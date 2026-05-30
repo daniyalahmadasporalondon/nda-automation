@@ -1264,7 +1264,7 @@ textarea {
 .studio-matter-meta {
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(3, minmax(110px, max-content));
+  grid-template-columns: repeat(2, minmax(110px, max-content));
   margin: 0;
 }
 
