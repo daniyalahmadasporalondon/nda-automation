@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=3">
+    <link rel="stylesheet" href="/static/styles.css?v=4">
   </head>
   <body>
     <div class="app-shell">
@@ -15,23 +15,24 @@
         </div>
         <div class="topbar-actions">
           <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button" type="button" data-tab="review">Review</button>
-            <button class="tab-button active" type="button" data-tab="clauses">Hard clauses</button>
+            <button class="tab-button active" type="button" data-tab="review">Review</button>
+            <button class="tab-button" type="button" data-tab="clauses">Hard clauses</button>
           </nav>
           <div class="mode-pill">hard clauses only</div>
         </div>
       </header>
 
-      <main class="workspace view" id="reviewView" data-view="review">
+      <main class="workspace view active" id="reviewView" data-view="review">
         <section class="input-panel">
           <div class="panel-heading">
             <h2>NDA text</h2>
             <label class="file-button">
-              <input id="fileInput" type="file" accept=".txt,.md,.text">
-              Upload text
+              <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+              Upload file
             </label>
           </div>
           <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+          <div class="file-meta" id="fileMeta">No file selected</div>
           <div class="actions">
             <button id="reviewButton" type="button">Review NDA</button>
             <button id="clearButton" class="secondary" type="button">Clear</button>
@@ -51,7 +52,7 @@
         </section>
       </main>
 
-      <main class="playbook-view view active" id="clausesView" data-view="clauses">
+      <main class="playbook-view view" id="clausesView" data-view="clauses">
         <section class="playbook-shell">
           <aside class="clause-rail">
             <div class="rail-heading">
@@ -66,6 +67,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=4"></script>
   </body>
 </html>

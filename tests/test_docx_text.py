@@ -1,0 +1,54 @@
+from io import BytesIO
+import unittest
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from nda_automation.docx_text import DocxExtractionError, extract_docx_text
+
+
+class DocxTextTests(unittest.TestCase):
+    def test_extracts_paragraph_text_from_docx(self):
+        data = make_docx(
+            [
+                "Mutual Non-Disclosure Agreement",
+                "Each party is a Disclosing Party and Receiving Party.",
+                "This Agreement continues for five (5) years.",
+            ]
+        )
+
+        text = extract_docx_text(data)
+
+        self.assertIn("Mutual Non-Disclosure Agreement", text)
+        self.assertIn("Each party is a Disclosing Party and Receiving Party.", text)
+        self.assertIn("five (5) years", text)
+
+    def test_rejects_non_docx_bytes(self):
+        with self.assertRaises(DocxExtractionError):
+            extract_docx_text(b"not a word document")
+
+
+def make_docx(paragraphs):
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in paragraphs
+    )
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def escape_xml(value):
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()

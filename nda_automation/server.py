@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import mimetypes
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -8,9 +10,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .checker import PLAYBOOK_PATH, review_nda
+from .docx_text import DocxExtractionError, extract_docx_text
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -41,10 +45,15 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/api/review":
-            self._send_json({"error": "Not found"}, status=404)
+        if path == "/api/review":
+            self._handle_text_review()
             return
+        if path == "/api/review-document":
+            self._handle_document_review()
+            return
+        self._send_json({"error": "Not found"}, status=404)
 
+    def _handle_text_review(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(content_length)
         try:
@@ -59,6 +68,49 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json(review_nda(text))
+
+    def _handle_document_review(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+            return
+
+        filename = payload.get("filename", "")
+        content_base64 = payload.get("content_base64", "")
+        if not isinstance(filename, str) or not filename.lower().endswith(".docx"):
+            self._send_json({"error": "Upload a .docx Word document."}, status=400)
+            return
+        if not isinstance(content_base64, str) or not content_base64:
+            self._send_json({"error": "Provide a Word document to review."}, status=400)
+            return
+
+        try:
+            document_bytes = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError):
+            self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
+            return
+
+        if len(document_bytes) > MAX_DOCUMENT_BYTES:
+            self._send_json({"error": "The Word document is larger than the 10 MB upload limit."}, status=400)
+            return
+
+        try:
+            extracted_text = extract_docx_text(document_bytes)
+        except DocxExtractionError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+
+        result = review_nda(extracted_text)
+        result["source"] = {
+            "filename": filename,
+            "type": "docx",
+            "extracted_characters": len(extracted_text),
+        }
+        result["extracted_text"] = extracted_text
+        self._send_json(result)
 
     def _send_file(self, path: Path, content_type: str | None = None) -> None:
         if not path.is_file():

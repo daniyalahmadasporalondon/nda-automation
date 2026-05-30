@@ -2,6 +2,7 @@ const ndaText = document.querySelector("#ndaText");
 const reviewButton = document.querySelector("#reviewButton");
 const clearButton = document.querySelector("#clearButton");
 const fileInput = document.querySelector("#fileInput");
+const fileMeta = document.querySelector("#fileMeta");
 const overallTitle = document.querySelector("#overallTitle");
 const resultHero = document.querySelector("#resultHero");
 const resultMark = document.querySelector("#resultMark");
@@ -13,6 +14,7 @@ const clauseDetail = document.querySelector("#clauseDetail");
 
 let playbookClauses = [];
 let selectedClauseId = null;
+let selectedDocument = null;
 
 const emptyState = () => {
   clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
@@ -30,11 +32,30 @@ tabButtons.forEach((button) => {
 fileInput.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  const extension = file.name.split(".").pop().toLowerCase();
+
+  if (extension === "docx") {
+    selectedDocument = file;
+    ndaText.value = "";
+    ndaText.placeholder = "Word document selected";
+    fileMeta.textContent = `${file.name} ready for review`;
+    setActiveTab("review");
+    return;
+  }
+
+  selectedDocument = null;
   ndaText.value = await file.text();
+  ndaText.placeholder = "Paste NDA text here";
+  fileMeta.textContent = `${file.name} loaded as text`;
+  setActiveTab("review");
 });
 
 clearButton.addEventListener("click", () => {
   ndaText.value = "";
+  ndaText.placeholder = "Paste NDA text here";
+  fileInput.value = "";
+  selectedDocument = null;
+  fileMeta.textContent = "No file selected";
   overallTitle.textContent = "Awaiting review";
   resultMark.textContent = "-";
   resultHero.className = "result-hero";
@@ -43,7 +64,7 @@ clearButton.addEventListener("click", () => {
 
 reviewButton.addEventListener("click", async () => {
   const text = ndaText.value.trim();
-  if (!text) {
+  if (!text && !selectedDocument) {
     overallTitle.textContent = "Add NDA text";
     resultMark.textContent = "-";
     resultHero.className = "result-hero fail";
@@ -55,13 +76,20 @@ reviewButton.addEventListener("click", async () => {
   reviewButton.textContent = "Reviewing";
 
   try {
-    const response = await fetch("/api/review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+    const response = selectedDocument
+      ? await reviewDocument(selectedDocument)
+      : await fetch("/api/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Review failed");
+    if (payload.extracted_text) {
+      ndaText.value = payload.extracted_text;
+      ndaText.placeholder = "Paste NDA text here";
+      fileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
+    }
     renderResult(payload);
   } catch (error) {
     overallTitle.textContent = error.message;
@@ -72,6 +100,30 @@ reviewButton.addEventListener("click", async () => {
     reviewButton.textContent = "Review NDA";
   }
 });
+
+async function reviewDocument(file) {
+  const contentBase64 = await fileToBase64(file);
+  return fetch("/api/review-document", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      content_base64: contentBase64,
+    }),
+  });
+}
+
+async function fileToBase64(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
 
 function renderResult(result) {
   const passed = result.overall_status === "meets_requirements";
