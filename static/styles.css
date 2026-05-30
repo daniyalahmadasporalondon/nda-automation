@@ -1248,7 +1248,7 @@ textarea {
   display: grid;
   flex: 1;
   gap: 18px;
-  grid-template-columns: 240px minmax(420px, 1fr) minmax(310px, 360px);
+  grid-template-columns: 240px minmax(520px, 1fr) minmax(270px, 300px);
   min-height: 0;
 }
 
@@ -1349,7 +1349,7 @@ textarea {
   display: flex;
   height: 46px;
   justify-content: space-between;
-  padding: 0 38px;
+  padding: 0 30px;
 }
 
 .studio-view-switch {
@@ -1387,7 +1387,7 @@ textarea {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 28px 34px 42px;
+  padding: 28px 24px 42px;
 }
 
 .studio-page {
@@ -1397,7 +1397,7 @@ textarea {
   margin: 0 auto;
   min-height: 980px;
   padding: 78px 78px;
-  width: min(780px, 100%);
+  width: min(840px, 100%);
 }
 
 .studio-page h2 {
@@ -1432,10 +1432,10 @@ textarea {
 
 .studio-playbook > h2 {
   border-bottom: 1px solid var(--border);
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1.1;
   margin: 0;
-  padding: 24px 28px;
+  padding: 22px 22px;
   text-transform: uppercase;
 }
 
@@ -1443,8 +1443,8 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 22px rgba(23, 10, 51, 0.045);
-  margin: 26px 28px 0;
-  padding: 18px 20px;
+  margin: 22px 18px 0;
+  padding: 16px 16px;
 }
 
 .studio-match-line {
