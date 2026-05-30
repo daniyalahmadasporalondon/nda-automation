@@ -4,54 +4,69 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <link rel="stylesheet" href="/static/styles.css?v=15">
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">aspora legal</p>
-          <h1>nda automation</h1>
-        </div>
-        <div class="topbar-actions">
-          <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button active" type="button" data-tab="review">Review</button>
-            <button class="tab-button" type="button" data-tab="clauses">Hard clauses</button>
-          </nav>
-          <div class="mode-pill">hard clauses only</div>
-        </div>
-      </header>
-
-      <main class="review-workstation view active" id="reviewView" data-view="review">
-        <aside class="review-rail" aria-label="Review workspace">
+      <aside class="app-sidebar" aria-label="Workspace">
+        <div class="sidebar-brand">
           <div class="rail-logo">A</div>
-          <div class="rail-current">Review</div>
-        </aside>
+        </div>
+        <nav class="sidebar-tabs">
+          <button class="tab-button sidebar-tab active" type="button" data-tab="review">Review</button>
+          <button class="tab-button sidebar-tab" type="button" data-tab="clauses">Clauses</button>
+        </nav>
+      </aside>
 
-        <section class="review-shell">
+      <section class="workspace-shell">
+        <header class="topbar">
+          <div class="product-lockup">
+            <strong>aspora</strong>
+            <span>Clause Studio</span>
+          </div>
+          <div class="matter-title">
+            <span>NDA Review</span>
+            <strong id="docTitle">Untitled NDA</strong>
+          </div>
+          <div class="topbar-actions">
+            <div class="mode-pill">hard clauses only</div>
+          </div>
+        </header>
+
+        <main class="review-workstation view active" id="reviewView" data-view="review">
           <header class="review-titlebar">
             <div>
               <p class="eyebrow">nda review</p>
-              <h2>Hard-clause workstation</h2>
+              <h1 id="workspaceDocTitle">Untitled NDA</h1>
+              <div class="review-badges">
+                <span>Ready</span>
+                <span>Hard clauses only</span>
+              </div>
             </div>
-            <div class="review-scope">Hard clauses only</div>
+            <label class="file-button">
+              <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+              Upload file
+            </label>
           </header>
 
           <section class="review-stage">
+            <aside class="clause-lane" aria-label="Clause map">
+              <div class="lane-heading">
+                <p class="eyebrow">clause map</p>
+                <h2>Hard clauses</h2>
+              </div>
+              <div class="lane-list" id="clauseLane"></div>
+            </aside>
+
             <section class="document-workbench">
               <div class="document-toolbar">
-                <div>
-                  <p class="eyebrow">document</p>
-                  <h2>Source text</h2>
-                </div>
-                <label class="file-button">
-                  <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                  Upload file
-                </label>
+                <span class="document-tab">Document</span>
+                <span class="document-meta">Editable source text</span>
               </div>
 
               <div class="document-canvas">
                 <div class="document-page">
+                  <div class="page-title">NON-DISCLOSURE AGREEMENT</div>
                   <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
                 </div>
               </div>
@@ -62,11 +77,12 @@
                 <div>
                   <p class="eyebrow">verdict</p>
                   <h2 id="overallTitle">Awaiting review</h2>
+                  <p id="resultMeta">No hard-clause review has run yet.</p>
                 </div>
                 <div class="result-mark" id="resultMark">-</div>
               </div>
 
-              <section class="verdict-section">
+              <section class="verdict-section clause-panel">
                 <div class="results-heading">
                   <div>
                     <p class="eyebrow">checklist</p>
@@ -86,30 +102,33 @@
           </section>
 
           <footer class="review-actionbar">
-            <div class="file-meta" id="fileMeta">No file selected</div>
+            <div class="file-meta">
+              <span>Current file</span>
+              <strong id="fileMeta">No file selected</strong>
+            </div>
             <div class="actions">
               <button id="reviewButton" type="button">Review NDA</button>
               <button id="clearButton" class="secondary" type="button">Clear</button>
             </div>
           </footer>
-        </section>
-      </main>
+        </main>
 
-      <main class="playbook-view view" id="clausesView" data-view="clauses">
-        <section class="playbook-shell">
-          <aside class="clause-rail">
-            <div class="rail-heading">
-              <p class="eyebrow">hard clauses</p>
-              <h2>Aspora playbook</h2>
-            </div>
-            <div class="playbook-list" id="playbookList"></div>
-          </aside>
+        <main class="playbook-view view" id="clausesView" data-view="clauses">
+          <section class="playbook-shell">
+            <aside class="clause-rail">
+              <div class="rail-heading">
+                <p class="eyebrow">hard clauses</p>
+                <h2>Aspora playbook</h2>
+              </div>
+              <div class="playbook-list" id="playbookList"></div>
+            </aside>
 
-          <section class="clause-detail" id="clauseDetail"></section>
-        </section>
-      </main>
+            <section class="clause-detail" id="clauseDetail"></section>
+          </section>
+        </main>
+      </section>
     </div>
 
-    <script src="/static/app.js?v=14"></script>
+    <script src="/static/app.js?v=15"></script>
   </body>
 </html>

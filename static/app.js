@@ -3,10 +3,14 @@ const reviewButton = document.querySelector("#reviewButton");
 const clearButton = document.querySelector("#clearButton");
 const fileInput = document.querySelector("#fileInput");
 const fileMeta = document.querySelector("#fileMeta");
+const docTitle = document.querySelector("#docTitle");
+const workspaceDocTitle = document.querySelector("#workspaceDocTitle");
 const overallTitle = document.querySelector("#overallTitle");
 const resultHero = document.querySelector("#resultHero");
 const resultMark = document.querySelector("#resultMark");
+const resultMeta = document.querySelector("#resultMeta");
 const clauseGrid = document.querySelector("#clauseGrid");
+const clauseLane = document.querySelector("#clauseLane");
 const reviewDetail = document.querySelector("#reviewDetail");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
@@ -21,12 +25,14 @@ let selectedReviewClauseId = null;
 
 const emptyState = () => {
   clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
+  resultMeta.textContent = "No hard-clause review has run yet.";
   reviewDetail.innerHTML = `
     <div class="review-detail-empty">
       <p class="eyebrow">clause detail</p>
       <h2>No review yet</h2>
     </div>
   `;
+  renderClauseLane();
 };
 
 emptyState();
@@ -48,6 +54,8 @@ fileInput.addEventListener("change", async (event) => {
     ndaText.value = "";
     ndaText.placeholder = "Word document selected";
     fileMeta.textContent = `${file.name} ready for review`;
+    docTitle.textContent = file.name;
+    workspaceDocTitle.textContent = file.name;
     setActiveTab("review");
     return;
   }
@@ -56,6 +64,8 @@ fileInput.addEventListener("change", async (event) => {
   ndaText.value = await file.text();
   ndaText.placeholder = "Paste NDA text here";
   fileMeta.textContent = `${file.name} loaded as text`;
+  docTitle.textContent = file.name;
+  workspaceDocTitle.textContent = file.name;
   setActiveTab("review");
 });
 
@@ -65,6 +75,8 @@ clearButton.addEventListener("click", () => {
   fileInput.value = "";
   selectedDocument = null;
   fileMeta.textContent = "No file selected";
+  docTitle.textContent = "Untitled NDA";
+  workspaceDocTitle.textContent = "Untitled NDA";
   overallTitle.textContent = "Awaiting review";
   resultMark.textContent = "-";
   resultHero.className = "result-hero";
@@ -138,14 +150,60 @@ async function fileToBase64(file) {
 
 function renderResult(result) {
   const passed = result.overall_status === "meets_requirements";
+  const checks = (result.clauses || []).filter((clause) => clause.status === "fail").length;
   overallTitle.textContent = passed ? "Meets requirements" : "Does not meet requirements";
   resultMark.textContent = passed ? "PASS" : "CHECK";
+  resultMeta.textContent = passed
+    ? "All hard clauses are currently satisfied."
+    : `${checks} hard ${checks === 1 ? "clause needs" : "clauses need"} checking.`;
   resultHero.className = `result-hero ${passed ? "pass" : "fail"}`;
 
   reviewClauses = result.clauses || [];
   selectedReviewClauseId = reviewClauses.find((clause) => clause.status === "fail")?.id || reviewClauses[0]?.id || null;
+  renderClauseLane();
   renderReviewClauseList();
   renderReviewDetail();
+}
+
+function renderClauseLane() {
+  if (!clauseLane) return;
+
+  const sourceClauses = reviewClauses.length
+    ? reviewClauses
+    : playbookClauses.map((clause) => ({ ...clause, status: "idle" }));
+
+  if (!sourceClauses.length) {
+    clauseLane.innerHTML = '<div class="lane-empty">Loading clauses</div>';
+    return;
+  }
+
+  clauseLane.innerHTML = sourceClauses
+    .map((clause, index) => {
+      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
+      const status = clause.status === "fail" ? "check" : clause.status;
+      const statusText = clause.status === "fail" ? "Check" : clause.status === "pass" ? "Pass" : "Pending";
+      const tag = reviewClauses.length ? "button" : "div";
+      const type = reviewClauses.length ? ' type="button"' : "";
+      const data = reviewClauses.length ? ` data-lane-clause-id="${escapeHtml(clause.id)}"` : "";
+      return `
+        <${tag} class="lane-item ${selected} ${status}"${type}${data}>
+          <span class="lane-dot"></span>
+          <span class="lane-code">CL-${String(index + 1).padStart(2, "0")}</span>
+          <span class="lane-name">${escapeHtml(clause.name)}</span>
+          <span class="lane-status">${statusText}</span>
+        </${tag}>
+      `;
+    })
+    .join("");
+
+  clauseLane.querySelectorAll("[data-lane-clause-id]").forEach((item) => {
+    item.addEventListener("click", () => {
+      selectedReviewClauseId = item.dataset.laneClauseId;
+      renderClauseLane();
+      renderReviewClauseList();
+      renderReviewDetail();
+    });
+  });
 }
 
 function renderReviewClauseList() {
@@ -171,6 +229,7 @@ function renderReviewClauseList() {
   clauseGrid.querySelectorAll("[data-review-clause-id]").forEach((card) => {
     card.addEventListener("click", () => {
       selectedReviewClauseId = card.dataset.reviewClauseId;
+      renderClauseLane();
       renderReviewClauseList();
       renderReviewDetail();
     });
@@ -178,6 +237,7 @@ function renderReviewClauseList() {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       selectedReviewClauseId = card.dataset.reviewClauseId;
+      renderClauseLane();
       renderReviewClauseList();
       renderReviewDetail();
     });
@@ -230,6 +290,7 @@ async function loadPlaybook() {
 
     playbookClauses = playbook.clauses || [];
     selectedClauseId = playbookClauses[0]?.id || null;
+    renderClauseLane();
     renderPlaybookList();
     renderClauseDetail();
   } catch (error) {
