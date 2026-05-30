@@ -620,15 +620,18 @@ function scrollTextareaToIndex(input, index) {
   const container = input.closest(".studio-page-wrap, .document-canvas");
   if (!container) return;
 
-  const top = offsetTopWithin(input, container) + visualLineCount * lineHeight;
-  container.scrollTop = Math.max(0, top - container.clientHeight * 0.32);
+  const targetTop = layoutOffsetTop(input) - layoutOffsetTop(container) + visualLineCount * lineHeight;
+  container.scrollTo({
+    behavior: "smooth",
+    top: Math.max(0, targetTop - container.clientHeight * 0.32),
+  });
 }
 
-function offsetTopWithin(element, ancestor) {
+function layoutOffsetTop(element) {
   let offset = 0;
   let current = element;
 
-  while (current && current !== ancestor) {
+  while (current) {
     offset += current.offsetTop || 0;
     current = current.offsetParent;
   }
