@@ -24,8 +24,13 @@ const clauseLane = document.querySelector("#clauseLane");
 const reviewDetail = document.querySelector("#reviewDetail");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
+const interfaceScaleButtons = document.querySelectorAll(".interface-scale [data-interface-scale]");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
+
+const DEFAULT_INTERFACE_SCALE = "90";
+const INTERFACE_SCALE_STORAGE_KEY = "ndaAutomation.interfaceScale";
+const INTERFACE_SCALES = new Set(["85", "90", "100"]);
 
 let playbookClauses = [];
 let selectedClauseId = null;
@@ -33,6 +38,7 @@ let selectedDocument = null;
 let reviewClauses = [];
 let selectedReviewClauseId = null;
 
+setupInterfaceScale();
 setupSourceEditors();
 
 const emptyState = () => {
@@ -198,6 +204,49 @@ async function fileToBase64(file) {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function setupInterfaceScale() {
+  applyInterfaceScale(getSavedInterfaceScale());
+
+  interfaceScaleButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const scale = normalizeInterfaceScale(button.dataset.interfaceScale);
+      applyInterfaceScale(scale);
+      saveInterfaceScale(scale);
+    });
+  });
+}
+
+function getSavedInterfaceScale() {
+  try {
+    return normalizeInterfaceScale(window.localStorage.getItem(INTERFACE_SCALE_STORAGE_KEY));
+  } catch {
+    return DEFAULT_INTERFACE_SCALE;
+  }
+}
+
+function saveInterfaceScale(scale) {
+  try {
+    window.localStorage.setItem(INTERFACE_SCALE_STORAGE_KEY, scale);
+  } catch {
+    // Local storage can be unavailable in restricted browser modes.
+  }
+}
+
+function normalizeInterfaceScale(scale) {
+  return INTERFACE_SCALES.has(scale) ? scale : DEFAULT_INTERFACE_SCALE;
+}
+
+function applyInterfaceScale(scale) {
+  const normalizedScale = normalizeInterfaceScale(scale);
+  document.body.dataset.interfaceScale = normalizedScale;
+  interfaceScaleButtons.forEach((button) => {
+    const isActive = button.dataset.interfaceScale === normalizedScale;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+  requestAnimationFrame(resizeSourceEditors);
 }
 
 function setupSourceEditors() {

@@ -41,8 +41,29 @@
   --green: #44c131;
   --red: #ef4444;
   --display-font: "PP Neue Corp Compact", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --interface-height: 111.111vh;
+  --interface-scale: 0.9;
+  --interface-width: 111.111vw;
   --text-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --shadow: 0 20px 70px rgba(43, 12, 110, 0.1);
+}
+
+body[data-interface-scale="85"] {
+  --interface-height: 117.647vh;
+  --interface-scale: 0.85;
+  --interface-width: 117.647vw;
+}
+
+body[data-interface-scale="90"] {
+  --interface-height: 111.111vh;
+  --interface-scale: 0.9;
+  --interface-width: 111.111vw;
+}
+
+body[data-interface-scale="100"] {
+  --interface-height: 100vh;
+  --interface-scale: 1;
+  --interface-width: 100vw;
 }
 
 * {
@@ -907,8 +928,11 @@ textarea::placeholder {
 .app-shell {
   display: flex;
   gap: 14px;
-  height: 100vh;
+  height: var(--interface-height);
   padding: 12px;
+  transform: scale(var(--interface-scale));
+  transform-origin: top left;
+  width: var(--interface-width);
 }
 
 .workspace-shell {
@@ -1017,6 +1041,8 @@ textarea::placeholder {
 }
 
 .topbar-actions {
+  align-items: center;
+  display: flex;
   gap: 10px;
 }
 
@@ -1024,6 +1050,42 @@ textarea::placeholder {
   background: #f2efff;
   color: var(--brand);
   height: 36px;
+}
+
+.interface-scale {
+  align-items: center;
+  background: #f2efff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  height: 36px;
+  padding: 4px;
+}
+
+.interface-scale span {
+  color: var(--ink-muted);
+  font-family: var(--display-font);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 7px;
+}
+
+.interface-scale button {
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  height: 26px;
+  padding: 0 8px;
+}
+
+.interface-scale button.active,
+.interface-scale button[aria-pressed="true"] {
+  background: var(--brand);
+  box-shadow: 0 5px 14px rgba(85, 35, 178, 0.18);
+  color: #fff;
 }
 
 .mode-pill {
@@ -1865,12 +1927,18 @@ textarea {
 
 @media (max-width: 920px) {
   body {
+    --interface-height: auto;
+    --interface-scale: 1;
+    --interface-width: 100%;
     overflow: auto;
   }
 
   .app-shell {
     grid-template-columns: 1fr;
+    height: auto;
     min-height: 100vh;
+    transform: none;
+    width: 100%;
   }
 
   .app-sidebar {
@@ -1899,6 +1967,10 @@ textarea {
   .topbar-actions,
   .actions {
     width: 100%;
+  }
+
+  .interface-scale {
+    justify-content: space-between;
   }
 
   .review-stage,

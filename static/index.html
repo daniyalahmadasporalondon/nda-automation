@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=23">
+    <link rel="stylesheet" href="/static/styles.css?v=24">
   </head>
   <body>
     <div class="app-shell">
@@ -24,6 +24,12 @@
             <strong id="docTitle">Untitled NDA</strong>
           </div>
           <div class="topbar-actions">
+            <div class="interface-scale" role="group" aria-label="Interface zoom">
+              <span>Zoom</span>
+              <button type="button" data-interface-scale="85">85%</button>
+              <button type="button" data-interface-scale="90">90%</button>
+              <button type="button" data-interface-scale="100">100%</button>
+            </div>
             <label class="file-button top-upload">
               <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
               Upload file
@@ -207,6 +213,6 @@
       </section>
     </div>
 
-    <script src="/static/app.js?v=23"></script>
+    <script src="/static/app.js?v=24"></script>
   </body>
 </html>
