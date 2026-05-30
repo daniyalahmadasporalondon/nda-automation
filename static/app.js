@@ -586,6 +586,9 @@ function findClauseTextRange(text, clause) {
 }
 
 function findClauseTextRanges(text, clause) {
+  const paragraphRanges = findClauseParagraphRanges(text, clause);
+  if (paragraphRanges.length) return paragraphRanges;
+
   const searchIndex = createSearchIndex(text);
   const evidenceRanges = uniqueRanges((clause.evidence || [])
     .map((snippet) => findQueryRange(searchIndex, snippet, 12))
@@ -605,6 +608,62 @@ function findClauseTextRanges(text, clause) {
   return fallbackRange ? [expandToParagraph(text, fallbackRange.start, fallbackRange.end)] : [];
 }
 
+function findClauseParagraphRanges(text, clause) {
+  const paragraphs = getDocumentParagraphs(text);
+  const scored = paragraphs
+    .map((paragraph, index) => ({
+      index,
+      paragraph,
+      score: scoreParagraphForClause(paragraph.text, clause),
+    }))
+    .filter((item) => item.score > 0);
+
+  if (!scored.length) return [];
+
+  if (clause.id === "signatures") {
+    const strongHits = scored.filter((item) => item.score >= 6);
+    const hits = strongHits.length ? strongHits : scored;
+    const startIndex = Math.min(...hits.map((item) => item.index));
+    const endIndex = Math.max(...hits.map((item) => item.index));
+    return [{
+      start: paragraphs[startIndex].start,
+      end: paragraphs[endIndex].end,
+    }];
+  }
+
+  const maxScore = Math.max(...scored.map((item) => item.score));
+  const maxMatches = clause.id === "term_and_survival" ? 2 : 1;
+  return scored
+    .filter((item) => item.score >= maxScore)
+    .slice(0, maxMatches)
+    .map((item) => ({
+      start: item.paragraph.start,
+      end: item.paragraph.end,
+    }));
+}
+
+function scoreParagraphForClause(text, clause) {
+  const normalized = normalizeQuery(text);
+  const rules = CLAUSE_PARAGRAPH_RULES[clause.id] || [];
+  let score = 0;
+
+  rules.forEach((rule) => {
+    if (rule.pattern.test(normalized)) score += rule.weight;
+  });
+
+  if (clause.id === "confidential_information") {
+    const categoryHits = CONFIDENTIAL_INFO_CATEGORIES
+      .filter((category) => normalized.includes(category)).length;
+    score += Math.min(categoryHits, 6);
+  }
+
+  if (clause.id === "term_and_survival" && /\byears?\b/.test(normalized)) {
+    score += 4;
+  }
+
+  return score;
+}
+
 function uniqueRanges(ranges) {
   const seen = new Set();
   return ranges.filter((range) => {
@@ -622,6 +681,62 @@ const CLAUSE_JUMP_TERMS = {
   term_and_survival: ["term", "survive", "survival", "period", "years"],
   non_circumvention: ["non-circumvention", "non circumvention", "circumvent", "introduced parties", "exclusive dealing"],
   signatures: ["signatures", "signature", "title:", "date:", "by:"],
+};
+
+const CONFIDENTIAL_INFO_CATEGORIES = [
+  "business",
+  "customer",
+  "employee",
+  "financial",
+  "market",
+  "pricing",
+  "proprietary",
+  "source code",
+  "supplier",
+  "technical",
+  "trade secret",
+];
+
+const CLAUSE_PARAGRAPH_RULES = {
+  mutuality: [
+    { pattern: /\bmutual\b/, weight: 9 },
+    { pattern: /\bboth parties\b/, weight: 8 },
+    { pattern: /\beach party\b.*\b(disclosing|receiving) party\b/, weight: 8 },
+    { pattern: /\bdisclosing party\b.*\breceiving party\b/, weight: 6 },
+    { pattern: /\breceiving party\b.*\bdisclosing party\b/, weight: 6 },
+    { pattern: /\bone[- ]way\b|\bunilateral\b|\bonly the receiving party\b|\brecipient only\b/, weight: 8 },
+  ],
+  confidential_information: [
+    { pattern: /\bdefinition of confidential information\b/, weight: 11 },
+    { pattern: /\bconfidential information\b.{0,40}\b(means|shall mean|includes?|refers to|is defined)\b/, weight: 11 },
+    { pattern: /\b(means|shall mean|includes?)\b.{0,40}\bconfidential information\b/, weight: 9 },
+    { pattern: /\bany and all information\b/, weight: 8 },
+    { pattern: /\bnon[- ]public information\b/, weight: 5 },
+    { pattern: /\bindependently developed\b|\bresidual knowledge\b|\bresiduals\b|\breverse engineer(?:ing)?\b/, weight: 6 },
+  ],
+  governing_law: [
+    { pattern: /\bgoverning law\b/, weight: 11 },
+    { pattern: /\bgoverned by\b/, weight: 9 },
+    { pattern: /\blaws of\b/, weight: 6 },
+    { pattern: /\bjurisdiction\b|\bcourts?\b|\barbitration\b/, weight: 3 },
+  ],
+  term_and_survival: [
+    { pattern: /\bterm\b|\bsurviv(?:e|al|es|ing)\b/, weight: 8 },
+    { pattern: /\bremain in effect\b|\bperiod of\b|\bterminate\b|\btermination\b/, weight: 5 },
+    { pattern: /\bindefinitely\b|\bperpetual confidentiality\b|\bfor so long as the information remains confidential\b/, weight: 9 },
+  ],
+  non_circumvention: [
+    { pattern: /\bnon[- ]circumvention\b/, weight: 11 },
+    { pattern: /\bcircumvent(?:ion|s|ed|ing)?\b/, weight: 10 },
+    { pattern: /\bintroduced parties\b|\bsubstitute purpose\b|\bexclusive dealing\b/, weight: 8 },
+  ],
+  signatures: [
+    { pattern: /\bsignatures?\b|\bexecution block\b/, weight: 9 },
+    { pattern: /\btitle\s*:/, weight: 8 },
+    { pattern: /\bdate\s*:/, weight: 8 },
+    { pattern: /\bby\s*:/, weight: 7 },
+    { pattern: /^for\s+(?!a\b|the\b|any\b|period\b|purpose\b|purposes\b|term\b)[a-z0-9&.,' -]{2,80}/, weight: 5 },
+  ],
 };
 
 function createSearchIndex(text) {
