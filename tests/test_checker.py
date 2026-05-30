@@ -31,6 +31,17 @@ class CheckerTests(unittest.TestCase):
         term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
         self.assertEqual(term_clause["status"], "pass")
 
+    def test_term_and_survival_picks_up_period_of_two_years(self):
+        text = """
+        This Agreement shall continue for a period of two (2) years.
+        The undertakings set out in this Agreement will survive for a further period of two (2) years.
+        """
+        result = review_nda(text)
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "pass")
+        self.assertIn("within the five-year cap", term_clause["finding"])
+
     def test_term_and_survival_rejects_more_than_five_years(self):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8")
         result = review_nda(text.replace("three (3) years", "seven (7) years"))

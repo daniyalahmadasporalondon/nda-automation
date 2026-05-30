@@ -146,12 +146,6 @@ def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, objec
     year_terms = _extract_year_terms(normalized)
     has_term_within_cap = any(1 <= years <= max_years for years in year_terms)
     has_term_over_cap = any(years > max_years for years in year_terms)
-    has_trade_secret_carveout = "trade secret" in normalized and (
-        "remain trade secrets" in normalized or "remains a trade secret" in normalized or "remain a trade secret" in normalized
-    )
-    has_personal_data_carveout = "personal data" in normalized and (
-        "data-protection law" in normalized or "data protection law" in normalized or "applicable law" in normalized
-    )
     ordinary_indefinite_term = any(
         phrase in normalized
         for phrase in [
@@ -161,9 +155,13 @@ def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, objec
         ]
     )
 
-    if has_term_within_cap and not has_term_over_cap and has_trade_secret_carveout and has_personal_data_carveout and not ordinary_indefinite_term:
-        return _pass(clause, "Term is within the five-year cap and required survival carve-outs were found.", _evidence(text, [r"\b(?:one|two|three|four|five|[1-5])(?:\s*\(\s*[1-5]\s*\))?(?:\s*-\s*|\s+)years?\b", r"trade secrets", r"personal data"]))
-    return _fail(clause, "The term must be fixed at up to five years with trade secret and personal data carve-outs.", _evidence(text, [r"\b(?:six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b", r"indefinitely", r"trade secrets", r"personal data"]))
+    if has_term_over_cap:
+        return _fail(clause, "A term or survival period exceeds the five-year cap.", _evidence(text, [r"\b(?:six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b"]))
+    if ordinary_indefinite_term:
+        return _fail(clause, "Ordinary confidentiality appears indefinite rather than capped at five years.", _evidence(text, [r"indefinitely", r"perpetual confidentiality", r"for so long as the information remains confidential"]))
+    if has_term_within_cap:
+        return _pass(clause, "Term or survival period is within the five-year cap.", _evidence(text, [r"\b(?:one|two|three|four|five|[1-5])(?:\s*\(\s*[1-5]\s*\))?(?:\s*-\s*|\s+)years?\b"]))
+    return _fail(clause, "No fixed term or survival period of up to five years was found.", _evidence(text, [r"term", r"survive", r"period"]))
 
 
 def _extract_year_terms(normalized: str) -> List[int]:
