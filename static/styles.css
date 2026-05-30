@@ -566,6 +566,7 @@ textarea {
   line-height: 1.75;
   min-height: 780px;
   outline: none;
+  overflow: hidden;
   padding: 0;
   resize: none;
   width: 100%;
@@ -1430,20 +1431,21 @@ textarea {
 }
 
 .studio-page-wrap {
+  background: #fff;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 28px 24px 42px;
+  padding: 0;
 }
 
 .studio-page {
   background: #fff;
-  border-radius: 4px;
-  box-shadow: 0 18px 70px rgba(43, 12, 110, 0.1);
-  margin: 0 auto;
-  min-height: 980px;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  min-height: 100%;
   padding: 70px 82px;
-  width: min(920px, 100%);
+  width: 100%;
 }
 
 .studio-document-logo {
@@ -1493,6 +1495,7 @@ textarea {
   font-size: 18px;
   line-height: 1.72;
   min-height: 650px;
+  overflow: hidden;
 }
 
 .studio-playbook {

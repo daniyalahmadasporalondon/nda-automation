@@ -33,6 +33,8 @@ let selectedDocument = null;
 let reviewClauses = [];
 let selectedReviewClauseId = null;
 
+setupSourceEditors();
+
 const emptyState = () => {
   clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
   resultMeta.textContent = "No hard-clause review has run yet.";
@@ -52,6 +54,7 @@ loadPlaybook();
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveTab(button.dataset.tab);
+    requestAnimationFrame(resizeSourceEditors);
   });
 });
 
@@ -64,6 +67,7 @@ fileInput.addEventListener("change", async (event) => {
     selectedDocument = file;
     ndaText.value = "";
     studioNdaText.value = "";
+    resizeSourceEditors();
     ndaText.placeholder = "Word document selected";
     studioNdaText.placeholder = "Word document selected";
     fileMeta.textContent = `${file.name} ready for review`;
@@ -79,6 +83,7 @@ fileInput.addEventListener("change", async (event) => {
   const fileText = await file.text();
   ndaText.value = fileText;
   studioNdaText.value = fileText;
+  resizeSourceEditors();
   ndaText.placeholder = "Paste NDA text here";
   studioNdaText.placeholder = "Paste NDA text here";
   fileMeta.textContent = `${file.name} loaded as text`;
@@ -92,6 +97,7 @@ fileInput.addEventListener("change", async (event) => {
 function clearReview() {
   ndaText.value = "";
   studioNdaText.value = "";
+  resizeSourceEditors();
   ndaText.placeholder = "Paste NDA text here";
   studioNdaText.placeholder = "Paste NDA text here";
   fileInput.value = "";
@@ -152,6 +158,7 @@ async function runReview(sourceInput, button) {
     if (payload.extracted_text) {
       ndaText.value = payload.extracted_text;
       studioNdaText.value = payload.extracted_text;
+      resizeSourceEditors();
       ndaText.placeholder = "Paste NDA text here";
       studioNdaText.placeholder = "Paste NDA text here";
       fileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
@@ -191,6 +198,25 @@ async function fileToBase64(file) {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function setupSourceEditors() {
+  [ndaText, studioNdaText].forEach((input) => {
+    input.addEventListener("input", () => {
+      resizeSourceEditor(input);
+    });
+    resizeSourceEditor(input);
+  });
+}
+
+function resizeSourceEditors() {
+  [ndaText, studioNdaText].forEach(resizeSourceEditor);
+}
+
+function resizeSourceEditor(input) {
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.max(input.scrollHeight, input.clientHeight)}px`;
 }
 
 function renderResult(result) {
@@ -523,6 +549,7 @@ function focusTextRange(input, start, end) {
   }
 
   input.setSelectionRange(safeStart, safeEnd);
+  resizeSourceEditor(input);
   scrollTextareaToIndex(input, safeStart);
   pulseSourcePage(input);
 }
@@ -539,7 +566,25 @@ function scrollTextareaToIndex(input, index) {
     .split("\n")
     .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
 
-  input.scrollTop = Math.max(0, visualLineCount * lineHeight - input.clientHeight * 0.32);
+  input.scrollTop = 0;
+
+  const container = input.closest(".studio-page-wrap, .document-canvas");
+  if (!container) return;
+
+  const top = offsetTopWithin(input, container) + visualLineCount * lineHeight;
+  container.scrollTop = Math.max(0, top - container.clientHeight * 0.32);
+}
+
+function offsetTopWithin(element, ancestor) {
+  let offset = 0;
+  let current = element;
+
+  while (current && current !== ancestor) {
+    offset += current.offsetTop || 0;
+    current = current.offsetParent;
+  }
+
+  return offset;
 }
 
 function pulseSourcePage(input) {
