@@ -37,4 +37,4 @@ python3 -m unittest discover -s tests
 
 ## Review output
 
-The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence. The frontend uses those paragraph IDs for highlighting and clause navigation instead of guessing locally.
+The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence. DOCX uploads preserve the source Word paragraph index for future redlining. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.

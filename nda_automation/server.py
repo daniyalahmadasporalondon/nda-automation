@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .checker import PLAYBOOK_PATH, review_nda
-from .docx_text import DocxExtractionError, extract_docx_text
+from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
@@ -98,16 +98,18 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            extracted_text = extract_docx_text(document_bytes)
+            extracted_paragraphs = extract_docx_paragraphs(document_bytes)
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
 
-        result = review_nda(extracted_text)
+        extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
+        result = review_nda(extracted_text, paragraphs=extracted_paragraphs)
         result["source"] = {
             "filename": filename,
             "type": "docx",
             "extracted_characters": len(extracted_text),
+            "extracted_paragraphs": len(extracted_paragraphs),
         }
         result["extracted_text"] = extracted_text
         self._send_json(result)

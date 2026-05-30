@@ -31,15 +31,21 @@ def load_playbook() -> Dict[str, object]:
         return json.load(handle)
 
 
-def review_nda(text: str) -> Dict[str, object]:
+def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str, object]:
     source_text = text or ""
+    if paragraphs is None:
+        document_paragraphs = split_document_paragraphs(source_text)
+    else:
+        if not source_text:
+            source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        document_paragraphs = align_document_paragraphs(paragraphs, source_text)
+
     normalized = _normalize(source_text)
-    paragraphs = split_document_paragraphs(source_text)
     playbook = load_playbook()
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
     clause_results = [
-        check(source_text, normalized, clauses_by_id[clause_id], paragraphs)
+        check(source_text, normalized, clauses_by_id[clause_id], document_paragraphs)
         for clause_id, check in CLAUSE_CHECKS
     ]
     failed = [clause for clause in clause_results if not clause["passes"]]
@@ -49,7 +55,7 @@ def review_nda(text: str) -> Dict[str, object]:
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "requirements_passed": len(clause_results) - len(failed),
         "requirements_failed": len(failed),
-        "paragraphs": paragraphs,
+        "paragraphs": document_paragraphs,
         "clauses": clause_results,
     }
 
@@ -67,6 +73,34 @@ def split_document_paragraphs(text: str) -> List[Paragraph]:
 
     _add_paragraph(paragraphs, source_text, cursor, len(source_text))
     return paragraphs
+
+
+def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> List[Paragraph]:
+    aligned: List[Paragraph] = []
+    cursor = 0
+    for paragraph in paragraphs:
+        paragraph_text = str(paragraph.get("text", "")).strip()
+        if not paragraph_text:
+            continue
+
+        start = source_text.find(paragraph_text, cursor)
+        if start == -1:
+            start = cursor
+        end = start + len(paragraph_text)
+        cursor = end
+
+        index = len(aligned) + 1
+        aligned_paragraph: Paragraph = {
+            "id": f"p{index}",
+            "index": index,
+            "text": paragraph_text,
+            "start": start,
+            "end": end,
+        }
+        if "source_index" in paragraph:
+            aligned_paragraph["source_index"] = paragraph["source_index"]
+        aligned.append(aligned_paragraph)
+    return aligned
 
 
 def _add_paragraph(paragraphs: List[Paragraph], text: str, start: int, end: int) -> None:
@@ -169,16 +203,11 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
 
 def _check_governing_law(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     has_governing_anchor = any(anchor in normalized for anchor in ["governing law", "governed by", "laws of"])
-    approved_patterns = [
-        r"\bindia\b",
-        r"\bdelaware\b",
-        r"\bengland and wales\b",
-        r"\bdifc\b",
-    ]
+    approved_patterns = [_literal_word_pattern(str(law)) for law in clause.get("approved_laws", [])]
     approved_law_found = any(re.search(pattern, normalized) for pattern in approved_patterns)
 
     if has_governing_anchor and approved_law_found:
-        return _match(clause, "Approved governing law found.", _paragraph_matches(paragraphs, [r"governed by", r"governing law", r"India", r"Delaware", r"England and Wales", r"DIFC"]))
+        return _match(clause, "Approved governing law found.", _paragraph_matches(paragraphs, [r"governed by", r"governing law", *approved_patterns]))
     if has_governing_anchor:
         return _check(clause, "A governing law clause was found, but it does not use an approved law.", _paragraph_matches(paragraphs, [r"governed by", r"governing law", r"laws of"]))
     return _not_present(clause, "No governing law clause was found.", [])
@@ -232,7 +261,7 @@ def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, objec
     prohibited_language = [pattern for pattern in prohibited_patterns if re.search(pattern, normalized)]
 
     if not prohibited_language:
-        return _not_present(clause, "No prohibited non-circumvention language detected.", [], passes=True)
+        return _not_present(clause, "No prohibited non-circumvention language detected.", [])
     return _check(clause, "Prohibited non-circumvention or substitute-purpose language found.", _paragraph_matches(paragraphs, prohibited_patterns))
 
 
@@ -288,18 +317,18 @@ _validate_check_registry()
 
 
 def _match(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
-    return _result(clause, "match", True, reason, matched_paragraphs)
+    return _result(clause, "match", reason, matched_paragraphs)
 
 
 def _check(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
-    return _result(clause, "check", False, reason, matched_paragraphs)
+    return _result(clause, "check", reason, matched_paragraphs)
 
 
-def _not_present(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph], passes: bool = False) -> ClauseResult:
-    return _result(clause, "not_present", passes, reason, matched_paragraphs)
+def _not_present(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
+    return _result(clause, "not_present", reason, matched_paragraphs)
 
 
-def _result(clause: Dict[str, object], status: str, passes: bool, reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
+def _result(clause: Dict[str, object], status: str, reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
     paragraph_matches = list(matched_paragraphs)[:3]
     matched_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraph_matches)
     result = {
@@ -307,7 +336,7 @@ def _result(clause: Dict[str, object], status: str, passes: bool, reason: str, m
         "name": clause["name"],
         "requirement": clause["requirement"],
         "status": status,
-        "passes": passes,
+        "passes": _status_passes_clause_type(status, clause),
         "reason": reason,
         "finding": reason,
         "matched_paragraph_ids": [paragraph["id"] for paragraph in paragraph_matches],
@@ -323,6 +352,18 @@ def _result(clause: Dict[str, object], status: str, passes: bool, reason: str, m
 def _normalize(text: str) -> str:
     lowered = text.lower()
     return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _status_passes_clause_type(status: str, clause: Dict[str, object]) -> bool:
+    clause_type = clause.get("type")
+    if clause_type == "prohibited":
+        return status == "not_present"
+    return status == "match"
+
+
+def _literal_word_pattern(value: str) -> str:
+    words = re.escape(value.lower()).replace(r"\ ", r"\s+")
+    return rf"\b{words}\b"
 
 
 def _paragraph_matches(paragraphs: Iterable[Paragraph], patterns: Iterable[str]) -> List[Paragraph]:

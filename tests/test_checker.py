@@ -1,8 +1,10 @@
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
-from nda_automation.checker import review_nda, split_document_paragraphs
+from nda_automation.checker import load_playbook, review_nda, split_document_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -81,6 +83,20 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(governing_law["reason"], "Approved governing law found.")
 
+    def test_can_use_supplied_structured_paragraphs(self):
+        result = review_nda(
+            "First paragraph.\n\nThis Agreement shall be governed by the laws of the DIFC.",
+            paragraphs=[
+                {"source_index": 4, "text": "First paragraph."},
+                {"source_index": 5, "text": "This Agreement shall be governed by the laws of the DIFC."},
+            ],
+        )
+
+        self.assertEqual(result["paragraphs"][1]["id"], "p2")
+        self.assertEqual(result["paragraphs"][1]["source_index"], 5)
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p2"])
+
     def test_prohibited_clause_can_pass_as_not_present(self):
         result = review_nda((ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8"))
 
@@ -88,6 +104,30 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(non_circumvention["status"], "not_present")
         self.assertTrue(non_circumvention["passes"])
         self.assertEqual(non_circumvention["matched_paragraph_ids"], [])
+
+    def test_approved_laws_are_read_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"] = ["DIFC"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("This Agreement shall be governed by the laws of Delaware.")
+
+        governing_law_result = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law_result["status"], "check")
+        self.assertFalse(governing_law_result["passes"])
+
+    def test_prohibited_clause_polarity_comes_from_playbook_type(self):
+        playbook = deepcopy(load_playbook())
+        non_circumvention = next(clause for clause in playbook["clauses"] if clause["id"] == "non_circumvention")
+        non_circumvention["type"] = "required"
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda((ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8"))
+
+        non_circumvention_result = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention_result["status"], "not_present")
+        self.assertFalse(non_circumvention_result["passes"])
 
     def test_result_contract_stays_hard_clause_only(self):
         result = review_nda((ROOT / "samples" / "fail-nda.txt").read_text(encoding="utf-8"))

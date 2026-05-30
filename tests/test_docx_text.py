@@ -2,7 +2,7 @@ from io import BytesIO
 import unittest
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from nda_automation.docx_text import DocxExtractionError, extract_docx_text
+from nda_automation.docx_text import DocxExtractionError, extract_docx_paragraphs, extract_docx_text
 
 
 class DocxTextTests(unittest.TestCase):
@@ -20,6 +20,19 @@ class DocxTextTests(unittest.TestCase):
         self.assertIn("Mutual Non-Disclosure Agreement", text)
         self.assertIn("Each party is a Disclosing Party and Receiving Party.", text)
         self.assertIn("five (5) years", text)
+
+    def test_extracts_structured_docx_paragraphs(self):
+        data = make_docx(["", "First real paragraph.", "Second real paragraph."])
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs,
+            [
+                {"source_index": 2, "text": "First real paragraph."},
+                {"source_index": 3, "text": "Second real paragraph."},
+            ],
+        )
 
     def test_rejects_non_docx_bytes(self):
         with self.assertRaises(DocxExtractionError):

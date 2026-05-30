@@ -539,14 +539,7 @@ function renderStudioDocumentHighlights() {
     return;
   }
 
-  const paragraphs = reviewParagraphs.length
-    ? reviewParagraphs
-    : getDocumentParagraphs(studioNdaText.value).map((paragraph, index) => ({
-        ...paragraph,
-        id: `p${index + 1}`,
-        index: index + 1,
-      }));
-  if (!paragraphs.length) {
+  if (!reviewParagraphs.length) {
     showStudioSourceEditor();
     return;
   }
@@ -558,7 +551,7 @@ function renderStudioDocumentHighlights() {
     });
   });
 
-  studioDocumentRender.innerHTML = paragraphs
+  studioDocumentRender.innerHTML = reviewParagraphs
     .map((paragraph) => {
       const linked = clausesByParagraphId.get(paragraph.id) || [];
       const selected = linked.find((clause) => clause.id === selectedReviewClauseId);
@@ -586,35 +579,6 @@ function renderStudioDocumentHighlights() {
   });
 
   showStudioDocumentRender();
-}
-
-function getDocumentParagraphs(text) {
-  const hasBlankLineBreaks = /\n\s*\n/.test(text);
-  const separator = hasBlankLineBreaks ? /\n\s*\n/g : /\n+/g;
-  const paragraphs = [];
-  let cursor = 0;
-  let match;
-
-  while ((match = separator.exec(text))) {
-    addParagraph(paragraphs, text, cursor, match.index);
-    cursor = match.index + match[0].length;
-  }
-
-  addParagraph(paragraphs, text, cursor, text.length);
-  return paragraphs;
-}
-
-function addParagraph(paragraphs, text, start, end) {
-  const raw = text.slice(start, end);
-  const trimmed = raw.trim();
-  if (!trimmed) return;
-  const leading = raw.match(/^\s*/)[0].length;
-  const trailing = raw.match(/\s*$/)[0].length;
-  paragraphs.push({
-    end: end - trailing,
-    start: start + leading,
-    text: trimmed,
-  });
 }
 
 function selectReviewClause(clauseId, options = {}) {

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import Dict, List
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+DocxParagraph = Dict[str, object]
 
 
 class DocxExtractionError(ValueError):
@@ -12,6 +14,34 @@ class DocxExtractionError(ValueError):
 
 
 def extract_docx_text(data: bytes) -> str:
+    paragraphs = extract_docx_paragraphs(data)
+    return "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs).strip()
+
+
+def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
+    root = _read_document_root(data)
+
+    paragraphs: List[DocxParagraph] = []
+    for source_index, paragraph in enumerate(root.iter(f"{WORD_NS}p"), start=1):
+        parts = []
+        for node in paragraph.iter():
+            if node.tag == f"{WORD_NS}t" and node.text:
+                parts.append(node.text)
+            elif node.tag == f"{WORD_NS}tab":
+                parts.append("\t")
+            elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
+                parts.append("\n")
+
+        text = "".join(parts).strip()
+        if text:
+            paragraphs.append({"source_index": source_index, "text": text})
+
+    if not paragraphs:
+        raise DocxExtractionError("No readable text was found in the Word document.")
+    return paragraphs
+
+
+def _read_document_root(data: bytes) -> ET.Element:
     try:
         with ZipFile(BytesIO(data)) as document:
             try:
@@ -25,24 +55,4 @@ def extract_docx_text(data: bytes) -> str:
         root = ET.fromstring(document_xml)
     except ET.ParseError as exc:
         raise DocxExtractionError("The Word document body could not be read.") from exc
-
-    paragraphs = []
-    for paragraph in root.iter(f"{WORD_NS}p"):
-        parts = []
-        for node in paragraph.iter():
-            if node.tag == f"{WORD_NS}t" and node.text:
-                parts.append(node.text)
-            elif node.tag == f"{WORD_NS}tab":
-                parts.append("\t")
-            elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
-                parts.append("\n")
-
-        text = "".join(parts).strip()
-        if text:
-            paragraphs.append(text)
-
-    extracted = "\n\n".join(paragraphs).strip()
-    if not extracted:
-        raise DocxExtractionError("No readable text was found in the Word document.")
-    return extracted
-
+    return root
