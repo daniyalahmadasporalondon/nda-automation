@@ -7,6 +7,7 @@ const docTitle = document.querySelector("#docTitle");
 const workspaceDocTitle = document.querySelector("#workspaceDocTitle");
 const studioDocTitle = document.querySelector("#studioDocTitle");
 const studioNdaText = document.querySelector("#studioNdaText");
+const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
 const studioClearButton = document.querySelector("#studioClearButton");
@@ -73,6 +74,7 @@ fileInput.addEventListener("change", async (event) => {
     selectedDocument = file;
     ndaText.value = "";
     studioNdaText.value = "";
+    showStudioSourceEditor();
     resizeSourceEditors();
     ndaText.placeholder = "Word document selected";
     studioNdaText.placeholder = "Word document selected";
@@ -89,6 +91,7 @@ fileInput.addEventListener("change", async (event) => {
   const fileText = await file.text();
   ndaText.value = fileText;
   studioNdaText.value = fileText;
+  showStudioSourceEditor();
   resizeSourceEditors();
   ndaText.placeholder = "Paste NDA text here";
   studioNdaText.placeholder = "Paste NDA text here";
@@ -103,6 +106,7 @@ fileInput.addEventListener("change", async (event) => {
 function clearReview() {
   ndaText.value = "";
   studioNdaText.value = "";
+  showStudioSourceEditor();
   resizeSourceEditors();
   ndaText.placeholder = "Paste NDA text here";
   studioNdaText.placeholder = "Paste NDA text here";
@@ -263,9 +267,23 @@ function resizeSourceEditors() {
 }
 
 function resizeSourceEditor(input) {
-  if (!input) return;
+  if (!input || input.hidden) return;
   input.style.height = "auto";
   input.style.height = `${Math.max(input.scrollHeight, input.clientHeight)}px`;
+}
+
+function showStudioSourceEditor() {
+  if (!studioDocumentRender) return;
+  studioDocumentRender.hidden = true;
+  studioDocumentRender.innerHTML = "";
+  studioNdaText.hidden = false;
+  resizeSourceEditor(studioNdaText);
+}
+
+function showStudioDocumentRender() {
+  if (!studioDocumentRender) return;
+  studioNdaText.hidden = true;
+  studioDocumentRender.hidden = false;
 }
 
 function renderResult(result) {
@@ -288,6 +306,7 @@ function renderResult(result) {
 
 function renderStudioEmpty() {
   if (!studioIssueList) return;
+  showStudioSourceEditor();
   studioMatchSummary.textContent = `0/${playbookClauses.length || 6}`;
   studioOverallTitle.textContent = "Awaiting review";
   studioIssueList.innerHTML = '<div class="studio-empty">No review yet</div>';
@@ -329,6 +348,7 @@ function renderStudioResult(result) {
 
   renderStudioClauseLane();
   renderStudioDetail();
+  renderStudioDocumentHighlights();
 }
 
 function renderStudioClauseLane() {
@@ -449,6 +469,83 @@ function renderReviewClauseList() {
   });
 }
 
+function renderStudioDocumentHighlights() {
+  if (!studioDocumentRender) return;
+
+  const text = studioNdaText.value.trim();
+  if (!text || !reviewClauses.length) {
+    showStudioSourceEditor();
+    return;
+  }
+
+  const ranges = reviewClauses
+    .flatMap((clause) => findClauseTextRanges(studioNdaText.value, clause)
+      .map((range) => ({ clause, range })));
+  const paragraphs = getDocumentParagraphs(studioNdaText.value);
+
+  studioDocumentRender.innerHTML = paragraphs
+    .map((paragraph, index) => {
+      const linked = ranges.filter((item) => rangesOverlap(paragraph, item.range));
+      const selected = linked.find((item) => item.clause.id === selectedReviewClauseId);
+      const primary = selected || linked.find((item) => item.clause.status === "fail") || linked[0];
+      const ids = linked.map((item) => item.clause.id).join(" ");
+      const classes = [
+        "studio-doc-paragraph",
+        linked.length ? "has-clause" : "",
+        primary?.clause.status === "fail" ? "verify" : "",
+        primary?.clause.status === "pass" ? "match" : "",
+        selected ? "selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      return `<p class="${classes}" data-paragraph-index="${index}" data-clause-ids="${escapeHtml(ids)}">${escapeHtml(paragraph.text)}</p>`;
+    })
+    .join("");
+
+  studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
+    paragraph.addEventListener("click", () => {
+      const clauseId = paragraph.dataset.clauseIds.split(" ").filter(Boolean)[0];
+      if (clauseId) selectReviewClause(clauseId, { jump: false });
+    });
+  });
+
+  showStudioDocumentRender();
+}
+
+function getDocumentParagraphs(text) {
+  const hasBlankLineBreaks = /\n\s*\n/.test(text);
+  const separator = hasBlankLineBreaks ? /\n\s*\n/g : /\n+/g;
+  const paragraphs = [];
+  let cursor = 0;
+  let match;
+
+  while ((match = separator.exec(text))) {
+    addParagraph(paragraphs, text, cursor, match.index);
+    cursor = match.index + match[0].length;
+  }
+
+  addParagraph(paragraphs, text, cursor, text.length);
+  return paragraphs;
+}
+
+function addParagraph(paragraphs, text, start, end) {
+  const raw = text.slice(start, end);
+  const trimmed = raw.trim();
+  if (!trimmed) return;
+  const leading = raw.match(/^\s*/)[0].length;
+  const trailing = raw.match(/\s*$/)[0].length;
+  paragraphs.push({
+    end: end - trailing,
+    start: start + leading,
+    text: trimmed,
+  });
+}
+
+function rangesOverlap(first, second) {
+  return first.start < second.end && second.start < first.end;
+}
+
 function selectReviewClause(clauseId, options = {}) {
   selectedReviewClauseId = clauseId;
   renderClauseLane();
@@ -471,6 +568,11 @@ function jumpToClauseSource(clause) {
   const range = findClauseTextRange(sourceInput.value, clause);
   if (!range) return;
 
+  if (sourceInput === studioNdaText && studioDocumentRender && !studioDocumentRender.hidden) {
+    scrollRenderedClauseToView(clause.id);
+    return;
+  }
+
   focusTextRange(sourceInput, range.start, range.end);
 }
 
@@ -480,12 +582,17 @@ function getActiveSourceInput() {
 }
 
 function findClauseTextRange(text, clause) {
-  const searchIndex = createSearchIndex(text);
-  const evidenceRange = (clause.evidence || [])
-    .map((snippet) => findQueryRange(searchIndex, snippet, 12))
-    .find(Boolean);
+  return findClauseTextRanges(text, clause)[0] || null;
+}
 
-  if (evidenceRange) return expandToParagraph(text, evidenceRange.start, evidenceRange.end);
+function findClauseTextRanges(text, clause) {
+  const searchIndex = createSearchIndex(text);
+  const evidenceRanges = uniqueRanges((clause.evidence || [])
+    .map((snippet) => findQueryRange(searchIndex, snippet, 12))
+    .filter(Boolean)
+    .map((range) => expandToParagraph(text, range.start, range.end)));
+
+  if (evidenceRanges.length) return evidenceRanges;
 
   const fallbackTerms = [
     ...(CLAUSE_JUMP_TERMS[clause.id] || []),
@@ -495,7 +602,17 @@ function findClauseTextRange(text, clause) {
     .map((term) => findQueryRange(searchIndex, term, 3))
     .find(Boolean);
 
-  return fallbackRange ? expandToParagraph(text, fallbackRange.start, fallbackRange.end) : null;
+  return fallbackRange ? [expandToParagraph(text, fallbackRange.start, fallbackRange.end)] : [];
+}
+
+function uniqueRanges(ranges) {
+  const seen = new Set();
+  return ranges.filter((range) => {
+    const key = `${range.start}:${range.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 const CLAUSE_JUMP_TERMS = {
@@ -625,6 +742,25 @@ function scrollTextareaToIndex(input, index) {
     behavior: "smooth",
     top: Math.max(0, targetTop - container.clientHeight * 0.32),
   });
+}
+
+function scrollRenderedClauseToView(clauseId) {
+  const container = studioDocumentRender.closest(".studio-page-wrap");
+  if (!container) return;
+
+  const target = Array.from(studioDocumentRender.querySelectorAll("[data-clause-ids]"))
+    .find((paragraph) => paragraph.dataset.clauseIds.split(" ").includes(clauseId));
+  if (!target) return;
+
+  const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
+  container.scrollTo({
+    behavior: "smooth",
+    top: Math.max(0, targetTop - container.clientHeight * 0.24),
+  });
+
+  target.classList.remove("paragraph-pulse");
+  void target.offsetWidth;
+  target.classList.add("paragraph-pulse");
 }
 
 function layoutOffsetTop(element) {

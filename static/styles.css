@@ -1544,6 +1544,76 @@ textarea {
   margin-bottom: 48px;
 }
 
+.studio-document-render {
+  color: #263247;
+  display: grid;
+  font-family: var(--text-font);
+  font-size: 18px;
+  gap: 20px;
+  line-height: 1.72;
+}
+
+.studio-document-render[hidden] {
+  display: none;
+}
+
+.studio-doc-paragraph {
+  border-left: 4px solid transparent;
+  border-radius: 8px;
+  margin: 0;
+  padding: 14px 18px;
+  scroll-margin-top: 80px;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  white-space: pre-wrap;
+}
+
+.studio-doc-paragraph.has-clause {
+  background: rgba(85, 35, 178, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(85, 35, 178, 0.08);
+  cursor: pointer;
+}
+
+.studio-doc-paragraph.match {
+  background: rgba(68, 193, 49, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(68, 193, 49, 0.14);
+}
+
+.studio-doc-paragraph.verify {
+  background: rgba(236, 93, 214, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(236, 93, 214, 0.14);
+}
+
+.studio-doc-paragraph.selected {
+  background: #eefaf7;
+  border-left-color: var(--green);
+  box-shadow:
+    inset 0 0 0 2px #bfa7ff,
+    0 12px 28px rgba(85, 35, 178, 0.08);
+}
+
+.studio-doc-paragraph.selected.verify {
+  background: #fff4fb;
+  border-left-color: var(--pink);
+}
+
+.studio-doc-paragraph.paragraph-pulse {
+  animation: paragraph-highlight-pulse 950ms ease;
+}
+
+@keyframes paragraph-highlight-pulse {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+
+  42% {
+    transform: translateX(3px);
+  }
+}
+
 #studioNdaText {
   color: #263247;
   font-family: var(--text-font);
