@@ -133,11 +133,63 @@ h2 {
   display: grid;
 }
 
-.workspace {
-  gap: 20px;
-  grid-template-columns: minmax(360px, 0.92fr) minmax(420px, 1.08fr);
+.review-workstation {
+  gap: 16px;
   margin: 0 auto;
   max-width: 1360px;
+}
+
+.workstation-header {
+  align-items: center;
+  background: var(--brand-dark-accent);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  min-height: 96px;
+  padding: 22px 24px;
+}
+
+.workstation-header .eyebrow {
+  color: var(--brand-pink);
+}
+
+.workstation-header h2 {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.workstation-meta {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  min-width: 170px;
+  padding: 13px 15px;
+}
+
+.workstation-meta span,
+.workstation-meta strong {
+  display: block;
+}
+
+.workstation-meta span {
+  color: var(--brand-pink);
+  font-size: 12px;
+  font-weight: 900;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.workstation-meta strong {
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.workstation-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(330px, 0.82fr) minmax(430px, 1.18fr);
 }
 
 .input-panel,
@@ -146,7 +198,7 @@ h2 {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  min-height: calc(100vh - 132px);
+  min-height: calc(100vh - 244px);
 }
 
 .input-panel {
@@ -160,7 +212,7 @@ h2 {
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .file-button,
@@ -193,7 +245,7 @@ textarea {
   color: var(--text-primary);
   flex: 1;
   line-height: 1.55;
-  min-height: 420px;
+  min-height: clamp(280px, calc(100vh - 440px), 520px);
   outline: none;
   padding: 16px;
   resize: none;
@@ -246,7 +298,7 @@ button.secondary {
   color: white;
   display: flex;
   justify-content: space-between;
-  min-height: 138px;
+  min-height: 128px;
   padding: 24px;
 }
 
@@ -280,10 +332,18 @@ button.secondary {
   background: #3a0b18;
 }
 
+.results-heading {
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 18px 14px;
+}
+
 .clause-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   overflow: auto;
   padding: 16px;
 }
@@ -592,10 +652,21 @@ button.secondary {
   }
 
   .workspace,
+  .workstation-grid,
   .clause-grid,
   .playbook-shell,
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workstation-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .workstation-meta {
+    width: 100%;
   }
 
   .input-panel,

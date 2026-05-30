@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=10">
+    <link rel="stylesheet" href="/static/styles.css?v=12">
   </head>
   <body>
     <div class="app-shell">
@@ -22,33 +22,55 @@
         </div>
       </header>
 
-      <main class="workspace view active" id="reviewView" data-view="review">
-        <section class="input-panel">
-          <div class="panel-heading">
-            <h2>NDA text</h2>
-            <label class="file-button">
-              <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-              Upload file
-            </label>
+      <main class="review-workstation view active" id="reviewView" data-view="review">
+        <section class="workstation-header">
+          <div>
+            <p class="eyebrow">review workstation</p>
+            <h2>Document review</h2>
           </div>
-          <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
-          <div class="file-meta" id="fileMeta">No file selected</div>
-          <div class="actions">
-            <button id="reviewButton" type="button">Review NDA</button>
-            <button id="clearButton" class="secondary" type="button">Clear</button>
+          <div class="workstation-meta">
+            <span>Scope</span>
+            <strong>Hard clauses</strong>
           </div>
         </section>
 
-        <section class="result-panel">
-          <div class="result-hero" id="resultHero">
-            <div>
-              <p class="eyebrow">result</p>
-              <h2 id="overallTitle">Awaiting review</h2>
+        <section class="workstation-grid">
+          <section class="input-panel workstation-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">source</p>
+                <h2>Document</h2>
+              </div>
+              <label class="file-button">
+                <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                Upload file
+              </label>
             </div>
-            <div class="result-mark" id="resultMark">-</div>
-          </div>
+            <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+            <div class="file-meta" id="fileMeta">No file selected</div>
+            <div class="actions">
+              <button id="reviewButton" type="button">Review NDA</button>
+              <button id="clearButton" class="secondary" type="button">Clear</button>
+            </div>
+          </section>
 
-          <div class="clause-grid" id="clauseGrid"></div>
+          <section class="result-panel workstation-panel">
+            <div class="result-hero" id="resultHero">
+              <div>
+                <p class="eyebrow">result</p>
+                <h2 id="overallTitle">Awaiting review</h2>
+              </div>
+              <div class="result-mark" id="resultMark">-</div>
+            </div>
+
+            <div class="results-heading">
+              <div>
+                <p class="eyebrow">checklist</p>
+                <h2>Hard clause result</h2>
+              </div>
+            </div>
+            <div class="clause-grid" id="clauseGrid"></div>
+          </section>
         </section>
       </main>
 
@@ -67,6 +89,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=10"></script>
+    <script src="/static/app.js?v=12"></script>
   </body>
 </html>
