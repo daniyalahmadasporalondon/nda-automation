@@ -1,0 +1,50 @@
+{
+  "version": "0.1.0",
+  "name": "Aspora NDA hard clauses",
+  "clauses": [
+    {
+      "id": "mutuality",
+      "name": "Mutuality",
+      "requirement": "The NDA must bind both parties symmetrically as disclosing and receiving parties.",
+      "type": "required"
+    },
+    {
+      "id": "confidential_information",
+      "name": "Confidential Information",
+      "requirement": "Confidential Information must be broad and must not include extra exclusions beyond the standard carve-outs.",
+      "type": "required"
+    },
+    {
+      "id": "governing_law",
+      "name": "Governing Law",
+      "requirement": "Governing law must be India, Delaware, England and Wales, or DIFC.",
+      "type": "required",
+      "approved_laws": [
+        "India",
+        "Delaware",
+        "England and Wales",
+        "DIFC"
+      ]
+    },
+    {
+      "id": "term_and_survival",
+      "name": "Term and Survival",
+      "requirement": "The NDA must run for five years, with survival carve-outs for trade secrets and personal data.",
+      "type": "required",
+      "term_years": 5
+    },
+    {
+      "id": "non_circumvention",
+      "name": "Non-Circumvention",
+      "requirement": "The NDA must not include non-circumvention, introduced-party non-solicit, or substitute-purpose exclusivity obligations.",
+      "type": "prohibited"
+    },
+    {
+      "id": "signatures",
+      "name": "Signatures",
+      "requirement": "The execution block must show both parties, signatory titles, and a date.",
+      "type": "required"
+    }
+  ]
+}
+

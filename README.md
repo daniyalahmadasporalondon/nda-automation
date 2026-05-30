@@ -1,0 +1,32 @@
+# nda-automation
+
+A small, separate NDA hard-clause checker.
+
+This project deliberately stays away from triage workflows, ranking layers, Gmail/Drive integrations, corpus history, and generated redlines. It answers one question: does the NDA meet the required hard clauses?
+
+## Run locally
+
+```bash
+python3 -m nda_automation.server --port 8787
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787
+```
+
+## Test
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+## Current checks
+
+- Mutual NDA obligations
+- Broad confidential information definition
+- Approved governing law
+- Five-year term with trade secret and personal data survival carve-outs
+- No non-circumvention or substitute-purpose exclusivity
+- Complete execution block

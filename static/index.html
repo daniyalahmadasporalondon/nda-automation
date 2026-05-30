@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nda automation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">aspora legal</p>
+          <h1>nda automation</h1>
+        </div>
+        <div class="mode-pill">hard clauses only</div>
+      </header>
+
+      <main class="workspace">
+        <section class="input-panel">
+          <div class="panel-heading">
+            <h2>NDA text</h2>
+            <label class="file-button">
+              <input id="fileInput" type="file" accept=".txt,.md,.text">
+              Upload text
+            </label>
+          </div>
+          <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+          <div class="actions">
+            <button id="reviewButton" type="button">Review NDA</button>
+            <button id="clearButton" class="secondary" type="button">Clear</button>
+          </div>
+        </section>
+
+        <section class="result-panel">
+          <div class="result-hero" id="resultHero">
+            <div>
+              <p class="eyebrow">result</p>
+              <h2 id="overallTitle">Awaiting review</h2>
+            </div>
+            <div class="result-mark" id="resultMark">-</div>
+          </div>
+
+          <div class="clause-grid" id="clauseGrid"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
