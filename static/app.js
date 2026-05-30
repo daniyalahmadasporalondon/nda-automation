@@ -1,28 +1,19 @@
-const ndaText = document.querySelector("#ndaText");
-const reviewButton = document.querySelector("#reviewButton");
-const clearButton = document.querySelector("#clearButton");
 const fileInput = document.querySelector("#fileInput");
-const fileMeta = document.querySelector("#fileMeta");
 const docTitle = document.querySelector("#docTitle");
-const workspaceDocTitle = document.querySelector("#workspaceDocTitle");
 const studioDocTitle = document.querySelector("#studioDocTitle");
 const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
+const studioExportButton = document.querySelector("#studioExportButton");
 const studioClearButton = document.querySelector("#studioClearButton");
 const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioIssueList = document.querySelector("#studioIssueList");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioMatchSummary = document.querySelector("#studioMatchSummary");
 const studioOverallTitle = document.querySelector("#studioOverallTitle");
-const overallTitle = document.querySelector("#overallTitle");
-const resultHero = document.querySelector("#resultHero");
-const resultMark = document.querySelector("#resultMark");
-const resultMeta = document.querySelector("#resultMeta");
-const clauseGrid = document.querySelector("#clauseGrid");
-const clauseLane = document.querySelector("#clauseLane");
-const reviewDetail = document.querySelector("#reviewDetail");
+const studioResultMark = document.querySelector("#studioResultMark");
+const studioResultMeta = document.querySelector("#studioResultMeta");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
 const interfaceScaleButtons = document.querySelectorAll(".interface-scale [data-interface-scale]");
@@ -32,27 +23,29 @@ const clauseDetail = document.querySelector("#clauseDetail");
 const DEFAULT_INTERFACE_SCALE = "90";
 const INTERFACE_SCALE_STORAGE_KEY = "ndaAutomation.interfaceScale";
 const INTERFACE_SCALES = new Set(["85", "90", "100"]);
+const DEFAULT_DOCUMENT_TITLE = "Untitled NDA";
+const SOURCE_PLACEHOLDER = "Paste NDA text here";
 
-let playbookClauses = [];
-let selectedClauseId = null;
-let selectedDocument = null;
-let reviewClauses = [];
-let reviewParagraphs = [];
-let selectedReviewClauseId = null;
+const sourceInputs = [studioNdaText];
+const fileMetaDisplays = [studioFileMeta];
+const documentTitleDisplays = [docTitle, studioDocTitle];
+
+const state = {
+  playbookClauses: [],
+  selectedClauseId: null,
+  selectedDocument: null,
+  reviewClauses: [],
+  reviewParagraphs: [],
+  reviewRedlines: [],
+  reviewDirty: false,
+  reviewSourceText: "",
+  selectedReviewClauseId: null,
+};
 
 setupInterfaceScale();
 setupSourceEditors();
 
 const emptyState = () => {
-  clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
-  resultMeta.textContent = "No hard-clause review has run yet.";
-  reviewDetail.innerHTML = `
-    <div class="review-detail-empty">
-      <p class="eyebrow">clause detail</p>
-      <h2>No review yet</h2>
-    </div>
-  `;
-  renderClauseLane();
   renderStudioEmpty();
 };
 
@@ -72,85 +65,74 @@ fileInput.addEventListener("change", async (event) => {
   const extension = file.name.split(".").pop().toLowerCase();
 
   if (extension === "docx") {
-    selectedDocument = file;
-    ndaText.value = "";
-    studioNdaText.value = "";
+    state.selectedDocument = file;
+    setSourceText("");
     showStudioSourceEditor();
     resizeSourceEditors();
-    ndaText.placeholder = "Word document selected";
-    studioNdaText.placeholder = "Word document selected";
-    fileMeta.textContent = `${file.name} ready for review`;
-    studioFileMeta.textContent = `${file.name} ready for review`;
-    docTitle.textContent = file.name;
-    workspaceDocTitle.textContent = file.name;
-    studioDocTitle.textContent = file.name;
-    setActiveTab("reviewStudio");
+    setSourcePlaceholder("Word document selected");
+    setFileMeta(`${file.name} ready for review`);
+    setDocumentTitle(file.name);
+    resetReviewResults();
+    renderStudioEmpty();
+    setActiveTab("review");
     return;
   }
 
-  selectedDocument = null;
+  state.selectedDocument = null;
   const fileText = await file.text();
-  ndaText.value = fileText;
-  studioNdaText.value = fileText;
+  setSourceText(fileText);
   showStudioSourceEditor();
   resizeSourceEditors();
-  ndaText.placeholder = "Paste NDA text here";
-  studioNdaText.placeholder = "Paste NDA text here";
-  fileMeta.textContent = `${file.name} loaded as text`;
-  studioFileMeta.textContent = `${file.name} loaded as text`;
-  docTitle.textContent = file.name;
-  workspaceDocTitle.textContent = file.name;
-  studioDocTitle.textContent = file.name;
-  setActiveTab("reviewStudio");
+  setSourcePlaceholder(SOURCE_PLACEHOLDER);
+  setFileMeta(`${file.name} loaded as text`);
+  setDocumentTitle(file.name);
+  resetReviewResults();
+  renderStudioEmpty();
+  setActiveTab("review");
 });
 
 function clearReview() {
-  ndaText.value = "";
-  studioNdaText.value = "";
+  setSourceText("");
   showStudioSourceEditor();
   resizeSourceEditors();
-  ndaText.placeholder = "Paste NDA text here";
-  studioNdaText.placeholder = "Paste NDA text here";
+  setSourcePlaceholder(SOURCE_PLACEHOLDER);
   fileInput.value = "";
-  selectedDocument = null;
-  fileMeta.textContent = "No file selected";
-  studioFileMeta.textContent = "No file selected";
-  docTitle.textContent = "Untitled NDA";
-  workspaceDocTitle.textContent = "Untitled NDA";
-  studioDocTitle.textContent = "Untitled NDA";
-  overallTitle.textContent = "Awaiting review";
-  resultMark.textContent = "-";
-  resultHero.className = "result-hero";
-  reviewClauses = [];
-  reviewParagraphs = [];
-  selectedReviewClauseId = null;
+  state.selectedDocument = null;
+  setFileMeta("No file selected");
+  setDocumentTitle(DEFAULT_DOCUMENT_TITLE);
+  resetReviewResults();
   emptyState();
 }
 
-clearButton.addEventListener("click", () => {
-  clearReview();
-});
+function resetReviewResults() {
+  state.reviewClauses = [];
+  state.reviewParagraphs = [];
+  state.reviewRedlines = [];
+  state.reviewDirty = false;
+  state.reviewSourceText = "";
+  state.selectedReviewClauseId = null;
+}
 
 studioClearButton.addEventListener("click", () => {
   clearReview();
-});
-
-reviewButton.addEventListener("click", async () => {
-  await runReview(ndaText, reviewButton);
 });
 
 studioReviewButton.addEventListener("click", async () => {
   await runReview(studioNdaText, studioReviewButton);
 });
 
+studioExportButton.addEventListener("click", async () => {
+  await exportReviewDocx();
+});
+
 async function runReview(sourceInput, button) {
   const text = sourceInput.value.trim();
-  if (!text && !selectedDocument) {
-    overallTitle.textContent = "Add NDA text";
-    studioOverallTitle.textContent = "Add NDA text";
-    resultMark.textContent = "-";
-    resultHero.className = "result-hero fail";
+  if (!text && !state.selectedDocument) {
     emptyState();
+    studioOverallTitle.textContent = "Add NDA text";
+    studioResultMark.textContent = "-";
+    studioResultMeta.textContent = "Paste NDA text or upload a document to run the checklist.";
+    studioMatchSummary.textContent = `0/${getClauseTotal()}`;
     return;
   }
 
@@ -158,8 +140,8 @@ async function runReview(sourceInput, button) {
   button.textContent = "Reviewing";
 
   try {
-    const response = selectedDocument
-      ? await reviewDocument(selectedDocument)
+    const response = state.selectedDocument
+      ? await reviewDocument(state.selectedDocument)
       : await fetch("/api/review", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -167,24 +149,71 @@ async function runReview(sourceInput, button) {
         });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Review could not run");
+    const reviewedText = payload.extracted_text || text;
     if (payload.extracted_text) {
-      ndaText.value = payload.extracted_text;
-      studioNdaText.value = payload.extracted_text;
+      setSourceText(payload.extracted_text);
       resizeSourceEditors();
-      ndaText.placeholder = "Paste NDA text here";
-      studioNdaText.placeholder = "Paste NDA text here";
-      fileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
-      studioFileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
+      setSourcePlaceholder(SOURCE_PLACEHOLDER);
+      setFileMeta(`${payload.source.filename} reviewed from Word document`);
     }
-    renderResult(payload);
+    renderResult(payload, reviewedText);
   } catch (error) {
-    overallTitle.textContent = error.message;
     studioOverallTitle.textContent = error.message;
-    resultMark.textContent = "!";
-    resultHero.className = "result-hero fail";
+    studioResultMark.textContent = "!";
+    studioResultMark.className = "check";
+    studioResultMeta.textContent = "Review could not run.";
   } finally {
     button.disabled = false;
     button.textContent = "Review NDA";
+  }
+}
+
+async function exportReviewDocx() {
+  const text = state.reviewSourceText.trim();
+  if (!text) return;
+  if (state.reviewDirty) {
+    studioOverallTitle.textContent = "Review needed";
+    studioResultMark.textContent = "!";
+    studioResultMark.className = "check";
+    studioResultMeta.textContent = "Run Review NDA again before exporting.";
+    updateExportButtonState();
+    return;
+  }
+
+  studioExportButton.disabled = true;
+  studioExportButton.textContent = "Exporting";
+
+  try {
+    const payload = {
+      text,
+      reviewed_text: text,
+      title: docTitle.textContent || DEFAULT_DOCUMENT_TITLE,
+    };
+    if (state.selectedDocument) {
+      payload.filename = state.selectedDocument.name;
+      payload.content_base64 = await fileToBase64(state.selectedDocument);
+    }
+
+    const response = await fetch("/api/export-review-docx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(payload.error || "Export could not run");
+    }
+    const blob = await response.blob();
+    downloadBlob(blob, downloadFilename(response) || "nda-review-report.docx");
+    setFileMeta("Review report exported as Word document");
+  } catch (error) {
+    studioOverallTitle.textContent = error.message;
+    studioResultMark.textContent = "!";
+    studioResultMark.className = "check";
+    studioResultMeta.textContent = "Export could not run.";
+  } finally {
+    studioExportButton.textContent = "Export DOCX";
+    updateExportButtonState();
   }
 }
 
@@ -210,6 +239,47 @@ async function fileToBase64(file) {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function downloadFilename(response) {
+  const contentDisposition = response.headers.get("Content-Disposition") || "";
+  const match = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return match ? match[1] : "";
+}
+
+function setSourceText(text) {
+  sourceInputs.forEach((input) => {
+    input.value = text;
+  });
+}
+
+function setSourcePlaceholder(placeholder) {
+  sourceInputs.forEach((input) => {
+    input.placeholder = placeholder;
+  });
+}
+
+function setFileMeta(message) {
+  fileMetaDisplays.forEach((display) => {
+    display.textContent = message;
+  });
+}
+
+function setDocumentTitle(title) {
+  documentTitleDisplays.forEach((display) => {
+    display.textContent = title;
+  });
 }
 
 function setupInterfaceScale() {
@@ -256,16 +326,19 @@ function applyInterfaceScale(scale) {
 }
 
 function setupSourceEditors() {
-  [ndaText, studioNdaText].forEach((input) => {
+  sourceInputs.forEach((input) => {
     input.addEventListener("input", () => {
       resizeSourceEditor(input);
+      if (input.value.trim()) {
+        markSourceEdited("Text edited");
+      }
     });
     resizeSourceEditor(input);
   });
 }
 
 function resizeSourceEditors() {
-  [ndaText, studioNdaText].forEach(resizeSourceEditor);
+  sourceInputs.forEach(resizeSourceEditor);
 }
 
 function resizeSourceEditor(input) {
@@ -288,51 +361,66 @@ function showStudioDocumentRender() {
   studioDocumentRender.hidden = false;
 }
 
-function renderResult(result) {
-  const passed = result.overall_status === "meets_requirements";
-  const checks = (result.clauses || []).filter((clause) => !clausePasses(clause)).length;
-  overallTitle.textContent = passed ? "Meets requirements" : "Does not meet requirements";
-  resultMark.textContent = passed ? "PASS" : "CHECK";
-  resultMeta.textContent = passed
-    ? "All hard clauses are currently satisfied."
-    : `${checks} hard ${checks === 1 ? "clause needs" : "clauses need"} checking.`;
-  resultHero.className = `result-hero ${passed ? "pass" : "fail"}`;
-
-  reviewClauses = result.clauses || [];
-  reviewParagraphs = result.paragraphs || [];
-  selectedReviewClauseId = reviewClauses.find((clause) => !clausePasses(clause))?.id || reviewClauses[0]?.id || null;
-  renderClauseLane();
+function renderResult(result, reviewedText) {
+  state.reviewClauses = result.clauses || [];
+  state.reviewParagraphs = result.paragraphs || [];
+  state.reviewRedlines = result.redline_edits || [];
+  state.reviewDirty = false;
+  state.reviewSourceText = reviewedText || studioNdaText.value.trim();
+  state.selectedReviewClauseId =
+    state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
-  renderReviewClauseList();
-  renderReviewDetail();
+  updateExportButtonState();
 }
 
 function renderStudioEmpty() {
   if (!studioIssueList) return;
   showStudioSourceEditor();
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
+  studioResultMark.textContent = "-";
+  studioResultMark.className = "";
   studioOverallTitle.textContent = "Awaiting review";
+  studioResultMeta.textContent = "No hard-clause review has run yet.";
   studioIssueList.innerHTML = '<div class="studio-empty">No review yet</div>';
   studioDetailPanel.innerHTML = `
-    <p class="eyebrow">playbook language</p>
+    <p class="eyebrow">selected clause</p>
     <p>No review yet.</p>
   `;
+  updateExportButtonState();
   renderStudioClauseLane();
+}
+
+function updateExportButtonState() {
+  if (!studioExportButton) return;
+  studioExportButton.disabled = !state.reviewClauses.length || !state.reviewSourceText.trim() || state.reviewDirty;
 }
 
 function renderStudioResult(result) {
   if (!studioIssueList) return;
   const clauses = result.clauses || [];
+  renderStudioSummary(clauses);
+  renderStudioIssueList(clauses);
+  renderStudioClauseLane();
+  renderStudioDetail();
+  renderStudioDocumentHighlights();
+}
+
+function renderStudioSummary(clauses) {
   const passedCount = clauses.filter(clausePasses).length;
   const failedCount = clauses.filter(clauseNeedsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
-  studioOverallTitle.textContent = failedCount
-    ? `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} checking`
-    : "All hard clauses match";
+  studioResultMark.textContent = failedCount ? "CHECK" : "PASS";
+  studioResultMark.className = failedCount ? "check" : "pass";
+  studioOverallTitle.textContent = failedCount ? "Does not meet requirements" : "Meets requirements";
+  studioResultMeta.textContent = failedCount
+    ? `${failedCount} hard ${failedCount === 1 ? "clause needs" : "clauses need"} checking.`
+    : "All hard clauses are currently satisfied.";
+}
 
+function renderStudioIssueList(clauses) {
   studioIssueList.innerHTML = clauses
     .map((clause) => {
-      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
+      const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const statusTone = clauseTone(clause);
       const statusText = clauseStatusLabel(clause);
       return `
@@ -347,19 +435,11 @@ function renderStudioResult(result) {
     })
     .join("");
 
-  studioIssueList.querySelectorAll("[data-studio-clause-id]").forEach((row) => {
-    row.addEventListener("click", () => {
-      selectReviewClause(row.dataset.studioClauseId, { jump: true });
-    });
-  });
-
-  renderStudioClauseLane();
-  renderStudioDetail();
-  renderStudioDocumentHighlights();
+  bindClauseSelection(studioIssueList, "[data-studio-clause-id]", "studioClauseId");
 }
 
 function getClauseTotal(clauses = []) {
-  return clauses.length || playbookClauses.length || 0;
+  return clauses.length || state.playbookClauses.length || 0;
 }
 
 function clausePasses(clause) {
@@ -396,12 +476,41 @@ function clauseResultLabel(clause) {
   return "Pending";
 }
 
+function clauseIssueLabel(clause) {
+  if (clause.status === "idle") return "Pending";
+  return clause.issue_label || "Needs review";
+}
+
+function hasReviewResults() {
+  return state.reviewClauses.length > 0;
+}
+
+function getDisplayClauses() {
+  return hasReviewResults()
+    ? state.reviewClauses
+    : state.playbookClauses.map((clause) => ({ ...clause, status: "idle" }));
+}
+
+function getSelectedReviewClause() {
+  return state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
+}
+
+function getSelectedRedlineEdits() {
+  return state.reviewRedlines.filter((edit) => edit.clause_id === state.selectedReviewClauseId);
+}
+
+function bindClauseSelection(container, selector, datasetKey) {
+  container.querySelectorAll(selector).forEach((item) => {
+    item.addEventListener("click", () => {
+      selectReviewClause(item.dataset[datasetKey], { jump: true });
+    });
+  });
+}
+
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
-  const sourceClauses = reviewClauses.length
-    ? reviewClauses
-    : playbookClauses.map((clause) => ({ ...clause, status: "idle" }));
+  const sourceClauses = getDisplayClauses();
 
   if (!sourceClauses.length) {
     studioClauseLane.innerHTML = '<div class="studio-empty">Loading clauses</div>';
@@ -410,11 +519,11 @@ function renderStudioClauseLane() {
 
   studioClauseLane.innerHTML = sourceClauses
     .map((clause, index) => {
-      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
+      const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const statusClass = clauseDotTone(clause);
-      const tag = reviewClauses.length ? "button" : "div";
-      const type = reviewClauses.length ? ' type="button"' : "";
-      const data = reviewClauses.length ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : "";
+      const tag = hasReviewResults() ? "button" : "div";
+      const type = hasReviewResults() ? ' type="button"' : "";
+      const data = hasReviewResults() ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : "";
       return `
         <${tag} class="studio-clause-item ${selected}"${type}${data}>
           <span class="studio-clause-dot ${statusClass}"></span>
@@ -425,171 +534,321 @@ function renderStudioClauseLane() {
     })
     .join("");
 
-  studioClauseLane.querySelectorAll("[data-studio-lane-id]").forEach((row) => {
-    row.addEventListener("click", () => {
-      selectReviewClause(row.dataset.studioLaneId, { jump: true });
-    });
-  });
+  bindClauseSelection(studioClauseLane, "[data-studio-lane-id]", "studioLaneId");
 }
 
 function renderStudioDetail() {
-  const clause = reviewClauses.find((item) => item.id === selectedReviewClauseId);
+  const clause = getSelectedReviewClause();
   if (!clause) return;
+  const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = clause.matched_text
-    ? `<div class="studio-detail-block"><small>Exact paragraph</small><p>${escapeHtml(clause.matched_text)}</p></div>`
-    : '<div class="studio-detail-block muted"><small>Exact paragraph</small><p>No matching paragraph identified.</p></div>';
+    ? `<div class="studio-detail-block studio-detail-evidence"><small>Exact paragraph</small><p>${escapeHtml(clause.matched_text)}</p></div>`
+    : '<div class="studio-detail-block studio-detail-evidence muted"><small>Exact paragraph</small><p>No matching paragraph identified.</p></div>';
+  const fixBlock = clauseNeedsReview(clause) && clause.what_to_fix
+    ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
+    : "";
+  const redlineEdits = getSelectedRedlineEdits();
+  const redlineBlock = redlineEdits.length
+    ? `
+      <div class="studio-detail-block redline-block">
+        <small>Proposed redline</small>
+        ${redlineEdits.map(renderDetailRedlineEdit).join("")}
+      </div>
+    `
+    : "";
   const acceptableLanguage = clause.acceptable_language
     ? `<div class="studio-detail-block"><small>Acceptable language</small><p>${escapeHtml(clause.acceptable_language)}</p></div>`
     : "";
   studioDetailPanel.innerHTML = `
-    <p class="eyebrow">clause detail</p>
+    <p class="eyebrow">selected clause</p>
     <div class="studio-detail-heading">
       <h3>${escapeHtml(clause.name)}</h3>
       <span class="status ${clauseTone(clause)}">${escapeHtml(clauseStatusLabel(clause))}</span>
     </div>
-    <div class="studio-detail-block">
-      <small>Requirement</small>
-      <p>${escapeHtml(clause.requirement)}</p>
+    <div class="studio-detail-stack">
+      <div class="studio-detail-block requirement-block">
+        <small>Requirement</small>
+        <p>${escapeHtml(clause.requirement)}</p>
+      </div>
+      ${excerpt}
+      <div class="studio-detail-block issue-block ${escapeHtml(clauseTone(clause))}">
+        <small>Issue type</small>
+        <p>${escapeHtml(clauseIssueLabel(clause))}</p>
+      </div>
+      <div class="studio-detail-block finding-block">
+        <small>Why</small>
+        <p>${escapeHtml(whyText)}</p>
+      </div>
+      ${fixBlock}
+      ${redlineBlock}
+      <div class="studio-detail-block">
+        <small>Backend result</small>
+        <p>${escapeHtml(clauseResultLabel(clause))}</p>
+      </div>
+      ${acceptableLanguage}
     </div>
-    <div class="studio-detail-block finding-block">
-      <small>Why</small>
-      <p>${escapeHtml(clause.reason || clause.finding)}</p>
-    </div>
-    ${excerpt}
-    ${acceptableLanguage}
   `;
 }
 
-function renderClauseLane() {
-  if (!clauseLane) return;
-
-  const sourceClauses = reviewClauses.length
-    ? reviewClauses
-    : playbookClauses.map((clause) => ({ ...clause, status: "idle" }));
-
-  if (!sourceClauses.length) {
-    clauseLane.innerHTML = '<div class="lane-empty">Loading clauses</div>';
-    return;
-  }
-
-  clauseLane.innerHTML = sourceClauses
-    .map((clause, index) => {
-      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const status = clauseTone(clause);
-      const statusText = clauseStatusLabel(clause);
-      const tag = reviewClauses.length ? "button" : "div";
-      const type = reviewClauses.length ? ' type="button"' : "";
-      const data = reviewClauses.length ? ` data-lane-clause-id="${escapeHtml(clause.id)}"` : "";
-      return `
-        <${tag} class="lane-item ${selected} ${status}"${type}${data}>
-          <span class="lane-dot"></span>
-          <span class="lane-code">CL-${String(index + 1).padStart(2, "0")}</span>
-          <span class="lane-name">${escapeHtml(clause.name)}</span>
-          <span class="lane-status">${statusText}</span>
-        </${tag}>
-      `;
-    })
-    .join("");
-
-  clauseLane.querySelectorAll("[data-lane-clause-id]").forEach((item) => {
-    item.addEventListener("click", () => {
-      selectReviewClause(item.dataset.laneClauseId, { jump: true });
-    });
-  });
+function renderDetailRedlineEdit(edit) {
+  const replacement = renderRedlineReplacement(edit, "p");
+  const original = edit.action === "insert_after_paragraph"
+    ? renderRedlineAnchor(edit)
+    : `<p class="redline-original">${escapeHtml(edit.original_text || "")}</p>`;
+  return `
+    <div class="detail-redline-edit">
+      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
+      ${original}
+      ${replacement}
+      ${renderRedlineTemplateOptions(edit)}
+    </div>
+  `;
 }
 
-function renderReviewClauseList() {
-  clauseGrid.innerHTML = reviewClauses
-    .map((clause) => {
-      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const statusLabel = clauseStatusLabel(clause);
-      const statusTone = clauseTone(clause);
-      return `
-        <article class="clause-card ${selected}" data-review-clause-id="${escapeHtml(clause.id)}" tabindex="0">
-          <header>
-            <div>
-              <h3>${escapeHtml(clause.name)}</h3>
-              <p class="requirement">${escapeHtml(clause.requirement)}</p>
-            </div>
-            <span class="status ${statusTone}">${statusLabel}</span>
-          </header>
-          <p class="finding">${escapeHtml(clause.reason || clause.finding)}</p>
-        </article>
-      `;
-    })
-    .join("");
+function renderRedlineAnchor(edit) {
+  const paragraphLabel = edit.paragraph_index ? `Paragraph ${edit.paragraph_index}` : "Selected paragraph";
+  const anchorText = edit.anchor_text || "";
+  return `
+    <p class="redline-anchor">
+      <strong>${escapeHtml(paragraphLabel)}</strong>
+      ${escapeHtml(anchorText)}
+    </p>
+  `;
+}
 
-  clauseGrid.querySelectorAll("[data-review-clause-id]").forEach((card) => {
-    card.addEventListener("click", () => {
-      selectReviewClause(card.dataset.reviewClauseId, { jump: true });
-    });
-    card.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      selectReviewClause(card.dataset.reviewClauseId, { jump: true });
-    });
-  });
+function renderRedlineTemplateOptions(edit) {
+  const options = edit.template_options || [];
+  if (options.length <= 1) return "";
+
+  return `
+    <div class="redline-options">
+      <span class="redline-options-title">Jurisdiction options</span>
+      ${options.map((option) => `
+        <div class="redline-option ${option.selected ? "selected" : ""}">
+          <strong>${escapeHtml(option.label || "Option")}${option.selected ? " - Default" : ""}</strong>
+          <span>${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderStudioDocumentHighlights() {
   if (!studioDocumentRender) return;
 
-  if (!reviewClauses.length) {
+  if (!state.reviewClauses.length) {
     showStudioSourceEditor();
     return;
   }
 
-  if (!reviewParagraphs.length) {
+  if (!state.reviewParagraphs.length) {
     showStudioSourceEditor();
     return;
   }
   const clausesByParagraphId = new Map();
-  reviewClauses.forEach((clause) => {
+  state.reviewClauses.forEach((clause) => {
     (clause.matched_paragraph_ids || []).forEach((paragraphId) => {
       if (!clausesByParagraphId.has(paragraphId)) clausesByParagraphId.set(paragraphId, []);
       clausesByParagraphId.get(paragraphId).push(clause);
     });
   });
+  const redlinesByParagraphId = new Map();
+  state.reviewRedlines.forEach((edit) => {
+    if (!redlinesByParagraphId.has(edit.paragraph_id)) redlinesByParagraphId.set(edit.paragraph_id, []);
+    redlinesByParagraphId.get(edit.paragraph_id).push(edit);
+  });
 
-  studioDocumentRender.innerHTML = reviewParagraphs
+  studioDocumentRender.innerHTML = state.reviewParagraphs
     .map((paragraph) => {
-      const linked = clausesByParagraphId.get(paragraph.id) || [];
-      const selected = linked.find((clause) => clause.id === selectedReviewClauseId);
+      const redlines = redlinesByParagraphId.get(paragraph.id) || [];
+      const redlineClauses = redlines
+        .map((edit) => state.reviewClauses.find((clause) => clause.id === edit.clause_id))
+        .filter(Boolean);
+      const linked = mergeClauses(clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
+      const selected = linked.find((clause) => clause.id === state.selectedReviewClauseId);
       const primary = selected || linked.find((clause) => !clausePasses(clause)) || linked[0];
+      const selectedRedline = redlines.find((edit) => edit.clause_id === state.selectedReviewClauseId);
+      const primaryRedline = selectedRedline || redlines[0];
+      const visibleRedlines = redlines.every(isInsertionRedline)
+        ? (selectedRedline ? [selectedRedline] : redlines)
+        : (primaryRedline ? [primaryRedline] : []);
       const ids = linked.map((clause) => clause.id).join(" ");
+      const editableClasses = [
+        "paragraph-editable",
+        primaryRedline?.action === "replace_paragraph" ? "redline-edit-source" : "",
+        primaryRedline?.action === "delete_paragraph" ? "redline-edit-source" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       const classes = [
         "studio-doc-paragraph",
         linked.length ? "has-clause" : "",
+        redlines.length ? "has-redline" : "",
+        primaryRedline?.action === "delete_paragraph" ? "redline-delete" : "",
+        primaryRedline?.action === "insert_after_paragraph" ? "redline-insert" : "",
         primary && !clausePasses(primary) ? "verify" : "",
         primary && clausePasses(primary) ? "match" : "",
         selected ? "selected" : "",
       ]
         .filter(Boolean)
         .join(" ");
+      const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(paragraph, visibleRedlines) : "";
+      const paragraphHtml = `
+        <div
+          class="${editableClasses}"
+          contenteditable="plaintext-only"
+          spellcheck="true"
+          role="textbox"
+          aria-multiline="true"
+          data-editable-paragraph-id="${escapeHtml(paragraph.id)}"
+          aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}"
+        >${escapeHtml(paragraph.text)}</div>
+        ${redlineHtml}
+      `;
 
-      return `<p class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(ids)}">${escapeHtml(paragraph.text)}</p>`;
+      return `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(ids)}">${paragraphHtml}</div>`;
     })
     .join("");
 
   studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
-    paragraph.addEventListener("click", () => {
+    paragraph.addEventListener("click", (event) => {
+      if (event.target.closest("[data-editable-paragraph-id]")) return;
       const clauseId = paragraph.dataset.clauseIds.split(" ").filter(Boolean)[0];
       if (clauseId) selectReviewClause(clauseId, { jump: false });
     });
   });
+  bindViewerParagraphEditing();
 
   showStudioDocumentRender();
 }
 
+function bindViewerParagraphEditing() {
+  studioDocumentRender.querySelectorAll("[data-editable-paragraph-id]").forEach((editable) => {
+    editable.addEventListener("focus", () => {
+      editable.closest(".studio-doc-paragraph")?.classList.add("is-editing");
+    });
+    editable.addEventListener("blur", () => {
+      editable.closest(".studio-doc-paragraph")?.classList.remove("is-editing");
+    });
+    editable.addEventListener("input", () => {
+      syncViewerParagraphEdit(editable);
+    });
+    editable.addEventListener("paste", pastePlainText);
+  });
+}
+
+function syncViewerParagraphEdit(editable) {
+  const paragraphId = editable.dataset.editableParagraphId;
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  if (!paragraph) return;
+
+  paragraph.text = editableParagraphText(editable);
+  syncReviewSourceFromParagraphs();
+  markSourceEdited("Edited in viewer");
+  studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
+  updateExportButtonState();
+}
+
+function editableParagraphText(editable) {
+  return editable.innerText
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function syncReviewSourceFromParagraphs() {
+  const text = state.reviewParagraphs
+    .map((paragraph) => String(paragraph.text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  setSourceText(text);
+}
+
+function markSourceEdited(message) {
+  if (state.reviewClauses.length || state.reviewSourceText.trim()) {
+    state.reviewDirty = true;
+  }
+  if (state.selectedDocument) {
+    state.selectedDocument = null;
+    fileInput.value = "";
+  }
+  if (message) {
+    setFileMeta(message);
+  }
+}
+
+function pastePlainText(event) {
+  const text = event.clipboardData?.getData("text/plain");
+  if (!text) return;
+  event.preventDefault();
+  document.execCommand("insertText", false, text);
+}
+
+function mergeClauses(primaryClauses, secondaryClauses) {
+  const merged = [...primaryClauses];
+  secondaryClauses.forEach((clause) => {
+    if (!merged.find((item) => item.id === clause.id)) merged.push(clause);
+  });
+  return merged;
+}
+
+function renderParagraphRedlines(paragraph, edits) {
+  if (edits.every(isInsertionRedline)) {
+    return edits.map(renderParagraphInsertion).join("");
+  }
+  return renderParagraphRedline(paragraph, edits[0]);
+}
+
+function renderParagraphRedline(paragraph, edit) {
+  if (isInsertionRedline(edit)) {
+    return renderParagraphInsertion(edit);
+  }
+
+  return `
+    <div class="paragraph-redline-note" contenteditable="false">
+      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
+      ${renderRedlineReplacement(edit, "span")}
+    </div>
+  `;
+}
+
+function renderParagraphInsertion(edit) {
+  return `
+    <div class="paragraph-insertion" contenteditable="false">
+      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
+      <span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span>
+    </div>
+  `;
+}
+
+function redlineActionLabel(edit) {
+  if (edit.action === "delete_paragraph") return edit.action_label || "Remove paragraph";
+  if (edit.action === "insert_after_paragraph") return edit.action_label || "Insert after paragraph";
+  if (edit.action === "replace_paragraph") return edit.action_label || "Replace paragraph";
+  return edit.action_label || "Proposed edit";
+}
+
+function renderRedlineReplacement(edit, tagName) {
+  if (edit.action === "delete_paragraph") {
+    return `<${tagName} class="redline-removal">Remove this paragraph.</${tagName}>`;
+  }
+  if (edit.action === "insert_after_paragraph") {
+    return `<${tagName} class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</${tagName}>`;
+  }
+  return `<${tagName} class="redline-replacement">${escapeHtml(edit.replacement_text || "")}</${tagName}>`;
+}
+
+function isInsertionRedline(edit) {
+  return edit?.action === "insert_after_paragraph";
+}
+
 function selectReviewClause(clauseId, options = {}) {
-  selectedReviewClauseId = clauseId;
-  renderClauseLane();
-  renderStudioResult({ clauses: reviewClauses });
-  renderReviewClauseList();
-  renderReviewDetail();
+  state.selectedReviewClauseId = clauseId;
+  renderStudioResult({ clauses: state.reviewClauses });
 
   if (options.jump) {
-    const clause = reviewClauses.find((item) => item.id === clauseId);
+    const clause = state.reviewClauses.find((item) => item.id === clauseId);
     requestAnimationFrame(() => jumpToClauseSource(clause));
   }
 }
@@ -597,22 +856,15 @@ function selectReviewClause(clauseId, options = {}) {
 function jumpToClauseSource(clause) {
   if (!clause) return;
 
-  const sourceInput = getActiveSourceInput();
-
-  if (sourceInput === studioNdaText && studioDocumentRender && !studioDocumentRender.hidden) {
+  if (studioDocumentRender && !studioDocumentRender.hidden) {
     scrollRenderedClauseToView(clause.id);
     return;
   }
 
-  if (!sourceInput?.value.trim() || !clause.matched_text) return;
-  const range = findExactTextRange(sourceInput.value, clause.matched_text);
+  if (!studioNdaText.value.trim() || !clause.matched_text) return;
+  const range = findExactTextRange(studioNdaText.value, clause.matched_text);
   if (!range) return;
-  focusTextRange(sourceInput, range.start, range.end);
-}
-
-function getActiveSourceInput() {
-  const activeView = document.querySelector("[data-view].active");
-  return activeView?.dataset.view === "review" ? ndaText : studioNdaText;
+  focusTextRange(studioNdaText, range.start, range.end);
 }
 
 function findExactTextRange(text, query) {
@@ -693,7 +945,7 @@ function scrollTextareaToIndex(input, index) {
 
   input.scrollTop = 0;
 
-  const container = input.closest(".studio-page-wrap, .document-canvas");
+  const container = input.closest(".studio-page-wrap");
   if (!container) return;
 
   const targetTop = layoutOffsetTop(input) - layoutOffsetTop(container) + visualLineCount * lineHeight;
@@ -707,8 +959,11 @@ function scrollRenderedClauseToView(clauseId) {
   const container = studioDocumentRender.closest(".studio-page-wrap");
   if (!container) return;
 
-  const clause = reviewClauses.find((item) => item.id === clauseId);
-  const paragraphIds = clause?.matched_paragraph_ids || [];
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  const redlineParagraphIds = state.reviewRedlines
+    .filter((edit) => edit.clause_id === clauseId)
+    .map((edit) => edit.paragraph_id);
+  const paragraphIds = [...(clause?.matched_paragraph_ids || []), ...redlineParagraphIds];
   const target = Array.from(studioDocumentRender.querySelectorAll("[data-paragraph-id]"))
     .find((paragraph) => paragraphIds.includes(paragraph.dataset.paragraphId));
   if (!target) return;
@@ -737,55 +992,11 @@ function layoutOffsetTop(element) {
 }
 
 function pulseSourcePage(input) {
-  const page = input.closest(".studio-page, .document-page");
+  const page = input.closest(".studio-page");
   if (!page) return;
   page.classList.remove("source-jump");
   void page.offsetWidth;
   page.classList.add("source-jump");
-}
-
-function renderReviewDetail() {
-  const clause = reviewClauses.find((item) => item.id === selectedReviewClauseId);
-  if (!clause) {
-    emptyState();
-    return;
-  }
-
-  const statusLabel = clauseStatusLabel(clause);
-  const statusTone = clauseTone(clause);
-  const exactExcerpt = clause.matched_text
-    ? `<p class="evidence">${escapeHtml(clause.matched_text)}</p>`
-    : '<p class="review-detail-muted">No matching paragraph identified.</p>';
-  const acceptableLanguage = clause.acceptable_language
-    ? `<div class="review-detail-block"><small>Acceptable language</small><p>${escapeHtml(clause.acceptable_language)}</p></div>`
-    : "";
-
-  reviewDetail.innerHTML = `
-    <div class="review-detail-header">
-      <div>
-        <p class="eyebrow">selected clause</p>
-        <h2>${escapeHtml(clause.name)}</h2>
-      </div>
-      <span class="status ${statusTone}">${statusLabel}</span>
-    </div>
-    <div class="review-detail-block">
-      <small>Requirement</small>
-      <p>${escapeHtml(clause.requirement)}</p>
-    </div>
-    <div class="review-detail-block finding-block">
-      <small>Why</small>
-      <p>${escapeHtml(clause.reason || clause.finding)}</p>
-    </div>
-    <div class="review-detail-evidence">
-      <small>Exact paragraph</small>
-      ${exactExcerpt}
-    </div>
-    <div class="review-detail-block">
-      <small>Backend result</small>
-      <p>${escapeHtml(clauseResultLabel(clause))}</p>
-    </div>
-    ${acceptableLanguage}
-  `;
 }
 
 async function loadPlaybook() {
@@ -797,9 +1008,8 @@ async function loadPlaybook() {
     const playbook = await response.json();
     if (!response.ok) throw new Error(playbook.error || "Playbook could not load");
 
-    playbookClauses = playbook.clauses || [];
-    selectedClauseId = playbookClauses[0]?.id || null;
-    renderClauseLane();
+    state.playbookClauses = playbook.clauses || [];
+    state.selectedClauseId = state.playbookClauses[0]?.id || null;
     renderStudioEmpty();
     renderPlaybookList();
     renderClauseDetail();
@@ -819,9 +1029,9 @@ function setActiveTab(tabName) {
 }
 
 function renderPlaybookList() {
-  playbookList.innerHTML = playbookClauses
+  playbookList.innerHTML = state.playbookClauses
     .map((clause, index) => {
-      const selected = clause.id === selectedClauseId ? "selected" : "";
+      const selected = clause.id === state.selectedClauseId ? "selected" : "";
       const position = String(index + 1).padStart(2, "0");
       return `
         <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}">
@@ -837,7 +1047,7 @@ function renderPlaybookList() {
 
   playbookList.querySelectorAll("[data-clause-id]").forEach((row) => {
     row.addEventListener("click", () => {
-      selectedClauseId = row.dataset.clauseId;
+      state.selectedClauseId = row.dataset.clauseId;
       renderPlaybookList();
       renderClauseDetail();
     });
@@ -845,7 +1055,7 @@ function renderPlaybookList() {
 }
 
 function renderClauseDetail() {
-  const clause = playbookClauses.find((item) => item.id === selectedClauseId);
+  const clause = state.playbookClauses.find((item) => item.id === state.selectedClauseId);
   if (!clause) {
     clauseDetail.innerHTML = '<div class="detail-empty">No clause selected</div>';
     return;

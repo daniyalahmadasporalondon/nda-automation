@@ -15,8 +15,7 @@
             <span>Clause Studio</span>
           </div>
           <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button" type="button" data-tab="review">Review</button>
-            <button class="tab-button active" type="button" data-tab="reviewStudio">Review Studio</button>
+            <button class="tab-button active" type="button" data-tab="review">Review</button>
             <button class="tab-button" type="button" data-tab="clauses">Clauses</button>
           </nav>
           <div class="matter-title">
@@ -37,7 +36,7 @@
           </div>
         </header>
 
-        <main class="studio-review view active" id="reviewStudioView" data-view="reviewStudio">
+        <main class="studio-review view active" id="reviewView" data-view="review">
           <header class="studio-matter-card">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
@@ -79,7 +78,6 @@
               </div>
               <div class="studio-page-wrap">
                 <div class="studio-page">
-                  <h2>Untitled NDA</h2>
                   <p class="studio-document-subtitle">NON-DISCLOSURE AGREEMENT (NDA)</p>
                   <div id="studioDocumentRender" class="studio-document-render" hidden></div>
                   <textarea id="studioNdaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
@@ -87,22 +85,28 @@
               </div>
             </section>
 
-            <aside class="studio-playbook" aria-label="Redlines and playbook">
-              <h2>Redlines &amp; Playbook</h2>
+            <aside class="studio-playbook" aria-label="Checklist and selected clauses">
+              <h2>Checklist</h2>
               <section class="studio-card studio-check-card">
-                <p class="eyebrow">playbook check</p>
+                <p class="eyebrow">checklist</p>
+                <div class="studio-verdict-line">
+                  <strong id="studioResultMark">-</strong>
+                  <div>
+                    <h3 id="studioOverallTitle">Awaiting review</h3>
+                    <p id="studioResultMeta">No hard-clause review has run yet.</p>
+                  </div>
+                </div>
                 <div class="studio-match-line">
                   <strong id="studioMatchSummary">0/6</strong>
                   <span>clauses checked</span>
                 </div>
-                <p id="studioOverallTitle">Awaiting review</p>
               </section>
               <section class="studio-card">
-                <p class="eyebrow">clauses vs playbook</p>
+                <p class="eyebrow">selected clauses</p>
                 <div class="studio-issue-list" id="studioIssueList"></div>
               </section>
               <section class="studio-card" id="studioDetailPanel">
-                <p class="eyebrow">playbook language</p>
+                <p class="eyebrow">selected clause</p>
                 <p>No review yet.</p>
               </section>
             </aside>
@@ -115,84 +119,8 @@
             </div>
             <div class="actions">
               <button id="studioReviewButton" type="button">Review NDA</button>
+              <button id="studioExportButton" class="secondary" type="button" disabled>Export DOCX</button>
               <button id="studioClearButton" class="secondary" type="button">Clear</button>
-            </div>
-          </footer>
-        </main>
-
-        <main class="review-workstation view" id="reviewView" data-view="review">
-          <header class="review-titlebar">
-            <div>
-              <p class="eyebrow">nda review</p>
-              <h1 id="workspaceDocTitle">Untitled NDA</h1>
-              <div class="review-badges">
-                <span>Ready</span>
-                <span>Hard clauses only</span>
-              </div>
-            </div>
-            <div class="review-count">6 hard clauses</div>
-          </header>
-
-          <section class="review-stage">
-            <aside class="clause-lane" aria-label="Clause map">
-              <div class="lane-heading">
-                <p class="eyebrow">clause map</p>
-                <h2>Hard clauses</h2>
-              </div>
-              <div class="lane-list" id="clauseLane"></div>
-            </aside>
-
-            <section class="document-workbench">
-              <div class="document-toolbar">
-                <span class="document-tab">Document</span>
-                <span class="document-meta">Editable source text</span>
-              </div>
-
-              <div class="document-canvas">
-                <div class="document-page">
-                  <div class="page-title">NON-DISCLOSURE AGREEMENT</div>
-                  <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
-                </div>
-              </div>
-            </section>
-
-            <aside class="verdict-rail">
-              <div class="result-hero" id="resultHero">
-                <div>
-                  <p class="eyebrow">verdict</p>
-                  <h2 id="overallTitle">Awaiting review</h2>
-                  <p id="resultMeta">No hard-clause review has run yet.</p>
-                </div>
-                <div class="result-mark" id="resultMark">-</div>
-              </div>
-
-              <section class="verdict-section clause-panel">
-                <div class="results-heading">
-                  <div>
-                    <p class="eyebrow">checklist</p>
-                    <h2>Hard clauses</h2>
-                  </div>
-                </div>
-                <div class="clause-grid" id="clauseGrid"></div>
-              </section>
-
-              <section class="verdict-section selected-clause-panel" id="reviewDetail">
-                <div class="review-detail-empty">
-                  <p class="eyebrow">clause detail</p>
-                  <h2>No review yet</h2>
-                </div>
-              </section>
-            </aside>
-          </section>
-
-          <footer class="review-actionbar">
-            <div class="file-meta">
-              <span>Current file</span>
-              <strong id="fileMeta">No file selected</strong>
-            </div>
-            <div class="actions">
-              <button id="reviewButton" type="button">Review NDA</button>
-              <button id="clearButton" class="secondary" type="button">Clear</button>
             </div>
           </footer>
         </main>

@@ -2,7 +2,7 @@
 
 A small, separate NDA hard-clause checker.
 
-This project deliberately stays away from triage workflows, ranking layers, Gmail/Drive integrations, corpus history, and generated redlines. It answers one question: does the NDA meet the required hard clauses?
+This project deliberately stays away from triage workflows, ranking layers, Gmail/Drive integrations, corpus history, and automatic document mutation. It answers one question: does the NDA meet the required hard clauses?
 
 You can paste NDA text directly, upload a plain text file, or upload a `.docx` Word document for review.
 
@@ -37,4 +37,9 @@ python3 -m unittest discover -s tests
 
 ## Review output
 
-The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence. DOCX uploads preserve the source Word paragraph index for future redlining. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+
+## Policy decisions to confirm
+
+- Confidentiality residuals and reverse-engineering terms are flagged only when they appear in exclusion-context paragraphs.
+- DOCX paragraph alignment fails the whole review if any extracted paragraph cannot be aligned to the source text.

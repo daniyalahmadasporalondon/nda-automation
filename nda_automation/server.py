@@ -9,7 +9,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .checker import PLAYBOOK_PATH, review_nda
+from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, review_nda
+from .docx_export import DOCX_MIME, build_review_report_docx
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +51,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/review-document":
             self._handle_document_review()
+            return
+        if path == "/api/export-review-docx":
+            self._handle_review_docx_export()
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -104,7 +108,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-        result = review_nda(extracted_text, paragraphs=extracted_paragraphs)
+        try:
+            result = review_nda(extracted_text, paragraphs=extracted_paragraphs)
+        except ParagraphAlignmentError:
+            self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
+            return
         result["source"] = {
             "filename": filename,
             "type": "docx",
@@ -114,6 +122,76 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         result["extracted_text"] = extracted_text
         self._send_json(result)
 
+    def _handle_review_docx_export(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+            return
+
+        text = payload.get("text", "")
+        reviewed_text = payload.get("reviewed_text", "")
+        has_docx_payload = (
+            isinstance(payload.get("filename"), str)
+            and payload.get("filename", "").lower().endswith(".docx")
+            and isinstance(payload.get("content_base64"), str)
+            and bool(payload.get("content_base64"))
+        )
+        export_text = reviewed_text if isinstance(reviewed_text, str) and reviewed_text.strip() else text
+        if (not isinstance(export_text, str) or not export_text.strip()) and not has_docx_payload:
+            self._send_json({"error": "Provide NDA text to export."}, status=400)
+            return
+        if (
+            not has_docx_payload
+            and isinstance(text, str)
+            and text.strip()
+            and isinstance(reviewed_text, str)
+            and reviewed_text.strip()
+            and text.strip() != reviewed_text.strip()
+        ):
+            self._send_json({"error": "Export text must match the latest reviewed text. Run Review NDA again."}, status=409)
+            return
+
+        title = payload.get("title", "NDA Review")
+        if not isinstance(title, str) or not title.strip():
+            title = "NDA Review"
+
+        try:
+            review_result = self._review_result_for_export(payload, export_text)
+        except DocxExtractionError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+        except ParagraphAlignmentError:
+            self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
+            return
+
+        report_bytes = build_review_report_docx(review_result, title=title.strip())
+        self._send_download(
+            report_bytes,
+            "nda-review-report.docx",
+            DOCX_MIME,
+        )
+
+    def _review_result_for_export(self, payload: dict, fallback_text: str) -> dict:
+        filename = payload.get("filename", "")
+        content_base64 = payload.get("content_base64", "")
+        if isinstance(filename, str) and filename.lower().endswith(".docx") and isinstance(content_base64, str) and content_base64:
+            try:
+                document_bytes = base64.b64decode(content_base64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise DocxExtractionError("The uploaded Word document could not be decoded.") from exc
+
+            if len(document_bytes) > MAX_DOCUMENT_BYTES:
+                raise DocxExtractionError("The Word document is larger than the 10 MB upload limit.")
+
+            extracted_paragraphs = extract_docx_paragraphs(document_bytes)
+            extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
+            return review_nda(extracted_text, paragraphs=extracted_paragraphs)
+
+        return review_nda(fallback_text)
+
     def _send_file(self, path: Path, content_type: str | None = None) -> None:
         if not path.is_file():
             self._send_json({"error": "Not found"}, status=404)
@@ -122,6 +200,15 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         detected_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", detected_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_download(self, data: bytes, filename: str, content_type: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

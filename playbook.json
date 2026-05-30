@@ -28,6 +28,25 @@
         "financial",
         "technical"
       ],
+      "definition_categories": [
+        "financial",
+        "business",
+        "technical",
+        "customer",
+        "employee",
+        "supplier",
+        "pricing",
+        "market",
+        "trade secret",
+        "proprietary",
+        "source code"
+      ],
+      "problematic_exclusion_terms": [
+        "residual knowledge",
+        "residuals",
+        "reverse engineer",
+        "reverse engineering"
+      ],
       "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party."
     },
     {
@@ -41,6 +60,13 @@
         "England and Wales",
         "DIFC"
       ],
+      "preferred_law": "England and Wales",
+      "law_phrases": {
+        "India": "India",
+        "Delaware": "Delaware",
+        "England and Wales": "England and Wales",
+        "DIFC": "the DIFC"
+      },
       "search_terms": [
         "governing law",
         "governed by",
@@ -58,6 +84,7 @@
       "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years.",
       "type": "required",
       "max_term_years": 5,
+      "redline_template": "The confidentiality obligations survive for a fixed period of up to {max_term_years_label}, except for trade secrets or legal obligations that require a longer period.",
       "search_terms": [
         "term",
         "survive",
@@ -93,6 +120,7 @@
         "date:",
         "by:"
       ],
+      "redline_template": "For [Party 1 legal name]\nBy:\nName:\nTitle:\nDate:\n\nFor [Party 2 legal name]\nBy:\nName:\nTitle:\nDate:",
       "acceptable_language": "Each party should have an execution block showing the legal entity name, authorised signatory, title, and date."
     }
   ]

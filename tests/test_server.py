@@ -4,10 +4,17 @@ import json
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
+from io import BytesIO
 from unittest.mock import patch
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 
+from nda_automation.checker import ParagraphAlignmentError
+from nda_automation.docx_export import DOCX_MIME
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
+
+W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
 class QuietNdaAutomationHandler(NdaAutomationHandler):
@@ -30,6 +37,10 @@ class ServerTests(unittest.TestCase):
         cls.thread.join(timeout=5)
 
     def request(self, method, path, body=None, headers=None):
+        status, payload, _response_headers = self.request_with_headers(method, path, body=body, headers=headers)
+        return status, payload
+
+    def request_with_headers(self, method, path, body=None, headers=None):
         request_headers = headers or {}
         request_body = body
         if isinstance(body, dict):
@@ -48,7 +59,7 @@ class ServerTests(unittest.TestCase):
                 payload = json.loads(raw_body.decode("utf-8"))
             else:
                 payload = raw_body
-            return response.status, payload
+            return response.status, payload, dict(response.getheaders())
         finally:
             connection.close()
 
@@ -78,6 +89,146 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertIn("clauses", payload)
+        self.assertIn("redline_edits", payload)
+
+    def test_text_review_returns_structured_redline_edits(self):
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            {"text": "This Agreement shall be governed by the laws of California."},
+        )
+
+        self.assertEqual(status, 200)
+        governing_law_redline = next(edit for edit in payload["redline_edits"] if edit["clause_id"] == "governing_law")
+        self.assertEqual(governing_law_redline["action"], "replace_paragraph")
+        self.assertEqual(governing_law_redline["status"], "proposed")
+        self.assertEqual(governing_law_redline["paragraph_id"], "p1")
+        self.assertEqual(
+            [option["label"] for option in governing_law_redline["template_options"]],
+            ["India", "Delaware", "England and Wales", "DIFC"],
+        )
+
+    def test_text_review_returns_insert_redlines_for_missing_clauses(self):
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            {"text": "The parties will discuss a possible transaction."},
+        )
+
+        self.assertEqual(status, 200)
+        redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
+        self.assertEqual(redlines_by_clause["governing_law"]["action"], "insert_after_paragraph")
+        self.assertIn("England and Wales", redlines_by_clause["governing_law"]["insert_text"])
+        self.assertEqual(redlines_by_clause["term_and_survival"]["action"], "insert_after_paragraph")
+        self.assertIn("up to five years", redlines_by_clause["term_and_survival"]["insert_text"])
+        self.assertEqual(redlines_by_clause["signatures"]["action"], "insert_after_paragraph")
+        self.assertIn("For [Party 1 legal name]", redlines_by_clause["signatures"]["insert_text"])
+
+    def test_text_review_returns_term_and_non_circumvention_redlines(self):
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            {
+                "text": (
+                    "The confidentiality obligations survive for seven years.\n\n"
+                    "The Recipient must not circumvent the Company or deal directly with introduced parties."
+                )
+            },
+        )
+
+        self.assertEqual(status, 200)
+        redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
+        self.assertEqual(redlines_by_clause["term_and_survival"]["action"], "replace_paragraph")
+        self.assertIn("up to five years", redlines_by_clause["term_and_survival"]["replacement_text"])
+        self.assertEqual(redlines_by_clause["non_circumvention"]["action"], "delete_paragraph")
+        self.assertEqual(redlines_by_clause["non_circumvention"]["replacement_text"], "")
+
+    def test_review_docx_export_returns_track_changes_enabled_docx(self):
+        status, payload, headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {"text": "This Agreement shall be governed by the laws of California.", "title": "California NDA"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="nda-review-report.docx"')
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            settings_xml = archive.read("word/settings.xml").decode("utf-8")
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        settings_root = ET.fromstring(settings_xml)
+        document_root = ET.fromstring(document_xml)
+        self.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
+        self.assertIn("California NDA", document_xml)
+        self.assertGreaterEqual(len(document_root.findall(".//w:del", W_NS)), 1)
+        self.assertGreaterEqual(len(document_root.findall(".//w:ins", W_NS)), 1)
+
+    def test_review_docx_export_text_path_uses_reviewed_text(self):
+        status, payload, _headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "reviewed_text": "This Agreement shall be governed by the laws of California.",
+                "title": "Reviewed Text NDA",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("Reviewed Text NDA", document_xml)
+        self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
+
+    def test_review_docx_export_rejects_text_that_differs_from_reviewed_text(self):
+        status, payload = self.request(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "text": "This Agreement shall be governed by the laws of England and Wales.",
+                "reviewed_text": "This Agreement shall be governed by the laws of California.",
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
+
+    def test_review_docx_export_preserves_word_source_index(self):
+        extracted_paragraphs = [
+            {"source_index": 8, "text": "Intro paragraph."},
+            {"source_index": 12, "text": "This Agreement shall be governed by the laws of California."},
+        ]
+        with patch.object(server_module, "extract_docx_paragraphs", return_value=extracted_paragraphs):
+            status, payload, _headers = self.request_with_headers(
+                "POST",
+                "/api/export-review-docx",
+                {
+                    "text": "Stale browser text should not drive DOCX export.",
+                    "title": "Uploaded NDA",
+                    "filename": "uploaded.docx",
+                    "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
+                },
+            )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        document_root = ET.fromstring(document_xml)
+        deletion_text = [
+            "".join(node.text or "" for node in deletion.findall(".//w:delText", W_NS))
+            for deletion in document_root.findall(".//w:del", W_NS)
+        ]
+        self.assertIn("source paragraph 12", document_xml)
+        self.assertTrue(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
+        self.assertNotIn("Stale browser text should not drive DOCX export.", document_xml)
+
+    def test_review_docx_export_rejects_empty_text(self):
+        status, payload = self.request("POST", "/api/export-review-docx", {"text": " "})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Provide NDA text to export.")
 
     def test_document_review_rejects_bad_json(self):
         status, payload = self.request(
@@ -116,6 +267,21 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The Word document is larger than the 10 MB upload limit.")
+
+    def test_document_review_reports_paragraph_alignment_failure(self):
+        with patch.object(server_module, "extract_docx_paragraphs", return_value=[{"source_index": 1, "text": "Paragraph"}]):
+            with patch.object(server_module, "review_nda", side_effect=ParagraphAlignmentError("alignment failed")):
+                status, payload = self.request(
+                    "POST",
+                    "/api/review-document",
+                    {
+                        "filename": "nda.docx",
+                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "The extracted document paragraphs could not be aligned to the extracted text.")
 
     def test_static_route_blocks_directory_traversal(self):
         status, payload = self.request("GET", "/static/../README.md")
