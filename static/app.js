@@ -5,6 +5,16 @@ const fileInput = document.querySelector("#fileInput");
 const fileMeta = document.querySelector("#fileMeta");
 const docTitle = document.querySelector("#docTitle");
 const workspaceDocTitle = document.querySelector("#workspaceDocTitle");
+const studioDocTitle = document.querySelector("#studioDocTitle");
+const studioNdaText = document.querySelector("#studioNdaText");
+const studioFileMeta = document.querySelector("#studioFileMeta");
+const studioReviewButton = document.querySelector("#studioReviewButton");
+const studioClearButton = document.querySelector("#studioClearButton");
+const studioClauseLane = document.querySelector("#studioClauseLane");
+const studioIssueList = document.querySelector("#studioIssueList");
+const studioDetailPanel = document.querySelector("#studioDetailPanel");
+const studioMatchSummary = document.querySelector("#studioMatchSummary");
+const studioOverallTitle = document.querySelector("#studioOverallTitle");
 const overallTitle = document.querySelector("#overallTitle");
 const resultHero = document.querySelector("#resultHero");
 const resultMark = document.querySelector("#resultMark");
@@ -33,6 +43,7 @@ const emptyState = () => {
     </div>
   `;
   renderClauseLane();
+  renderStudioEmpty();
 };
 
 emptyState();
@@ -52,51 +63,81 @@ fileInput.addEventListener("change", async (event) => {
   if (extension === "docx") {
     selectedDocument = file;
     ndaText.value = "";
+    studioNdaText.value = "";
     ndaText.placeholder = "Word document selected";
+    studioNdaText.placeholder = "Word document selected";
     fileMeta.textContent = `${file.name} ready for review`;
+    studioFileMeta.textContent = `${file.name} ready for review`;
     docTitle.textContent = file.name;
     workspaceDocTitle.textContent = file.name;
-    setActiveTab("review");
+    studioDocTitle.textContent = file.name;
+    setActiveTab("reviewStudio");
     return;
   }
 
   selectedDocument = null;
-  ndaText.value = await file.text();
+  const fileText = await file.text();
+  ndaText.value = fileText;
+  studioNdaText.value = fileText;
   ndaText.placeholder = "Paste NDA text here";
+  studioNdaText.placeholder = "Paste NDA text here";
   fileMeta.textContent = `${file.name} loaded as text`;
+  studioFileMeta.textContent = `${file.name} loaded as text`;
   docTitle.textContent = file.name;
   workspaceDocTitle.textContent = file.name;
-  setActiveTab("review");
+  studioDocTitle.textContent = file.name;
+  setActiveTab("reviewStudio");
 });
 
-clearButton.addEventListener("click", () => {
+function clearReview() {
   ndaText.value = "";
+  studioNdaText.value = "";
   ndaText.placeholder = "Paste NDA text here";
+  studioNdaText.placeholder = "Paste NDA text here";
   fileInput.value = "";
   selectedDocument = null;
   fileMeta.textContent = "No file selected";
+  studioFileMeta.textContent = "No file selected";
   docTitle.textContent = "Untitled NDA";
   workspaceDocTitle.textContent = "Untitled NDA";
+  studioDocTitle.textContent = "Untitled NDA";
   overallTitle.textContent = "Awaiting review";
   resultMark.textContent = "-";
   resultHero.className = "result-hero";
   reviewClauses = [];
   selectedReviewClauseId = null;
   emptyState();
+}
+
+clearButton.addEventListener("click", () => {
+  clearReview();
+});
+
+studioClearButton.addEventListener("click", () => {
+  clearReview();
 });
 
 reviewButton.addEventListener("click", async () => {
-  const text = ndaText.value.trim();
+  await runReview(ndaText, reviewButton);
+});
+
+studioReviewButton.addEventListener("click", async () => {
+  await runReview(studioNdaText, studioReviewButton);
+});
+
+async function runReview(sourceInput, button) {
+  const text = sourceInput.value.trim();
   if (!text && !selectedDocument) {
     overallTitle.textContent = "Add NDA text";
+    studioOverallTitle.textContent = "Add NDA text";
     resultMark.textContent = "-";
     resultHero.className = "result-hero fail";
     emptyState();
     return;
   }
 
-  reviewButton.disabled = true;
-  reviewButton.textContent = "Reviewing";
+  button.disabled = true;
+  button.textContent = "Reviewing";
 
   try {
     const response = selectedDocument
@@ -110,19 +151,23 @@ reviewButton.addEventListener("click", async () => {
     if (!response.ok) throw new Error(payload.error || "Review could not run");
     if (payload.extracted_text) {
       ndaText.value = payload.extracted_text;
+      studioNdaText.value = payload.extracted_text;
       ndaText.placeholder = "Paste NDA text here";
+      studioNdaText.placeholder = "Paste NDA text here";
       fileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
+      studioFileMeta.textContent = `${payload.source.filename} reviewed from Word document`;
     }
     renderResult(payload);
   } catch (error) {
     overallTitle.textContent = error.message;
+    studioOverallTitle.textContent = error.message;
     resultMark.textContent = "!";
     resultHero.className = "result-hero fail";
   } finally {
-    reviewButton.disabled = false;
-    reviewButton.textContent = "Review NDA";
+    button.disabled = false;
+    button.textContent = "Review NDA";
   }
-});
+}
 
 async function reviewDocument(file) {
   const contentBase64 = await fileToBase64(file);
@@ -161,8 +206,110 @@ function renderResult(result) {
   reviewClauses = result.clauses || [];
   selectedReviewClauseId = reviewClauses.find((clause) => clause.status === "fail")?.id || reviewClauses[0]?.id || null;
   renderClauseLane();
+  renderStudioResult(result);
   renderReviewClauseList();
   renderReviewDetail();
+}
+
+function renderStudioEmpty() {
+  if (!studioIssueList) return;
+  studioMatchSummary.textContent = `0/${playbookClauses.length || 6}`;
+  studioOverallTitle.textContent = "Awaiting review";
+  studioIssueList.innerHTML = '<div class="studio-empty">No review yet</div>';
+  studioDetailPanel.innerHTML = `
+    <p class="eyebrow">playbook language</p>
+    <p>No review yet.</p>
+  `;
+  renderStudioClauseLane();
+}
+
+function renderStudioResult(result) {
+  if (!studioIssueList) return;
+  const clauses = result.clauses || [];
+  const passedCount = clauses.filter((clause) => clause.status === "pass").length;
+  const failedCount = clauses.filter((clause) => clause.status === "fail").length;
+  studioMatchSummary.textContent = `${passedCount}/${clauses.length || playbookClauses.length || 6}`;
+  studioOverallTitle.textContent = failedCount
+    ? `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} checking`
+    : "All hard clauses match";
+
+  studioIssueList.innerHTML = clauses
+    .map((clause) => {
+      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
+      const statusText = clause.status === "fail" ? "Verify" : "Match";
+      return `
+        <button class="studio-issue-row ${selected}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}">
+          <span>${escapeHtml(clause.name)}</span>
+          <strong class="${clause.status}">${statusText}</strong>
+        </button>
+      `;
+    })
+    .join("");
+
+  studioIssueList.querySelectorAll("[data-studio-clause-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      selectedReviewClauseId = row.dataset.studioClauseId;
+      renderStudioResult({ clauses: reviewClauses });
+      renderClauseLane();
+      renderReviewClauseList();
+      renderReviewDetail();
+    });
+  });
+
+  renderStudioClauseLane();
+  renderStudioDetail();
+}
+
+function renderStudioClauseLane() {
+  if (!studioClauseLane) return;
+
+  const sourceClauses = reviewClauses.length
+    ? reviewClauses
+    : playbookClauses.map((clause) => ({ ...clause, status: "idle" }));
+
+  if (!sourceClauses.length) {
+    studioClauseLane.innerHTML = '<div class="studio-empty">Loading clauses</div>';
+    return;
+  }
+
+  studioClauseLane.innerHTML = sourceClauses
+    .map((clause, index) => {
+      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
+      const statusClass = clause.status === "fail" ? "verify" : clause.status === "pass" ? "match" : "pending";
+      const tag = reviewClauses.length ? "button" : "div";
+      const type = reviewClauses.length ? ' type="button"' : "";
+      const data = reviewClauses.length ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : "";
+      return `
+        <${tag} class="studio-clause-item ${selected}"${type}${data}>
+          <span class="studio-clause-dot ${statusClass}"></span>
+          <strong>${index + 1}</strong>
+          <span>${escapeHtml(clause.name)}</span>
+        </${tag}>
+      `;
+    })
+    .join("");
+
+  studioClauseLane.querySelectorAll("[data-studio-lane-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      selectedReviewClauseId = row.dataset.studioLaneId;
+      renderStudioResult({ clauses: reviewClauses });
+      renderClauseLane();
+      renderReviewClauseList();
+      renderReviewDetail();
+    });
+  });
+}
+
+function renderStudioDetail() {
+  const clause = reviewClauses.find((item) => item.id === selectedReviewClauseId);
+  if (!clause) return;
+  const statusText = clause.status === "fail" ? "Verify against playbook" : "Matches playbook";
+  studioDetailPanel.innerHTML = `
+    <p class="eyebrow">playbook language</p>
+    <h3>${escapeHtml(clause.name)}</h3>
+    <p>${escapeHtml(clause.requirement)}</p>
+    <strong class="studio-detail-status">${statusText}</strong>
+  `;
 }
 
 function renderClauseLane() {
@@ -230,6 +377,7 @@ function renderReviewClauseList() {
     card.addEventListener("click", () => {
       selectedReviewClauseId = card.dataset.reviewClauseId;
       renderClauseLane();
+      renderStudioResult({ clauses: reviewClauses });
       renderReviewClauseList();
       renderReviewDetail();
     });
@@ -238,6 +386,7 @@ function renderReviewClauseList() {
       event.preventDefault();
       selectedReviewClauseId = card.dataset.reviewClauseId;
       renderClauseLane();
+      renderStudioResult({ clauses: reviewClauses });
       renderReviewClauseList();
       renderReviewDetail();
     });
@@ -291,6 +440,7 @@ async function loadPlaybook() {
     playbookClauses = playbook.clauses || [];
     selectedClauseId = playbookClauses[0]?.id || null;
     renderClauseLane();
+    renderStudioEmpty();
     renderPlaybookList();
     renderClauseDetail();
   } catch (error) {

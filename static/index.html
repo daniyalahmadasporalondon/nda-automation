@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=17">
+    <link rel="stylesheet" href="/static/styles.css?v=18">
   </head>
   <body>
     <div class="app-shell">
@@ -18,7 +18,8 @@
             </div>
           </div>
           <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button active" type="button" data-tab="review">Review</button>
+            <button class="tab-button" type="button" data-tab="review">Review</button>
+            <button class="tab-button active" type="button" data-tab="reviewStudio">Review Studio</button>
             <button class="tab-button" type="button" data-tab="clauses">Clauses</button>
           </nav>
           <div class="matter-title">
@@ -33,7 +34,93 @@
           </div>
         </header>
 
-        <main class="review-workstation view active" id="reviewView" data-view="review">
+        <main class="studio-review view active" id="reviewStudioView" data-view="reviewStudio">
+          <header class="studio-matter-card">
+            <div class="studio-matter-left">
+              <span class="back-dot">‹</span>
+              <div>
+                <div class="studio-tags">
+                  <span>ASP-24CPXBHH5</span>
+                  <span>In Review</span>
+                </div>
+                <h1 id="studioDocTitle">Untitled NDA</h1>
+              </div>
+            </div>
+            <dl class="studio-matter-meta">
+              <div>
+                <dt>Counterparty</dt>
+                <dd>Pending upload</dd>
+              </div>
+              <div>
+                <dt>Received</dt>
+                <dd>30/05/2026</dd>
+              </div>
+              <div>
+                <dt>Review type</dt>
+                <dd>Hard clauses</dd>
+              </div>
+            </dl>
+          </header>
+
+          <section class="studio-grid">
+            <aside class="studio-clauses" aria-label="Studio clause map">
+              <p class="eyebrow">clauses</p>
+              <div class="studio-clause-list" id="studioClauseLane"></div>
+            </aside>
+
+            <section class="studio-document">
+              <div class="studio-doc-toolbar">
+                <div class="studio-view-switch">
+                  <span>Views:</span>
+                  <strong>Redline</strong>
+                  <span>Clean</span>
+                  <span>Side by Side</span>
+                </div>
+                <div class="studio-zoom">100%</div>
+              </div>
+              <div class="studio-page-wrap">
+                <div class="studio-page">
+                  <h2>Untitled NDA</h2>
+                  <p class="studio-document-subtitle">NON-DISCLOSURE AGREEMENT (NDA)</p>
+                  <textarea id="studioNdaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+                </div>
+              </div>
+            </section>
+
+            <aside class="studio-playbook" aria-label="Redlines and playbook">
+              <h2>Redlines &amp; Playbook</h2>
+              <section class="studio-card studio-check-card">
+                <p class="eyebrow">playbook check</p>
+                <div class="studio-match-line">
+                  <strong id="studioMatchSummary">0/6</strong>
+                  <span>clauses checked</span>
+                </div>
+                <p id="studioOverallTitle">Awaiting review</p>
+              </section>
+              <section class="studio-card">
+                <p class="eyebrow">clauses vs playbook</p>
+                <div class="studio-issue-list" id="studioIssueList"></div>
+              </section>
+              <section class="studio-card" id="studioDetailPanel">
+                <p class="eyebrow">playbook language</p>
+                <p>No review yet.</p>
+              </section>
+            </aside>
+          </section>
+
+          <footer class="studio-actionbar">
+            <div class="studio-file-summary">
+              <strong id="studioFileMeta">No file selected</strong>
+              <span>Editable review source</span>
+            </div>
+            <div class="actions">
+              <button id="studioReviewButton" type="button">Review NDA</button>
+              <button id="studioClearButton" class="secondary" type="button">Clear</button>
+            </div>
+          </footer>
+        </main>
+
+        <main class="review-workstation view" id="reviewView" data-view="review">
           <header class="review-titlebar">
             <div>
               <p class="eyebrow">nda review</p>
@@ -126,6 +213,6 @@
       </section>
     </div>
 
-    <script src="/static/app.js?v=17"></script>
+    <script src="/static/app.js?v=18"></script>
   </body>
 </html>
