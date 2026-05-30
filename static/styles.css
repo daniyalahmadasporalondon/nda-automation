@@ -1671,50 +1671,81 @@ textarea {
 
 .studio-issue-list {
   display: grid;
-  gap: 0;
+  gap: 10px;
 }
 
-.studio-issue-row {
-  align-items: center;
-  background: transparent;
-  border-radius: 0;
+.studio-issue-card {
+  align-items: stretch;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   color: var(--ink);
-  display: flex;
+  display: grid;
+  gap: 10px;
   height: auto;
-  justify-content: space-between;
-  min-height: 36px;
-  padding: 8px 0;
+  justify-content: stretch;
+  min-height: 90px;
+  padding: 14px 16px;
   text-align: left;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  width: 100%;
 }
 
-.studio-issue-row + .studio-issue-row {
-  border-top: 1px solid var(--border);
+.studio-issue-card.check {
+  background: #f2efff;
 }
 
-.studio-issue-row:hover,
-.studio-issue-row.selected {
-  background: #f5f1ff;
+.studio-issue-card:hover,
+.studio-issue-card.selected {
+  background: #f2efff;
+  border-color: var(--border-strong);
+  box-shadow: inset 0 0 0 1px rgba(85, 35, 178, 0.12);
+  transform: translateY(-1px);
 }
 
-.studio-issue-row span {
+.studio-issue-card-top {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.studio-issue-title {
   font-size: 14px;
-  font-weight: 750;
+  font-weight: 800;
+  line-height: 1.2;
+  min-width: 0;
 }
 
-.studio-issue-row strong {
+.studio-issue-pill {
+  align-items: center;
   border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
   font-size: 12px;
-  padding: 4px 8px;
+  font-weight: 800;
+  justify-content: center;
+  line-height: 1;
+  min-width: 56px;
+  padding: 7px 10px 6px;
 }
 
-.studio-issue-row strong.pass {
-  background: rgba(16, 185, 129, 0.12);
+.studio-issue-pill.pass {
+  background: rgba(68, 193, 49, 0.12);
   color: #087a57;
 }
 
-.studio-issue-row strong.fail {
-  background: rgba(240, 95, 163, 0.14);
+.studio-issue-pill.check {
+  background: rgba(236, 93, 214, 0.16);
   color: #b42365;
+}
+
+.studio-issue-finding {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.35;
 }
 
 .studio-empty {

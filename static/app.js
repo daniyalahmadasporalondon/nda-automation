@@ -330,11 +330,15 @@ function renderStudioResult(result) {
   studioIssueList.innerHTML = clauses
     .map((clause) => {
       const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const statusText = clause.status === "fail" ? "Verify" : "Match";
+      const statusTone = clause.status === "fail" ? "check" : "pass";
+      const statusText = clause.status === "fail" ? "CHECK" : "PASS";
       return `
-        <button class="studio-issue-row ${selected}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}">
-          <span>${escapeHtml(clause.name)}</span>
-          <strong class="${clause.status}">${statusText}</strong>
+        <button class="studio-issue-card ${selected} ${statusTone}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}">
+          <span class="studio-issue-card-top">
+            <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
+            <strong class="studio-issue-pill ${statusTone}">${statusText}</strong>
+          </span>
+          <span class="studio-issue-finding">${escapeHtml(clause.finding || "Clause review available.")}</span>
         </button>
       `;
     })
