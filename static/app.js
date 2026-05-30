@@ -6,12 +6,26 @@ const overallTitle = document.querySelector("#overallTitle");
 const resultHero = document.querySelector("#resultHero");
 const resultMark = document.querySelector("#resultMark");
 const clauseGrid = document.querySelector("#clauseGrid");
+const tabButtons = document.querySelectorAll("[data-tab]");
+const views = document.querySelectorAll("[data-view]");
+const playbookList = document.querySelector("#playbookList");
+const clauseDetail = document.querySelector("#clauseDetail");
+
+let playbookClauses = [];
+let selectedClauseId = null;
 
 const emptyState = () => {
   clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
 };
 
 emptyState();
+loadPlaybook();
+
+tabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveTab(button.dataset.tab);
+  });
+});
 
 fileInput.addEventListener("change", async (event) => {
   const file = event.target.files[0];
@@ -87,6 +101,107 @@ function renderResult(result) {
     .join("");
 }
 
+async function loadPlaybook() {
+  playbookList.innerHTML = '<div class="playbook-loading">Loading clauses</div>';
+  clauseDetail.innerHTML = '<div class="detail-empty">Loading playbook</div>';
+
+  try {
+    const response = await fetch("/playbook");
+    const playbook = await response.json();
+    if (!response.ok) throw new Error(playbook.error || "Playbook failed to load");
+
+    playbookClauses = playbook.clauses || [];
+    selectedClauseId = playbookClauses[0]?.id || null;
+    renderPlaybookList();
+    renderClauseDetail();
+  } catch (error) {
+    playbookList.innerHTML = `<div class="playbook-loading">${escapeHtml(error.message)}</div>`;
+    clauseDetail.innerHTML = '<div class="detail-empty">Playbook unavailable</div>';
+  }
+}
+
+function setActiveTab(tabName) {
+  tabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === tabName);
+  });
+  views.forEach((view) => {
+    view.classList.toggle("active", view.dataset.view === tabName);
+  });
+}
+
+function renderPlaybookList() {
+  playbookList.innerHTML = playbookClauses
+    .map((clause, index) => {
+      const selected = clause.id === selectedClauseId ? "selected" : "";
+      const position = String(index + 1).padStart(2, "0");
+      return `
+        <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}">
+          <span class="clause-number">${position}</span>
+          <span>
+            <strong>${escapeHtml(clause.name)}</strong>
+            <small>${escapeHtml(clause.type)}</small>
+          </span>
+        </button>
+      `;
+    })
+    .join("");
+
+  playbookList.querySelectorAll("[data-clause-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      selectedClauseId = row.dataset.clauseId;
+      renderPlaybookList();
+      renderClauseDetail();
+    });
+  });
+}
+
+function renderClauseDetail() {
+  const clause = playbookClauses.find((item) => item.id === selectedClauseId);
+  if (!clause) {
+    clauseDetail.innerHTML = '<div class="detail-empty">No clause selected</div>';
+    return;
+  }
+
+  const lawChips = (clause.approved_laws || [])
+    .map((law) => `<span>${escapeHtml(law)}</span>`)
+    .join("");
+  const termYears = clause.term_years
+    ? `<div class="fact-box"><small>Term</small><strong>${escapeHtml(clause.term_years)} years</strong></div>`
+    : "";
+  const approvedLaws = lawChips
+    ? `<div class="law-strip">${lawChips}</div>`
+    : "";
+
+  clauseDetail.innerHTML = `
+    <div class="detail-header">
+      <div>
+        <p class="eyebrow">clause ${escapeHtml(clause.id)}</p>
+        <h2>${escapeHtml(clause.name)}</h2>
+      </div>
+      <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(clause.type)}</span>
+    </div>
+
+    <div class="requirement-panel">
+      <small>Requirement</small>
+      <p>${escapeHtml(clause.requirement)}</p>
+    </div>
+
+    <div class="detail-grid">
+      <div class="fact-box">
+        <small>Checker outcome</small>
+        <strong>${clause.type === "prohibited" ? "Must be absent" : "Must be present"}</strong>
+      </div>
+      <div class="fact-box">
+        <small>Source</small>
+        <strong>playbook.json</strong>
+      </div>
+      ${termYears}
+    </div>
+
+    ${approvedLaws}
+  `;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -95,4 +210,3 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-

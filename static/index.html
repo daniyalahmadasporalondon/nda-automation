@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
   </head>
   <body>
     <div class="app-shell">
@@ -13,10 +13,16 @@
           <p class="eyebrow">aspora legal</p>
           <h1>nda automation</h1>
         </div>
-        <div class="mode-pill">hard clauses only</div>
+        <div class="topbar-actions">
+          <nav class="tabbar" aria-label="Workspace">
+            <button class="tab-button" type="button" data-tab="review">Review</button>
+            <button class="tab-button active" type="button" data-tab="clauses">Hard clauses</button>
+          </nav>
+          <div class="mode-pill">hard clauses only</div>
+        </div>
       </header>
 
-      <main class="workspace">
+      <main class="workspace view" id="reviewView" data-view="review">
         <section class="input-panel">
           <div class="panel-heading">
             <h2>NDA text</h2>
@@ -44,9 +50,22 @@
           <div class="clause-grid" id="clauseGrid"></div>
         </section>
       </main>
+
+      <main class="playbook-view view active" id="clausesView" data-view="clauses">
+        <section class="playbook-shell">
+          <aside class="clause-rail">
+            <div class="rail-heading">
+              <p class="eyebrow">hard clauses</p>
+              <h2>Aspora playbook</h2>
+            </div>
+            <div class="playbook-list" id="playbookList"></div>
+          </aside>
+
+          <section class="clause-detail" id="clauseDetail"></section>
+        </section>
+      </main>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=3"></script>
   </body>
 </html>
-
