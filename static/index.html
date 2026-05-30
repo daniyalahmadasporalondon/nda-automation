@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=12">
+    <link rel="stylesheet" href="/static/styles.css?v=13">
   </head>
   <body>
     <div class="app-shell">
@@ -26,16 +26,22 @@
         <section class="workstation-header">
           <div>
             <p class="eyebrow">review workstation</p>
-            <h2>Document review</h2>
+            <h2>Hard-clause review</h2>
           </div>
-          <div class="workstation-meta">
-            <span>Scope</span>
-            <strong>Hard clauses</strong>
+          <div class="workstation-status-strip">
+            <div class="workstation-meta">
+              <span>Input</span>
+              <strong>Paste or Word</strong>
+            </div>
+            <div class="workstation-meta">
+              <span>Output</span>
+              <strong>Pass / check</strong>
+            </div>
           </div>
         </section>
 
         <section class="workstation-grid">
-          <section class="input-panel workstation-panel">
+          <section class="input-panel workstation-panel document-panel">
             <div class="panel-heading">
               <div>
                 <p class="eyebrow">source</p>
@@ -63,13 +69,24 @@
               <div class="result-mark" id="resultMark">-</div>
             </div>
 
-            <div class="results-heading">
-              <div>
-                <p class="eyebrow">checklist</p>
-                <h2>Hard clause result</h2>
-              </div>
+            <div class="review-results-body">
+              <section class="clause-list-panel">
+                <div class="results-heading">
+                  <div>
+                    <p class="eyebrow">checklist</p>
+                    <h2>Hard clauses</h2>
+                  </div>
+                </div>
+                <div class="clause-grid" id="clauseGrid"></div>
+              </section>
+
+              <aside class="selected-clause-panel" id="reviewDetail">
+                <div class="review-detail-empty">
+                  <p class="eyebrow">clause detail</p>
+                  <h2>No review yet</h2>
+                </div>
+              </aside>
             </div>
-            <div class="clause-grid" id="clauseGrid"></div>
           </section>
         </section>
       </main>
@@ -89,6 +106,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=12"></script>
+    <script src="/static/app.js?v=13"></script>
   </body>
 </html>

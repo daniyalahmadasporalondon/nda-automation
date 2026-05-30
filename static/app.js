@@ -7,6 +7,7 @@ const overallTitle = document.querySelector("#overallTitle");
 const resultHero = document.querySelector("#resultHero");
 const resultMark = document.querySelector("#resultMark");
 const clauseGrid = document.querySelector("#clauseGrid");
+const reviewDetail = document.querySelector("#reviewDetail");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
 const playbookList = document.querySelector("#playbookList");
@@ -15,9 +16,17 @@ const clauseDetail = document.querySelector("#clauseDetail");
 let playbookClauses = [];
 let selectedClauseId = null;
 let selectedDocument = null;
+let reviewClauses = [];
+let selectedReviewClauseId = null;
 
 const emptyState = () => {
   clauseGrid.innerHTML = '<div class="empty">No review yet</div>';
+  reviewDetail.innerHTML = `
+    <div class="review-detail-empty">
+      <p class="eyebrow">clause detail</p>
+      <h2>No review yet</h2>
+    </div>
+  `;
 };
 
 emptyState();
@@ -59,6 +68,8 @@ clearButton.addEventListener("click", () => {
   overallTitle.textContent = "Awaiting review";
   resultMark.textContent = "-";
   resultHero.className = "result-hero";
+  reviewClauses = [];
+  selectedReviewClauseId = null;
   emptyState();
 });
 
@@ -131,14 +142,19 @@ function renderResult(result) {
   resultMark.textContent = passed ? "PASS" : "CHECK";
   resultHero.className = `result-hero ${passed ? "pass" : "fail"}`;
 
-  clauseGrid.innerHTML = result.clauses
+  reviewClauses = result.clauses || [];
+  selectedReviewClauseId = reviewClauses.find((clause) => clause.status === "fail")?.id || reviewClauses[0]?.id || null;
+  renderReviewClauseList();
+  renderReviewDetail();
+}
+
+function renderReviewClauseList() {
+  clauseGrid.innerHTML = reviewClauses
     .map((clause) => {
+      const selected = clause.id === selectedReviewClauseId ? "selected" : "";
       const statusLabel = clause.status === "fail" ? "CHECK" : clause.status.toUpperCase();
-      const evidence = clause.evidence.length
-        ? `<p class="evidence">${escapeHtml(clause.evidence[0])}</p>`
-        : "";
       return `
-        <article class="clause-card">
+        <article class="clause-card ${selected}" data-review-clause-id="${escapeHtml(clause.id)}" tabindex="0">
           <header>
             <div>
               <h3>${escapeHtml(clause.name)}</h3>
@@ -147,11 +163,60 @@ function renderResult(result) {
             <span class="status ${clause.status}">${statusLabel}</span>
           </header>
           <p class="finding">${escapeHtml(clause.finding)}</p>
-          ${evidence}
         </article>
       `;
     })
     .join("");
+
+  clauseGrid.querySelectorAll("[data-review-clause-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      selectedReviewClauseId = card.dataset.reviewClauseId;
+      renderReviewClauseList();
+      renderReviewDetail();
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectedReviewClauseId = card.dataset.reviewClauseId;
+      renderReviewClauseList();
+      renderReviewDetail();
+    });
+  });
+}
+
+function renderReviewDetail() {
+  const clause = reviewClauses.find((item) => item.id === selectedReviewClauseId);
+  if (!clause) {
+    emptyState();
+    return;
+  }
+
+  const statusLabel = clause.status === "fail" ? "CHECK" : clause.status.toUpperCase();
+  const evidence = clause.evidence?.length
+    ? clause.evidence.map((snippet) => `<p class="evidence">${escapeHtml(snippet)}</p>`).join("")
+    : '<p class="review-detail-muted">No evidence snippet captured.</p>';
+
+  reviewDetail.innerHTML = `
+    <div class="review-detail-header">
+      <div>
+        <p class="eyebrow">selected clause</p>
+        <h2>${escapeHtml(clause.name)}</h2>
+      </div>
+      <span class="status ${clause.status}">${statusLabel}</span>
+    </div>
+    <div class="review-detail-block">
+      <small>Requirement</small>
+      <p>${escapeHtml(clause.requirement)}</p>
+    </div>
+    <div class="review-detail-block finding-block">
+      <small>Finding</small>
+      <p>${escapeHtml(clause.finding)}</p>
+    </div>
+    <div class="review-detail-evidence">
+      <small>Evidence</small>
+      ${evidence}
+    </div>
+  `;
 }
 
 async function loadPlaybook() {
