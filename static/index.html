@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=13">
+    <link rel="stylesheet" href="/static/styles.css?v=14">
   </head>
   <body>
     <div class="app-shell">
@@ -23,54 +23,50 @@
       </header>
 
       <main class="review-workstation view active" id="reviewView" data-view="review">
-        <section class="workstation-header">
-          <div>
-            <p class="eyebrow">review workstation</p>
-            <h2>Hard-clause review</h2>
-          </div>
-          <div class="workstation-status-strip">
-            <div class="workstation-meta">
-              <span>Input</span>
-              <strong>Paste or Word</strong>
-            </div>
-            <div class="workstation-meta">
-              <span>Output</span>
-              <strong>Pass / check</strong>
-            </div>
-          </div>
-        </section>
+        <aside class="review-rail" aria-label="Review workspace">
+          <div class="rail-logo">A</div>
+          <div class="rail-current">Review</div>
+        </aside>
 
-        <section class="workstation-grid">
-          <section class="input-panel workstation-panel document-panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">source</p>
-                <h2>Document</h2>
+        <section class="review-shell">
+          <header class="review-titlebar">
+            <div>
+              <p class="eyebrow">nda review</p>
+              <h2>Hard-clause workstation</h2>
+            </div>
+            <div class="review-scope">Hard clauses only</div>
+          </header>
+
+          <section class="review-stage">
+            <section class="document-workbench">
+              <div class="document-toolbar">
+                <div>
+                  <p class="eyebrow">document</p>
+                  <h2>Source text</h2>
+                </div>
+                <label class="file-button">
+                  <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                  Upload file
+                </label>
               </div>
-              <label class="file-button">
-                <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                Upload file
-              </label>
-            </div>
-            <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
-            <div class="file-meta" id="fileMeta">No file selected</div>
-            <div class="actions">
-              <button id="reviewButton" type="button">Review NDA</button>
-              <button id="clearButton" class="secondary" type="button">Clear</button>
-            </div>
-          </section>
 
-          <section class="result-panel workstation-panel">
-            <div class="result-hero" id="resultHero">
-              <div>
-                <p class="eyebrow">result</p>
-                <h2 id="overallTitle">Awaiting review</h2>
+              <div class="document-canvas">
+                <div class="document-page">
+                  <textarea id="ndaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+                </div>
               </div>
-              <div class="result-mark" id="resultMark">-</div>
-            </div>
+            </section>
 
-            <div class="review-results-body">
-              <section class="clause-list-panel">
+            <aside class="verdict-rail">
+              <div class="result-hero" id="resultHero">
+                <div>
+                  <p class="eyebrow">verdict</p>
+                  <h2 id="overallTitle">Awaiting review</h2>
+                </div>
+                <div class="result-mark" id="resultMark">-</div>
+              </div>
+
+              <section class="verdict-section">
                 <div class="results-heading">
                   <div>
                     <p class="eyebrow">checklist</p>
@@ -80,14 +76,22 @@
                 <div class="clause-grid" id="clauseGrid"></div>
               </section>
 
-              <aside class="selected-clause-panel" id="reviewDetail">
+              <section class="verdict-section selected-clause-panel" id="reviewDetail">
                 <div class="review-detail-empty">
                   <p class="eyebrow">clause detail</p>
                   <h2>No review yet</h2>
                 </div>
-              </aside>
-            </div>
+              </section>
+            </aside>
           </section>
+
+          <footer class="review-actionbar">
+            <div class="file-meta" id="fileMeta">No file selected</div>
+            <div class="actions">
+              <button id="reviewButton" type="button">Review NDA</button>
+              <button id="clearButton" class="secondary" type="button">Clear</button>
+            </div>
+          </footer>
         </section>
       </main>
 
@@ -106,6 +110,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=13"></script>
+    <script src="/static/app.js?v=14"></script>
   </body>
 </html>
