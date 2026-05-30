@@ -13,7 +13,8 @@
         "mutual",
         "disclosing party",
         "receiving party"
-      ]
+      ],
+      "acceptable_language": "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party."
     },
     {
       "id": "confidential_information",
@@ -26,7 +27,8 @@
         "business",
         "financial",
         "technical"
-      ]
+      ],
+      "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party."
     },
     {
       "id": "governing_law",
@@ -47,7 +49,8 @@
         "DIFC",
         "Delaware",
         "India"
-      ]
+      ],
+      "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, or the DIFC."
     },
     {
       "id": "term_and_survival",
@@ -61,7 +64,8 @@
         "survival",
         "period",
         "years"
-      ]
+      ],
+      "acceptable_language": "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period."
     },
     {
       "id": "non_circumvention",
@@ -74,7 +78,8 @@
         "circumvent",
         "introduced parties",
         "exclusive dealing"
-      ]
+      ],
+      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."
     },
     {
       "id": "signatures",
@@ -87,7 +92,8 @@
         "title:",
         "date:",
         "by:"
-      ]
+      ],
+      "acceptable_language": "Each party should have an execution block showing the legal entity name, authorised signatory, title, and date."
     }
   ]
 }

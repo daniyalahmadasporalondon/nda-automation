@@ -37,6 +37,7 @@ let playbookClauses = [];
 let selectedClauseId = null;
 let selectedDocument = null;
 let reviewClauses = [];
+let reviewParagraphs = [];
 let selectedReviewClauseId = null;
 
 setupInterfaceScale();
@@ -121,6 +122,7 @@ function clearReview() {
   resultMark.textContent = "-";
   resultHero.className = "result-hero";
   reviewClauses = [];
+  reviewParagraphs = [];
   selectedReviewClauseId = null;
   emptyState();
 }
@@ -288,7 +290,7 @@ function showStudioDocumentRender() {
 
 function renderResult(result) {
   const passed = result.overall_status === "meets_requirements";
-  const checks = (result.clauses || []).filter((clause) => clause.status === "fail").length;
+  const checks = (result.clauses || []).filter((clause) => !clausePasses(clause)).length;
   overallTitle.textContent = passed ? "Meets requirements" : "Does not meet requirements";
   resultMark.textContent = passed ? "PASS" : "CHECK";
   resultMeta.textContent = passed
@@ -297,7 +299,8 @@ function renderResult(result) {
   resultHero.className = `result-hero ${passed ? "pass" : "fail"}`;
 
   reviewClauses = result.clauses || [];
-  selectedReviewClauseId = reviewClauses.find((clause) => clause.status === "fail")?.id || reviewClauses[0]?.id || null;
+  reviewParagraphs = result.paragraphs || [];
+  selectedReviewClauseId = reviewClauses.find((clause) => !clausePasses(clause))?.id || reviewClauses[0]?.id || null;
   renderClauseLane();
   renderStudioResult(result);
   renderReviewClauseList();
@@ -320,8 +323,8 @@ function renderStudioEmpty() {
 function renderStudioResult(result) {
   if (!studioIssueList) return;
   const clauses = result.clauses || [];
-  const passedCount = clauses.filter((clause) => clause.status === "pass").length;
-  const failedCount = clauses.filter((clause) => clause.status === "fail").length;
+  const passedCount = clauses.filter(clausePasses).length;
+  const failedCount = clauses.filter(clauseNeedsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
   studioOverallTitle.textContent = failedCount
     ? `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} checking`
@@ -330,15 +333,15 @@ function renderStudioResult(result) {
   studioIssueList.innerHTML = clauses
     .map((clause) => {
       const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const statusTone = clause.status === "fail" ? "check" : "pass";
-      const statusText = clause.status === "fail" ? "CHECK" : "PASS";
+      const statusTone = clauseTone(clause);
+      const statusText = clauseStatusLabel(clause);
       return `
         <button class="studio-issue-card ${selected} ${statusTone}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}">
           <span class="studio-issue-card-top">
             <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
             <strong class="studio-issue-pill ${statusTone}">${statusText}</strong>
           </span>
-          <span class="studio-issue-finding">${escapeHtml(clause.finding || "Clause review available.")}</span>
+          <span class="studio-issue-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>
         </button>
       `;
     })
@@ -359,6 +362,40 @@ function getClauseTotal(clauses = []) {
   return clauses.length || playbookClauses.length || 0;
 }
 
+function clausePasses(clause) {
+  if (!clause) return false;
+  if (typeof clause.passes === "boolean") return clause.passes;
+  return clause.status === "pass" || clause.status === "match";
+}
+
+function clauseNeedsReview(clause) {
+  return !clausePasses(clause) && clause.status !== "idle";
+}
+
+function clauseTone(clause) {
+  if (clause.status === "idle") return "pending";
+  return clausePasses(clause) ? "pass" : "check";
+}
+
+function clauseDotTone(clause) {
+  if (clause.status === "idle") return "pending";
+  return clausePasses(clause) ? "match" : "verify";
+}
+
+function clauseStatusLabel(clause) {
+  if (clause.status === "idle") return "Pending";
+  return clausePasses(clause) ? "PASS" : "CHECK";
+}
+
+function clauseResultLabel(clause) {
+  if (clause.status === "not_present") return "Not present";
+  if (clause.status === "match") return "Match";
+  if (clause.status === "check") return "Check";
+  if (clause.status === "pass") return "Match";
+  if (clause.status === "fail") return "Check";
+  return "Pending";
+}
+
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -374,7 +411,7 @@ function renderStudioClauseLane() {
   studioClauseLane.innerHTML = sourceClauses
     .map((clause, index) => {
       const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const statusClass = clause.status === "fail" ? "verify" : clause.status === "pass" ? "match" : "pending";
+      const statusClass = clauseDotTone(clause);
       const tag = reviewClauses.length ? "button" : "div";
       const type = reviewClauses.length ? ' type="button"' : "";
       const data = reviewClauses.length ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : "";
@@ -398,12 +435,28 @@ function renderStudioClauseLane() {
 function renderStudioDetail() {
   const clause = reviewClauses.find((item) => item.id === selectedReviewClauseId);
   if (!clause) return;
-  const statusText = clause.status === "fail" ? "Verify against playbook" : "Matches playbook";
+  const excerpt = clause.matched_text
+    ? `<div class="studio-detail-block"><small>Exact paragraph</small><p>${escapeHtml(clause.matched_text)}</p></div>`
+    : '<div class="studio-detail-block muted"><small>Exact paragraph</small><p>No matching paragraph identified.</p></div>';
+  const acceptableLanguage = clause.acceptable_language
+    ? `<div class="studio-detail-block"><small>Acceptable language</small><p>${escapeHtml(clause.acceptable_language)}</p></div>`
+    : "";
   studioDetailPanel.innerHTML = `
-    <p class="eyebrow">playbook language</p>
-    <h3>${escapeHtml(clause.name)}</h3>
-    <p>${escapeHtml(clause.requirement)}</p>
-    <strong class="studio-detail-status">${statusText}</strong>
+    <p class="eyebrow">clause detail</p>
+    <div class="studio-detail-heading">
+      <h3>${escapeHtml(clause.name)}</h3>
+      <span class="status ${clauseTone(clause)}">${escapeHtml(clauseStatusLabel(clause))}</span>
+    </div>
+    <div class="studio-detail-block">
+      <small>Requirement</small>
+      <p>${escapeHtml(clause.requirement)}</p>
+    </div>
+    <div class="studio-detail-block finding-block">
+      <small>Why</small>
+      <p>${escapeHtml(clause.reason || clause.finding)}</p>
+    </div>
+    ${excerpt}
+    ${acceptableLanguage}
   `;
 }
 
@@ -422,8 +475,8 @@ function renderClauseLane() {
   clauseLane.innerHTML = sourceClauses
     .map((clause, index) => {
       const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const status = clause.status === "fail" ? "check" : clause.status;
-      const statusText = clause.status === "fail" ? "Check" : clause.status === "pass" ? "Pass" : "Pending";
+      const status = clauseTone(clause);
+      const statusText = clauseStatusLabel(clause);
       const tag = reviewClauses.length ? "button" : "div";
       const type = reviewClauses.length ? ' type="button"' : "";
       const data = reviewClauses.length ? ` data-lane-clause-id="${escapeHtml(clause.id)}"` : "";
@@ -449,7 +502,8 @@ function renderReviewClauseList() {
   clauseGrid.innerHTML = reviewClauses
     .map((clause) => {
       const selected = clause.id === selectedReviewClauseId ? "selected" : "";
-      const statusLabel = clause.status === "fail" ? "CHECK" : clause.status.toUpperCase();
+      const statusLabel = clauseStatusLabel(clause);
+      const statusTone = clauseTone(clause);
       return `
         <article class="clause-card ${selected}" data-review-clause-id="${escapeHtml(clause.id)}" tabindex="0">
           <header>
@@ -457,9 +511,9 @@ function renderReviewClauseList() {
               <h3>${escapeHtml(clause.name)}</h3>
               <p class="requirement">${escapeHtml(clause.requirement)}</p>
             </div>
-            <span class="status ${clause.status}">${statusLabel}</span>
+            <span class="status ${statusTone}">${statusLabel}</span>
           </header>
-          <p class="finding">${escapeHtml(clause.finding)}</p>
+          <p class="finding">${escapeHtml(clause.reason || clause.finding)}</p>
         </article>
       `;
     })
@@ -480,34 +534,47 @@ function renderReviewClauseList() {
 function renderStudioDocumentHighlights() {
   if (!studioDocumentRender) return;
 
-  const text = studioNdaText.value.trim();
-  if (!text || !reviewClauses.length) {
+  if (!reviewClauses.length) {
     showStudioSourceEditor();
     return;
   }
 
-  const ranges = reviewClauses
-    .flatMap((clause) => findClauseTextRanges(studioNdaText.value, clause)
-      .map((range) => ({ clause, range })));
-  const paragraphs = getDocumentParagraphs(studioNdaText.value);
+  const paragraphs = reviewParagraphs.length
+    ? reviewParagraphs
+    : getDocumentParagraphs(studioNdaText.value).map((paragraph, index) => ({
+        ...paragraph,
+        id: `p${index + 1}`,
+        index: index + 1,
+      }));
+  if (!paragraphs.length) {
+    showStudioSourceEditor();
+    return;
+  }
+  const clausesByParagraphId = new Map();
+  reviewClauses.forEach((clause) => {
+    (clause.matched_paragraph_ids || []).forEach((paragraphId) => {
+      if (!clausesByParagraphId.has(paragraphId)) clausesByParagraphId.set(paragraphId, []);
+      clausesByParagraphId.get(paragraphId).push(clause);
+    });
+  });
 
   studioDocumentRender.innerHTML = paragraphs
-    .map((paragraph, index) => {
-      const linked = ranges.filter((item) => rangesOverlap(paragraph, item.range));
-      const selected = linked.find((item) => item.clause.id === selectedReviewClauseId);
-      const primary = selected || linked.find((item) => item.clause.status === "fail") || linked[0];
-      const ids = linked.map((item) => item.clause.id).join(" ");
+    .map((paragraph) => {
+      const linked = clausesByParagraphId.get(paragraph.id) || [];
+      const selected = linked.find((clause) => clause.id === selectedReviewClauseId);
+      const primary = selected || linked.find((clause) => !clausePasses(clause)) || linked[0];
+      const ids = linked.map((clause) => clause.id).join(" ");
       const classes = [
         "studio-doc-paragraph",
         linked.length ? "has-clause" : "",
-        primary?.clause.status === "fail" ? "verify" : "",
-        primary?.clause.status === "pass" ? "match" : "",
+        primary && !clausePasses(primary) ? "verify" : "",
+        primary && clausePasses(primary) ? "match" : "",
         selected ? "selected" : "",
       ]
         .filter(Boolean)
         .join(" ");
 
-      return `<p class="${classes}" data-paragraph-index="${index}" data-clause-ids="${escapeHtml(ids)}">${escapeHtml(paragraph.text)}</p>`;
+      return `<p class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(ids)}">${escapeHtml(paragraph.text)}</p>`;
     })
     .join("");
 
@@ -550,10 +617,6 @@ function addParagraph(paragraphs, text, start, end) {
   });
 }
 
-function rangesOverlap(first, second) {
-  return first.start < second.end && second.start < first.end;
-}
-
 function selectReviewClause(clauseId, options = {}) {
   selectedReviewClauseId = clauseId;
   renderClauseLane();
@@ -571,16 +634,15 @@ function jumpToClauseSource(clause) {
   if (!clause) return;
 
   const sourceInput = getActiveSourceInput();
-  if (!sourceInput?.value.trim()) return;
-
-  const range = findClauseTextRange(sourceInput.value, clause);
-  if (!range) return;
 
   if (sourceInput === studioNdaText && studioDocumentRender && !studioDocumentRender.hidden) {
     scrollRenderedClauseToView(clause.id);
     return;
   }
 
+  if (!sourceInput?.value.trim() || !clause.matched_text) return;
+  const range = findExactTextRange(sourceInput.value, clause.matched_text);
+  if (!range) return;
   focusTextRange(sourceInput, range.start, range.end);
 }
 
@@ -589,206 +651,28 @@ function getActiveSourceInput() {
   return activeView?.dataset.view === "review" ? ndaText : studioNdaText;
 }
 
-function findClauseTextRange(text, clause) {
-  return findClauseTextRanges(text, clause)[0] || null;
-}
-
-function findClauseTextRanges(text, clause) {
-  const paragraphRanges = findClauseParagraphRanges(text, clause);
-  if (paragraphRanges.length) return paragraphRanges;
-
-  const searchIndex = createSearchIndex(text);
-  const evidenceRanges = uniqueRanges((clause.evidence || [])
-    .map((snippet) => findQueryRange(searchIndex, snippet, 12))
-    .filter(Boolean)
-    .map((range) => expandToParagraph(text, range.start, range.end)));
-
-  if (evidenceRanges.length) return evidenceRanges;
-
-  const fallbackTerms = getClauseSearchTerms(clause);
-  const fallbackRange = fallbackTerms
-    .map((term) => findQueryRange(searchIndex, term, 3))
-    .find(Boolean);
-
-  return fallbackRange ? [expandToParagraph(text, fallbackRange.start, fallbackRange.end)] : [];
-}
-
-function findClauseParagraphRanges(text, clause) {
-  const paragraphs = getDocumentParagraphs(text);
-  const scored = paragraphs
-    .map((paragraph, index) => ({
-      index,
-      paragraph,
-      score: scoreParagraphForClause(paragraph.text, clause),
-    }))
-    .filter((item) => item.score > 0);
-
-  if (!scored.length) return [];
-
-  if (clause.id === "signatures") {
-    const strongHits = scored.filter((item) => item.score >= 6);
-    const hits = strongHits.length ? strongHits : scored;
-    const startIndex = Math.min(...hits.map((item) => item.index));
-    const endIndex = Math.max(...hits.map((item) => item.index));
-    return [{
-      start: paragraphs[startIndex].start,
-      end: paragraphs[endIndex].end,
-    }];
+function findExactTextRange(text, query) {
+  const exactStart = text.indexOf(query);
+  if (exactStart !== -1) {
+    return {
+      start: exactStart,
+      end: exactStart + query.length,
+    };
   }
 
-  const maxScore = Math.max(...scored.map((item) => item.score));
-  const maxMatches = clause.id === "term_and_survival" ? 2 : 1;
-  return scored
-    .filter((item) => item.score >= maxScore)
-    .slice(0, maxMatches)
-    .map((item) => ({
-      start: item.paragraph.start,
-      end: item.paragraph.end,
-    }));
+  const searchIndex = createExactSearchIndex(text);
+  const normalizedQuery = normalizeExactSearch(query);
+  if (!normalizedQuery) return null;
+  const start = searchIndex.normalized.indexOf(normalizedQuery);
+  if (start === -1) return null;
+  const endIndex = Math.min(start + normalizedQuery.length - 1, searchIndex.map.length - 1);
+  return {
+    start: searchIndex.map[start],
+    end: searchIndex.map[endIndex] + 1,
+  };
 }
 
-function scoreParagraphForClause(text, clause) {
-  const normalized = normalizeQuery(text);
-  const rules = CLAUSE_PARAGRAPH_RULES[clause.id] || [];
-  let score = 0;
-
-  rules.forEach((rule) => {
-    if (rule.pattern.test(normalized)) score += rule.weight;
-  });
-
-  if (clause.id === "confidential_information") {
-    const categoryHits = CONFIDENTIAL_INFO_CATEGORIES
-      .filter((category) => normalized.includes(category)).length;
-    score += Math.min(categoryHits, 6);
-  }
-
-  if (clause.id === "term_and_survival" && /\byears?\b/.test(normalized)) {
-    score += 4;
-  }
-
-  if (clause.id === "governing_law") {
-    const approvedLawHits = getClauseApprovedLaws(clause)
-      .filter((law) => normalized.includes(law)).length;
-    score += approvedLawHits * 8;
-
-    if (/\bgoverned\b.{0,90}\bby\b/.test(normalized)) score += 8;
-    if (/\blaws?\b/.test(normalized) && /\bcourts?\b|\bjurisdiction\b|\barbitration\b/.test(normalized)) score += 4;
-  }
-
-  if (isStandaloneClauseHeading(normalized, clause)) {
-    score = Math.min(score, 2);
-  }
-
-  return score;
-}
-
-function getClauseSearchTerms(clause) {
-  const playbookClause = playbookClauses.find((item) => item.id === clause.id) || {};
-  return uniqueStrings([
-    ...asStringArray(playbookClause.search_terms),
-    ...asStringArray(clause.search_terms),
-    clause.name,
-  ]);
-}
-
-function getClauseApprovedLaws(clause) {
-  const playbookClause = playbookClauses.find((item) => item.id === clause.id) || {};
-  return uniqueStrings([
-    ...asStringArray(playbookClause.approved_laws),
-    ...asStringArray(clause.approved_laws),
-  ]).map(normalizeQuery);
-}
-
-function asStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item) => typeof item === "string" && item.trim());
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  return values
-    .map((value) => value.trim())
-    .filter((value) => {
-      if (!value || seen.has(value.toLowerCase())) return false;
-      seen.add(value.toLowerCase());
-      return true;
-    });
-}
-
-function isStandaloneClauseHeading(normalizedText, clause) {
-  const clauseName = normalizeQuery(clause.name);
-  const wordCount = normalizedText.split(" ").filter(Boolean).length;
-  return wordCount <= 4 && normalizedText === clauseName;
-}
-
-function uniqueRanges(ranges) {
-  const seen = new Set();
-  return ranges.filter((range) => {
-    const key = `${range.start}:${range.end}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-const CONFIDENTIAL_INFO_CATEGORIES = [
-  "business",
-  "customer",
-  "employee",
-  "financial",
-  "market",
-  "pricing",
-  "proprietary",
-  "source code",
-  "supplier",
-  "technical",
-  "trade secret",
-];
-
-const CLAUSE_PARAGRAPH_RULES = {
-  mutuality: [
-    { pattern: /\bmutual\b/, weight: 9 },
-    { pattern: /\bboth parties\b/, weight: 8 },
-    { pattern: /\beach party\b.*\b(disclosing|receiving) party\b/, weight: 8 },
-    { pattern: /\bdisclosing party\b.*\breceiving party\b/, weight: 6 },
-    { pattern: /\breceiving party\b.*\bdisclosing party\b/, weight: 6 },
-    { pattern: /\bone[- ]way\b|\bunilateral\b|\bonly the receiving party\b|\brecipient only\b/, weight: 8 },
-  ],
-  confidential_information: [
-    { pattern: /\bdefinition of confidential information\b/, weight: 11 },
-    { pattern: /\bconfidential information\b.{0,40}\b(means|shall mean|includes?|refers to|is defined)\b/, weight: 11 },
-    { pattern: /\b(means|shall mean|includes?)\b.{0,40}\bconfidential information\b/, weight: 9 },
-    { pattern: /\bany and all information\b/, weight: 8 },
-    { pattern: /\bnon[- ]public information\b/, weight: 5 },
-    { pattern: /\bindependently developed\b|\bresidual knowledge\b|\bresiduals\b|\breverse engineer(?:ing)?\b/, weight: 6 },
-  ],
-  governing_law: [
-    { pattern: /\bgoverning law\b/, weight: 11 },
-    { pattern: /\bgoverned by\b/, weight: 9 },
-    { pattern: /\bgoverned\b.{0,90}\bby\b/, weight: 8 },
-    { pattern: /\blaws of\b/, weight: 6 },
-    { pattern: /\bjurisdiction\b|\bcourts?\b|\barbitration\b/, weight: 3 },
-  ],
-  term_and_survival: [
-    { pattern: /\bterm\b|\bsurviv(?:e|al|es|ing)\b/, weight: 8 },
-    { pattern: /\bremain in effect\b|\bperiod of\b|\bterminate\b|\btermination\b/, weight: 5 },
-    { pattern: /\bindefinitely\b|\bperpetual confidentiality\b|\bfor so long as the information remains confidential\b/, weight: 9 },
-  ],
-  non_circumvention: [
-    { pattern: /\bnon[- ]circumvention\b/, weight: 11 },
-    { pattern: /\bcircumvent(?:ion|s|ed|ing)?\b/, weight: 10 },
-    { pattern: /\bintroduced parties\b|\bsubstitute purpose\b|\bexclusive dealing\b/, weight: 8 },
-  ],
-  signatures: [
-    { pattern: /\bsignatures?\b|\bexecution block\b/, weight: 9 },
-    { pattern: /\btitle\s*:/, weight: 8 },
-    { pattern: /\bdate\s*:/, weight: 8 },
-    { pattern: /\bby\s*:/, weight: 7 },
-    { pattern: /^for\s+(?!a\b|the\b|any\b|period\b|purpose\b|purposes\b|term\b)[a-z0-9&.,' -]{2,80}/, weight: 5 },
-  ],
-};
-
-function createSearchIndex(text) {
+function createExactSearchIndex(text) {
   let normalized = "";
   const map = [];
   let previousWasSpace = false;
@@ -803,69 +687,16 @@ function createSearchIndex(text) {
       previousWasSpace = true;
       continue;
     }
-
-    normalized += char.toLowerCase();
+    normalized += char;
     map.push(index);
     previousWasSpace = false;
   }
 
-  return { normalized, map };
+  return { normalized: normalized.trim(), map };
 }
 
-function findQueryRange(searchIndex, query, minLength) {
-  const normalizedQuery = normalizeQuery(query);
-  if (normalizedQuery.length < minLength) return null;
-
-  const candidates = [normalizedQuery, ...queryWindows(normalizedQuery)];
-  for (const candidate of candidates) {
-    if (candidate.length < minLength) continue;
-    const start = searchIndex.normalized.indexOf(candidate);
-    if (start === -1) continue;
-    const endIndex = Math.min(start + candidate.length - 1, searchIndex.map.length - 1);
-    return {
-      start: searchIndex.map[start],
-      end: searchIndex.map[endIndex] + 1,
-    };
-  }
-
-  return null;
-}
-
-function normalizeQuery(value) {
-  return String(value)
-    .replace(/^\s*\.\.\./, "")
-    .replace(/\.\.\.\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function queryWindows(query) {
-  const words = query.split(" ").filter(Boolean);
-  if (words.length < 10) return [];
-
-  return [
-    words.slice(0, 12).join(" "),
-    words.slice(Math.max(words.length - 12, 0)).join(" "),
-    words.slice(Math.max(Math.floor(words.length / 2) - 6, 0), Math.floor(words.length / 2) + 6).join(" "),
-  ];
-}
-
-function expandToParagraph(text, start, end) {
-  const doubleStart = text.lastIndexOf("\n\n", start);
-  const singleStart = text.lastIndexOf("\n", start);
-  let paragraphStart = doubleStart >= 0 ? doubleStart + 2 : singleStart >= 0 ? singleStart + 1 : 0;
-
-  const doubleEnd = text.indexOf("\n\n", end);
-  const singleEnd = text.indexOf("\n", end);
-  let paragraphEnd = doubleEnd >= 0 ? doubleEnd : singleEnd >= 0 ? singleEnd : text.length;
-
-  if (paragraphEnd - paragraphStart > 1400) {
-    paragraphStart = Math.max(0, start - 180);
-    paragraphEnd = Math.min(text.length, end + 520);
-  }
-
-  return { start: paragraphStart, end: Math.max(paragraphEnd, end) };
+function normalizeExactSearch(value) {
+  return String(value).replace(/\s+/g, " ").trim();
 }
 
 function focusTextRange(input, start, end) {
@@ -912,8 +743,10 @@ function scrollRenderedClauseToView(clauseId) {
   const container = studioDocumentRender.closest(".studio-page-wrap");
   if (!container) return;
 
-  const target = Array.from(studioDocumentRender.querySelectorAll("[data-clause-ids]"))
-    .find((paragraph) => paragraph.dataset.clauseIds.split(" ").includes(clauseId));
+  const clause = reviewClauses.find((item) => item.id === clauseId);
+  const paragraphIds = clause?.matched_paragraph_ids || [];
+  const target = Array.from(studioDocumentRender.querySelectorAll("[data-paragraph-id]"))
+    .find((paragraph) => paragraphIds.includes(paragraph.dataset.paragraphId));
   if (!target) return;
 
   const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
@@ -954,10 +787,14 @@ function renderReviewDetail() {
     return;
   }
 
-  const statusLabel = clause.status === "fail" ? "CHECK" : clause.status.toUpperCase();
-  const evidence = clause.evidence?.length
-    ? clause.evidence.map((snippet) => `<p class="evidence">${escapeHtml(snippet)}</p>`).join("")
-    : '<p class="review-detail-muted">No evidence snippet captured.</p>';
+  const statusLabel = clauseStatusLabel(clause);
+  const statusTone = clauseTone(clause);
+  const exactExcerpt = clause.matched_text
+    ? `<p class="evidence">${escapeHtml(clause.matched_text)}</p>`
+    : '<p class="review-detail-muted">No matching paragraph identified.</p>';
+  const acceptableLanguage = clause.acceptable_language
+    ? `<div class="review-detail-block"><small>Acceptable language</small><p>${escapeHtml(clause.acceptable_language)}</p></div>`
+    : "";
 
   reviewDetail.innerHTML = `
     <div class="review-detail-header">
@@ -965,20 +802,25 @@ function renderReviewDetail() {
         <p class="eyebrow">selected clause</p>
         <h2>${escapeHtml(clause.name)}</h2>
       </div>
-      <span class="status ${clause.status}">${statusLabel}</span>
+      <span class="status ${statusTone}">${statusLabel}</span>
     </div>
     <div class="review-detail-block">
       <small>Requirement</small>
       <p>${escapeHtml(clause.requirement)}</p>
     </div>
     <div class="review-detail-block finding-block">
-      <small>Finding</small>
-      <p>${escapeHtml(clause.finding)}</p>
+      <small>Why</small>
+      <p>${escapeHtml(clause.reason || clause.finding)}</p>
     </div>
     <div class="review-detail-evidence">
-      <small>Evidence</small>
-      ${evidence}
+      <small>Exact paragraph</small>
+      ${exactExcerpt}
     </div>
+    <div class="review-detail-block">
+      <small>Backend result</small>
+      <p>${escapeHtml(clauseResultLabel(clause))}</p>
+    </div>
+    ${acceptableLanguage}
   `;
 }
 

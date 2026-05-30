@@ -34,3 +34,7 @@ python3 -m unittest discover -s tests
 - Term and ordinary confidentiality survival up to five years
 - No non-circumvention or substitute-purpose exclusivity
 - Complete execution block
+
+## Review output
+
+The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence. The frontend uses those paragraph IDs for highlighting and clause navigation instead of guessing locally.

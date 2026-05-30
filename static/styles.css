@@ -743,6 +743,16 @@ textarea::placeholder {
   color: #087a57;
 }
 
+.status.check {
+  background: rgba(240, 95, 163, 0.14);
+  color: #b42365;
+}
+
+.status.pending {
+  background: rgba(143, 143, 143, 0.14);
+  color: var(--ink-soft);
+}
+
 .status.fail {
   background: rgba(240, 95, 163, 0.14);
   color: #b42365;
@@ -1741,6 +1751,11 @@ textarea {
   color: #b42365;
 }
 
+.studio-issue-pill.pending {
+  background: rgba(143, 143, 143, 0.14);
+  color: var(--ink-soft);
+}
+
 .studio-issue-finding {
   color: var(--ink);
   font-size: 14px;
@@ -1758,6 +1773,47 @@ textarea {
 .studio-card h3 {
   font-size: 15px;
   margin-bottom: 8px;
+}
+
+.studio-detail-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.studio-detail-block {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.studio-detail-block small {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 10px;
+  font-weight: 900;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.studio-detail-block p {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.4;
+  margin-bottom: 0;
+}
+
+.studio-detail-block.finding-block {
+  background: var(--bg-soft);
+  border-color: var(--border-strong);
+}
+
+.studio-detail-block.muted p {
+  color: var(--ink-muted);
 }
 
 .studio-detail-status {
