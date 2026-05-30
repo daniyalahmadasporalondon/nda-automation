@@ -29,9 +29,9 @@
     {
       "id": "term_and_survival",
       "name": "Term and Survival",
-      "requirement": "The NDA must run for five years, with survival carve-outs for trade secrets and personal data.",
+      "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years, with carve-outs for trade secrets and personal data.",
       "type": "required",
-      "term_years": 5
+      "max_term_years": 5
     },
     {
       "id": "non_circumvention",
@@ -47,4 +47,3 @@
     }
   ]
 }
-

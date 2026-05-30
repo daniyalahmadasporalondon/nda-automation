@@ -29,6 +29,6 @@ python3 -m unittest discover -s tests
 - Mutual NDA obligations
 - Broad confidential information definition
 - Approved governing law
-- Five-year term with trade secret and personal data survival carve-outs
+- Term up to five years with trade secret and personal data survival carve-outs
 - No non-circumvention or substitute-purpose exclusivity
 - Complete execution block

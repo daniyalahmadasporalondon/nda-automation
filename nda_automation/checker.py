@@ -8,6 +8,18 @@ from typing import Callable, Dict, Iterable, List
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
+YEAR_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
 
 ClauseResult = Dict[str, object]
 
@@ -130,7 +142,10 @@ def _check_governing_law(text: str, normalized: str, clause: Dict[str, object]) 
 
 
 def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, object]) -> ClauseResult:
-    has_five_year_term = bool(re.search(r"\b(?:five\s*\(5\)|five|5)\s+years?\b", normalized))
+    max_years = int(clause.get("max_term_years", clause.get("term_years", 5)))
+    year_terms = _extract_year_terms(normalized)
+    has_term_within_cap = any(1 <= years <= max_years for years in year_terms)
+    has_term_over_cap = any(years > max_years for years in year_terms)
     has_trade_secret_carveout = "trade secret" in normalized and (
         "remain trade secrets" in normalized or "remains a trade secret" in normalized or "remain a trade secret" in normalized
     )
@@ -146,9 +161,23 @@ def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, objec
         ]
     )
 
-    if has_five_year_term and has_trade_secret_carveout and has_personal_data_carveout and not ordinary_indefinite_term:
-        return _pass(clause, "Five-year term and required survival carve-outs found.", _evidence(text, [r"five\s*\(5\)", r"5 years", r"trade secrets", r"personal data"]))
-    return _fail(clause, "The term must be five years with trade secret and personal data carve-outs.", _evidence(text, [r"five\s*\(5\)", r"5 years", r"indefinitely", r"trade secrets", r"personal data"]))
+    if has_term_within_cap and not has_term_over_cap and has_trade_secret_carveout and has_personal_data_carveout and not ordinary_indefinite_term:
+        return _pass(clause, "Term is within the five-year cap and required survival carve-outs were found.", _evidence(text, [r"\b(?:one|two|three|four|five|[1-5])(?:\s*\(\s*[1-5]\s*\))?(?:\s*-\s*|\s+)years?\b", r"trade secrets", r"personal data"]))
+    return _fail(clause, "The term must be fixed at up to five years with trade secret and personal data carve-outs.", _evidence(text, [r"\b(?:six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b", r"indefinitely", r"trade secrets", r"personal data"]))
+
+
+def _extract_year_terms(normalized: str) -> List[int]:
+    terms: List[int] = []
+    pattern = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,2}))(?:\s*\(\s*(\d{1,2})\s*\))?(?:\s*-\s*|\s+)years?\b"
+    for match in re.finditer(pattern, normalized):
+        word_value, digit_value, parenthetical_value = match.groups()
+        if parenthetical_value:
+            terms.append(int(parenthetical_value))
+        elif digit_value:
+            terms.append(int(digit_value))
+        elif word_value:
+            terms.append(YEAR_WORDS[word_value])
+    return terms
 
 
 def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, object]) -> ClauseResult:
@@ -218,4 +247,3 @@ def _evidence(text: str, patterns: Iterable[str]) -> List[str]:
         if snippet not in snippets:
             snippets.append(snippet)
     return snippets
-

@@ -523,7 +523,7 @@ button.secondary {
 .detail-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .fact-box {
@@ -536,8 +536,9 @@ button.secondary {
 
 .fact-box strong {
   display: block;
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .law-strip {

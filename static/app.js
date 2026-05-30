@@ -217,8 +217,9 @@ function renderClauseDetail() {
   const lawChips = (clause.approved_laws || [])
     .map((law) => `<span>${escapeHtml(law)}</span>`)
     .join("");
-  const termYears = clause.term_years
-    ? `<div class="fact-box"><small>Term</small><strong>${escapeHtml(clause.term_years)} years</strong></div>`
+  const maxTermYears = clause.max_term_years || clause.term_years;
+  const termYears = maxTermYears
+    ? `<div class="fact-box"><small>Term cap</small><strong>Up to ${escapeHtml(maxTermYears)} years</strong></div>`
     : "";
   const approvedLaws = lawChips
     ? `<div class="law-strip">${lawChips}</div>`

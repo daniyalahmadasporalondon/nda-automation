@@ -8,7 +8,7 @@ The exclusions are limited to information that is in the public domain, already 
 
 This Agreement shall be governed by the laws of England and Wales.
 
-This Agreement continues for five (5) years from the Effective Date. Trade secrets survive for so long as they remain trade secrets. Personal data survives for as long as applicable law requires.
+This Agreement continues for three (3) years from the Effective Date. Trade secrets survive for so long as they remain trade secrets. Personal data survives for as long as applicable law requires.
 
 For Aspora Technology Services Private Limited
 By: __________________
@@ -19,4 +19,3 @@ For Counterparty Limited
 By: __________________
 Title: Chief Executive Officer
 Date: 2026-05-30
-
