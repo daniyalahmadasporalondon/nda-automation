@@ -661,7 +661,26 @@ function scoreParagraphForClause(text, clause) {
     score += 4;
   }
 
+  if (clause.id === "governing_law") {
+    const approvedLawHits = APPROVED_GOVERNING_LAWS
+      .filter((law) => normalized.includes(law)).length;
+    score += approvedLawHits * 8;
+
+    if (/\bgoverned\b.{0,90}\bby\b/.test(normalized)) score += 8;
+    if (/\blaws?\b/.test(normalized) && /\bcourts?\b|\bjurisdiction\b|\barbitration\b/.test(normalized)) score += 4;
+  }
+
+  if (isStandaloneClauseHeading(normalized, clause)) {
+    score = Math.min(score, 2);
+  }
+
   return score;
+}
+
+function isStandaloneClauseHeading(normalizedText, clause) {
+  const clauseName = normalizeQuery(clause.name);
+  const wordCount = normalizedText.split(" ").filter(Boolean).length;
+  return wordCount <= 4 && normalizedText === clauseName;
 }
 
 function uniqueRanges(ranges) {
@@ -697,6 +716,13 @@ const CONFIDENTIAL_INFO_CATEGORIES = [
   "trade secret",
 ];
 
+const APPROVED_GOVERNING_LAWS = [
+  "delaware",
+  "difc",
+  "england and wales",
+  "india",
+];
+
 const CLAUSE_PARAGRAPH_RULES = {
   mutuality: [
     { pattern: /\bmutual\b/, weight: 9 },
@@ -717,6 +743,7 @@ const CLAUSE_PARAGRAPH_RULES = {
   governing_law: [
     { pattern: /\bgoverning law\b/, weight: 11 },
     { pattern: /\bgoverned by\b/, weight: 9 },
+    { pattern: /\bgoverned\b.{0,90}\bby\b/, weight: 8 },
     { pattern: /\blaws of\b/, weight: 6 },
     { pattern: /\bjurisdiction\b|\bcourts?\b|\barbitration\b/, weight: 3 },
   ],
