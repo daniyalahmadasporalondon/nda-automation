@@ -1453,6 +1453,24 @@ textarea {
   width: 132px;
 }
 
+.studio-page.source-jump,
+.document-page.source-jump {
+  animation: source-jump-pulse 900ms ease;
+}
+
+@keyframes source-jump-pulse {
+  0%,
+  100% {
+    box-shadow: 0 18px 70px rgba(43, 12, 110, 0.1);
+  }
+
+  38% {
+    box-shadow:
+      0 0 0 3px rgba(255, 156, 21, 0.3),
+      0 22px 80px rgba(85, 35, 178, 0.18);
+  }
+}
+
 .studio-page h2 {
   color: var(--brand-ink);
   font-size: 32px;

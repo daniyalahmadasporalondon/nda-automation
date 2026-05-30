@@ -248,11 +248,7 @@ function renderStudioResult(result) {
 
   studioIssueList.querySelectorAll("[data-studio-clause-id]").forEach((row) => {
     row.addEventListener("click", () => {
-      selectedReviewClauseId = row.dataset.studioClauseId;
-      renderStudioResult({ clauses: reviewClauses });
-      renderClauseLane();
-      renderReviewClauseList();
-      renderReviewDetail();
+      selectReviewClause(row.dataset.studioClauseId, { jump: true });
     });
   });
 
@@ -291,11 +287,7 @@ function renderStudioClauseLane() {
 
   studioClauseLane.querySelectorAll("[data-studio-lane-id]").forEach((row) => {
     row.addEventListener("click", () => {
-      selectedReviewClauseId = row.dataset.studioLaneId;
-      renderStudioResult({ clauses: reviewClauses });
-      renderClauseLane();
-      renderReviewClauseList();
-      renderReviewDetail();
+      selectReviewClause(row.dataset.studioLaneId, { jump: true });
     });
   });
 }
@@ -345,10 +337,7 @@ function renderClauseLane() {
 
   clauseLane.querySelectorAll("[data-lane-clause-id]").forEach((item) => {
     item.addEventListener("click", () => {
-      selectedReviewClauseId = item.dataset.laneClauseId;
-      renderClauseLane();
-      renderReviewClauseList();
-      renderReviewDetail();
+      selectReviewClause(item.dataset.laneClauseId, { jump: true });
     });
   });
 }
@@ -375,22 +364,190 @@ function renderReviewClauseList() {
 
   clauseGrid.querySelectorAll("[data-review-clause-id]").forEach((card) => {
     card.addEventListener("click", () => {
-      selectedReviewClauseId = card.dataset.reviewClauseId;
-      renderClauseLane();
-      renderStudioResult({ clauses: reviewClauses });
-      renderReviewClauseList();
-      renderReviewDetail();
+      selectReviewClause(card.dataset.reviewClauseId, { jump: true });
     });
     card.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      selectedReviewClauseId = card.dataset.reviewClauseId;
-      renderClauseLane();
-      renderStudioResult({ clauses: reviewClauses });
-      renderReviewClauseList();
-      renderReviewDetail();
+      selectReviewClause(card.dataset.reviewClauseId, { jump: true });
     });
   });
+}
+
+function selectReviewClause(clauseId, options = {}) {
+  selectedReviewClauseId = clauseId;
+  renderClauseLane();
+  renderStudioResult({ clauses: reviewClauses });
+  renderReviewClauseList();
+  renderReviewDetail();
+
+  if (options.jump) {
+    const clause = reviewClauses.find((item) => item.id === clauseId);
+    requestAnimationFrame(() => jumpToClauseSource(clause));
+  }
+}
+
+function jumpToClauseSource(clause) {
+  if (!clause) return;
+
+  const sourceInput = getActiveSourceInput();
+  if (!sourceInput?.value.trim()) return;
+
+  const range = findClauseTextRange(sourceInput.value, clause);
+  if (!range) return;
+
+  focusTextRange(sourceInput, range.start, range.end);
+}
+
+function getActiveSourceInput() {
+  const activeView = document.querySelector("[data-view].active");
+  return activeView?.dataset.view === "review" ? ndaText : studioNdaText;
+}
+
+function findClauseTextRange(text, clause) {
+  const searchIndex = createSearchIndex(text);
+  const evidenceRange = (clause.evidence || [])
+    .map((snippet) => findQueryRange(searchIndex, snippet, 12))
+    .find(Boolean);
+
+  if (evidenceRange) return expandToParagraph(text, evidenceRange.start, evidenceRange.end);
+
+  const fallbackTerms = [
+    ...(CLAUSE_JUMP_TERMS[clause.id] || []),
+    clause.name,
+  ];
+  const fallbackRange = fallbackTerms
+    .map((term) => findQueryRange(searchIndex, term, 3))
+    .find(Boolean);
+
+  return fallbackRange ? expandToParagraph(text, fallbackRange.start, fallbackRange.end) : null;
+}
+
+const CLAUSE_JUMP_TERMS = {
+  mutuality: ["each party", "both parties", "mutual", "disclosing party", "receiving party"],
+  confidential_information: ["confidential information", "any and all information", "business", "financial", "technical"],
+  governing_law: ["governing law", "governed by", "laws of", "england and wales", "difc", "delaware", "india"],
+  term_and_survival: ["term", "survive", "survival", "period", "years"],
+  non_circumvention: ["non-circumvention", "non circumvention", "circumvent", "introduced parties", "exclusive dealing"],
+  signatures: ["signatures", "signature", "title:", "date:", "by:"],
+};
+
+function createSearchIndex(text) {
+  let normalized = "";
+  const map = [];
+  let previousWasSpace = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      if (normalized && !previousWasSpace) {
+        normalized += " ";
+        map.push(index);
+      }
+      previousWasSpace = true;
+      continue;
+    }
+
+    normalized += char.toLowerCase();
+    map.push(index);
+    previousWasSpace = false;
+  }
+
+  return { normalized, map };
+}
+
+function findQueryRange(searchIndex, query, minLength) {
+  const normalizedQuery = normalizeQuery(query);
+  if (normalizedQuery.length < minLength) return null;
+
+  const candidates = [normalizedQuery, ...queryWindows(normalizedQuery)];
+  for (const candidate of candidates) {
+    if (candidate.length < minLength) continue;
+    const start = searchIndex.normalized.indexOf(candidate);
+    if (start === -1) continue;
+    const endIndex = Math.min(start + candidate.length - 1, searchIndex.map.length - 1);
+    return {
+      start: searchIndex.map[start],
+      end: searchIndex.map[endIndex] + 1,
+    };
+  }
+
+  return null;
+}
+
+function normalizeQuery(value) {
+  return String(value)
+    .replace(/^\s*\.\.\./, "")
+    .replace(/\.\.\.\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function queryWindows(query) {
+  const words = query.split(" ").filter(Boolean);
+  if (words.length < 10) return [];
+
+  return [
+    words.slice(0, 12).join(" "),
+    words.slice(Math.max(words.length - 12, 0)).join(" "),
+    words.slice(Math.max(Math.floor(words.length / 2) - 6, 0), Math.floor(words.length / 2) + 6).join(" "),
+  ];
+}
+
+function expandToParagraph(text, start, end) {
+  const doubleStart = text.lastIndexOf("\n\n", start);
+  const singleStart = text.lastIndexOf("\n", start);
+  let paragraphStart = doubleStart >= 0 ? doubleStart + 2 : singleStart >= 0 ? singleStart + 1 : 0;
+
+  const doubleEnd = text.indexOf("\n\n", end);
+  const singleEnd = text.indexOf("\n", end);
+  let paragraphEnd = doubleEnd >= 0 ? doubleEnd : singleEnd >= 0 ? singleEnd : text.length;
+
+  if (paragraphEnd - paragraphStart > 1400) {
+    paragraphStart = Math.max(0, start - 180);
+    paragraphEnd = Math.min(text.length, end + 520);
+  }
+
+  return { start: paragraphStart, end: Math.max(paragraphEnd, end) };
+}
+
+function focusTextRange(input, start, end) {
+  const safeStart = Math.max(0, Math.min(start, input.value.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, input.value.length));
+
+  try {
+    input.focus({ preventScroll: true });
+  } catch {
+    input.focus();
+  }
+
+  input.setSelectionRange(safeStart, safeEnd);
+  scrollTextareaToIndex(input, safeStart);
+  pulseSourcePage(input);
+}
+
+function scrollTextareaToIndex(input, index) {
+  const style = window.getComputedStyle(input);
+  const fontSize = parseFloat(style.fontSize) || 16;
+  const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.7;
+  const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const availableWidth = Math.max(input.clientWidth - paddingX, 80);
+  const charsPerLine = Math.max(24, Math.floor(availableWidth / (fontSize * 0.55)));
+  const visualLineCount = input.value
+    .slice(0, index)
+    .split("\n")
+    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+
+  input.scrollTop = Math.max(0, visualLineCount * lineHeight - input.clientHeight * 0.32);
+}
+
+function pulseSourcePage(input) {
+  const page = input.closest(".studio-page, .document-page");
+  if (!page) return;
+  page.classList.remove("source-jump");
+  void page.offsetWidth;
+  page.classList.add("source-jump");
 }
 
 function renderReviewDetail() {
