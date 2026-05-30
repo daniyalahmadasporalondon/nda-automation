@@ -1510,13 +1510,6 @@ textarea {
   width: 100%;
 }
 
-.studio-document-logo {
-  display: block;
-  height: auto;
-  margin: 0 auto 48px;
-  width: 132px;
-}
-
 .studio-page.source-jump,
 .document-page.source-jump {
   animation: source-jump-pulse 900ms ease;
