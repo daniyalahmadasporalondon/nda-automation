@@ -97,6 +97,10 @@ class ParagraphAlignmentError(ValueError):
     pass
 
 
+class PlaybookTemplateError(ValueError):
+    pass
+
+
 def load_playbook() -> Dict[str, object]:
     with PLAYBOOK_PATH.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -472,8 +476,9 @@ def _clause_template_text(
         return ""
     try:
         return template.format(**(context or {}))
-    except (KeyError, ValueError):
-        return template
+    except (IndexError, KeyError, ValueError) as error:
+        clause_id = str(clause.get("id", "unknown"))
+        raise PlaybookTemplateError(f"Invalid {field} template for clause {clause_id}: {error}") from error
 
 
 def _problematic_confidential_exclusion_paragraphs(
@@ -966,11 +971,16 @@ def _literal_word_pattern(value: str) -> str:
 
 def _paragraph_matches(paragraphs: Iterable[Paragraph], patterns: Iterable[str]) -> List[Paragraph]:
     matches: List[Paragraph] = []
+    seen = set()
     for paragraph in paragraphs:
         paragraph_text = str(paragraph["text"])
         for pattern in patterns:
             if not re.search(pattern, paragraph_text, flags=re.IGNORECASE):
                 continue
+            dedup_key = paragraph.get("id") or (paragraph.get("start"), paragraph.get("end"), paragraph.get("text"))
+            if dedup_key in seen:
+                break
             matches.append(paragraph)
+            seen.add(dedup_key)
             break
     return matches

@@ -4,7 +4,14 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from nda_automation.checker import ParagraphAlignmentError, load_playbook, review_nda, split_document_paragraphs
+from nda_automation.checker import (
+    ParagraphAlignmentError,
+    PlaybookTemplateError,
+    _paragraph_matches,
+    load_playbook,
+    review_nda,
+    split_document_paragraphs,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,6 +110,15 @@ class CheckerTests(unittest.TestCase):
         term_redline = self.redline_for_clause(result, "term_and_survival")
         self.assertEqual(term_redline["replacement_text"], "Custom survival language capped at four years.")
 
+    def test_bad_playbook_redline_template_fails_loud(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["redline_template"] = "Custom survival language capped at {unknown_placeholder}."
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with self.assertRaisesRegex(PlaybookTemplateError, "term_and_survival"):
+                review_nda("The confidentiality obligations survive for seven (7) years.")
+
     def test_term_and_survival_redline_replaces_existing_bad_term(self):
         result = review_nda("The confidentiality obligations survive for seven (7) years.")
 
@@ -141,6 +157,12 @@ class CheckerTests(unittest.TestCase):
                 {"id": "p2", "index": 2, "text": "Second paragraph.", "start": 18, "end": 35},
             ],
         )
+
+    def test_paragraph_matches_deduplicates_matches(self):
+        paragraph = {"id": "p1", "index": 1, "text": "This Agreement is governed by the laws of California."}
+        matches = _paragraph_matches([paragraph, paragraph], [r"governed by", r"laws of"])
+
+        self.assertEqual(matches, [paragraph])
 
     def test_clause_results_include_exact_evidence_paragraphs(self):
         result = review_nda(
