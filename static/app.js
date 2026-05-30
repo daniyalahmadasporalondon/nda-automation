@@ -84,7 +84,7 @@ reviewButton.addEventListener("click", async () => {
           body: JSON.stringify({ text }),
         });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Review failed");
+    if (!response.ok) throw new Error(payload.error || "Review could not run");
     if (payload.extracted_text) {
       ndaText.value = payload.extracted_text;
       ndaText.placeholder = "Paste NDA text here";
@@ -128,11 +128,12 @@ async function fileToBase64(file) {
 function renderResult(result) {
   const passed = result.overall_status === "meets_requirements";
   overallTitle.textContent = passed ? "Meets requirements" : "Does not meet requirements";
-  resultMark.textContent = passed ? "PASS" : "FAIL";
+  resultMark.textContent = passed ? "PASS" : "CHECK";
   resultHero.className = `result-hero ${passed ? "pass" : "fail"}`;
 
   clauseGrid.innerHTML = result.clauses
     .map((clause) => {
+      const statusLabel = clause.status === "fail" ? "CHECK" : clause.status.toUpperCase();
       const evidence = clause.evidence.length
         ? `<p class="evidence">${escapeHtml(clause.evidence[0])}</p>`
         : "";
@@ -143,7 +144,7 @@ function renderResult(result) {
               <h3>${escapeHtml(clause.name)}</h3>
               <p class="requirement">${escapeHtml(clause.requirement)}</p>
             </div>
-            <span class="status ${clause.status}">${clause.status.toUpperCase()}</span>
+            <span class="status ${clause.status}">${statusLabel}</span>
           </header>
           <p class="finding">${escapeHtml(clause.finding)}</p>
           ${evidence}
@@ -160,7 +161,7 @@ async function loadPlaybook() {
   try {
     const response = await fetch("/playbook");
     const playbook = await response.json();
-    if (!response.ok) throw new Error(playbook.error || "Playbook failed to load");
+    if (!response.ok) throw new Error(playbook.error || "Playbook could not load");
 
     playbookClauses = playbook.clauses || [];
     selectedClauseId = playbookClauses[0]?.id || null;
