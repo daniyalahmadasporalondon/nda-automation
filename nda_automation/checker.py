@@ -22,6 +22,7 @@ YEAR_WORDS = {
 }
 
 ClauseResult = Dict[str, object]
+CheckFn = Callable[[str, str, Dict[str, object]], ClauseResult]
 
 
 def load_playbook() -> Dict[str, object]:
@@ -35,18 +36,9 @@ def review_nda(text: str) -> Dict[str, object]:
     playbook = load_playbook()
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
-    checks: List[Callable[[str, str, Dict[str, object]], ClauseResult]] = [
-        _check_mutuality,
-        _check_confidential_information,
-        _check_governing_law,
-        _check_term_and_survival,
-        _check_non_circumvention,
-        _check_signatures,
-    ]
-
     clause_results = [
-        check(source_text, normalized, clauses_by_id[check.__name__.replace("_check_", "")])
-        for check in checks
+        check(source_text, normalized, clauses_by_id[clause_id])
+        for clause_id, check in CLAUSE_CHECKS
     ]
     failed = [clause for clause in clause_results if clause["status"] == "fail"]
 
@@ -205,6 +197,41 @@ def _check_signatures(text: str, normalized: str, clause: Dict[str, object]) -> 
     return _fail(clause, "The execution block is missing both-party signatures, titles, or a date.", _evidence(text, [r"Title\s*:", r"Date\s*:", r"For\s+", r"By\s*:"]))
 
 
+CLAUSE_CHECKS: List[tuple[str, CheckFn]] = [
+    ("mutuality", _check_mutuality),
+    ("confidential_information", _check_confidential_information),
+    ("governing_law", _check_governing_law),
+    ("term_and_survival", _check_term_and_survival),
+    ("non_circumvention", _check_non_circumvention),
+    ("signatures", _check_signatures),
+]
+
+
+def _validate_check_registry() -> None:
+    check_ids = [clause_id for clause_id, _check in CLAUSE_CHECKS]
+    duplicate_check_ids = sorted({clause_id for clause_id in check_ids if check_ids.count(clause_id) > 1})
+    if duplicate_check_ids:
+        raise RuntimeError(f"Duplicate checker IDs: {', '.join(duplicate_check_ids)}")
+
+    playbook_ids = [str(clause["id"]) for clause in load_playbook()["clauses"]]
+    duplicate_playbook_ids = sorted({clause_id for clause_id in playbook_ids if playbook_ids.count(clause_id) > 1})
+    if duplicate_playbook_ids:
+        raise RuntimeError(f"Duplicate playbook IDs: {', '.join(duplicate_playbook_ids)}")
+
+    missing_checks = sorted(set(playbook_ids) - set(check_ids))
+    extra_checks = sorted(set(check_ids) - set(playbook_ids))
+    if missing_checks or extra_checks:
+        detail = []
+        if missing_checks:
+            detail.append(f"missing checks for: {', '.join(missing_checks)}")
+        if extra_checks:
+            detail.append(f"checks without playbook clauses: {', '.join(extra_checks)}")
+        raise RuntimeError("Checker registry does not match playbook (" + "; ".join(detail) + ")")
+
+
+_validate_check_registry()
+
+
 def _pass(clause: Dict[str, object], finding: str, evidence: Iterable[str]) -> ClauseResult:
     return _result(clause, "pass", finding, evidence)
 
@@ -214,7 +241,7 @@ def _fail(clause: Dict[str, object], finding: str, evidence: Iterable[str]) -> C
 
 
 def _result(clause: Dict[str, object], status: str, finding: str, evidence: Iterable[str]) -> ClauseResult:
-    return {
+    result = {
         "id": clause["id"],
         "name": clause["name"],
         "requirement": clause["requirement"],
@@ -222,6 +249,10 @@ def _result(clause: Dict[str, object], status: str, finding: str, evidence: Iter
         "finding": finding,
         "evidence": list(evidence)[:3],
     }
+    for field in ["approved_laws", "max_term_years", "search_terms", "term_years", "type"]:
+        if field in clause:
+            result[field] = clause[field]
+    return result
 
 
 def _normalize(text: str) -> str:

@@ -307,7 +307,7 @@ function renderResult(result) {
 function renderStudioEmpty() {
   if (!studioIssueList) return;
   showStudioSourceEditor();
-  studioMatchSummary.textContent = `0/${playbookClauses.length || 6}`;
+  studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioOverallTitle.textContent = "Awaiting review";
   studioIssueList.innerHTML = '<div class="studio-empty">No review yet</div>';
   studioDetailPanel.innerHTML = `
@@ -322,7 +322,7 @@ function renderStudioResult(result) {
   const clauses = result.clauses || [];
   const passedCount = clauses.filter((clause) => clause.status === "pass").length;
   const failedCount = clauses.filter((clause) => clause.status === "fail").length;
-  studioMatchSummary.textContent = `${passedCount}/${clauses.length || playbookClauses.length || 6}`;
+  studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
   studioOverallTitle.textContent = failedCount
     ? `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} checking`
     : "All hard clauses match";
@@ -353,6 +353,10 @@ function renderStudioResult(result) {
   renderStudioClauseLane();
   renderStudioDetail();
   renderStudioDocumentHighlights();
+}
+
+function getClauseTotal(clauses = []) {
+  return clauses.length || playbookClauses.length || 0;
 }
 
 function renderStudioClauseLane() {
@@ -601,10 +605,7 @@ function findClauseTextRanges(text, clause) {
 
   if (evidenceRanges.length) return evidenceRanges;
 
-  const fallbackTerms = [
-    ...(CLAUSE_JUMP_TERMS[clause.id] || []),
-    clause.name,
-  ];
+  const fallbackTerms = getClauseSearchTerms(clause);
   const fallbackRange = fallbackTerms
     .map((term) => findQueryRange(searchIndex, term, 3))
     .find(Boolean);
@@ -666,7 +667,7 @@ function scoreParagraphForClause(text, clause) {
   }
 
   if (clause.id === "governing_law") {
-    const approvedLawHits = APPROVED_GOVERNING_LAWS
+    const approvedLawHits = getClauseApprovedLaws(clause)
       .filter((law) => normalized.includes(law)).length;
     score += approvedLawHits * 8;
 
@@ -679,6 +680,39 @@ function scoreParagraphForClause(text, clause) {
   }
 
   return score;
+}
+
+function getClauseSearchTerms(clause) {
+  const playbookClause = playbookClauses.find((item) => item.id === clause.id) || {};
+  return uniqueStrings([
+    ...asStringArray(playbookClause.search_terms),
+    ...asStringArray(clause.search_terms),
+    clause.name,
+  ]);
+}
+
+function getClauseApprovedLaws(clause) {
+  const playbookClause = playbookClauses.find((item) => item.id === clause.id) || {};
+  return uniqueStrings([
+    ...asStringArray(playbookClause.approved_laws),
+    ...asStringArray(clause.approved_laws),
+  ]).map(normalizeQuery);
+}
+
+function asStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string" && item.trim());
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  return values
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value || seen.has(value.toLowerCase())) return false;
+      seen.add(value.toLowerCase());
+      return true;
+    });
 }
 
 function isStandaloneClauseHeading(normalizedText, clause) {
@@ -697,15 +731,6 @@ function uniqueRanges(ranges) {
   });
 }
 
-const CLAUSE_JUMP_TERMS = {
-  mutuality: ["each party", "both parties", "mutual", "disclosing party", "receiving party"],
-  confidential_information: ["confidential information", "any and all information", "business", "financial", "technical"],
-  governing_law: ["governing law", "governed by", "laws of", "england and wales", "difc", "delaware", "india"],
-  term_and_survival: ["term", "survive", "survival", "period", "years"],
-  non_circumvention: ["non-circumvention", "non circumvention", "circumvent", "introduced parties", "exclusive dealing"],
-  signatures: ["signatures", "signature", "title:", "date:", "by:"],
-};
-
 const CONFIDENTIAL_INFO_CATEGORIES = [
   "business",
   "customer",
@@ -718,13 +743,6 @@ const CONFIDENTIAL_INFO_CATEGORIES = [
   "supplier",
   "technical",
   "trade secret",
-];
-
-const APPROVED_GOVERNING_LAWS = [
-  "delaware",
-  "difc",
-  "england and wales",
-  "india",
 ];
 
 const CLAUSE_PARAGRAPH_RULES = {

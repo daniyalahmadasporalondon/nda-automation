@@ -6,13 +6,27 @@
       "id": "mutuality",
       "name": "Mutuality",
       "requirement": "The NDA must bind both parties symmetrically as disclosing and receiving parties.",
-      "type": "required"
+      "type": "required",
+      "search_terms": [
+        "each party",
+        "both parties",
+        "mutual",
+        "disclosing party",
+        "receiving party"
+      ]
     },
     {
       "id": "confidential_information",
       "name": "Confidential Information",
       "requirement": "Confidential Information must be broad and must not include extra exclusions beyond the standard carve-outs.",
-      "type": "required"
+      "type": "required",
+      "search_terms": [
+        "confidential information",
+        "any and all information",
+        "business",
+        "financial",
+        "technical"
+      ]
     },
     {
       "id": "governing_law",
@@ -24,6 +38,15 @@
         "Delaware",
         "England and Wales",
         "DIFC"
+      ],
+      "search_terms": [
+        "governing law",
+        "governed by",
+        "laws of",
+        "England and Wales",
+        "DIFC",
+        "Delaware",
+        "India"
       ]
     },
     {
@@ -31,19 +54,40 @@
       "name": "Term and Survival",
       "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years.",
       "type": "required",
-      "max_term_years": 5
+      "max_term_years": 5,
+      "search_terms": [
+        "term",
+        "survive",
+        "survival",
+        "period",
+        "years"
+      ]
     },
     {
       "id": "non_circumvention",
       "name": "Non-Circumvention",
       "requirement": "The NDA must not include non-circumvention, introduced-party non-solicit, or substitute-purpose exclusivity obligations.",
-      "type": "prohibited"
+      "type": "prohibited",
+      "search_terms": [
+        "non-circumvention",
+        "non circumvention",
+        "circumvent",
+        "introduced parties",
+        "exclusive dealing"
+      ]
     },
     {
       "id": "signatures",
       "name": "Signatures",
       "requirement": "The execution block must show both parties, signatory titles, and a date.",
-      "type": "required"
+      "type": "required",
+      "search_terms": [
+        "signatures",
+        "signature",
+        "title:",
+        "date:",
+        "by:"
+      ]
     }
   ]
 }

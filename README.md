@@ -8,6 +8,8 @@ You can paste NDA text directly, upload a plain text file, or upload a `.docx` W
 
 ## Run locally
 
+Requires Python 3.9 or newer.
+
 ```bash
 python3 -m nda_automation.server --port 8787
 ```
