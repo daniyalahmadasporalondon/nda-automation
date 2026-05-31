@@ -12,10 +12,11 @@ from . import matter_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
-from .ingestion_service import create_matter_from_docx
+from .ingestion_service import create_matter_from_document, is_supported_document_filename
+from .pdf_text import PdfExtractionError
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-DEFAULT_INBOUND_QUERY = "has:attachment filename:docx newer_than:30d"
+DEFAULT_INBOUND_QUERY = "has:attachment (filename:docx OR filename:pdf) newer_than:30d"
 MAX_GMAIL_IMPORT_LIMIT = 25
 
 ROLE_TOKEN_ENV = {
@@ -86,9 +87,9 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             skipped.append({"message_id": message_id, "reason": "message_unavailable"})
             continue
 
-        attachments = list(_docx_attachments(message.get("payload") or {}))
+        attachments = list(_reviewable_attachments(message.get("payload") or {}))
         if not attachments:
-            skipped.append({"message_id": message_id, "reason": "no_docx_attachment"})
+            skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
         metadata = _message_metadata(message, str(profile.get("emailAddress") or ""))
@@ -122,7 +123,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                 continue
 
             try:
-                matter = create_matter_from_docx(
+                matter = create_matter_from_document(
                     filename=str(attachment.get("filename") or "nda.docx"),
                     document_bytes=document_bytes,
                     source_type="gmail_inbound",
@@ -133,7 +134,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                         "gmail_attachment_id": attachment_id,
                     },
                 )
-            except (DocxExtractionError, ParagraphAlignmentError):
+            except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
                 skipped.append({
                     "attachment_filename": str(attachment.get("filename") or ""),
                     "message_id": message_id,
@@ -308,11 +309,11 @@ def _parse_email_date(value: str) -> str:
     return parsed.isoformat()
 
 
-def _docx_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:
+def _reviewable_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:
     attachments: list[dict[str, str]] = []
     for part in _walk_payload_parts(payload):
         filename = str(part.get("filename") or "")
-        if not filename.lower().endswith(".docx"):
+        if not is_supported_document_filename(filename):
             continue
         body = part.get("body") or {}
         attachment_id = str(body.get("attachmentId") or "")

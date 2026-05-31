@@ -13,9 +13,14 @@ from urllib.parse import quote, unquote, urlparse
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import DOCX_MIME, DocxExportError
-from .docx_text import DocxExtractionError, extract_docx_paragraphs
+from .docx_text import DocxExtractionError
 from . import export_service, gmail_integration, matter_view, redline_export_service
-from .ingestion_service import create_matter_from_docx
+from .ingestion_service import (
+    create_matter_from_document,
+    extract_document_paragraphs,
+    is_supported_document_filename,
+)
+from .pdf_text import PdfExtractionError
 from . import matter_store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -133,17 +138,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
         filename = payload.get("filename", "")
         content_base64 = payload.get("content_base64", "")
-        if not isinstance(filename, str) or not filename.lower().endswith(".docx"):
-            self._send_json({"error": "Upload a .docx Word document."}, status=400)
+        if not is_supported_document_filename(filename):
+            self._send_json({"error": "Upload a .docx Word document or text-based PDF."}, status=400)
             return
         if not isinstance(content_base64, str) or not content_base64:
-            self._send_json({"error": "Provide a Word document to review."}, status=400)
+            self._send_json({"error": "Provide a document to review."}, status=400)
             return
 
         try:
             document_bytes = base64.b64decode(content_base64, validate=True)
         except (binascii.Error, ValueError):
-            self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
+            self._send_json({"error": "The uploaded document could not be decoded."}, status=400)
             return
 
         try:
@@ -153,8 +158,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            extracted_paragraphs = extract_docx_paragraphs(document_bytes)
-        except DocxExtractionError as error:
+            source_type, extracted_paragraphs = extract_document_paragraphs(filename, document_bytes)
+        except (DocxExtractionError, PdfExtractionError, ValueError) as error:
             self._send_json({"error": str(error)}, status=400)
             return
 
@@ -166,7 +171,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         result["source"] = {
             "filename": filename,
-            "type": "docx",
+            "type": source_type,
             "extracted_characters": len(extracted_text),
             "extracted_paragraphs": len(extracted_paragraphs),
         }
@@ -181,11 +186,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         filename = payload.get("filename", "")
         content_base64 = payload.get("content_base64", "")
         source_type = payload.get("source_type", "gmail_demo")
-        if not isinstance(filename, str) or not filename.lower().endswith(".docx"):
-            self._send_json({"error": "Upload a .docx Word document."}, status=400)
+        if not is_supported_document_filename(filename):
+            self._send_json({"error": "Upload a .docx Word document or text-based PDF."}, status=400)
             return
         if not isinstance(content_base64, str) or not content_base64:
-            self._send_json({"error": "Provide a Word document to import."}, status=400)
+            self._send_json({"error": "Provide a document to import."}, status=400)
             return
         if not isinstance(source_type, str) or not source_type.strip():
             source_type = "gmail_demo"
@@ -198,7 +203,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         try:
             document_bytes = base64.b64decode(content_base64, validate=True)
         except (binascii.Error, ValueError):
-            self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
+            self._send_json({"error": "The uploaded document could not be decoded."}, status=400)
             return
 
         try:
@@ -208,14 +213,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            matter = create_matter_from_docx(
+            matter = create_matter_from_document(
                 filename=filename,
                 document_bytes=document_bytes,
                 source_type=source_type,
                 board_column=board_column,
                 intake_metadata=self._matter_intake_metadata(payload, filename),
             )
-        except DocxExtractionError as error:
+        except (DocxExtractionError, PdfExtractionError, ValueError) as error:
             self._send_json({"error": str(error)}, status=400)
             return
         except DocumentSizeError:
@@ -405,6 +410,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             }, status=500)
             return
         except DocxExtractionError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+        except PdfExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
         except ParagraphAlignmentError:

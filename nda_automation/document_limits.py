@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-DOCUMENT_TOO_LARGE_MESSAGE = "The Word document is larger than the 10 MB upload limit."
+DOCUMENT_TOO_LARGE_MESSAGE = "The document is larger than the 10 MB upload limit."
 
 
 class DocumentSizeError(ValueError):

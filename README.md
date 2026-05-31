@@ -2,9 +2,9 @@
 
 A focused NDA hard-clause review portal.
 
-The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` NDA attachments from a configured inbound Gmail account, while outbound redline sends use the configured outbound Gmail role and require an explicit confirmation click.
+The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` and text-based `.pdf` NDA attachments from a configured inbound Gmail account, while outbound redline sends use the configured outbound Gmail role and require an explicit confirmation click.
 
-You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document for one-off review, or import a `.docx` into the Repository for matter-based review.
+You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document or text-based `.pdf` for one-off review, or import a `.docx`/`.pdf` into the Repository for matter-based review. Scanned image-only PDFs need OCR before review.
 
 ## Run locally
 
@@ -48,7 +48,7 @@ export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
 export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
 ```
 
-Inbound sync imports recent `.docx` attachments into the `Gmail Demo` Repository lane. Outbound send generates the same native Word redline used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
+Inbound sync imports recent `.docx` and text-based `.pdf` attachments into the `Gmail Demo` Repository lane. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
 
 ## Current checks
 
@@ -61,9 +61,9 @@ Inbound sync imports recent `.docx` attachments into the `Gmail Demo` Repository
 
 ## Review output
 
-The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index; PDF uploads preserve extracted page metadata. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
 
-Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. If a Repository matter is re-reviewed as edited text, export switches to the normal review-report flow rather than reusing stale stored matter results.
+Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. PDF matter exports generate a Word review report because PDFs cannot be patched with native Word tracked changes. If a Repository matter is re-reviewed as edited text, export switches to the normal review-report flow rather than reusing stale stored matter results.
 
 ## Policy decisions to confirm
 

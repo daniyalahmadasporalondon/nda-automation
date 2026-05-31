@@ -103,7 +103,7 @@ class ServerTests(unittest.TestCase):
             patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
         )
 
-    def assert_review_payload_contract(self, payload, *, expects_docx_source=False):
+    def assert_review_payload_contract(self, payload, *, expected_source_type=None):
         for key in ["overall_status", "checked_at", "requirements_passed", "requirements_failed", "paragraphs", "clauses", "redline_edits"]:
             self.assertIn(key, payload)
         self.assertEqual(payload.get("evidence_trust"), {"status": "verified", "errors": []})
@@ -181,8 +181,8 @@ class ServerTests(unittest.TestCase):
                     self.assertIn("inline_diff_operations", option)
                     self.assertTrue(option["inline_diff_operations"])
 
-        if expects_docx_source:
-            self.assertEqual(payload["source"]["type"], "docx")
+        if expected_source_type:
+            self.assertEqual(payload["source"]["type"], expected_source_type)
             self.assertIn("extracted_text", payload)
             for paragraph in payload["paragraphs"]:
                 self.assertIn("source_index", paragraph)
@@ -264,7 +264,23 @@ class ServerTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 200)
-        self.assert_review_payload_contract(payload, expects_docx_source=True)
+        self.assert_review_payload_contract(payload, expected_source_type="docx")
+
+    def test_review_payload_contract_covers_uploaded_pdf_flow(self):
+        source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        status, payload = self.request(
+            "POST",
+            "/api/review-document",
+            {
+                "filename": "uploaded.pdf",
+                "content_base64": base64.b64encode(source_pdf).decode("ascii"),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assert_review_payload_contract(payload, expected_source_type="pdf")
+        self.assertIn("California", payload["extracted_text"])
 
     def test_matter_upload_creates_persisted_gmail_demo_matter(self):
         source_docx = make_docx([
@@ -529,7 +545,7 @@ class ServerTests(unittest.TestCase):
                 )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Upload a .docx Word document.")
+        self.assertEqual(payload["error"], "Upload a .docx Word document or text-based PDF.")
 
     def test_matter_upload_rejects_unsupported_source(self):
         source_docx = make_docx(["This Agreement shall be governed by the laws of California."])
@@ -586,6 +602,36 @@ class ServerTests(unittest.TestCase):
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
 
+    def test_pdf_matter_export_uses_review_report_docx(self):
+        source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.pdf",
+                        "content_base64": base64.b64encode(source_pdf).decode("ascii"),
+                    },
+                )
+                matter = create_payload["matter"]
+                export_status, export_payload, export_headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"matter_id": matter["id"]},
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(matter["source_filename"], "Acme NDA.pdf")
+        self.assertEqual(matter["review_result"]["source"]["type"], "pdf")
+        self.assertEqual(export_status, 200)
+        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Acme-NDA-redlined.docx"')
+        with ZipFile(BytesIO(export_payload)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("NDA Redline", document_xml)
+        self.assertIn("California", document_xml)
+
     def test_matter_export_fails_when_source_docx_is_missing(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
@@ -619,7 +665,7 @@ class ServerTests(unittest.TestCase):
             "account": "inbound@example.com",
             "imported": [{"id": "matter_1"}],
             "query": "has:attachment",
-            "skipped": [{"message_id": "m1", "reason": "no_docx_attachment"}],
+            "skipped": [{"message_id": "m1", "reason": "no_reviewable_attachment"}],
         }) as import_inbound_matters:
             status, payload = self.request(
                 "POST",
@@ -631,7 +677,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["imported"][0]["id"], "matter_1")
         self.assertEqual(payload["imported"][0]["recipient_email"], "")
         self.assertEqual(payload["imported"][0]["can_send_redline"], False)
-        self.assertEqual(payload["skipped"][0]["reason"], "no_docx_attachment")
+        self.assertEqual(payload["skipped"][0]["reason"], "no_reviewable_attachment")
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
     def test_gmail_send_payload_replies_in_thread_only_for_same_account(self):
@@ -1365,7 +1411,7 @@ class ServerTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Upload a .docx Word document.")
+        self.assertEqual(payload["error"], "Upload a .docx Word document or text-based PDF.")
 
     def test_document_review_rejects_oversize_upload(self):
         with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
@@ -1379,7 +1425,7 @@ class ServerTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The Word document is larger than the 10 MB upload limit.")
+        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
 
     def test_matter_upload_rejects_oversize_upload_at_ingestion_boundary(self):
         with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
@@ -1393,10 +1439,10 @@ class ServerTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The Word document is larger than the 10 MB upload limit.")
+        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
 
     def test_document_review_reports_paragraph_alignment_failure(self):
-        with patch.object(server_module, "extract_docx_paragraphs", return_value=[{"source_index": 1, "text": "Paragraph"}]):
+        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}])):
             with patch.object(server_module, "review_nda", side_effect=ParagraphAlignmentError("alignment failed")):
                 status, payload = self.request(
                     "POST",
@@ -1411,7 +1457,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "The extracted document paragraphs could not be aligned to the extracted text.")
 
     def test_document_review_reports_playbook_template_error(self):
-        with patch.object(server_module, "extract_docx_paragraphs", return_value=[{"source_index": 1, "text": "Paragraph"}]):
+        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}])):
             with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
                 status, payload = self.request(
                     "POST",
@@ -1429,7 +1475,7 @@ class ServerTests(unittest.TestCase):
         extracted_paragraphs = [
             {"source_index": 1, "text": "The confidentiality obligations survive for seven (7) years."}
         ]
-        with patch.object(server_module, "extract_docx_paragraphs", return_value=extracted_paragraphs):
+        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", extracted_paragraphs)):
             with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
                 status, payload = self.request(
                     "POST",
@@ -1487,6 +1533,31 @@ def make_docx(paragraphs):
     with BytesIO() as output:
         with ZipFile(output, "w") as archive:
             archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def make_pdf(text):
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n",
+        "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    stream = f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET\n"
+    objects.append(f"5 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n")
+    with BytesIO() as output:
+        output.write(b"%PDF-1.4\n")
+        offsets = [0]
+        for pdf_object in objects:
+            offsets.append(output.tell())
+            output.write(pdf_object.encode("latin-1"))
+        xref_offset = output.tell()
+        output.write(f"xref\n0 {len(objects) + 1}\n".encode("latin-1"))
+        output.write(b"0000000000 65535 f \n")
+        for offset in offsets[1:]:
+            output.write(f"{offset:010d} 00000 n \n".encode("latin-1"))
+        output.write(f"trailer << /Root 1 0 R /Size {len(objects) + 1} >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("latin-1"))
         return output.getvalue()
 
 

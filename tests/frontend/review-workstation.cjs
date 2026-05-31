@@ -287,12 +287,12 @@ async function testRepositoryMatterImportAndFreshReview(page) {
         account: "inbound@example.com",
         imported: [],
         query: "has:attachment",
-        skipped: [{ message_id: "m1", reason: "no_docx_attachment" }],
+        skipped: [{ message_id: "m1", reason: "no_reviewable_attachment" }],
       }),
     });
   });
   await page.getByRole("button", { name: "Sync Gmail" }).click();
-  await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX)");
+  await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
   await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");

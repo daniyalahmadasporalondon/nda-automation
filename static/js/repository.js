@@ -39,8 +39,8 @@ const RepositoryView = (() => {
     });
 
     async function importMatter(file) {
-      if (!file.name.toLowerCase().endsWith(".docx")) {
-        setImportStatus("Upload a .docx Word document");
+      if (!isReviewableDocument(file.name)) {
+        setImportStatus("Upload a .docx Word document or text-based PDF");
         return;
       }
 
@@ -548,9 +548,15 @@ const RepositoryView = (() => {
       duplicate_attachment: "duplicate",
       message_unavailable: "message unavailable",
       no_docx_attachment: "no DOCX",
+      no_reviewable_attachment: "no DOCX/PDF",
       review_failed: "review failed",
     };
     return labels[reason] || "skipped";
+  }
+
+  function isReviewableDocument(filename) {
+    const lowerFilename = String(filename || "").toLowerCase();
+    return lowerFilename.endsWith(".docx") || lowerFilename.endsWith(".pdf");
   }
 
   function boardColumnLabel(boardColumn) {

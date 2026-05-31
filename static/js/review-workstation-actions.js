@@ -1,13 +1,13 @@
 async function loadFileIntoReview(file) {
   const extension = file.name.split(".").pop().toLowerCase();
 
-  if (extension === "docx") {
+  if (extension === "docx" || extension === "pdf") {
     state.selectedDocument = file;
     state.selectedMatter = null;
     setSourceText("");
     showStudioSourceEditor();
     resizeSourceEditors();
-    setSourcePlaceholder("Word document selected");
+    setSourcePlaceholder(`${extension.toUpperCase()} document selected`);
     setFileMeta(`${file.name} ready for review`);
     setDocumentTitle(file.name);
     resetReviewResults();
@@ -115,7 +115,7 @@ async function runReview(sourceInput, button) {
       setSourceText(payload.extracted_text);
       resizeSourceEditors();
       setSourcePlaceholder(SOURCE_PLACEHOLDER);
-      setFileMeta(`${payload.source.filename} reviewed from Word document`);
+      setFileMeta(`${payload.source.filename} reviewed from ${payload.source.type?.toUpperCase() || "document"}`);
     }
     renderResult(payload, reviewedText);
   } catch (error) {
@@ -253,7 +253,7 @@ async function chooseExportSaveHandle(suggestedName, options = {}) {
   try {
     return await window.showSaveFilePicker({
       suggestedName,
-      types: DOCX_FILE_PICKER_TYPES,
+      types: EXPORT_FILE_PICKER_TYPES,
     });
   } catch (error) {
     if (error?.name === "AbortError") return null;

@@ -12,7 +12,7 @@ const REDLINE_REPLACE_PARAGRAPH = "replace_paragraph";
 
 const FILE_BASE64_CHUNK_SIZE = 0x8000;
 const DOWNLOAD_URL_REVOKE_DELAY_MS = 30000;
-const DOCX_FILE_PICKER_TYPES = [
+const EXPORT_FILE_PICKER_TYPES = [
   {
     description: "Word document",
     accept: {
@@ -20,6 +20,7 @@ const DOCX_FILE_PICKER_TYPES = [
     },
   },
 ];
+const REVIEWABLE_DOCUMENT_ACCEPT = ".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf";
 const DEFAULT_FONT_SIZE_PX = 16;
 const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.7;
 const SOURCE_SCROLL_MIN_WIDTH_PX = 80;

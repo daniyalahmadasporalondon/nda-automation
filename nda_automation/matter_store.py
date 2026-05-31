@@ -259,7 +259,7 @@ def _delete_stored_document(matter: dict[str, Any]) -> None:
 def _safe_filename(filename: str) -> str:
     basename = Path(filename).name or "nda.docx"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip("-._")
-    if not safe_name.lower().endswith(".docx"):
+    if not safe_name.lower().endswith((".docx", ".pdf")):
         safe_name = f"{safe_name or 'nda'}.docx"
     return safe_name or "nda.docx"
 
