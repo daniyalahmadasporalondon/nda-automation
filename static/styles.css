@@ -1120,9 +1120,9 @@ textarea::placeholder {
 }
 
 .studio-issue-pill.check {
-  background: var(--violet-bg);
-  box-shadow: inset 0 0 0 1px var(--violet-border);
-  color: var(--violet-ink);
+  background: var(--red-bg);
+  box-shadow: inset 0 0 0 1px var(--red-border);
+  color: var(--red-ink);
 }
 
 .studio-issue-pill.pending {
@@ -1687,9 +1687,9 @@ textarea::placeholder {
 }
 
 .status.check {
-  background: var(--violet-bg);
-  box-shadow: inset 0 0 0 1px var(--violet-border);
-  color: var(--violet-ink);
+  background: var(--red-bg);
+  box-shadow: inset 0 0 0 1px var(--red-border);
+  color: var(--red-ink);
 }
 
 .status.pending {

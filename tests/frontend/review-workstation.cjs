@@ -245,6 +245,18 @@ async function testInlineDiffAlgorithmEdges(page) {
 
 async function testBackendRedlineModes(page) {
   await runReview(page, redlineNda);
+  const checkPillStyles = await page.locator(".studio-issue-pill.check").first().evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      backgroundColor: styles.backgroundColor,
+      color: styles.color,
+      boxShadow: styles.boxShadow,
+    };
+  });
+  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 226, 226)");
+  assert.equal(checkPillStyles.color, "rgb(180, 35, 24)");
+  assert.match(checkPillStyles.boxShadow, /252, 165, 165/);
+
   await page.locator('[data-studio-clause-id="term_and_survival"]').click();
 
   const termParagraph = page.locator('[data-paragraph-id="p1"]');
