@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
+    fcntl = None
 
 from . import app_settings, matter_store
 from .checker import ParagraphAlignmentError
@@ -30,6 +37,7 @@ ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
     "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
 }
+_TOKEN_LOCK = threading.RLock()
 
 
 class GmailIntegrationError(RuntimeError):
@@ -259,28 +267,67 @@ def _gmail_service(role: str) -> Any:
 
 def _credentials_for_role(role: str) -> Any:
     token_path = _token_path_for_role(role)
-    if not token_path.is_file():
-        raise GmailIntegrationError(f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account.")
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
     except ImportError as exc:
         raise GmailIntegrationError("Google API packages are not installed.") from exc
 
-    try:
-        credentials = Credentials.from_authorized_user_file(str(token_path))
-    except Exception as exc:
-        raise GmailIntegrationError(f"Gmail {role} token could not be read.") from exc
-
-    if credentials and credentials.expired and credentials.refresh_token:
+    with _locked_token_file(token_path):
+        if not token_path.is_file():
+            raise GmailIntegrationError(f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account.")
         try:
-            credentials.refresh(Request())
-            token_path.write_text(credentials.to_json(), encoding="utf-8")
+            credentials = Credentials.from_authorized_user_file(str(token_path))
         except Exception as exc:
-            raise GmailIntegrationError(f"Gmail {role} token could not refresh.") from exc
-    if not credentials or not credentials.valid:
-        raise GmailIntegrationError(f"Gmail {role} token is not valid.")
-    return credentials
+            raise GmailIntegrationError(f"Gmail {role} token could not be read.") from exc
+
+        if credentials and credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(Request())
+                _write_token_json_unlocked(token_path, credentials.to_json())
+            except GmailIntegrationError:
+                raise
+            except Exception as exc:
+                raise GmailIntegrationError(f"Gmail {role} token could not refresh.") from exc
+        if not credentials or not credentials.valid:
+            raise GmailIntegrationError(f"Gmail {role} token is not valid.")
+        return credentials
+
+
+@contextmanager
+def _locked_token_file(token_path: Path):
+    with _TOKEN_LOCK:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = token_path.with_name(f".{token_path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_token_atomically(token_path: Path, token_json: str) -> None:
+    with _locked_token_file(token_path):
+        _write_token_json_unlocked(token_path, token_json)
+
+
+def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
+    temporary_path = token_path.with_name(f".{token_path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            handle.write(token_json)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, token_path)
+    except OSError as exc:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise GmailIntegrationError("Gmail token could not be saved.") from exc
 
 
 def _token_path_for_role(role: str) -> Path:

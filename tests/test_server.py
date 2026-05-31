@@ -1046,6 +1046,25 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertEqual(payload["error"], "Gmail inbound is disabled in Admin.")
 
+    def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
+        with tempfile.TemporaryDirectory() as token_dir:
+            token_path = server_module.Path(token_dir) / "token.json"
+            token_path.write_text('{"token": "old"}', encoding="utf-8")
+            temporary_path = token_path.parent / ".token.json.tmp"
+            lock_path = token_path.parent / ".token.json.lock"
+
+            gmail_integration._write_token_atomically(token_path, '{"token": "new"}')
+            saved = token_path.read_text(encoding="utf-8")
+
+            with patch.object(gmail_integration.os, "replace", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(gmail_integration.GmailIntegrationError, "token could not be saved"):
+                    gmail_integration._write_token_atomically(token_path, '{"token": "corrupt"}')
+
+            self.assertEqual(saved, '{"token": "new"}')
+            self.assertEqual(token_path.read_text(encoding="utf-8"), '{"token": "new"}')
+            self.assertFalse(temporary_path.exists())
+            self.assertTrue(lock_path.exists())
+
     def test_gmail_send_payload_replies_in_thread_for_same_account(self):
         class FakeExecutable:
             def __init__(self, payload):
