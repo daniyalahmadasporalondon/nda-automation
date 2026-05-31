@@ -706,12 +706,18 @@ async function testSourceRedlineExportRegression(page) {
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.locator("#fileInput").setInputFiles(sourceDocxPath);
-  await assertTextContains(page.locator("#studioFileMeta"), "ready for review");
-  await page.getByRole("button", { name: "Review NDA" }).click();
+  await page.waitForSelector("#repositoryView:not([hidden])");
+  assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
+  await waitForText(page, "#repositoryImportStatus", "Source Redline NDA");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
+
+  await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#studioDocumentRender:not([hidden])");
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
 
-  assert.equal(await page.locator("#studioDocTitle").innerText(), "Source Redline NDA.docx");
+  assert.equal(await page.locator("#studioDocTitle").innerText(), "Source Redline NDA");
+  await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
   assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "source-redline review should produce CHECK findings");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");

@@ -76,7 +76,8 @@ tabButtons.forEach((button) => {
 fileInput.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  if (state.activeTab === "repository") {
+  if (isWordDocument(file)) {
+    setActiveTab("repository");
     await repositoryController.importMatter(file);
     fileInput.value = "";
     return;
@@ -114,6 +115,10 @@ async function loadFileIntoReview(file) {
   resetReviewResults();
   renderStudioEmpty();
   setActiveTab("review");
+}
+
+function isWordDocument(file) {
+  return file.name.toLowerCase().endsWith(".docx");
 }
 
 function clearReview() {
