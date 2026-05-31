@@ -12,6 +12,14 @@ const REDLINE_REPLACE_PARAGRAPH = "replace_paragraph";
 
 const FILE_BASE64_CHUNK_SIZE = 0x8000;
 const DOWNLOAD_URL_REVOKE_DELAY_MS = 30000;
+const DOCX_FILE_PICKER_TYPES = [
+  {
+    description: "Word document",
+    accept: {
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+    },
+  },
+];
 const INLINE_DIFF_MAX_MATRIX_CELLS = 40000;
 const DEFAULT_FONT_SIZE_PX = 16;
 const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.7;

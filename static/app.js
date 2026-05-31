@@ -170,9 +170,16 @@ async function exportReviewDocx() {
   if (!text) return;
 
   studioExportButton.disabled = true;
-  studioExportButton.textContent = "Exporting";
+  studioExportButton.textContent = "Choosing file";
 
   try {
+    const saveHandle = await chooseExportSaveHandle(suggestedExportFilename());
+    if (saveHandle === null) {
+      studioFileMeta.textContent = "Export cancelled";
+      return;
+    }
+
+    studioExportButton.textContent = "Exporting";
     const payload = {
       text,
       reviewed_text: text,
@@ -195,12 +202,17 @@ async function exportReviewDocx() {
     const filename = downloadFilename(response) || "nda-review-report.docx";
     const savedPath = response.headers.get("X-Export-Path");
     const savedUrl = response.headers.get("X-Export-URL");
-    renderExportSuccess(filename, savedPath, savedUrl);
-    if (savedUrl) {
+    if (saveHandle) {
+      const blob = await response.blob();
+      await writeBlobToSaveHandle(saveHandle, blob);
+      renderExportSuccess(filename, savedPath, savedUrl, "saved");
+    } else if (savedUrl) {
+      renderExportSuccess(filename, savedPath, savedUrl);
       downloadUrl(savedUrl, filename);
     } else {
       const blob = await response.blob();
       downloadBlob(blob, filename);
+      renderExportSuccess(filename, savedPath, savedUrl, "downloading");
     }
   } catch (error) {
     studioOverallTitle.textContent = error.message;
@@ -210,6 +222,37 @@ async function exportReviewDocx() {
   } finally {
     studioExportButton.textContent = "Export DOCX";
     updateExportButtonState();
+  }
+}
+
+async function chooseExportSaveHandle(suggestedName) {
+  if (!shouldUseSaveFilePicker()) return undefined;
+  try {
+    return await window.showSaveFilePicker({
+      suggestedName,
+      types: DOCX_FILE_PICKER_TYPES,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") return null;
+    console.warn("Save picker unavailable; falling back to browser download.", error);
+    return undefined;
+  }
+}
+
+function shouldUseSaveFilePicker() {
+  return (
+    typeof window.showSaveFilePicker === "function"
+    && window.isSecureContext
+    && !navigator.webdriver
+  );
+}
+
+async function writeBlobToSaveHandle(fileHandle, blob) {
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(blob);
+  } finally {
+    await writable.close();
   }
 }
 
@@ -251,12 +294,12 @@ function downloadUrl(url, filename) {
   link.remove();
 }
 
-function renderExportSuccess(filename, savedPath, savedUrl) {
+function renderExportSuccess(filename, savedPath, savedUrl, fallbackVerb = "exported") {
   state.lastExport = { filename, savedPath, savedUrl };
   studioFileMeta.textContent = "";
   const summary = document.createElement("span");
   summary.className = "export-success";
-  summary.textContent = savedUrl ? `Saved export: ${savedUrl}` : `${filename} exported`;
+  summary.textContent = savedUrl ? `Saved export: ${savedUrl}` : `${filename} ${fallbackVerb}`;
   studioFileMeta.append(summary);
   if (savedUrl) {
     studioFileMeta.append(document.createTextNode(" "));
@@ -269,6 +312,22 @@ function renderExportSuccess(filename, savedPath, savedUrl) {
   } else if (savedPath) {
     studioFileMeta.append(document.createTextNode(` ${savedPath}`));
   }
+}
+
+function suggestedExportFilename() {
+  if (state.selectedDocument?.name) return redlineDownloadFilename(state.selectedDocument.name);
+  return "nda-review-report.docx";
+}
+
+function redlineDownloadFilename(filename) {
+  const basename = filename.split(/[\\/]/).pop() || "";
+  const stem = basename.replace(/\.[^.]*$/, "");
+  const safeName = Array.from(stem)
+    .map((character) => (/[a-z0-9_-]/i.test(character) ? character : "-"))
+    .join("")
+    .replace(/^[-_]+/g, "")
+    .replace(/[-_]+$/g, "");
+  return `${safeName || "nda"}-redlined.docx`;
 }
 
 function downloadFilename(response) {
