@@ -610,6 +610,12 @@ async function testClauseDecisionControls(page) {
 
   await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
   await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "IGNORED IN EXPORT");
+  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
+
+  await page.locator('[data-lane-card-id="signatures"] [data-export-clause-id="signatures"][data-export-decision="include"]').click();
+  await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "INCLUDED IN EXPORT");
+  await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
+  await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
@@ -627,8 +633,8 @@ async function testClauseDecisionControls(page) {
   );
   assert.equal(
     exportedChanges.insertions.some((text) => text.includes("For [Party 1 legal name]")),
-    false,
-    "ignored signature redline should not be exported",
+    true,
+    "re-included signature redline should be exported",
   );
   assert.equal(
     exportedChanges.insertions.some((text) => text.includes("England and Wales")),

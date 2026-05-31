@@ -194,7 +194,12 @@ function bindExportDecisionControls(container) {
 
 function setClauseExportDecision(clauseId, included) {
   state.exportClauseDecisions[clauseId] = included;
+  state.selectedReviewClauseId = clauseId;
   renderStudioResult({ clauses: state.reviewClauses });
+  if (included) {
+    const clause = state.reviewClauses.find((item) => item.id === clauseId);
+    requestAnimationFrame(() => jumpToClauseSource(clause));
+  }
   updateExportButtonState();
 }
 

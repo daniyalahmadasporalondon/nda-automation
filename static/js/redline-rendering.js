@@ -330,7 +330,7 @@ function renderParagraphRedline(edit) {
 }
 
 function renderParagraphInsertion(edit) {
-  return `<div class="paragraph-insertion" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
+  return `<div class="paragraph-insertion" data-redline-edit-id="${escapeHtml(edit.id || "")}" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
 }
 
 function redlineActionLabel(edit) {
