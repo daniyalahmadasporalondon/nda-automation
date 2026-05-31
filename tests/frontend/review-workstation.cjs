@@ -265,9 +265,19 @@ async function testBackendRedlineModes(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 243, 199)");
-  assert.equal(checkPillStyles.color, "rgb(146, 64, 14)");
-  assert.match(checkPillStyles.boxShadow, /253, 230, 138/);
+  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 226, 226)");
+  assert.equal(checkPillStyles.color, "rgb(180, 35, 24)");
+  assert.match(checkPillStyles.boxShadow, /252, 165, 165/);
+
+  const checkDotStyles = await page.locator(".studio-clause-dot.verify").first().evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      backgroundColor: styles.backgroundColor,
+      boxShadow: styles.boxShadow,
+    };
+  });
+  assert.equal(checkDotStyles.backgroundColor, "rgb(239, 68, 68)");
+  assert.match(checkDotStyles.boxShadow, /239, 68, 68/);
 
   const prohibitedParagraphStyles = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => {
     const styles = getComputedStyle(node);
@@ -286,6 +296,15 @@ async function testBackendRedlineModes(page) {
   await page.locator('[data-studio-clause-id="term_and_survival"]').click();
 
   const termParagraph = page.locator('[data-paragraph-id="p1"]');
+  const termParagraphStyles = await termParagraph.evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      backgroundColor: styles.backgroundColor,
+      borderLeftColor: styles.borderLeftColor,
+    };
+  });
+  assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
+  assert.equal(termParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   await assertRedlinePreview(termParagraph, {
     originalText: "seven",
     insertedText: "fixed period of up to five",

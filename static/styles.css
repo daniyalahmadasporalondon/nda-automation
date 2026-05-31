@@ -568,8 +568,8 @@ h3 {
 }
 
 .studio-clause-dot.verify {
-  background: var(--violet);
-  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4);
+  background: var(--red);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4);
 }
 
 .studio-clause-item strong {
@@ -798,14 +798,15 @@ h3 {
 }
 
 .studio-doc-paragraph.verify {
-  background: var(--violet-bg);
-  box-shadow: inset 0 0 0 1px var(--violet-border);
+  background: var(--red-bg);
+  border-left-color: var(--red);
+  box-shadow: inset 0 0 0 1px var(--red-border);
 }
 
 .studio-doc-paragraph.has-redline {
-  background: #fffaf0;
-  border-left-color: var(--amber);
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.24);
+  background: var(--red-bg);
+  border-left-color: var(--red);
+  box-shadow: inset 0 0 0 1px var(--red-border);
 }
 
 .studio-doc-paragraph.manual-redline {
@@ -825,6 +826,14 @@ h3 {
 .studio-doc-paragraph.selected.match {
   background: var(--green-bg);
   border-left-color: var(--green);
+}
+
+.studio-doc-paragraph.selected.verify {
+  background: var(--red-bg);
+  border-left-color: var(--red);
+  box-shadow:
+    inset 0 0 0 2px var(--red-border),
+    0 12px 26px -16px rgba(239, 68, 68, 0.22);
 }
 
 .studio-doc-paragraph.is-editing {
@@ -1016,9 +1025,9 @@ textarea::placeholder {
 }
 
 .studio-verdict-line > strong.check {
-  background: var(--amber-bg);
-  border-color: var(--amber-border);
-  color: var(--amber-ink);
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
 }
 
 .studio-verdict-line h3 {
@@ -1079,7 +1088,9 @@ textarea::placeholder {
 }
 
 .studio-issue-card.check {
-  background: var(--bg-softer);
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.08);
 }
 
 .studio-issue-card:hover,
@@ -1088,6 +1099,15 @@ textarea::placeholder {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
   transform: translateY(-1px);
+}
+
+.studio-issue-card.check:hover,
+.studio-issue-card.check.selected {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  box-shadow:
+    inset 0 0 0 1px rgba(239, 68, 68, 0.1),
+    var(--shadow-sm);
 }
 
 .studio-issue-card-top {
@@ -1127,9 +1147,9 @@ textarea::placeholder {
 }
 
 .studio-issue-pill.check {
-  background: var(--amber-bg);
-  box-shadow: inset 0 0 0 1px var(--amber-border);
-  color: var(--amber-ink);
+  background: var(--red-bg);
+  box-shadow: inset 0 0 0 1px var(--red-border);
+  color: var(--red-ink);
 }
 
 .studio-issue-pill.pending {
@@ -1700,9 +1720,9 @@ textarea::placeholder {
 }
 
 .status.check {
-  background: var(--amber-bg);
-  box-shadow: inset 0 0 0 1px var(--amber-border);
-  color: var(--amber-ink);
+  background: var(--red-bg);
+  box-shadow: inset 0 0 0 1px var(--red-border);
+  color: var(--red-ink);
 }
 
 .status.pending {
