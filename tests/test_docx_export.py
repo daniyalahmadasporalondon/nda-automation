@@ -12,6 +12,7 @@ from nda_automation.docx_export import (
     _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
+    validate_docx_open_health,
 )
 from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.redline_actions import (
@@ -118,6 +119,7 @@ def resolve_relationship_target(relationship_part, target):
 
 
 def assert_docx_package_healthy(testcase, docx_bytes, require_styles=False):
+    testcase.assertEqual(validate_docx_open_health(docx_bytes, require_styles=require_styles), [])
     required_parts = {
         "[Content_Types].xml",
         "_rels/.rels",

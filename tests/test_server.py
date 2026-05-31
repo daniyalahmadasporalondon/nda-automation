@@ -79,6 +79,7 @@ class ServerTests(unittest.TestCase):
             connection.close()
 
     def assert_saved_export_url_matches_response(self, headers, payload):
+        self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
         self.assertIn("X-Export-URL", headers)
         route_status, route_payload, route_headers = self.request_with_headers("GET", headers["X-Export-URL"])
 
@@ -216,6 +217,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], DOCX_MIME)
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="nda-review-report.docx"')
+        self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
         self.assertEqual(headers["X-Export-URL"], "/exports/nda-review-report.docx")
         self.assertTrue(headers["X-Export-Path"].endswith("nda-review-report.docx"))
         self.assertEqual(saved_payload, payload)
@@ -329,10 +331,30 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
         self.assertNotIn("X-Export-Path", headers)
         self.assertNotIn("X-Export-URL", headers)
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
+
+    def test_review_docx_export_fails_before_download_when_docx_health_fails(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            with (
+                patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)),
+                patch.object(server_module, "validate_docx_open_health", return_value=["Missing DOCX parts: _rels/.rels."]),
+            ):
+                status, payload, headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"text": "This Agreement shall be governed by the laws of California."},
+                )
+                saved_files = list(server_module.Path(exports_dir).iterdir())
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], "The exported Word document failed its open-health check.")
+        self.assertEqual(payload["details"], ["Missing DOCX parts: _rels/.rels."])
+        self.assertNotEqual(headers.get("Content-Type"), DOCX_MIME)
+        self.assertEqual(saved_files, [])
 
     def test_review_docx_export_rejects_text_that_differs_from_reviewed_text(self):
         status, payload = self.request(

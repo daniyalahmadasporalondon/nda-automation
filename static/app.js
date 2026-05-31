@@ -206,17 +206,18 @@ async function exportReviewDocx() {
     const filename = downloadFilename(response) || "nda-review-report.docx";
     const savedPath = response.headers.get("X-Export-Path");
     const savedUrl = response.headers.get("X-Export-URL");
+    const exportVerified = response.headers.get("X-Export-Verified");
     if (saveHandle) {
       const blob = await response.blob();
       await writeBlobToSaveHandle(saveHandle, blob);
-      renderExportSuccess(filename, savedPath, savedUrl, "saved");
+      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "saved");
     } else if (savedUrl) {
-      renderExportSuccess(filename, savedPath, savedUrl);
+      renderExportSuccess(filename, savedPath, savedUrl, exportVerified);
       downloadUrl(savedUrl, filename);
     } else {
       const blob = await response.blob();
       downloadBlob(blob, filename);
-      renderExportSuccess(filename, savedPath, savedUrl, "downloading");
+      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading");
     }
   } catch (error) {
     studioOverallTitle.textContent = error.message;
@@ -298,12 +299,13 @@ function downloadUrl(url, filename) {
   link.remove();
 }
 
-function renderExportSuccess(filename, savedPath, savedUrl, fallbackVerb = "exported") {
-  state.lastExport = { filename, savedPath, savedUrl };
+function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported") {
+  state.lastExport = { filename, savedPath, savedUrl, verification };
   studioFileMeta.textContent = "";
   const summary = document.createElement("span");
   summary.className = "export-success";
-  summary.textContent = savedUrl ? `Saved export: ${savedUrl}` : `${filename} ${fallbackVerb}`;
+  const verificationText = verification ? " · Word package verified · Track Changes enabled" : "";
+  summary.textContent = `${savedUrl ? `Saved export: ${savedUrl}` : `${filename} ${fallbackVerb}`}${verificationText}`;
   studioFileMeta.append(summary);
   if (savedUrl) {
     studioFileMeta.append(document.createTextNode(" "));

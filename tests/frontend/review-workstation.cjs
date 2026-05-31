@@ -651,6 +651,8 @@ async function testExportFlow(page) {
   assert.ok(fs.statSync(downloadedPath).size > 1000, "exported DOCX should not be empty");
   await assertTextContains(page.locator("#studioFileMeta"), "Saved export:");
   await assertTextContains(page.locator("#studioFileMeta"), "/exports/nda-review-report.docx");
+  await assertTextContains(page.locator("#studioFileMeta"), "Word package verified");
+  await assertTextContains(page.locator("#studioFileMeta"), "Track Changes enabled");
   await assertTextContains(page.locator("#studioFileMeta a.download-again"), "Download again");
   assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("href"), "/exports/nda-review-report.docx");
   assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("download"), "nda-review-report.docx");

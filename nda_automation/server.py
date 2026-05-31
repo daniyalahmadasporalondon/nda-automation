@@ -11,7 +11,13 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
-from .docx_export import DOCX_MIME, DocxExportError, build_review_report_docx, build_source_redline_docx
+from .docx_export import (
+    DOCX_MIME,
+    DocxExportError,
+    build_review_report_docx,
+    build_source_redline_docx,
+    validate_docx_open_health,
+)
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -186,13 +192,23 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         else:
             report_bytes = build_review_report_docx(review_result, title=title.strip())
             download_filename = "nda-review-report.docx"
+
+        health_errors = validate_docx_open_health(report_bytes, require_styles=source_document_bytes is None)
+        if health_errors:
+            print(f"DOCX export health check failed: {'; '.join(health_errors)}")
+            self._send_json({
+                "error": "The exported Word document failed its open-health check.",
+                "details": health_errors,
+            }, status=500)
+            return
+
         saved_path = _persist_export(report_bytes, download_filename)
-        headers = {}
+        headers = {"X-Export-Verified": "word-package; track-revisions"}
         if saved_path is not None:
-            headers = {
+            headers.update({
                 "X-Export-Path": str(saved_path),
                 "X-Export-URL": f"/exports/{quote(saved_path.name)}",
-            }
+            })
         self._send_download(
             report_bytes,
             download_filename,
