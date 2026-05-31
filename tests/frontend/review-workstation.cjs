@@ -193,11 +193,25 @@ async function testInlineDiffAlgorithmEdges(page) {
         name: vector.name,
         actual: diffTextOperations(original, replacement),
         expected: expectedOperations(vector),
+        expectedOperationCount: (vector.operationBlocks || []).reduce((total, block) => total + block.count, 0),
+        originalTokenBlockCount: vector.originalTokenBlock?.count || null,
+        originalTokenCount: tokenizeInlineDiff(original).length,
+        replacementTokenBlockCount: vector.replacementTokenBlock?.count || null,
+        replacementTokenCount: tokenizeInlineDiff(replacement).length,
       };
     });
   }, inlineDiffVectors);
 
   for (const vector of operationsByVector) {
+    if (vector.originalTokenBlockCount !== null) {
+      assert.equal(vector.originalTokenCount, vector.originalTokenBlockCount, `${vector.name} original token block count`);
+    }
+    if (vector.replacementTokenBlockCount !== null) {
+      assert.equal(vector.replacementTokenCount, vector.replacementTokenBlockCount, `${vector.name} replacement token block count`);
+    }
+    if (vector.expectedOperationCount) {
+      assert.equal(vector.expected.length, vector.expectedOperationCount, `${vector.name} operation block count`);
+    }
     assert.deepEqual(vector.actual, vector.expected, vector.name);
   }
 

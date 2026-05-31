@@ -156,6 +156,15 @@ class DocxExportTests(unittest.TestCase):
         for vector in inline_diff_vectors():
             with self.subTest(vector["name"]):
                 original, replacement, expected_operations = expand_inline_diff_vector(vector)
+                if "originalTokenBlock" in vector:
+                    self.assertEqual(len(original.split()), vector["originalTokenBlock"]["count"])
+                if "replacementTokenBlock" in vector:
+                    self.assertEqual(len(replacement.split()), vector["replacementTokenBlock"]["count"])
+                if "operationBlocks" in vector:
+                    self.assertEqual(
+                        len(expected_operations),
+                        sum(block["count"] for block in vector["operationBlocks"]),
+                    )
                 self.assertEqual(_diff_text_operations(original, replacement), expected_operations)
 
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):
