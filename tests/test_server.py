@@ -90,6 +90,81 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(route_payload, payload)
         self.assertEqual(server_module.Path(headers["X-Export-Path"]).read_bytes(), payload)
 
+    def assert_review_payload_contract(self, payload, *, expects_docx_source=False):
+        for key in ["overall_status", "checked_at", "requirements_passed", "requirements_failed", "paragraphs", "clauses", "redline_edits"]:
+            self.assertIn(key, payload)
+        self.assertIn(payload["overall_status"], {"meets_requirements", "does_not_meet_requirements"})
+        self.assertIsInstance(payload["requirements_passed"], int)
+        self.assertIsInstance(payload["requirements_failed"], int)
+        self.assertIsInstance(payload["paragraphs"], list)
+        self.assertIsInstance(payload["clauses"], list)
+        self.assertIsInstance(payload["redline_edits"], list)
+
+        paragraphs_by_id = {}
+        for paragraph in payload["paragraphs"]:
+            for key in ["id", "index", "text", "start", "end"]:
+                self.assertIn(key, paragraph)
+            self.assertIsInstance(paragraph["id"], str)
+            self.assertIsInstance(paragraph["index"], int)
+            self.assertIsInstance(paragraph["text"], str)
+            self.assertIsInstance(paragraph["start"], int)
+            self.assertIsInstance(paragraph["end"], int)
+            paragraphs_by_id[paragraph["id"]] = paragraph
+
+        for clause in payload["clauses"]:
+            for key in [
+                "id",
+                "name",
+                "requirement",
+                "status",
+                "passes",
+                "issue_type",
+                "issue_label",
+                "what_to_fix",
+                "reason",
+                "finding",
+                "matched_paragraph_ids",
+                "matched_text",
+                "evidence",
+                "evidence_paragraphs",
+            ]:
+                self.assertIn(key, clause, f"{clause.get('id', 'unknown')} missing {key}")
+            self.assertIn(clause["status"], {"match", "check", "not_present"})
+            self.assertIsInstance(clause["passes"], bool)
+            self.assertEqual(clause["reason"], clause["finding"])
+            matched_ids = clause["matched_paragraph_ids"]
+            self.assertIsInstance(matched_ids, list)
+            expected_paragraphs = [paragraphs_by_id[paragraph_id] for paragraph_id in matched_ids]
+            self.assertEqual(clause["matched_text"], "\n\n".join(paragraph["text"] for paragraph in expected_paragraphs))
+            self.assertEqual(clause["evidence"], [paragraph["text"] for paragraph in expected_paragraphs])
+            self.assertEqual(clause["evidence_paragraphs"], expected_paragraphs)
+
+        for redline in payload["redline_edits"]:
+            for key in ["id", "clause_id", "clause_name", "paragraph_id", "paragraph_index", "action", "action_label", "status", "original_text", "replacement_text", "reason"]:
+                self.assertIn(key, redline)
+            self.assertNotIn("target_position", redline)
+            self.assertNotIn("selected_template_id", redline)
+            self.assertIn(redline["paragraph_id"], paragraphs_by_id)
+            self.assertEqual(redline["paragraph_index"], paragraphs_by_id[redline["paragraph_id"]]["index"])
+            self.assertIn(redline["action"], {"replace_paragraph", "insert_after_paragraph", "delete_paragraph"})
+            if redline["action"] == "insert_after_paragraph":
+                self.assertEqual(redline["original_text"], "")
+                self.assertIn("anchor_text", redline)
+                self.assertIn("insert_text", redline)
+                self.assertTrue(redline["insert_text"].strip())
+            elif redline["action"] == "delete_paragraph":
+                self.assertEqual(redline["replacement_text"], "")
+                self.assertTrue(redline["original_text"].strip())
+            else:
+                self.assertTrue(redline["original_text"].strip())
+                self.assertTrue(redline["replacement_text"].strip())
+
+        if expects_docx_source:
+            self.assertEqual(payload["source"]["type"], "docx")
+            self.assertIn("extracted_text", payload)
+            for paragraph in payload["paragraphs"]:
+                self.assertIn("source_index", paragraph)
+
     def malformed_template_playbook(self):
         playbook = deepcopy(load_playbook())
         term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
@@ -134,6 +209,40 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("clauses", payload)
         self.assertIn("redline_edits", payload)
+        self.assert_review_payload_contract(payload)
+
+    def test_review_payload_contract_covers_pass_check_and_missing_flows(self):
+        scenarios = [
+            ("pass", "Each party may disclose Confidential Information and this Agreement is governed by the laws of the DIFC for two years.\n\nFor Aspora Ltd\nBy: A. Signatory\nTitle: Director\nDate: 2026-05-30\n\nFor Counterparty Ltd\nBy: B. Signatory\nTitle: CEO\nDate: 2026-05-30"),
+            ("check", "The confidentiality obligations survive for seven years.\n\nThe Recipient must not circumvent the Company."),
+            ("missing", "The parties will discuss a possible transaction."),
+        ]
+
+        for name, text in scenarios:
+            with self.subTest(name=name):
+                status, payload = self.request("POST", "/api/review", {"text": text})
+
+                self.assertEqual(status, 200)
+                self.assert_review_payload_contract(payload)
+
+    def test_review_payload_contract_covers_uploaded_docx_flow(self):
+        source_docx = make_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+
+        status, payload = self.request(
+            "POST",
+            "/api/review-document",
+            {
+                "filename": "uploaded.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assert_review_payload_contract(payload, expects_docx_source=True)
 
     def test_text_review_reports_playbook_template_error(self):
         with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):

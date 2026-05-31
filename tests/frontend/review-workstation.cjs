@@ -37,6 +37,7 @@ const allActionRedlineNda = [
 
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
+  ["surfaces review and export error details", testFailureUxDetails],
   ["covers inline diff algorithm edge cases", testInlineDiffAlgorithmEdges],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
@@ -197,6 +198,45 @@ async function testAccessibleControlState(page) {
   await page.getByRole("button", { name: "Clean" }).click();
   assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "false");
   assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
+}
+
+async function testFailureUxDetails(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.route("**/api/review", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Clause evidence provenance drift.",
+        details: ["governing_law: matched_text does not equal matched source paragraphs."],
+      }),
+    });
+  });
+  await page.getByPlaceholder("Paste NDA text here").fill("This Agreement shall be governed by the laws of California.");
+  await page.getByRole("button", { name: "Review NDA" }).click();
+  await waitForText(page, "#studioOverallTitle", "Clause evidence provenance drift.");
+  await assertTextContains(page.locator("#studioOverallTitle"), "Clause evidence provenance drift.");
+  await assertTextContains(page.locator("#studioResultMeta"), "Review could not run.");
+  await assertTextContains(page.locator("#studioResultMeta"), "governing_law: matched_text");
+  await page.unroute("**/api/review");
+
+  await runReview(page, passNda);
+  await page.route("**/api/export-review-docx", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "The exported Word document failed its open-health check.",
+        details: ["Missing DOCX parts: _rels/.rels."],
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Export DOCX" }).click();
+  await waitForText(page, "#studioOverallTitle", "The exported Word document failed its open-health check.");
+  await assertTextContains(page.locator("#studioOverallTitle"), "The exported Word document failed its open-health check.");
+  await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
+  await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
+  await page.unroute("**/api/export-review-docx");
 }
 
 async function testInlineDiffAlgorithmEdges(page) {
@@ -729,6 +769,13 @@ async function colorPixelCounts(locator) {
 async function assertTextContains(locator, expected) {
   const text = await locator.innerText();
   assert.ok(text.includes(expected), `expected "${text}" to include "${expected}"`);
+}
+
+async function waitForText(page, selector, expected) {
+  await page.waitForFunction(
+    ({ selector, expected }) => document.querySelector(selector)?.innerText.includes(expected),
+    { selector, expected },
+  );
 }
 
 function escapeRegExp(value) {

@@ -147,7 +147,7 @@ async function runReview(sourceInput, button) {
           body: JSON.stringify({ text }),
         });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Review could not run");
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not run");
     const reviewedText = payload.extracted_text || text;
     if (payload.extracted_text) {
       setSourceText(payload.extracted_text);
@@ -157,10 +157,7 @@ async function runReview(sourceInput, button) {
     }
     renderResult(payload, reviewedText);
   } catch (error) {
-    studioOverallTitle.textContent = error.message;
-    studioResultMark.textContent = "!";
-    studioResultMark.className = "check";
-    studioResultMeta.textContent = "Review could not run.";
+    renderOperationError(error, "Review could not run.");
   } finally {
     button.disabled = false;
     button.textContent = "Review NDA";
@@ -201,7 +198,7 @@ async function exportReviewDocx() {
     });
     if (!response.ok) {
       const payload = await response.json();
-      throw new Error(payload.error || "Export could not run");
+      throw reviewErrorFromPayload(payload, "Export could not run");
     }
     const filename = downloadFilename(response) || "nda-review-report.docx";
     const savedPath = response.headers.get("X-Export-Path");
@@ -220,14 +217,29 @@ async function exportReviewDocx() {
       renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading");
     }
   } catch (error) {
-    studioOverallTitle.textContent = error.message;
-    studioResultMark.textContent = "!";
-    studioResultMark.className = "check";
-    studioResultMeta.textContent = "Export could not run.";
+    renderOperationError(error, "Export could not run.");
   } finally {
     studioExportButton.textContent = "Export DOCX";
     updateExportButtonState();
   }
+}
+
+function reviewErrorFromPayload(payload, fallbackMessage) {
+  const error = new Error(payload?.error || fallbackMessage);
+  if (Array.isArray(payload?.details)) {
+    error.details = payload.details.filter(Boolean).map((item) => String(item));
+  }
+  return error;
+}
+
+function renderOperationError(error, fallbackMeta) {
+  studioOverallTitle.textContent = error.message || fallbackMeta;
+  studioResultMark.textContent = "!";
+  studioResultMark.className = "check";
+  const details = Array.isArray(error.details) && error.details.length
+    ? ` ${error.details.slice(0, 3).join(" ")}`
+    : "";
+  studioResultMeta.textContent = `${fallbackMeta}${details}`;
 }
 
 async function chooseExportSaveHandle(suggestedName) {
