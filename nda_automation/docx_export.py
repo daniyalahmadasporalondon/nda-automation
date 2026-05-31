@@ -24,6 +24,8 @@ CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+A4_PAGE_WIDTH_TWIPS = "11906"
+A4_PAGE_HEIGHT_TWIPS = "16838"
 ET.register_namespace("w", W_NS)
 ET.register_namespace("r", R_NS)
 
@@ -642,7 +644,7 @@ def _document_xml(body_xml: str) -> str:
   <w:body>
     {body_xml}
     <w:sectPr>
-      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgSz w:w="{A4_PAGE_WIDTH_TWIPS}" w:h="{A4_PAGE_HEIGHT_TWIPS}"/>
       <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
     </w:sectPr>
   </w:body>
@@ -661,8 +663,8 @@ def _ensure_document_section_properties(document_root: ET.Element) -> None:
 def _default_section_properties() -> ET.Element:
     section = ET.Element(_w_tag("sectPr"))
     ET.SubElement(section, _w_tag("pgSz"), {
-        _w_tag("w"): "12240",
-        _w_tag("h"): "15840",
+        _w_tag("w"): A4_PAGE_WIDTH_TWIPS,
+        _w_tag("h"): A4_PAGE_HEIGHT_TWIPS,
     })
     ET.SubElement(section, _w_tag("pgMar"), {
         _w_tag("top"): "1440",

@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 
 from nda_automation.checker import review_nda
 from nda_automation.docx_export import (
+    A4_PAGE_HEIGHT_TWIPS,
+    A4_PAGE_WIDTH_TWIPS,
     _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
@@ -547,7 +549,12 @@ class DocxExportTests(unittest.TestCase):
 
         assert_docx_package_healthy(self, redlined_docx)
         _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
-        self.assertIsNotNone(document_root.find(".//w:body/w:sectPr", W_NS))
+        section = document_root.find(".//w:body/w:sectPr", W_NS)
+        self.assertIsNotNone(section)
+        page_size = section.find("w:pgSz", W_NS)
+        self.assertIsNotNone(page_size)
+        self.assertEqual(page_size.get(f"{{{W_NS['w']}}}w"), A4_PAGE_WIDTH_TWIPS)
+        self.assertEqual(page_size.get(f"{{{W_NS['w']}}}h"), A4_PAGE_HEIGHT_TWIPS)
 
     def test_source_docx_export_marks_paragraph_deletes_and_insertions(self):
         source_docx = make_source_docx([
