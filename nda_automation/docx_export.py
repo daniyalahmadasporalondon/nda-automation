@@ -399,6 +399,8 @@ def _resolve_source_paragraph(
 
 
 def _redline_source_index(redline: RedlineEdit) -> int | None:
+    if redline.get("source_part"):
+        return None
     source_index = redline.get("source_index", redline.get("paragraph_index"))
     try:
         return int(source_index)

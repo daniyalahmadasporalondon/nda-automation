@@ -159,6 +159,8 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
         }
         if "source_index" in paragraph:
             aligned_paragraph["source_index"] = paragraph["source_index"]
+        if "source_part" in paragraph:
+            aligned_paragraph["source_part"] = paragraph["source_part"]
         aligned.append(aligned_paragraph)
     return aligned
 
@@ -902,7 +904,7 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
             if not isinstance(evidence_paragraph, dict):
                 errors.append(f"{clause_id}: evidence_paragraph is not an object")
                 continue
-            for key in ["id", "index", "text", "start", "end", "source_index"]:
+            for key in ["id", "index", "text", "start", "end", "source_index", "source_part"]:
                 if key in source_paragraph and evidence_paragraph.get(key) != source_paragraph.get(key):
                     errors.append(f"{clause_id}: evidence paragraph {source_paragraph.get('id')} has drifted {key}")
                 elif key not in source_paragraph and key in evidence_paragraph:
@@ -921,6 +923,8 @@ def _evidence_paragraph(paragraph: Paragraph) -> Paragraph:
     }
     if "source_index" in paragraph:
         evidence["source_index"] = paragraph["source_index"]
+    if "source_part" in paragraph:
+        evidence["source_part"] = paragraph["source_part"]
     return evidence
 
 
@@ -1017,6 +1021,8 @@ def _redline_edit(
     }
     if "source_index" in paragraph:
         edit["source_index"] = paragraph["source_index"]
+    if "source_part" in paragraph:
+        edit["source_part"] = paragraph["source_part"]
     if action == REDLINE_INSERT_AFTER_PARAGRAPH:
         edit["anchor_text"] = paragraph["text"]
         edit["insert_text"] = proposed_text
