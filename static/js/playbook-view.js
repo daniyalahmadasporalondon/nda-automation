@@ -111,6 +111,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     editor.addEventListener("change", handleEditorInput);
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
+    setupSpecialControls(clause);
   }
 
   function handleEditorInput() {
@@ -139,6 +140,37 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (discard) discard.disabled = !diff;
     if (save) save.disabled = !hasAnyDraft();
     renderPlaybookList();
+  }
+
+  function setupSpecialControls(clause) {
+    if (clause.id !== "term_and_survival") return;
+    const addButton = clauseDetail.querySelector("#addSurvivalCarveOut");
+    const input = clauseDetail.querySelector("#survivalCarveOutInput");
+    if (addButton && input) {
+      addButton.addEventListener("click", () => {
+        const value = input.value.trim();
+        if (!value) return;
+        clause.longer_survival_carve_out_terms = dedupeList([
+          ...(clause.longer_survival_carve_out_terms || []),
+          value,
+        ]);
+        input.value = "";
+        renderClauseDetail();
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        addButton.click();
+      });
+    }
+    clauseDetail.querySelectorAll("[data-remove-survival-carveout]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const value = button.dataset.removeSurvivalCarveout;
+        clause.longer_survival_carve_out_terms = (clause.longer_survival_carve_out_terms || [])
+          .filter((item) => item !== value);
+        renderClauseDetail();
+      });
+    });
   }
 
   async function savePlaybook(event) {
@@ -207,6 +239,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       "redline_template",
       "standard_exclusions_template",
       "max_term_years",
+      "longer_survival_carve_out_terms",
     ];
     return fields
       .filter((field) => stableJson(clause[field]) !== stableJson(saved[field]))
@@ -222,16 +255,33 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     }
     if (clause.id === "term_and_survival") {
       const carveOuts = (clause.longer_survival_carve_out_terms || [])
+        .map((item) => `
+          <button class="admin-chip removable" type="button" data-remove-survival-carveout="${escapeHtml(item)}">
+            ${escapeHtml(item)} <span aria-hidden="true">x</span>
+          </button>
+        `)
+        .join("");
+      const indefiniteTerms = (clause.indefinite_terms || [])
         .map((item) => `<span class="admin-chip">${escapeHtml(item)}</span>`)
         .join("");
       return `
         <label class="admin-field compact">
-          <span>Term Length (years)</span>
+          <span>Ordinary Confidentiality Cap (years)</span>
           <input name="max_term_years" type="number" min="1" max="25" step="1" value="${escapeHtml(clause.max_term_years || 5)}">
         </label>
         <section class="admin-special">
-          <h3>Permitted Longer Survival Carve-outs</h3>
-          <div class="admin-chip-row">${carveOuts}</div>
+          <h3>Permitted Perpetual / Longer Survival Carve-outs</h3>
+          <p class="admin-muted">Only these carve-out terms can justify indefinite, perpetual, or above-cap survival. Ordinary confidentiality still has to stay within the cap.</p>
+          <div class="admin-chip-row">${carveOuts || '<span class="admin-muted">No longer-survival carve-outs configured</span>'}</div>
+          <div class="admin-inline-add">
+            <input id="survivalCarveOutInput" type="text" placeholder="Add carve-out term">
+            <button class="secondary" id="addSurvivalCarveOut" type="button">Add</button>
+          </div>
+        </section>
+        <section class="admin-special">
+          <h3>Perpetual / Indefinite Trigger Terms</h3>
+          <p class="admin-muted">When these terms appear outside the permitted carve-out context, the clause is checked.</p>
+          <div class="admin-chip-row">${indefiniteTerms}</div>
         </section>
       `;
     }
@@ -331,6 +381,17 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function clonePlaybook(value) {
     return JSON.parse(JSON.stringify(value || {}));
+  }
+
+  function dedupeList(values) {
+    const seen = new Set();
+    return values.filter((value) => {
+      const key = String(value).trim();
+      const normalized = key.toLowerCase();
+      if (!key || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
   }
 
   return { loadPlaybook, renderClauseDetail, renderPlaybookList };

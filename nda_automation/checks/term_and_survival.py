@@ -113,8 +113,9 @@ def _is_allowed_carve_out_fragment(normalized: str, start: int, end: int, clause
 
 def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
     configured_terms = clause.get("longer_survival_carve_out_terms")
-    terms = configured_terms if isinstance(configured_terms, list) else []
-    if not terms:
+    if isinstance(configured_terms, list):
+        terms = configured_terms
+    else:
         terms = [
             "trade secret",
             "trade secrets",

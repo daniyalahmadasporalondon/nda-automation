@@ -272,6 +272,14 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Standard Exclusions Language");
   assert.equal(await page.getByText("Confidential-Info Exclusions Allowlist", { exact: false }).count(), 0);
   assert.equal(await page.getByPlaceholder("Add exclusion key").count(), 0);
+  await page.getByRole("button", { name: "Term and Survival" }).click();
+  await assertTextContains(page.locator("#clauseDetail"), "Ordinary Confidentiality Cap (years)");
+  await assertTextContains(page.locator("#clauseDetail"), "Permitted Perpetual / Longer Survival Carve-outs");
+  await assertTextContains(page.locator("#clauseDetail"), "Perpetual / Indefinite Trigger Terms");
+  await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
+  await page.locator("#addSurvivalCarveOut").click();
+  await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
+  await assertTextContains(page.locator("#playbookDraftDiff"), "longer_survival_carve_out_terms");
   await page.getByRole("button", { name: "Mutuality" }).click();
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
@@ -290,6 +298,8 @@ async function testPlaybookAdminEditor(page) {
   await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
   assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
+  const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
+  assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
   await page.unroute("**/api/playbook");
 }
 

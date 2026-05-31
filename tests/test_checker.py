@@ -230,6 +230,24 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
 
+    def test_term_and_survival_empty_configured_carveouts_disallow_perpetual_exceptions(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["longer_survival_carve_out_terms"] = []
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                The confidentiality obligations survive for five years, except that trade secrets
+                survive for so long as they remain trade secrets.
+                """
+            )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertIn("indefinite or perpetual", term_clause["finding"])
+
     def test_term_and_survival_still_flags_perpetual_ordinary_confidentiality(self):
         result = review_nda("The confidentiality obligations survive perpetually.")
 
