@@ -166,6 +166,7 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
+  assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
     const styles = getComputedStyle(node);
     return {
