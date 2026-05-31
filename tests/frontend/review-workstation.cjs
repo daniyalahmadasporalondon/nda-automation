@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
@@ -41,6 +42,7 @@ const tests = [
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
+  ["guards DOCX upload review edit export bedrock workflow", testBedrockExportGuardrail],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
 ];
 
@@ -546,6 +548,65 @@ async function testPreviewMatchesExportedDocx(page) {
   }
 }
 
+async function testBedrockExportGuardrail(page) {
+  const tmpDir = fs.mkdtempSync(path.join(osTmpDir(), "nda-bedrock-"));
+  const sourceDocxPath = path.join(tmpDir, "Bedrock Source NDA.docx");
+  makeDocxFixture(sourceDocxPath, [
+    "NON-DISCLOSURE AGREEMENT (NDA)",
+    "This Agreement shall be governed by the laws of California.",
+    "The Recipient must not circumvent the Company.",
+  ]);
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.locator("#fileInput").setInputFiles(sourceDocxPath);
+  await assertTextContains(page.locator("#studioFileMeta"), "ready for review");
+  await page.getByRole("button", { name: "Review NDA" }).click();
+  await page.waitForSelector("#studioDocumentRender:not([hidden])");
+  await page.waitForSelector(".studio-issue-card");
+
+  assert.equal(await page.locator("#studioDocTitle").innerText(), "Bedrock Source NDA.docx");
+  assert.ok(await page.locator(".studio-issue-card.check").count() > 0, "bedrock review should produce CHECK findings");
+
+  await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");
+  await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
+  await assertTextContains(page.locator("#studioFileMeta"), "Edited in viewer");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#studioExportButton").click(),
+  ]);
+  assert.equal(download.suggestedFilename(), "Bedrock-Source-NDA-redlined.docx");
+  const exportedPath = await download.path();
+  assert.ok(exportedPath, "bedrock export download path should be available");
+
+  const exportedDocx = readDocxTrackChanges(exportedPath);
+  assert.equal(exportedDocx.hasTrackRevisions, true, "bedrock export must enable Word track revisions");
+  assert.ok(!exportedDocx.documentXml.includes("NDA Redline"), "source export must not become the report wrapper");
+  assert.ok(!exportedDocx.documentXml.includes("Review Notes"), "source export must not leak review notes");
+  assert.ok(exportedDocx.documentXml.includes("The Recipient must not circumvent the Company."), "source paragraphs must survive export");
+  assert.ok(
+    exportedDocx.revisionParagraphs.some((paragraph) => (
+      normalizeWhitespace(paragraph.original) === "NON-DISCLOSURE AGREEMENT (NDA)"
+      && normalizeWhitespace(paragraph.accepted) === "Do you see problem?"
+    )),
+    "viewer edit must export as a native Word tracked change on the uploaded source",
+  );
+  assert.ok(
+    exportedDocx.revisionParagraphs.some((paragraph) => (
+      normalizeWhitespace(paragraph.original) === "This Agreement shall be governed by the laws of California."
+      && normalizeWhitespace(paragraph.accepted) === "This Agreement shall be governed by the laws of England and Wales."
+    )),
+    "clause redline must still map to and revise the exact source paragraph",
+  );
+  assert.ok(
+    exportedDocx.revisionParagraphs.some((paragraph) => (
+      normalizeWhitespace(paragraph.original) === "The Recipient must not circumvent the Company."
+      && normalizeWhitespace(paragraph.accepted) === ""
+    )),
+    "delete redline must remain a native deletion against the source paragraph",
+  );
+}
+
 async function testExportFlow(page) {
   await runReview(page, passNda);
   const exportButton = page.locator("#studioExportButton");
@@ -647,6 +708,35 @@ function normalizeWhitespace(value) {
   return String(value).replace(/\s+/g, " ").trim();
 }
 
+function osTmpDir() {
+  return fs.realpathSync(os.tmpdir());
+}
+
+function makeDocxFixture(docxPath, paragraphs) {
+  const script = `
+import sys
+from zipfile import ZipFile, ZIP_DEFLATED
+from xml.sax.saxutils import escape
+
+docx_path = sys.argv[1]
+paragraphs = sys.argv[2:]
+body = "".join(
+    '<w:p><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>'.format(escape(paragraph))
+    for paragraph in paragraphs
+)
+document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>'''
+with ZipFile(docx_path, "w", ZIP_DEFLATED) as archive:
+    archive.writestr("word/document.xml", document_xml)
+`;
+  const result = spawnSync(PYTHON, ["-c", script, docxPath, ...paragraphs], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`Could not create DOCX fixture: ${result.stderr || result.stdout}`);
+  }
+}
+
 function readDocxTrackChanges(docxPath) {
   const script = `
 import json
@@ -656,7 +746,9 @@ from zipfile import ZipFile
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 with ZipFile(sys.argv[1]) as archive:
-    root = ET.fromstring(archive.read("word/document.xml"))
+    document_xml = archive.read("word/document.xml").decode("utf-8")
+    root = ET.fromstring(document_xml)
+    settings_xml = archive.read("word/settings.xml").decode("utf-8") if "word/settings.xml" in archive.namelist() else ""
 
 def text_for_revision_state(node, accepted):
     tag = node.tag.rsplit("}", 1)[-1]
@@ -695,7 +787,13 @@ for paragraph in root.findall(".//w:p", W_NS):
             "deletions": paragraph_deletions,
             "insertions": paragraph_insertions,
         })
-print(json.dumps({"deletions": deletions, "insertions": insertions, "revisionParagraphs": revision_paragraphs}))
+print(json.dumps({
+    "deletions": deletions,
+    "insertions": insertions,
+    "revisionParagraphs": revision_paragraphs,
+    "documentXml": document_xml,
+    "hasTrackRevisions": "<w:trackRevisions" in settings_xml,
+}))
 `;
   const result = spawnSync(PYTHON, ["-c", script, docxPath], { encoding: "utf8" });
   if (result.status !== 0) {
