@@ -314,20 +314,40 @@ h3 {
 .tabbar {
   align-self: stretch;
   display: flex;
-  gap: 18px;
+  gap: 26px;
+  justify-content: flex-end;
+  margin-left: auto;
+  min-width: 0;
 }
 
 .tab-button {
+  align-items: center;
   background: transparent;
   border-bottom: 2px solid transparent;
   border-radius: 0;
   color: var(--ink-soft);
+  display: inline-flex;
+  gap: 8px;
   font-family: var(--display-font);
   font-size: 13px;
   font-weight: 700;
   height: 100%;
+  line-height: 1;
   padding: 0 0;
+  white-space: nowrap;
   width: auto;
+}
+
+.tab-icon {
+  display: block;
+  flex: 0 0 auto;
+  height: 17px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  fill: none;
+  width: 17px;
 }
 
 .tab-button:hover {
@@ -1858,6 +1878,18 @@ textarea::placeholder {
     flex-wrap: wrap;
     height: auto;
     padding: 12px 16px;
+  }
+
+  .tabbar {
+    flex: 1 1 100%;
+    gap: 18px;
+    justify-content: flex-start;
+    margin-left: 0;
+    overflow-x: auto;
+  }
+
+  .tab-button {
+    min-height: 38px;
   }
 
   .studio-review {
