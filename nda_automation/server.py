@@ -173,6 +173,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
 
+        _apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
+
         if source_document_bytes is not None:
             try:
                 report_bytes = build_source_redline_docx(source_document_bytes, review_result)
@@ -270,6 +272,64 @@ def _redline_download_filename(filename: str) -> str:
     safe_name = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in source_name)
     safe_name = safe_name.strip("-_") or "nda"
     return f"{safe_name}-redlined.docx"
+
+
+def _apply_manual_export_redlines(review_result: dict, manual_redlines: object) -> None:
+    if not isinstance(manual_redlines, list):
+        return
+
+    cleaned_redlines = [
+        redline
+        for redline in (_clean_manual_export_redline(item) for item in manual_redlines)
+        if redline is not None
+    ]
+    if not cleaned_redlines:
+        return
+
+    manual_paragraph_ids = {str(redline.get("paragraph_id")) for redline in cleaned_redlines}
+    existing_redlines = review_result.get("redline_edits", [])
+    if not isinstance(existing_redlines, list):
+        existing_redlines = []
+    review_result["redline_edits"] = cleaned_redlines + [
+        redline
+        for redline in existing_redlines
+        if not (isinstance(redline, dict) and str(redline.get("paragraph_id")) in manual_paragraph_ids)
+    ]
+
+
+def _clean_manual_export_redline(redline: object) -> dict | None:
+    if not isinstance(redline, dict):
+        return None
+
+    action = redline.get("action")
+    if action not in {"replace_paragraph", "delete_paragraph"}:
+        return None
+
+    paragraph_id = str(redline.get("paragraph_id") or "")
+    original_text = str(redline.get("original_text") or "").strip()
+    replacement_text = str(redline.get("replacement_text") or "").strip()
+    if not paragraph_id or not original_text:
+        return None
+    if action == "replace_paragraph" and not replacement_text:
+        return None
+
+    cleaned = {
+        "id": str(redline.get("id") or f"manual-{paragraph_id}"),
+        "clause_id": "manual_viewer_edit",
+        "status": "proposed",
+        "action": action,
+        "action_label": "Remove paragraph" if action == "delete_paragraph" else "Replace paragraph",
+        "paragraph_id": paragraph_id,
+        "original_text": original_text,
+        "replacement_text": "" if action == "delete_paragraph" else replacement_text,
+    }
+
+    for key in ("paragraph_index", "source_index"):
+        try:
+            cleaned[key] = int(redline.get(key))
+        except (TypeError, ValueError):
+            continue
+    return cleaned
 
 
 def _persist_export(data: bytes, filename: str) -> Path | None:

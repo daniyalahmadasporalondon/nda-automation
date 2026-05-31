@@ -575,7 +575,14 @@ async function testExportFlow(page) {
   ]);
   const editedDownloadedPath = await editedDownload.path();
   assert.ok(editedDownloadedPath, "edited export download path should be available");
-  assert.match(readDocxDocumentXml(editedDownloadedPath), /Mutual Non-Disclosure Agreement with edits/);
+  const editedChanges = readDocxTrackChanges(editedDownloadedPath);
+  assert.ok(
+    editedChanges.revisionParagraphs.some((paragraph) => (
+      normalizeWhitespace(paragraph.original) === "Mutual Non-Disclosure Agreement"
+      && normalizeWhitespace(paragraph.accepted) === "Mutual Non-Disclosure Agreement with edits"
+    )),
+    "edited export should preserve the browser manual edit as a native Word tracked change",
+  );
 }
 
 async function assertRedlinePreview(paragraphLocator, { originalText, insertedText, editableCount }) {
@@ -695,21 +702,6 @@ print(json.dumps({"deletions": deletions, "insertions": insertions, "revisionPar
     throw new Error(`Could not read exported DOCX track changes: ${result.stderr || result.stdout}`);
   }
   return JSON.parse(result.stdout);
-}
-
-function readDocxDocumentXml(docxPath) {
-  const script = `
-import sys
-from zipfile import ZipFile
-
-with ZipFile(sys.argv[1]) as archive:
-    print(archive.read("word/document.xml").decode("utf-8"))
-`;
-  const result = spawnSync(PYTHON, ["-c", script, docxPath], { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(`Could not read exported DOCX document XML: ${result.stderr || result.stdout}`);
-  }
-  return result.stdout;
 }
 
 function wait(ms) {

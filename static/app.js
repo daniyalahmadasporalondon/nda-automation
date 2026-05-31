@@ -184,6 +184,7 @@ async function exportReviewDocx() {
       text,
       reviewed_text: text,
       title: studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE,
+      manual_redline_edits: manualExportRedlines(),
     };
     if (state.selectedDocument) {
       payload.filename = state.selectedDocument.name;
@@ -317,6 +318,32 @@ function renderExportSuccess(filename, savedPath, savedUrl, fallbackVerb = "expo
 function suggestedExportFilename() {
   if (state.selectedDocument?.name) return redlineDownloadFilename(state.selectedDocument.name);
   return "nda-review-report.docx";
+}
+
+function manualExportRedlines() {
+  const originalById = new Map(state.reviewOriginalParagraphs.map((paragraph) => [paragraph.id, paragraph]));
+  return state.reviewParagraphs
+    .map((paragraph) => {
+      const original = originalById.get(paragraph.id);
+      if (!original) return null;
+      const originalText = String(original.text || "").trim();
+      const replacementText = String(paragraph.text || "").trim();
+      if (originalText === replacementText) return null;
+      const isDelete = !replacementText;
+      return {
+        id: `manual-${paragraph.id}`,
+        clause_id: "manual_viewer_edit",
+        status: "proposed",
+        action: isDelete ? REDLINE_DELETE_PARAGRAPH : REDLINE_REPLACE_PARAGRAPH,
+        action_label: isDelete ? "Remove paragraph" : "Replace paragraph",
+        paragraph_id: paragraph.id,
+        paragraph_index: paragraph.index,
+        source_index: paragraph.source_index || paragraph.index,
+        original_text: originalText,
+        replacement_text: replacementText,
+      };
+    })
+    .filter(Boolean);
 }
 
 function redlineDownloadFilename(filename) {

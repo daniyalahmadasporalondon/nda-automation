@@ -256,6 +256,39 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Reviewed Text NDA", document_xml)
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
 
+    def test_review_docx_export_preserves_manual_viewer_redlines(self):
+        status, payload, _headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "text": "Do you see problem?",
+                "reviewed_text": "Do you see problem?",
+                "manual_redline_edits": [
+                    {
+                        "id": "manual-p1",
+                        "action": "replace_paragraph",
+                        "paragraph_id": "p1",
+                        "paragraph_index": 1,
+                        "source_index": 1,
+                        "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
+                        "replacement_text": "Do you see problem?",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            document_root = ET.fromstring(archive.read("word/document.xml"))
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        self.assertIn(("NON-DISCLOSURE AGREEMENT (NDA)", "Do you see problem?"), revision_states)
+
     def test_review_docx_export_download_does_not_require_saved_copy(self):
         with patch.object(server_module, "EXPORTS_DIR", None):
             status, payload, headers = self.request_with_headers(
