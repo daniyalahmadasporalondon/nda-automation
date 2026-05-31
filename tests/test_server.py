@@ -444,6 +444,35 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(list_payload["matters"], [])
         self.assertFalse(stored_path_exists)
 
+    def test_matter_delete_removes_repository_item_and_uploaded_document(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Delete Me.docx",
+                    document_bytes=b"delete-me",
+                    extracted_text="delete me",
+                    review_result={"clauses": []},
+                    triage={"triage_status": "needs_redline", "issue_count": 1},
+                )
+                stored_path = matter_store.UPLOADS_DIR / matter["stored_filename"]
+                delete_status, delete_payload = self.request("DELETE", f"/api/matters/{matter['id']}")
+                fetch_status, fetch_payload = self.request("GET", f"/api/matters/{matter['id']}")
+                list_status, list_payload = self.request("GET", "/api/matters")
+                missing_delete_status, missing_delete_payload = self.request("DELETE", "/api/matters/matter_missing")
+                stored_path_exists = stored_path.exists()
+
+        self.assertEqual(delete_status, 200)
+        self.assertEqual(delete_payload["deleted"]["id"], matter["id"])
+        self.assertNotIn("stored_filename", delete_payload["deleted"])
+        self.assertEqual(fetch_status, 404)
+        self.assertEqual(fetch_payload["error"], "Matter not found.")
+        self.assertEqual(list_status, 200)
+        self.assertEqual(list_payload["matters"], [])
+        self.assertEqual(missing_delete_status, 404)
+        self.assertEqual(missing_delete_payload["error"], "Matter not found.")
+        self.assertFalse(stored_path_exists)
+
     def test_public_matter_uses_explicit_allowlist(self):
         public = matter_view.public_matter({
             "id": "matter_1",

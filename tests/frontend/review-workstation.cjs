@@ -432,9 +432,14 @@ async function testStructuredEvidenceAndRationale(page) {
 
 async function testRepositoryMatterImportAndFreshReview(page) {
   const docxPath = path.join(os.tmpdir(), `repository-matter-${Date.now()}.docx`);
+  const deleteDocxPath = path.join(os.tmpdir(), `repository-delete-${Date.now()}.docx`);
+  const deleteStem = path.basename(deleteDocxPath, ".docx");
   makeDocxFixture(docxPath, [
     "This Agreement shall be governed by the laws of California.",
     "The Recipient must not circumvent the Company.",
+  ]);
+  makeDocxFixture(deleteDocxPath, [
+    "This Agreement shall be governed by the laws of Delaware.",
   ]);
 
   await page.route("**/api/gmail/status", async (route) => {
@@ -477,10 +482,16 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator("#repositoryFileInput").count(), 0);
   assert.equal(await page.getByText("Import NDA", { exact: true }).count(), 0);
   await createRepositoryMatter(page, docxPath);
+  await createRepositoryMatter(page, deleteDocxPath);
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
-  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
+  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "2");
+  const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
+  await deleteCard.getByRole("button", { name: "Delete matter" }).click();
+  await waitForRepositoryCount(page, "gmail_demo", "1");
+  assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
+  assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
   assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
   await assertTextContains(page.locator(".repository-card"), "Manual upload");

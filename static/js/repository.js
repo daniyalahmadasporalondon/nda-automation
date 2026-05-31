@@ -76,6 +76,17 @@ const RepositoryView = (() => {
         list.querySelectorAll("[data-matter-id]").forEach((card) => {
           card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
           card.addEventListener("click", () => openMatter(card.dataset.matterId));
+          card.addEventListener("keydown", (event) => {
+            if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
+            event.preventDefault();
+            openMatter(card.dataset.matterId);
+          });
+        });
+        list.querySelectorAll("[data-delete-matter-id]").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteMatter(button.dataset.deleteMatterId, button);
+          });
         });
       });
     }
@@ -90,6 +101,39 @@ const RepositoryView = (() => {
         renderDetailPanel(payload.matter);
       } catch (error) {
         console.warn(error.message || "Matter could not load");
+      }
+    }
+
+    async function deleteMatter(matterId, control) {
+      if (!matterId) return;
+      pendingSendMatterId = null;
+      if (control) {
+        control.disabled = true;
+        control.setAttribute("aria-busy", "true");
+      }
+      try {
+        const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}`, { method: "DELETE" });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Matter could not be deleted");
+        state.matters = state.matters.filter((matter) => matter.id !== matterId);
+        if (selectedMatter?.id === matterId) {
+          selectedMatter = null;
+          renderEmptyPanel();
+        }
+        if (state.selectedMatter?.id === matterId) {
+          state.selectedMatter = null;
+        }
+        renderBoard();
+      } catch (error) {
+        if (control?.isConnected) {
+          control.disabled = false;
+          control.removeAttribute("aria-busy");
+        }
+        if (repositoryMatterPanel && !repositoryMatterPanel.hidden) {
+          setPanelMessage(error.message || "Matter could not be deleted");
+        } else {
+          console.warn(error.message || "Matter could not be deleted");
+        }
       }
     }
 
@@ -435,13 +479,16 @@ const RepositoryView = (() => {
     const issueCount = Number(matter.issue_count || 0);
     const date = formatMatterDate(matter.received_at || matter.created_at);
     return `
-      <button class="repository-card" type="button" data-matter-id="${escapeHtml(matter.id)}">
+      <article class="repository-card" role="button" tabindex="0" data-matter-id="${escapeHtml(matter.id)}" aria-label="Open matter ${escapeHtml(matterSubject(matter))}">
         <span class="repository-card-top">
           <span class="repository-card-badges">
             <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
             <span class="repository-source-badge ${escapeHtml(sourceBadgeClass(matter.source_type))}">${escapeHtml(sourceTypeLabel(matter.source_type))}</span>
           </span>
-          <span>${escapeHtml(date)}</span>
+          <span class="repository-card-top-actions">
+            <span>${escapeHtml(date)}</span>
+            <button class="repository-card-delete" type="button" data-delete-matter-id="${escapeHtml(matter.id)}" aria-label="Delete matter" title="Delete matter">x</button>
+          </span>
         </span>
         <strong>${escapeHtml(matterSubject(matter))}</strong>
         <span class="repository-card-source">${escapeHtml(matterSender(matter))}</span>
@@ -451,7 +498,7 @@ const RepositoryView = (() => {
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
           <span>${escapeHtml(boardColumnLabel(matter.board_column))}</span>
         </span>
-      </button>
+      </article>
     `;
   }
 

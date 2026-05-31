@@ -242,6 +242,16 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500)
 
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            if path.startswith("/api/matters/"):
+                self._handle_matter_delete(path)
+                return
+            self._send_json({"error": "Not found"}, status=404)
+        except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500)
+
     def _handle_matter_list(self, *, send_body: bool = True) -> None:
         try:
             self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())}, send_body=send_body)
@@ -442,6 +452,18 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Matter not found."}, status=404)
             return
         self._send_json({"matter": matter_view.public_matter(matter)})
+
+    def _handle_matter_delete(self, path: str) -> None:
+        matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
+        if not matter_id or "/" in matter_id:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+
+        matter = matter_store.delete_matter(matter_id)
+        if matter is None:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        self._send_json({"deleted": matter_view.public_matter(matter)})
 
     def _handle_gmail_import(self) -> None:
         self._send_json({"error": "Manual Gmail sync is disabled. Use Admin sync frequency."}, status=410)

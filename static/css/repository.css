@@ -153,6 +153,7 @@
   border-radius: 12px;
   box-shadow: 0 8px 24px -18px rgba(26, 19, 51, 0.24);
   color: var(--ink);
+  cursor: pointer;
   display: grid;
   gap: 7px;
   height: auto;
@@ -166,6 +167,12 @@
   border-color: var(--border-strong);
   box-shadow: 0 14px 30px -22px rgba(26, 19, 51, 0.32);
   transform: translateY(-1px);
+}
+
+.repository-card:focus-visible {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(96, 48, 205, 0.14), 0 14px 30px -22px rgba(26, 19, 51, 0.32);
+  outline: none;
 }
 
 .repository-card.active {
@@ -189,6 +196,38 @@
   font-weight: 700;
   justify-content: space-between;
   min-width: 0;
+}
+
+.repository-card-top-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.repository-card-delete {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 900;
+  height: 22px;
+  line-height: 1;
+  padding: 0;
+  width: 22px;
+}
+
+.repository-card-delete:hover:not(:disabled),
+.repository-card-delete:focus-visible {
+  background: rgba(255, 243, 242, 0.94);
+  border-color: rgba(239, 68, 68, 0.34);
+  color: #b42318;
+  outline: none;
+}
+
+.repository-card-delete:disabled {
+  opacity: 0.45;
 }
 
 .repository-card strong {

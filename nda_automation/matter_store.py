@@ -153,6 +153,18 @@ def reset_demo_repository() -> int:
     return len(matters)
 
 
+def delete_matter(matter_id: str) -> dict[str, Any] | None:
+    with _locked_store():
+        matters = _load_matters()
+        deleted_matter = next((matter for matter in matters if matter.get("id") == matter_id), None)
+        if deleted_matter is None:
+            return None
+        kept_matters = [matter for matter in matters if matter.get("id") != matter_id]
+        _save_matters(kept_matters)
+        _delete_stored_document(deleted_matter)
+        return deleted_matter
+
+
 def create_matter(
     *,
     source_filename: str,
