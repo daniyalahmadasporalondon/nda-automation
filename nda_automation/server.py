@@ -314,17 +314,12 @@ def _clean_manual_export_redline(redline: object) -> dict | None:
     if not isinstance(redline, dict):
         return None
 
-    action = redline.get("action")
-    if action not in {"replace_paragraph", "delete_paragraph"}:
+    common = _clean_export_redline_contract(redline, {"replace_paragraph", "delete_paragraph"})
+    if common is None:
         return None
 
-    paragraph_id = str(redline.get("paragraph_id") or "")
-    original_text = str(redline.get("original_text") or "").strip()
-    replacement_text = str(redline.get("replacement_text") or "").strip()
-    if not paragraph_id or not original_text:
-        return None
-    if action == "replace_paragraph" and not replacement_text:
-        return None
+    action = common["action"]
+    paragraph_id = common["paragraph_id"]
 
     cleaned = {
         "id": str(redline.get("id") or f"manual-{paragraph_id}"),
@@ -333,15 +328,11 @@ def _clean_manual_export_redline(redline: object) -> dict | None:
         "action": action,
         "action_label": "Remove paragraph" if action == "delete_paragraph" else "Replace paragraph",
         "paragraph_id": paragraph_id,
-        "original_text": original_text,
-        "replacement_text": "" if action == "delete_paragraph" else replacement_text,
+        "original_text": common["original_text"],
+        "replacement_text": common["replacement_text"],
     }
 
-    for key in ("paragraph_index", "source_index"):
-        try:
-            cleaned[key] = int(redline.get(key))
-        except (TypeError, ValueError):
-            continue
+    _copy_redline_indexes(redline, cleaned)
     return cleaned
 
 
@@ -349,12 +340,11 @@ def _clean_export_redline(redline: object) -> dict | None:
     if not isinstance(redline, dict):
         return None
 
-    action = redline.get("action")
-    if action not in {"replace_paragraph", "delete_paragraph", "insert_after_paragraph"}:
-        return None
-
-    paragraph_id = str(redline.get("paragraph_id") or "")
-    if not paragraph_id:
+    common = _clean_export_redline_contract(
+        redline,
+        {"replace_paragraph", "delete_paragraph", "insert_after_paragraph"},
+    )
+    if common is None:
         return None
 
     cleaned = {
@@ -380,31 +370,48 @@ def _clean_export_redline(redline: object) -> dict | None:
             "template_options",
         }
     }
-    cleaned["action"] = action
-    cleaned["paragraph_id"] = paragraph_id
+    cleaned.update(common)
+    _copy_redline_indexes(redline, cleaned, remove_invalid=True)
+    return cleaned
 
-    for text_key in ("original_text", "replacement_text", "anchor_text", "insert_text"):
-        if text_key in cleaned:
-            cleaned[text_key] = str(cleaned[text_key] or "")
 
-    original_text = str(cleaned.get("original_text") or "").strip()
-    replacement_text = str(cleaned.get("replacement_text") or "").strip()
-    insert_text = str(cleaned.get("insert_text") or "").strip()
-    if action in {"replace_paragraph", "delete_paragraph"} and not original_text:
-        return None
-    if action == "replace_paragraph" and not replacement_text:
-        return None
-    if action == "delete_paragraph":
-        cleaned["replacement_text"] = ""
-    if action == "insert_after_paragraph" and not insert_text:
+def _clean_export_redline_contract(redline: dict, allowed_actions: set[str]) -> dict | None:
+    action = redline.get("action")
+    if action not in allowed_actions:
         return None
 
+    paragraph_id = str(redline.get("paragraph_id") or "")
+    if not paragraph_id:
+        return None
+
+    original_text = str(redline.get("original_text") or "")
+    replacement_text = str(redline.get("replacement_text") or "")
+    anchor_text = str(redline.get("anchor_text") or "")
+    insert_text = str(redline.get("insert_text") or "")
+    if action in {"replace_paragraph", "delete_paragraph"} and not original_text.strip():
+        return None
+    if action == "replace_paragraph" and not replacement_text.strip():
+        return None
+    if action == "insert_after_paragraph" and not insert_text.strip():
+        return None
+
+    return {
+        "action": action,
+        "paragraph_id": paragraph_id,
+        "original_text": original_text,
+        "replacement_text": "" if action == "delete_paragraph" else replacement_text,
+        "anchor_text": anchor_text,
+        "insert_text": insert_text,
+    }
+
+
+def _copy_redline_indexes(source: dict, target: dict, *, remove_invalid: bool = False) -> None:
     for key in ("paragraph_index", "source_index"):
         try:
-            cleaned[key] = int(cleaned[key])
+            target[key] = int(source.get(key))
         except (TypeError, ValueError, KeyError):
-            cleaned.pop(key, None)
-    return cleaned
+            if remove_invalid:
+                target.pop(key, None)
 
 
 def _persist_export(data: bytes, filename: str) -> Path | None:
