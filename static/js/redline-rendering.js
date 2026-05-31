@@ -42,7 +42,7 @@ function paragraphViewModel(paragraph, context) {
   const selectedRedline = redlines.find((edit) => edit.clause_id === context.selectedClauseId);
   const manualRedline = manualParagraphRedline(paragraph, context.originalParagraphs);
   const primaryClause = selectedClause || linkedClauses.find((clause) => !clauseStatus(clause).passes) || linkedClauses[0];
-  const primaryRedline = manualRedline || selectedRedline || redlines[0] || null;
+  const primaryRedline = manualRedline || selectedRedline || primaryBackendRedline(redlines, redlineClauses) || null;
   const visibleRedlines = visibleParagraphRedlines(redlines, manualRedline, selectedRedline, primaryRedline);
 
   return {
@@ -65,6 +65,14 @@ function visibleParagraphRedlines(redlines, manualRedline, selectedRedline, prim
   if (manualRedline) return redlines.filter(isInsertionRedline);
   if (redlines.every(isInsertionRedline)) return selectedRedline ? [selectedRedline] : redlines;
   return primaryRedline ? [primaryRedline] : [];
+}
+
+function primaryBackendRedline(redlines, redlineClauses) {
+  const prohibitedDelete = redlines.find((edit) => {
+    const clause = redlineClauses.find((candidate) => candidate.id === edit.clause_id);
+    return edit.action === REDLINE_DELETE_PARAGRAPH && isFailedProhibitedClause(clause);
+  });
+  return prohibitedDelete || redlines.find((edit) => !isInsertionRedline(edit)) || redlines[0];
 }
 
 function renderDocumentParagraph(model) {
@@ -108,10 +116,15 @@ function renderRedlineDocumentParagraph(model) {
       model.manualRedline ? "manual-redline" : "",
       model.primaryRedline?.action === REDLINE_DELETE_PARAGRAPH ? "redline-delete" : "",
       model.primaryRedline?.action === REDLINE_INSERT_AFTER_PARAGRAPH ? "redline-insert" : "",
+      isFailedProhibitedClause(model.primaryClause) ? "prohibited" : "",
       model.primaryClause && !clauseStatus(model.primaryClause).passes ? "verify" : "",
       model.primaryClause && clauseStatus(model.primaryClause).passes ? "match" : "",
     ],
   });
+}
+
+function isFailedProhibitedClause(clause) {
+  return clause?.type === "prohibited" && !clauseStatus(clause).passes;
 }
 
 function renderParagraphFrame(model, { body, classes = [] }) {

@@ -257,6 +257,20 @@ async function testBackendRedlineModes(page) {
   assert.equal(checkPillStyles.color, "rgb(180, 35, 24)");
   assert.match(checkPillStyles.boxShadow, /252, 165, 165/);
 
+  const prohibitedParagraphStyles = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      hasProhibitedClass: node.classList.contains("prohibited"),
+      backgroundColor: styles.backgroundColor,
+      borderLeftColor: styles.borderLeftColor,
+      borderLeftWidth: styles.borderLeftWidth,
+    };
+  });
+  assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
+  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
+  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
+  assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(239, 68, 68, 0.08)");
+
   await page.locator('[data-studio-clause-id="term_and_survival"]').click();
 
   const termParagraph = page.locator('[data-paragraph-id="p1"]');

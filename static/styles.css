@@ -838,6 +838,12 @@ h3 {
   border-color: rgba(239, 68, 68, 0.26);
 }
 
+.studio-doc-paragraph.prohibited {
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 4px solid var(--red);
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.2);
+}
+
 .studio-doc-paragraph.redline-insert {
   background: #effdf5;
   border-color: rgba(16, 185, 129, 0.3);
