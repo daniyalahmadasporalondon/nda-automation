@@ -125,7 +125,6 @@ const RepositoryView = (() => {
   function sourceTypeLabel(sourceType) {
     const labels = {
       gmail_demo: "Gmail Demo",
-      manual_upload: "Manual upload",
     };
     return labels[sourceType] || sourceType || "Source";
   }

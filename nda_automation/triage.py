@@ -35,13 +35,3 @@ def triage_review_result(review_result: dict) -> dict:
         "requirements_passed": int(review_result.get("requirements_passed") or 0),
         "requirements_failed": int(review_result.get("requirements_failed") or failed_count),
     }
-
-
-def intake_error_triage() -> dict:
-    return {
-        "triage_status": "intake_error",
-        "next_action": "Fix intake error",
-        "issue_count": 0,
-        "requirements_passed": 0,
-        "requirements_failed": 0,
-    }
