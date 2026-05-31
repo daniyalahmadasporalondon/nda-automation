@@ -95,6 +95,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 review_result.get("redline_edits", []),
                 review_result.get("paragraphs", []),
             )
+            _ensure_document_section_properties(document_root)
 
             overrides: Dict[str, bytes] = {
                 "word/document.xml": _xml_bytes(document_root),
@@ -615,7 +616,7 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
 
 
 def _revision_attrs(revision_id: int) -> str:
-    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return f'w:id="{revision_id}" w:author="nda-automation" w:date="{timestamp}"'
 
 
@@ -638,6 +639,33 @@ def _document_xml(body_xml: str) -> str:
     </w:sectPr>
   </w:body>
 </w:document>"""
+
+
+def _ensure_document_section_properties(document_root: ET.Element) -> None:
+    body = document_root.find(_w_tag("body"))
+    if body is None:
+        body = ET.SubElement(document_root, _w_tag("body"))
+    if body.find(_w_tag("sectPr")) is not None:
+        return
+    body.append(_default_section_properties())
+
+
+def _default_section_properties() -> ET.Element:
+    section = ET.Element(_w_tag("sectPr"))
+    ET.SubElement(section, _w_tag("pgSz"), {
+        _w_tag("w"): "12240",
+        _w_tag("h"): "15840",
+    })
+    ET.SubElement(section, _w_tag("pgMar"), {
+        _w_tag("top"): "1440",
+        _w_tag("right"): "1440",
+        _w_tag("bottom"): "1440",
+        _w_tag("left"): "1440",
+        _w_tag("header"): "720",
+        _w_tag("footer"): "720",
+        _w_tag("gutter"): "0",
+    })
+    return section
 
 
 def _settings_xml() -> str:

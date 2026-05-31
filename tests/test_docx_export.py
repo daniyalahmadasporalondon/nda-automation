@@ -534,6 +534,19 @@ class DocxExportTests(unittest.TestCase):
 
         assert_docx_package_healthy(self, redlined_docx)
 
+    def test_source_docx_export_adds_missing_section_properties(self):
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        self.assertIsNotNone(document_root.find(".//w:body/w:sectPr", W_NS))
+
     def test_source_docx_export_marks_paragraph_deletes_and_insertions(self):
         source_docx = make_source_docx([
             "The parties will discuss a possible transaction.",

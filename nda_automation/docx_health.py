@@ -96,6 +96,17 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
                 return errors
             if settings_root.find(_w_tag("trackRevisions")) is None:
                 errors.append("settings.xml does not enable Track Changes.")
+
+            try:
+                document_root = ET.fromstring(archive.read("word/document.xml"))
+            except (KeyError, ET.ParseError) as exc:
+                errors.append(f"document.xml is unreadable: {exc}.")
+                return errors
+            body = document_root.find(_w_tag("body"))
+            if body is None:
+                errors.append("document.xml is missing w:body.")
+            elif body.find(_w_tag("sectPr")) is None:
+                errors.append("document.xml is missing section properties.")
     except BadZipFile:
         errors.append("Export is not a readable DOCX zip package.")
     return errors
