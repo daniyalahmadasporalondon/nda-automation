@@ -5,27 +5,20 @@ import base64
 import binascii
 import json
 import mimetypes
-from copy import deepcopy
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
-from .docx_export import (
-    DOCX_MIME,
-    DocxExportError,
-    build_review_report_docx,
-    build_source_redline_docx,
-    validate_docx_open_health,
-)
+from .docx_export import DOCX_MIME, DocxExportError
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
-from . import export_service, gmail_integration
+from . import export_service, gmail_integration, matter_view, redline_export_service
 from .ingestion_service import create_matter_from_docx
 from . import matter_store
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+MAX_DOCUMENT_BYTES = redline_export_service.MAX_DOCUMENT_BYTES
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
@@ -53,7 +46,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/matters":
             try:
-                self._send_json({"matters": matter_store.list_matters()})
+                self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())})
             except matter_store.MatterStoreError as error:
                 self._send_json({"error": str(error)}, status=500)
             return
@@ -67,7 +60,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if matter is None:
                 self._send_json({"error": "Matter not found."}, status=404)
                 return
-            self._send_json({"matter": matter})
+            self._send_json({"matter": matter_view.public_matter(matter)})
             return
         if path.startswith("/static/"):
             requested = (STATIC_DIR / path.removeprefix("/static/")).resolve()
@@ -223,7 +216,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
 
-        self._send_json({"matter": matter}, status=201)
+        self._send_json({"matter": matter_view.public_matter(matter)}, status=201)
 
     def _matter_intake_metadata(self, payload: dict, filename: str) -> dict[str, str]:
         metadata = {
@@ -267,7 +260,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if matter is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
-        self._send_json({"matter": matter})
+        self._send_json({"matter": matter_view.public_matter(matter)})
 
     def _handle_gmail_import(self) -> None:
         payload = self._read_json_payload()
@@ -290,6 +283,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except gmail_integration.GmailIntegrationError as error:
             self._send_json({"error": str(error)}, status=503)
             return
+        if isinstance(result.get("imported"), list):
+            result = {**result, "imported": matter_view.public_matters(result["imported"])}
         self._send_json(result)
 
     def _handle_gmail_send_redline(self) -> None:
@@ -314,7 +309,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            report_bytes, download_filename = self._redline_docx_for_matter(matter_id.strip(), payload)
+            redline_export = redline_export_service.build_matter_redline(matter_id.strip(), payload)
+        except redline_export_service.DocxOpenHealthError as error:
+            self._send_json({"error": str(error), "details": error.details}, status=500)
+            return
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
@@ -323,7 +321,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            sent = gmail_integration.send_redline_email(matter, report_bytes, download_filename)
+            sent = gmail_integration.send_redline_email(matter, redline_export.data, redline_export.filename)
         except gmail_integration.GmailIntegrationError as error:
             self._send_json({"error": str(error)}, status=503)
             return
@@ -334,7 +332,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "board_column": "redline_ready",
                 "last_outbound_account": sent.get("outbound_account", ""),
                 "last_outbound_at": sent.get("sent_at", ""),
-                "last_outbound_filename": download_filename,
+                "last_outbound_filename": redline_export.filename,
                 "last_outbound_message_id": sent.get("message_id", ""),
                 "last_outbound_subject": sent.get("subject", ""),
                 "last_outbound_thread_id": sent.get("thread_id", ""),
@@ -345,7 +343,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if updated_matter is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
-        self._send_json({"filename": download_filename, "matter": updated_matter, "sent": sent})
+        self._send_json({
+            "filename": redline_export.filename,
+            "matter": matter_view.public_matter(updated_matter),
+            "sent": sent,
+        })
 
     def _handle_review_docx_export(self) -> None:
         payload = self._read_json_payload()
@@ -382,96 +384,35 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             title = "NDA Review"
 
         try:
-            review_result, source_document_bytes, source_filename = self._review_result_for_export(payload, export_text)
+            redline_export = redline_export_service.build_review_export(payload, export_text, title=title)
+        except redline_export_service.DocxOpenHealthError as error:
+            self._send_json({
+                "error": str(error),
+                "details": error.details,
+            }, status=500)
+            return
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
         except ParagraphAlignmentError:
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
-
-        export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
-        export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
-
-        if source_document_bytes is not None:
-            try:
-                report_bytes = build_source_redline_docx(source_document_bytes, review_result)
-            except DocxExportError as error:
-                self._send_json({"error": str(error)}, status=400)
-                return
-            download_filename = export_service.redline_download_filename(source_filename)
-        else:
-            report_bytes = build_review_report_docx(review_result, title=title.strip())
-            download_filename = "nda-review-report.docx"
-
-        health_errors = validate_docx_open_health(report_bytes, require_styles=source_document_bytes is None)
-        if health_errors:
-            print(f"DOCX export health check failed: {'; '.join(health_errors)}")
-            self._send_json({
-                "error": "The exported Word document failed its open-health check.",
-                "details": health_errors,
-            }, status=500)
+        except DocxExportError as error:
+            self._send_json({"error": str(error)}, status=400)
             return
 
-        saved_path = export_service.persist_export(report_bytes, download_filename)
-        headers = {"X-Export-Verified": "word-package; track-revisions"}
-        if saved_path is not None:
+        headers = {"X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER}
+        if redline_export.saved_path is not None:
             headers.update({
-                "X-Export-Path": str(saved_path),
-                "X-Export-URL": f"/exports/{quote(saved_path.name)}",
+                "X-Export-Path": str(redline_export.saved_path),
+                "X-Export-URL": f"/exports/{quote(redline_export.saved_path.name)}",
             })
         self._send_download(
-            report_bytes,
-            download_filename,
+            redline_export.data,
+            redline_export.filename,
             DOCX_MIME,
             headers=headers,
         )
-
-    def _review_result_for_export(self, payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
-        matter_id = payload.get("matter_id")
-        if isinstance(matter_id, str) and matter_id.strip():
-            matter = matter_store.get_matter(matter_id.strip())
-            if matter is None:
-                raise DocxExtractionError("Matter not found.")
-            review_result = matter.get("review_result")
-            if not isinstance(review_result, dict):
-                raise DocxExtractionError("Matter does not have a stored review result.")
-            source_document_bytes = matter_store.get_source_document_bytes(matter)
-            source_filename = str(matter.get("source_filename") or "")
-            if source_document_bytes is None:
-                raise DocxExtractionError("Matter source document is missing from storage.")
-            return deepcopy(review_result), source_document_bytes, source_filename
-
-        filename = payload.get("filename", "")
-        content_base64 = payload.get("content_base64", "")
-        if isinstance(filename, str) and filename.lower().endswith(".docx") and isinstance(content_base64, str) and content_base64:
-            try:
-                document_bytes = base64.b64decode(content_base64, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise DocxExtractionError("The uploaded Word document could not be decoded.") from exc
-
-            if len(document_bytes) > MAX_DOCUMENT_BYTES:
-                raise DocxExtractionError("The Word document is larger than the 10 MB upload limit.")
-
-            extracted_paragraphs = extract_docx_paragraphs(document_bytes)
-            extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-            return review_nda(extracted_text, paragraphs=extracted_paragraphs), document_bytes, filename
-
-        return review_nda(fallback_text), None, ""
-
-    def _redline_docx_for_matter(self, matter_id: str, payload: dict | None = None) -> tuple[bytes, str]:
-        review_result, source_document_bytes, source_filename = self._review_result_for_export({"matter_id": matter_id}, "")
-        if source_document_bytes is None:
-            raise DocxExtractionError("Matter source document is missing from storage.")
-        payload = payload or {}
-        export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
-        export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
-        report_bytes = build_source_redline_docx(source_document_bytes, review_result)
-        health_errors = validate_docx_open_health(report_bytes, require_styles=False)
-        if health_errors:
-            print(f"DOCX export health check failed: {'; '.join(health_errors)}")
-            raise DocxExportError("The redlined Word document failed its open-health check.")
-        return report_bytes, export_service.redline_download_filename(source_filename)
 
     def _read_json_payload(self) -> dict | None:
         content_length = int(self.headers.get("Content-Length", "0"))

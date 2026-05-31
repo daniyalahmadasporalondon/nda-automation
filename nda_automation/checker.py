@@ -15,7 +15,7 @@ from .redline_actions import (
 from .inline_diff import diff_text_operation_dicts
 from .review_document import (
     Paragraph,
-    ParagraphAlignmentError,
+    ParagraphAlignmentError as ParagraphAlignmentError,
     align_document_paragraphs,
     split_document_paragraphs,
     validate_clause_evidence_trust,

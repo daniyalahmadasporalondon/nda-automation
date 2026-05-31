@@ -13,7 +13,7 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .inline_diff import diff_text_operations
-from .docx_health import validate_docx_open_health
+from .docx_health import validate_docx_open_health as validate_docx_open_health
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"

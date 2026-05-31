@@ -27,6 +27,12 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install lint tools
+        run: python -m pip install ruff
+
+      - name: Lint Python
+        run: ruff check nda_automation tests
+
       - name: Compile Python
         run: python -m py_compile nda_automation/*.py
 
@@ -35,9 +41,7 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
-          node --check static/app.js
-          node --check static/js/repository.js
-          node --check static/js/redline-rendering.js
+          find static -name '*.js' -print0 | xargs -0 -n1 node --check
           node --check tests/frontend/review-workstation.cjs
 
   frontend:

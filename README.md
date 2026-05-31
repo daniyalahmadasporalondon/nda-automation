@@ -2,7 +2,7 @@
 
 A focused NDA hard-clause review portal.
 
-The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` NDA attachments from a configured inbound Gmail account, while outbound redline sends use a separate configured Gmail account and require an explicit confirmation click.
+The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` NDA attachments from a configured inbound Gmail account, while outbound redline sends use the configured outbound Gmail role and require an explicit confirmation click.
 
 You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document for one-off review, or import a `.docx` into the Repository for matter-based review.
 

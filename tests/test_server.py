@@ -293,6 +293,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["source_filename"], "Acme NDA.docx")
         self.assertEqual(matter["document_title"], "Acme NDA")
         self.assertEqual(matter["sender"], "Manual upload")
+        self.assertEqual(matter["recipient_email"], "")
+        self.assertEqual(matter["can_send_redline"], False)
         self.assertEqual(matter["subject"], "Acme NDA")
         self.assertEqual(matter["attachment_filename"], "Acme NDA.docx")
         self.assertEqual(matter["message_snippet"], "Manual upload of Acme NDA.docx.")
@@ -308,6 +310,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(fetch_status, 200)
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
         self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
+        self.assertEqual(fetch_payload["matter"]["can_send_redline"], False)
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -395,6 +398,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["source_type"], "gmail_inbound")
         self.assertEqual(matter["board_column"], "gmail_demo")
         self.assertEqual(matter["sender"], "legal@example.com")
+        self.assertEqual(matter["recipient_email"], "legal@example.com")
+        self.assertEqual(matter["can_send_redline"], True)
         self.assertEqual(matter["subject"], "Please review our NDA")
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
@@ -516,7 +521,9 @@ class ServerTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["imported"], [{"id": "matter_1"}])
+        self.assertEqual(payload["imported"][0]["id"], "matter_1")
+        self.assertEqual(payload["imported"][0]["recipient_email"], "")
+        self.assertEqual(payload["imported"][0]["can_send_redline"], False)
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
     def test_gmail_send_payload_replies_in_thread_only_for_same_account(self):
@@ -656,8 +663,8 @@ class ServerTests(unittest.TestCase):
                 )
                 matter = create_payload["matter"]
                 self.assertGreater(len(matter["review_result"].get("redline_edits") or []), 0)
-                with patch.object(server_module, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module, "validate_docx_open_health", return_value=[]):
+                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
                             "message_id": "msg_outbound",
                             "outbound_account": "legal@aspora.com",
@@ -953,7 +960,11 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as exports_dir:
             with (
                 patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)),
-                patch.object(server_module, "validate_docx_open_health", return_value=["Missing DOCX parts: _rels/.rels."]),
+                patch.object(
+                    server_module.redline_export_service,
+                    "validate_docx_open_health",
+                    return_value=["Missing DOCX parts: _rels/.rels."],
+                ),
             ):
                 status, payload, headers = self.request_with_headers(
                     "POST",
@@ -982,7 +993,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
 
     def test_review_docx_export_reports_playbook_template_error(self):
-        with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+        with patch.object(server_module.redline_export_service, "review_nda", side_effect=PlaybookTemplateError("bad template")):
             status, payload = self.request(
                 "POST",
                 "/api/export-review-docx",

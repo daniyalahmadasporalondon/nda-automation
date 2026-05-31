@@ -157,8 +157,8 @@ const RepositoryView = (() => {
         : [];
       const isClosed = matter.board_column === "signed_closed";
       const subject = matterSubject(matter);
-      const recipient = recipientEmail(matter);
-      const canSendRedline = Boolean(recipient);
+      const recipient = MatterUtils.recipientEmail(matter);
+      const canSendRedline = MatterUtils.canSendRedline(matter);
       const confirmingSend = pendingSendMatterId === matter.id;
       repositoryMatterPanel.hidden = false;
       repositoryWorkspace?.classList.add("detail-open");
@@ -281,7 +281,7 @@ const RepositoryView = (() => {
     }
 
     async function sendRedline(matter) {
-      const recipient = recipientEmail(matter);
+      const recipient = MatterUtils.recipientEmail(matter);
       if (!recipient) {
         pendingSendMatterId = null;
         setPanelMessage("Matter sender is not an email address.");
@@ -447,14 +447,6 @@ const RepositoryView = (() => {
       gmail_inbound: "Gmail Inbound",
     };
     return labels[sourceType] || sourceType || "Source";
-  }
-
-  function recipientEmail(matter) {
-    const sender = matterSender(matter);
-    const bracketMatch = sender.match(/<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>/);
-    const candidate = bracketMatch ? bracketMatch[1] : sender;
-    const emailMatch = candidate.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    return emailMatch ? emailMatch[0] : "";
   }
 
   function boardColumnLabel(boardColumn) {
