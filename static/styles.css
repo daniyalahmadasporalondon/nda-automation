@@ -712,8 +712,8 @@ h3 {
 
 .studio-doc-toolbar {
   align-items: center;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex: 0 0 auto;
   height: 36px;
