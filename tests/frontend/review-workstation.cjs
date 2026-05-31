@@ -40,6 +40,7 @@ const tests = [
   ["covers inline diff algorithm edge cases", testInlineDiffAlgorithmEdges],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
+  ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
   ["guards DOCX upload review edit export bedrock workflow", testBedrockExportGuardrail],
@@ -402,6 +403,42 @@ async function testClauseAnchorCycling(page) {
   await nonCircumventionCard.click();
   await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
   assert.equal(await page.locator('[data-paragraph-id="p1"]').evaluate((node) => node.classList.contains("paragraph-pulse")), false);
+}
+
+async function testClauseDecisionControls(page) {
+  await runReview(page, "This Agreement shall be governed by the laws of California.");
+
+  await page.locator('[data-studio-clause-id="governing_law"]').click();
+  await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
+  await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
+
+  await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
+  await assertTextContains(page.locator('[data-issue-card-id="signatures"] .studio-export-state'), "IGNORED IN EXPORT");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#studioExportButton").click(),
+  ]);
+  const exportedPath = await download.path();
+  assert.ok(exportedPath, "decision export download path should be available");
+  const exportedChanges = readDocxTrackChanges(exportedPath);
+  assert.ok(
+    exportedChanges.revisionParagraphs.some((paragraph) => (
+      normalizeWhitespace(paragraph.original) === "This Agreement shall be governed by the laws of California."
+      && normalizeWhitespace(paragraph.accepted) === "This Agreement shall be governed by the laws of the DIFC."
+    )),
+    "selected template option should drive the exported governing-law redline",
+  );
+  assert.equal(
+    exportedChanges.insertions.some((text) => text.includes("For [Party 1 legal name]")),
+    false,
+    "ignored signature redline should not be exported",
+  );
+  assert.equal(
+    exportedChanges.insertions.some((text) => text.includes("England and Wales")),
+    false,
+    "default governing-law template should not leak after choosing DIFC",
+  );
 }
 
 async function testManualViewerEditRedline(page) {

@@ -1124,6 +1124,17 @@ textarea::placeholder {
   width: 100%;
 }
 
+.studio-issue-select {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: grid;
+  gap: 9px;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
 .studio-issue-card.check {
   background: var(--red-bg);
   border-color: var(--red-border);
@@ -1200,6 +1211,51 @@ textarea::placeholder {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.4;
+}
+
+.studio-export-state {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.studio-export-state.included {
+  color: var(--green-ink);
+}
+
+.studio-export-state.ignored {
+  color: var(--red-ink);
+}
+
+.studio-export-controls,
+.detail-export-controls {
+  display: flex;
+  gap: 7px;
+}
+
+.export-choice {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
+.export-choice.active {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.export-choice[data-export-decision="ignore"].active {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
 }
 
 .studio-empty {
@@ -1418,7 +1474,9 @@ textarea::placeholder {
   display: grid;
   gap: 4px;
   padding: 9px 10px;
+  text-align: left;
   transition: background 0.18s ease, border-color 0.18s ease;
+  width: 100%;
 }
 
 .redline-option.selected {

@@ -173,6 +173,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
 
+        _apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
         _apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
 
         if source_document_bytes is not None:
@@ -274,6 +275,18 @@ def _redline_download_filename(filename: str) -> str:
     return f"{safe_name}-redlined.docx"
 
 
+def _apply_selected_export_redlines(review_result: dict, selected_redlines: object) -> None:
+    if not isinstance(selected_redlines, list):
+        return
+
+    cleaned_redlines = [
+        redline
+        for redline in (_clean_export_redline(item) for item in selected_redlines)
+        if redline is not None
+    ]
+    review_result["redline_edits"] = cleaned_redlines
+
+
 def _apply_manual_export_redlines(review_result: dict, manual_redlines: object) -> None:
     if not isinstance(manual_redlines, list):
         return
@@ -329,6 +342,56 @@ def _clean_manual_export_redline(redline: object) -> dict | None:
             cleaned[key] = int(redline.get(key))
         except (TypeError, ValueError):
             continue
+    return cleaned
+
+
+def _clean_export_redline(redline: object) -> dict | None:
+    if not isinstance(redline, dict):
+        return None
+
+    action = redline.get("action")
+    if action not in {"replace_paragraph", "delete_paragraph", "insert_after_paragraph"}:
+        return None
+
+    paragraph_id = str(redline.get("paragraph_id") or "")
+    if not paragraph_id:
+        return None
+
+    cleaned = {
+        key: value
+        for key, value in redline.items()
+        if key in {
+            "id",
+            "clause_id",
+            "clause_name",
+            "paragraph_id",
+            "paragraph_index",
+            "source_index",
+            "action",
+            "action_label",
+            "status",
+            "original_text",
+            "replacement_text",
+            "reason",
+            "target_position",
+            "anchor_text",
+            "insert_text",
+            "selected_template_id",
+            "template_options",
+        }
+    }
+    cleaned["action"] = action
+    cleaned["paragraph_id"] = paragraph_id
+
+    for text_key in ("original_text", "replacement_text", "anchor_text", "insert_text"):
+        if text_key in cleaned:
+            cleaned[text_key] = str(cleaned[text_key] or "")
+
+    for key in ("paragraph_index", "source_index"):
+        try:
+            cleaned[key] = int(cleaned[key])
+        except (TypeError, ValueError, KeyError):
+            cleaned.pop(key, None)
     return cleaned
 
 

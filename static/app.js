@@ -31,6 +31,8 @@ const state = {
   reviewSourceText: "",
   selectedReviewClauseId: null,
   clauseJumpIndexes: {},
+  exportClauseDecisions: {},
+  redlineTemplateSelections: {},
   lastExport: null,
   documentViewMode: VIEW_MODE_REDLINE,
 };
@@ -107,6 +109,8 @@ function resetReviewResults() {
   state.reviewSourceText = "";
   state.selectedReviewClauseId = null;
   state.clauseJumpIndexes = {};
+  state.exportClauseDecisions = {};
+  state.redlineTemplateSelections = {};
   state.lastExport = null;
 }
 
@@ -184,6 +188,7 @@ async function exportReviewDocx() {
       text,
       reviewed_text: text,
       title: studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE,
+      export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
     };
     if (state.selectedDocument) {
@@ -421,6 +426,8 @@ function renderResult(result, reviewedText) {
     text: String(paragraph.text || ""),
   }));
   state.reviewRedlines = result.redline_edits || [];
+  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
+  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.reviewDirty = false;
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
@@ -481,19 +488,38 @@ function renderStudioIssueList(clauses) {
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseStatus(clause);
-      return `
-        <button class="studio-issue-card ${selected} ${status.tone}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
-          <span class="studio-issue-card-top">
-            <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
-            <strong class="studio-issue-pill ${status.tone}">${status.pillLabel}</strong>
+      const redlineCount = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id).length;
+      const canDecide = redlineCount > 0;
+      const included = clauseExportIncluded(clause.id);
+      const exportState = canDecide
+        ? `<span class="studio-export-state ${included ? "included" : "ignored"}">${included ? "Included in export" : "Ignored in export"}</span>`
+        : "";
+      const exportControls = canDecide
+        ? `
+          <span class="studio-export-controls" role="group" aria-label="${escapeHtml(clause.name)} export decision">
+            <button class="export-choice ${included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Include</button>
+            <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
           </span>
-          <span class="studio-issue-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>
-        </button>
+        `
+        : "";
+      return `
+        <article class="studio-issue-card ${selected} ${status.tone} ${canDecide ? "decidable" : ""}" data-issue-card-id="${escapeHtml(clause.id)}">
+          <button class="studio-issue-select" type="button" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
+            <span class="studio-issue-card-top">
+              <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
+              <strong class="studio-issue-pill ${status.tone}">${status.pillLabel}</strong>
+            </span>
+            <span class="studio-issue-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>
+            ${exportState}
+          </button>
+          ${exportControls}
+        </article>
       `;
     })
     .join("");
 
   bindClauseSelection(studioIssueList, "[data-studio-clause-id]", "studioClauseId");
+  bindExportDecisionControls(studioIssueList);
 }
 
 function getClauseTotal(clauses = []) {
@@ -502,6 +528,60 @@ function getClauseTotal(clauses = []) {
 
 function hasReviewResults() {
   return state.reviewClauses.length > 0;
+}
+
+function defaultExportClauseDecisions(clauses, redlines) {
+  const clausesWithRedlines = new Set((redlines || []).map((edit) => edit.clause_id).filter(Boolean));
+  return Object.fromEntries((clauses || []).map((clause) => [
+    clause.id,
+    clausesWithRedlines.has(clause.id),
+  ]));
+}
+
+function defaultRedlineTemplateSelections(redlines) {
+  const selections = {};
+  (redlines || []).forEach((edit) => {
+    const selected = (edit.template_options || []).find((option) => option.selected) || (edit.template_options || [])[0];
+    if (selected?.id) selections[edit.id] = selected.id;
+  });
+  return selections;
+}
+
+function clauseExportIncluded(clauseId) {
+  return state.exportClauseDecisions[clauseId] !== false;
+}
+
+function redlineExportIncluded(edit) {
+  return clauseExportIncluded(edit.clause_id);
+}
+
+function effectiveReviewRedlines() {
+  return state.reviewRedlines
+    .filter(redlineExportIncluded)
+    .map(applyTemplateSelectionToRedline);
+}
+
+function applyTemplateSelectionToRedline(edit) {
+  const selectedOptionId = state.redlineTemplateSelections[edit.id];
+  const selectedOption = (edit.template_options || []).find((option) => option.id === selectedOptionId);
+  if (!selectedOption) return { ...edit };
+
+  const nextEdit = {
+    ...edit,
+    selected_template_id: selectedOption.id,
+    template_options: (edit.template_options || []).map((option) => ({
+      ...option,
+      selected: option.id === selectedOption.id,
+    })),
+  };
+  const selectedText = selectedOption.text || selectedOption.replacement_text || selectedOption.insert_text || "";
+  if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) {
+    nextEdit.insert_text = selectedOption.insert_text || selectedText;
+    nextEdit.replacement_text = selectedOption.replacement_text || selectedText;
+  } else {
+    nextEdit.replacement_text = selectedOption.replacement_text || selectedText;
+  }
+  return nextEdit;
 }
 
 function getDisplayClauses() {
@@ -515,7 +595,7 @@ function getSelectedReviewClause() {
 }
 
 function getSelectedRedlineEdits() {
-  return state.reviewRedlines.filter((edit) => edit.clause_id === state.selectedReviewClauseId);
+  return effectiveReviewRedlines().filter((edit) => edit.clause_id === state.selectedReviewClauseId);
 }
 
 function bindClauseSelection(container, selector, datasetKey) {
@@ -524,6 +604,26 @@ function bindClauseSelection(container, selector, datasetKey) {
       selectReviewClause(item.dataset[datasetKey], { jump: true });
     });
   });
+}
+
+function bindExportDecisionControls(container) {
+  container.querySelectorAll("[data-export-clause-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setClauseExportDecision(button.dataset.exportClauseId, button.dataset.exportDecision === "include");
+    });
+  });
+}
+
+function setClauseExportDecision(clauseId, included) {
+  state.exportClauseDecisions[clauseId] = included;
+  renderStudioResult({ clauses: state.reviewClauses });
+  updateExportButtonState();
+}
+
+function setRedlineTemplateSelection(editId, optionId) {
+  state.redlineTemplateSelections[editId] = optionId;
+  renderStudioResult({ clauses: state.reviewClauses });
 }
 
 function renderStudioClauseLane() {
@@ -570,6 +670,18 @@ function renderStudioDetail() {
     ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
   const redlineEdits = getSelectedRedlineEdits();
+  const selectedClauseRedlineCount = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id).length;
+  const exportDecisionBlock = selectedClauseRedlineCount
+    ? `
+      <div class="studio-detail-block export-decision-block">
+        <small>Export decision</small>
+        <div class="detail-export-controls" role="group" aria-label="${escapeHtml(clause.name)} export decision">
+          <button class="export-choice ${clauseExportIncluded(clause.id) ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="include" aria-pressed="${clauseExportIncluded(clause.id) ? "true" : "false"}">Include redline</button>
+          <button class="export-choice ${!clauseExportIncluded(clause.id) ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="ignore" aria-pressed="${!clauseExportIncluded(clause.id) ? "true" : "false"}">Ignore</button>
+        </div>
+      </div>
+    `
+    : "";
   const redlineBlock = redlineEdits.length
     ? `
       <div class="studio-detail-block redline-block">
@@ -602,6 +714,7 @@ function renderStudioDetail() {
         <p>${escapeHtml(whyText)}</p>
       </div>
       ${fixBlock}
+      ${exportDecisionBlock}
       ${redlineBlock}
       <div class="studio-detail-block">
         <small>Backend result</small>
@@ -610,6 +723,8 @@ function renderStudioDetail() {
       ${acceptableLanguage}
     </div>
   `;
+  bindExportDecisionControls(studioDetailPanel);
+  bindTemplateOptionControls(studioDetailPanel);
 }
 
 function renderDetailRedlineEdit(edit) {
@@ -646,13 +761,21 @@ function renderRedlineTemplateOptions(edit) {
     <div class="redline-options">
       <span class="redline-options-title">Jurisdiction options</span>
       ${options.map((option) => `
-        <div class="redline-option ${option.selected ? "selected" : ""}">
+        <button class="redline-option ${option.selected ? "selected" : ""}" type="button" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-pressed="${option.selected ? "true" : "false"}">
           <strong>${escapeHtml(option.label || "Option")}${option.selected ? " - Default" : ""}</strong>
           <span>${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}</span>
-        </div>
+        </button>
       `).join("")}
     </div>
   `;
+}
+
+function bindTemplateOptionControls(container) {
+  container.querySelectorAll("[data-redline-edit-id][data-redline-option-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setRedlineTemplateSelection(button.dataset.redlineEditId, button.dataset.redlineOptionId);
+    });
+  });
 }
 
 function renderStudioDocumentHighlights() {
@@ -672,7 +795,7 @@ function renderStudioDocumentHighlights() {
     clauses: state.reviewClauses,
     originalParagraphs: state.reviewOriginalParagraphs,
     paragraphs: state.reviewParagraphs,
-    redlines: state.reviewRedlines,
+    redlines: effectiveReviewRedlines(),
     selectedClauseId: state.selectedReviewClauseId,
     viewMode,
   });
@@ -753,12 +876,12 @@ function updateManualRedlinePreview(editable, paragraph) {
   if (!container) return;
   const manualRedline = manualParagraphRedline(paragraph, state.reviewOriginalParagraphs);
   const backendRedline = selectedBackendRedline(paragraph.id);
-  const hasBackendRedline = state.reviewRedlines.some((edit) => edit.paragraph_id === paragraph.id);
+  const hasBackendRedline = effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id);
   syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });
 }
 
 function selectedBackendRedline(paragraphId) {
-  const paragraphRedlines = state.reviewRedlines.filter((edit) => edit.paragraph_id === paragraphId);
+  const paragraphRedlines = effectiveReviewRedlines().filter((edit) => edit.paragraph_id === paragraphId);
   return paragraphRedlines.find((edit) => edit.clause_id === state.selectedReviewClauseId) || paragraphRedlines[0] || null;
 }
 
