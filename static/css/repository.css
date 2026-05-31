@@ -136,41 +136,6 @@
   justify-content: center;
 }
 
-.repository-import {
-  align-items: stretch;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  margin-bottom: 10px;
-}
-
-.repository-import-actions {
-  display: grid;
-  gap: 7px;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
-}
-
-.repository-gmail-sync,
-.repository-demo-reset {
-  border-radius: 9999px;
-  font-size: 11px;
-  height: 30px;
-  padding: 0 11px;
-  white-space: nowrap;
-}
-
-.repository-import span {
-  color: var(--ink-muted);
-  font-size: 10.5px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: 100%;
-}
-
 .repository-send-redline.confirming {
   border-color: var(--brand);
   color: var(--brand);

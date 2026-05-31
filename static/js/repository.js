@@ -8,10 +8,8 @@ const RepositoryView = (() => {
 
   function createController({
     state,
-    repositoryDemoResetButton,
     gmailDemoMatterList,
     repositoryMatterPanel,
-    repositoryImportStatus,
     downloadBlob,
     downloadFilename,
     loadMatterIntoReview,
@@ -23,37 +21,12 @@ const RepositoryView = (() => {
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
 
-    repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
     repositoryMatterPanel?.addEventListener("click", (event) => {
       if (event.target === repositoryMatterPanel) closePanel();
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && repositoryMatterPanel && !repositoryMatterPanel.hidden) closePanel();
     });
-
-    async function resetDemoRepository() {
-      if (!repositoryDemoResetButton) return;
-      const originalText = repositoryDemoResetButton.textContent;
-      repositoryDemoResetButton.disabled = true;
-      repositoryDemoResetButton.textContent = "Resetting";
-      setImportStatus("Resetting demo repository");
-      try {
-        const response = await fetch("/api/demo/reset", { method: "POST" });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Demo reset could not run");
-        state.matters = [];
-        selectedMatter = null;
-        pendingSendMatterId = null;
-        renderEmptyPanel();
-        renderBoard();
-        setImportStatus(`Demo reset. Removed ${Number(payload.removed || 0)} matters.`);
-      } catch (error) {
-        setImportStatus(error.message || "Demo reset could not run");
-      } finally {
-        repositoryDemoResetButton.disabled = false;
-        repositoryDemoResetButton.textContent = originalText || "Reset Demo";
-      }
-    }
 
     async function loadGmailStatus() {
       try {
@@ -116,7 +89,7 @@ const RepositoryView = (() => {
         renderBoard();
         renderDetailPanel(payload.matter);
       } catch (error) {
-        setImportStatus(error.message || "Matter could not load");
+        console.warn(error.message || "Matter could not load");
       }
     }
 
@@ -404,10 +377,6 @@ const RepositoryView = (() => {
       if (messageNode) messageNode.textContent = message;
     }
 
-    function setImportStatus(message) {
-      if (repositoryImportStatus) repositoryImportStatus.textContent = message;
-    }
-
     function renderSendComposer(matter, recipient, confirmingSend) {
       if (!confirmingSend) return "";
       const subject = defaultOutboundSubject(matter);
@@ -459,7 +428,6 @@ const RepositoryView = (() => {
       markMatterRedlineReady,
       openMatter,
       renderBoard,
-      setImportStatus,
     };
   }
 

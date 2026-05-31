@@ -549,8 +549,14 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "signed_closed", "1");
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
-  await page.getByRole("button", { name: "Reset Demo" }).click();
-  await waitForText(page, "#repositoryImportStatus", "Demo reset. Removed 1 matters.");
+  assert.equal(await page.getByRole("button", { name: "Reset Demo" }).count(), 0);
+  assert.equal(await page.locator("#repositoryImportStatus").count(), 0);
+  await page.evaluate(async () => {
+    const response = await fetch("/api/demo/reset", { method: "POST" });
+    if (!response.ok) throw new Error("Demo reset failed");
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
   await waitForRepositoryCount(page, "signed_closed", "0");
 
   fs.rmSync(docxPath, { force: true });

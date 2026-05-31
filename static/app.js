@@ -48,10 +48,8 @@ let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
   state,
-  repositoryDemoResetButton: document.querySelector("#repositoryDemoResetButton"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
-  repositoryImportStatus: document.querySelector("#repositoryImportStatus"),
   downloadBlob,
   downloadFilename,
   loadMatterIntoReview,
