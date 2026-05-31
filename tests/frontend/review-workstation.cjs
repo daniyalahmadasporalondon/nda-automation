@@ -589,7 +589,9 @@ async function testBackendRedlineModes(page) {
   assert.doesNotMatch(cleanText, /seven years/);
   assert.doesNotMatch(cleanText, /must not circumvent/);
   assert.equal(await page.locator('[data-paragraph-id="p2"]').count(), 1);
-  assert.equal((await page.locator('[data-paragraph-id="p2"]').innerText()).trim(), "");
+  const cleanDeleteAnchor = page.locator('[data-paragraph-id="p2"]');
+  assert.equal(await cleanDeleteAnchor.evaluate((node) => node.classList.contains("doc-clean-removed-anchor")), true);
+  assert.equal((await cleanDeleteAnchor.innerText()).trim(), "");
   await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
 
@@ -661,6 +663,7 @@ async function testClauseDecisionControls(page) {
   await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   await page.locator('[data-studio-lane-id="signatures"]').click();
+  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
   await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
