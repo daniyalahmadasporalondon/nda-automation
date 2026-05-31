@@ -12,6 +12,7 @@ from nda_automation.checker import (
     load_playbook,
     review_nda,
     split_document_paragraphs,
+    validate_clause_evidence_trust,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -347,6 +348,42 @@ class CheckerTests(unittest.TestCase):
                 clause["evidence"],
                 [paragraphs_by_id[paragraph_id]["text"] for paragraph_id in matched_ids],
             )
+            self.assertEqual(
+                clause["evidence_paragraphs"],
+                [paragraphs_by_id[paragraph_id] for paragraph_id in matched_ids],
+            )
+
+        self.assertEqual(validate_clause_evidence_trust(result, text), [])
+
+    def test_clause_evidence_trust_fails_loudly_on_drift(self):
+        text = (
+            "This Agreement shall be governed by the laws of California.\n\n"
+            "The confidentiality obligations survive for seven (7) years."
+        )
+        result = review_nda(text)
+
+        drifted_result = deepcopy(result)
+        governing_law = next(clause for clause in drifted_result["clauses"] if clause["id"] == "governing_law")
+        governing_law["evidence_paragraphs"][0]["text"] = "Drifted evidence."
+        governing_law["matched_text"] = "Drifted evidence."
+
+        errors = validate_clause_evidence_trust(drifted_result, text)
+
+        self.assertTrue(any("governing_law" in error and "matched_text" in error for error in errors))
+        self.assertTrue(any("governing_law" in error and "has drifted text" in error for error in errors))
+
+    def test_clause_evidence_trust_detects_offset_drift(self):
+        text = "This Agreement shall be governed by the laws of California."
+        result = review_nda(text)
+
+        drifted_result = deepcopy(result)
+        drifted_result["paragraphs"][0]["start"] = 1
+        governing_law = next(clause for clause in drifted_result["clauses"] if clause["id"] == "governing_law")
+        governing_law["evidence_paragraphs"][0]["start"] = 1
+
+        errors = validate_clause_evidence_trust(drifted_result, text)
+
+        self.assertTrue(any("paragraph offsets do not resolve" in error for error in errors))
 
     def test_redline_edits_map_to_review_paragraph_provenance(self):
         result = review_nda(

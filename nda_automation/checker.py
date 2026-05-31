@@ -82,7 +82,7 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
     failed = [clause for clause in clause_results if not clause["passes"]]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
 
-    return {
+    result = {
         "overall_status": "does_not_meet_requirements" if failed else "meets_requirements",
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "requirements_passed": len(clause_results) - len(failed),
@@ -91,6 +91,10 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }
+    evidence_errors = validate_clause_evidence_trust(result, source_text)
+    if evidence_errors:
+        raise RuntimeError("Clause evidence provenance drift: " + "; ".join(evidence_errors))
+    return result
 
 
 def split_document_paragraphs(text: str) -> List[Paragraph]:
@@ -780,6 +784,7 @@ def _result(
 ) -> ClauseResult:
     paragraph_matches = _select_evidence_paragraphs(matched_paragraphs)
     matched_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraph_matches)
+    evidence_paragraphs = [_evidence_paragraph(paragraph) for paragraph in paragraph_matches]
     passes = _status_passes_clause_type(status, clause)
     result = {
         "id": clause["id"],
@@ -795,6 +800,7 @@ def _result(
         "matched_paragraph_ids": [paragraph["id"] for paragraph in paragraph_matches],
         "matched_text": matched_text,
         "evidence": [paragraph["text"] for paragraph in paragraph_matches],
+        "evidence_paragraphs": evidence_paragraphs,
     }
     for field in [
         "acceptable_language",
@@ -812,6 +818,96 @@ def _result(
         if field in clause:
             result[field] = clause[field]
     return result
+
+
+def validate_clause_evidence_trust(review_result: Dict[str, object], source_text: str | None = None) -> List[str]:
+    errors: List[str] = []
+    paragraphs = review_result.get("paragraphs", [])
+    clauses = review_result.get("clauses", [])
+    if not isinstance(paragraphs, list):
+        return ["review result paragraphs must be a list"]
+    if not isinstance(clauses, list):
+        return ["review result clauses must be a list"]
+
+    paragraphs_by_id = {
+        str(paragraph.get("id")): paragraph
+        for paragraph in paragraphs
+        if isinstance(paragraph, dict) and paragraph.get("id") is not None
+    }
+    for paragraph in paragraphs:
+        if not isinstance(paragraph, dict):
+            errors.append("review paragraph is not an object")
+            continue
+        paragraph_id = str(paragraph.get("id", "unknown"))
+        start = paragraph.get("start")
+        end = paragraph.get("end")
+        text = str(paragraph.get("text", ""))
+        if isinstance(start, int) and isinstance(end, int) and source_text is not None and source_text[start:end] != text:
+            errors.append(f"{paragraph_id}: paragraph offsets do not resolve to paragraph text")
+        index = paragraph.get("index")
+        if isinstance(index, int) and 1 <= index <= len(paragraphs):
+            indexed_paragraph = paragraphs[index - 1]
+            if isinstance(indexed_paragraph, dict) and indexed_paragraph.get("id") != paragraph.get("id"):
+                errors.append(f"{paragraph_id}: paragraph index points to {indexed_paragraph.get('id')}")
+
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            errors.append("clause result is not an object")
+            continue
+        clause_id = str(clause.get("id", "unknown"))
+        matched_ids = clause.get("matched_paragraph_ids", [])
+        evidence = clause.get("evidence", [])
+        evidence_paragraphs = clause.get("evidence_paragraphs", [])
+        if not isinstance(matched_ids, list):
+            errors.append(f"{clause_id}: matched_paragraph_ids must be a list")
+            continue
+        if not isinstance(evidence, list):
+            errors.append(f"{clause_id}: evidence must be a list")
+            evidence = []
+        if not isinstance(evidence_paragraphs, list):
+            errors.append(f"{clause_id}: evidence_paragraphs must be a list")
+            evidence_paragraphs = []
+
+        expected_paragraphs = []
+        for paragraph_id in matched_ids:
+            paragraph = paragraphs_by_id.get(str(paragraph_id))
+            if paragraph is None:
+                errors.append(f"{clause_id}: matched paragraph {paragraph_id} is not in reviewed source")
+                continue
+            expected_paragraphs.append(paragraph)
+
+        expected_texts = [str(paragraph.get("text", "")) for paragraph in expected_paragraphs]
+        expected_text = "\n\n".join(expected_texts)
+        if clause.get("matched_text", "") != expected_text:
+            errors.append(f"{clause_id}: matched_text does not equal matched source paragraphs")
+        if evidence != expected_texts:
+            errors.append(f"{clause_id}: evidence text does not equal matched source paragraphs")
+        if [str(item.get("id")) for item in evidence_paragraphs if isinstance(item, dict)] != [str(paragraph.get("id")) for paragraph in expected_paragraphs]:
+            errors.append(f"{clause_id}: evidence_paragraphs ids do not equal matched_paragraph_ids")
+        for evidence_paragraph, source_paragraph in zip(evidence_paragraphs, expected_paragraphs):
+            if not isinstance(evidence_paragraph, dict):
+                errors.append(f"{clause_id}: evidence_paragraph is not an object")
+                continue
+            for key in ["id", "index", "text", "start", "end", "source_index"]:
+                if key in source_paragraph and evidence_paragraph.get(key) != source_paragraph.get(key):
+                    errors.append(f"{clause_id}: evidence paragraph {source_paragraph.get('id')} has drifted {key}")
+                elif key not in source_paragraph and key in evidence_paragraph:
+                    errors.append(f"{clause_id}: evidence paragraph {source_paragraph.get('id')} has unexpected {key}")
+
+    return errors
+
+
+def _evidence_paragraph(paragraph: Paragraph) -> Paragraph:
+    evidence = {
+        "id": paragraph["id"],
+        "index": paragraph["index"],
+        "text": paragraph["text"],
+        "start": paragraph["start"],
+        "end": paragraph["end"],
+    }
+    if "source_index" in paragraph:
+        evidence["source_index"] = paragraph["source_index"]
+    return evidence
 
 
 def _select_evidence_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List[Paragraph]:
