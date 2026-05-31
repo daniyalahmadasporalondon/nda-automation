@@ -650,7 +650,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
         self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
-        self.assertNotIn("gmail_account", matter)
+        self.assertEqual(matter["gmail_account"], "inbound@example.com")
         self.assertNotIn("gmail_attachment_id", matter)
         self.assertNotIn("gmail_message_id", matter)
         self.assertNotIn("gmail_thread_id", matter)
@@ -1003,7 +1003,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(payload["synced_at"])
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
-    def test_gmail_send_payload_replies_in_thread_only_for_same_account(self):
+    def test_gmail_send_payload_replies_in_thread_for_same_account(self):
         class FakeExecutable:
             def __init__(self, payload):
                 self.payload = payload
@@ -1034,7 +1034,6 @@ class ServerTests(unittest.TestCase):
                 return self.users_api
 
         same_account_service = FakeGmailService("legal@aspora.com")
-        different_account_service = FakeGmailService("outbound@gmail.com")
         base_matter = {
             "gmail_account": "legal@aspora.com",
             "gmail_thread_id": "thread_inbound",
@@ -1044,18 +1043,56 @@ class ServerTests(unittest.TestCase):
 
         with patch.object(server_module.gmail_integration, "_gmail_service", return_value=same_account_service):
             same_result = server_module.gmail_integration.send_redline_email(base_matter, b"docx", "redline.docx")
-        with patch.object(server_module.gmail_integration, "_gmail_service", return_value=different_account_service):
-            different_result = server_module.gmail_integration.send_redline_email(base_matter, b"docx", "redline.docx")
 
         self.assertEqual(same_account_service.users_api.sent_body["threadId"], "thread_inbound")
         self.assertEqual(same_result["thread_id"], "thread_inbound")
-        self.assertNotIn("threadId", different_account_service.users_api.sent_body)
-        self.assertEqual(different_result["thread_id"], "new_thread")
-        raw_message = different_account_service.users_api.sent_body["raw"]
+        raw_message = same_account_service.users_api.sent_body["raw"]
         padding = "=" * ((4 - len(raw_message) % 4) % 4)
         decoded_message = base64.urlsafe_b64decode((raw_message + padding).encode("ascii"))
         self.assertIn(b"To: legal@example.com", decoded_message)
         self.assertIn(b'filename="redline.docx"', decoded_message)
+
+    def test_gmail_send_redline_rejects_outbound_account_mismatch_for_gmail_matter(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            sent_body = None
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "personal@gmail.com"})
+
+            def messages(self):
+                return self
+
+            def send(self, userId, body):
+                self.sent_body = body
+                return FakeExecutable({"id": "sent_1"})
+
+        class FakeGmailService:
+            def __init__(self):
+                self.users_api = FakeUsers()
+
+            def users(self):
+                return self.users_api
+
+        service = FakeGmailService()
+        matter = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_thread_id": "thread_inbound",
+            "sender": "Counterparty <legal@example.com>",
+            "subject": "Please review",
+        }
+
+        with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
+            with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "does not match inbound Gmail account"):
+                server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+
+        self.assertIsNone(service.users_api.sent_body)
 
     def test_gmail_send_redline_rejects_display_name_email_spoof(self):
         matter = {

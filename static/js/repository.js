@@ -225,6 +225,18 @@ const RepositoryView = (() => {
               <dt>From</dt>
               <dd>${escapeHtml(matterSender(matter))}</dd>
             </div>
+            ${matter.gmail_account ? `
+              <div>
+                <dt>Inbound mailbox</dt>
+                <dd>${escapeHtml(matter.gmail_account)}</dd>
+              </div>
+            ` : ""}
+            ${recipient ? `
+              <div>
+                <dt>Reply to</dt>
+                <dd>${escapeHtml(recipient)}</dd>
+              </div>
+            ` : ""}
             <div>
               <dt>Received</dt>
               <dd>${escapeHtml(formatMatterDateTime(matter.received_at || matter.created_at) || "-")}</dd>
@@ -249,6 +261,18 @@ const RepositoryView = (() => {
             <div>
               <dt>Last sent</dt>
               <dd>${escapeHtml(formatMatterDateTime(matter.last_outbound_at))}</dd>
+            </div>
+          ` : ""}
+          ${matter.last_outbound_account ? `
+            <div>
+              <dt>Last sent from</dt>
+              <dd>${escapeHtml(matter.last_outbound_account)}</dd>
+            </div>
+          ` : ""}
+          ${matter.last_outbound_to ? `
+            <div>
+              <dt>Last sent to</dt>
+              <dd>${escapeHtml(matter.last_outbound_to)}</dd>
             </div>
           ` : ""}
         </dl>

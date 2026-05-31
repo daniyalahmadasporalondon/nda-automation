@@ -168,6 +168,7 @@ def send_redline_email(
     service = _gmail_service("outbound")
     profile = _gmail_profile(service)
     outbound_account = str(profile.get("emailAddress") or "")
+    _ensure_outbound_matches_inbound(matter, outbound_account)
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
     message = EmailMessage()
     message["To"] = recipient
@@ -285,6 +286,19 @@ def _gmail_profile(service: Any) -> dict[str, Any]:
 def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
     inbound_account = str(matter.get("gmail_account") or "").strip().casefold()
     return bool(inbound_account and outbound_account and inbound_account == outbound_account.strip().casefold())
+
+
+def _ensure_outbound_matches_inbound(matter: dict[str, Any], outbound_account: str) -> None:
+    inbound_account = str(matter.get("gmail_account") or "").strip()
+    if not inbound_account:
+        return
+    if inbound_account.casefold() == outbound_account.strip().casefold():
+        return
+    raise GmailIntegrationError(
+        "Outbound Gmail account "
+        f"{outbound_account or 'unknown'} does not match inbound Gmail account {inbound_account}. "
+        f"Reconnect the outbound Gmail token for {inbound_account} before sending this redline."
+    )
 
 
 def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, str]:

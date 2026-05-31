@@ -12,6 +12,7 @@ class PublicMatter(TypedDict, total=False):
     created_at: str
     document_title: str
     extracted_text: str
+    gmail_account: str
     id: str
     issue_count: int
     last_outbound_account: str
@@ -44,6 +45,7 @@ PUBLIC_MATTER_FIELDS = {
     "created_at",
     "document_title",
     "extracted_text",
+    "gmail_account",
     "id",
     "issue_count",
     "last_outbound_account",
