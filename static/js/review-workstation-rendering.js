@@ -74,9 +74,13 @@ function renderStudioSummary(clauses) {
 
 function reviewWarningSummary() {
   const trust = state.latestReviewResult?.evidence_trust;
-  if (trust?.status !== "flagged") return "";
-  const firstError = Array.isArray(trust.errors) && trust.errors.length ? ` ${trust.errors[0]}` : "";
-  return `Evidence provenance warning.${firstError}`;
+  if (trust?.status === "flagged") {
+    const firstError = Array.isArray(trust.errors) && trust.errors.length ? ` ${trust.errors[0]}` : "";
+    return `Evidence provenance warning.${firstError}`;
+  }
+  const warnings = Array.isArray(state.latestReviewResult?.review_warnings) ? state.latestReviewResult.review_warnings : [];
+  const firstWarning = warnings.find((warning) => warning?.message);
+  return firstWarning?.message || "";
 }
 
 function renderClauseExportState(clause, canDecide, included) {

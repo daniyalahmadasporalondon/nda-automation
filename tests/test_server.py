@@ -281,6 +281,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assert_review_payload_contract(payload, expected_source_type="pdf")
         self.assertIn("California", payload["extracted_text"])
+        self.assertEqual(payload["source"]["extraction_quality"]["page_count"], 1)
+        self.assertEqual(payload["source"]["extraction_quality"]["pages_with_text"], 1)
+        self.assertIn("warnings", payload["source"]["extraction_quality"])
 
     def test_matter_upload_creates_persisted_gmail_demo_matter(self):
         source_docx = make_docx([
@@ -1442,7 +1445,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
 
     def test_document_review_reports_paragraph_alignment_failure(self):
-        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}])):
+        with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
             with patch.object(server_module, "review_nda", side_effect=ParagraphAlignmentError("alignment failed")):
                 status, payload = self.request(
                     "POST",
@@ -1457,7 +1460,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "The extracted document paragraphs could not be aligned to the extracted text.")
 
     def test_document_review_reports_playbook_template_error(self):
-        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}])):
+        with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
             with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
                 status, payload = self.request(
                     "POST",
@@ -1475,7 +1478,7 @@ class ServerTests(unittest.TestCase):
         extracted_paragraphs = [
             {"source_index": 1, "text": "The confidentiality obligations survive for seven (7) years."}
         ]
-        with patch.object(server_module, "extract_document_paragraphs", return_value=("docx", extracted_paragraphs)):
+        with patch.object(server_module, "extract_document", return_value=("docx", extracted_paragraphs, None)):
             with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
                 status, payload = self.request(
                     "POST",

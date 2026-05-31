@@ -63,6 +63,8 @@ Inbound sync imports recent `.docx` and text-based `.pdf` attachments into the `
 
 The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index; PDF uploads preserve extracted page metadata. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
 
+PDF extraction also reports basic quality metadata, including page counts, pages without extractable text, extracted character/paragraph counts, repeated header/footer removal, and warnings when extraction looks sparse or degraded.
+
 Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. PDF matter exports generate a Word review report because PDFs cannot be patched with native Word tracked changes. If a Repository matter is re-reviewed as edited text, export switches to the normal review-report flow rather than reusing stale stored matter results.
 
 ## Policy decisions to confirm

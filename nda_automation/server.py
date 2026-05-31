@@ -17,7 +17,7 @@ from .docx_text import DocxExtractionError
 from . import export_service, gmail_integration, matter_view, redline_export_service
 from .ingestion_service import (
     create_matter_from_document,
-    extract_document_paragraphs,
+    extract_document,
     is_supported_document_filename,
 )
 from .pdf_text import PdfExtractionError
@@ -158,7 +158,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            source_type, extracted_paragraphs = extract_document_paragraphs(filename, document_bytes)
+            source_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
         except (DocxExtractionError, PdfExtractionError, ValueError) as error:
             self._send_json({"error": str(error)}, status=400)
             return
@@ -175,6 +175,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             "extracted_characters": len(extracted_text),
             "extracted_paragraphs": len(extracted_paragraphs),
         }
+        if extraction_quality:
+            result["source"]["extraction_quality"] = extraction_quality
+            warnings = extraction_quality.get("warnings")
+            if isinstance(warnings, list) and warnings:
+                result.setdefault("review_warnings", []).extend(warnings)
         result["extracted_text"] = extracted_text
         self._send_json(result)
 
