@@ -363,10 +363,8 @@ def _clean_export_redline(redline: object) -> dict | None:
             "original_text",
             "replacement_text",
             "reason",
-            "target_position",
             "anchor_text",
             "insert_text",
-            "selected_template_id",
             "template_options",
         }
     }

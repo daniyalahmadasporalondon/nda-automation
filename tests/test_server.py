@@ -302,6 +302,23 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(server_module._clean_export_redline(redline))
         self.assertIsNone(server_module._clean_manual_export_redline(redline))
 
+    def test_selected_export_redline_drops_dead_metadata_but_keeps_report_templates(self):
+        cleaned = server_module._clean_export_redline({
+            "id": "template-replace",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "original_text": "Old law.",
+            "replacement_text": "New law.",
+            "target_position": "after_paragraph",
+            "selected_template_id": "unused-option-id",
+            "template_options": [{"id": "option-a", "label": "Option A", "text": "New law."}],
+        })
+
+        self.assertIsNotNone(cleaned)
+        self.assertNotIn("target_position", cleaned)
+        self.assertNotIn("selected_template_id", cleaned)
+        self.assertEqual(cleaned["template_options"][0]["id"], "option-a")
+
     def test_review_docx_export_download_does_not_require_saved_copy(self):
         with patch.object(server_module, "EXPORTS_DIR", None):
             status, payload, headers = self.request_with_headers(
