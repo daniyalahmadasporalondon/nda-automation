@@ -4,11 +4,18 @@ const RepositoryView = (() => {
     fileInput,
     repositoryFileInput,
     gmailDemoMatterList,
+    repositoryMatterPanel,
     repositoryImportStatus,
+    downloadBlob,
+    downloadFilename,
     fileToBase64,
     loadMatterIntoReview,
+    redlineDownloadFilename,
     reviewErrorFromPayload,
   }) {
+    let selectedMatter = null;
+    const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
+
     repositoryFileInput?.addEventListener("change", async (event) => {
       const file = event.target.files[0];
       if (!file) return;
@@ -36,6 +43,9 @@ const RepositoryView = (() => {
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Import could not run");
         await loadMatters();
+        if (payload.matter?.id) {
+          await openMatter(payload.matter.id);
+        }
         setImportStatus(`${payload.matter.document_title || file.name} imported`);
       } catch (error) {
         setImportStatus(error.message || "Import could not run");
@@ -49,6 +59,10 @@ const RepositoryView = (() => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Repository could not load");
         state.matters = Array.isArray(payload.matters) ? payload.matters : [];
+        if (selectedMatter && !state.matters.find((matter) => matter.id === selectedMatter.id)) {
+          selectedMatter = null;
+          renderEmptyPanel();
+        }
         renderBoard();
       } catch (error) {
         gmailDemoMatterList.innerHTML = `<div class="repository-dropzone">${escapeHtml(error.message)}</div>`;
@@ -69,6 +83,7 @@ const RepositoryView = (() => {
 
       gmailDemoMatterList.innerHTML = gmailDemoMatters.map(renderMatterCard).join("");
       gmailDemoMatterList.querySelectorAll("[data-matter-id]").forEach((card) => {
+        card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
         card.addEventListener("click", () => openMatter(card.dataset.matterId));
       });
     }
@@ -78,18 +93,121 @@ const RepositoryView = (() => {
         const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}`);
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Matter could not load");
-        loadMatterIntoReview(payload.matter);
+        selectedMatter = payload.matter;
+        renderBoard();
+        renderDetailPanel(payload.matter);
         if (fileInput) fileInput.value = "";
       } catch (error) {
         setImportStatus(error.message || "Matter could not load");
       }
     }
 
+    function renderDetailPanel(matter) {
+      if (!repositoryMatterPanel) return;
+      const reviewResult = matter.review_result || {};
+      const failedClauses = Array.isArray(reviewResult.clauses)
+        ? reviewResult.clauses.filter((clause) => clause && clause.passes === false)
+        : [];
+      repositoryMatterPanel.hidden = false;
+      repositoryWorkspace?.classList.add("detail-open");
+      repositoryMatterPanel.innerHTML = `
+        <header class="repository-detail-head">
+          <div>
+            <p class="repository-detail-kicker">${escapeHtml(sourceTypeLabel(matter.source_type))}</p>
+            <h2>${escapeHtml(matter.document_title || matter.source_filename || "Untitled NDA")}</h2>
+          </div>
+          <button class="repository-detail-close" type="button" aria-label="Close matter panel">x</button>
+        </header>
+        <div class="repository-detail-status">
+          <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
+          <strong>${escapeHtml(matter.next_action || "Review")}</strong>
+          <span>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</span>
+        </div>
+        <dl class="repository-detail-meta">
+          <div>
+            <dt>Received</dt>
+            <dd>${escapeHtml(formatMatterDate(matter.created_at) || "-")}</dd>
+          </div>
+          <div>
+            <dt>File</dt>
+            <dd>${escapeHtml(matter.source_filename || "-")}</dd>
+          </div>
+          <div>
+            <dt>Requirements</dt>
+            <dd>${Number(matter.requirements_passed || 0)} passed / ${Number(matter.requirements_failed || 0)} failed</dd>
+          </div>
+        </dl>
+        <section class="repository-detail-issues">
+          <h3>Key failed clauses</h3>
+          ${renderFailedClauses(failedClauses)}
+        </section>
+        <div class="repository-detail-actions">
+          <button type="button" class="repository-open-review">Open Review</button>
+          <button type="button" class="secondary repository-export-redline">Export Redline</button>
+        </div>
+        <p class="repository-detail-message" aria-live="polite"></p>
+      `;
+      repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", closePanel);
+      repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => {
+        loadMatterIntoReview(matter);
+      });
+      repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => exportMatter(matter));
+    }
+
+    function renderEmptyPanel() {
+      if (!repositoryMatterPanel) return;
+      repositoryWorkspace?.classList.remove("detail-open");
+      repositoryMatterPanel.hidden = true;
+      repositoryMatterPanel.innerHTML = '<div class="repository-detail-empty">Select a matter</div>';
+    }
+
+    function closePanel() {
+      selectedMatter = null;
+      renderEmptyPanel();
+      renderBoard();
+    }
+
+    async function exportMatter(matter) {
+      const exportButton = repositoryMatterPanel?.querySelector(".repository-export-redline");
+      setPanelMessage("");
+      if (exportButton) {
+        exportButton.disabled = true;
+        exportButton.textContent = "Exporting";
+      }
+      try {
+        const response = await fetch("/api/export-review-docx", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ matter_id: matter.id }),
+        });
+        if (!response.ok) {
+          const payload = await response.json();
+          throw reviewErrorFromPayload(payload, "Export could not run");
+        }
+        const filename = downloadFilename(response) || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx");
+        const blob = await response.blob();
+        downloadBlob(blob, filename);
+        setPanelMessage(`Downloading ${filename}`);
+      } catch (error) {
+        setPanelMessage(error.message || "Export could not run");
+      } finally {
+        if (exportButton) {
+          exportButton.disabled = false;
+          exportButton.textContent = "Export Redline";
+        }
+      }
+    }
+
+    function setPanelMessage(message) {
+      const messageNode = repositoryMatterPanel?.querySelector(".repository-detail-message");
+      if (messageNode) messageNode.textContent = message;
+    }
+
     function setImportStatus(message) {
       if (repositoryImportStatus) repositoryImportStatus.textContent = message;
     }
 
-    return { importMatter, loadMatters, renderBoard, setImportStatus };
+    return { importMatter, loadMatters, openMatter, renderBoard, setImportStatus };
   }
 
   function renderMatterCard(matter) {
@@ -120,6 +238,22 @@ const RepositoryView = (() => {
       intake_error: "Error",
     };
     return labels[status] || "Review";
+  }
+
+  function renderFailedClauses(clauses) {
+    if (!clauses.length) {
+      return '<p class="repository-detail-none">No failed clauses</p>';
+    }
+    return `
+      <ul>
+        ${clauses.slice(0, 6).map((clause) => `
+          <li>
+            <strong>${escapeHtml(clause.name || clause.id || "Clause")}</strong>
+            <span>${escapeHtml(clause.issue_label || clause.reason || "Needs review")}</span>
+          </li>
+        `).join("")}
+      </ul>
+    `;
   }
 
   function sourceTypeLabel(sourceType) {

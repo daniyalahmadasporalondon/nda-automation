@@ -44,9 +44,13 @@ const repositoryController = createRepositoryController({
   fileInput,
   repositoryFileInput: document.querySelector("#repositoryFileInput"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
+  repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
   repositoryImportStatus: document.querySelector("#repositoryImportStatus"),
+  downloadBlob,
+  downloadFilename,
   fileToBase64,
   loadMatterIntoReview,
+  redlineDownloadFilename,
   reviewErrorFromPayload,
 });
 

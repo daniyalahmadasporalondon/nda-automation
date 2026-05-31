@@ -254,6 +254,21 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
 
   await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Non-Circumvention");
+
+  const [matterExportRequest, matterDownload] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export Redline" }).click(),
+  ]);
+  const matterExportPayload = matterExportRequest.postDataJSON();
+  assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
+  assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
+
+  await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");

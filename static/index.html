@@ -119,55 +119,61 @@
               <button class="repository-undo" type="button" disabled>Undo Move (0)</button>
             </header>
 
-            <section class="repository-board" aria-label="Contract repository board">
-              <article class="repository-column">
-                <header class="repository-column-head">
-                  <h2>Gmail Demo</h2>
-                  <span data-repository-count="gmail_demo">0</span>
-                </header>
-                <div class="repository-import">
-                  <label class="file-button repository-import-button">
-                    <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                    Import NDA
-                  </label>
-                  <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
-                </div>
-                <div class="repository-card-list" id="gmailDemoMatterList">
+            <section class="repository-workspace">
+              <section class="repository-board" aria-label="Contract repository board">
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>Gmail Demo</h2>
+                    <span data-repository-count="gmail_demo">0</span>
+                  </header>
+                  <div class="repository-import">
+                    <label class="file-button repository-import-button">
+                      <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                      Import NDA
+                    </label>
+                    <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
+                  </div>
+                  <div class="repository-card-list" id="gmailDemoMatterList">
+                    <div class="repository-dropzone">No documents</div>
+                  </div>
+                </article>
+
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>[Insert Name]</h2>
+                    <span data-repository-count="placeholder_1">0</span>
+                  </header>
                   <div class="repository-dropzone">No documents</div>
-                </div>
-              </article>
+                </article>
 
-              <article class="repository-column">
-                <header class="repository-column-head">
-                  <h2>[Insert Name]</h2>
-                  <span data-repository-count="placeholder_1">0</span>
-                </header>
-                <div class="repository-dropzone">No documents</div>
-              </article>
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>[Insert Name]</h2>
+                    <span data-repository-count="placeholder_2">0</span>
+                  </header>
+                  <div class="repository-dropzone">No documents</div>
+                </article>
 
-              <article class="repository-column">
-                <header class="repository-column-head">
-                  <h2>[Insert Name]</h2>
-                  <span data-repository-count="placeholder_2">0</span>
-                </header>
-                <div class="repository-dropzone">No documents</div>
-              </article>
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>[Insert Name]</h2>
+                    <span data-repository-count="placeholder_3">0</span>
+                  </header>
+                  <div class="repository-dropzone">No documents</div>
+                </article>
 
-              <article class="repository-column">
-                <header class="repository-column-head">
-                  <h2>[Insert Name]</h2>
-                  <span data-repository-count="placeholder_3">0</span>
-                </header>
-                <div class="repository-dropzone">No documents</div>
-              </article>
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>[Insert Name]</h2>
+                    <span data-repository-count="placeholder_4">0</span>
+                  </header>
+                  <div class="repository-dropzone">No documents</div>
+                </article>
+              </section>
 
-              <article class="repository-column">
-                <header class="repository-column-head">
-                  <h2>[Insert Name]</h2>
-                  <span data-repository-count="placeholder_4">0</span>
-                </header>
-                <div class="repository-dropzone">No documents</div>
-              </article>
+              <aside class="repository-detail-panel" id="repositoryMatterPanel" aria-live="polite" hidden>
+                <div class="repository-detail-empty">Select a matter</div>
+              </aside>
             </section>
           </section>
         </main>
