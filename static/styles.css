@@ -1052,6 +1052,11 @@ textarea::placeholder {
   cursor: pointer;
 }
 
+.doc-clean-removed-anchor {
+  min-height: 8px;
+  padding: 0;
+}
+
 .doc-sxs-paragraph {
   cursor: pointer;
   padding: 4px;

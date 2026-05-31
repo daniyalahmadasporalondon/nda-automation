@@ -546,6 +546,10 @@ async function testBackendRedlineModes(page) {
   assert.match(cleanText, /fixed period of up to five years/);
   assert.doesNotMatch(cleanText, /seven years/);
   assert.doesNotMatch(cleanText, /must not circumvent/);
+  assert.equal(await page.locator('[data-paragraph-id="p2"]').count(), 1);
+  assert.equal((await page.locator('[data-paragraph-id="p2"]').innerText()).trim(), "");
+  await page.locator('[data-studio-clause-id="non_circumvention"]').click();
+  await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
 
   await page.getByRole("button", { name: "Side by Side" }).click();
   const sideBySide = await page.locator('[data-paragraph-id="p1"]').evaluate((node) => ({

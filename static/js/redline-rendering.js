@@ -83,12 +83,10 @@ function renderDocumentParagraph(model) {
 
 function renderCleanDocumentParagraph(model) {
   let html = "";
-  if (!model.plan.remove) {
-    html += renderParagraphFrame(model, {
-      body: escapeHtml(model.plan.cleanText),
-      classes: ["doc-clean-paragraph"],
-    });
-  }
+  html += renderParagraphFrame(model, {
+    body: model.plan.remove ? "" : escapeHtml(model.plan.cleanText),
+    classes: ["doc-clean-paragraph", model.plan.remove ? "doc-clean-removed-anchor" : ""],
+  });
   return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN, model.paragraph.id);
 }
 
