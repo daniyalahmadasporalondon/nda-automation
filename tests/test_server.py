@@ -461,6 +461,16 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("gmail_message_id", public)
         self.assertNotIn("gmail_attachment_id", public)
 
+    def test_public_matter_rejects_sender_display_name_email_spoof(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "sender": '"jane@x.com" <attacker@evil.com>',
+            "subject": "NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "")
+        self.assertEqual(public["can_send_redline"], False)
+
     def test_matter_retention_prunes_old_closed_uploads(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -607,6 +617,31 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
         self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")
         self.assertEqual(duplicate["id"], matter["id"])
+
+    def test_matter_upload_rejects_spoofed_sender_for_redline_recipient(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Spoof NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "sender": '"jane@x.com" <attacker@evil.com>',
+                        "subject": "Please review our NDA",
+                    },
+                )
+
+        self.assertEqual(status, 201)
+        matter = payload["matter"]
+        self.assertEqual(matter["sender"], "Manual upload")
+        self.assertEqual(matter["recipient_email"], "")
+        self.assertEqual(matter["can_send_redline"], False)
 
     def test_matter_upload_rejects_invalid_upload_cleanly(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -811,6 +846,18 @@ class ServerTests(unittest.TestCase):
         decoded_message = base64.urlsafe_b64decode((raw_message + padding).encode("ascii"))
         self.assertIn(b"To: legal@example.com", decoded_message)
         self.assertIn(b'filename="redline.docx"', decoded_message)
+
+    def test_gmail_send_redline_rejects_display_name_email_spoof(self):
+        matter = {
+            "sender": '"jane@x.com" <attacker@evil.com>',
+            "subject": "Please review",
+        }
+
+        with patch.object(server_module.gmail_integration, "_gmail_service") as gmail_service:
+            with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "valid email"):
+                server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+
+        gmail_service.assert_not_called()
 
     def test_gmail_send_redline_requires_confirmation_and_records_outbound_send(self):
         source_docx = make_docx([

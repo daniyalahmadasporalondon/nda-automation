@@ -241,8 +241,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"matter": matter_view.public_matter(matter)}, status=201)
 
     def _matter_intake_metadata(self, payload: dict, filename: str) -> dict[str, str]:
+        sender = self._clean_intake_text(payload.get("sender"))
+        sender = gmail_integration.recipient_email(sender) if sender else ""
         metadata = {
-            "sender": self._clean_intake_text(payload.get("sender")) or "Manual upload",
+            "sender": sender or "Manual upload",
             "subject": self._clean_intake_text(payload.get("subject")) or Path(filename).stem or "Untitled NDA",
             "received_at": self._clean_intake_text(payload.get("received_at")),
             "message_snippet": (

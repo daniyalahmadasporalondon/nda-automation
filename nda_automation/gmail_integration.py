@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from email.utils import formatdate, parseaddr, parsedate_to_datetime
+from email.utils import formatdate, getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from .pdf_text import PdfExtractionError
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DEFAULT_INBOUND_QUERY = "has:attachment (filename:docx OR filename:pdf) newer_than:30d"
 MAX_GMAIL_IMPORT_LIMIT = 25
+EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 
 ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
@@ -203,14 +205,26 @@ def send_redline_email(
 def recipient_email(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    _display_name, email_address = parseaddr(value)
-    email_address = email_address.strip()
-    if "@" not in email_address or any(character.isspace() for character in email_address):
+    addresses = [(display.strip(), email.strip()) for display, email in getaddresses([value]) if email.strip()]
+    if len(addresses) != 1:
         return ""
+    display_name, email_address = addresses[0]
+    if not _is_valid_email_address(email_address):
+        return ""
+    canonical_email = email_address.lower()
+    display_emails = re.findall(EMAIL_IN_TEXT_PATTERN, display_name, flags=re.IGNORECASE)
+    if any(display_email.lower() != canonical_email for display_email in display_emails):
+        return ""
+    return canonical_email
+
+
+def _is_valid_email_address(email_address: str) -> bool:
+    if "@" not in email_address or any(character.isspace() for character in email_address):
+        return False
     local_part, _at, domain = email_address.rpartition("@")
     if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
-        return ""
-    return email_address
+        return False
+    return True
 
 
 def _gmail_service(role: str) -> Any:
