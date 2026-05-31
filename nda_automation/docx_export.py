@@ -5,7 +5,7 @@ import posixpath
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Dict, List, Tuple
+from typing import Dict, List, NamedTuple, Tuple
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from .redline_actions import (
@@ -34,6 +34,14 @@ ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
+
+
+class SourceParagraph(NamedTuple):
+    source_index: int
+    parent: ET.Element
+    paragraph: ET.Element
+    text: str
+    normalized_text: str
 
 
 class DocxExportError(ValueError):
@@ -86,7 +94,11 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
             source_names = set(source_archive.namelist())
             document_root = ET.fromstring(source_archive.read("word/document.xml"))
-            _apply_redline_edits_to_source_document(document_root, review_result.get("redline_edits", []))
+            _apply_redline_edits_to_source_document(
+                document_root,
+                review_result.get("redline_edits", []),
+                review_result.get("paragraphs", []),
+            )
 
             overrides: Dict[str, bytes] = {
                 "word/document.xml": _xml_bytes(document_root),
@@ -329,53 +341,132 @@ def _redlines_by_paragraph(redlines: object) -> Dict[str, List[RedlineEdit]]:
     return grouped
 
 
-def _redlines_by_source_index(redlines: object) -> Dict[int, List[RedlineEdit]]:
+def _redlines_by_source_paragraph(
+    redlines: object,
+    source_paragraphs: List[SourceParagraph],
+    review_paragraphs: object = None,
+) -> Dict[int, List[RedlineEdit]]:
     grouped: Dict[int, List[RedlineEdit]] = {}
     if not isinstance(redlines, list):
         return grouped
 
+    review_paragraphs_by_id = _review_paragraphs_by_id(review_paragraphs)
     for redline in redlines:
         if not isinstance(redline, dict):
             continue
-        source_index = redline.get("source_index", redline.get("paragraph_index"))
-        try:
-            source_index_int = int(source_index)
-        except (TypeError, ValueError):
+        source_paragraph = _resolve_source_paragraph(redline, source_paragraphs, review_paragraphs_by_id)
+        if source_paragraph is None:
             continue
-        grouped.setdefault(source_index_int, []).append(redline)
+        grouped.setdefault(source_paragraph.source_index, []).append(redline)
     return grouped
 
 
-def _apply_redline_edits_to_source_document(document_root: ET.Element, redlines: object) -> None:
-    redlines_by_source_index = _redlines_by_source_index(redlines)
+def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, Paragraph]:
+    if not isinstance(review_paragraphs, list):
+        return {}
+    return {
+        str(paragraph.get("id")): paragraph
+        for paragraph in review_paragraphs
+        if isinstance(paragraph, dict) and paragraph.get("id")
+    }
+
+
+def _resolve_source_paragraph(
+    redline: RedlineEdit,
+    source_paragraphs: List[SourceParagraph],
+    review_paragraphs_by_id: Dict[str, Paragraph],
+) -> SourceParagraph | None:
+    source_index = _redline_source_index(redline)
+    anchor_texts = _redline_anchor_texts(redline, review_paragraphs_by_id)
+    for anchor_text in anchor_texts:
+        matches = [
+            paragraph
+            for paragraph in source_paragraphs
+            if paragraph.normalized_text == _normalize_paragraph_text(anchor_text)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1 and source_index is not None:
+            indexed_match = next((paragraph for paragraph in matches if paragraph.source_index == source_index), None)
+            if indexed_match is not None:
+                return indexed_match
+        if matches:
+            return matches[0]
+
+    if source_index is None:
+        return None
+    return next((paragraph for paragraph in source_paragraphs if paragraph.source_index == source_index), None)
+
+
+def _redline_source_index(redline: RedlineEdit) -> int | None:
+    source_index = redline.get("source_index", redline.get("paragraph_index"))
+    try:
+        return int(source_index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _redline_anchor_texts(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> List[str]:
+    candidates: List[object] = []
+    if redline.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH:
+        candidates.extend([redline.get("anchor_text"), redline.get("original_text")])
+    else:
+        candidates.extend([redline.get("original_text"), redline.get("anchor_text")])
+
+    review_paragraph = review_paragraphs_by_id.get(str(redline.get("paragraph_id") or ""))
+    if review_paragraph:
+        candidates.append(review_paragraph.get("text"))
+
+    texts: List[str] = []
+    seen = set()
+    for candidate in candidates:
+        normalized = _normalize_paragraph_text(candidate)
+        if not normalized or normalized in seen:
+            continue
+        texts.append(str(candidate or ""))
+        seen.add(normalized)
+    return texts
+
+
+def _normalize_paragraph_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _apply_redline_edits_to_source_document(
+    document_root: ET.Element,
+    redlines: object,
+    review_paragraphs: object = None,
+) -> None:
+    source_paragraphs = _indexed_source_paragraphs(document_root)
+    redlines_by_source_index = _redlines_by_source_paragraph(redlines, source_paragraphs, review_paragraphs)
     if not redlines_by_source_index:
         return
 
     revision_id = _next_revision_id(document_root)
-    for source_index, parent, paragraph in reversed(_indexed_source_paragraphs(document_root)):
-        edits = redlines_by_source_index.get(source_index, [])
+    for source_paragraph in reversed(source_paragraphs):
+        edits = redlines_by_source_index.get(source_paragraph.source_index, [])
         if not edits:
             continue
 
-        siblings = list(parent)
+        siblings = list(source_paragraph.parent)
         try:
-            paragraph_position = siblings.index(paragraph)
+            paragraph_position = siblings.index(source_paragraph.paragraph)
         except ValueError:
             continue
 
         primary_edit = next((edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH), None)
         if primary_edit and primary_edit.get("action") == REDLINE_REPLACE_PARAGRAPH:
             replacement_paragraph, revision_id = _source_tracked_replace_paragraph(
-                paragraph,
-                str(primary_edit.get("original_text") or _paragraph_text(paragraph)),
+                source_paragraph.paragraph,
+                str(primary_edit.get("original_text") or _paragraph_text(source_paragraph.paragraph)),
                 str(primary_edit.get("replacement_text") or ""),
                 revision_id,
             )
-            parent[paragraph_position] = replacement_paragraph
+            source_paragraph.parent[paragraph_position] = replacement_paragraph
         elif primary_edit and primary_edit.get("action") == REDLINE_DELETE_PARAGRAPH:
-            parent[paragraph_position] = _source_tracked_delete_paragraph(
-                paragraph,
-                str(primary_edit.get("original_text") or _paragraph_text(paragraph)),
+            source_paragraph.parent[paragraph_position] = _source_tracked_delete_paragraph(
+                source_paragraph.paragraph,
+                str(primary_edit.get("original_text") or _paragraph_text(source_paragraph.paragraph)),
                 revision_id,
             )
             revision_id += 1
@@ -384,13 +475,13 @@ def _apply_redline_edits_to_source_document(document_root: ET.Element, redlines:
         for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
             insert_text = str(insertion.get("insert_text") or insertion.get("replacement_text") or "")
             for inserted_paragraph in _source_tracked_insert_paragraphs(insert_text, revision_id):
-                parent.insert(insert_position, inserted_paragraph)
+                source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
                 revision_id += 1
 
 
-def _indexed_source_paragraphs(root: ET.Element) -> List[Tuple[int, ET.Element, ET.Element]]:
-    paragraphs: List[Tuple[int, ET.Element, ET.Element]] = []
+def _indexed_source_paragraphs(root: ET.Element) -> List[SourceParagraph]:
+    paragraphs: List[SourceParagraph] = []
     source_index = 0
 
     def visit(parent: ET.Element) -> None:
@@ -398,7 +489,16 @@ def _indexed_source_paragraphs(root: ET.Element) -> List[Tuple[int, ET.Element, 
         for child in list(parent):
             if child.tag == _w_tag("p"):
                 source_index += 1
-                paragraphs.append((source_index, parent, child))
+                text = _paragraph_text(child)
+                paragraphs.append(
+                    SourceParagraph(
+                        source_index=source_index,
+                        parent=parent,
+                        paragraph=child,
+                        text=text,
+                        normalized_text=_normalize_paragraph_text(text),
+                    )
+                )
             visit(child)
 
     visit(root)

@@ -408,6 +408,81 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
 
+    def test_source_docx_export_prefers_text_anchors_over_stale_source_index(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "Insert after this paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 3,
+            "checked_at": "2026-05-31T00:00:00+00:00",
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": "Intro paragraph."},
+                {"id": "p2", "index": 2, "source_index": 2, "text": "Insert after this paragraph."},
+                {
+                    "id": "p3",
+                    "index": 3,
+                    "source_index": 3,
+                    "text": "This Agreement shall be governed by the laws of California.",
+                },
+                {"id": "p4", "index": 4, "source_index": 4, "text": "The Recipient must not circumvent the Company."},
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p3",
+                    "source_index": 1,
+                    "original_text": "This Agreement shall be governed by the laws of California.",
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                },
+                {
+                    "id": "r2",
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "paragraph_id": "p2",
+                    "source_index": 1,
+                    "anchor_text": "Insert after this paragraph.",
+                    "insert_text": "New required clause.",
+                },
+                {
+                    "id": "r3",
+                    "action": REDLINE_DELETE_PARAGRAPH,
+                    "paragraph_id": "p4",
+                    "source_index": 1,
+                    "original_text": "The Recipient must not circumvent the Company.",
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        self.assertIn(("Intro paragraph.", "Intro paragraph."), states)
+        self.assertIn(("Insert after this paragraph.", "Insert after this paragraph."), states)
+        self.assertIn(("", "New required clause."), states)
+        self.assertIn(
+            (
+                "This Agreement shall be governed by the laws of California.",
+                "This Agreement shall be governed by the laws of England and Wales.",
+            ),
+            states,
+        )
+        self.assertIn(("The Recipient must not circumvent the Company.", ""), states)
+
     def test_source_docx_export_repairs_missing_package_relationships(self):
         source_docx = make_source_docx(
             ["This Agreement shall be governed by the laws of California."],
