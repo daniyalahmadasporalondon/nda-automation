@@ -1,5 +1,4 @@
 const fileInput = document.querySelector("#fileInput");
-const docTitle = document.querySelector("#docTitle");
 const studioDocTitle = document.querySelector("#studioDocTitle");
 const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
@@ -16,19 +15,15 @@ const studioResultMark = document.querySelector("#studioResultMark");
 const studioResultMeta = document.querySelector("#studioResultMeta");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
-const interfaceScaleButtons = document.querySelectorAll(".interface-scale [data-interface-scale]");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
 
-const DEFAULT_INTERFACE_SCALE = "90";
-const INTERFACE_SCALE_STORAGE_KEY = "ndaAutomation.interfaceScale";
-const INTERFACE_SCALES = new Set(["85", "90", "100"]);
 const DEFAULT_DOCUMENT_TITLE = "Untitled NDA";
 const SOURCE_PLACEHOLDER = "Paste NDA text here";
 
 const sourceInputs = [studioNdaText];
 const fileMetaDisplays = [studioFileMeta];
-const documentTitleDisplays = [docTitle, studioDocTitle];
+const documentTitleDisplays = [studioDocTitle];
 
 const state = {
   playbookClauses: [],
@@ -40,10 +35,11 @@ const state = {
   reviewDirty: false,
   reviewSourceText: "",
   selectedReviewClauseId: null,
+  documentViewMode: "redline",
 };
 
-setupInterfaceScale();
 setupSourceEditors();
+setupDocumentViewModes();
 
 const emptyState = () => {
   renderStudioEmpty();
@@ -187,7 +183,7 @@ async function exportReviewDocx() {
     const payload = {
       text,
       reviewed_text: text,
-      title: docTitle.textContent || DEFAULT_DOCUMENT_TITLE,
+      title: studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE,
     };
     if (state.selectedDocument) {
       payload.filename = state.selectedDocument.name;
@@ -280,49 +276,6 @@ function setDocumentTitle(title) {
   documentTitleDisplays.forEach((display) => {
     display.textContent = title;
   });
-}
-
-function setupInterfaceScale() {
-  applyInterfaceScale(getSavedInterfaceScale());
-
-  interfaceScaleButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const scale = normalizeInterfaceScale(button.dataset.interfaceScale);
-      applyInterfaceScale(scale);
-      saveInterfaceScale(scale);
-    });
-  });
-}
-
-function getSavedInterfaceScale() {
-  try {
-    return normalizeInterfaceScale(window.localStorage.getItem(INTERFACE_SCALE_STORAGE_KEY));
-  } catch {
-    return DEFAULT_INTERFACE_SCALE;
-  }
-}
-
-function saveInterfaceScale(scale) {
-  try {
-    window.localStorage.setItem(INTERFACE_SCALE_STORAGE_KEY, scale);
-  } catch {
-    // Local storage can be unavailable in restricted browser modes.
-  }
-}
-
-function normalizeInterfaceScale(scale) {
-  return INTERFACE_SCALES.has(scale) ? scale : DEFAULT_INTERFACE_SCALE;
-}
-
-function applyInterfaceScale(scale) {
-  const normalizedScale = normalizeInterfaceScale(scale);
-  document.body.dataset.interfaceScale = normalizedScale;
-  interfaceScaleButtons.forEach((button) => {
-    const isActive = button.dataset.interfaceScale === normalizedScale;
-    button.classList.toggle("active", isActive);
-    button.setAttribute("aria-pressed", String(isActive));
-  });
-  requestAnimationFrame(resizeSourceEditors);
 }
 
 function setupSourceEditors() {
@@ -658,6 +611,10 @@ function renderStudioDocumentHighlights() {
     redlinesByParagraphId.get(edit.paragraph_id).push(edit);
   });
 
+  const viewMode = state.documentViewMode || "redline";
+  studioDocumentRender.classList.toggle("doc-mode-clean", viewMode === "clean");
+  studioDocumentRender.classList.toggle("doc-mode-sidebyside", viewMode === "sidebyside");
+
   studioDocumentRender.innerHTML = state.reviewParagraphs
     .map((paragraph) => {
       const redlines = redlinesByParagraphId.get(paragraph.id) || [];
@@ -666,20 +623,21 @@ function renderStudioDocumentHighlights() {
         .filter(Boolean);
       const linked = mergeClauses(clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
       const selected = linked.find((clause) => clause.id === state.selectedReviewClauseId);
+      const ids = linked.map((clause) => clause.id).join(" ");
+
+      if (viewMode === "clean") {
+        return renderCleanParagraph(paragraph, redlines, { ids, selected: Boolean(selected) });
+      }
+      if (viewMode === "sidebyside") {
+        return renderSideBySideParagraph(paragraph, redlines, { ids, selected: Boolean(selected) });
+      }
+
       const primary = selected || linked.find((clause) => !clausePasses(clause)) || linked[0];
       const selectedRedline = redlines.find((edit) => edit.clause_id === state.selectedReviewClauseId);
       const primaryRedline = selectedRedline || redlines[0];
       const visibleRedlines = redlines.every(isInsertionRedline)
         ? (selectedRedline ? [selectedRedline] : redlines)
         : (primaryRedline ? [primaryRedline] : []);
-      const ids = linked.map((clause) => clause.id).join(" ");
-      const editableClasses = [
-        "paragraph-editable",
-        primaryRedline?.action === "replace_paragraph" ? "redline-edit-source" : "",
-        primaryRedline?.action === "delete_paragraph" ? "redline-edit-source" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
       const classes = [
         "studio-doc-paragraph",
         linked.length ? "has-clause" : "",
@@ -692,19 +650,7 @@ function renderStudioDocumentHighlights() {
       ]
         .filter(Boolean)
         .join(" ");
-      const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(paragraph, visibleRedlines) : "";
-      const paragraphHtml = `
-        <div
-          class="${editableClasses}"
-          contenteditable="plaintext-only"
-          spellcheck="true"
-          role="textbox"
-          aria-multiline="true"
-          data-editable-paragraph-id="${escapeHtml(paragraph.id)}"
-          aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}"
-        >${escapeHtml(paragraph.text)}</div>
-        ${redlineHtml}
-      `;
+      const paragraphHtml = renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines);
 
       return `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(ids)}">${paragraphHtml}</div>`;
     })
@@ -720,6 +666,132 @@ function renderStudioDocumentHighlights() {
   bindViewerParagraphEditing();
 
   showStudioDocumentRender();
+}
+
+function setupDocumentViewModes() {
+  const buttons = document.querySelectorAll(".studio-view-switch [data-view-mode]");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.viewMode;
+      if (state.documentViewMode === mode) return;
+      state.documentViewMode = mode;
+      buttons.forEach((other) => other.classList.toggle("active", other === button));
+      if (state.reviewParagraphs.length && !studioDocumentRender.hidden) {
+        renderStudioDocumentHighlights();
+      }
+    });
+  });
+}
+
+function paragraphRedlinePlan(paragraph, redlines) {
+  const replace = redlines.find((edit) => edit.action === "replace_paragraph");
+  const remove = redlines.find((edit) => edit.action === "delete_paragraph");
+  const inserts = redlines.filter((edit) => edit.action === "insert_after_paragraph");
+  const cleanText = remove
+    ? ""
+    : replace
+      ? String(replace.replacement_text || "")
+      : String(paragraph.text || "");
+  return { replace, remove, inserts, cleanText };
+}
+
+function renderCleanParagraph(paragraph, redlines, context) {
+  const plan = paragraphRedlinePlan(paragraph, redlines);
+  let html = "";
+  if (!plan.remove) {
+    const classes = ["studio-doc-paragraph", "doc-clean-paragraph", context.selected ? "selected" : ""]
+      .filter(Boolean)
+      .join(" ");
+    html += `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}">${escapeHtml(plan.cleanText)}</div>`;
+  }
+  plan.inserts.forEach((edit) => {
+    const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
+    html += `<div class="studio-doc-paragraph doc-clean-paragraph">${inserted}</div>`;
+  });
+  return html;
+}
+
+function renderSideBySideParagraph(paragraph, redlines, context) {
+  const plan = paragraphRedlinePlan(paragraph, redlines);
+  const original = escapeHtml(String(paragraph.text || ""));
+  const latest = plan.remove
+    ? `<span class="sxs-removed">${original}</span>`
+    : escapeHtml(plan.cleanText) || `<span class="sxs-empty">—</span>`;
+  const classes = ["studio-doc-paragraph", "doc-sxs-paragraph", context.selected ? "selected" : ""]
+    .filter(Boolean)
+    .join(" ");
+  let html = `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div>${original}</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Latest</span><div>${latest}</div></div></div></div>`;
+  plan.inserts.forEach((edit) => {
+    const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
+    html += `<div class="studio-doc-paragraph doc-sxs-paragraph"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">—</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Latest</span><div class="sxs-inserted">${inserted}</div></div></div></div>`;
+  });
+  return html;
+}
+
+function renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines) {
+  if (primaryRedline?.action === "replace_paragraph") {
+    return `<div class="paragraph-diff" contenteditable="false">${renderWordDiff(paragraph.text, primaryRedline.replacement_text || "")}</div>`;
+  }
+  if (primaryRedline?.action === "delete_paragraph") {
+    return `<div class="paragraph-diff paragraph-diff-removed" contenteditable="false"><span class="diff-del">${escapeHtml(String(paragraph.text || ""))}</span></div><div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(primaryRedline))}</span></div>`;
+  }
+  const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(paragraph, visibleRedlines) : "";
+  return `
+        <div
+          class="paragraph-editable"
+          contenteditable="plaintext-only"
+          spellcheck="true"
+          role="textbox"
+          aria-multiline="true"
+          data-editable-paragraph-id="${escapeHtml(paragraph.id)}"
+          aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}"
+        >${escapeHtml(String(paragraph.text || ""))}</div>
+        ${redlineHtml}
+      `;
+}
+
+function tokenizeForDiff(text) {
+  return String(text || "").match(/\s+|\S+/g) || [];
+}
+
+function renderWordDiff(oldText, newText) {
+  const a = tokenizeForDiff(oldText);
+  const b = tokenizeForDiff(newText);
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i -= 1) {
+    for (let j = n - 1; j >= 0; j -= 1) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const del = (token) => (token.trim() ? `<span class="diff-del">${escapeHtml(token)}</span>` : escapeHtml(token));
+  const ins = (token) => (token.trim() ? `<span class="diff-ins">${escapeHtml(token)}</span>` : escapeHtml(token));
+  let i = 0;
+  let j = 0;
+  let html = "";
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      html += escapeHtml(a[i]);
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      html += del(a[i]);
+      i += 1;
+    } else {
+      html += ins(b[j]);
+      j += 1;
+    }
+  }
+  while (i < m) {
+    html += del(a[i]);
+    i += 1;
+  }
+  while (j < n) {
+    html += ins(b[j]);
+    j += 1;
+  }
+  return html;
 }
 
 function bindViewerParagraphEditing() {
