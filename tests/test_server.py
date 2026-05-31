@@ -2,6 +2,7 @@ import base64
 import http.client
 import json
 import os
+import socket
 import tempfile
 import threading
 import unittest
@@ -84,6 +85,22 @@ class ServerTests(unittest.TestCase):
             return response.status, payload, dict(response.getheaders())
         finally:
             connection.close()
+
+    def raw_http_request(self, request_text):
+        with socket.create_connection((self.host, self.port), timeout=5) as connection:
+            connection.sendall(request_text.encode("utf-8"))
+            connection.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        raw_response = b"".join(chunks)
+        header_bytes, _, body = raw_response.partition(b"\r\n\r\n")
+        status_line = header_bytes.splitlines()[0].decode("iso-8859-1")
+        status = int(status_line.split()[1])
+        return status, json.loads(body.decode("utf-8"))
 
     def assert_saved_export_url_matches_response(self, headers, payload):
         self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
@@ -215,6 +232,47 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Request body must be a JSON object.")
+
+    def test_text_review_rejects_empty_content_length(self):
+        status, payload = self.raw_http_request(
+            "POST /api/review HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: \r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Content-Length must be a non-negative integer.")
+
+    def test_text_review_rejects_malformed_content_length(self):
+        status, payload = self.raw_http_request(
+            "POST /api/review HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: nope\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Content-Length must be a non-negative integer.")
+
+    def test_text_review_rejects_negative_content_length(self):
+        status, payload = self.raw_http_request(
+            "POST /api/review HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: -1\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Content-Length must be a non-negative integer.")
 
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})

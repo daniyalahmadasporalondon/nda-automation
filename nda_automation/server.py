@@ -443,7 +443,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         )
 
     def _read_json_payload(self) -> dict | None:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length = self._read_content_length()
+        if content_length is None:
+            return None
         raw_body = self.rfile.read(content_length)
         try:
             payload = json.loads(raw_body.decode("utf-8") or "{}")
@@ -454,6 +456,24 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Request body must be a JSON object."}, status=400)
             return None
         return payload
+
+    def _read_content_length(self) -> int | None:
+        raw_content_length = self.headers.get("Content-Length")
+        if raw_content_length is None:
+            return 0
+        raw_content_length = raw_content_length.strip()
+        if not raw_content_length:
+            self._send_json({"error": "Content-Length must be a non-negative integer."}, status=400)
+            return None
+        try:
+            content_length = int(raw_content_length)
+        except ValueError:
+            self._send_json({"error": "Content-Length must be a non-negative integer."}, status=400)
+            return None
+        if content_length < 0:
+            self._send_json({"error": "Content-Length must be a non-negative integer."}, status=400)
+            return None
+        return content_length
 
     def _send_file(self, path: Path, content_type: str | None = None, *, send_body: bool = True) -> None:
         if not path.is_file():
