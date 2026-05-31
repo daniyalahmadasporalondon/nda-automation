@@ -1552,9 +1552,30 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(payload["playbook"]["clauses"][0]["preferred_position"], playbook["clauses"][0]["preferred_position"])
                 saved = json.loads(playbook_path.read_text(encoding="utf-8"))
+                self.assertFalse((playbook_path.parent / ".playbook.json.tmp").exists())
 
         saved_mutuality = next(clause for clause in saved["clauses"] if clause["id"] == "mutuality")
         self.assertEqual(saved_mutuality["preferred_position"], "Mutual NDA policy saved by admin.")
+
+    def test_playbook_save_preserves_existing_file_when_atomic_replace_fails(self):
+        original_playbook = deepcopy(load_playbook())
+        changed_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in changed_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "This should not replace the saved playbook."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = server_module.Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            temporary_path = playbook_path.parent / ".playbook.json.tmp"
+
+            with patch.object(server_module, "PLAYBOOK_PATH", playbook_path):
+                with patch.object(server_module.os, "replace", side_effect=OSError("disk full")):
+                    status, payload = self.request("POST", "/api/playbook", {"playbook": changed_playbook})
+
+            self.assertEqual(status, 500)
+            self.assertEqual(payload["error"], "Playbook could not be saved.")
+            self.assertEqual(json.loads(playbook_path.read_text(encoding="utf-8")), original_playbook)
+            self.assertFalse(temporary_path.exists())
 
     def test_playbook_save_rejects_invalid_playbook_without_writing_file(self):
         playbook = deepcopy(load_playbook())

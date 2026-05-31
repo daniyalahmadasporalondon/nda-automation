@@ -6,6 +6,9 @@ import binascii
 import hashlib
 import json
 import mimetypes
+import os
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +27,11 @@ from .ingestion_service import (
 from .pdf_text import PdfExtractionError
 from . import matter_store
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
+    fcntl = None
+
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
@@ -31,6 +39,39 @@ MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_dem
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
+_PLAYBOOK_LOCK = threading.RLock()
+
+
+@contextmanager
+def _locked_playbook():
+    with _PLAYBOOK_LOCK:
+        PLAYBOOK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = PLAYBOOK_PATH.with_suffix(f"{PLAYBOOK_PATH.suffix}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_playbook_atomically(playbook: dict) -> None:
+    data = json.dumps(playbook, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    temporary_path = PLAYBOOK_PATH.with_name(f".{PLAYBOOK_PATH.name}.tmp")
+    try:
+        with temporary_path.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, PLAYBOOK_PATH)
+    except OSError:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -455,13 +496,16 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            validate_playbook(playbook)
+            with _locked_playbook():
+                validate_playbook(playbook)
+                _write_playbook_atomically(playbook)
         except PlaybookTemplateError as error:
             self._send_json({"error": str(error)}, status=400)
             return
+        except OSError:
+            self._send_json({"error": "Playbook could not be saved."}, status=500)
+            return
 
-        data = json.dumps(playbook, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
-        PLAYBOOK_PATH.write_bytes(data)
         self._send_json({"playbook": playbook, "saved_at": datetime.now(UTC).isoformat()})
 
     def _read_json_payload(self) -> dict | None:
