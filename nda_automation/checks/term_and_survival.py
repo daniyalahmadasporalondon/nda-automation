@@ -20,7 +20,6 @@ from .common import (
     _year_count_label,
 )
 
-CARVE_OUT_CONTEXT_PATTERN = r"\b(?:trade\s+secrets?|legal\s+obligations?|required\s+by\s+law|applicable\s+law)\b"
 CARVE_OUT_MARKER_PATTERN = r"\b(?:except|excluding|other\s+than|save\s+for|provided\s+that)\b"
 
 
@@ -33,9 +32,18 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     year_terms = _extract_year_terms_with_context(term_normalized)
     has_term_within_cap = any(1 <= term["years"] <= max_years for term in year_terms)
-    ordinary_over_cap_terms = [term for term in year_terms if term["years"] > max_years and not _is_allowed_carve_out_year(term_normalized, term)]
+    ordinary_over_cap_terms = [
+        term
+        for term in year_terms
+        if term["years"] > max_years and not _is_allowed_carve_out_year(term_normalized, term, clause)
+    ]
     has_term_over_cap = bool(ordinary_over_cap_terms)
-    ordinary_indefinite_term = any(re.search(pattern, term_normalized) for pattern in indefinite_patterns)
+    ordinary_indefinite_matches = [
+        match
+        for pattern in indefinite_patterns
+        for match in re.finditer(pattern, term_normalized)
+        if not _is_allowed_carve_out_fragment(term_normalized, match.start(), match.end(), clause)
+    ]
 
     if has_term_over_cap:
         return _check(
@@ -47,7 +55,7 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
                 f"to a fixed period of {cap_label} or less."
             ),
         )
-    if ordinary_indefinite_term:
+    if ordinary_indefinite_matches:
         return _check(
             clause,
             f"Survival language appears indefinite or perpetual rather than capped at {cap_label}.",
@@ -88,11 +96,38 @@ def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:
     return terms
 
 
-def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int]) -> bool:
-    fragment = _term_fragment(normalized, term["start"], term["end"])
-    if not re.search(CARVE_OUT_CONTEXT_PATTERN, fragment):
+def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:
+    return _is_allowed_carve_out_fragment(normalized, term["start"], term["end"], clause)
+
+
+def _is_allowed_carve_out_fragment(normalized: str, start: int, end: int, clause: Dict[str, object]) -> bool:
+    fragment = _term_fragment(normalized, start, end)
+    carve_out_patterns = _carve_out_context_patterns(clause)
+    if not any(re.search(pattern, fragment) for pattern in carve_out_patterns):
         return False
-    return bool(re.search(CARVE_OUT_MARKER_PATTERN, fragment) or fragment.lstrip().startswith(("trade secret", "legal obligation")))
+    return bool(
+        re.search(CARVE_OUT_MARKER_PATTERN, fragment)
+        or any(re.match(pattern, fragment.lstrip()) for pattern in carve_out_patterns)
+    )
+
+
+def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
+    configured_terms = clause.get("longer_survival_carve_out_terms")
+    terms = configured_terms if isinstance(configured_terms, list) else []
+    if not terms:
+        terms = [
+            "trade secret",
+            "trade secrets",
+            "legal obligation",
+            "legal obligations",
+            "required by law",
+            "applicable law",
+        ]
+    return [
+        re.escape(str(term).lower().strip()).replace(r"\ ", r"\s+")
+        for term in terms
+        if str(term).strip()
+    ]
 
 
 def _term_fragment(normalized: str, start: int, end: int) -> str:

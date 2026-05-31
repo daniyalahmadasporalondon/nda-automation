@@ -11,7 +11,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
-from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
+from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda, validate_playbook
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import DOCX_MIME, DocxExportError
 from .docx_text import DocxExtractionError
@@ -100,6 +100,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "/api/gmail/send-redline": self._handle_gmail_send_redline,
                 "/api/demo/reset": self._handle_demo_reset,
                 "/api/export-review-docx": self._handle_review_docx_export,
+                "/api/playbook": self._handle_playbook_save,
             }
             handler = exact_routes.get(path)
             if handler is not None:
@@ -442,6 +443,26 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             DOCX_MIME,
             headers=headers,
         )
+
+    def _handle_playbook_save(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        playbook = payload.get("playbook")
+        if not isinstance(playbook, dict):
+            self._send_json({"error": "Playbook payload must include a playbook object."}, status=400)
+            return
+
+        try:
+            validate_playbook(playbook)
+        except PlaybookTemplateError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+
+        data = json.dumps(playbook, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+        PLAYBOOK_PATH.write_bytes(data)
+        self._send_json({"playbook": playbook, "saved_at": datetime.now(UTC).isoformat()})
 
     def _read_json_payload(self) -> dict | None:
         content_length = self._read_content_length()

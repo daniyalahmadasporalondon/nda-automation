@@ -132,6 +132,16 @@ class CheckerTests(unittest.TestCase):
         self.assertNotEqual(result_clause["status"], "match")
         self.assertFalse(result_clause["passes"])
 
+    def test_mutuality_check_returns_playbook_redline(self):
+        result = review_nda("This is a unilateral NDA and only the Receiving Party receives Confidential Information.")
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(mutuality["status"], "check")
+        self.assertFalse(mutuality["passes"])
+        redline = self.redline_for_clause(result, "mutuality")
+        self.assertEqual(redline["action"], "replace_paragraph")
+        self.assertIn("each party acts as both", redline["replacement_text"])
+
     def test_mutuality_role_terms_come_from_playbook(self):
         playbook = deepcopy(load_playbook())
         mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
@@ -206,6 +216,27 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
         self.assertIn("within the cap of five years", term_clause["finding"])
+
+    def test_term_and_survival_allows_perpetual_trade_secret_and_personal_data_carveouts(self):
+        result = review_nda(
+            """
+            The confidentiality obligations survive for five years, except that trade secrets survive
+            for so long as they remain trade secrets and personal data survives for as long as
+            data-protection law requires.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+
+    def test_term_and_survival_still_flags_perpetual_ordinary_confidentiality(self):
+        result = review_nda("The confidentiality obligations survive perpetually.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertIn("indefinite or perpetual", term_clause["finding"])
 
     def test_term_and_survival_rejects_over_cap_ordinary_term_with_trade_secret_carve_out(self):
         result = review_nda(
@@ -326,10 +357,9 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(redline["action_label"], "Replace paragraph")
         self.assertEqual(redline["paragraph_id"], "p1")
         self.assertEqual(redline["original_text"], "The confidentiality obligations survive for seven (7) years.")
-        self.assertEqual(
-            redline["replacement_text"],
-            "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period.",
-        )
+        self.assertIn("fixed period of up to five years", redline["replacement_text"])
+        self.assertIn("trade secrets", redline["replacement_text"])
+        self.assertIn("personal data", redline["replacement_text"])
 
     def test_missing_term_and_survival_creates_insert_redline_after_anchor_paragraph(self):
         result = review_nda("The parties will discuss a possible transaction.")
@@ -798,6 +828,11 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(confidential_information["matched_paragraph_ids"], ["p2"])
         self.assertEqual(confidential_information["issue_type"], "present_but_wrong")
         self.assertIn("Remove residual knowledge", confidential_information["what_to_fix"])
+        redline = self.redline_for_clause(result, "confidential_information")
+        self.assertEqual(redline["action"], "replace_paragraph")
+        self.assertEqual(redline["paragraph_id"], "p2")
+        self.assertIn("public through no breach", redline["replacement_text"])
+        self.assertNotIn("residual", redline["replacement_text"].lower())
 
     def test_confidentiality_exclusion_scan_is_not_capped_before_problem_detection(self):
         result = review_nda(

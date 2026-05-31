@@ -46,6 +46,7 @@ __all__ = [
     "load_playbook",
     "review_nda",
     "split_document_paragraphs",
+    "validate_playbook",
     "validate_clause_evidence_trust",
 ]
 
@@ -59,6 +60,10 @@ def load_playbook() -> Dict[str, object]:
     if not isinstance(playbook, dict):
         raise PlaybookTemplateError("Playbook must be a JSON object.")
     return playbook
+
+
+def validate_playbook(playbook: Dict[str, object]) -> None:
+    _validate_playbook_contract(playbook)
 
 
 def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str, object]:
@@ -202,6 +207,9 @@ def _validate_playbook_contract(playbook: Dict[str, object]) -> None:
 
     clauses_by_id = {str(clause["id"]): clause for clause in clauses}
     _validate_governing_law_playbook(clauses_by_id["governing_law"])
+    _require_template(clauses_by_id["mutuality"], "redline_template")
+    _require_template(clauses_by_id["confidential_information"], "redline_template")
+    _require_template(clauses_by_id["confidential_information"], "standard_exclusions_template")
     _require_template(clauses_by_id["term_and_survival"], "redline_template")
     _require_template(clauses_by_id["signatures"], "redline_template")
 
@@ -393,6 +401,74 @@ def _governing_law_redlines(
     return [edit] if edit else []
 
 
+def _template_redline_for_required_clause(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    edit_number: int,
+    template_text: str,
+) -> RedlineEdit | None:
+    if _is_missing_required_check(clause):
+        anchor = _insertion_anchor_paragraph(clause, paragraphs_by_id)
+        if not anchor:
+            return None
+        return _redline_edit(
+            edit_number,
+            clause,
+            anchor,
+            REDLINE_INSERT_AFTER_PARAGRAPH,
+            insert_text=template_text,
+        )
+
+    if not _is_present_but_wrong_check(clause):
+        return None
+
+    paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
+    if not paragraphs:
+        return None
+
+    return _redline_edit(
+        edit_number,
+        clause,
+        paragraphs[0],
+        REDLINE_REPLACE_PARAGRAPH,
+        replacement_text=template_text,
+    )
+
+
+def _mutuality_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    edit = _template_redline_for_required_clause(
+        clause,
+        paragraphs_by_id,
+        start_number,
+        _clause_template_text(clause, "redline_template"),
+    )
+    return [edit] if edit else []
+
+
+def _confidential_information_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    template_field = "standard_exclusions_template" if _confidential_issue_is_exclusion_based(clause) else "redline_template"
+    edit = _template_redline_for_required_clause(
+        clause,
+        paragraphs_by_id,
+        start_number,
+        _clause_template_text(clause, template_field),
+    )
+    return [edit] if edit else []
+
+
+def _confidential_issue_is_exclusion_based(clause: ClauseResult) -> bool:
+    issue_text = f"{clause.get('reason', '')} {clause.get('what_to_fix', '')}".lower()
+    return "exclusion" in issue_text or "residual" in issue_text or "reverse-engineering" in issue_text
+
+
 def _term_and_survival_redline(
     clause: ClauseResult,
     paragraphs_by_id: Dict[str, Paragraph],
@@ -497,8 +573,8 @@ def _no_redlines(
 REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
     # Every checked clause must declare its redline behavior. Use
     # _no_redlines when the absence of a proposed edit is intentional.
-    ("mutuality", _no_redlines),
-    ("confidential_information", _no_redlines),
+    ("mutuality", _mutuality_redlines),
+    ("confidential_information", _confidential_information_redlines),
     ("governing_law", _governing_law_redlines),
     ("term_and_survival", _term_and_survival_redlines),
     ("non_circumvention", _non_circumvention_redlines),

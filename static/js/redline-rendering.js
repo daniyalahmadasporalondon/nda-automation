@@ -41,8 +41,13 @@ function paragraphViewModel(paragraph, context) {
   const selectedClause = linkedClauses.find((clause) => clause.id === context.selectedClauseId);
   const selectedRedline = redlines.find((edit) => edit.clause_id === context.selectedClauseId);
   const manualRedline = manualParagraphRedline(paragraph, context.originalParagraphs);
-  const primaryClause = selectedClause || linkedClauses.find((clause) => !clauseStatus(clause).passes) || linkedClauses[0];
   const primaryRedline = manualRedline || selectedRedline || primaryBackendRedline(redlines, redlineClauses) || null;
+  const primaryClause = (
+    selectedClause
+    || linkedClauses.find((clause) => clause.id === primaryRedline?.clause_id)
+    || linkedClauses.find((clause) => !clauseStatus(clause).passes)
+    || linkedClauses[0]
+  );
   const visibleRedlines = visibleParagraphRedlines(redlines, manualRedline, selectedRedline, primaryRedline);
 
   return {
@@ -113,7 +118,7 @@ function renderRedlineDocumentParagraph(model) {
       model.manualRedline ? "manual-redline" : "",
       model.primaryRedline?.action === REDLINE_DELETE_PARAGRAPH ? "redline-delete" : "",
       model.primaryRedline?.action === REDLINE_INSERT_AFTER_PARAGRAPH ? "redline-insert" : "",
-      isFailedProhibitedClause(model.primaryClause) ? "prohibited" : "",
+      model.linkedClauses.some(isFailedProhibitedClause) ? "prohibited" : "",
       model.primaryClause && !clauseStatus(model.primaryClause).passes ? "verify" : "",
       model.primaryClause && clauseStatus(model.primaryClause).passes ? "match" : "",
     ],

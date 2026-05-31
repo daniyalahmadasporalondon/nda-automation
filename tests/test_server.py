@@ -1539,6 +1539,38 @@ class ServerTests(unittest.TestCase):
                     )
                     self.assertEqual((exports_path / "new.docx").read_bytes(), b"new")
 
+    def test_playbook_save_updates_local_playbook_file_after_validation(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "Mutual NDA policy saved by admin."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = server_module.Path(playbook_dir) / "playbook.json"
+            with patch.object(server_module, "PLAYBOOK_PATH", playbook_path):
+                status, payload = self.request("POST", "/api/playbook", {"playbook": playbook})
+
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["playbook"]["clauses"][0]["preferred_position"], playbook["clauses"][0]["preferred_position"])
+                saved = json.loads(playbook_path.read_text(encoding="utf-8"))
+
+        saved_mutuality = next(clause for clause in saved["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(saved_mutuality["preferred_position"], "Mutual NDA policy saved by admin.")
+
+    def test_playbook_save_rejects_invalid_playbook_without_writing_file(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["search_terms"] = []
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = server_module.Path(playbook_dir) / "playbook.json"
+            with patch.object(server_module, "PLAYBOOK_PATH", playbook_path):
+                status, payload = self.request("POST", "/api/playbook", {"playbook": playbook})
+
+                self.assertEqual(status, 400)
+                self.assertFalse(playbook_path.exists())
+
+        self.assertIn("must include search_terms", payload["error"])
+
     def test_text_review_reports_malformed_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
         mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")

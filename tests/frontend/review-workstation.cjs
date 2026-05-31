@@ -33,6 +33,7 @@ const allActionRedlineNda = [
 
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
+  ["edits playbook admin drafts with Pass/Check policy framing", testPlaybookAdminEditor],
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -252,6 +253,35 @@ async function testFailureUxDetails(page) {
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
   await page.unroute("**/api/export-review-docx");
+}
+
+async function testPlaybookAdminEditor(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Admin" }).click();
+  await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
+  await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
+  await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
+  assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
+  assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
+  assert.equal(await page.getByText("Escalate", { exact: false }).count(), 0);
+
+  await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
+  await assertTextContains(page.locator("#playbookDraftDiff"), "check_trigger");
+  assert.equal(await page.getByRole("button", { name: "Commit & Save Playbook" }).isEnabled(), true);
+
+  let savedPayload;
+  await page.route("**/api/playbook", async (route) => {
+    savedPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ playbook: savedPayload.playbook, saved_at: "2026-05-31T20:00:00+00:00" }),
+    });
+  });
+  await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
+  await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
+  assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
+  await page.unroute("**/api/playbook");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

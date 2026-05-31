@@ -132,7 +132,8 @@ body {
 
 button,
 textarea,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -993,6 +994,14 @@ h3 {
   box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.2);
 }
 
+.studio-doc-paragraph.selected.prohibited {
+  background: rgba(239, 68, 68, 0.08);
+  border-left-color: var(--red);
+  box-shadow:
+    inset 0 0 0 2px rgba(239, 68, 68, 0.22),
+    0 12px 26px -16px rgba(239, 68, 68, 0.22);
+}
+
 .studio-doc-paragraph.redline-insert {
   background: #effdf5;
   border-color: rgba(16, 185, 129, 0.3);
@@ -1640,7 +1649,7 @@ textarea::placeholder {
   color: var(--ink);
   display: grid;
   gap: 8px;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   height: auto;
   justify-content: flex-start;
   min-height: 50px;
@@ -1697,9 +1706,219 @@ textarea::placeholder {
   text-transform: uppercase;
 }
 
+.playbook-row em {
+  background: var(--amber-bg);
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 0 0 1px var(--amber-border);
+  color: var(--amber-ink);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
 .clause-detail {
   overflow: auto;
+  padding: 0;
+}
+
+.playbook-editor {
+  display: grid;
+  gap: 16px;
   padding: 18px;
+}
+
+.admin-head {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+
+.admin-head h2 {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.08;
+  margin: 0;
+}
+
+.admin-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-field {
+  display: grid;
+  gap: 7px;
+}
+
+.admin-field.compact {
+  max-width: 180px;
+}
+
+.admin-field > span,
+.admin-fieldset legend,
+.admin-special h3,
+.admin-rules h3 {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  margin: 0;
+}
+
+.admin-field input,
+.admin-field select,
+.admin-field textarea,
+.admin-inline-add input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  min-height: 38px;
+  padding: 9px 10px;
+  width: 100%;
+}
+
+.admin-field textarea {
+  line-height: 1.45;
+  min-height: 86px;
+  resize: vertical;
+}
+
+.admin-checkbox {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+  min-height: 38px;
+  padding-top: 18px;
+}
+
+.admin-checkbox input,
+.admin-fieldset input {
+  accent-color: var(--brand);
+}
+
+.admin-checkbox span,
+.admin-fieldset span {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.admin-fieldset {
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 0;
+  padding: 0;
+}
+
+.admin-fieldset legend {
+  flex: 0 0 100%;
+  margin-bottom: 1px;
+}
+
+.admin-fieldset label {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+}
+
+.admin-special,
+.admin-rules {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.admin-rules pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.admin-rules.diff pre {
+  color: var(--ink);
+}
+
+.admin-chip-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.admin-chip {
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--brand);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.admin-chip.removable {
+  color: var(--brand);
+  height: 28px;
+}
+
+.admin-chip.removable span {
+  color: var(--ink-muted);
+}
+
+.admin-inline-add {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 260px) auto;
+}
+
+.admin-muted,
+.admin-save-status {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.admin-actions {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding-top: 4px;
+  position: sticky;
+  bottom: -18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), var(--bg-panel));
+  padding-bottom: 2px;
+}
+
+.admin-actions .admin-save-status {
+  margin-right: auto;
 }
 
 .detail-header {
@@ -1910,6 +2129,21 @@ textarea::placeholder {
   .studio-grid,
   .playbook-shell {
     grid-template-columns: 1fr;
+  }
+
+  .admin-grid.two,
+  .admin-inline-add {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-actions {
+    align-items: stretch;
+    flex-direction: column;
+    position: static;
+  }
+
+  .admin-actions .admin-save-status {
+    margin-right: 0;
   }
 
   .studio-clauses {
