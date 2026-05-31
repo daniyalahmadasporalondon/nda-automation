@@ -28,6 +28,7 @@ STATIC_DIR = ROOT / "static"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo"}
+MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -96,6 +97,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path in {"/api/matters", "/api/inbound/upload"}:
                 self._handle_matter_upload()
+                return
+            if path.startswith("/api/matters/") and path.endswith("/stage"):
+                self._handle_matter_stage_update(path)
                 return
             if path == "/api/export-review-docx":
                 self._handle_review_docx_export()
@@ -210,6 +214,27 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json({"matter": matter}, status=201)
+
+    def _handle_matter_stage_update(self, path: str) -> None:
+        matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/stage")).strip("/")
+        if not matter_id or "/" in matter_id:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        board_column = payload.get("board_column", "")
+        if not isinstance(board_column, str) or board_column not in MATTER_BOARD_COLUMNS:
+            self._send_json({"error": "Unsupported matter stage."}, status=400)
+            return
+
+        matter = matter_store.update_matter_stage(matter_id, board_column)
+        if matter is None:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        self._send_json({"matter": matter})
 
     def _handle_review_docx_export(self) -> None:
         payload = self._read_json_payload()

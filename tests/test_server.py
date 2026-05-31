@@ -303,6 +303,59 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(fetch_status, 200)
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
 
+    def test_matter_stage_update_persists_workflow_column(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Workflow NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                review_status, review_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/stage",
+                    {"board_column": "in_review"},
+                )
+                list_status, list_payload = self.request("GET", "/api/matters")
+                close_status, close_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/stage",
+                    {"board_column": "signed_closed"},
+                )
+                invalid_status, invalid_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/stage",
+                    {"board_column": "unknown"},
+                )
+                missing_status, missing_payload = self.request(
+                    "POST",
+                    "/api/matters/matter_missing/stage",
+                    {"board_column": "in_review"},
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["matter"]["board_column"], "in_review")
+        self.assertEqual(review_payload["matter"]["status"], "active")
+        self.assertEqual(list_status, 200)
+        self.assertEqual(list_payload["matters"][0]["board_column"], "in_review")
+        self.assertEqual(close_status, 200)
+        self.assertEqual(close_payload["matter"]["board_column"], "signed_closed")
+        self.assertEqual(close_payload["matter"]["status"], "closed")
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(invalid_payload["error"], "Unsupported matter stage.")
+        self.assertEqual(missing_status, 404)
+        self.assertEqual(missing_payload["error"], "Matter not found.")
+
     def test_matter_upload_rejects_invalid_upload_cleanly(self):
         with tempfile.TemporaryDirectory() as data_dir:
             with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:

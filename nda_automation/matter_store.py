@@ -44,6 +44,25 @@ def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
     return source_path.read_bytes()
 
 
+def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _MATTERS_LOCK:
+        matters = _load_matters()
+        for index, matter in enumerate(matters):
+            if matter.get("id") != matter_id:
+                continue
+            updated_matter = {
+                **matter,
+                "board_column": board_column,
+                "status": "closed" if board_column == "signed_closed" else "active",
+                "updated_at": now,
+            }
+            matters[index] = updated_matter
+            _save_matters(matters)
+            return updated_matter
+    return None
+
+
 def create_matter(
     *,
     source_filename: str,

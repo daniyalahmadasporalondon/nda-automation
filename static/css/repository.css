@@ -88,7 +88,7 @@
 .repository-board {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   min-width: 0;
 }
 
@@ -391,7 +391,7 @@
 .repository-detail-actions {
   display: grid;
   gap: 9px;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   margin-top: 16px;
 }
 
@@ -405,7 +405,8 @@
 }
 
 @media (max-width: 1180px) {
-  .repository-workspace {
+  .repository-workspace,
+  .repository-workspace.detail-open {
     grid-template-columns: 1fr;
   }
 

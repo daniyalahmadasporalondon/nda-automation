@@ -260,6 +260,7 @@ async function exportReviewDocx() {
       downloadBlob(blob, filename);
       renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading");
     }
+    await repositoryController.markMatterRedlineReady(state.selectedMatter);
   } catch (error) {
     renderOperationError(error, "Export could not run.");
   } finally {

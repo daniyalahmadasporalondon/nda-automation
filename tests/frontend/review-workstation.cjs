@@ -252,6 +252,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForText(page, "#repositoryImportStatus", "repository-matter-");
   await page.waitForSelector(".repository-card");
   assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
+  assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
 
   await page.locator(".repository-card").click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
@@ -267,12 +269,28 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const matterExportPayload = matterExportRequest.postDataJSON();
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
   assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
+  await waitForRepositoryCount(page, "gmail_demo", "0");
+  await waitForRepositoryCount(page, "redline_ready", "1");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Redline Ready");
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");
   await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
+  await waitForRepositoryCount(page, "in_review", "1");
+  await waitForRepositoryCount(page, "redline_ready", "0");
+
+  const [reviewMatterExportRequest, reviewMatterDownload] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export DOCX" }).click(),
+  ]);
+  const reviewMatterExportPayload = reviewMatterExportRequest.postDataJSON();
+  assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
+  assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
+  await waitForRepositoryCount(page, "in_review", "0");
+  await waitForRepositoryCount(page, "redline_ready", "1");
 
   await page.getByRole("button", { name: "Review NDA" }).click();
   await waitForText(page, "#studioFileMeta", "Repository text reviewed as a fresh draft");
@@ -285,6 +303,11 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const exportPayload = exportRequest.postDataJSON();
   assert.equal(download.suggestedFilename(), "nda-review-report.docx");
   assert.equal(Object.prototype.hasOwnProperty.call(exportPayload, "matter_id"), false);
+
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.getByRole("button", { name: "Close Matter", exact: true }).click();
+  await waitForRepositoryCount(page, "redline_ready", "0");
+  await waitForRepositoryCount(page, "signed_closed", "1");
 
   fs.rmSync(docxPath, { force: true });
 }
@@ -859,6 +882,13 @@ async function waitForText(page, selector, expected) {
   await page.waitForFunction(
     ({ selector, expected }) => document.querySelector(selector)?.innerText.includes(expected),
     { selector, expected },
+  );
+}
+
+async function waitForRepositoryCount(page, column, expected) {
+  await page.waitForFunction(
+    ({ column, expected }) => document.querySelector(`[data-repository-count="${column}"]`)?.textContent.trim() === expected,
+    { column, expected },
   );
 }
 

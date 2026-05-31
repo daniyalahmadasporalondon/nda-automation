@@ -1,4 +1,11 @@
 const RepositoryView = (() => {
+  const BOARD_COLUMNS = [
+    { id: "gmail_demo", label: "Gmail Demo" },
+    { id: "in_review", label: "In Review" },
+    { id: "redline_ready", label: "Redline Ready" },
+    { id: "signed_closed", label: "Signed / Closed" },
+  ];
+
   function createController({
     state,
     fileInput,
@@ -15,6 +22,7 @@ const RepositoryView = (() => {
   }) {
     let selectedMatter = null;
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
+    const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
 
     repositoryFileInput?.addEventListener("change", async (event) => {
       const file = event.target.files[0];
@@ -70,21 +78,23 @@ const RepositoryView = (() => {
     }
 
     function renderBoard() {
-      const gmailDemoMatters = state.matters.filter((matter) => matter.board_column === "gmail_demo");
-      document.querySelectorAll("[data-repository-count]").forEach((count) => {
-        const column = count.dataset.repositoryCount;
-        count.textContent = column === "gmail_demo" ? String(gmailDemoMatters.length) : "0";
+      const mattersByColumn = new Map(BOARD_COLUMNS.map((column) => [column.id, []]));
+      state.matters.forEach((matter) => {
+        const column = boardColumnIds.has(matter.board_column) ? matter.board_column : "gmail_demo";
+        mattersByColumn.get(column).push(matter);
       });
-      if (!gmailDemoMatterList) return;
-      if (!gmailDemoMatters.length) {
-        gmailDemoMatterList.innerHTML = '<div class="repository-dropzone">No documents</div>';
-        return;
-      }
-
-      gmailDemoMatterList.innerHTML = gmailDemoMatters.map(renderMatterCard).join("");
-      gmailDemoMatterList.querySelectorAll("[data-matter-id]").forEach((card) => {
-        card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
-        card.addEventListener("click", () => openMatter(card.dataset.matterId));
+      document.querySelectorAll("[data-repository-count]").forEach((count) => {
+        count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
+      });
+      document.querySelectorAll("[data-repository-list]").forEach((list) => {
+        const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
+        list.innerHTML = matters.length
+          ? matters.map(renderMatterCard).join("")
+          : '<div class="repository-dropzone">No documents</div>';
+        list.querySelectorAll("[data-matter-id]").forEach((card) => {
+          card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
+          card.addEventListener("click", () => openMatter(card.dataset.matterId));
+        });
       });
     }
 
@@ -108,6 +118,7 @@ const RepositoryView = (() => {
       const failedClauses = Array.isArray(reviewResult.clauses)
         ? reviewResult.clauses.filter((clause) => clause && clause.passes === false)
         : [];
+      const isClosed = matter.board_column === "signed_closed";
       repositoryMatterPanel.hidden = false;
       repositoryWorkspace?.classList.add("detail-open");
       repositoryMatterPanel.innerHTML = `
@@ -120,7 +131,7 @@ const RepositoryView = (() => {
         </header>
         <div class="repository-detail-status">
           <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
-          <strong>${escapeHtml(matter.next_action || "Review")}</strong>
+          <strong>${escapeHtml(boardColumnLabel(matter.board_column))}</strong>
           <span>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</span>
         </div>
         <dl class="repository-detail-meta">
@@ -131,6 +142,10 @@ const RepositoryView = (() => {
           <div>
             <dt>File</dt>
             <dd>${escapeHtml(matter.source_filename || "-")}</dd>
+          </div>
+          <div>
+            <dt>Next action</dt>
+            <dd>${escapeHtml(matter.next_action || "Review")}</dd>
           </div>
           <div>
             <dt>Requirements</dt>
@@ -144,14 +159,14 @@ const RepositoryView = (() => {
         <div class="repository-detail-actions">
           <button type="button" class="repository-open-review">Open Review</button>
           <button type="button" class="secondary repository-export-redline">Export Redline</button>
+          <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
         </div>
         <p class="repository-detail-message" aria-live="polite"></p>
       `;
       repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", closePanel);
-      repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => {
-        loadMatterIntoReview(matter);
-      });
+      repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => openMatterInReview(matter));
       repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => exportMatter(matter));
+      repositoryMatterPanel.querySelector(".repository-close-matter")?.addEventListener("click", () => closeMatterWorkflow(matter));
     }
 
     function renderEmptyPanel() {
@@ -165,6 +180,11 @@ const RepositoryView = (() => {
       selectedMatter = null;
       renderEmptyPanel();
       renderBoard();
+    }
+
+    async function openMatterInReview(matter) {
+      const updatedMatter = await moveMatterToColumn(matter.id, "in_review", { quiet: true });
+      loadMatterIntoReview(updatedMatter || matter);
     }
 
     async function exportMatter(matter) {
@@ -187,7 +207,8 @@ const RepositoryView = (() => {
         const filename = downloadFilename(response) || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx");
         const blob = await response.blob();
         downloadBlob(blob, filename);
-        setPanelMessage(`Downloading ${filename}`);
+        const movedMatter = await moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
+        setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Redline Ready.` : `Downloading ${filename}. Stage could not update.`);
       } catch (error) {
         setPanelMessage(error.message || "Export could not run");
       } finally {
@@ -195,6 +216,65 @@ const RepositoryView = (() => {
           exportButton.disabled = false;
           exportButton.textContent = "Export Redline";
         }
+      }
+    }
+
+    async function closeMatterWorkflow(matter) {
+      const closeButton = repositoryMatterPanel?.querySelector(".repository-close-matter");
+      setPanelMessage("");
+      if (closeButton) {
+        closeButton.disabled = true;
+        closeButton.textContent = "Closing";
+      }
+      const movedMatter = await moveMatterToColumn(matter.id, "signed_closed", { quiet: true });
+      setPanelMessage(movedMatter ? "Moved to Signed / Closed." : "Matter could not move.");
+      if (closeButton && !movedMatter) {
+        closeButton.disabled = false;
+        closeButton.textContent = "Close Matter";
+      }
+    }
+
+    async function markMatterRedlineReady(matter) {
+      if (!matter?.id) return null;
+      return moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
+    }
+
+    async function moveMatterToColumn(matterId, boardColumn, options = {}) {
+      try {
+        const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/stage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ board_column: boardColumn }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Matter could not move");
+        const updatedMatter = payload.matter;
+        if (!updatedMatter?.id) throw new Error("Matter could not move");
+        replaceMatter(updatedMatter);
+        renderBoard();
+        if (options.renderPanel !== false && selectedMatter?.id === updatedMatter.id) {
+          renderDetailPanel(selectedMatter);
+        }
+        return updatedMatter;
+      } catch (error) {
+        if (!options.quiet) {
+          setPanelMessage(error.message || "Matter could not move");
+        }
+        return null;
+      }
+    }
+
+    function replaceMatter(updatedMatter) {
+      if (!updatedMatter?.id) return;
+      const matterIndex = state.matters.findIndex((matter) => matter.id === updatedMatter.id);
+      state.matters = matterIndex >= 0
+        ? state.matters.map((matter) => (matter.id === updatedMatter.id ? updatedMatter : matter))
+        : [updatedMatter, ...state.matters];
+      if (selectedMatter?.id === updatedMatter.id) {
+        selectedMatter = updatedMatter;
+      }
+      if (state.selectedMatter?.id === updatedMatter.id) {
+        state.selectedMatter = updatedMatter;
       }
     }
 
@@ -207,7 +287,7 @@ const RepositoryView = (() => {
       if (repositoryImportStatus) repositoryImportStatus.textContent = message;
     }
 
-    return { importMatter, loadMatters, openMatter, renderBoard, setImportStatus };
+    return { importMatter, loadMatters, markMatterRedlineReady, openMatter, renderBoard, setImportStatus };
   }
 
   function renderMatterCard(matter) {
@@ -224,7 +304,7 @@ const RepositoryView = (() => {
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
-          <span>${escapeHtml(matter.next_action || "Review")}</span>
+          <span>${escapeHtml(boardColumnLabel(matter.board_column))}</span>
         </span>
       </button>
     `;
@@ -263,13 +343,17 @@ const RepositoryView = (() => {
     return labels[sourceType] || sourceType || "Source";
   }
 
+  function boardColumnLabel(boardColumn) {
+    return BOARD_COLUMNS.find((column) => column.id === boardColumn)?.label || "Gmail Demo";
+  }
+
   function formatMatterDate(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
   }
 
-  return { createController, formatMatterDate, renderMatterCard, sourceTypeLabel, triageLabel };
+  return { boardColumnLabel, createController, formatMatterDate, renderMatterCard, sourceTypeLabel, triageLabel };
 })();
 
 function createRepositoryController(options) {
