@@ -70,6 +70,7 @@
   --green-bg: #e6fdf4;
   --green-border: #a7f3d0;
   --amber: #f59e0b;
+  --amber-ink: #92400e;
   --amber-bg: #fef3c7;
   --amber-border: #fde68a;
   --orange: #ef6c00;
@@ -1015,9 +1016,9 @@ textarea::placeholder {
 }
 
 .studio-verdict-line > strong.check {
-  background: var(--red-bg);
-  border-color: var(--red-border);
-  color: var(--red-ink);
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
 }
 
 .studio-verdict-line h3 {
@@ -1126,9 +1127,9 @@ textarea::placeholder {
 }
 
 .studio-issue-pill.check {
-  background: var(--red-bg);
-  box-shadow: inset 0 0 0 1px var(--red-border);
-  color: var(--red-ink);
+  background: var(--amber-bg);
+  box-shadow: inset 0 0 0 1px var(--amber-border);
+  color: var(--amber-ink);
 }
 
 .studio-issue-pill.pending {
@@ -1699,9 +1700,9 @@ textarea::placeholder {
 }
 
 .status.check {
-  background: var(--red-bg);
-  box-shadow: inset 0 0 0 1px var(--red-border);
-  color: var(--red-ink);
+  background: var(--amber-bg);
+  box-shadow: inset 0 0 0 1px var(--amber-border);
+  color: var(--amber-ink);
 }
 
 .status.pending {

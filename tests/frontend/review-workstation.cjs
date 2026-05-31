@@ -264,9 +264,9 @@ async function testBackendRedlineModes(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 226, 226)");
-  assert.equal(checkPillStyles.color, "rgb(180, 35, 24)");
-  assert.match(checkPillStyles.boxShadow, /252, 165, 165/);
+  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 243, 199)");
+  assert.equal(checkPillStyles.color, "rgb(146, 64, 14)");
+  assert.match(checkPillStyles.boxShadow, /253, 230, 138/);
 
   const prohibitedParagraphStyles = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => {
     const styles = getComputedStyle(node);
