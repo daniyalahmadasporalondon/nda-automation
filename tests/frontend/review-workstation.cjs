@@ -264,6 +264,9 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Escalate", { exact: false }).count(), 0);
+  assert.equal(await page.getByText("Severity", { exact: false }).count(), 0);
+  assert.equal(await page.getByText("Category Group", { exact: false }).count(), 0);
+  assert.equal(await page.getByText("Monitor", { exact: false }).count(), 0);
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
   await assertTextContains(page.locator("#playbookDraftDiff"), "check_trigger");

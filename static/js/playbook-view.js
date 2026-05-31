@@ -1,7 +1,4 @@
 function createPlaybookController({ state, playbookList, clauseDetail, renderStudioEmpty }) {
-  const CATEGORY_OPTIONS = ["Core", "Commercial", "Disputes", "Execution"];
-  const SEVERITY_OPTIONS = ["High", "Medium", "Low"];
-
   async function loadPlaybook() {
     playbookList.innerHTML = '<div class="playbook-loading">Loading clauses</div>';
     clauseDetail.innerHTML = '<div class="detail-empty">Loading playbook</div>';
@@ -35,7 +32,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
             <span class="clause-number">${position}</span>
             <span>
               <strong>${escapeHtml(clause.name)}</strong>
-              <small>${escapeHtml(stanceLabel(clause))} · ${escapeHtml(clause.severity || "Medium")}</small>
+              <small>${escapeHtml(stanceLabel(clause))}</small>
             </span>
             ${draft}
           </button>
@@ -69,14 +66,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
         </div>
 
-        <div class="admin-grid two">
+        <div class="admin-grid">
           ${textInput("Clause Name", "name", clause.name)}
-          ${selectInput("Category Group", "category_group", clause.category_group || "Core", CATEGORY_OPTIONS)}
-          ${selectInput("Severity Level", "severity", clause.severity || "Medium", SEVERITY_OPTIONS)}
-          <label class="admin-checkbox">
-            <input type="checkbox" name="monitor" ${clause.monitor !== false ? "checked" : ""}>
-            <span>Monitor - engine actively checks this clause</span>
-          </label>
         </div>
 
         <fieldset class="admin-fieldset">
@@ -129,9 +120,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const form = clauseDetail.querySelector("#playbookEditor");
     const data = new FormData(form);
     clause.name = String(data.get("name") || "").trim() || clause.name;
-    clause.category_group = String(data.get("category_group") || "Core");
-    clause.severity = String(data.get("severity") || "Medium");
-    clause.monitor = data.get("monitor") === "on";
     clause.type = data.get("type") === "prohibited" ? "prohibited" : "required";
     clause.preferred_position = String(data.get("preferred_position") || "").trim();
     clause.check_trigger = String(data.get("check_trigger") || "").trim();
@@ -238,9 +226,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const fields = [
       "name",
       "type",
-      "category_group",
-      "severity",
-      "monitor",
       "preferred_position",
       "check_trigger",
       "redline_template",
