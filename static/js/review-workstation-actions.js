@@ -40,7 +40,6 @@ function clearReview() {
   showStudioSourceEditor();
   resizeSourceEditors();
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
-  fileInput.value = "";
   state.selectedDocument = null;
   state.selectedMatter = null;
   setFileMeta("No file selected");

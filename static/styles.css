@@ -339,13 +339,6 @@ h3 {
   color: var(--brand);
 }
 
-.topbar-actions {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  margin-left: auto;
-}
-
 .file-button {
   align-items: center;
   background: var(--bg-chip);
@@ -375,10 +368,6 @@ h3 {
 
 .file-button input {
   display: none;
-}
-
-.top-upload {
-  height: 32px;
 }
 
 /* ---------- Review workstation body ---------- */

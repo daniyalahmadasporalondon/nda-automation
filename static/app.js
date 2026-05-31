@@ -1,4 +1,3 @@
-const fileInput = document.querySelector("#fileInput");
 const studioDocTitle = document.querySelector("#studioDocTitle");
 const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
@@ -43,7 +42,6 @@ let pendingReviewSendMatterId = null;
 
 const repositoryController = createRepositoryController({
   state,
-  fileInput,
   gmailSyncButton: document.querySelector("#gmailSyncButton"),
   repositoryFileInput: document.querySelector("#repositoryFileInput"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
@@ -81,18 +79,6 @@ tabButtons.forEach((button) => {
     setActiveTab(button.dataset.tab);
     requestAnimationFrame(resizeSourceEditors);
   });
-});
-
-fileInput.addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-  if (isWordDocument(file)) {
-    setActiveTab("repository");
-    await repositoryController.importMatter(file);
-    fileInput.value = "";
-    return;
-  }
-  loadFileIntoReview(file);
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {

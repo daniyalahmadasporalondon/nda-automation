@@ -8,7 +8,6 @@ const RepositoryView = (() => {
 
   function createController({
     state,
-    fileInput,
     gmailSyncButton,
     repositoryFileInput,
     gmailDemoMatterList,
@@ -143,7 +142,6 @@ const RepositoryView = (() => {
         selectedMatter = payload.matter;
         renderBoard();
         renderDetailPanel(payload.matter);
-        if (fileInput) fileInput.value = "";
       } catch (error) {
         setImportStatus(error.message || "Matter could not load");
       }

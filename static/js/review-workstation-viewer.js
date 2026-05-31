@@ -94,7 +94,6 @@ function markSourceEdited(message, { preserveSourceDocument = false } = {}) {
   }
   if (state.selectedDocument && !preserveSourceDocument) {
     state.selectedDocument = null;
-    fileInput.value = "";
   }
   if (message) {
     setFileMeta(message);
@@ -325,7 +324,6 @@ function loadMatterIntoReview(matter) {
   const reviewResult = matter.review_result || {};
   state.selectedMatter = matter;
   state.selectedDocument = null;
-  fileInput.value = "";
   setSourceText(matter.extracted_text || reviewResult.extracted_text || "");
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);

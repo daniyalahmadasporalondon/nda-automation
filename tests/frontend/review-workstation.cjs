@@ -752,7 +752,9 @@ async function testSourceRedlineExportRegression(page) {
   ]);
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.locator("#fileInput").setInputFiles(sourceDocxPath);
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector("#repositoryView:not([hidden])");
+  await page.locator("#repositoryFileInput").setInputFiles(sourceDocxPath);
   await page.waitForSelector("#repositoryView:not([hidden])");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
   await waitForText(page, "#repositoryImportStatus", "Source Redline NDA");
