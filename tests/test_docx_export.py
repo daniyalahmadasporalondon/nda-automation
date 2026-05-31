@@ -20,6 +20,10 @@ from nda_automation.redline_actions import (
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
+from tests.docx_redline_contract import (
+    assert_docx_redline_contract,
+    inspect_docx_redline_contract,
+)
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
@@ -299,46 +303,7 @@ def track_changes_contract_review_result():
 
 
 def assert_track_changes_contract(testcase, docx_bytes, redline_edits):
-    settings_root, document_root, _document_xml = docx_xml_roots(docx_bytes)
-    testcase.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
-
-    paragraphs = document_root.findall(".//w:p", W_NS)
-    for edit in redline_edits:
-        action = edit["action"]
-        if action == REDLINE_REPLACE_PARAGRAPH:
-            original = edit["original_text"]
-            replacement = edit["replacement_text"]
-            matches = [
-                paragraph
-                for paragraph in paragraphs
-                if revision_text_for_state(paragraph, accepted=False) == original
-                and revision_text_for_state(paragraph, accepted=True) == replacement
-            ]
-            testcase.assertTrue(matches, f"Missing replace revision paragraph for {edit['id']}")
-            testcase.assertTrue(matches[0].findall(".//w:del", W_NS), "Replace must include inline w:del")
-            testcase.assertTrue(matches[0].findall(".//w:ins", W_NS), "Replace must include inline w:ins")
-        elif action == REDLINE_INSERT_AFTER_PARAGRAPH:
-            insert_text = edit["insert_text"]
-            matches = [
-                paragraph
-                for paragraph in paragraphs
-                if revision_text_for_state(paragraph, accepted=False) == ""
-                and revision_text_for_state(paragraph, accepted=True) == insert_text
-            ]
-            testcase.assertTrue(matches, f"Missing insert revision paragraph for {edit['id']}")
-            testcase.assertTrue(paragraph_has_mark_revision(matches[0], "ins"), "Insert must mark the paragraph inserted")
-            testcase.assertTrue(matches[0].findall(".//w:ins", W_NS), "Insert must include inserted text")
-        elif action == REDLINE_DELETE_PARAGRAPH:
-            original = edit["original_text"]
-            matches = [
-                paragraph
-                for paragraph in paragraphs
-                if revision_text_for_state(paragraph, accepted=False) == original
-                and revision_text_for_state(paragraph, accepted=True) == ""
-            ]
-            testcase.assertTrue(matches, f"Missing delete revision paragraph for {edit['id']}")
-            testcase.assertTrue(paragraph_has_mark_revision(matches[0], "del"), "Delete must mark the paragraph deleted")
-            testcase.assertTrue(matches[0].findall(".//w:delText", W_NS), "Delete must include deleted text")
+    return assert_docx_redline_contract(testcase, docx_bytes, redline_edits)
 
 
 def inline_diff_vectors():
@@ -534,7 +499,21 @@ class DocxExportTests(unittest.TestCase):
 
         report_docx = build_review_report_docx(result)
 
-        assert_track_changes_contract(self, report_docx, result["redline_edits"])
+        inspection = assert_track_changes_contract(self, report_docx, result["redline_edits"])
+        self.assertEqual(inspection.summary["expected_replace"], 1)
+        self.assertEqual(inspection.summary["expected_insert"], 1)
+        self.assertEqual(inspection.summary["expected_delete"], 1)
+
+    def test_redline_contract_inspector_rejects_accepted_only_exports(self):
+        result = track_changes_contract_review_result()
+        accepted_only_result = {**result, "redline_edits": []}
+
+        report_docx = build_review_report_docx(accepted_only_result)
+        inspection = inspect_docx_redline_contract(report_docx, result["redline_edits"])
+
+        self.assertTrue(any("replace did not preserve" in error for error in inspection.errors))
+        self.assertTrue(any("insert did not preserve" in error for error in inspection.errors))
+        self.assertTrue(any("delete did not preserve" in error for error in inspection.errors))
 
     def test_review_report_docx_splits_multi_paragraph_insertions(self):
         result = review_nda(

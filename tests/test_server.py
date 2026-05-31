@@ -16,6 +16,7 @@ from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateErro
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
+from tests.docx_redline_contract import assert_docx_redline_contract
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
@@ -259,27 +260,29 @@ class ServerTests(unittest.TestCase):
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
 
     def test_review_docx_export_preserves_manual_viewer_redlines(self):
+        manual_redlines = [
+            {
+                "id": "manual-p1",
+                "action": "replace_paragraph",
+                "paragraph_id": "p1",
+                "paragraph_index": 1,
+                "source_index": 1,
+                "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
+                "replacement_text": "Do you see problem?",
+            }
+        ]
         status, payload, _headers = self.request_with_headers(
             "POST",
             "/api/export-review-docx",
             {
                 "text": "Do you see problem?",
                 "reviewed_text": "Do you see problem?",
-                "manual_redline_edits": [
-                    {
-                        "id": "manual-p1",
-                        "action": "replace_paragraph",
-                        "paragraph_id": "p1",
-                        "paragraph_index": 1,
-                        "source_index": 1,
-                        "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
-                        "replacement_text": "Do you see problem?",
-                    }
-                ],
+                "manual_redline_edits": manual_redlines,
             },
         )
 
         self.assertEqual(status, 200)
+        assert_docx_redline_contract(self, payload, manual_redlines)
         with ZipFile(BytesIO(payload)) as archive:
             document_root = ET.fromstring(archive.read("word/document.xml"))
         revision_states = [
@@ -455,6 +458,26 @@ class ServerTests(unittest.TestCase):
             "NON-DISCLOSURE AGREEMENT (NDA)",
             "This reciprocal confidentiality agreement is dated 2025.",
         ])
+        manual_redlines = [
+            {
+                "id": "manual-p1",
+                "action": "replace_paragraph",
+                "paragraph_id": "p1",
+                "paragraph_index": 1,
+                "source_index": 1,
+                "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
+                "replacement_text": "Do you see problem?",
+            },
+            {
+                "id": "manual-p2",
+                "action": "replace_paragraph",
+                "paragraph_id": "p2",
+                "paragraph_index": 2,
+                "source_index": 2,
+                "original_text": "This reciprocal confidentiality agreement is dated 2025.",
+                "replacement_text": "Hello",
+            },
+        ]
         status, payload, headers = self.request_with_headers(
             "POST",
             "/api/export-review-docx",
@@ -462,32 +485,14 @@ class ServerTests(unittest.TestCase):
                 "reviewed_text": "Do you see problem?\n\nHello",
                 "filename": "Orbii - NDA DIFC.docx",
                 "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                "manual_redline_edits": [
-                    {
-                        "id": "manual-p1",
-                        "action": "replace_paragraph",
-                        "paragraph_id": "p1",
-                        "paragraph_index": 1,
-                        "source_index": 1,
-                        "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
-                        "replacement_text": "Do you see problem?",
-                    },
-                    {
-                        "id": "manual-p2",
-                        "action": "replace_paragraph",
-                        "paragraph_id": "p2",
-                        "paragraph_index": 2,
-                        "source_index": 2,
-                        "original_text": "This reciprocal confidentiality agreement is dated 2025.",
-                        "replacement_text": "Hello",
-                    },
-                ],
+                "manual_redline_edits": manual_redlines,
             },
         )
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="Orbii---NDA-DIFC-redlined.docx"')
         assert_source_export_has_no_report_leakage(self, payload)
+        assert_docx_redline_contract(self, payload, manual_redlines)
         with ZipFile(BytesIO(payload)) as archive:
             document_root = ET.fromstring(archive.read("word/document.xml"))
         revision_states = [
@@ -541,6 +546,7 @@ class ServerTests(unittest.TestCase):
             export_payload,
             extra_forbidden=["Stale pasted browser text should not appear in the export."],
         )
+        assert_docx_redline_contract(self, export_payload, [governing_law_redline, non_circumvention_redline])
         with ZipFile(BytesIO(export_payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
