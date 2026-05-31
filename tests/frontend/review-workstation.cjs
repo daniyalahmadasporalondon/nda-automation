@@ -43,7 +43,7 @@ const tests = [
   ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
-  ["guards DOCX upload review edit export bedrock workflow", testBedrockExportGuardrail],
+  ["guards source-redline export regression", testSourceRedlineExportRegression],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
 ];
 
@@ -577,9 +577,9 @@ async function testPreviewMatchesExportedDocx(page) {
   }
 }
 
-async function testBedrockExportGuardrail(page) {
-  const tmpDir = fs.mkdtempSync(path.join(osTmpDir(), "nda-bedrock-"));
-  const sourceDocxPath = path.join(tmpDir, "Bedrock Source NDA.docx");
+async function testSourceRedlineExportRegression(page) {
+  const tmpDir = fs.mkdtempSync(path.join(osTmpDir(), "nda-source-redline-"));
+  const sourceDocxPath = path.join(tmpDir, "Source Redline NDA.docx");
   makeDocxFixture(sourceDocxPath, [
     "NON-DISCLOSURE AGREEMENT (NDA)",
     "This Agreement shall be governed by the laws of California.",
@@ -593,8 +593,8 @@ async function testBedrockExportGuardrail(page) {
   await page.waitForSelector("#studioDocumentRender:not([hidden])");
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
 
-  assert.equal(await page.locator("#studioDocTitle").innerText(), "Bedrock Source NDA.docx");
-  assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "bedrock review should produce CHECK findings");
+  assert.equal(await page.locator("#studioDocTitle").innerText(), "Source Redline NDA.docx");
+  assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "source-redline review should produce CHECK findings");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
@@ -604,12 +604,12 @@ async function testBedrockExportGuardrail(page) {
     page.waitForEvent("download"),
     page.locator("#studioExportButton").click(),
   ]);
-  assert.equal(download.suggestedFilename(), "Bedrock-Source-NDA-redlined.docx");
+  assert.equal(download.suggestedFilename(), "Source-Redline-NDA-redlined.docx");
   const exportedPath = await download.path();
-  assert.ok(exportedPath, "bedrock export download path should be available");
+  assert.ok(exportedPath, "source-redline export download path should be available");
 
   const exportedDocx = readDocxTrackChanges(exportedPath);
-  assert.equal(exportedDocx.hasTrackRevisions, true, "bedrock export must enable Word track revisions");
+  assert.equal(exportedDocx.hasTrackRevisions, true, "source-redline export must enable Word track revisions");
   assert.ok(!exportedDocx.documentXml.includes("NDA Redline"), "source export must not become the report wrapper");
   assert.ok(!exportedDocx.documentXml.includes("Review Notes"), "source export must not leak review notes");
   assert.ok(exportedDocx.documentXml.includes("The Recipient must not circumvent the Company."), "source paragraphs must survive export");
