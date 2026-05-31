@@ -2023,6 +2023,84 @@ textarea::placeholder {
   margin: 0;
 }
 
+.integration-toggle-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.integration-toggle-row {
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px;
+}
+
+.integration-toggle-row div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.integration-toggle-row strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.integration-toggle-row span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.integration-switch {
+  background: #cfd3dc;
+  border: 0;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 3px;
+  position: relative;
+  transition: background 0.16s ease, opacity 0.16s ease;
+  width: 54px;
+}
+
+.integration-switch span {
+  background: #fff;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(26, 19, 51, 0.18);
+  display: block;
+  height: 22px;
+  transform: translateX(0);
+  transition: transform 0.16s ease;
+  width: 22px;
+}
+
+.integration-switch.on {
+  background: #1677ff;
+}
+
+.integration-switch.on span {
+  transform: translateX(26px);
+}
+
+.integration-switch:focus-visible {
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.22);
+  outline: none;
+}
+
+.integration-switch:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .integration-status {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -2309,6 +2387,7 @@ textarea::placeholder {
     grid-template-columns: 1fr;
   }
 
+  .integration-toggle-grid,
   .integration-facts,
   .integration-facts.compact {
     grid-template-columns: 1fr;

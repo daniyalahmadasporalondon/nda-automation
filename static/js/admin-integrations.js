@@ -14,14 +14,22 @@ const AdminIntegrationsView = (() => {
     gmailRecentSend,
     gmailRefreshButton,
     gmailSyncButton,
+    gmailInboundToggle,
+    gmailOutboundToggle,
     reviewErrorFromPayload,
     syncGmail,
   }) {
     gmailRefreshButton?.addEventListener("click", load);
     gmailSyncButton?.addEventListener("click", sync);
+    gmailInboundToggle?.addEventListener("click", () => updateGmailToggle("inbound"));
+    gmailOutboundToggle?.addEventListener("click", () => updateGmailToggle("outbound"));
 
     async function sync() {
       if (!syncGmail) return;
+      if (state.gmailStatus?.inbound?.enabled === false) {
+        setOverall("Inbound off", "blocked");
+        return;
+      }
       setOverall("Syncing", "pending");
       const result = await syncGmail({ button: gmailSyncButton });
       if (result?.error) {
@@ -48,12 +56,38 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function updateGmailToggle(role) {
+      const current = state.gmailStatus?.[role] || {};
+      const nextEnabled = current.enabled === false;
+      const payloadKey = `${role}_enabled`;
+      setToggleDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const response = await fetch("/api/gmail/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [payloadKey]: nextEnabled }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail setting could not save");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Save failed", "blocked");
+        renderToggleControls(state.gmailStatus || {});
+      } finally {
+        setToggleDisabled(false);
+      }
+    }
+
     function renderGmail(status, matters) {
       state.gmailStatus = status;
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
+      const paused = inbound.enabled === false || outbound.enabled === false;
       const ready = Boolean(inbound.ready && outbound.ready);
-      setOverall(ready ? "Connected" : "Needs setup", ready ? "ready" : "blocked");
+      setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
+      renderToggleControls(status);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", configuredLabel(inbound));
@@ -105,6 +139,7 @@ const AdminIntegrationsView = (() => {
       setFact("outbound-configured", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(state.gmailLastSync));
+      renderToggleControls(state.gmailStatus || {});
     }
 
     function setLastSync(sync) {
@@ -121,15 +156,40 @@ const AdminIntegrationsView = (() => {
     }
 
     function setFact(key, value) {
-      const node = gmailFacts?.querySelector(`[data-admin-gmail="${key}"]`);
+      const node = gmailCard?.querySelector(`[data-admin-gmail="${key}"]`) || gmailFacts?.querySelector(`[data-admin-gmail="${key}"]`);
       if (node) node.textContent = value;
+    }
+
+    function renderToggleControls(status) {
+      const inbound = status.inbound || {};
+      const outbound = status.outbound || {};
+      renderToggle(gmailInboundToggle, inbound.enabled !== false);
+      renderToggle(gmailOutboundToggle, outbound.enabled !== false);
+      setFact("inbound-enabled-copy", inbound.enabled === false ? "Off" : "On");
+      setFact("outbound-enabled-copy", outbound.enabled === false ? "Off" : "On");
+      if (gmailSyncButton) {
+        gmailSyncButton.disabled = inbound.enabled === false;
+      }
+    }
+
+    function renderToggle(button, enabled) {
+      if (!button) return;
+      button.setAttribute("aria-checked", enabled ? "true" : "false");
+      button.classList.toggle("on", enabled);
+      button.classList.toggle("off", !enabled);
+    }
+
+    function setToggleDisabled(disabled) {
+      [gmailInboundToggle, gmailOutboundToggle].forEach((button) => {
+        if (button) button.disabled = disabled;
+      });
     }
 
     return { load, setLastSync };
   }
 
   function accountLabel(account) {
-    if (account?.ready && account.email) return account.email;
+    if (account?.email) return account.email;
     return account?.error || account?.email || "Not connected";
   }
 

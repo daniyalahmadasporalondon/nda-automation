@@ -258,23 +258,49 @@ async function testFailureUxDetails(page) {
 }
 
 async function testPlaybookAdminEditor(page) {
+  const gmailStatusPayload = {
+    gmail: {
+      inbound: {
+        configured: true,
+        email: "inbound@example.com",
+        enabled: true,
+        query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
+        ready: true,
+      },
+      outbound: {
+        configured: true,
+        email: "outbound@example.com",
+        enabled: true,
+        ready: true,
+      },
+    },
+  };
+  let gmailSettingsPayload;
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      body: JSON.stringify(gmailStatusPayload),
+    });
+  });
+  await page.route("**/api/gmail/settings", async (route) => {
+    gmailSettingsPayload = route.request().postDataJSON();
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "inbound_enabled")) {
+      gmailStatusPayload.gmail.inbound.enabled = gmailSettingsPayload.inbound_enabled;
+      gmailStatusPayload.gmail.inbound.ready = gmailSettingsPayload.inbound_enabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "outbound_enabled")) {
+      gmailStatusPayload.gmail.outbound.enabled = gmailSettingsPayload.outbound_enabled;
+      gmailStatusPayload.gmail.outbound.ready = gmailSettingsPayload.outbound_enabled;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
       body: JSON.stringify({
-        gmail: {
-          inbound: {
-            configured: true,
-            email: "inbound@example.com",
-            query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
-            ready: true,
-          },
-          outbound: {
-            configured: true,
-            email: "outbound@example.com",
-            ready: true,
-          },
+        gmail: gmailStatusPayload.gmail,
+        gmail_settings: {
+          inbound_enabled: gmailStatusPayload.gmail.inbound.enabled,
+          outbound_enabled: gmailStatusPayload.gmail.outbound.enabled,
         },
       }),
     });
@@ -345,6 +371,12 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "OUTBOUND ACCOUNT");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
+  assert.equal(await page.locator("#adminGmailInboundToggle").getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator("#adminGmailOutboundToggle").getAttribute("aria-checked"), "true");
+  await page.locator("#adminGmailInboundToggle").click();
+  await page.waitForFunction(() => document.querySelector("#adminGmailInboundToggle")?.getAttribute("aria-checked") === "false");
+  assert.deepEqual(gmailSettingsPayload, { inbound_enabled: false });
+  assert.equal(await page.locator("#adminGmailSyncButton").isDisabled(), true);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "confidentiality agreement");
@@ -353,6 +385,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");
   await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/gmail/settings");
   await page.unroute("**/api/matters");
 }
 

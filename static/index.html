@@ -243,9 +243,30 @@
                       <h2>Gmail</h2>
                     </div>
                     <span class="integration-status" id="adminGmailOverall">Checking</span>
-                  </header>
+	                  </header>
 
-                  <dl class="integration-facts" id="adminGmailFacts">
+	                  <div class="integration-toggle-grid" id="adminGmailToggles">
+	                    <div class="integration-toggle-row">
+	                      <div>
+	                        <strong>Inbound email</strong>
+	                        <span data-admin-gmail="inbound-enabled-copy">Checking</span>
+	                      </div>
+	                      <button class="integration-switch" id="adminGmailInboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable inbound Gmail">
+	                        <span></span>
+	                      </button>
+	                    </div>
+	                    <div class="integration-toggle-row">
+	                      <div>
+	                        <strong>Outbound email</strong>
+	                        <span data-admin-gmail="outbound-enabled-copy">Checking</span>
+	                      </div>
+	                      <button class="integration-switch" id="adminGmailOutboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable outbound Gmail">
+	                        <span></span>
+	                      </button>
+	                    </div>
+	                  </div>
+
+	                  <dl class="integration-facts" id="adminGmailFacts">
                     <div>
                       <dt>Inbound account</dt>
                       <dd data-admin-gmail="inbound-email">Checking</dd>

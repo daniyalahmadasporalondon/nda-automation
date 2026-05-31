@@ -14,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
 from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
+from nda_automation import app_settings
 from nda_automation import document_limits
 from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
@@ -547,16 +548,47 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(triage["issue_count"], 1)
 
     def test_gmail_status_requires_env_token_paths(self):
-        with patch.dict(os.environ, {
-            gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
-            gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
-        }, clear=False):
-            status = gmail_integration.gmail_status()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    status = gmail_integration.gmail_status()
 
         self.assertEqual(status["inbound"]["configured"], False)
         self.assertEqual(status["outbound"]["configured"], False)
+        self.assertEqual(status["inbound"]["enabled"], True)
+        self.assertEqual(status["outbound"]["enabled"], True)
         self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
+
+    def test_gmail_settings_endpoint_persists_toggles(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"inbound_enabled": False, "outbound_enabled": True},
+                )
+                invalid_status, invalid_payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"inbound_enabled": "off"},
+                )
+                settings = app_settings.gmail_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["inbound_enabled"], False)
+        self.assertEqual(payload["gmail_settings"]["outbound_enabled"], True)
+        self.assertEqual(payload["gmail"]["inbound"]["enabled"], False)
+        self.assertEqual(payload["gmail"]["outbound"]["enabled"], True)
+        self.assertEqual(settings["inbound_enabled"], False)
+        self.assertEqual(settings["outbound_enabled"], True)
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(invalid_payload["error"], "Gmail enabled settings must be true or false.")
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -1004,6 +1036,16 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(payload["synced_at"])
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
+    def test_gmail_import_endpoint_rejects_when_inbound_disabled(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_gmail_settings({"inbound_enabled": False})
+                status, payload = self.request("POST", "/api/gmail/import", {"limit": 1})
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "Gmail inbound is disabled in Admin.")
+
     def test_gmail_send_payload_replies_in_thread_for_same_account(self):
         class FakeExecutable:
             def __init__(self, payload):
@@ -1042,8 +1084,9 @@ class ServerTests(unittest.TestCase):
             "subject": "Please review",
         }
 
-        with patch.object(server_module.gmail_integration, "_gmail_service", return_value=same_account_service):
-            same_result = server_module.gmail_integration.send_redline_email(base_matter, b"docx", "redline.docx")
+        with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
+            with patch.object(server_module.gmail_integration, "_gmail_service", return_value=same_account_service):
+                same_result = server_module.gmail_integration.send_redline_email(base_matter, b"docx", "redline.docx")
 
         self.assertEqual(same_account_service.users_api.sent_body["threadId"], "thread_inbound")
         self.assertEqual(same_result["thread_id"], "thread_inbound")
@@ -1089,11 +1132,28 @@ class ServerTests(unittest.TestCase):
             "subject": "Please review",
         }
 
-        with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
-            with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "does not match inbound Gmail account"):
-                server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+        with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
+            with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
+                with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "does not match inbound Gmail account"):
+                    server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
 
         self.assertIsNone(service.users_api.sent_body)
+
+    def test_gmail_send_redline_rejects_when_outbound_disabled(self):
+        matter = {
+            "sender": "Counterparty <legal@example.com>",
+            "subject": "Please review",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_gmail_settings({"outbound_enabled": False})
+                with patch.object(server_module.gmail_integration, "_gmail_service") as gmail_service:
+                    with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "Gmail outbound is disabled"):
+                        server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+
+        gmail_service.assert_not_called()
 
     def test_gmail_send_redline_rejects_display_name_email_spoof(self):
         matter = {

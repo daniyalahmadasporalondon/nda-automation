@@ -9,7 +9,7 @@ from email.utils import formatdate, getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from . import matter_store
+from . import app_settings, matter_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -38,10 +38,13 @@ class GmailIntegrationError(RuntimeError):
 
 def gmail_status() -> dict[str, dict[str, Any]]:
     status: dict[str, dict[str, Any]] = {}
+    settings = app_settings.gmail_settings()
     for role in ("inbound", "outbound"):
+        enabled = bool(settings.get(f"{role}_enabled", True))
         role_status: dict[str, Any] = {
             "configured": False,
             "email": "",
+            "enabled": enabled,
             "ready": False,
             "role": role,
         }
@@ -64,12 +67,17 @@ def gmail_status() -> dict[str, dict[str, Any]]:
             role_status["error"] = str(error)
         else:
             role_status["email"] = str(profile.get("emailAddress") or "")
-            role_status["ready"] = True
+            if enabled:
+                role_status["ready"] = True
+            else:
+                role_status["error"] = f"Gmail {role} is disabled in Admin."
         status[role] = role_status
     return status
 
 
 def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict[str, Any]:
+    if not app_settings.gmail_role_enabled("inbound"):
+        raise GmailIntegrationError("Gmail inbound is disabled in Admin.")
     service = _gmail_service("inbound")
     profile = _gmail_profile(service)
     inbound_query = query.strip() if isinstance(query, str) and query.strip() else DEFAULT_INBOUND_QUERY
@@ -171,6 +179,8 @@ def send_redline_email(
     recipient = recipient_email(matter.get("sender"))
     if not recipient:
         raise GmailIntegrationError("Matter sender is not a valid email address.")
+    if not app_settings.gmail_role_enabled("outbound"):
+        raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
     service = _gmail_service("outbound")
     profile = _gmail_profile(service)

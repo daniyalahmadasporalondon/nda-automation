@@ -18,7 +18,7 @@ from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateErr
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import DOCX_MIME, DocxExportError
 from .docx_text import DocxExtractionError
-from . import export_service, gmail_integration, matter_view, redline_export_service
+from . import app_settings, export_service, gmail_integration, matter_view, redline_export_service
 from .ingestion_service import (
     create_matter_from_document,
     extract_document,
@@ -169,7 +169,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         exact_routes = {
             "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
             "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
-            "/api/gmail/status": lambda: self._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body),
+            "/api/gmail/status": lambda: self._handle_gmail_status(send_body=send_body),
             "/api/matters": lambda: self._handle_matter_list(send_body=send_body),
         }
         handler = exact_routes.get(path)
@@ -217,6 +217,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "/api/matters": self._handle_matter_upload,
                 "/api/gmail/import": self._handle_gmail_import,
                 "/api/gmail/send-redline": self._handle_gmail_send_redline,
+                "/api/gmail/settings": self._handle_gmail_settings_update,
                 "/api/demo/reset": self._handle_demo_reset,
                 "/api/export-review-docx": self._handle_review_docx_export,
                 "/api/playbook": self._handle_playbook_save,
@@ -236,11 +237,19 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_playbook_template_error()
         except matter_store.MatterStoreError as error:
             self._send_json({"error": str(error)}, status=500)
+        except app_settings.AppSettingsError as error:
+            self._send_json({"error": str(error)}, status=500)
 
     def _handle_matter_list(self, *, send_body: bool = True) -> None:
         try:
             self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())}, send_body=send_body)
         except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500, send_body=send_body)
+
+    def _handle_gmail_status(self, *, send_body: bool = True) -> None:
+        try:
+            self._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body)
+        except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500, send_body=send_body)
 
     def _handle_text_review(self) -> None:
@@ -458,6 +467,27 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             result = {**result, "imported": matter_view.public_matters(result["imported"])}
         self._send_json(result)
 
+    def _handle_gmail_settings_update(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        updates: dict[str, bool] = {}
+        for key in ("inbound_enabled", "outbound_enabled"):
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if not isinstance(value, bool):
+                self._send_json({"error": "Gmail enabled settings must be true or false."}, status=400)
+                return
+            updates[key] = value
+        if not updates:
+            self._send_json({"error": "Provide an inbound_enabled or outbound_enabled setting."}, status=400)
+            return
+
+        settings = app_settings.update_gmail_settings(updates)
+        self._send_json({"gmail_settings": settings, "gmail": gmail_integration.gmail_status()})
+
     def _handle_demo_reset(self) -> None:
         removed_count = matter_store.reset_demo_repository()
         self._send_json({"removed": removed_count, "matters": []})
@@ -481,6 +511,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if not gmail_integration.recipient_email(matter.get("sender")):
             self._send_json({"error": "Matter sender is not a valid email address."}, status=400)
+            return
+        if not app_settings.gmail_role_enabled("outbound"):
+            self._send_json({"error": "Gmail outbound is disabled in Admin."}, status=503)
             return
         outbound_subject = _clean_outbound_subject(payload.get("subject"))
         outbound_body = _clean_outbound_body(payload.get("body"))

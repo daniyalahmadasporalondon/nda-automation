@@ -70,6 +70,8 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailRecentSend: document.querySelector("#adminGmailRecentSend"),
   gmailRefreshButton: document.querySelector("#adminGmailRefreshButton"),
   gmailSyncButton: document.querySelector("#adminGmailSyncButton"),
+  gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
+  gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
   reviewErrorFromPayload,
   syncGmail: (options) => repositoryController.syncGmail(options),
 });
