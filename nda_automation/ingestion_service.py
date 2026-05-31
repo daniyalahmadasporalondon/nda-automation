@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .checker import ParagraphAlignmentError, review_nda
+from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_store import create_matter
 from .triage import triage_review_result
@@ -16,6 +17,7 @@ def create_matter_from_docx(
     board_column: str = "gmail_demo",
     intake_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    ensure_document_size(document_bytes)
     extracted_paragraphs = extract_docx_paragraphs(document_bytes)
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
     review_result = review_nda(extracted_text, paragraphs=extracted_paragraphs)

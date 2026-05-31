@@ -13,9 +13,12 @@ from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
 from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
+from nda_automation import document_limits
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
+from nda_automation import gmail_integration
 from nda_automation import matter_store
+from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -284,7 +287,8 @@ class ServerTests(unittest.TestCase):
                 list_status, list_payload = self.request("GET", "/api/matters")
                 matter = payload["matter"]
                 fetch_status, fetch_payload = self.request("GET", f"/api/matters/{matter['id']}")
-                stored_path = matter_store.UPLOADS_DIR / matter["stored_filename"]
+                stored_matter = matter_store.get_matter(matter["id"])
+                stored_path = matter_store.UPLOADS_DIR / stored_matter["stored_filename"]
                 stored_bytes = stored_path.read_bytes()
 
         self.assertEqual(status, 201)
@@ -304,6 +308,8 @@ class ServerTests(unittest.TestCase):
         self.assertGreaterEqual(matter["issue_count"], 1)
         self.assertIn("review_result", matter)
         self.assertIn("extracted_text", matter)
+        self.assertNotIn("stored_filename", matter)
+        self.assertNotIn("gmail_message_id", matter)
         self.assertEqual(stored_bytes, source_docx)
         self.assertEqual(list_status, 200)
         self.assertEqual([item["id"] for item in list_payload["matters"]], [matter["id"]])
@@ -311,6 +317,69 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
         self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
         self.assertEqual(fetch_payload["matter"]["can_send_redline"], False)
+
+    def test_public_matter_uses_explicit_allowlist(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "sender": "Sender <sender@example.com>",
+            "subject": "NDA",
+            "stored_filename": "internal.docx",
+            "gmail_message_id": "msg_123",
+            "gmail_attachment_id": "att_123",
+            "review_result": {"clauses": []},
+            "extracted_text": "Text",
+        })
+
+        self.assertEqual(public["id"], "matter_1")
+        self.assertEqual(public["recipient_email"], "sender@example.com")
+        self.assertEqual(public["can_send_redline"], True)
+        self.assertNotIn("stored_filename", public)
+        self.assertNotIn("gmail_message_id", public)
+        self.assertNotIn("gmail_attachment_id", public)
+
+    def test_matter_retention_prunes_old_closed_uploads(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "2"}):
+                with patches[0], patches[1], patches[2]:
+                    first = matter_store.create_matter(
+                        source_filename="first.docx",
+                        document_bytes=b"first",
+                        extracted_text="first",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    matter_store.update_matter_stage(first["id"], "signed_closed")
+                    second = matter_store.create_matter(
+                        source_filename="second.docx",
+                        document_bytes=b"second",
+                        extracted_text="second",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    third = matter_store.create_matter(
+                        source_filename="third.docx",
+                        document_bytes=b"third",
+                        extracted_text="third",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    matters = matter_store.list_matters()
+
+        self.assertEqual({matter["id"] for matter in matters}, {second["id"], third["id"]})
+        self.assertFalse(first_path.exists())
+
+    def test_gmail_status_requires_env_token_paths(self):
+        with patch.dict(os.environ, {
+            gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+            gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+        }, clear=False):
+            status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["inbound"]["configured"], False)
+        self.assertEqual(status["outbound"]["configured"], False)
+        self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -392,6 +461,7 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 duplicate = matter_store.find_gmail_attachment("msg_123", "att_123")
+                stored_matter = matter_store.get_matter(payload["matter"]["id"])
 
         self.assertEqual(status, 201)
         matter = payload["matter"]
@@ -404,10 +474,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
         self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
-        self.assertEqual(matter["gmail_account"], "inbound@example.com")
-        self.assertEqual(matter["gmail_attachment_id"], "att_123")
-        self.assertEqual(matter["gmail_message_id"], "msg_123")
-        self.assertEqual(matter["gmail_thread_id"], "thr_123")
+        self.assertNotIn("gmail_account", matter)
+        self.assertNotIn("gmail_attachment_id", matter)
+        self.assertNotIn("gmail_message_id", matter)
+        self.assertNotIn("gmail_thread_id", matter)
+        self.assertEqual(stored_matter["gmail_account"], "inbound@example.com")
+        self.assertEqual(stored_matter["gmail_attachment_id"], "att_123")
+        self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
+        self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")
         self.assertEqual(duplicate["id"], matter["id"])
 
     def test_matter_upload_rejects_invalid_upload_cleanly(self):
@@ -496,7 +570,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter = create_payload["matter"]
-                (matter_store.UPLOADS_DIR / matter["stored_filename"]).unlink()
+                stored_matter = matter_store.get_matter(matter["id"])
+                (matter_store.UPLOADS_DIR / stored_matter["stored_filename"]).unlink()
                 export_status, export_payload = self.request(
                     "POST",
                     "/api/export-review-docx",
@@ -1260,10 +1335,24 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Upload a .docx Word document.")
 
     def test_document_review_rejects_oversize_upload(self):
-        with patch.object(server_module, "MAX_DOCUMENT_BYTES", 4):
+        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
             status, payload = self.request(
                 "POST",
                 "/api/review-document",
+                {
+                    "filename": "nda.docx",
+                    "content_base64": base64.b64encode(b"too large").decode("ascii"),
+                },
+            )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "The Word document is larger than the 10 MB upload limit.")
+
+    def test_matter_upload_rejects_oversize_upload_at_ingestion_boundary(self):
+        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
+            status, payload = self.request(
+                "POST",
+                "/api/matters",
                 {
                     "filename": "nda.docx",
                     "content_base64": base64.b64encode(b"too large").decode("ascii"),

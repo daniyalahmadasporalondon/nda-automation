@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
+from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import DOCX_MIME, DocxExportError
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from . import export_service, gmail_integration, matter_view, redline_export_service
@@ -18,7 +19,6 @@ from . import matter_store
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-MAX_DOCUMENT_BYTES = redline_export_service.MAX_DOCUMENT_BYTES
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
@@ -138,8 +138,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
             return
 
-        if len(document_bytes) > MAX_DOCUMENT_BYTES:
-            self._send_json({"error": "The Word document is larger than the 10 MB upload limit."}, status=400)
+        try:
+            ensure_document_size(document_bytes)
+        except DocumentSizeError:
+            self._send_json({"error": DOCUMENT_TOO_LARGE_MESSAGE}, status=400)
             return
 
         try:
@@ -191,8 +193,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
             return
 
-        if len(document_bytes) > MAX_DOCUMENT_BYTES:
-            self._send_json({"error": "The Word document is larger than the 10 MB upload limit."}, status=400)
+        try:
+            ensure_document_size(document_bytes)
+        except DocumentSizeError:
+            self._send_json({"error": DOCUMENT_TOO_LARGE_MESSAGE}, status=400)
             return
 
         try:
@@ -205,6 +209,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             )
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
+            return
+        except DocumentSizeError:
+            self._send_json({"error": DOCUMENT_TOO_LARGE_MESSAGE}, status=400)
             return
         except ParagraphAlignmentError:
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)

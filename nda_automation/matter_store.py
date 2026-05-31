@@ -20,6 +20,7 @@ DATA_DIR = Path(os.environ["NDA_DATA_DIR"]).expanduser() if os.environ.get("NDA_
 MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
+DEFAULT_MAX_STORED_MATTERS = 250
 GMAIL_METADATA_FIELDS = (
     "gmail_account",
     "gmail_attachment_id",
@@ -160,6 +161,7 @@ def create_matter(
         }
         matters = _load_matters()
         matters.append(matter)
+        matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
         _save_matters(matters)
     return matter
 
@@ -199,6 +201,50 @@ def _save_matters(matters: list[dict[str, Any]]) -> None:
     with temporary_path.open("w", encoding="utf-8") as handle:
         json.dump(matters, handle, indent=2)
     temporary_path.replace(MATTERS_PATH)
+
+
+def _prune_stored_matters(matters: list[dict[str, Any]], *, protected_matter_id: str) -> list[dict[str, Any]]:
+    retention_limit = _stored_matter_limit()
+    if retention_limit <= 0 or len(matters) <= retention_limit:
+        return matters
+
+    removable = [
+        matter
+        for matter in matters
+        if matter.get("id") != protected_matter_id
+    ]
+    removable.sort(key=_matter_retention_sort_key)
+    remove_count = len(matters) - retention_limit
+    remove_ids = {str(matter.get("id")) for matter in removable[:remove_count]}
+    kept = [matter for matter in matters if str(matter.get("id")) not in remove_ids]
+    for matter in removable[:remove_count]:
+        _delete_stored_document(matter)
+    return kept
+
+
+def _stored_matter_limit() -> int:
+    raw_limit = os.environ.get("NDA_MATTER_RETENTION_LIMIT", str(DEFAULT_MAX_STORED_MATTERS))
+    try:
+        return max(0, int(raw_limit))
+    except ValueError:
+        return DEFAULT_MAX_STORED_MATTERS
+
+
+def _matter_retention_sort_key(matter: dict[str, Any]) -> tuple[int, str]:
+    is_closed = 0 if matter.get("status") == "closed" or matter.get("board_column") == "signed_closed" else 1
+    return (is_closed, str(matter.get("updated_at") or matter.get("created_at") or ""))
+
+
+def _delete_stored_document(matter: dict[str, Any]) -> None:
+    stored_filename = str(matter.get("stored_filename") or "")
+    if not stored_filename:
+        return
+    try:
+        source_path = (UPLOADS_DIR / stored_filename).resolve()
+        if source_path.parent == UPLOADS_DIR.resolve():
+            source_path.unlink(missing_ok=True)
+    except OSError:
+        return
 
 
 def _safe_filename(filename: str) -> str:

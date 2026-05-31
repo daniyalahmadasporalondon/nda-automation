@@ -304,8 +304,8 @@ def _resolve_source_paragraph(
             indexed_match = next((paragraph for paragraph in matches if paragraph.source_index == source_index), None)
             if indexed_match is not None:
                 return indexed_match
-        if matches:
-            return matches[0]
+        if matches and source_index is None:
+            return None
 
     if source_index is None:
         return None

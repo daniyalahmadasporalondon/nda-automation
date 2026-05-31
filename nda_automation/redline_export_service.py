@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import export_service, matter_store
 from .checker import review_nda
+from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
     DocxExportError,
     build_review_report_docx,
@@ -16,7 +17,6 @@ from .docx_export import (
 )
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
 
@@ -94,8 +94,10 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
         except (binascii.Error, ValueError) as exc:
             raise DocxExtractionError("The uploaded Word document could not be decoded.") from exc
 
-        if len(document_bytes) > MAX_DOCUMENT_BYTES:
-            raise DocxExtractionError("The Word document is larger than the 10 MB upload limit.")
+        try:
+            ensure_document_size(document_bytes)
+        except DocumentSizeError as exc:
+            raise DocxExtractionError(DOCUMENT_TOO_LARGE_MESSAGE) from exc
 
         extracted_paragraphs = extract_docx_paragraphs(document_bytes)
         extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)

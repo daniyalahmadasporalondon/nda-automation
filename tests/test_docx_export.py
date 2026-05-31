@@ -483,6 +483,45 @@ class DocxExportTests(unittest.TestCase):
         )
         self.assertIn(("The Recipient must not circumvent the Company.", ""), states)
 
+    def test_source_docx_export_skips_ambiguous_text_anchor_without_source_index(self):
+        source_docx = make_source_docx([
+            "Duplicate paragraph.",
+            "Duplicate paragraph.",
+        ])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 1,
+            "checked_at": "2026-05-31T00:00:00+00:00",
+            "paragraphs": [
+                {"id": "p1", "index": 1, "text": "Duplicate paragraph."},
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "original_text": "Duplicate paragraph.",
+                    "replacement_text": "Changed paragraph.",
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        self.assertEqual(states, [("Duplicate paragraph.", "Duplicate paragraph.")] * 2)
+
     def test_source_docx_export_repairs_missing_package_relationships(self):
         source_docx = make_source_docx(
             ["This Agreement shall be governed by the laws of California."],

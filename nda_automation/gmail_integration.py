@@ -10,21 +10,17 @@ from typing import Any
 
 from . import matter_store
 from .checker import ParagraphAlignmentError
+from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
 from .ingestion_service import create_matter_from_docx
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DEFAULT_INBOUND_QUERY = "has:attachment filename:docx newer_than:30d"
 MAX_GMAIL_IMPORT_LIMIT = 25
-MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
     "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
-}
-ROLE_DEFAULT_TOKEN_PATHS = {
-    "inbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
-    "outbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
 }
 
 
@@ -35,13 +31,19 @@ class GmailIntegrationError(RuntimeError):
 def gmail_status() -> dict[str, dict[str, Any]]:
     status: dict[str, dict[str, Any]] = {}
     for role in ("inbound", "outbound"):
-        token_path = _token_path_for_role(role)
         role_status: dict[str, Any] = {
-            "configured": token_path.is_file(),
+            "configured": False,
             "email": "",
             "ready": False,
             "role": role,
         }
+        try:
+            token_path = _token_path_for_role(role)
+        except GmailIntegrationError:
+            role_status["error"] = f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+            status[role] = role_status
+            continue
+        role_status["configured"] = token_path.is_file()
         if not token_path.is_file():
             role_status["error"] = f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
             status[role] = role_status
@@ -109,7 +111,9 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                     "reason": "attachment_unavailable",
                 })
                 continue
-            if len(document_bytes) > MAX_GMAIL_ATTACHMENT_BYTES:
+            try:
+                ensure_document_size(document_bytes)
+            except DocumentSizeError:
                 skipped.append({
                     "attachment_filename": str(attachment.get("filename") or ""),
                     "message_id": message_id,
@@ -252,7 +256,7 @@ def _token_path_for_role(role: str) -> Path:
     configured_path = os.environ.get(ROLE_TOKEN_ENV[role])
     if configured_path:
         return Path(configured_path).expanduser()
-    return ROLE_DEFAULT_TOKEN_PATHS[role]
+    raise GmailIntegrationError(f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account.")
 
 
 def _gmail_profile(service: Any) -> dict[str, Any]:
