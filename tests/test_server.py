@@ -274,6 +274,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Content-Length must be a non-negative integer.")
 
+    def test_text_review_rejects_oversize_request_body_before_reading(self):
+        with patch.object(server_module, "MAX_REQUEST_BODY_BYTES", 8):
+            status, payload = self.raw_http_request(
+                "POST /api/review HTTP/1.1\r\n"
+                f"Host: {self.host}:{self.port}\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: 9\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"], server_module.REQUEST_BODY_TOO_LARGE_MESSAGE)
+
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})
 

@@ -29,6 +29,8 @@ STATIC_DIR = ROOT / "static"
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
+MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
+REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -472,6 +474,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return None
         if content_length < 0:
             self._send_json({"error": "Content-Length must be a non-negative integer."}, status=400)
+            return None
+        if content_length > MAX_REQUEST_BODY_BYTES:
+            self._send_json({"error": REQUEST_BODY_TOO_LARGE_MESSAGE}, status=413)
             return None
         return content_length
 
