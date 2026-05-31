@@ -107,6 +107,10 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
                 errors.append("document.xml is missing w:body.")
             elif body.find(_w_tag("sectPr")) is None:
                 errors.append("document.xml is missing section properties.")
+            if document_root.findall(f".//{_w_tag('pPr')}/{_w_tag('rPr')}/{_w_tag('ins')}"):
+                errors.append("document.xml contains insertion revision markup inside paragraph properties.")
+            if document_root.findall(f".//{_w_tag('pPr')}/{_w_tag('rPr')}/{_w_tag('del')}"):
+                errors.append("document.xml contains deletion revision markup inside paragraph properties.")
     except BadZipFile:
         errors.append("Export is not a readable DOCX zip package.")
     return errors

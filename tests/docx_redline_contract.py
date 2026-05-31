@@ -43,9 +43,13 @@ def inspect_docx_redline_contract(docx_bytes: bytes, redline_edits: list[dict[st
         "expected_delete": 0,
         "actual_inline_deletions": len(document_root.findall(".//w:del", W_NS)),
         "actual_inline_insertions": len(document_root.findall(".//w:ins", W_NS)),
-        "actual_paragraph_mark_deletions": len(paragraph_mark_revisions(document_root, "del")),
-        "actual_paragraph_mark_insertions": len(paragraph_mark_revisions(document_root, "ins")),
+        "invalid_paragraph_property_deletions": len(paragraph_property_revisions(document_root, "del")),
+        "invalid_paragraph_property_insertions": len(paragraph_property_revisions(document_root, "ins")),
     }
+    if paragraph_property_revisions(document_root, "del"):
+        errors.append("document contains w:del inside paragraph properties, which Word repairs on open.")
+    if paragraph_property_revisions(document_root, "ins"):
+        errors.append("document contains w:ins inside paragraph properties, which Word repairs on open.")
 
     for edit in redline_edits:
         action = edit.get("action")
@@ -79,8 +83,6 @@ def inspect_docx_redline_contract(docx_bytes: bytes, redline_edits: list[dict[st
             if not matches:
                 errors.append(f"{edit_id}: insert did not preserve empty-original/accepted paragraph states.")
                 continue
-            if not paragraph_has_mark_revision(matches[0], "ins"):
-                errors.append(f"{edit_id}: insert is missing paragraph mark w:ins.")
             if not matches[0].findall(".//w:ins", W_NS):
                 errors.append(f"{edit_id}: insert is missing inserted text in w:ins.")
         elif action == REDLINE_DELETE_PARAGRAPH:
@@ -95,8 +97,6 @@ def inspect_docx_redline_contract(docx_bytes: bytes, redline_edits: list[dict[st
             if not matches:
                 errors.append(f"{edit_id}: delete did not preserve original/empty-accepted paragraph states.")
                 continue
-            if not paragraph_has_mark_revision(matches[0], "del"):
-                errors.append(f"{edit_id}: delete is missing paragraph mark w:del.")
             if not matches[0].findall(".//w:delText", W_NS):
                 errors.append(f"{edit_id}: delete is missing deleted text in w:delText.")
 
@@ -123,12 +123,12 @@ def tracked_inserted_text(document_root: ET.Element) -> list[str]:
     ]
 
 
-def paragraph_mark_revisions(document_root: ET.Element, kind: str) -> list[ET.Element]:
+def paragraph_property_revisions(document_root: ET.Element, kind: str) -> list[ET.Element]:
     return document_root.findall(f".//w:pPr/w:rPr/w:{kind}", W_NS)
 
 
-def paragraph_has_mark_revision(paragraph: ET.Element, kind: str) -> bool:
-    return paragraph.find(f"./w:pPr/w:rPr/w:{kind}", W_NS) is not None
+def paragraph_mark_revisions(document_root: ET.Element, kind: str) -> list[ET.Element]:
+    return paragraph_property_revisions(document_root, kind)
 
 
 def revision_text_for_state(node: ET.Element, accepted: bool) -> str:

@@ -25,6 +25,7 @@ from nda_automation.redline_actions import (
 from tests.docx_redline_contract import (
     assert_docx_redline_contract,
     inspect_docx_redline_contract,
+    paragraph_property_revisions,
 )
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -188,10 +189,6 @@ def tracked_inserted_text(document_root):
 
 def paragraph_mark_revisions(document_root, kind):
     return document_root.findall(f".//w:pPr/w:rPr/w:{kind}", W_NS)
-
-
-def paragraph_has_mark_revision(paragraph, kind):
-    return paragraph.find(f"./w:pPr/w:rPr/w:{kind}", W_NS) is not None
 
 
 def revision_text_for_state(node, accepted):
@@ -572,8 +569,8 @@ class DocxExportTests(unittest.TestCase):
         inserted_text = tracked_inserted_text(document_root)
         self.assertTrue(any("must not circumvent" in text for text in deleted_text))
         self.assertTrue(any("This Agreement shall be governed by the laws of England and Wales." in text for text in inserted_text))
-        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "del")), 1)
-        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
+        self.assertEqual(paragraph_property_revisions(document_root, "del"), [])
+        self.assertEqual(paragraph_property_revisions(document_root, "ins"), [])
 
     def test_source_docx_export_matches_redline_actions_at_paragraph_level(self):
         source_docx = make_source_docx([
@@ -619,7 +616,7 @@ class DocxExportTests(unittest.TestCase):
                 for text in deleted_text
             )
         )
-        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "del")), 1)
+        self.assertEqual(paragraph_property_revisions(document_root, "del"), [])
 
     def test_review_report_docx_marks_insert_after_paragraph_redlines(self):
         result = review_nda("The parties will discuss a possible transaction.")
@@ -628,7 +625,28 @@ class DocxExportTests(unittest.TestCase):
 
         inserted_text = tracked_inserted_text(document_root)
         self.assertTrue(any("This Agreement shall be governed by the laws of England and Wales." in text for text in inserted_text))
-        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
+        self.assertEqual(paragraph_property_revisions(document_root, "ins"), [])
+
+    def test_docx_open_health_rejects_revision_markup_inside_paragraph_properties(self):
+        result = review_nda("The parties will discuss a possible transaction.")
+        docx_bytes = build_review_report_docx(result)
+        with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
+            document_xml = source_archive.read("word/document.xml").decode("utf-8")
+            document_xml = document_xml.replace(
+                "<w:p><w:ins ",
+                '<w:p><w:pPr><w:rPr><w:ins w:id="999" w:author="bad" w:date="2026-05-31T00:00:00Z" /></w:rPr></w:pPr><w:ins ',
+                1,
+            )
+            with BytesIO() as output:
+                with ZipFile(output, "w", ZIP_DEFLATED) as patched_archive:
+                    for item in source_archive.infolist():
+                        data = document_xml.encode("utf-8") if item.filename == "word/document.xml" else source_archive.read(item.filename)
+                        patched_archive.writestr(item, data)
+                patched_docx = output.getvalue()
+
+        errors = validate_docx_open_health(patched_docx, require_styles=True)
+
+        self.assertIn("document.xml contains insertion revision markup inside paragraph properties.", errors)
 
     def test_review_report_docx_preserves_track_changes_contract_by_redline_action(self):
         result = track_changes_contract_review_result()
@@ -663,7 +681,7 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("For [Party 1 legal name]" in text for text in inserted_text))
         self.assertTrue(any("For [Party 2 legal name]" in text for text in inserted_text))
         self.assertGreaterEqual(len([text for text in inserted_text if text.startswith("For [Party")]), 2)
-        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 2)
+        self.assertEqual(paragraph_mark_revisions(document_root, "ins"), [])
 
 
 if __name__ == "__main__":

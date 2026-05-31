@@ -521,7 +521,7 @@ def _run(text: str, bold: bool = False) -> str:
 
 def _tracked_delete_paragraph(text: str, revision_id: int) -> str:
     revision_attrs = _revision_attrs(revision_id)
-    return f"<w:p>{_paragraph_mark_revision('del', revision_attrs)}{_tracked_delete_with_attrs(text, revision_attrs)}</w:p>"
+    return f"<w:p>{_tracked_delete_with_attrs(text, revision_attrs)}</w:p>"
 
 
 def _tracked_replace_paragraph(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
@@ -580,8 +580,7 @@ def _tracked_insert_paragraphs(text: str, first_revision_id: int) -> List[str]:
     for index, block in enumerate(blocks):
         revision_attrs = _revision_attrs(first_revision_id + index)
         paragraphs.append(
-            f"<w:p>{_paragraph_mark_revision('ins', revision_attrs)}"
-            f"{_tracked_insert_with_attrs(block, revision_attrs)}</w:p>"
+            f"<w:p>{_tracked_insert_with_attrs(block, revision_attrs)}</w:p>"
         )
     return paragraphs
 
@@ -600,10 +599,6 @@ def _tracked_delete_with_attrs(text: str, revision_attrs: str) -> str:
 
 def _tracked_insert_with_attrs(text: str, revision_attrs: str) -> str:
     return f'<w:ins {revision_attrs}>{_run(text)}</w:ins>'
-
-
-def _paragraph_mark_revision(kind: str, revision_attrs: str) -> str:
-    return f"<w:pPr><w:rPr><w:{kind} {revision_attrs}/></w:rPr></w:pPr>"
 
 
 def _deleted_run(text: str) -> str:
