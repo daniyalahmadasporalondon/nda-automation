@@ -318,6 +318,24 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Upload a .docx Word document.")
 
+    def test_matter_upload_rejects_unsupported_source(self):
+        source_docx = make_docx(["This Agreement shall be governed by the laws of California."])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "unknown_board",
+                    },
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Unsupported matter source.")
+
     def test_matter_export_uses_preserved_original_docx(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
@@ -354,6 +372,44 @@ class ServerTests(unittest.TestCase):
         with ZipFile(BytesIO(export_payload)) as archive:
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
+
+    def test_matter_export_fails_when_source_docx_is_missing(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter = create_payload["matter"]
+                (matter_store.UPLOADS_DIR / matter["stored_filename"]).unlink()
+                export_status, export_payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"matter_id": matter["id"]},
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 400)
+        self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
+
+    def test_corrupt_matter_store_does_not_reset_repository(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            data_path = server_module.Path(data_dir)
+            data_path.mkdir(parents=True, exist_ok=True)
+            (data_path / "matters.json").write_text("{not valid json", encoding="utf-8")
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                status, payload = self.request("GET", "/api/matters")
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], "Matter store is not valid JSON.")
 
     def test_text_review_reports_playbook_template_error(self):
         with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):

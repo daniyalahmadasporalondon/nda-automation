@@ -1,10 +1,10 @@
 # nda-automation
 
-A small, separate NDA hard-clause checker.
+A focused NDA hard-clause review portal.
 
-This project deliberately stays away from triage workflows, ranking layers, Gmail/Drive integrations, corpus history, and automatic document mutation. It answers one question: does the NDA meet the required hard clauses?
+The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The current Repository flow uses a local `Gmail Demo` intake lane only; it is intentionally not a live Gmail or Drive integration yet.
 
-You can paste NDA text directly, upload a plain text file, or upload a `.docx` Word document for review.
+You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document for one-off review, or import a `.docx` into the Repository for matter-based review.
 
 ## Run locally
 
@@ -45,6 +45,8 @@ npm run test:frontend
 ## Review output
 
 The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+
+Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. If a Repository matter is re-reviewed as edited text, export switches to the normal review-report flow rather than reusing stale stored matter results.
 
 ## Policy decisions to confirm
 

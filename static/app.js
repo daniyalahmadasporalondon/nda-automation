@@ -183,6 +183,7 @@ studioExportButton.addEventListener("click", async () => {
 
 async function runReview(sourceInput, button) {
   const text = sourceInput.value.trim();
+  const rerunningLoadedMatter = Boolean(state.selectedMatter?.id && !state.selectedDocument);
   if (!text && !state.selectedDocument) {
     emptyState();
     studioOverallTitle.textContent = "Add NDA text";
@@ -206,6 +207,10 @@ async function runReview(sourceInput, button) {
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not run");
     const reviewedText = payload.extracted_text || text;
+    if (rerunningLoadedMatter) {
+      state.selectedMatter = null;
+      setFileMeta("Repository text reviewed as a fresh draft");
+    }
     if (payload.extracted_text) {
       setSourceText(payload.extracted_text);
       resizeSourceEditors();

@@ -13,6 +13,7 @@ const PORT = Number(process.env.FRONTEND_TEST_PORT || 19000 + Math.floor(Math.ra
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nda-automation-data-"));
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
 const redlineNda = [
@@ -36,6 +37,7 @@ const tests = [
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
+  ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
@@ -77,6 +79,7 @@ function startServer() {
     cwd: ROOT,
     env: {
       ...process.env,
+      NDA_DATA_DIR: TEST_DATA_DIR,
       NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
       PYTHONUNBUFFERED: "1",
     },
@@ -106,6 +109,7 @@ async function stopServer(server) {
       resolve();
     });
   });
+  fs.rmSync(TEST_DATA_DIR, { force: true, recursive: true });
 }
 
 async function waitForServer() {
@@ -233,6 +237,41 @@ async function testFailureUxDetails(page) {
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
   await page.unroute("**/api/export-review-docx");
+}
+
+async function testRepositoryMatterImportAndFreshReview(page) {
+  const docxPath = path.join(os.tmpdir(), `repository-matter-${Date.now()}.docx`);
+  makeDocxFixture(docxPath, [
+    "This Agreement shall be governed by the laws of California.",
+    "The Recipient must not circumvent the Company.",
+  ]);
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.locator("#repositoryFileInput").setInputFiles(docxPath);
+  await waitForText(page, "#repositoryImportStatus", "repository-matter-");
+  await page.waitForSelector(".repository-card");
+  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
+
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
+  await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");
+  await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
+
+  await page.getByRole("button", { name: "Review NDA" }).click();
+  await waitForText(page, "#studioFileMeta", "Repository text reviewed as a fresh draft");
+
+  const [exportRequest, download] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export DOCX" }).click(),
+  ]);
+  const exportPayload = exportRequest.postDataJSON();
+  assert.equal(download.suggestedFilename(), "nda-review-report.docx");
+  assert.equal(Object.prototype.hasOwnProperty.call(exportPayload, "matter_id"), false);
+
+  fs.rmSync(docxPath, { force: true });
 }
 
 async function testSavePickerGuardsAndFallbacks(page) {

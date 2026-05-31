@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import mimetypes
+from copy import deepcopy
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
+MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo"}
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -46,11 +48,18 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"status": "ok"})
             return
         if path == "/api/matters":
-            self._send_json({"matters": matter_store.list_matters()})
+            try:
+                self._send_json({"matters": matter_store.list_matters()})
+            except matter_store.MatterStoreError as error:
+                self._send_json({"error": str(error)}, status=500)
             return
         if path.startswith("/api/matters/"):
             matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
-            matter = matter_store.get_matter(matter_id)
+            try:
+                matter = matter_store.get_matter(matter_id)
+            except matter_store.MatterStoreError as error:
+                self._send_json({"error": str(error)}, status=500)
+                return
             if matter is None:
                 self._send_json({"error": "Matter not found."}, status=404)
                 return
@@ -94,6 +103,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
             self._send_playbook_template_error()
+        except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500)
 
     def _handle_text_review(self) -> None:
         payload = self._read_json_payload()
@@ -168,6 +179,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if not isinstance(source_type, str) or not source_type.strip():
             source_type = "gmail_demo"
+        source_type = source_type.strip()
+        board_column = MATTER_SOURCE_COLUMNS.get(source_type)
+        if board_column is None:
+            self._send_json({"error": "Unsupported matter source."}, status=400)
+            return
 
         try:
             document_bytes = base64.b64decode(content_base64, validate=True)
@@ -183,8 +199,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             matter = create_matter_from_docx(
                 filename=filename,
                 document_bytes=document_bytes,
-                source_type=source_type.strip(),
-                board_column=source_type.strip(),
+                source_type=source_type,
+                board_column=board_column,
             )
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
@@ -286,7 +302,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 raise DocxExtractionError("Matter does not have a stored review result.")
             source_document_bytes = matter_store.get_source_document_bytes(matter)
             source_filename = str(matter.get("source_filename") or "")
-            return export_service._copy_jsonish_dict(review_result), source_document_bytes, source_filename
+            if source_document_bytes is None:
+                raise DocxExtractionError("Matter source document is missing from storage.")
+            return deepcopy(review_result), source_document_bytes, source_filename
 
         filename = payload.get("filename", "")
         content_base64 = payload.get("content_base64", "")
