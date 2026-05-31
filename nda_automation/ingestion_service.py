@@ -14,6 +14,7 @@ def create_matter_from_docx(
     document_bytes: bytes,
     source_type: str = "gmail_demo",
     board_column: str = "gmail_demo",
+    intake_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     extracted_paragraphs = extract_docx_paragraphs(document_bytes)
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
@@ -33,6 +34,7 @@ def create_matter_from_docx(
         triage=triage_review_result(review_result),
         source_type=source_type,
         board_column=board_column,
+        intake_metadata=intake_metadata,
     )
 
 

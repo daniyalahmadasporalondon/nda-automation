@@ -46,6 +46,11 @@ const RepositoryView = (() => {
             filename: file.name,
             content_base64: await fileToBase64(file),
             source_type: "gmail_demo",
+            sender: "Manual upload",
+            subject: documentTitleFromFilename(file.name),
+            received_at: new Date().toISOString(),
+            message_snippet: `Manual upload of ${file.name}.`,
+            attachment_filename: file.name,
           }),
         });
         const payload = await response.json();
@@ -119,13 +124,14 @@ const RepositoryView = (() => {
         ? reviewResult.clauses.filter((clause) => clause && clause.passes === false)
         : [];
       const isClosed = matter.board_column === "signed_closed";
+      const subject = matterSubject(matter);
       repositoryMatterPanel.hidden = false;
       repositoryWorkspace?.classList.add("detail-open");
       repositoryMatterPanel.innerHTML = `
         <header class="repository-detail-head">
           <div>
             <p class="repository-detail-kicker">${escapeHtml(sourceTypeLabel(matter.source_type))}</p>
-            <h2>${escapeHtml(matter.document_title || matter.source_filename || "Untitled NDA")}</h2>
+            <h2>${escapeHtml(subject)}</h2>
           </div>
           <button class="repository-detail-close" type="button" aria-label="Close matter panel">x</button>
         </header>
@@ -134,15 +140,24 @@ const RepositoryView = (() => {
           <strong>${escapeHtml(boardColumnLabel(matter.board_column))}</strong>
           <span>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</span>
         </div>
+        <section class="repository-detail-email">
+          <dl>
+            <div>
+              <dt>From</dt>
+              <dd>${escapeHtml(matterSender(matter))}</dd>
+            </div>
+            <div>
+              <dt>Received</dt>
+              <dd>${escapeHtml(formatMatterDateTime(matter.received_at || matter.created_at) || "-")}</dd>
+            </div>
+            <div>
+              <dt>Attachment</dt>
+              <dd>${escapeHtml(matter.attachment_filename || matter.source_filename || "-")}</dd>
+            </div>
+          </dl>
+          <p>${escapeHtml(matter.message_snippet || "No message preview available.")}</p>
+        </section>
         <dl class="repository-detail-meta">
-          <div>
-            <dt>Received</dt>
-            <dd>${escapeHtml(formatMatterDate(matter.created_at) || "-")}</dd>
-          </div>
-          <div>
-            <dt>File</dt>
-            <dd>${escapeHtml(matter.source_filename || "-")}</dd>
-          </div>
           <div>
             <dt>Next action</dt>
             <dd>${escapeHtml(matter.next_action || "Review")}</dd>
@@ -292,15 +307,16 @@ const RepositoryView = (() => {
 
   function renderMatterCard(matter) {
     const issueCount = Number(matter.issue_count || 0);
-    const date = formatMatterDate(matter.created_at);
+    const date = formatMatterDate(matter.received_at || matter.created_at);
     return `
       <button class="repository-card" type="button" data-matter-id="${escapeHtml(matter.id)}">
         <span class="repository-card-top">
           <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
           <span>${escapeHtml(date)}</span>
         </span>
-        <strong>${escapeHtml(matter.document_title || matter.source_filename || "Untitled NDA")}</strong>
-        <span class="repository-card-source">${escapeHtml(sourceTypeLabel(matter.source_type))}</span>
+        <strong>${escapeHtml(matterSubject(matter))}</strong>
+        <span class="repository-card-source">${escapeHtml(matterSender(matter))}</span>
+        <span class="repository-card-snippet">${escapeHtml(matter.message_snippet || matter.attachment_filename || matter.source_filename || sourceTypeLabel(matter.source_type))}</span>
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
@@ -347,10 +363,33 @@ const RepositoryView = (() => {
     return BOARD_COLUMNS.find((column) => column.id === boardColumn)?.label || "Gmail Demo";
   }
 
+  function matterSubject(matter) {
+    return matter.subject || matter.document_title || matter.source_filename || "Untitled NDA";
+  }
+
+  function matterSender(matter) {
+    return matter.sender || sourceTypeLabel(matter.source_type);
+  }
+
+  function documentTitleFromFilename(filename) {
+    return (filename.split(/[\\/]/).pop() || filename).replace(/\.[^.]*$/, "") || "Untitled NDA";
+  }
+
   function formatMatterDate(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+  }
+
+  function formatMatterDateTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString(undefined, {
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      month: "short",
+    });
   }
 
   return { boardColumnLabel, createController, formatMatterDate, renderMatterCard, sourceTypeLabel, triageLabel };

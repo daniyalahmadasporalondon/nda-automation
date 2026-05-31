@@ -292,6 +292,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["board_column"], "gmail_demo")
         self.assertEqual(matter["source_filename"], "Acme NDA.docx")
         self.assertEqual(matter["document_title"], "Acme NDA")
+        self.assertEqual(matter["sender"], "Manual upload")
+        self.assertEqual(matter["subject"], "Acme NDA")
+        self.assertEqual(matter["attachment_filename"], "Acme NDA.docx")
+        self.assertEqual(matter["message_snippet"], "Manual upload of Acme NDA.docx.")
+        self.assertIn("received_at", matter)
         self.assertEqual(matter["triage_status"], "legal_review")
         self.assertEqual(matter["next_action"], "Needs legal review")
         self.assertGreaterEqual(matter["issue_count"], 1)
@@ -302,6 +307,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in list_payload["matters"]], [matter["id"]])
         self.assertEqual(fetch_status, 200)
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
+        self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -355,6 +361,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(invalid_payload["error"], "Unsupported matter stage.")
         self.assertEqual(missing_status, 404)
         self.assertEqual(missing_payload["error"], "Matter not found.")
+
+    def test_matter_upload_preserves_email_intake_metadata(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Attached NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "sender": "legal@example.com",
+                        "subject": "Please review our NDA",
+                        "received_at": "2026-05-31T10:15:00+01:00",
+                        "message_snippet": "Hi team, please review the attached NDA.",
+                        "attachment_filename": "Counterparty NDA.docx",
+                    },
+                )
+
+        self.assertEqual(status, 201)
+        matter = payload["matter"]
+        self.assertEqual(matter["sender"], "legal@example.com")
+        self.assertEqual(matter["subject"], "Please review our NDA")
+        self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
+        self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
+        self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
 
     def test_matter_upload_rejects_invalid_upload_cleanly(self):
         with tempfile.TemporaryDirectory() as data_dir:

@@ -254,10 +254,14 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
   assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
+  await assertTextContains(page.locator(".repository-card"), "Manual upload");
+  await assertTextContains(page.locator(".repository-card"), "Manual upload of repository-matter");
 
   await page.locator(".repository-card").click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Manual upload");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Non-Circumvention");
 

@@ -72,11 +72,13 @@ def create_matter(
     triage: dict[str, Any],
     source_type: str = "gmail_demo",
     board_column: str = "gmail_demo",
+    intake_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matter_id = f"matter_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
     safe_source_name = _safe_filename(source_filename)
     stored_filename = f"{matter_id}-{safe_source_name}"
+    metadata = _intake_metadata(source_filename, now, intake_metadata)
 
     with _MATTERS_LOCK:
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,6 +95,7 @@ def create_matter(
             "counterparty_name": "",
             "status": "active",
             "board_column": board_column,
+            **metadata,
             "extracted_text": extracted_text,
             "review_result": review_result,
             **triage,
@@ -132,3 +135,25 @@ def _safe_filename(filename: str) -> str:
     if not safe_name.lower().endswith(".docx"):
         safe_name = f"{safe_name or 'nda'}.docx"
     return safe_name or "nda.docx"
+
+
+def _intake_metadata(source_filename: str, received_at: str, metadata: dict[str, Any] | None) -> dict[str, str]:
+    metadata = metadata or {}
+    subject = _clean_metadata_value(metadata.get("subject")) or Path(source_filename).stem or "Untitled NDA"
+    sender = _clean_metadata_value(metadata.get("sender")) or "Manual upload"
+    snippet = _clean_metadata_value(metadata.get("message_snippet")) or f"Manual upload of {Path(source_filename).name or 'NDA document'}."
+    attachment_filename = _clean_metadata_value(metadata.get("attachment_filename")) or source_filename
+    metadata_received_at = _clean_metadata_value(metadata.get("received_at"))
+    return {
+        "sender": sender,
+        "subject": subject,
+        "received_at": metadata_received_at or received_at,
+        "message_snippet": snippet,
+        "attachment_filename": attachment_filename,
+    }
+
+
+def _clean_metadata_value(value: object, max_length: int = 500) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:max_length]

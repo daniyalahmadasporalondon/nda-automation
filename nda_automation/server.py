@@ -205,6 +205,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 document_bytes=document_bytes,
                 source_type=source_type,
                 board_column=board_column,
+                intake_metadata=self._matter_intake_metadata(payload, filename),
             )
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
@@ -214,6 +215,24 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json({"matter": matter}, status=201)
+
+    def _matter_intake_metadata(self, payload: dict, filename: str) -> dict[str, str]:
+        return {
+            "sender": self._clean_intake_text(payload.get("sender")) or "Manual upload",
+            "subject": self._clean_intake_text(payload.get("subject")) or Path(filename).stem or "Untitled NDA",
+            "received_at": self._clean_intake_text(payload.get("received_at")),
+            "message_snippet": (
+                self._clean_intake_text(payload.get("message_snippet"))
+                or f"Manual upload of {Path(filename).name or 'NDA document'}."
+            ),
+            "attachment_filename": self._clean_intake_text(payload.get("attachment_filename")) or filename,
+        }
+
+    @staticmethod
+    def _clean_intake_text(value: object, max_length: int = 500) -> str:
+        if not isinstance(value, str):
+            return ""
+        return " ".join(value.split())[:max_length]
 
     def _handle_matter_stage_update(self, path: str) -> None:
         matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/stage")).strip("/")
