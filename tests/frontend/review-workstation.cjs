@@ -297,6 +297,22 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 
+  await page.evaluate(() => {
+    window.__repositoryUploadErrors = [];
+    window.addEventListener("error", (event) => {
+      window.__repositoryUploadErrors.push(event.message);
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      window.__repositoryUploadErrors.push(String(event.reason?.message || event.reason));
+    });
+    const input = document.querySelector("#repositoryFileInput");
+    Object.defineProperty(input, "files", { configurable: true, get: () => null });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    delete input.files;
+  });
+  await page.waitForTimeout(50);
+  assert.deepEqual(await page.evaluate(() => window.__repositoryUploadErrors), []);
+
   await page.locator("#repositoryFileInput").setInputFiles(docxPath);
   await waitForText(page, "#repositoryImportStatus", "repository-matter-");
   await page.waitForSelector(".repository-card");

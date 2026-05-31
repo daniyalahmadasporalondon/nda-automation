@@ -32,7 +32,7 @@ const RepositoryView = (() => {
     repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
 
     repositoryFileInput?.addEventListener("change", async (event) => {
-      const file = event.target.files[0];
+      const file = event.target?.files?.[0];
       if (!file) return;
       await importMatter(file);
       repositoryFileInput.value = "";
