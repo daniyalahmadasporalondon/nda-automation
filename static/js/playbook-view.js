@@ -111,7 +111,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     editor.addEventListener("change", handleEditorInput);
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
-    setupSpecialControls(clause);
   }
 
   function handleEditorInput() {
@@ -128,29 +127,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       clause.max_term_years = Math.max(1, Number.parseInt(data.get("max_term_years"), 10) || 5);
     }
     renderDraftState();
-  }
-
-  function setupSpecialControls(clause) {
-    if (clause.id === "confidential_information") {
-      const addButton = clauseDetail.querySelector("#addAllowedExclusion");
-      const input = clauseDetail.querySelector("#allowedExclusionInput");
-      if (addButton && input) {
-        addButton.addEventListener("click", () => {
-          const value = input.value.trim();
-          if (!value) return;
-          clause.allowed_exclusions = dedupeList([...(clause.allowed_exclusions || []), value]);
-          input.value = "";
-          renderClauseDetail();
-        });
-      }
-      clauseDetail.querySelectorAll("[data-remove-exclusion]").forEach((button) => {
-        button.addEventListener("click", () => {
-          const value = button.dataset.removeExclusion;
-          clause.allowed_exclusions = (clause.allowed_exclusions || []).filter((item) => item !== value);
-          renderClauseDetail();
-        });
-      });
-    }
   }
 
   function renderDraftState() {
@@ -230,7 +206,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       "check_trigger",
       "redline_template",
       "standard_exclusions_template",
-      "allowed_exclusions",
       "max_term_years",
     ];
     return fields
@@ -241,23 +216,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function specialControls(clause) {
     if (clause.id === "confidential_information") {
-      const chips = (clause.allowed_exclusions || [])
-        .map((item) => `
-          <button class="admin-chip removable" type="button" data-remove-exclusion="${escapeHtml(item)}">
-            ${escapeHtml(item)} <span aria-hidden="true">x</span>
-          </button>
-        `)
-        .join("");
       return `
         ${textArea("Standard Exclusions Language", "standard_exclusions_template", clause.standard_exclusions_template || "", 3)}
-        <section class="admin-special">
-          <h3>Confidential-Info Exclusions Allowlist</h3>
-          <div class="admin-chip-row">${chips || '<span class="admin-muted">No exclusions configured</span>'}</div>
-          <div class="admin-inline-add">
-            <input id="allowedExclusionInput" type="text" placeholder="Add exclusion key">
-            <button class="secondary" id="addAllowedExclusion" type="button">Add</button>
-          </div>
-        </section>
       `;
     }
     if (clause.id === "term_and_survival") {
@@ -305,7 +265,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     }
     if (clause.id === "confidential_information") {
       rules.required_categories = clause.definition_categories || [];
-      rules.allowed_exclusions = clause.allowed_exclusions || [];
       rules.problematic_exclusions = clause.problematic_exclusion_terms || [];
     }
     if (clause.id === "term_and_survival") {
@@ -372,16 +331,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function clonePlaybook(value) {
     return JSON.parse(JSON.stringify(value || {}));
-  }
-
-  function dedupeList(values) {
-    const seen = new Set();
-    return values.filter((value) => {
-      const key = String(value).trim();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
   }
 
   return { loadPlaybook, renderClauseDetail, renderPlaybookList };

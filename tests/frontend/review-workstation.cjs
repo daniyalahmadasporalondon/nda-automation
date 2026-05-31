@@ -267,6 +267,11 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.getByText("Severity", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Category Group", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Monitor", { exact: false }).count(), 0);
+  await page.getByRole("button", { name: "Confidential Information" }).click();
+  await assertTextContains(page.locator("#clauseDetail"), "Standard Exclusions Language");
+  assert.equal(await page.getByText("Confidential-Info Exclusions Allowlist", { exact: false }).count(), 0);
+  assert.equal(await page.getByPlaceholder("Add exclusion key").count(), 0);
+  await page.getByRole("button", { name: "Mutuality" }).click();
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
   await assertTextContains(page.locator("#playbookDraftDiff"), "check_trigger");
