@@ -219,14 +219,13 @@ def _mutual_role_paragraphs(
 
 
 def _check_confidential_information(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    search_terms = _clause_terms(clause, "search_terms")
+    definition_name_terms, definition_coverage_terms = _confidential_definition_search_terms(clause)
     categories = _clause_terms(clause, "definition_categories")
     category_label = _confidential_categories_label(categories)
-    definition_name_terms = search_terms[:1]
     definition_name_patterns = [_literal_word_pattern(term) for term in definition_name_terms]
     definition_paragraphs = _paragraph_matches(paragraphs, definition_name_patterns)
     definition_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in definition_paragraphs))
-    coverage_terms = _dedupe_terms(search_terms[1:] + categories)
+    coverage_terms = _dedupe_terms(definition_coverage_terms + categories)
     coverage_hits = [term for term in coverage_terms if term in definition_normalized]
     broad_definition = bool(definition_paragraphs) and len(coverage_hits) >= 4
     exclusion_paragraphs = _paragraph_matches(paragraphs, _clause_term_patterns(clause, "exclusion_context_terms"))
@@ -274,6 +273,17 @@ def _check_confidential_information(_text: str, normalized: str, clause: Dict[st
                 "from Confidential Information."
             ),
         )
+
+
+def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[List[str], List[str]]:
+    """Split confidential-information search terms by their playbook contract.
+
+    For the `confidential_information` clause, `search_terms[0]` is the
+    definition paragraph anchor. The remaining `search_terms[1:]` entries are
+    coverage signals checked inside the anchored definition paragraphs.
+    """
+    search_terms = _clause_terms(clause, "search_terms")
+    return search_terms[:1], search_terms[1:]
 
 
 def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
