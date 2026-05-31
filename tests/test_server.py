@@ -289,6 +289,19 @@ class ServerTests(unittest.TestCase):
         ]
         self.assertIn(("NON-DISCLOSURE AGREEMENT (NDA)", "Do you see problem?"), revision_states)
 
+    def test_selected_export_redline_rejects_blank_replace_like_manual_redline(self):
+        redline = {
+            "id": "blank-replace",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "source_index": 1,
+            "original_text": "The original paragraph.",
+            "replacement_text": "",
+        }
+
+        self.assertIsNone(server_module._clean_export_redline(redline))
+        self.assertIsNone(server_module._clean_manual_export_redline(redline))
+
     def test_review_docx_export_download_does_not_require_saved_copy(self):
         with patch.object(server_module, "EXPORTS_DIR", None):
             status, payload, headers = self.request_with_headers(

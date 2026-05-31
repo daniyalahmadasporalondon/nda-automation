@@ -544,12 +544,13 @@ function applyTemplateSelectionToRedline(edit) {
       selected: option.id === selectedOption.id,
     })),
   };
-  const selectedText = selectedOption.text || selectedOption.replacement_text || selectedOption.insert_text || "";
+  const selectedReplacement = selectedOption.replacement_text || selectedOption.text || "";
+  const selectedInsert = selectedOption.insert_text || selectedOption.replacement_text || selectedOption.text || "";
   if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) {
-    nextEdit.insert_text = selectedOption.insert_text || selectedText;
-    nextEdit.replacement_text = selectedOption.replacement_text || selectedText;
-  } else {
-    nextEdit.replacement_text = selectedOption.replacement_text || selectedText;
+    if (selectedInsert.trim()) nextEdit.insert_text = selectedInsert;
+    if (selectedReplacement.trim()) nextEdit.replacement_text = selectedReplacement;
+  } else if (selectedReplacement.trim()) {
+    nextEdit.replacement_text = selectedReplacement;
   }
   return nextEdit;
 }

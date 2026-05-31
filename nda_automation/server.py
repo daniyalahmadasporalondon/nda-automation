@@ -387,6 +387,18 @@ def _clean_export_redline(redline: object) -> dict | None:
         if text_key in cleaned:
             cleaned[text_key] = str(cleaned[text_key] or "")
 
+    original_text = str(cleaned.get("original_text") or "").strip()
+    replacement_text = str(cleaned.get("replacement_text") or "").strip()
+    insert_text = str(cleaned.get("insert_text") or "").strip()
+    if action in {"replace_paragraph", "delete_paragraph"} and not original_text:
+        return None
+    if action == "replace_paragraph" and not replacement_text:
+        return None
+    if action == "delete_paragraph":
+        cleaned["replacement_text"] = ""
+    if action == "insert_after_paragraph" and not insert_text:
+        return None
+
     for key in ("paragraph_index", "source_index"):
         try:
             cleaned[key] = int(cleaned[key])
