@@ -168,8 +168,8 @@ async function testAccessibleControlState(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(matterCardStyles.borderRadius, "12px");
-  assert.match(matterCardStyles.boxShadow, /43, 12, 110/);
+  assert.equal(matterCardStyles.borderRadius, "22px");
+  assert.match(matterCardStyles.boxShadow, /26, 19, 51/);
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
@@ -187,7 +187,7 @@ async function testAccessibleControlState(page) {
     };
   });
   assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
-  assert.equal(activePlaybookRow.borderLeftColor, "rgb(85, 35, 178)");
+  assert.equal(activePlaybookRow.borderLeftColor, "rgb(79, 27, 179)");
   assert.equal(activePlaybookRow.borderLeftWidth, "3px");
 
   await page.getByRole("tab", { name: "Review" }).click();
