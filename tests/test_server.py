@@ -77,6 +77,15 @@ class ServerTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def assert_saved_export_url_matches_response(self, headers, payload):
+        self.assertIn("X-Export-URL", headers)
+        route_status, route_payload, route_headers = self.request_with_headers("GET", headers["X-Export-URL"])
+
+        self.assertEqual(route_status, 200)
+        self.assertEqual(route_headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(route_headers["Content-Disposition"], headers["Content-Disposition"])
+        self.assertEqual(route_payload, payload)
+
     def malformed_template_playbook(self):
         playbook = deepcopy(load_playbook())
         term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
@@ -400,12 +409,30 @@ class ServerTests(unittest.TestCase):
                     "/api/export-review-docx",
                     {"text": "This Agreement shall be governed by the laws of California."},
                 )
-                route_status, route_payload, route_headers = self.request_with_headers("GET", headers["X-Export-URL"])
+                self.assert_saved_export_url_matches_response(headers, payload)
 
         self.assertEqual(status, 200)
-        self.assertEqual(route_status, 200)
-        self.assertEqual(route_headers["Content-Type"], DOCX_MIME)
-        self.assertEqual(route_payload, payload)
+
+    def test_saved_uploaded_docx_export_route_returns_exact_docx_bytes(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        with tempfile.TemporaryDirectory() as exports_dir:
+            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+                status, payload, headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "filename": "uploaded.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                self.assert_saved_export_url_matches_response(headers, payload)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Export-URL"], "/exports/uploaded-redlined.docx")
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="uploaded-redlined.docx"')
+        assert_source_export_has_no_report_leakage(self, payload)
 
     def test_text_review_reports_malformed_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
