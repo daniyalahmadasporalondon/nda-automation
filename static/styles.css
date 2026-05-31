@@ -315,36 +315,11 @@ h3 {
   color: var(--brand);
 }
 
-.matter-title {
-  border-left: 1px solid var(--border);
-  display: grid;
-  gap: 2px;
-  margin-left: auto;
-  min-width: 0;
-  padding-left: 18px;
-}
-
-.matter-title span {
-  color: var(--ink-muted);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.matter-title strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .topbar-actions {
   align-items: center;
   display: flex;
   gap: 10px;
+  margin-left: auto;
 }
 
 .file-button {
@@ -636,8 +611,7 @@ h3 {
   padding: 3px;
 }
 
-.studio-view-switch span,
-.studio-view-switch strong,
+.studio-view-switch .vs-label,
 .studio-zoom {
   color: var(--ink-soft);
   font-family: var(--text-font);
@@ -646,9 +620,24 @@ h3 {
   padding: 4px 10px;
 }
 
-.studio-view-switch strong {
-  background: var(--brand);
+.studio-view-switch .vs-btn {
+  background: transparent;
+  border: 0;
   border-radius: 6px;
+  color: var(--ink-soft);
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 600;
+  height: auto;
+  padding: 5px 11px;
+}
+
+.studio-view-switch .vs-btn:hover {
+  color: var(--ink);
+}
+
+.studio-view-switch .vs-btn.active {
+  background: var(--brand);
   color: #fff;
 }
 
@@ -662,9 +651,10 @@ h3 {
 .studio-page-wrap {
   background: transparent;
   flex: 1;
+  margin: 22px 0 24px;
   min-height: 0;
   overflow: auto;
-  padding: 22px 24px 32px;
+  padding: 0 24px;
 }
 
 .studio-page {
@@ -753,6 +743,31 @@ h3 {
   text-decoration: line-through;
   text-decoration-color: var(--red);
   text-decoration-thickness: 2px;
+}
+
+.paragraph-diff {
+  white-space: pre-wrap;
+}
+
+.paragraph-diff-removed {
+  opacity: 0.82;
+}
+
+.diff-del {
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 3px;
+  color: #b42318;
+  padding: 0 1px;
+  text-decoration: line-through;
+  text-decoration-color: var(--red);
+  text-decoration-thickness: 2px;
+}
+
+.diff-ins {
+  background: rgba(16, 185, 129, 0.18);
+  border-radius: 3px;
+  color: #05603a;
+  padding: 0 1px;
 }
 
 .studio-doc-paragraph.has-clause {
@@ -850,6 +865,67 @@ textarea::placeholder {
   line-height: 1.62;
   min-height: 420px;
   overflow: hidden;
+}
+
+#studioNdaText[hidden] {
+  display: none;
+}
+
+/* View modes — Clean & Side by Side */
+.doc-clean-paragraph {
+  cursor: pointer;
+}
+
+.doc-sxs-paragraph {
+  cursor: pointer;
+  padding: 4px;
+}
+
+.clause-sxs {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.clause-sxs-col {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 11px 13px;
+}
+
+.clause-sxs-col.latest {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+}
+
+.clause-sxs-tag {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  margin-bottom: 7px;
+  text-transform: uppercase;
+}
+
+.clause-sxs-col.latest .clause-sxs-tag {
+  color: var(--green-ink);
+}
+
+.sxs-removed {
+  color: #991b1b;
+  text-decoration: line-through;
+  text-decoration-color: var(--red);
+  text-decoration-thickness: 2px;
+}
+
+.sxs-inserted {
+  color: #065f46;
+}
+
+.sxs-empty {
+  color: var(--ink-muted);
 }
 
 /* ---------- Playbook / checklist rail (right, scrolls internally) ---------- */
@@ -1648,10 +1724,6 @@ textarea::placeholder {
     flex-wrap: wrap;
     height: auto;
     padding: 12px 16px;
-  }
-
-  .matter-title {
-    display: none;
   }
 
   .studio-review {
