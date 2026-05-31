@@ -17,8 +17,8 @@ YEAR_WORDS = {
     "nine": 9,
     "ten": 10,
 }
-YEAR_TERM_PATTERN = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,2}))(?:\s*\(\s*(\d{1,2})\s*\))?(?:\s*-\s*|\s+)years?\b"
-YEAR_TERM_EVIDENCE_PATTERN = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b"
+YEAR_TERM_PATTERN = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,3}))(?:\s*\(\s*(\d{1,3})\s*\))?(?:\s*-\s*|\s+)(months?|years?)\b"
+YEAR_TERM_EVIDENCE_PATTERN = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,3})(?:\s*\(\s*\d{1,3}\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
 INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW = 160
 MAX_EVIDENCE_PARAGRAPHS = 3
 ISSUE_TYPE_NONE = "none"
@@ -39,16 +39,19 @@ class PlaybookTemplateError(ValueError):
     pass
 
 
-def _extract_year_terms(normalized: str) -> List[int]:
-    terms: List[int] = []
+def _extract_year_terms(normalized: str) -> List[float]:
+    terms: List[float] = []
     for match in re.finditer(YEAR_TERM_PATTERN, normalized):
-        word_value, digit_value, parenthetical_value = match.groups()
+        word_value, digit_value, parenthetical_value, unit = match.groups()
         if parenthetical_value:
-            terms.append(int(parenthetical_value))
+            value = int(parenthetical_value)
         elif digit_value:
-            terms.append(int(digit_value))
+            value = int(digit_value)
         elif word_value:
-            terms.append(YEAR_WORDS[word_value])
+            value = YEAR_WORDS[word_value]
+        else:
+            continue
+        terms.append(value / 12 if unit.startswith("month") else value)
     return terms
 
 def _year_count_label(years: int) -> str:

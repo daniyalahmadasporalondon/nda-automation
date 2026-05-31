@@ -74,15 +74,16 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
 def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:
     terms: List[Dict[str, int]] = []
     for match in re.finditer(YEAR_TERM_PATTERN, normalized):
-        word_value, digit_value, parenthetical_value = match.groups()
+        word_value, digit_value, parenthetical_value, unit = match.groups()
         if parenthetical_value:
-            years = int(parenthetical_value)
+            value = int(parenthetical_value)
         elif digit_value:
-            years = int(digit_value)
+            value = int(digit_value)
         elif word_value:
-            years = YEAR_WORDS[word_value]
+            value = YEAR_WORDS[word_value]
         else:
             continue
+        years = value / 12 if unit.startswith("month") else value
         terms.append({"years": years, "start": match.start(), "end": match.end()})
     return terms
 

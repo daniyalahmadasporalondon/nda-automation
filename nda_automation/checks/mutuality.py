@@ -14,10 +14,18 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+
+NEGATED_MUTUALITY_PATTERN = r"\b(?:not|no|neither|nor|without)\b.{0,40}\b(?:mutual|reciprocal)\b"
+
+
 def _check_mutuality(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     search_patterns = _clause_term_patterns(clause, "search_terms")
     one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
-    mutual_paragraphs = _paragraph_matches(paragraphs, search_patterns)
+    mutual_paragraphs = [
+        paragraph
+        for paragraph in _paragraph_matches(paragraphs, search_patterns)
+        if not _negates_mutuality(str(paragraph["text"]))
+    ]
     separated_role_paragraphs = _mutual_role_paragraphs(normalized, clause, paragraphs)
     one_way_paragraphs = _paragraph_matches(paragraphs, one_way_patterns)
 
@@ -68,3 +76,6 @@ def _mutual_role_paragraphs(
 
     return evidence
 
+
+def _negates_mutuality(text: str) -> bool:
+    return bool(re.search(NEGATED_MUTUALITY_PATTERN, text, flags=re.IGNORECASE))

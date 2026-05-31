@@ -125,6 +125,13 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(result_clause["status"], "not_present")
         self.assertFalse(result_clause["passes"])
 
+    def test_mutuality_ignores_negated_mutuality_language(self):
+        result = review_nda("This is not a mutual agreement and only the Recipient receives Confidential Information.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertNotEqual(result_clause["status"], "match")
+        self.assertFalse(result_clause["passes"])
+
     def test_mutuality_role_terms_come_from_playbook(self):
         playbook = deepcopy(load_playbook())
         mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
@@ -159,6 +166,14 @@ class CheckerTests(unittest.TestCase):
         term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
         self.assertEqual(term_clause["status"], "match")
         self.assertIn("within the cap of five years", term_clause["finding"])
+
+    def test_term_and_survival_picks_up_month_denominated_terms(self):
+        result = review_nda("The confidentiality obligations survive for 36 months after termination.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("36 months", term_clause["matched_text"])
 
     def test_term_and_survival_ignores_unrelated_year_references(self):
         result = review_nda("The parties have worked together for two years on commercial discussions.")
@@ -624,6 +639,21 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(confidential_information["status"], "match")
         self.assertTrue(confidential_information["passes"])
 
+    def test_proprietary_information_definition_satisfies_confidential_definition(self):
+        result = review_nda(
+            """
+            Proprietary Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+            """
+        )
+
+        confidential_information = next(
+            clause for clause in result["clauses"] if clause["id"] == "confidential_information"
+        )
+        self.assertEqual(confidential_information["status"], "match")
+        self.assertTrue(confidential_information["passes"])
+
     def test_confidential_information_fix_copy_uses_playbook_categories(self):
         playbook = deepcopy(load_playbook())
         confidential_information = next(
@@ -817,6 +847,13 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(redline["replacement_text"], "")
 
+    def test_non_circumvention_ignores_circumvent_applicable_law(self):
+        result = review_nda("Nothing in this Agreement requires a party to circumvent applicable law.")
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertTrue(non_circumvention["passes"])
+
     def test_non_circumvention_redlines_each_detected_paragraph(self):
         result = review_nda(
             """
@@ -932,6 +969,19 @@ class CheckerTests(unittest.TestCase):
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
         self.assertEqual(result_clause["status"], "match")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
+
+    def test_signature_markers_are_not_counted_across_body_text(self):
+        result = review_nda(
+            """
+            The report was prepared by: the finance team and reviewed by: the legal team.
+
+            The project title: Market Entry Review. The role: evaluator. The date: 2026-05-30.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
+        self.assertNotEqual(result_clause["status"], "match")
+        self.assertFalse(result_clause["passes"])
 
     def test_missing_governing_law_creates_insert_redline_with_jurisdiction_options(self):
         result = review_nda("The parties will discuss a possible transaction.")

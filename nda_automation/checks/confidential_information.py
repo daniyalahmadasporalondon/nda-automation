@@ -82,7 +82,9 @@ def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[Li
     coverage signals checked inside the anchored definition paragraphs.
     """
     search_terms = _clause_terms(clause, "search_terms")
-    return search_terms[:1], search_terms[1:]
+    definition_aliases = ["proprietary information"]
+    definition_terms = _dedupe_terms(search_terms[:1] + definition_aliases)
+    return definition_terms, search_terms[1:]
 
 def _problematic_confidential_exclusion_paragraphs(
     exclusion_paragraphs: Iterable[Paragraph],
@@ -126,4 +128,3 @@ def _has_unqualified_independent_development(
             if not any(re.search(qualification_pattern, context) for qualification_pattern in qualification_patterns):
                 return True
     return False
-
