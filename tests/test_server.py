@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
+from nda_automation import matter_store
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -90,6 +91,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(route_headers["Content-Disposition"], headers["Content-Disposition"])
         self.assertEqual(route_payload, payload)
         self.assertEqual(server_module.Path(headers["X-Export-Path"]).read_bytes(), payload)
+
+    def matter_store_patches(self, data_dir):
+        data_path = server_module.Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", data_path),
+            patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
+        )
 
     def assert_review_payload_contract(self, payload, *, expects_docx_source=False):
         for key in ["overall_status", "checked_at", "requirements_passed", "requirements_failed", "paragraphs", "clauses", "redline_edits"]:
@@ -253,6 +262,98 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assert_review_payload_contract(payload, expects_docx_source=True)
+
+    def test_matter_upload_creates_persisted_gmail_demo_matter(self):
+        source_docx = make_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "gmail_demo",
+                    },
+                )
+                list_status, list_payload = self.request("GET", "/api/matters")
+                matter = payload["matter"]
+                fetch_status, fetch_payload = self.request("GET", f"/api/matters/{matter['id']}")
+                stored_path = matter_store.UPLOADS_DIR / matter["stored_filename"]
+                stored_bytes = stored_path.read_bytes()
+
+        self.assertEqual(status, 201)
+        self.assertEqual(matter["source_type"], "gmail_demo")
+        self.assertEqual(matter["board_column"], "gmail_demo")
+        self.assertEqual(matter["source_filename"], "Acme NDA.docx")
+        self.assertEqual(matter["document_title"], "Acme NDA")
+        self.assertEqual(matter["triage_status"], "legal_review")
+        self.assertEqual(matter["next_action"], "Needs legal review")
+        self.assertGreaterEqual(matter["issue_count"], 1)
+        self.assertIn("review_result", matter)
+        self.assertIn("extracted_text", matter)
+        self.assertEqual(stored_bytes, source_docx)
+        self.assertEqual(list_status, 200)
+        self.assertEqual([item["id"] for item in list_payload["matters"]], [matter["id"]])
+        self.assertEqual(fetch_status, 200)
+        self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
+
+    def test_matter_upload_rejects_invalid_upload_cleanly(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "nda.txt",
+                        "content_base64": base64.b64encode(b"not docx").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Upload a .docx Word document.")
+
+    def test_matter_export_uses_preserved_original_docx(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                export_status, export_payload, export_headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": matter_id,
+                        "reviewed_text": "Stale reviewed text should not appear.",
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 200)
+        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Acme-NDA-redlined.docx"')
+        assert_source_export_has_no_report_leakage(
+            self,
+            export_payload,
+            extra_forbidden=["Stale reviewed text should not appear."],
+        )
+        with ZipFile(BytesIO(export_payload)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("California", document_xml)
 
     def test_text_review_reports_playbook_template_error(self):
         with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):

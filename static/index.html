@@ -15,6 +15,7 @@
             <span>Clause Studio</span>
           </div>
           <nav class="tabbar" aria-label="Workspace" role="tablist">
+            <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">Repository</button>
             <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">Review</button>
             <button class="tab-button" id="clausesTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="clauses">Clauses</button>
           </nav>
@@ -102,6 +103,69 @@
               <button id="studioClearButton" class="secondary" type="button">Clear</button>
             </div>
           </footer>
+        </main>
+
+        <main class="repository-view view" id="repositoryView" role="tabpanel" aria-labelledby="repositoryTab" data-view="repository" hidden>
+          <section class="repository-shell">
+            <header class="repository-header">
+              <div class="repository-title">
+                <span class="repository-icon" aria-hidden="true"></span>
+                <h1>Contract Repository</h1>
+              </div>
+              <button class="repository-undo" type="button" disabled>Undo Move (0)</button>
+            </header>
+
+            <section class="repository-board" aria-label="Contract repository board">
+              <article class="repository-column">
+                <header class="repository-column-head">
+                  <h2>Gmail Demo</h2>
+                  <span data-repository-count="gmail_demo">0</span>
+                </header>
+                <div class="repository-import">
+                  <label class="file-button repository-import-button">
+                    <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                    Import NDA
+                  </label>
+                  <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
+                </div>
+                <div class="repository-card-list" id="gmailDemoMatterList">
+                  <div class="repository-dropzone">No documents</div>
+                </div>
+              </article>
+
+              <article class="repository-column">
+                <header class="repository-column-head">
+                  <h2>[Insert Name]</h2>
+                  <span data-repository-count="placeholder_1">0</span>
+                </header>
+                <div class="repository-dropzone">No documents</div>
+              </article>
+
+              <article class="repository-column">
+                <header class="repository-column-head">
+                  <h2>[Insert Name]</h2>
+                  <span data-repository-count="placeholder_2">0</span>
+                </header>
+                <div class="repository-dropzone">No documents</div>
+              </article>
+
+              <article class="repository-column">
+                <header class="repository-column-head">
+                  <h2>[Insert Name]</h2>
+                  <span data-repository-count="placeholder_3">0</span>
+                </header>
+                <div class="repository-dropzone">No documents</div>
+              </article>
+
+              <article class="repository-column">
+                <header class="repository-column-head">
+                  <h2>[Insert Name]</h2>
+                  <span data-repository-count="placeholder_4">0</span>
+                </header>
+                <div class="repository-dropzone">No documents</div>
+              </article>
+            </section>
+          </section>
         </main>
 
         <main class="playbook-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>

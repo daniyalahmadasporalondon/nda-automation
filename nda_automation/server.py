@@ -19,6 +19,8 @@ from .docx_export import (
 )
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from . import export_service
+from .ingestion_service import create_matter_from_docx
+from . import matter_store
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
@@ -42,6 +44,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"status": "ok"})
+            return
+        if path == "/api/matters":
+            self._send_json({"matters": matter_store.list_matters()})
+            return
+        if path.startswith("/api/matters/"):
+            matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
+            matter = matter_store.get_matter(matter_id)
+            if matter is None:
+                self._send_json({"error": "Matter not found."}, status=404)
+                return
+            self._send_json({"matter": matter})
             return
         if path.startswith("/static/"):
             requested = (STATIC_DIR / path.removeprefix("/static/")).resolve()
@@ -71,6 +84,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/review-document":
                 self._handle_document_review()
+                return
+            if path in {"/api/matters", "/api/inbound/upload"}:
+                self._handle_matter_upload()
                 return
             if path == "/api/export-review-docx":
                 self._handle_review_docx_export()
@@ -136,6 +152,49 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         result["extracted_text"] = extracted_text
         self._send_json(result)
 
+    def _handle_matter_upload(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        filename = payload.get("filename", "")
+        content_base64 = payload.get("content_base64", "")
+        source_type = payload.get("source_type", "gmail_demo")
+        if not isinstance(filename, str) or not filename.lower().endswith(".docx"):
+            self._send_json({"error": "Upload a .docx Word document."}, status=400)
+            return
+        if not isinstance(content_base64, str) or not content_base64:
+            self._send_json({"error": "Provide a Word document to import."}, status=400)
+            return
+        if not isinstance(source_type, str) or not source_type.strip():
+            source_type = "gmail_demo"
+
+        try:
+            document_bytes = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError):
+            self._send_json({"error": "The uploaded Word document could not be decoded."}, status=400)
+            return
+
+        if len(document_bytes) > MAX_DOCUMENT_BYTES:
+            self._send_json({"error": "The Word document is larger than the 10 MB upload limit."}, status=400)
+            return
+
+        try:
+            matter = create_matter_from_docx(
+                filename=filename,
+                document_bytes=document_bytes,
+                source_type=source_type.strip(),
+                board_column=source_type.strip(),
+            )
+        except DocxExtractionError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+        except ParagraphAlignmentError:
+            self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
+            return
+
+        self._send_json({"matter": matter}, status=201)
+
     def _handle_review_docx_export(self) -> None:
         payload = self._read_json_payload()
         if payload is None:
@@ -150,11 +209,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             and bool(payload.get("content_base64"))
         )
         export_text = reviewed_text if isinstance(reviewed_text, str) and reviewed_text.strip() else text
-        if (not isinstance(export_text, str) or not export_text.strip()) and not has_docx_payload:
+        has_matter_payload = isinstance(payload.get("matter_id"), str) and bool(payload.get("matter_id", "").strip())
+        if (not isinstance(export_text, str) or not export_text.strip()) and not has_docx_payload and not has_matter_payload:
             self._send_json({"error": "Provide NDA text to export."}, status=400)
             return
         if (
-            not has_docx_payload
+            not has_matter_payload
+            and not has_docx_payload
             and isinstance(text, str)
             and text.strip()
             and isinstance(reviewed_text, str)
@@ -215,6 +276,18 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         )
 
     def _review_result_for_export(self, payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
+        matter_id = payload.get("matter_id")
+        if isinstance(matter_id, str) and matter_id.strip():
+            matter = matter_store.get_matter(matter_id.strip())
+            if matter is None:
+                raise DocxExtractionError("Matter not found.")
+            review_result = matter.get("review_result")
+            if not isinstance(review_result, dict):
+                raise DocxExtractionError("Matter does not have a stored review result.")
+            source_document_bytes = matter_store.get_source_document_bytes(matter)
+            source_filename = str(matter.get("source_filename") or "")
+            return export_service._copy_jsonish_dict(review_result), source_document_bytes, source_filename
+
         filename = payload.get("filename", "")
         content_base64 = payload.get("content_base64", "")
         if isinstance(filename, str) and filename.lower().endswith(".docx") and isinstance(content_base64, str) and content_base64:
