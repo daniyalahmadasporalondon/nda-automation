@@ -87,7 +87,7 @@ function renderCleanDocumentParagraph(model) {
     body: model.plan.remove ? "" : escapeHtml(model.plan.cleanText),
     classes: ["doc-clean-paragraph", model.plan.remove ? "doc-clean-removed-anchor" : ""],
   });
-  return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN, model.paragraph.id);
+  return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN);
 }
 
 function renderSideBySideDocumentParagraph(model) {
@@ -101,7 +101,7 @@ function renderSideBySideDocumentParagraph(model) {
   return renderParagraphFrame(model, {
     body,
     classes: ["doc-sxs-paragraph"],
-  }) + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_SIDE_BY_SIDE, model.paragraph.id);
+  }) + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_SIDE_BY_SIDE);
 }
 
 function renderRedlineDocumentParagraph(model) {
@@ -146,10 +146,10 @@ function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", paragr
   `;
 }
 
-function renderInsertedParagraphs(inserts, viewMode, anchorParagraphId = "") {
+function renderInsertedParagraphs(inserts, viewMode) {
   return inserts.map((edit) => {
     const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
-    const attributes = `data-redline-edit-id="${escapeHtml(edit.id || "")}" data-redline-anchor-id="${escapeHtml(anchorParagraphId)}"`;
+    const attributes = `data-redline-edit-id="${escapeHtml(edit.id || "")}"`;
     if (viewMode === VIEW_MODE_SIDE_BY_SIDE) {
       return renderStudioParagraphFrame({
         body: `

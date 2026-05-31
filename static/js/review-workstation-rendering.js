@@ -236,7 +236,7 @@ function renderStudioClauseLane() {
         : "";
       const selectable = hasReviewResults()
         ? `
-          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
+          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
             <span class="studio-clause-dot ${status.dotTone}"></span>
             <strong class="studio-clause-number">${index + 1}</strong>
             <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
@@ -253,7 +253,7 @@ function renderStudioClauseLane() {
           </div>
         `;
       return `
-        <article class="studio-clause-item ${selected} ${status.tone} ${canDecide ? "decidable" : ""}" data-lane-card-id="${escapeHtml(clause.id)}">
+        <article class="studio-clause-item ${selected} ${status.tone} ${canDecide ? "decidable" : ""}">
           ${selectable}
           ${exportControls}
         </article>

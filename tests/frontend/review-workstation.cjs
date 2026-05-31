@@ -543,7 +543,7 @@ async function testBackendRedlineModes(page) {
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
   assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(239, 68, 68, 0.08)");
 
-  await page.locator('[data-studio-clause-id="term_and_survival"]').click();
+  await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
   const termParagraph = page.locator('[data-paragraph-id="p1"]');
   const termParagraphStyles = await termParagraph.evaluate((node) => {
@@ -569,7 +569,7 @@ async function testBackendRedlineModes(page) {
   assert.doesNotMatch(cleanText, /must not circumvent/);
   assert.equal(await page.locator('[data-paragraph-id="p2"]').count(), 1);
   assert.equal((await page.locator('[data-paragraph-id="p2"]').innerText()).trim(), "");
-  await page.locator('[data-studio-clause-id="non_circumvention"]').click();
+  await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
 
   await page.getByRole("button", { name: "Side by Side" }).click();
@@ -599,7 +599,7 @@ async function testBackendRedlineModes(page) {
   assert.equal(deletedSideBySide.proposed, "Removed in proposed text");
   assert.equal(deletedSideBySide.proposedEmpty, "Removed in proposed text");
 
-  const insertedBlocks = await page.locator('[data-redline-anchor-id="p2"]').evaluateAll((nodes) => (
+  const insertedBlocks = await page.locator('[data-redline-edit-id]').evaluateAll((nodes) => (
     nodes.map((node) => ({
       original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
       proposed: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
@@ -615,7 +615,7 @@ async function testBackendRedlineModes(page) {
 
 async function testClauseAnchorCycling(page) {
   await runReview(page, multiAnchorNda);
-  const nonCircumventionCard = page.locator('[data-studio-clause-id="non_circumvention"]');
+  const nonCircumventionCard = page.locator('[data-studio-lane-id="non_circumvention"]');
 
   await nonCircumventionCard.click();
   await page.waitForSelector('[data-paragraph-id="p1"].paragraph-pulse');
@@ -628,19 +628,22 @@ async function testClauseAnchorCycling(page) {
 
 async function testClauseDecisionControls(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
+  const signaturesCard = page.locator(".studio-clause-item").filter({
+    has: page.locator('[data-studio-lane-id="signatures"]'),
+  });
 
-  await page.locator('[data-studio-clause-id="governing_law"]').click();
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
   await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
   await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
 
   await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
-  await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "IGNORED IN EXPORT");
+  await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
-  await page.locator('[data-lane-card-id="signatures"]').click();
+  await page.locator('[data-studio-lane-id="signatures"]').click();
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
-  await page.locator('[data-lane-card-id="signatures"] [data-export-clause-id="signatures"][data-export-decision="include"]').click();
-  await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "INCLUDED IN EXPORT");
+  await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
+  await assertTextContains(signaturesCard.locator(".studio-export-state"), "INCLUDED IN EXPORT");
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
