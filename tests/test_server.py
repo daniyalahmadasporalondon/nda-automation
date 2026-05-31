@@ -230,14 +230,14 @@ class ServerTests(unittest.TestCase):
         self.assertGreaterEqual(len(document_root.findall(".//w:del", W_NS)), 1)
         self.assertGreaterEqual(len(document_root.findall(".//w:ins", W_NS)), 1)
 
-    def test_default_export_dir_is_desktop_not_project_exports(self):
-        self.assertEqual(
-            server_module.DEFAULT_EXPORTS_DIR,
-            server_module.Path.home() / "Desktop" / "NDA Exports",
-        )
+    def test_export_dir_is_opt_in_for_saved_export_routes(self):
         if "NDA_EXPORTS_DIR" not in os.environ:
-            self.assertEqual(server_module.EXPORTS_DIR, server_module.DEFAULT_EXPORTS_DIR)
-            self.assertNotEqual(server_module.EXPORTS_DIR, server_module.ROOT / "exports")
+            self.assertIsNone(server_module.EXPORTS_DIR)
+            self.assertIsNone(server_module._persist_export(b"data", "export.docx"))
+
+            status, payload = self.request("GET", "/exports/export.docx")
+            self.assertEqual(status, 404)
+            self.assertEqual(payload["error"], "Not found")
 
     def test_review_docx_export_text_path_uses_reviewed_text(self):
         status, payload, _headers = self.request_with_headers(
@@ -255,6 +255,21 @@ class ServerTests(unittest.TestCase):
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("Reviewed Text NDA", document_xml)
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
+
+    def test_review_docx_export_download_does_not_require_saved_copy(self):
+        with patch.object(server_module, "EXPORTS_DIR", None):
+            status, payload, headers = self.request_with_headers(
+                "POST",
+                "/api/export-review-docx",
+                {"text": "This Agreement shall be governed by the laws of California."},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertNotIn("X-Export-Path", headers)
+        self.assertNotIn("X-Export-URL", headers)
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
 
     def test_review_docx_export_rejects_text_that_differs_from_reviewed_text(self):
         status, payload = self.request(

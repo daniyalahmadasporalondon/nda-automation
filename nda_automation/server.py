@@ -16,8 +16,7 @@ from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-DEFAULT_EXPORTS_DIR = Path.home() / "Desktop" / "NDA Exports"
-EXPORTS_DIR = Path(os.environ.get("NDA_EXPORTS_DIR", DEFAULT_EXPORTS_DIR)).expanduser()
+EXPORTS_DIR = Path(os.environ["NDA_EXPORTS_DIR"]).expanduser() if os.environ.get("NDA_EXPORTS_DIR") else None
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 MAX_SAVED_EXPORTS = 25
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
@@ -48,6 +47,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_file(requested)
             return
         if path.startswith("/exports/"):
+            if EXPORTS_DIR is None:
+                self._send_json({"error": "Not found"}, status=404)
+                return
             requested_name = unquote(path.removeprefix("/exports/"))
             requested = (EXPORTS_DIR / requested_name).resolve()
             if requested.parent != EXPORTS_DIR.resolve() or not requested.is_file():
@@ -182,14 +184,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             report_bytes = build_review_report_docx(review_result, title=title.strip())
             download_filename = "nda-review-report.docx"
         saved_path = _persist_export(report_bytes, download_filename)
+        headers = {}
+        if saved_path is not None:
+            headers = {
+                "X-Export-Path": str(saved_path),
+                "X-Export-URL": f"/exports/{quote(saved_path.name)}",
+            }
         self._send_download(
             report_bytes,
             download_filename,
             DOCX_MIME,
-            headers={
-                "X-Export-Path": str(saved_path),
-                "X-Export-URL": f"/exports/{quote(saved_path.name)}",
-            },
+            headers=headers,
         )
 
     def _review_result_for_export(self, payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
@@ -267,18 +272,26 @@ def _redline_download_filename(filename: str) -> str:
     return f"{safe_name}-redlined.docx"
 
 
-def _persist_export(data: bytes, filename: str) -> Path:
+def _persist_export(data: bytes, filename: str) -> Path | None:
+    if EXPORTS_DIR is None:
+        return None
     safe_name = os.path.basename(filename) or "nda-review-report.docx"
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    export_path = (EXPORTS_DIR / safe_name).resolve()
-    if export_path.parent != EXPORTS_DIR.resolve():
-        export_path = EXPORTS_DIR / "nda-review-report.docx"
-    export_path.write_bytes(data)
-    _prune_saved_exports(export_path)
-    return export_path
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        export_path = (EXPORTS_DIR / safe_name).resolve()
+        if export_path.parent != EXPORTS_DIR.resolve():
+            export_path = EXPORTS_DIR / "nda-review-report.docx"
+        export_path.write_bytes(data)
+        _prune_saved_exports(export_path)
+        return export_path
+    except OSError as error:
+        print(f"Could not save export copy: {error}")
+        return None
 
 
 def _prune_saved_exports(protected_path: Path) -> None:
+    if EXPORTS_DIR is None:
+        return
     saved_exports = [
         path
         for path in EXPORTS_DIR.glob("*.docx")
