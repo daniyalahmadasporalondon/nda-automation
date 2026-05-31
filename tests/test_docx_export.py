@@ -14,6 +14,11 @@ from nda_automation.docx_export import (
     build_source_redline_docx,
 )
 from nda_automation.docx_text import extract_docx_paragraphs
+from nda_automation.redline_actions import (
+    REDLINE_DELETE_PARAGRAPH,
+    REDLINE_INSERT_AFTER_PARAGRAPH,
+    REDLINE_REPLACE_PARAGRAPH,
+)
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
@@ -156,6 +161,10 @@ def paragraph_mark_revisions(document_root, kind):
     return document_root.findall(f".//w:pPr/w:rPr/w:{kind}", W_NS)
 
 
+def paragraph_has_mark_revision(paragraph, kind):
+    return paragraph.find(f"./w:pPr/w:rPr/w:{kind}", W_NS) is not None
+
+
 def revision_text_for_state(node, accepted):
     tag = node.tag.rsplit("}", 1)[-1]
     if tag == "del":
@@ -207,6 +216,105 @@ def escape_xml(value):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def track_changes_contract_review_result():
+    paragraphs = [
+        {
+            "id": "p1",
+            "index": 1,
+            "source_index": 1,
+            "text": "This Agreement shall be governed by the laws of California.",
+        },
+        {
+            "id": "p2",
+            "index": 2,
+            "source_index": 2,
+            "text": "Insert after this paragraph.",
+        },
+        {
+            "id": "p3",
+            "index": 3,
+            "source_index": 3,
+            "text": "The Recipient must not circumvent the Company.",
+        },
+    ]
+    redline_edits = [
+        {
+            "id": "r1",
+            "action": REDLINE_REPLACE_PARAGRAPH,
+            "paragraph_id": "p1",
+            "source_index": 1,
+            "original_text": paragraphs[0]["text"],
+            "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+        },
+        {
+            "id": "r2",
+            "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+            "paragraph_id": "p2",
+            "source_index": 2,
+            "insert_text": "New required clause.",
+        },
+        {
+            "id": "r3",
+            "action": REDLINE_DELETE_PARAGRAPH,
+            "paragraph_id": "p3",
+            "source_index": 3,
+            "original_text": paragraphs[2]["text"],
+        },
+    ]
+    return {
+        "overall_status": "does_not_meet_requirements",
+        "requirements_passed": 0,
+        "requirements_failed": 3,
+        "checked_at": "2026-05-31T00:00:00+00:00",
+        "paragraphs": paragraphs,
+        "clauses": [],
+        "redline_edits": redline_edits,
+    }
+
+
+def assert_track_changes_contract(testcase, docx_bytes, redline_edits):
+    settings_root, document_root, _document_xml = docx_xml_roots(docx_bytes)
+    testcase.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
+
+    paragraphs = document_root.findall(".//w:p", W_NS)
+    for edit in redline_edits:
+        action = edit["action"]
+        if action == REDLINE_REPLACE_PARAGRAPH:
+            original = edit["original_text"]
+            replacement = edit["replacement_text"]
+            matches = [
+                paragraph
+                for paragraph in paragraphs
+                if revision_text_for_state(paragraph, accepted=False) == original
+                and revision_text_for_state(paragraph, accepted=True) == replacement
+            ]
+            testcase.assertTrue(matches, f"Missing replace revision paragraph for {edit['id']}")
+            testcase.assertTrue(matches[0].findall(".//w:del", W_NS), "Replace must include inline w:del")
+            testcase.assertTrue(matches[0].findall(".//w:ins", W_NS), "Replace must include inline w:ins")
+        elif action == REDLINE_INSERT_AFTER_PARAGRAPH:
+            insert_text = edit["insert_text"]
+            matches = [
+                paragraph
+                for paragraph in paragraphs
+                if revision_text_for_state(paragraph, accepted=False) == ""
+                and revision_text_for_state(paragraph, accepted=True) == insert_text
+            ]
+            testcase.assertTrue(matches, f"Missing insert revision paragraph for {edit['id']}")
+            testcase.assertTrue(paragraph_has_mark_revision(matches[0], "ins"), "Insert must mark the paragraph inserted")
+            testcase.assertTrue(matches[0].findall(".//w:ins", W_NS), "Insert must include inserted text")
+        elif action == REDLINE_DELETE_PARAGRAPH:
+            original = edit["original_text"]
+            matches = [
+                paragraph
+                for paragraph in paragraphs
+                if revision_text_for_state(paragraph, accepted=False) == original
+                and revision_text_for_state(paragraph, accepted=True) == ""
+            ]
+            testcase.assertTrue(matches, f"Missing delete revision paragraph for {edit['id']}")
+            testcase.assertTrue(paragraph_has_mark_revision(matches[0], "del"), "Delete must mark the paragraph deleted")
+            testcase.assertTrue(matches[0].findall(".//w:delText", W_NS), "Delete must include deleted text")
 
 
 def inline_diff_vectors():
@@ -363,26 +471,7 @@ class DocxExportTests(unittest.TestCase):
             "Insert after this paragraph.",
             "The Recipient must not circumvent the Company.",
         ])
-        review_result = {
-            "redline_edits": [
-                {
-                    "action": "replace_paragraph",
-                    "source_index": 1,
-                    "original_text": "This Agreement shall be governed by the laws of California.",
-                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
-                },
-                {
-                    "action": "insert_after_paragraph",
-                    "source_index": 2,
-                    "insert_text": "New required clause.",
-                },
-                {
-                    "action": "delete_paragraph",
-                    "source_index": 3,
-                    "original_text": "The Recipient must not circumvent the Company.",
-                },
-            ],
-        }
+        review_result = track_changes_contract_review_result()
 
         redlined_docx = build_source_redline_docx(source_docx, review_result)
 
@@ -405,6 +494,7 @@ class DocxExportTests(unittest.TestCase):
         self.assertIn(("Insert after this paragraph.", "Insert after this paragraph."), states)
         self.assertIn(("", "New required clause."), states)
         self.assertIn(("The Recipient must not circumvent the Company.", ""), states)
+        assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
 
     def test_review_report_docx_marks_delete_paragraph_redlines(self):
         result = review_nda("The Recipient must not circumvent the Company or deal directly with introduced parties.")
@@ -428,6 +518,13 @@ class DocxExportTests(unittest.TestCase):
         inserted_text = tracked_inserted_text(document_root)
         self.assertTrue(any("This Agreement shall be governed by the laws of England and Wales." in text for text in inserted_text))
         self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
+
+    def test_review_report_docx_preserves_track_changes_contract_by_redline_action(self):
+        result = track_changes_contract_review_result()
+
+        report_docx = build_review_report_docx(result)
+
+        assert_track_changes_contract(self, report_docx, result["redline_edits"])
 
     def test_review_report_docx_splits_multi_paragraph_insertions(self):
         result = review_nda(
