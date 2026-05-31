@@ -179,6 +179,33 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["issue_type"], "present_but_wrong")
         self.assertIn("five years or less", term_clause["what_to_fix"])
 
+    def test_term_and_survival_allows_numbered_trade_secret_carve_out(self):
+        result = review_nda(
+            """
+            The confidentiality obligations survive for a fixed period of up to five years,
+            except trade secrets and legal obligations that require a longer period shall survive for ten years.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("within the cap of five years", term_clause["finding"])
+
+    def test_term_and_survival_rejects_over_cap_ordinary_term_with_trade_secret_carve_out(self):
+        result = review_nda(
+            """
+            The confidentiality obligations survive for seven years,
+            except trade secrets shall survive for ten years.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "present_but_wrong")
+        self.assertIn("exceeds the cap of five years", term_clause["finding"])
+
     def test_term_and_survival_rejects_perpetual_survival(self):
         result = review_nda(
             """
