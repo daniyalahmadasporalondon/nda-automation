@@ -1004,6 +1004,8 @@ def _no_redlines(
 
 
 REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
+    # Every checked clause must declare its redline behavior. Use
+    # _no_redlines when the absence of a proposed edit is intentional.
     ("mutuality", _no_redlines),
     ("confidential_information", _no_redlines),
     ("governing_law", _governing_law_redlines),

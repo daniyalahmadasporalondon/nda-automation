@@ -28,7 +28,3 @@ function clauseStatus(clause) {
 function clausePasses(clause) {
   return clauseStatus(clause).passes;
 }
-
-function clauseNeedsReview(clause) {
-  return clauseStatus(clause).needsReview;
-}

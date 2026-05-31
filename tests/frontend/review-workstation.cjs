@@ -14,6 +14,10 @@ const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
+const inlineDiffVectors = JSON.parse(fs.readFileSync(
+  path.join(ROOT, "tests", "fixtures", "inline_diff_vectors.json"),
+  "utf8",
+));
 const redlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
@@ -155,6 +159,42 @@ async function testAccessibleControlState(page) {
 
 async function testInlineDiffAlgorithmEdges(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  const operationsByVector = await page.evaluate((vectors) => {
+    const tokenBlockText = (block) => Array.from({ length: block.count }, (_, index) => `${block.prefix}${index}`).join(" ");
+    const expectedOperations = (vector) => [
+      ...(vector.operations || []),
+      ...(vector.operationBlocks || []).flatMap((block) => (
+        Array.from({ length: block.count }, (_, index) => ({ type: block.type, token: `${block.prefix}${index}` }))
+      )),
+    ];
+    const diffTextOperations = (original, replacement) => {
+      const oldTokens = tokenizeInlineDiff(original);
+      const newTokens = tokenizeInlineDiff(replacement);
+      if (!oldTokens.length) return newTokens.map((token) => ({ type: "insert", token }));
+      if (!newTokens.length) return oldTokens.map((token) => ({ type: "delete", token }));
+      if (oldTokens.length * newTokens.length > INLINE_DIFF_MAX_MATRIX_CELLS) {
+        return [
+          ...oldTokens.map((token) => ({ type: "delete", token })),
+          ...newTokens.map((token) => ({ type: "insert", token })),
+        ];
+      }
+      return diffTokenOperations(oldTokens, newTokens);
+    };
+    return vectors.map((vector) => {
+      const original = vector.originalTokenBlock ? tokenBlockText(vector.originalTokenBlock) : vector.original;
+      const replacement = vector.replacementTokenBlock ? tokenBlockText(vector.replacementTokenBlock) : vector.replacement;
+      return {
+        name: vector.name,
+        actual: diffTextOperations(original, replacement),
+        expected: expectedOperations(vector),
+      };
+    });
+  }, inlineDiffVectors);
+
+  for (const vector of operationsByVector) {
+    assert.deepEqual(vector.actual, vector.expected, vector.name);
+  }
+
   const cases = await page.evaluate(() => {
     const revisionState = (html) => {
       const container = document.createElement("div");
@@ -179,7 +219,6 @@ async function testInlineDiffAlgorithmEdges(page) {
         "This Agreement (California) applies.",
         "This Agreement (England and Wales) applies.",
       )),
-      lcsOperations: diffTokenOperations(["Pay", "fees", ",", "taxes", "."], ["Pay", "charges", ",", "taxes", "."]),
       fallback: revisionState(renderInlineDiff(oldLong, newLong)),
     };
   });
@@ -198,15 +237,6 @@ async function testInlineDiffAlgorithmEdges(page) {
   assert.equal(cases.punctuation.accepted, "This Agreement (England and Wales) applies.");
   assert.deepEqual(cases.punctuation.deleted, ["California"]);
   assert.deepEqual(cases.punctuation.inserted, ["England", " and", " Wales"]);
-
-  assert.deepEqual(cases.lcsOperations, [
-    { type: "same", token: "Pay" },
-    { type: "delete", token: "fees" },
-    { type: "insert", token: "charges" },
-    { type: "same", token: "," },
-    { type: "same", token: "taxes" },
-    { type: "same", token: "." },
-  ]);
 
   assert.equal(cases.fallback.deleted.length, 201);
   assert.equal(cases.fallback.inserted.length, 200);

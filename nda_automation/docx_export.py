@@ -20,7 +20,7 @@ REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
-INLINE_DIFF_CELL_LIMIT = 40000
+INLINE_DIFF_MAX_MATRIX_CELLS = 40000
 INLINE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]")
 
 ET.register_namespace("w", W_NS)
@@ -506,7 +506,7 @@ def _diff_text_operations(original: str, replacement: str) -> List[Tuple[str, st
         return [("insert", token) for token in new_tokens]
     if not new_tokens:
         return [("delete", token) for token in old_tokens]
-    if len(old_tokens) * len(new_tokens) > INLINE_DIFF_CELL_LIMIT:
+    if len(old_tokens) * len(new_tokens) > INLINE_DIFF_MAX_MATRIX_CELLS:
         return [("delete", token) for token in old_tokens] + [("insert", token) for token in new_tokens]
     return _diff_token_operations(old_tokens, new_tokens)
 

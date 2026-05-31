@@ -1,4 +1,6 @@
 from io import BytesIO
+import json
+from pathlib import Path
 import unittest
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
@@ -16,6 +18,7 @@ W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
 STYLE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
 
 
 def docx_xml_roots(docx_bytes):
@@ -118,40 +121,42 @@ def escape_xml(value):
     )
 
 
+def inline_diff_vectors():
+    with INLINE_DIFF_VECTORS_PATH.open(encoding="utf-8") as fixture:
+        return json.load(fixture)
+
+
+def expand_inline_diff_vector(vector):
+    if "originalTokenBlock" in vector:
+        original = token_block_text(vector["originalTokenBlock"])
+    else:
+        original = vector["original"]
+    if "replacementTokenBlock" in vector:
+        replacement = token_block_text(vector["replacementTokenBlock"])
+    else:
+        replacement = vector["replacement"]
+
+    operations = []
+    for operation in vector.get("operations", []):
+        operations.append((operation["type"], operation["token"]))
+    for block in vector.get("operationBlocks", []):
+        operations.extend(
+            (block["type"], f'{block["prefix"]}{index}')
+            for index in range(block["count"])
+        )
+    return original, replacement, operations
+
+
+def token_block_text(block):
+    return " ".join(f'{block["prefix"]}{index}' for index in range(block["count"]))
+
+
 class DocxExportTests(unittest.TestCase):
-    def test_inline_diff_operations_cover_empty_inputs_and_lcs(self):
-        self.assertEqual(_diff_text_operations("", "Alpha, beta."), [
-            ("insert", "Alpha"),
-            ("insert", ","),
-            ("insert", "beta"),
-            ("insert", "."),
-        ])
-        self.assertEqual(_diff_text_operations("Alpha, beta.", ""), [
-            ("delete", "Alpha"),
-            ("delete", ","),
-            ("delete", "beta"),
-            ("delete", "."),
-        ])
-        self.assertEqual(_diff_text_operations("Pay fees, taxes.", "Pay charges, taxes."), [
-            ("same", "Pay"),
-            ("delete", "fees"),
-            ("insert", "charges"),
-            ("same", ","),
-            ("same", "taxes"),
-            ("same", "."),
-        ])
-
-    def test_inline_diff_operations_large_input_uses_bounded_fallback(self):
-        original = " ".join(f"old{index}" for index in range(201))
-        replacement = " ".join(f"new{index}" for index in range(200))
-
-        operations = _diff_text_operations(original, replacement)
-
-        self.assertEqual(len(operations), 401)
-        self.assertEqual([operation for operation, _token in operations[:201]], ["delete"] * 201)
-        self.assertEqual([operation for operation, _token in operations[201:]], ["insert"] * 200)
-        self.assertEqual(operations[0], ("delete", "old0"))
-        self.assertEqual(operations[201], ("insert", "new0"))
+    def test_inline_diff_operations_match_shared_vectors(self):
+        for vector in inline_diff_vectors():
+            with self.subTest(vector["name"]):
+                original, replacement, expected_operations = expand_inline_diff_vector(vector)
+                self.assertEqual(_diff_text_operations(original, replacement), expected_operations)
 
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):
         original = "This Agreement (California) applies."
