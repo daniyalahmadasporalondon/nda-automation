@@ -179,6 +179,21 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["issue_type"], "present_but_wrong")
         self.assertIn("five years or less", term_clause["what_to_fix"])
 
+    def test_term_and_survival_rejects_perpetual_survival(self):
+        result = review_nda(
+            """
+            This Agreement shall be valid for a period of three (3) months commencing from the Execution Date unless a definitive agreement is executed between the Parties, in which event this Agreement shall expire on the execution of such definitive agreement ("Term") and the confidentiality provisions of the definitive agreement shall supersede this Agreement. This Agreement can be terminated by Bank by giving a prior written notice of 7 (seven) days. The rights and obligations of the Parties mentioned in this Agreement will survive the expiry or early termination of this Agreement for perpetuity after the termination of this Agreement.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "present_but_wrong")
+        self.assertIn("indefinite or perpetual", term_clause["finding"])
+        self.assertIn("perpetuity", term_clause["matched_text"])
+        self.assertIn("five years or less", term_clause["what_to_fix"])
+
     def test_term_and_survival_uses_playbook_cap_in_details(self):
         playbook = deepcopy(load_playbook())
         term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")

@@ -43,10 +43,10 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
     if ordinary_indefinite_term:
         return _check(
             clause,
-            f"Ordinary confidentiality appears indefinite rather than capped at {cap_label}.",
+            f"Survival language appears indefinite or perpetual rather than capped at {cap_label}.",
             _paragraph_matches(term_paragraphs, indefinite_patterns),
             what_to_fix=(
-                "Replace indefinite ordinary confidentiality language "
+                "Replace indefinite or perpetual ordinary confidentiality language "
                 f"with a fixed period of {cap_label} or less."
             ),
         )
@@ -62,4 +62,3 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
         term_paragraphs,
         what_to_fix=f"Add a fixed term or ordinary confidentiality survival period of {cap_label} or less.",
     )
-

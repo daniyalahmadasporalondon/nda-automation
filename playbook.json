@@ -184,6 +184,9 @@
       "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording.",
       "indefinite_terms": [
         "indefinitely",
+        "perpetuity",
+        "perpetual",
+        "perpetually",
         "perpetual confidentiality",
         "for so long as the information remains confidential"
       ],
