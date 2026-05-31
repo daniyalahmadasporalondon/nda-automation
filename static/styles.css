@@ -121,7 +121,7 @@ body {
   background: var(--bg-main);
   color: var(--ink);
   font-family: var(--text-font);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   margin: 0;
@@ -143,11 +143,11 @@ button {
   cursor: pointer;
   display: inline-flex;
   font-family: var(--text-font);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
-  height: 34px;
+  height: 30px;
   justify-content: center;
-  padding: 0 14px;
+  padding: 0 11px;
   transition: transform 0.14s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
@@ -196,11 +196,11 @@ h3 {
 .eyebrow {
   color: var(--ink-muted);
   font-family: var(--text-font);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.1em;
   line-height: 1;
-  margin: 0 0 9px;
+  margin: 0 0 7px;
   text-transform: uppercase;
 }
 
@@ -264,15 +264,15 @@ h3 {
   color: var(--ink);
   display: flex;
   flex: 0 0 auto;
-  gap: 22px;
-  height: 58px;
-  padding: 0 24px;
+  gap: 12px;
+  height: 48px;
+  padding: 0 16px;
 }
 
 .product-lockup {
   align-items: center;
   display: flex;
-  gap: 13px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -280,17 +280,17 @@ h3 {
   display: block;
   flex: 0 0 auto;
   height: auto;
-  width: 100px;
+  width: 86px;
 }
 
 .product-lockup > span {
   border-left: 1px solid var(--border);
   color: var(--ink);
   font-family: var(--display-font);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1;
-  padding-left: 13px;
+  padding-left: 10px;
   white-space: nowrap;
 }
 
@@ -306,10 +306,10 @@ h3 {
   border-radius: 0;
   color: var(--ink-soft);
   font-family: var(--text-font);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   height: 100%;
-  padding: 0 14px;
+  padding: 0 11px;
   width: auto;
 }
 
@@ -339,11 +339,11 @@ h3 {
   display: inline-flex;
   flex: 0 0 auto;
   font-family: var(--text-font);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
-  height: 34px;
+  height: 30px;
   justify-content: center;
-  padding: 0 16px;
+  padding: 0 12px;
   transition: background 0.18s ease, border-color 0.18s ease, transform 0.14s ease;
 }
 
@@ -361,7 +361,7 @@ h3 {
 }
 
 .top-upload {
-  height: 32px;
+  height: 29px;
 }
 
 /* ---------- Review workstation body ---------- */
@@ -381,17 +381,17 @@ h3 {
   box-shadow: var(--shadow-sm);
   display: flex;
   flex: 0 0 auto;
-  gap: 22px;
+  gap: 16px;
   justify-content: space-between;
-  margin: 14px 24px 0;
-  min-height: 60px;
-  padding: 11px 18px;
+  margin: 10px 16px 0;
+  min-height: 50px;
+  padding: 8px 12px;
 }
 
 .studio-matter-left {
   align-items: center;
   display: flex;
-  gap: 15px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -404,12 +404,12 @@ h3 {
   display: flex;
   flex: 0 0 auto;
   font-family: var(--display-font);
-  font-size: 20px;
-  height: 32px;
+  font-size: 18px;
+  height: 28px;
   justify-content: center;
   line-height: 1;
   transition: background 0.18s ease, transform 0.18s ease;
-  width: 32px;
+  width: 28px;
 }
 
 .back-dot:hover {
@@ -421,19 +421,19 @@ h3 {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  margin-bottom: 6px;
+  gap: 5px;
+  margin-bottom: 4px;
 }
 
 .studio-tags span {
   background: var(--slate-bg);
   border-radius: var(--r-pill);
   color: var(--ink-soft);
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-weight: 700;
   letter-spacing: 0.05em;
   line-height: 1;
-  padding: 5px 9px;
+  padding: 4px 7px;
   text-transform: uppercase;
 }
 
@@ -445,7 +445,7 @@ h3 {
 
 .studio-matter-card h1 {
   font-family: var(--display-font);
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.1;
@@ -459,18 +459,18 @@ h3 {
 .studio-matter-meta {
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(2, minmax(96px, max-content));
+  grid-template-columns: repeat(2, minmax(82px, max-content));
   margin: 0;
 }
 
 .studio-matter-meta div {
   border-left: 1px solid var(--border);
-  padding: 0 18px;
+  padding: 0 12px;
 }
 
 .studio-matter-meta dt {
   color: var(--ink-muted);
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -478,17 +478,17 @@ h3 {
 
 .studio-matter-meta dd {
   color: var(--ink);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  margin: 4px 0 0;
+  margin: 2px 0 0;
 }
 
 .studio-grid {
   display: grid;
   flex: 1;
-  gap: 14px;
-  grid-template-columns: 222px minmax(440px, 1fr) minmax(264px, 300px);
-  margin: 14px 24px 0;
+  gap: 10px;
+  grid-template-columns: 190px minmax(500px, 1fr) minmax(300px, 340px);
+  margin: 10px 16px 0;
   min-height: 0;
 }
 
@@ -506,12 +506,12 @@ h3 {
 
 .studio-clauses {
   overflow: auto;
-  padding: 18px 18px 20px;
+  padding: 14px 14px 16px;
 }
 
 .studio-clause-list {
   display: grid;
-  margin-top: 16px;
+  margin-top: 12px;
 }
 
 .studio-clause-item {
@@ -521,12 +521,12 @@ h3 {
   border-radius: 0;
   color: var(--ink);
   display: grid;
-  gap: 3px 13px;
+  gap: 2px 10px;
   grid-template-columns: 10px minmax(0, 1fr);
   height: auto;
   justify-content: start;
-  min-height: 52px;
-  padding: 0 4px 16px 18px;
+  min-height: 44px;
+  padding: 0 3px 12px 15px;
   position: relative;
   text-align: left;
   transition: border-color 0.18s ease, color 0.18s ease;
@@ -550,12 +550,12 @@ h3 {
   border: 2.5px solid var(--bg-panel);
   border-radius: var(--r-pill);
   box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4);
-  height: 11px;
-  left: -7px;
+  height: 10px;
+  left: -6px;
   position: absolute;
   top: 1px;
   transition: transform 0.18s ease;
-  width: 11px;
+  width: 10px;
 }
 
 .studio-clause-item:hover .studio-clause-dot {
@@ -574,7 +574,7 @@ h3 {
 
 .studio-clause-item strong {
   font-family: var(--text-font);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 700;
   grid-column: 2;
   line-height: 1.15;
@@ -582,7 +582,7 @@ h3 {
 
 .studio-clause-item span:last-child {
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: 10.5px;
   font-weight: 500;
   grid-column: 2;
   line-height: 1.3;
@@ -603,9 +603,9 @@ h3 {
   border-bottom: 1px solid var(--border);
   display: flex;
   flex: 0 0 auto;
-  height: 42px;
+  height: 36px;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 12px;
 }
 
 .studio-view-switch {
@@ -622,9 +622,9 @@ h3 {
 .studio-zoom {
   color: var(--ink-soft);
   font-family: var(--text-font);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 3px 8px;
 }
 
 .studio-view-switch .vs-btn {
@@ -633,10 +633,10 @@ h3 {
   border-radius: 6px;
   color: var(--ink-soft);
   font-family: var(--text-font);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   height: auto;
-  padding: 5px 11px;
+  padding: 4px 9px;
 }
 
 .studio-view-switch .vs-btn:hover {
@@ -658,10 +658,10 @@ h3 {
 .studio-page-wrap {
   background: transparent;
   flex: 1;
-  margin: 22px 0 24px;
+  margin: 14px 0 16px;
   min-height: 0;
   overflow: auto;
-  padding: 0 24px;
+  padding: 0 16px;
 }
 
 .studio-page {
@@ -670,9 +670,9 @@ h3 {
   border-radius: var(--r-md);
   box-shadow: var(--shadow-paper);
   margin: 0 auto;
-  max-width: 720px;
+  max-width: 690px;
   min-height: calc(100% - 4px);
-  padding: 48px 56px;
+  padding: 38px 46px;
   width: 100%;
 }
 
@@ -697,11 +697,11 @@ h3 {
   border-bottom: 1px solid var(--border);
   color: var(--ink);
   font-family: var(--display-font);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0;
-  margin-bottom: 28px;
-  padding-bottom: 16px;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
   text-align: center;
   text-transform: uppercase;
 }
@@ -710,9 +710,9 @@ h3 {
   color: #2a2540;
   display: grid;
   font-family: var(--doc-font);
-  font-size: 15px;
-  gap: 16px;
-  line-height: 1.62;
+  font-size: 14px;
+  gap: 12px;
+  line-height: 1.56;
 }
 
 .studio-document-render[hidden] {
@@ -723,7 +723,7 @@ h3 {
   border-left: 3px solid transparent;
   border-radius: var(--r-sm);
   margin: 0;
-  padding: 11px 15px;
+  padding: 8px 11px;
   scroll-margin-top: 20px;
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   white-space: pre-wrap;
@@ -753,8 +753,8 @@ h3 {
 .paragraph-source-editor {
   border-top: 1px solid rgba(245, 158, 11, 0.2);
   display: none;
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 7px;
+  padding-top: 7px;
 }
 
 .studio-doc-paragraph.selected .paragraph-source-editor,
@@ -881,8 +881,8 @@ textarea {
   color: #2a2540;
   display: block;
   font-family: var(--doc-font);
-  font-size: 15px;
-  line-height: 1.62;
+  font-size: 14px;
+  line-height: 1.56;
   min-height: 480px;
   outline: none;
   overflow: hidden;
@@ -898,8 +898,8 @@ textarea::placeholder {
 #studioNdaText {
   color: #2a2540;
   font-family: var(--doc-font);
-  font-size: 15px;
-  line-height: 1.62;
+  font-size: 14px;
+  line-height: 1.56;
   min-height: 420px;
   overflow: hidden;
 }
@@ -920,7 +920,7 @@ textarea::placeholder {
 
 .clause-sxs {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   grid-template-columns: 1fr 1fr;
   align-items: stretch;
 }
@@ -931,8 +931,8 @@ textarea::placeholder {
   border-radius: var(--r-sm);
   display: grid;
   grid-template-rows: auto 1fr;
-  min-height: 92px;
-  padding: 11px 13px;
+  min-height: 78px;
+  padding: 9px 10px;
 }
 
 .clause-sxs-col.original.removed {
@@ -961,7 +961,7 @@ textarea::placeholder {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.09em;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
   text-transform: uppercase;
 }
 
@@ -993,18 +993,18 @@ textarea::placeholder {
   flex-direction: column;
   min-width: 0;
   overflow: auto;
-  padding-bottom: 16px;
+  padding-bottom: 10px;
 }
 
 .studio-playbook > h2 {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   color: var(--ink);
-  font-size: 13px;
+  font-size: 11.5px;
   letter-spacing: 0.06em;
   line-height: 1.1;
   margin: 0;
-  padding: 16px 16px;
+  padding: 12px 12px;
   position: sticky;
   text-transform: uppercase;
   top: 0;
@@ -1015,8 +1015,8 @@ textarea::placeholder {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  margin: 14px 14px 0;
-  padding: 14px;
+  margin: 10px 10px 0;
+  padding: 10px;
 }
 
 .studio-check-card {
@@ -1032,9 +1032,9 @@ textarea::placeholder {
 .studio-verdict-line {
   align-items: center;
   display: grid;
-  gap: 11px;
+  gap: 8px;
   grid-template-columns: auto minmax(0, 1fr);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .studio-verdict-line > strong {
@@ -1045,13 +1045,13 @@ textarea::placeholder {
   color: var(--ink-soft);
   display: inline-flex;
   font-family: var(--text-font);
-  font-size: 11px;
+  font-size: 9.5px;
   font-weight: 800;
-  height: 42px;
+  height: 34px;
   justify-content: center;
   letter-spacing: 0.04em;
-  min-width: 50px;
-  padding: 0 10px;
+  min-width: 42px;
+  padding: 0 8px;
   text-transform: uppercase;
 }
 
@@ -1068,7 +1068,7 @@ textarea::placeholder {
 }
 
 .studio-verdict-line h3 {
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.15;
   margin: 0 0 4px;
@@ -1081,14 +1081,14 @@ textarea::placeholder {
 .studio-match-line {
   align-items: baseline;
   display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 5px;
 }
 
 .studio-match-line strong {
   color: var(--brand);
   font-family: var(--display-font);
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 700;
   line-height: 1;
 }
@@ -1097,28 +1097,28 @@ textarea::placeholder {
 .studio-check-card p,
 .studio-card p {
   color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.3;
   margin-bottom: 0;
 }
 
 .studio-issue-list {
   display: grid;
-  gap: 9px;
+  gap: 6px;
 }
 
 .studio-issue-card {
   align-items: stretch;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 10px;
   color: var(--ink);
   display: grid;
-  gap: 9px;
+  gap: 6px;
   height: auto;
   justify-content: stretch;
   min-height: 0;
-  padding: 12px 13px;
+  padding: 9px 10px;
   text-align: left;
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
   width: 100%;
@@ -1129,7 +1129,10 @@ textarea::placeholder {
   border: 0;
   color: inherit;
   display: grid;
-  gap: 9px;
+  gap: 6px;
+  height: auto;
+  justify-content: stretch;
+  min-height: 0;
   padding: 0;
   text-align: left;
   width: 100%;
@@ -1146,7 +1149,7 @@ textarea::placeholder {
   background: var(--bg-softer);
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .studio-issue-card.check:hover,
@@ -1161,15 +1164,15 @@ textarea::placeholder {
 .studio-issue-card-top {
   align-items: center;
   display: flex;
-  gap: 9px;
+  gap: 6px;
   justify-content: space-between;
   min-width: 0;
 }
 
 .studio-issue-title {
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.12;
   min-width: 0;
 }
 
@@ -1178,13 +1181,13 @@ textarea::placeholder {
   border-radius: var(--r-pill);
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-weight: 700;
   justify-content: center;
   letter-spacing: 0.04em;
   line-height: 1;
-  min-width: 48px;
-  padding: 6px 9px 5px;
+  min-width: 42px;
+  padding: 5px 7px 4px;
   text-transform: uppercase;
 }
 
@@ -1208,14 +1211,18 @@ textarea::placeholder {
 
 .studio-issue-finding {
   color: var(--ink-soft);
-  font-size: 12px;
+  display: -webkit-box;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 1.4;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.28;
+  overflow: hidden;
 }
 
 .studio-export-state {
   color: var(--ink-muted);
-  font-size: 10px;
+  font-size: 8.5px;
   font-weight: 800;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1232,7 +1239,8 @@ textarea::placeholder {
 .studio-export-controls,
 .detail-export-controls {
   display: flex;
-  gap: 7px;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 .export-choice {
@@ -1240,10 +1248,11 @@ textarea::placeholder {
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   line-height: 1;
-  padding: 7px 10px;
+  min-height: 24px;
+  padding: 5px 8px;
 }
 
 .export-choice.active {
@@ -1260,23 +1269,23 @@ textarea::placeholder {
 
 .studio-empty {
   color: var(--ink-muted);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 500;
-  padding: 12px 0;
+  padding: 8px 0;
 }
 
 .studio-card h3 {
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
 }
 
 .studio-detail-heading {
   align-items: flex-start;
   display: flex;
-  gap: 9px;
+  gap: 7px;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .studio-detail-heading h3 {
@@ -1286,14 +1295,14 @@ textarea::placeholder {
 
 .studio-detail-stack {
   display: grid;
-  gap: 9px;
+  gap: 6px;
 }
 
 .studio-detail-block {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 11px 12px;
+  padding: 8px 9px;
 }
 
 .studio-detail-block.requirement-block {
@@ -1304,18 +1313,18 @@ textarea::placeholder {
 .studio-detail-block small {
   color: var(--ink-muted);
   display: block;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 800;
   letter-spacing: 0.09em;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   text-transform: uppercase;
 }
 
 .studio-detail-block p {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 1.35;
   margin-bottom: 0;
 }
 
@@ -1366,22 +1375,22 @@ textarea::placeholder {
 .paragraph-redline-note,
 .paragraph-insertion {
   display: grid;
-  gap: 7px;
-  margin-top: 9px;
+  gap: 5px;
+  margin-top: 6px;
 }
 
 .detail-redline-edit {
   display: grid;
-  gap: 7px;
+  gap: 5px;
 }
 
 .redline-label {
   color: var(--red-ink);
   display: block;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.07em;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
   text-transform: uppercase;
 }
 
@@ -1393,11 +1402,11 @@ textarea::placeholder {
   border-radius: 7px;
   display: block;
   font-family: var(--doc-font);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.45;
+  line-height: 1.35;
   margin: 0;
-  padding: 9px 12px;
+  padding: 7px 9px;
   white-space: pre-wrap;
 }
 
@@ -1439,7 +1448,7 @@ textarea::placeholder {
 .redline-anchor strong {
   color: var(--ink);
   display: block;
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 800;
   letter-spacing: 0.05em;
   margin-bottom: 5px;
@@ -1448,19 +1457,19 @@ textarea::placeholder {
 
 .paragraph-insertion {
   display: block;
-  margin-top: 9px;
+  margin-top: 6px;
 }
 
 .redline-options {
   display: grid;
-  gap: 7px;
+  gap: 5px;
   margin-top: 2px;
 }
 
 .redline-options-title {
   color: var(--ink-muted);
   display: block;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1472,8 +1481,8 @@ textarea::placeholder {
   border-radius: var(--r-sm);
   color: #463c5c;
   display: grid;
-  gap: 4px;
-  padding: 9px 10px;
+  gap: 3px;
+  padding: 7px 8px;
   text-align: left;
   transition: background 0.18s ease, border-color 0.18s ease;
   width: 100%;
@@ -1486,12 +1495,12 @@ textarea::placeholder {
 
 .redline-option strong {
   color: var(--ink);
-  font-size: 11.5px;
+  font-size: 10.5px;
 }
 
 .redline-option span {
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 /* ---------- Bottom action bar (flat white) ---------- */
@@ -1504,9 +1513,9 @@ textarea::placeholder {
   flex: 0 0 auto;
   gap: 16px;
   justify-content: space-between;
-  margin: 12px 0 0;
-  min-height: 44px;
-  padding: 0 24px;
+  margin: 10px 0 0;
+  min-height: 38px;
+  padding: 0 16px;
 }
 
 .studio-file-summary {
@@ -1516,7 +1525,7 @@ textarea::placeholder {
 
 .studio-file-summary strong {
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
 }
 
@@ -1530,30 +1539,30 @@ textarea::placeholder {
   border-radius: var(--r-pill);
   color: var(--green-ink);
   display: inline-flex;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1;
   margin-left: 6px;
-  padding: 5px 9px;
+  padding: 4px 7px;
   text-decoration: none;
 }
 
 .studio-file-summary span {
   color: var(--ink-muted);
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 600;
 }
 
 .actions {
   display: flex;
   flex: 0 0 auto;
-  gap: 9px;
+  gap: 7px;
 }
 
 .actions button {
   border-radius: var(--r-pill);
-  height: 32px;
-  min-width: 104px;
+  height: 29px;
+  min-width: 92px;
 }
 
 #studioReviewButton {
@@ -1572,13 +1581,13 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px 24px 24px;
+  padding: 10px 16px 18px;
 }
 
 .playbook-shell {
   display: grid;
-  gap: 14px;
-  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 10px;
+  grid-template-columns: 300px minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -1598,20 +1607,20 @@ textarea::placeholder {
 
 .rail-heading {
   border-bottom: 1px solid var(--border);
-  padding: 16px 18px;
+  padding: 12px 14px;
 }
 
 .rail-heading h2 {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   margin: 0;
 }
 
 .playbook-list {
   display: grid;
-  gap: 7px;
+  gap: 5px;
   overflow: auto;
-  padding: 11px;
+  padding: 8px;
 }
 
 .playbook-row {
@@ -1621,12 +1630,12 @@ textarea::placeholder {
   border-radius: var(--r-md);
   color: var(--ink);
   display: grid;
-  gap: 11px;
-  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  grid-template-columns: 30px minmax(0, 1fr);
   height: auto;
   justify-content: flex-start;
-  min-height: 58px;
-  padding: 10px 11px;
+  min-height: 50px;
+  padding: 8px 9px;
   text-align: left;
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   width: 100%;
@@ -1653,9 +1662,9 @@ textarea::placeholder {
   color: var(--brand);
   display: flex;
   font-family: var(--display-font);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  height: 34px;
+  height: 30px;
   justify-content: center;
 }
 
@@ -1665,7 +1674,7 @@ textarea::placeholder {
 }
 
 .playbook-row strong {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
   margin-bottom: 4px;
@@ -1673,7 +1682,7 @@ textarea::placeholder {
 
 .playbook-row small {
   color: var(--ink-muted);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1681,7 +1690,7 @@ textarea::placeholder {
 
 .clause-detail {
   overflow: auto;
-  padding: 24px;
+  padding: 18px;
 }
 
 .detail-header {
@@ -1689,11 +1698,11 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
-  padding-bottom: 18px;
+  padding-bottom: 14px;
 }
 
 .detail-header h2 {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1.08;
   margin: 0;
@@ -1727,8 +1736,8 @@ textarea::placeholder {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
   color: #fff;
-  margin: 18px 0;
-  padding: 22px;
+  margin: 14px 0;
+  padding: 17px;
   position: relative;
 }
 
@@ -1736,10 +1745,10 @@ textarea::placeholder {
 .fact-box small {
   color: var(--ink-muted);
   display: block;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.07em;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   text-transform: uppercase;
 }
 
@@ -1749,7 +1758,7 @@ textarea::placeholder {
 
 .requirement-panel p {
   font-family: var(--display-font);
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.3;
@@ -1759,7 +1768,7 @@ textarea::placeholder {
 
 .detail-grid {
   display: grid;
-  gap: 11px;
+  gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
@@ -1767,8 +1776,8 @@ textarea::placeholder {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  min-height: 90px;
-  padding: 15px;
+  min-height: 76px;
+  padding: 11px;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -1780,7 +1789,7 @@ textarea::placeholder {
 .fact-box strong {
   color: var(--ink);
   display: block;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -1789,8 +1798,8 @@ textarea::placeholder {
 .law-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
+  gap: 6px;
+  margin-top: 12px;
 }
 
 .law-strip span {
@@ -1798,9 +1807,9 @@ textarea::placeholder {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-pill);
   color: var(--brand);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 8px 13px;
+  padding: 6px 10px;
 }
 
 .playbook-loading,
@@ -1818,11 +1827,11 @@ textarea::placeholder {
 .status {
   border-radius: var(--r-pill);
   flex: 0 0 auto;
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-weight: 800;
   letter-spacing: 0.04em;
   line-height: 1;
-  padding: 6px 9px;
+  padding: 5px 7px;
   text-transform: uppercase;
 }
 
@@ -1848,7 +1857,7 @@ textarea::placeholder {
 
 @media (max-width: 1080px) {
   .studio-grid {
-    grid-template-columns: 200px minmax(0, 1fr) 260px;
+    grid-template-columns: 176px minmax(0, 1fr) 292px;
   }
 }
 
