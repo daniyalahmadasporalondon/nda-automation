@@ -813,6 +813,51 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 400)
         self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
 
+    def test_repository_export_and_send_share_matter_redline_builder(self):
+        matter_id = "matter_shared"
+        matter = {
+            "id": matter_id,
+            "sender": "Legal Team <legal@example.com>",
+            "subject": "Shared matter",
+        }
+        redline_export = server_module.redline_export_service.RedlineExport(
+            data=b"shared redline docx",
+            filename="Shared-redlined.docx",
+        )
+
+        with patch.object(server_module.redline_export_service, "build_matter_redline", return_value=redline_export) as build_matter_redline:
+            with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+                with patch.object(server_module.matter_store, "update_matter_fields", return_value=matter):
+                    with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                        "message_id": "msg_outbound",
+                        "outbound_account": "legal@aspora.com",
+                        "sent_at": "2026-05-31T12:00:00+00:00",
+                        "subject": "Re: Shared matter",
+                        "thread_id": "thread_outbound",
+                        "to": "legal@example.com",
+                    }):
+                        export_status, export_payload, export_headers = self.request_with_headers(
+                            "POST",
+                            "/api/export-review-docx",
+                            {"matter_id": matter_id, "export_redline_edits": []},
+                        )
+                        send_status, send_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {"matter_id": matter_id, "confirm_send": True},
+                        )
+
+        self.assertEqual(export_status, 200)
+        self.assertEqual(export_payload, b"shared redline docx")
+        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Shared-redlined.docx"')
+        self.assertEqual(send_status, 200)
+        self.assertEqual(send_payload["filename"], "Shared-redlined.docx")
+        self.assertEqual(build_matter_redline.call_count, 2)
+        self.assertEqual(build_matter_redline.call_args_list[0].args[0], matter_id)
+        self.assertTrue(build_matter_redline.call_args_list[0].kwargs["persist"])
+        self.assertEqual(build_matter_redline.call_args_list[1].args[0], matter_id)
+        self.assertNotIn("persist", build_matter_redline.call_args_list[1].kwargs)
+
     def test_gmail_import_endpoint_uses_inbound_connector(self):
         with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value={
             "account": "inbound@example.com",

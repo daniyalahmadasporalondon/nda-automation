@@ -453,7 +453,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             title = "NDA Review"
 
         try:
-            redline_export = redline_export_service.build_review_export(payload, export_text, title=title)
+            if has_matter_payload:
+                redline_export = redline_export_service.build_matter_redline(
+                    str(payload.get("matter_id", "")).strip(),
+                    payload,
+                    persist=True,
+                )
+            else:
+                redline_export = redline_export_service.build_review_export(payload, export_text, title=title)
         except redline_export_service.DocxOpenHealthError as error:
             self._send_json({
                 "error": str(error),

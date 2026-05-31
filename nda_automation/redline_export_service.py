@@ -34,6 +34,16 @@ class DocxOpenHealthError(DocxExportError):
 
 
 def build_review_export(payload: dict, fallback_text: str, *, title: str = "NDA Review") -> RedlineExport:
+    return _build_redline_export(payload, fallback_text, title=title, persist=True)
+
+
+def build_matter_redline(matter_id: str, payload: dict | None = None, *, persist: bool = False) -> RedlineExport:
+    payload = {**(payload or {}), "matter_id": matter_id}
+    title = str(payload.get("title") or "NDA Review")
+    return _build_redline_export(payload, "", title=title, persist=persist)
+
+
+def _build_redline_export(payload: dict, fallback_text: str, *, title: str, persist: bool) -> RedlineExport:
     review_result, source_document_bytes, source_filename = _review_result_for_export(payload, fallback_text)
     export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
@@ -51,30 +61,7 @@ def build_review_export(payload: dict, fallback_text: str, *, title: str = "NDA 
     return RedlineExport(
         data=report_bytes,
         filename=download_filename,
-        saved_path=export_service.persist_export(report_bytes, download_filename),
-    )
-
-
-def build_matter_redline(matter_id: str, payload: dict | None = None) -> RedlineExport:
-    payload = payload or {}
-    review_result, source_document_bytes, source_filename = _review_result_for_export({"matter_id": matter_id}, "")
-    if source_document_bytes is None:
-        raise DocxExtractionError("Matter source document is missing from storage.")
-
-    export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
-    export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
-    if source_filename.lower().endswith(".docx"):
-        report_bytes = build_source_redline_docx(source_document_bytes, review_result)
-        download_filename = export_service.redline_download_filename(source_filename)
-        require_styles = False
-    else:
-        report_bytes = build_review_report_docx(review_result, title=str(review_result.get("title") or "NDA Review"))
-        download_filename = export_service.redline_download_filename(source_filename or "nda-review-report.docx")
-        require_styles = True
-    _validate_export(report_bytes, require_styles=require_styles)
-    return RedlineExport(
-        data=report_bytes,
-        filename=download_filename,
+        saved_path=export_service.persist_export(report_bytes, download_filename) if persist else None,
     )
 
 
