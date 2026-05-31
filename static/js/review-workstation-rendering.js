@@ -22,7 +22,6 @@ function renderResult(result, reviewedText) {
 function renderStudioEmpty() {
   state.latestReviewResult = null;
   showStudioSourceEditor();
-  studioClauseLane?.classList.add("awaiting-review");
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioResultMark.textContent = "-";
   studioResultMark.className = "";
@@ -59,7 +58,6 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
-  studioClauseLane?.classList.remove("awaiting-review");
   const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
   const failedCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
