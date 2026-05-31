@@ -9,11 +9,12 @@ from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from io import BytesIO
 from unittest.mock import patch
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
 from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
 from nda_automation import document_limits
+from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
@@ -1432,6 +1433,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
 
+    def test_document_review_rejects_docx_decompression_bomb(self):
+        source_docx = make_compressed_docx("A" * 4096)
+
+        with patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2):
+            status, payload = self.request(
+                "POST",
+                "/api/review-document",
+                {
+                    "filename": "bomb.docx",
+                    "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                },
+            )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "The Word document uses a suspicious compression ratio.")
+
     def test_matter_upload_rejects_oversize_upload_at_ingestion_boundary(self):
         with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
             status, payload = self.request(
@@ -1537,6 +1554,17 @@ def make_docx(paragraphs):
 </w:document>"""
     with BytesIO() as output:
         with ZipFile(output, "w") as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def make_compressed_docx(text):
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>{escape_xml(text)}</w:t></w:r></w:p></w:body>
+</w:document>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
             archive.writestr("word/document.xml", document_xml)
         return output.getvalue()
 

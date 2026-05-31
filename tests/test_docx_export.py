@@ -3,6 +3,7 @@ import json
 import posixpath
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -10,12 +11,14 @@ from nda_automation.checker import review_nda
 from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
+    DocxExportError,
     _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
     validate_docx_open_health,
 )
 from nda_automation.inline_diff import diff_text_operations
+from nda_automation import docx_text
 from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -406,6 +409,13 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_export_rejects_suspicious_compression_ratio(self):
+        source_docx = make_source_docx(["A" * 4096])
+
+        with patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2):
+            with self.assertRaises(DocxExportError):
+                build_source_redline_docx(source_docx, {"paragraphs": [], "redline_edits": []})
 
     def test_source_docx_export_prefers_text_anchors_over_stale_source_index(self):
         source_docx = make_source_docx([

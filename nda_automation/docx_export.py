@@ -15,6 +15,7 @@ from .redline_actions import (
 )
 from .inline_diff import diff_text_operations
 from .docx_health import validate_docx_open_health as validate_docx_open_health
+from .docx_text import DocxExtractionError, validate_docx_archive
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -92,6 +93,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
 def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -> bytes:
     try:
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
+            validate_docx_archive(source_archive)
             source_names = set(source_archive.namelist())
             document_root = ET.fromstring(source_archive.read("word/document.xml"))
             _apply_redline_edits_to_source_document(
@@ -133,7 +135,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                         if name not in written:
                             redlined_archive.writestr(name, data)
                 return output.getvalue()
-    except (BadZipFile, KeyError, ET.ParseError) as exc:
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError) as exc:
         raise DocxExportError("The uploaded Word document could not be redlined.") from exc
 
 

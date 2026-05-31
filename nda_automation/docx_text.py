@@ -6,6 +6,10 @@ from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
+DOCX_TOO_LARGE_MESSAGE = "The Word document is too large after decompression."
+DOCX_SUSPICIOUS_COMPRESSION_MESSAGE = "The Word document uses a suspicious compression ratio."
 SUPPLEMENTAL_PART_PREFIXES = (
     "word/header",
     "word/footer",
@@ -28,6 +32,7 @@ def extract_docx_text(data: bytes) -> str:
 def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
     try:
         with ZipFile(BytesIO(data)) as document:
+            validate_docx_archive(document)
             paragraphs = _extract_main_document_paragraphs(document)
             paragraphs.extend(_extract_supplemental_paragraphs(document))
     except BadZipFile as exc:
@@ -36,6 +41,20 @@ def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
     if not paragraphs:
         raise DocxExtractionError("No readable text was found in the Word document.")
     return paragraphs
+
+
+def validate_docx_archive(document: ZipFile) -> None:
+    total_uncompressed = 0
+    for item in document.infolist():
+        if item.is_dir():
+            continue
+        total_uncompressed += item.file_size
+        if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+            raise DocxExtractionError(DOCX_TOO_LARGE_MESSAGE)
+        if item.file_size and item.compress_size == 0:
+            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
+        if item.compress_size and item.file_size / item.compress_size > MAX_DOCX_ENTRY_COMPRESSION_RATIO:
+            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
 
 
 def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:

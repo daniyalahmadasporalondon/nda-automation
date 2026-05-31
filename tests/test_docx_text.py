@@ -1,7 +1,9 @@
 from io import BytesIO
 import unittest
-from zipfile import ZIP_DEFLATED, ZipFile
+from unittest.mock import patch
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
+from nda_automation import docx_text
 from nda_automation.docx_text import DocxExtractionError, extract_docx_paragraphs, extract_docx_text
 
 
@@ -66,6 +68,20 @@ class DocxTextTests(unittest.TestCase):
         with self.assertRaises(DocxExtractionError):
             extract_docx_text(b"not a word document")
 
+    def test_rejects_excessive_uncompressed_docx_size(self):
+        data = make_zip({"word/document.xml": "A" * 128}, compression=ZIP_STORED)
+
+        with patch.object(docx_text, "MAX_DOCX_UNCOMPRESSED_BYTES", 64):
+            with self.assertRaisesRegex(DocxExtractionError, "too large after decompression"):
+                extract_docx_paragraphs(data)
+
+    def test_rejects_suspicious_docx_compression_ratio(self):
+        data = make_zip({"word/document.xml": "A" * 4096}, compression=ZIP_DEFLATED)
+
+        with patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2):
+            with self.assertRaisesRegex(DocxExtractionError, "suspicious compression ratio"):
+                extract_docx_paragraphs(data)
+
 
 def make_docx(paragraphs, *, body_xml="", extra_parts=None):
     body = "".join(
@@ -98,6 +114,14 @@ def escape_xml(value):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def make_zip(parts, *, compression):
+    with BytesIO() as output:
+        with ZipFile(output, "w", compression) as archive:
+            for name, content in parts.items():
+                archive.writestr(name, content)
+        return output.getvalue()
 
 
 if __name__ == "__main__":
