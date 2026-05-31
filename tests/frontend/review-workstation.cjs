@@ -179,7 +179,7 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
 
-  await page.getByRole("tab", { name: "Clauses" }).click();
+  await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
