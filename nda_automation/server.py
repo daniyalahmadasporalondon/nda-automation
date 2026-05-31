@@ -314,7 +314,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            report_bytes, download_filename = self._redline_docx_for_matter(matter_id.strip())
+            report_bytes, download_filename = self._redline_docx_for_matter(matter_id.strip(), payload)
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
@@ -459,10 +459,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
         return review_nda(fallback_text), None, ""
 
-    def _redline_docx_for_matter(self, matter_id: str) -> tuple[bytes, str]:
+    def _redline_docx_for_matter(self, matter_id: str, payload: dict | None = None) -> tuple[bytes, str]:
         review_result, source_document_bytes, source_filename = self._review_result_for_export({"matter_id": matter_id}, "")
         if source_document_bytes is None:
             raise DocxExtractionError("Matter source document is missing from storage.")
+        payload = payload or {}
+        export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
+        export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
         report_bytes = build_source_redline_docx(source_document_bytes, review_result)
         health_errors = validate_docx_open_health(report_bytes, require_styles=False)
         if health_errors:

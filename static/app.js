@@ -5,6 +5,7 @@ const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
 const studioExportButton = document.querySelector("#studioExportButton");
+const studioSendButton = document.querySelector("#studioSendButton");
 const studioClearButton = document.querySelector("#studioClearButton");
 const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
@@ -38,6 +39,7 @@ const state = {
   lastExport: null,
   documentViewMode: VIEW_MODE_REDLINE,
 };
+let pendingReviewSendMatterId = null;
 
 const repositoryController = createRepositoryController({
   state,
@@ -123,6 +125,7 @@ function isWordDocument(file) {
 }
 
 function clearReview() {
+  pendingReviewSendMatterId = null;
   setSourceText("");
   showStudioSourceEditor();
   resizeSourceEditors();
@@ -137,6 +140,7 @@ function clearReview() {
 }
 
 function resetReviewResults() {
+  pendingReviewSendMatterId = null;
   state.reviewClauses = [];
   state.reviewOriginalParagraphs = [];
   state.reviewParagraphs = [];
@@ -160,6 +164,10 @@ studioReviewButton.addEventListener("click", async () => {
 
 studioExportButton.addEventListener("click", async () => {
   await exportReviewDocx();
+});
+
+studioSendButton.addEventListener("click", async () => {
+  await sendReviewRedlineEmail();
 });
 
 async function runReview(sourceInput, button) {
@@ -208,6 +216,7 @@ async function runReview(sourceInput, button) {
 }
 
 async function exportReviewDocx() {
+  pendingReviewSendMatterId = null;
   const text = studioNdaText.value.trim() || state.reviewSourceText.trim();
   if (!text) return;
 
@@ -266,6 +275,54 @@ async function exportReviewDocx() {
     renderOperationError(error, "Export could not run.");
   } finally {
     studioExportButton.textContent = "Export DOCX";
+    updateExportButtonState();
+  }
+}
+
+async function sendReviewRedlineEmail() {
+  if (!state.selectedMatter?.id) return;
+  const recipient = matterRecipientEmail(state.selectedMatter);
+  if (!recipient) {
+    pendingReviewSendMatterId = null;
+    studioSendButton.textContent = "Send Redline";
+    setFileMeta("Matter sender is not an email address");
+    updateExportButtonState();
+    return;
+  }
+  if (pendingReviewSendMatterId !== state.selectedMatter.id) {
+    pendingReviewSendMatterId = state.selectedMatter.id;
+    studioSendButton.textContent = "Confirm Send";
+    setFileMeta(`Click Confirm Send to email the redline to ${recipient}`);
+    return;
+  }
+
+  studioSendButton.disabled = true;
+  studioSendButton.textContent = "Sending";
+  try {
+    const payload = {
+      matter_id: state.selectedMatter.id,
+      confirm_send: true,
+      export_redline_edits: effectiveReviewRedlines(),
+      manual_redline_edits: manualExportRedlines(),
+    };
+    const response = await fetch("/api/gmail/send-redline", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(result, "Redline email could not send");
+    if (result.matter?.id) {
+      state.selectedMatter = result.matter;
+      await repositoryController.loadMatters();
+    }
+    pendingReviewSendMatterId = null;
+    setFileMeta(`Sent redline to ${recipient}`);
+  } catch (error) {
+    pendingReviewSendMatterId = null;
+    renderOperationError(error, "Redline email could not send.");
+  } finally {
+    studioSendButton.textContent = "Send Redline";
     updateExportButtonState();
   }
 }
@@ -427,6 +484,14 @@ function downloadFilename(response) {
   return match ? match[1] : "";
 }
 
+function matterRecipientEmail(matter) {
+  const sender = String(matter?.sender || "");
+  const bracketMatch = sender.match(/<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>/);
+  const candidate = bracketMatch ? bracketMatch[1] : sender;
+  const emailMatch = candidate.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return emailMatch ? emailMatch[0] : "";
+}
+
 function setSourceText(text) {
   studioNdaText.value = text;
 }
@@ -478,6 +543,7 @@ function showStudioDocumentRender() {
 }
 
 function renderResult(result, reviewedText) {
+  pendingReviewSendMatterId = null;
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
@@ -515,8 +581,17 @@ function renderStudioEmpty() {
 }
 
 function updateExportButtonState() {
-  if (!studioExportButton) return;
-  studioExportButton.disabled = !state.reviewClauses.length || !(studioNdaText.value.trim() || state.reviewSourceText.trim());
+  const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
+  if (studioExportButton) {
+    studioExportButton.disabled = !canExport;
+  }
+  if (!studioSendButton) return;
+  const canSend = Boolean(canExport && state.selectedMatter?.id && matterRecipientEmail(state.selectedMatter));
+  studioSendButton.disabled = !canSend;
+  if (!canSend) {
+    pendingReviewSendMatterId = null;
+    studioSendButton.textContent = "Send Redline";
+  }
 }
 
 function renderStudioResult(result) {

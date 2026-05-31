@@ -24,7 +24,7 @@ ROLE_TOKEN_ENV = {
 }
 ROLE_DEFAULT_TOKEN_PATHS = {
     "inbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
-    "outbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json.bak-20260529-160446",
+    "outbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
 }
 
 
@@ -160,6 +160,7 @@ def send_redline_email(
 
     service = _gmail_service("outbound")
     profile = _gmail_profile(service)
+    outbound_account = str(profile.get("emailAddress") or "")
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
     message = EmailMessage()
     message["To"] = recipient
@@ -176,7 +177,7 @@ def send_redline_email(
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
     gmail_payload: dict[str, Any] = {"raw": raw_message}
     thread_id = str(matter.get("gmail_thread_id") or "").strip()
-    if thread_id:
+    if thread_id and _can_reply_in_thread(matter, outbound_account):
         gmail_payload["threadId"] = thread_id
 
     try:
@@ -186,10 +187,10 @@ def send_redline_email(
 
     return {
         "message_id": str(sent_message.get("id") or ""),
-        "outbound_account": str(profile.get("emailAddress") or ""),
+        "outbound_account": outbound_account,
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "subject": outbound_subject,
-        "thread_id": str(sent_message.get("threadId") or thread_id),
+        "thread_id": str(sent_message.get("threadId") or ""),
         "to": recipient,
     }
 
@@ -260,6 +261,11 @@ def _gmail_profile(service: Any) -> dict[str, Any]:
     except Exception as exc:
         raise GmailIntegrationError("Gmail account profile could not load.") from exc
     return profile if isinstance(profile, dict) else {}
+
+
+def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
+    inbound_account = str(matter.get("gmail_account") or "").strip().casefold()
+    return bool(inbound_account and outbound_account and inbound_account == outbound_account.strip().casefold())
 
 
 def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, str]:

@@ -34,7 +34,11 @@ jobs:
         run: python -m unittest discover -s tests
 
       - name: Check JavaScript syntax
-        run: node --check static/app.js
+        run: |
+          node --check static/app.js
+          node --check static/js/repository.js
+          node --check static/js/redline-rendering.js
+          node --check tests/frontend/review-workstation.cjs
 
   frontend:
     name: Frontend behavior
