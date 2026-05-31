@@ -6,6 +6,7 @@ const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioClearButton = document.querySelector("#studioClearButton");
+const studioCheckCard = document.querySelector(".studio-check-card");
 const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioIssueList = document.querySelector("#studioIssueList");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
@@ -346,6 +347,7 @@ function renderResult(result, reviewedText) {
 function renderStudioEmpty() {
   if (!studioIssueList) return;
   showStudioSourceEditor();
+  studioCheckCard?.classList.add("awaiting-review");
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioResultMark.textContent = "-";
   studioResultMark.className = "";
@@ -376,6 +378,7 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
+  studioCheckCard?.classList.remove("awaiting-review");
   const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
   const failedCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;

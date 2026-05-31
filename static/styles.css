@@ -1024,6 +1024,11 @@ textarea::placeholder {
   border-color: var(--border-strong);
 }
 
+.studio-check-card.awaiting-review {
+  background: var(--bg-softer);
+  border: 1px dashed var(--border-strong);
+}
+
 .studio-verdict-line {
   align-items: center;
   display: grid;

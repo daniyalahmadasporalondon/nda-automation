@@ -170,6 +170,17 @@ async function testAccessibleControlState(page) {
   });
   assert.equal(matterCardStyles.borderRadius, "12px");
   assert.match(matterCardStyles.boxShadow, /43, 12, 110/);
+  const awaitingCheckCardStyles = await page.locator(".studio-check-card.awaiting-review").evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      backgroundColor: styles.backgroundColor,
+      borderColor: styles.borderColor,
+      borderStyle: styles.borderStyle,
+    };
+  });
+  assert.equal(awaitingCheckCardStyles.backgroundColor, "rgb(250, 248, 255)");
+  assert.equal(awaitingCheckCardStyles.borderColor, "rgb(216, 206, 240)");
+  assert.equal(awaitingCheckCardStyles.borderStyle, "dashed");
 
   await page.getByRole("tab", { name: "Clauses" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
@@ -275,6 +286,7 @@ async function testInlineDiffAlgorithmEdges(page) {
 
 async function testBackendRedlineModes(page) {
   await runReview(page, redlineNda);
+  assert.equal(await page.locator(".studio-check-card.awaiting-review").count(), 0);
   const checkPillStyles = await page.locator(".studio-issue-pill.check").first().evaluate((node) => {
     const styles = getComputedStyle(node);
     return {
