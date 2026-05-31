@@ -147,16 +147,8 @@
 .repository-import-actions {
   display: grid;
   gap: 7px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-}
-
-.repository-import-button {
-  border-radius: 9999px;
-  display: flex;
-  grid-column: 1 / -1;
-  height: 30px;
-  justify-content: center;
 }
 
 .repository-gmail-sync,

@@ -5,6 +5,14 @@ const AdminIntegrationsView = (() => {
     'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement"',
     'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)',
   ].join(" ");
+  const CADENCE_LABELS = {
+    manual: "Manual sync only",
+    always_on: "Always on - every 1 minute",
+    "10_minutes": "Every 10 minutes",
+    "30_minutes": "Every 30 minutes",
+    "1_hour": "Every 1 hour",
+    "2_hours": "Every 2 hours",
+  };
 
   function createController({
     state,
@@ -16,6 +24,7 @@ const AdminIntegrationsView = (() => {
     gmailSyncButton,
     gmailInboundToggle,
     gmailOutboundToggle,
+    gmailCadenceControl,
     reviewErrorFromPayload,
     syncGmail,
   }) {
@@ -23,6 +32,9 @@ const AdminIntegrationsView = (() => {
     gmailSyncButton?.addEventListener("click", sync);
     gmailInboundToggle?.addEventListener("click", () => updateGmailToggle("inbound"));
     gmailOutboundToggle?.addEventListener("click", () => updateGmailToggle("outbound"));
+    gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
+      button.addEventListener("click", () => updateGmailCadence(button.dataset.gmailCadence || "manual"));
+    });
 
     async function sync() {
       if (!syncGmail) return;
@@ -80,6 +92,29 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function updateGmailCadence(syncCadence) {
+      const currentCadence = state.gmailStatus?.settings?.sync_cadence || "manual";
+      if (syncCadence === currentCadence) return;
+      setCadenceDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const response = await fetch("/api/gmail/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sync_cadence: syncCadence }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync cadence could not save");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Save failed", "blocked");
+        renderCadenceControl(state.gmailStatus?.settings?.sync_cadence || "manual");
+      } finally {
+        setCadenceDisabled(false);
+      }
+    }
+
     function renderGmail(status, matters) {
       state.gmailStatus = status;
       const inbound = status.inbound || {};
@@ -88,6 +123,7 @@ const AdminIntegrationsView = (() => {
       const ready = Boolean(inbound.ready && outbound.ready);
       setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
       renderToggleControls(status);
+      renderCadenceControl(status.settings?.sync_cadence || "manual");
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", configuredLabel(inbound));
@@ -140,6 +176,7 @@ const AdminIntegrationsView = (() => {
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(state.gmailLastSync));
       renderToggleControls(state.gmailStatus || {});
+      renderCadenceControl(state.gmailStatus?.settings?.sync_cadence || "manual");
     }
 
     function setLastSync(sync) {
@@ -182,6 +219,22 @@ const AdminIntegrationsView = (() => {
     function setToggleDisabled(disabled) {
       [gmailInboundToggle, gmailOutboundToggle].forEach((button) => {
         if (button) button.disabled = disabled;
+      });
+    }
+
+    function renderCadenceControl(syncCadence) {
+      const cadence = CADENCE_LABELS[syncCadence] ? syncCadence : "manual";
+      gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
+        const selected = button.dataset.gmailCadence === cadence;
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+        button.classList.toggle("active", selected);
+      });
+      setFact("sync-cadence-copy", `${CADENCE_LABELS[cadence]}.`);
+    }
+
+    function setCadenceDisabled(disabled) {
+      gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
+        button.disabled = disabled;
       });
     }
 

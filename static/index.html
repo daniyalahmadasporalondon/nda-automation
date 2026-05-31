@@ -142,10 +142,6 @@
                   <div class="repository-import">
                     <div class="repository-import-actions">
                       <button class="secondary repository-demo-reset" id="repositoryDemoResetButton" type="button">Reset Demo</button>
-                      <label class="file-button repository-import-button">
-                        <input id="repositoryFileInput" type="file" accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf">
-                        Import NDA
-                      </label>
                     </div>
                     <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
                   </div>
@@ -243,30 +239,43 @@
                       <h2>Gmail</h2>
                     </div>
                     <span class="integration-status" id="adminGmailOverall">Checking</span>
-	                  </header>
+                  </header>
 
-	                  <div class="integration-toggle-grid" id="adminGmailToggles">
-	                    <div class="integration-toggle-row">
-	                      <div>
-	                        <strong>Inbound email</strong>
-	                        <span data-admin-gmail="inbound-enabled-copy">Checking</span>
-	                      </div>
-	                      <button class="integration-switch" id="adminGmailInboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable inbound Gmail">
-	                        <span></span>
-	                      </button>
-	                    </div>
-	                    <div class="integration-toggle-row">
-	                      <div>
-	                        <strong>Outbound email</strong>
-	                        <span data-admin-gmail="outbound-enabled-copy">Checking</span>
-	                      </div>
-	                      <button class="integration-switch" id="adminGmailOutboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable outbound Gmail">
-	                        <span></span>
-	                      </button>
-	                    </div>
-	                  </div>
+                  <div class="integration-toggle-grid" id="adminGmailToggles">
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>Inbound email</strong>
+                        <span data-admin-gmail="inbound-enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminGmailInboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable inbound Gmail">
+                        <span></span>
+                      </button>
+                    </div>
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>Outbound email</strong>
+                        <span data-admin-gmail="outbound-enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminGmailOutboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable outbound Gmail">
+                        <span></span>
+                      </button>
+                    </div>
+                  </div>
 
-	                  <dl class="integration-facts" id="adminGmailFacts">
+                  <section class="integration-subsection">
+                    <h3>Sync cadence</h3>
+                    <div class="integration-cadence-control" id="adminGmailCadenceControl" role="group" aria-label="Gmail sync cadence">
+                      <button type="button" data-gmail-cadence="manual" aria-pressed="true">Manual</button>
+                      <button type="button" data-gmail-cadence="always_on" aria-pressed="false">Always on</button>
+                      <button type="button" data-gmail-cadence="10_minutes" aria-pressed="false">10 min</button>
+                      <button type="button" data-gmail-cadence="30_minutes" aria-pressed="false">30 min</button>
+                      <button type="button" data-gmail-cadence="1_hour" aria-pressed="false">1 hour</button>
+                      <button type="button" data-gmail-cadence="2_hours" aria-pressed="false">2 hours</button>
+                    </div>
+                    <p class="integration-cadence-copy" data-admin-gmail="sync-cadence-copy">Manual sync only.</p>
+                  </section>
+
+                  <dl class="integration-facts" id="adminGmailFacts">
                     <div>
                       <dt>Inbound account</dt>
                       <dd data-admin-gmail="inbound-email">Checking</dd>

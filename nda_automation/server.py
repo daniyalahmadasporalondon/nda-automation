@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,7 @@ MAX_REDLINE_DRAFT_ITEMS = 200
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
 _PLAYBOOK_LOCK = threading.RLock()
+_GMAIL_SYNC_LOCK = threading.Lock()
 
 
 @contextmanager
@@ -458,7 +460,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            result = gmail_integration.import_inbound_matters(limit=limit, query=query)
+            with _GMAIL_SYNC_LOCK:
+                result = gmail_integration.import_inbound_matters(limit=limit, query=query)
         except gmail_integration.GmailIntegrationError as error:
             self._send_json({"error": str(error)}, status=503)
             return
@@ -472,7 +475,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if payload is None:
             return
 
-        updates: dict[str, bool] = {}
+        updates: dict[str, object] = {}
         for key in ("inbound_enabled", "outbound_enabled"):
             if key not in payload:
                 continue
@@ -481,8 +484,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Gmail enabled settings must be true or false."}, status=400)
                 return
             updates[key] = value
+        if "sync_cadence" in payload:
+            sync_cadence = payload.get("sync_cadence")
+            if not isinstance(sync_cadence, str) or sync_cadence not in app_settings.GMAIL_SYNC_CADENCES:
+                self._send_json({"error": "Unsupported Gmail sync cadence."}, status=400)
+                return
+            updates["sync_cadence"] = sync_cadence
         if not updates:
-            self._send_json({"error": "Provide an inbound_enabled or outbound_enabled setting."}, status=400)
+            self._send_json({"error": "Provide a Gmail setting to update."}, status=400)
             return
 
         settings = app_settings.update_gmail_settings(updates)
@@ -761,8 +770,40 @@ def main() -> None:
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
+    _start_gmail_sync_scheduler()
     print(f"nda-automation running at http://{args.host}:{args.port}")
     server.serve_forever()
+
+
+def _start_gmail_sync_scheduler() -> None:
+    scheduler = threading.Thread(target=_gmail_sync_scheduler_loop, daemon=True)
+    scheduler.start()
+
+
+def _gmail_sync_scheduler_loop() -> None:
+    last_run = 0.0
+    last_cadence = ""
+    while True:
+        try:
+            settings = app_settings.gmail_settings()
+            cadence = str(settings.get("sync_cadence") or "manual")
+            interval_seconds = app_settings.gmail_sync_interval_seconds(cadence)
+            if cadence != last_cadence:
+                last_run = 0.0
+                last_cadence = cadence
+            if interval_seconds is not None and settings.get("inbound_enabled", True):
+                now = time.monotonic()
+                if now - last_run >= interval_seconds and _GMAIL_SYNC_LOCK.acquire(blocking=False):
+                    try:
+                        gmail_integration.import_inbound_matters(limit=10)
+                    except Exception as error:  # pragma: no cover - defensive background logging.
+                        print(f"Gmail scheduled sync failed: {error}")
+                    finally:
+                        last_run = now
+                        _GMAIL_SYNC_LOCK.release()
+        except Exception as error:  # pragma: no cover - defensive background logging.
+            print(f"Gmail sync scheduler failed: {error}")
+        time.sleep(5)
 
 
 if __name__ == "__main__":

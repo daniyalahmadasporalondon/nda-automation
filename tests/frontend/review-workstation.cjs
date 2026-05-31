@@ -260,6 +260,11 @@ async function testFailureUxDetails(page) {
 async function testPlaybookAdminEditor(page) {
   const gmailStatusPayload = {
     gmail: {
+      settings: {
+        inbound_enabled: true,
+        outbound_enabled: true,
+        sync_cadence: "manual",
+      },
       inbound: {
         configured: true,
         email: "inbound@example.com",
@@ -275,7 +280,7 @@ async function testPlaybookAdminEditor(page) {
       },
     },
   };
-  let gmailSettingsPayload;
+  const gmailSettingsPayloads = [];
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
       status: 200,
@@ -284,24 +289,27 @@ async function testPlaybookAdminEditor(page) {
     });
   });
   await page.route("**/api/gmail/settings", async (route) => {
-    gmailSettingsPayload = route.request().postDataJSON();
+    const gmailSettingsPayload = route.request().postDataJSON();
+    gmailSettingsPayloads.push(gmailSettingsPayload);
     if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "inbound_enabled")) {
       gmailStatusPayload.gmail.inbound.enabled = gmailSettingsPayload.inbound_enabled;
       gmailStatusPayload.gmail.inbound.ready = gmailSettingsPayload.inbound_enabled;
+      gmailStatusPayload.gmail.settings.inbound_enabled = gmailSettingsPayload.inbound_enabled;
     }
     if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "outbound_enabled")) {
       gmailStatusPayload.gmail.outbound.enabled = gmailSettingsPayload.outbound_enabled;
       gmailStatusPayload.gmail.outbound.ready = gmailSettingsPayload.outbound_enabled;
+      gmailStatusPayload.gmail.settings.outbound_enabled = gmailSettingsPayload.outbound_enabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "sync_cadence")) {
+      gmailStatusPayload.gmail.settings.sync_cadence = gmailSettingsPayload.sync_cadence;
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         gmail: gmailStatusPayload.gmail,
-        gmail_settings: {
-          inbound_enabled: gmailStatusPayload.gmail.inbound.enabled,
-          outbound_enabled: gmailStatusPayload.gmail.outbound.enabled,
-        },
+        gmail_settings: gmailStatusPayload.gmail.settings,
       }),
     });
   });
@@ -373,9 +381,15 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
   assert.equal(await page.locator("#adminGmailInboundToggle").getAttribute("aria-checked"), "true");
   assert.equal(await page.locator("#adminGmailOutboundToggle").getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator('[data-gmail-cadence="manual"]').getAttribute("aria-pressed"), "true");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Manual sync only.");
+  await page.locator('[data-gmail-cadence="30_minutes"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-gmail-cadence="30_minutes"]')?.getAttribute("aria-pressed") === "true");
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_cadence: "30_minutes" });
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Every 30 minutes.");
   await page.locator("#adminGmailInboundToggle").click();
   await page.waitForFunction(() => document.querySelector("#adminGmailInboundToggle")?.getAttribute("aria-checked") === "false");
-  assert.deepEqual(gmailSettingsPayload, { inbound_enabled: false });
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { inbound_enabled: false });
   assert.equal(await page.locator("#adminGmailSyncButton").isDisabled(), true);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
@@ -458,24 +472,11 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 
-  await page.evaluate(() => {
-    window.__repositoryUploadErrors = [];
-    window.addEventListener("error", (event) => {
-      window.__repositoryUploadErrors.push(event.message);
-    });
-    window.addEventListener("unhandledrejection", (event) => {
-      window.__repositoryUploadErrors.push(String(event.reason?.message || event.reason));
-    });
-    const input = document.querySelector("#repositoryFileInput");
-    Object.defineProperty(input, "files", { configurable: true, get: () => null });
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    delete input.files;
-  });
-  await page.waitForTimeout(50);
-  assert.deepEqual(await page.evaluate(() => window.__repositoryUploadErrors), []);
-
-  await page.locator("#repositoryFileInput").setInputFiles(docxPath);
-  await waitForText(page, "#repositoryImportStatus", "repository-matter-");
+  assert.equal(await page.locator("#repositoryFileInput").count(), 0);
+  assert.equal(await page.getByText("Import NDA", { exact: true }).count(), 0);
+  await createRepositoryMatter(page, docxPath);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
   assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "1");
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
@@ -704,8 +705,11 @@ async function testMatterRedlineDraftPersistence(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryView:not([hidden])");
-  await page.locator("#repositoryFileInput").setInputFiles(docxPath);
-  await waitForText(page, "#repositoryImportStatus", "draft-matter-");
+  await createRepositoryMatter(page, docxPath);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
 
   await page.getByRole("button", { name: "Open Review" }).click();
@@ -1187,10 +1191,12 @@ async function testSourceRedlineExportRegression(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryView:not([hidden])");
-  await page.locator("#repositoryFileInput").setInputFiles(sourceDocxPath);
-  await page.waitForSelector("#repositoryView:not([hidden])");
+  await createRepositoryMatter(page, sourceDocxPath);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
-  await waitForText(page, "#repositoryImportStatus", "Source Redline NDA");
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").filter({ hasText: "Source Redline NDA" }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
 
@@ -1349,6 +1355,31 @@ async function waitForRepositoryCount(page, column, expected) {
     ({ column, expected }) => document.querySelector(`[data-repository-count="${column}"]`)?.textContent.trim() === expected,
     { column, expected },
   );
+}
+
+async function createRepositoryMatter(page, docxPath, overrides = {}) {
+  const filename = path.basename(docxPath);
+  const payload = {
+    filename,
+    content_base64: fs.readFileSync(docxPath).toString("base64"),
+    source_type: "gmail_demo",
+    sender: "Manual upload",
+    subject: filename.replace(/\.[^.]*$/, ""),
+    received_at: "2026-05-31T12:00:00+00:00",
+    message_snippet: `Manual upload of ${filename}.`,
+    attachment_filename: filename,
+    ...overrides,
+  };
+  return page.evaluate(async (matterPayload) => {
+    const response = await fetch("/api/matters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(matterPayload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Matter could not be created");
+    return result.matter;
+  }, payload);
 }
 
 function escapeRegExp(value) {

@@ -44,9 +44,9 @@ class GmailIntegrationError(RuntimeError):
     pass
 
 
-def gmail_status() -> dict[str, dict[str, Any]]:
-    status: dict[str, dict[str, Any]] = {}
+def gmail_status() -> dict[str, Any]:
     settings = app_settings.gmail_settings()
+    status: dict[str, dict[str, Any]] = {"settings": settings}
     for role in ("inbound", "outbound"):
         enabled = bool(settings.get(f"{role}_enabled", True))
         role_status: dict[str, Any] = {

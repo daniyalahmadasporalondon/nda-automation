@@ -49,14 +49,12 @@ let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
   state,
-  repositoryFileInput: document.querySelector("#repositoryFileInput"),
   repositoryDemoResetButton: document.querySelector("#repositoryDemoResetButton"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
   repositoryImportStatus: document.querySelector("#repositoryImportStatus"),
   downloadBlob,
   downloadFilename,
-  fileToBase64,
   loadMatterIntoReview,
   redlineDownloadFilename,
   reviewErrorFromPayload,
@@ -72,6 +70,7 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailSyncButton: document.querySelector("#adminGmailSyncButton"),
   gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
   gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
+  gmailCadenceControl: document.querySelector("#adminGmailCadenceControl"),
   reviewErrorFromPayload,
   syncGmail: (options) => repositoryController.syncGmail(options),
 });

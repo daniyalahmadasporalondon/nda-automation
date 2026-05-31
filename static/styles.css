@@ -2101,6 +2101,45 @@ textarea::placeholder {
   opacity: 0.58;
 }
 
+.integration-cadence-control {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.integration-cadence-control button {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 800;
+  height: 34px;
+  min-width: 0;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.integration-cadence-control button.active,
+.integration-cadence-control button[aria-pressed="true"] {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.integration-cadence-control button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.integration-cadence-copy {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .integration-status {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -2388,6 +2427,7 @@ textarea::placeholder {
   }
 
   .integration-toggle-grid,
+  .integration-cadence-control,
   .integration-facts,
   .integration-facts.compact {
     grid-template-columns: 1fr;

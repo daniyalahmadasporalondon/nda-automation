@@ -571,24 +571,34 @@ class ServerTests(unittest.TestCase):
                 status, payload = self.request(
                     "POST",
                     "/api/gmail/settings",
-                    {"inbound_enabled": False, "outbound_enabled": True},
+                    {"inbound_enabled": False, "outbound_enabled": True, "sync_cadence": "30_minutes"},
                 )
                 invalid_status, invalid_payload = self.request(
                     "POST",
                     "/api/gmail/settings",
                     {"inbound_enabled": "off"},
                 )
+                invalid_cadence_status, invalid_cadence_payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"sync_cadence": "3_minutes"},
+                )
                 settings = app_settings.gmail_settings()
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["gmail_settings"]["inbound_enabled"], False)
         self.assertEqual(payload["gmail_settings"]["outbound_enabled"], True)
+        self.assertEqual(payload["gmail_settings"]["sync_cadence"], "30_minutes")
         self.assertEqual(payload["gmail"]["inbound"]["enabled"], False)
         self.assertEqual(payload["gmail"]["outbound"]["enabled"], True)
+        self.assertEqual(payload["gmail"]["settings"]["sync_cadence"], "30_minutes")
         self.assertEqual(settings["inbound_enabled"], False)
         self.assertEqual(settings["outbound_enabled"], True)
+        self.assertEqual(settings["sync_cadence"], "30_minutes")
         self.assertEqual(invalid_status, 400)
         self.assertEqual(invalid_payload["error"], "Gmail enabled settings must be true or false.")
+        self.assertEqual(invalid_cadence_status, 400)
+        self.assertEqual(invalid_cadence_payload["error"], "Unsupported Gmail sync cadence.")
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([

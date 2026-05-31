@@ -17,6 +17,15 @@ _SETTINGS_LOCK = threading.RLock()
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
     "outbound_enabled": True,
+    "sync_cadence": "manual",
+}
+GMAIL_SYNC_CADENCES = {
+    "manual": None,
+    "always_on": 60,
+    "10_minutes": 10 * 60,
+    "30_minutes": 30 * 60,
+    "1_hour": 60 * 60,
+    "2_hours": 2 * 60 * 60,
 }
 
 
@@ -24,22 +33,19 @@ class AppSettingsError(RuntimeError):
     pass
 
 
-def gmail_settings() -> dict[str, bool]:
+def gmail_settings() -> dict[str, Any]:
     settings = _load_settings()
     gmail = settings.get("gmail")
     if not isinstance(gmail, dict):
         gmail = {}
-    return {
-        "inbound_enabled": bool(gmail.get("inbound_enabled", DEFAULT_GMAIL_SETTINGS["inbound_enabled"])),
-        "outbound_enabled": bool(gmail.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
-    }
+    return gmail_settings_from_payload(gmail)
 
 
-def update_gmail_settings(updates: dict[str, bool]) -> dict[str, bool]:
+def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
     cleaned = {
         key: value
         for key, value in updates.items()
-        if key in DEFAULT_GMAIL_SETTINGS and isinstance(value, bool)
+        if _valid_gmail_setting(key, value)
     }
     if not cleaned:
         return gmail_settings()
@@ -59,11 +65,28 @@ def gmail_role_enabled(role: str) -> bool:
     return gmail_settings().get(key, True)
 
 
-def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, bool]:
+def gmail_sync_interval_seconds(cadence: object | None = None) -> int | None:
+    cadence_key = cadence if isinstance(cadence, str) else gmail_settings()["sync_cadence"]
+    return GMAIL_SYNC_CADENCES.get(cadence_key)
+
+
+def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sync_cadence = str(payload.get("sync_cadence") or DEFAULT_GMAIL_SETTINGS["sync_cadence"])
+    if sync_cadence not in GMAIL_SYNC_CADENCES:
+        sync_cadence = DEFAULT_GMAIL_SETTINGS["sync_cadence"]
     return {
         "inbound_enabled": bool(payload.get("inbound_enabled", DEFAULT_GMAIL_SETTINGS["inbound_enabled"])),
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
+        "sync_cadence": sync_cadence,
     }
+
+
+def _valid_gmail_setting(key: str, value: Any) -> bool:
+    if key in ("inbound_enabled", "outbound_enabled"):
+        return isinstance(value, bool)
+    if key == "sync_cadence":
+        return isinstance(value, str) and value in GMAIL_SYNC_CADENCES
+    return False
 
 
 def _load_settings() -> dict[str, Any]:

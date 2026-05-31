@@ -9,14 +9,12 @@ const RepositoryView = (() => {
   function createController({
     state,
     gmailSyncButton,
-    repositoryFileInput,
     repositoryDemoResetButton,
     gmailDemoMatterList,
     repositoryMatterPanel,
     repositoryImportStatus,
     downloadBlob,
     downloadFilename,
-    fileToBase64,
     loadMatterIntoReview,
     redlineDownloadFilename,
     reviewErrorFromPayload,
@@ -29,47 +27,6 @@ const RepositoryView = (() => {
 
     gmailSyncButton?.addEventListener("click", () => syncGmail({ button: gmailSyncButton }));
     repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
-
-    repositoryFileInput?.addEventListener("change", async (event) => {
-      const file = event.target?.files?.[0];
-      if (!file) return;
-      await importMatter(file);
-      repositoryFileInput.value = "";
-    });
-
-    async function importMatter(file) {
-      if (!isReviewableDocument(file.name)) {
-        setImportStatus("Upload a .docx Word document or text-based PDF");
-        return;
-      }
-
-      setImportStatus(`Importing ${file.name}`);
-      try {
-        const response = await fetch("/api/matters", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filename: file.name,
-            content_base64: await fileToBase64(file),
-            source_type: "gmail_demo",
-            sender: "Manual upload",
-            subject: documentTitleFromFilename(file.name),
-            received_at: new Date().toISOString(),
-            message_snippet: `Manual upload of ${file.name}.`,
-            attachment_filename: file.name,
-          }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Import could not run");
-        await loadMatters();
-        if (payload.matter?.id) {
-          await openMatter(payload.matter.id);
-        }
-        setImportStatus(`${payload.matter.document_title || file.name} imported`);
-      } catch (error) {
-        setImportStatus(error.message || "Import could not run");
-      }
-    }
 
     async function syncGmail({ button } = {}) {
       const control = button || gmailSyncButton;
@@ -553,7 +510,6 @@ const RepositoryView = (() => {
     }
 
     return {
-      importMatter,
       loadGmailStatus,
       loadMatters,
       markMatterRedlineReady,
@@ -639,11 +595,6 @@ const RepositoryView = (() => {
     return labels[reason] || "skipped";
   }
 
-  function isReviewableDocument(filename) {
-    const lowerFilename = String(filename || "").toLowerCase();
-    return lowerFilename.endsWith(".docx") || lowerFilename.endsWith(".pdf");
-  }
-
   function boardColumnLabel(boardColumn) {
     return BOARD_COLUMNS.find((column) => column.id === boardColumn)?.label || "Gmail Demo";
   }
@@ -654,10 +605,6 @@ const RepositoryView = (() => {
 
   function matterSender(matter) {
     return matter.sender || sourceTypeLabel(matter.source_type);
-  }
-
-  function documentTitleFromFilename(filename) {
-    return (filename.split(/[\\/]/).pop() || filename).replace(/\.[^.]*$/, "") || "Untitled NDA";
   }
 
   function formatMatterDate(value) {
