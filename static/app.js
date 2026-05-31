@@ -161,16 +161,8 @@ async function runReview(sourceInput, button) {
 }
 
 async function exportReviewDocx() {
-  const text = state.reviewSourceText.trim();
+  const text = studioNdaText.value.trim() || state.reviewSourceText.trim();
   if (!text) return;
-  if (state.reviewDirty) {
-    studioOverallTitle.textContent = "Review needed";
-    studioResultMark.textContent = "!";
-    studioResultMark.className = "check";
-    studioResultMeta.textContent = "Run Review NDA again before exporting.";
-    updateExportButtonState();
-    return;
-  }
 
   studioExportButton.disabled = true;
   studioExportButton.textContent = "Exporting";
@@ -351,7 +343,7 @@ function renderStudioEmpty() {
 
 function updateExportButtonState() {
   if (!studioExportButton) return;
-  studioExportButton.disabled = !state.reviewClauses.length || !state.reviewSourceText.trim() || state.reviewDirty;
+  studioExportButton.disabled = !state.reviewClauses.length || !(studioNdaText.value.trim() || state.reviewSourceText.trim());
 }
 
 function renderStudioResult(result) {
@@ -675,6 +667,7 @@ function syncReviewSourceFromParagraphs() {
     .map((paragraph) => String(paragraph.text || "").trim())
     .filter(Boolean)
     .join("\n\n");
+  state.reviewSourceText = text;
   setSourceText(text);
 }
 

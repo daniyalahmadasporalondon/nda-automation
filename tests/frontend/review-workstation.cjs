@@ -351,8 +351,7 @@ async function testManualViewerEditRedline(page) {
   });
   await assertRedGreenPixels(paragraph.locator(".paragraph-redline-preview"));
 
-  assert.equal(await page.locator("#studioExportButton").isDisabled(), true);
-  await assertTextContains(page.locator("#studioResultMeta"), "Run Review NDA again");
+  assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   await assertTextContains(page.locator("#studioFileMeta"), "Edited in viewer");
 
   await page.getByRole("button", { name: "Side by Side" }).click();
@@ -463,7 +462,15 @@ async function testExportFlow(page) {
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Mutual Non-Disclosure Agreement with edits");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
-  assert.equal(await exportButton.isDisabled(), true);
+  assert.equal(await exportButton.isEnabled(), true);
+
+  const [editedDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    exportButton.click(),
+  ]);
+  const editedDownloadedPath = await editedDownload.path();
+  assert.ok(editedDownloadedPath, "edited export download path should be available");
+  assert.match(readDocxDocumentXml(editedDownloadedPath), /Mutual Non-Disclosure Agreement with edits/);
 }
 
 async function assertRedlinePreview(paragraphLocator, { originalText, insertedText, editableCount }) {
@@ -568,6 +575,21 @@ print(json.dumps({"deletions": deletions, "insertions": insertions, "revisionPar
     throw new Error(`Could not read exported DOCX track changes: ${result.stderr || result.stdout}`);
   }
   return JSON.parse(result.stdout);
+}
+
+function readDocxDocumentXml(docxPath) {
+  const script = `
+import sys
+from zipfile import ZipFile
+
+with ZipFile(sys.argv[1]) as archive:
+    print(archive.read("word/document.xml").decode("utf-8"))
+`;
+  const result = spawnSync(PYTHON, ["-c", script, docxPath], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`Could not read exported DOCX document XML: ${result.stderr || result.stdout}`);
+  }
+  return result.stdout;
 }
 
 function wait(ms) {
