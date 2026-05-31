@@ -343,28 +343,10 @@ def inline_diff_vectors():
 
 
 def expand_inline_diff_vector(vector):
-    if "originalTokenBlock" in vector:
-        original = token_block_text(vector["originalTokenBlock"])
-    else:
-        original = vector["original"]
-    if "replacementTokenBlock" in vector:
-        replacement = token_block_text(vector["replacementTokenBlock"])
-    else:
-        replacement = vector["replacement"]
-
-    operations = []
-    for operation in vector.get("operations", []):
-        operations.append((operation["type"], operation["token"]))
-    for block in vector.get("operationBlocks", []):
-        operations.extend(
-            (block["type"], f'{block["prefix"]}{index}')
-            for index in range(block["count"])
-        )
+    original = vector["original"]
+    replacement = vector["replacement"]
+    operations = [(operation["type"], operation["token"]) for operation in vector["operations"]]
     return original, replacement, operations
-
-
-def token_block_text(block):
-    return " ".join(f'{block["prefix"]}{index}' for index in range(block["count"]))
 
 
 class DocxExportTests(unittest.TestCase):
@@ -372,15 +354,6 @@ class DocxExportTests(unittest.TestCase):
         for vector in inline_diff_vectors():
             with self.subTest(vector["name"]):
                 original, replacement, expected_operations = expand_inline_diff_vector(vector)
-                if "originalTokenBlock" in vector:
-                    self.assertEqual(len(original.split()), vector["originalTokenBlock"]["count"])
-                if "replacementTokenBlock" in vector:
-                    self.assertEqual(len(replacement.split()), vector["replacementTokenBlock"]["count"])
-                if "operationBlocks" in vector:
-                    self.assertEqual(
-                        len(expected_operations),
-                        sum(block["count"] for block in vector["operationBlocks"]),
-                    )
                 self.assertEqual(_diff_text_operations(original, replacement), expected_operations)
 
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):

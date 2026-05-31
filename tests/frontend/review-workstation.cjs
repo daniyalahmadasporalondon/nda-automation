@@ -166,13 +166,6 @@ async function testAccessibleControlState(page) {
 async function testInlineDiffAlgorithmEdges(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   const operationsByVector = await page.evaluate((vectors) => {
-    const tokenBlockText = (block) => Array.from({ length: block.count }, (_, index) => `${block.prefix}${index}`).join(" ");
-    const expectedOperations = (vector) => [
-      ...(vector.operations || []),
-      ...(vector.operationBlocks || []).flatMap((block) => (
-        Array.from({ length: block.count }, (_, index) => ({ type: block.type, token: `${block.prefix}${index}` }))
-      )),
-    ];
     const diffTextOperations = (original, replacement) => {
       const oldTokens = tokenizeInlineDiff(original);
       const newTokens = tokenizeInlineDiff(replacement);
@@ -187,31 +180,15 @@ async function testInlineDiffAlgorithmEdges(page) {
       return diffTokenOperations(oldTokens, newTokens);
     };
     return vectors.map((vector) => {
-      const original = vector.originalTokenBlock ? tokenBlockText(vector.originalTokenBlock) : vector.original;
-      const replacement = vector.replacementTokenBlock ? tokenBlockText(vector.replacementTokenBlock) : vector.replacement;
       return {
         name: vector.name,
-        actual: diffTextOperations(original, replacement),
-        expected: expectedOperations(vector),
-        expectedOperationCount: (vector.operationBlocks || []).reduce((total, block) => total + block.count, 0),
-        originalTokenBlockCount: vector.originalTokenBlock?.count || null,
-        originalTokenCount: tokenizeInlineDiff(original).length,
-        replacementTokenBlockCount: vector.replacementTokenBlock?.count || null,
-        replacementTokenCount: tokenizeInlineDiff(replacement).length,
+        actual: diffTextOperations(vector.original, vector.replacement),
+        expected: vector.operations,
       };
     });
   }, inlineDiffVectors);
 
   for (const vector of operationsByVector) {
-    if (vector.originalTokenBlockCount !== null) {
-      assert.equal(vector.originalTokenCount, vector.originalTokenBlockCount, `${vector.name} original token block count`);
-    }
-    if (vector.replacementTokenBlockCount !== null) {
-      assert.equal(vector.replacementTokenCount, vector.replacementTokenBlockCount, `${vector.name} replacement token block count`);
-    }
-    if (vector.expectedOperationCount) {
-      assert.equal(vector.expected.length, vector.expectedOperationCount, `${vector.name} operation block count`);
-    }
     assert.deepEqual(vector.actual, vector.expected, vector.name);
   }
 
