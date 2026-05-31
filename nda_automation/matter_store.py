@@ -123,6 +123,27 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, An
     return None
 
 
+def update_redline_draft(matter_id: str, redline_draft: dict[str, Any] | None) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        matters = _load_matters()
+        for index, matter in enumerate(matters):
+            if matter.get("id") != matter_id:
+                continue
+            updated_matter = {
+                **matter,
+                "updated_at": now,
+            }
+            if redline_draft is None:
+                updated_matter.pop("redline_draft", None)
+            else:
+                updated_matter["redline_draft"] = redline_draft
+            matters[index] = updated_matter
+            _save_matters(matters)
+            return updated_matter
+    return None
+
+
 def reset_demo_repository() -> int:
     with _locked_store():
         matters = _load_matters()

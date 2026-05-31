@@ -217,6 +217,7 @@ const RepositoryView = (() => {
           <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
           <strong>${escapeHtml(boardColumnLabel(matter.board_column))}</strong>
           <span>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</span>
+          <span>${escapeHtml(matter.redline_draft ? "Draft redline saved" : "No custom draft")}</span>
         </div>
         <section class="repository-detail-email">
           <dl>

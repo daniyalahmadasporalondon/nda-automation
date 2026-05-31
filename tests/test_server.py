@@ -813,6 +813,129 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 400)
         self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
 
+    def test_matter_redline_draft_save_and_reset_updates_public_matter(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        manual_redline = {
+            "id": "manual-p1",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+            "original_text": "This Agreement shall be governed by the laws of California.",
+            "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Draft NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                save_status, save_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/redline-draft",
+                    {
+                        "redline_draft": {
+                            "clause_decisions": {"governing_law": False},
+                            "template_selections": {"redline-governing_law-1": "england_and_wales"},
+                            "export_redline_edits": [],
+                            "manual_redline_edits": [manual_redline],
+                        },
+                    },
+                )
+                stored_after_save = matter_store.get_matter(matter_id)
+                reset_status, reset_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/redline-draft",
+                    {"redline_draft": None},
+                )
+                stored_after_reset = matter_store.get_matter(matter_id)
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(save_status, 200)
+        saved_draft = save_payload["matter"]["redline_draft"]
+        self.assertEqual(saved_draft["clause_decisions"], {"governing_law": False})
+        self.assertEqual(saved_draft["template_selections"], {"redline-governing_law-1": "england_and_wales"})
+        self.assertEqual(saved_draft["summary"]["included_redline_count"], 0)
+        self.assertEqual(saved_draft["summary"]["manual_redline_count"], 1)
+        self.assertIn("saved_at", saved_draft)
+        self.assertEqual(stored_after_save["redline_draft"]["manual_redline_edits"][0]["paragraph_id"], "p1")
+        self.assertEqual(reset_status, 200)
+        self.assertNotIn("redline_draft", reset_payload["matter"])
+        self.assertNotIn("redline_draft", stored_after_reset)
+
+    def test_matter_export_and_send_use_saved_redline_draft_without_payload_decisions(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        captured_redline_counts = []
+
+        def capture_redline_build(_source_bytes, review_result):
+            captured_redline_counts.append(len(review_result.get("redline_edits") or []))
+            return source_docx
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Saved Draft NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "sender": "legal@example.com",
+                    },
+                )
+                matter = create_payload["matter"]
+                self.assertGreater(len(matter["review_result"].get("redline_edits") or []), 0)
+                draft_status, _draft_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter['id']}/redline-draft",
+                    {
+                        "redline_draft": {
+                            "clause_decisions": {"governing_law": False, "non_circumvention": False},
+                            "template_selections": {},
+                            "export_redline_edits": [],
+                            "manual_redline_edits": [],
+                        },
+                    },
+                )
+                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                        with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                            "message_id": "msg_outbound",
+                            "outbound_account": "legal@aspora.com",
+                            "sent_at": "2026-05-31T12:00:00+00:00",
+                            "subject": "Re: Saved Draft NDA",
+                            "thread_id": "thread_outbound",
+                            "to": "legal@example.com",
+                        }):
+                            export_status, _export_payload = self.request(
+                                "POST",
+                                "/api/export-review-docx",
+                                {"matter_id": matter["id"]},
+                            )
+                            send_status, _send_payload = self.request(
+                                "POST",
+                                "/api/gmail/send-redline",
+                                {"matter_id": matter["id"], "confirm_send": True},
+                            )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(draft_status, 200)
+        self.assertEqual(export_status, 200)
+        self.assertEqual(send_status, 200)
+        self.assertEqual(captured_redline_counts, [0, 0])
+
     def test_repository_export_and_send_share_matter_redline_builder(self):
         matter_id = "matter_shared"
         matter = {

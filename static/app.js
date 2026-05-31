@@ -3,6 +3,8 @@ const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
+const studioSaveDraftButton = document.querySelector("#studioSaveDraftButton");
+const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButton");
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioSendButton = document.querySelector("#studioSendButton");
 const studioClearButton = document.querySelector("#studioClearButton");
@@ -12,6 +14,7 @@ const studioMatchSummary = document.querySelector("#studioMatchSummary");
 const studioOverallTitle = document.querySelector("#studioOverallTitle");
 const studioResultMark = document.querySelector("#studioResultMark");
 const studioResultMeta = document.querySelector("#studioResultMeta");
+const studioDraftMeta = document.querySelector("#studioDraftMeta");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
 const playbookList = document.querySelector("#playbookList");
@@ -33,6 +36,8 @@ const state = {
   clauseJumpIndexes: {},
   exportClauseDecisions: {},
   redlineTemplateSelections: {},
+  redlineDraft: null,
+  redlineDraftDirty: false,
   documentViewMode: VIEW_MODE_REDLINE,
 };
 let pendingReviewSendMatterId = null;

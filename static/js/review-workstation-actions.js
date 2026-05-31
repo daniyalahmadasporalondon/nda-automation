@@ -23,6 +23,8 @@ function resetReviewResults() {
   state.clauseJumpIndexes = {};
   state.exportClauseDecisions = {};
   state.redlineTemplateSelections = {};
+  state.redlineDraft = null;
+  state.redlineDraftDirty = false;
 }
 
 function setupReviewWorkstationActions() {
@@ -32,6 +34,14 @@ function setupReviewWorkstationActions() {
 
   studioReviewButton.addEventListener("click", async () => {
     await runReview(studioNdaText, studioReviewButton);
+  });
+
+  studioSaveDraftButton.addEventListener("click", async () => {
+    await saveReviewRedlineDraft();
+  });
+
+  studioDiscardDraftButton.addEventListener("click", async () => {
+    await resetReviewRedlineDraft();
   });
 
   studioExportButton.addEventListener("click", async () => {
@@ -104,6 +114,9 @@ async function exportReviewDocx() {
     }
 
     studioExportButton.textContent = "Exporting";
+    if (state.selectedMatter?.id && state.redlineDraftDirty) {
+      await saveReviewRedlineDraft({ quiet: true });
+    }
     const payload = {
       text,
       reviewed_text: text,
@@ -172,6 +185,9 @@ async function sendReviewRedlineEmail() {
   studioSendButton.disabled = true;
   studioSendButton.textContent = "Sending";
   try {
+    if (state.redlineDraftDirty) {
+      await saveReviewRedlineDraft({ quiet: true });
+    }
     const payload = {
       matter_id: state.selectedMatter.id,
       confirm_send: true,
@@ -208,6 +224,103 @@ function renderOperationError(error, fallbackMeta) {
     ? ` ${error.details.slice(0, 3).join(" ")}`
     : "";
   studioResultMeta.textContent = `${fallbackMeta}${details}`;
+}
+
+function markRedlineDraftDirty() {
+  if (!state.selectedMatter?.id || !state.reviewClauses.length) return;
+  state.redlineDraftDirty = true;
+  updateRedlineDraftControls();
+}
+
+function updateRedlineDraftControls() {
+  const canDraft = Boolean(state.selectedMatter?.id && state.reviewClauses.length);
+  if (studioSaveDraftButton) {
+    studioSaveDraftButton.disabled = !canDraft || !state.redlineDraftDirty;
+  }
+  if (studioDiscardDraftButton) {
+    studioDiscardDraftButton.disabled = !canDraft || !state.redlineDraft;
+  }
+  if (!studioDraftMeta) return;
+  if (!canDraft) {
+    studioDraftMeta.textContent = "No custom draft";
+  } else if (state.redlineDraftDirty) {
+    studioDraftMeta.textContent = "Unsaved redline draft changes";
+  } else if (state.redlineDraft) {
+    studioDraftMeta.textContent = "Draft redline saved";
+  } else {
+    studioDraftMeta.textContent = "No custom draft";
+  }
+}
+
+function currentRedlineDraftPayload() {
+  return {
+    clause_decisions: { ...state.exportClauseDecisions },
+    template_selections: { ...state.redlineTemplateSelections },
+    export_redline_edits: effectiveReviewRedlines(),
+    manual_redline_edits: manualExportRedlines(),
+  };
+}
+
+async function saveReviewRedlineDraft({ quiet = false } = {}) {
+  if (!state.selectedMatter?.id || !state.reviewClauses.length) return null;
+  if (studioSaveDraftButton && !quiet) {
+    studioSaveDraftButton.disabled = true;
+    studioSaveDraftButton.textContent = "Saving";
+  }
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(state.selectedMatter.id)}/redline-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redline_draft: currentRedlineDraftPayload() }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Draft could not save");
+    if (payload.matter?.id) {
+      state.selectedMatter = payload.matter;
+      state.redlineDraft = payload.matter.redline_draft || null;
+      state.redlineDraftDirty = false;
+      await repositoryController.openMatter(payload.matter.id);
+    }
+    updateRedlineDraftControls();
+    if (!quiet) setFileMeta("Draft redline saved");
+    return payload.matter || null;
+  } catch (error) {
+    if (!quiet) renderOperationError(error, "Draft could not save.");
+    throw error;
+  } finally {
+    if (studioSaveDraftButton) studioSaveDraftButton.textContent = "Save Draft";
+    updateRedlineDraftControls();
+  }
+}
+
+async function resetReviewRedlineDraft() {
+  if (!state.selectedMatter?.id) return null;
+  if (studioDiscardDraftButton) {
+    studioDiscardDraftButton.disabled = true;
+    studioDiscardDraftButton.textContent = "Resetting";
+  }
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(state.selectedMatter.id)}/redline-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redline_draft: null }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Draft could not reset");
+    if (payload.matter?.id) {
+      state.selectedMatter = payload.matter;
+      await repositoryController.openMatter(payload.matter.id);
+    }
+    resetCurrentRedlineDraftToDefaults();
+    setFileMeta("Draft redline reset");
+    return payload.matter || null;
+  } catch (error) {
+    renderOperationError(error, "Draft could not reset.");
+    return null;
+  } finally {
+    if (studioDiscardDraftButton) studioDiscardDraftButton.textContent = "Reset Draft";
+    updateRedlineDraftControls();
+  }
 }
 
 async function chooseExportSaveHandle(suggestedName, options = {}) {

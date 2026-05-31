@@ -109,10 +109,12 @@
           <footer class="studio-actionbar">
             <div class="studio-file-summary">
               <strong id="studioFileMeta" aria-live="polite">No file selected</strong>
-              <span>Editable review source</span>
+              <span id="studioDraftMeta" aria-live="polite">No custom draft</span>
             </div>
             <div class="actions">
               <button id="studioReviewButton" type="button">Review NDA</button>
+              <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
+              <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
               <button id="studioExportButton" class="secondary" type="button" disabled>Export DOCX</button>
               <button id="studioSendButton" class="secondary" type="button" disabled>Send Redline</button>
               <button id="studioClearButton" class="secondary" type="button">Clear</button>

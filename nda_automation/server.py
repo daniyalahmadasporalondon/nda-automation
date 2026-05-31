@@ -39,6 +39,7 @@ MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_dem
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
+MAX_REDLINE_DRAFT_ITEMS = 200
 _PLAYBOOK_LOCK = threading.RLock()
 
 
@@ -72,6 +73,63 @@ def _write_playbook_atomically(playbook: dict) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def _clean_redline_draft(draft: dict) -> dict:
+    manual_redlines = [
+        cleaned
+        for cleaned in (
+            export_service.clean_manual_export_redline(redline)
+            for redline in _clean_dict_list(draft.get("manual_redline_edits"))
+        )
+        if cleaned is not None
+    ]
+    cleaned = {
+        "clause_decisions": _clean_bool_map(draft.get("clause_decisions")),
+        "template_selections": _clean_text_map(draft.get("template_selections")),
+        "export_redline_edits": _clean_dict_list(draft.get("export_redline_edits")),
+        "manual_redline_edits": manual_redlines,
+        "saved_at": datetime.now(UTC).isoformat(),
+    }
+    cleaned["summary"] = {
+        "included_redline_count": len(cleaned["export_redline_edits"]),
+        "manual_redline_count": len(cleaned["manual_redline_edits"]),
+    }
+    return cleaned
+
+
+def _clean_bool_map(value: object) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned = {}
+    for key, item in list(value.items())[:MAX_REDLINE_DRAFT_ITEMS]:
+        key = str(key).strip()[:120]
+        if key:
+            cleaned[key] = bool(item)
+    return cleaned
+
+
+def _clean_text_map(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned = {}
+    for key, item in list(value.items())[:MAX_REDLINE_DRAFT_ITEMS]:
+        key = str(key).strip()[:120]
+        item = str(item).strip()[:240]
+        if key and item:
+            cleaned[key] = item
+    return cleaned
+
+
+def _clean_dict_list(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value[:MAX_REDLINE_DRAFT_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        cleaned.append(json.loads(json.dumps(item)))
+    return cleaned
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -149,6 +207,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 self._handle_matter_stage_update(path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
+                self._handle_matter_redline_draft_update(path)
                 return
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
@@ -321,6 +382,31 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         matter = matter_store.update_matter_stage(matter_id, board_column)
+        if matter is None:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        self._send_json({"matter": matter_view.public_matter(matter)})
+
+    def _handle_matter_redline_draft_update(self, path: str) -> None:
+        matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/redline-draft")).strip("/")
+        if not matter_id or "/" in matter_id:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        raw_draft = payload.get("redline_draft")
+        if raw_draft is None:
+            draft = None
+        elif isinstance(raw_draft, dict):
+            draft = _clean_redline_draft(raw_draft)
+        else:
+            self._send_json({"error": "Redline draft must be an object or null."}, status=400)
+            return
+
+        matter = matter_store.update_redline_draft(matter_id, draft)
         if matter is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return

@@ -24,6 +24,7 @@ class PublicMatter(TypedDict, total=False):
     message_snippet: str
     next_action: str
     recipient_email: str
+    redline_draft: dict[str, Any]
     received_at: str
     requirements_failed: int
     requirements_passed: int
@@ -54,6 +55,7 @@ PUBLIC_MATTER_FIELDS = {
     "last_outbound_to",
     "message_snippet",
     "next_action",
+    "redline_draft",
     "received_at",
     "requirements_failed",
     "requirements_passed",

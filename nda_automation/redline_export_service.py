@@ -78,6 +78,7 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
         source_filename = str(matter.get("source_filename") or "")
         if source_document_bytes is None:
             raise DocxExtractionError("Matter source document is missing from storage.")
+        _apply_saved_redline_draft(payload, matter)
         return deepcopy(review_result), source_document_bytes, source_filename
 
     filename = payload.get("filename", "")
@@ -98,6 +99,15 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
         return review_nda(extracted_text, paragraphs=extracted_paragraphs), document_bytes, filename
 
     return review_nda(fallback_text), None, ""
+
+
+def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:
+    draft = matter.get("redline_draft")
+    if not isinstance(draft, dict):
+        return
+    for field in ["export_redline_edits", "manual_redline_edits"]:
+        if field not in payload and field in draft:
+            payload[field] = draft[field]
 
 
 def _validate_export(report_bytes: bytes, *, require_styles: bool) -> None:

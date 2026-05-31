@@ -40,6 +40,7 @@ const tests = [
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
+  ["persists matter redline drafts", testMatterRedlineDraftPersistence],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
@@ -446,6 +447,59 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("button", { name: "Reset Demo" }).click();
   await waitForText(page, "#repositoryImportStatus", "Demo reset. Removed 1 matters.");
   await waitForRepositoryCount(page, "signed_closed", "0");
+
+  fs.rmSync(docxPath, { force: true });
+}
+
+async function testMatterRedlineDraftPersistence(page) {
+  const docxPath = path.join(os.tmpdir(), `draft-matter-${Date.now()}.docx`);
+  makeDocxFixture(docxPath, [
+    "NON-DISCLOSURE AGREEMENT (NDA)",
+    "This Agreement shall be governed by the laws of California.",
+    "The Recipient must not circumvent the Company.",
+  ]);
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector("#repositoryView:not([hidden])");
+  await page.locator("#repositoryFileInput").setInputFiles(docxPath);
+  await waitForText(page, "#repositoryImportStatus", "draft-matter-");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await assertTextContains(page.locator("#studioDraftMeta"), "No custom draft");
+  assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
+
+  await page.getByRole("button", { name: /Governing Law/ }).click();
+  await page.locator('[data-export-clause-id="governing_law"][data-export-decision="ignore"]').first().click();
+  await assertTextContains(page.locator("#studioDraftMeta"), "Unsaved redline draft changes");
+  assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), true);
+  await page.locator("#studioSaveDraftButton").click();
+  await waitForText(page, "#studioDraftMeta", "Draft redline saved");
+
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Draft redline saved");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Draft redline saved");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await waitForText(page, "#studioDraftMeta", "Draft redline saved");
+  const ignoredState = await page.locator('[data-export-clause-id="governing_law"][data-export-decision="ignore"]').first().evaluate((node) => ({
+    active: node.classList.contains("active"),
+    pressed: node.getAttribute("aria-pressed"),
+  }));
+  assert.deepEqual(ignoredState, { active: true, pressed: "true" });
+
+  await page.locator("#studioDiscardDraftButton").click();
+  await waitForText(page, "#studioDraftMeta", "No custom draft");
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "No custom draft");
 
   fs.rmSync(docxPath, { force: true });
 }

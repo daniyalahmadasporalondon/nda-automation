@@ -52,6 +52,7 @@ function syncViewerParagraphEdit(editable) {
   paragraph.text = editableParagraphText(editable);
   syncReviewSourceFromParagraphs();
   updateManualRedlinePreview(editable, paragraph);
+  markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
   studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
   updateExportButtonState();
@@ -324,8 +325,13 @@ function loadMatterIntoReview(matter) {
   setSourceText(matter.extracted_text || reviewResult.extracted_text || "");
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
-  setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`);
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
+  applyMatterRedlineDraft(matter.redline_draft);
+  setFileMeta(
+    matter.redline_draft
+      ? `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded - draft redline saved`
+      : `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`
+  );
   setActiveTab("review");
   requestAnimationFrame(resizeSourceEditors);
 }

@@ -10,6 +10,8 @@ function renderResult(result, reviewedText) {
   state.reviewRedlines = result.redline_edits || [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
+  state.redlineDraft = null;
+  state.redlineDraftDirty = false;
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
@@ -46,6 +48,7 @@ function updateExportButtonState() {
     pendingReviewSendMatterId = null;
     studioSendButton.textContent = "Send Redline";
   }
+  updateRedlineDraftControls();
 }
 
 function renderStudioResult(result) {
@@ -118,6 +121,68 @@ function defaultRedlineTemplateSelections(redlines) {
     if (selected?.id) selections[edit.id] = selected.id;
   });
   return selections;
+}
+
+function applyMatterRedlineDraft(draft) {
+  state.redlineDraft = draft && typeof draft === "object" ? draft : null;
+  state.redlineDraftDirty = false;
+  if (!state.redlineDraft) {
+    updateRedlineDraftControls();
+    return;
+  }
+  applyDraftClauseDecisions(state.redlineDraft.clause_decisions);
+  applyDraftTemplateSelections(state.redlineDraft.template_selections);
+  applyDraftManualRedlines(state.redlineDraft.manual_redline_edits);
+  renderStudioResult({ clauses: state.reviewClauses });
+  updateRedlineDraftControls();
+}
+
+function resetCurrentRedlineDraftToDefaults() {
+  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
+  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
+  state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
+    const original = state.reviewOriginalParagraphs.find((item) => item.id === paragraph.id);
+    return original ? { ...paragraph, text: original.text } : paragraph;
+  });
+  syncReviewSourceFromParagraphs();
+  state.redlineDraft = null;
+  state.redlineDraftDirty = false;
+  renderStudioResult({ clauses: state.reviewClauses });
+  updateRedlineDraftControls();
+}
+
+function applyDraftClauseDecisions(decisions) {
+  if (!decisions || typeof decisions !== "object") return;
+  Object.entries(decisions).forEach(([clauseId, included]) => {
+    if (state.reviewClauses.some((clause) => clause.id === clauseId)) {
+      state.exportClauseDecisions[clauseId] = Boolean(included);
+    }
+  });
+}
+
+function applyDraftTemplateSelections(selections) {
+  if (!selections || typeof selections !== "object") return;
+  const validRedlineIds = new Set(state.reviewRedlines.map((edit) => edit.id));
+  Object.entries(selections).forEach(([editId, optionId]) => {
+    if (validRedlineIds.has(editId) && optionId) {
+      state.redlineTemplateSelections[editId] = String(optionId);
+    }
+  });
+}
+
+function applyDraftManualRedlines(manualRedlines) {
+  if (!Array.isArray(manualRedlines) || !manualRedlines.length) return;
+  const redlineByParagraph = new Map();
+  manualRedlines.forEach((redline) => {
+    if (redline?.paragraph_id) redlineByParagraph.set(String(redline.paragraph_id), redline);
+  });
+  state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
+    const redline = redlineByParagraph.get(String(paragraph.id));
+    if (!redline) return paragraph;
+    const replacement = redline.action === REDLINE_DELETE_PARAGRAPH ? "" : String(redline.replacement_text || "");
+    return { ...paragraph, text: replacement };
+  });
+  syncReviewSourceFromParagraphs();
 }
 
 function clauseExportIncluded(clauseId) {
@@ -196,6 +261,7 @@ function bindExportDecisionControls(container) {
 function setClauseExportDecision(clauseId, included) {
   state.exportClauseDecisions[clauseId] = included;
   state.selectedReviewClauseId = clauseId;
+  markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
   if (included) {
     const clause = state.reviewClauses.find((item) => item.id === clauseId);
@@ -206,6 +272,7 @@ function setClauseExportDecision(clauseId, included) {
 
 function setRedlineTemplateSelection(editId, optionId) {
   state.redlineTemplateSelections[editId] = optionId;
+  markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
 }
 
