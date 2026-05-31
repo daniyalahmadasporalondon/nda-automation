@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+from nda_automation import checker as checker_module
 from nda_automation.checker import (
     ParagraphAlignmentError,
     PlaybookTemplateError,
@@ -24,6 +25,39 @@ class CheckerTests(unittest.TestCase):
         redlines = self.redlines_for_clause(result, clause_id)
         self.assertTrue(redlines, f"Expected a redline for {clause_id}")
         return redlines[0]
+
+    def test_redline_registry_mirrors_checker_registry(self):
+        self.assertEqual(
+            [clause_id for clause_id, _builder in checker_module.REDLINE_BUILDERS],
+            [clause_id for clause_id, _check in checker_module.CLAUSE_CHECKS],
+        )
+
+    def test_registry_validation_rejects_missing_redline_builder(self):
+        playbook = deepcopy(load_playbook())
+        playbook["clauses"].append({
+            "id": "new_clause",
+            "name": "New Clause",
+            "requirement": "New requirement.",
+            "type": "required",
+            "search_terms": ["new clause"],
+        })
+
+        def dummy_check(text, normalized, clause, paragraphs):
+            return {}
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with patch.object(checker_module, "CLAUSE_CHECKS", checker_module.CLAUSE_CHECKS + [("new_clause", dummy_check)]):
+                with self.assertRaisesRegex(RuntimeError, "missing redline builders for: new_clause"):
+                    checker_module._validate_check_registry()
+
+    def test_checker_has_no_default_policy_lists(self):
+        default_policy_lists = [
+            name
+            for name, value in vars(checker_module).items()
+            if name.startswith("DEFAULT_") and isinstance(value, (list, tuple, set))
+        ]
+
+        self.assertEqual(default_policy_lists, [])
 
     def test_pass_sample_meets_requirements(self):
         result = review_nda((ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8"))
@@ -49,6 +83,70 @@ class CheckerTests(unittest.TestCase):
         term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
+
+    def test_mutuality_terms_come_from_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["search_terms"] = ["reciprocal confidentiality"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("This Agreement creates reciprocal confidentiality obligations.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
+    def test_mutuality_accepts_separated_party_role_definitions(self):
+        result = review_nda(
+            """
+            The Disclosing Party means a party that discloses Confidential Information under this Agreement.
+
+            The Receiving Party means a party that receives Confidential Information under this Agreement.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
+
+    def test_mutuality_rejects_fixed_one_way_role_labels(self):
+        result = review_nda(
+            """
+            The Company is the Disclosing Party under this Agreement.
+
+            The Recipient is the Receiving Party under this Agreement.
+
+            The Receiving Party shall protect Confidential Information received from the Disclosing Party.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "not_present")
+        self.assertFalse(result_clause["passes"])
+
+    def test_mutuality_role_terms_come_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["role_terms"] = ["alpha role", "beta role"]
+        mutuality["role_reciprocity_terms"] = ["a side"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                The Alpha Role means a side that discloses Confidential Information.
+
+                The Beta Role means a side that receives Confidential Information.
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
+
+    def test_search_terms_are_checker_config_not_review_payload(self):
+        result = review_nda("This Agreement creates reciprocal confidentiality obligations.")
+
+        self.assertTrue(all("search_terms" not in clause for clause in result["clauses"]))
 
     def test_term_and_survival_picks_up_period_of_two_years(self):
         text = """
@@ -313,6 +411,28 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("financial, employee, and source code", result_clause["what_to_fix"])
         self.assertNotIn("business", result_clause["what_to_fix"])
 
+    def test_confidential_information_search_terms_define_broad_definition(self):
+        playbook = deepcopy(load_playbook())
+        confidential_information = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "confidential_information"
+        )
+        confidential_information["search_terms"] = [
+            "protected data",
+            "source repositories",
+            "roadmap",
+            "customer list",
+            "financial model",
+        ]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                "Protected Data means source repositories, roadmap, customer list, and financial model."
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
     def test_confidential_information_exclusion_terms_come_from_playbook(self):
         playbook = deepcopy(load_playbook())
         confidential_information = next(
@@ -334,6 +454,73 @@ class CheckerTests(unittest.TestCase):
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
         self.assertEqual(result_clause["status"], "check")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+
+    def test_confidential_information_exclusion_context_terms_come_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        confidential_information = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "confidential_information"
+        )
+        confidential_information["exclusion_context_terms"] = ["carves out"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                Confidential Information means any and all non-public business, financial, technical,
+                customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                by either party.
+
+                Confidential Information carves out residual knowledge.
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+
+    def test_independent_development_terms_come_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        confidential_information = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "confidential_information"
+        )
+        confidential_information["independent_development_terms"] = ["bench discovery"]
+        confidential_information["independent_development_qualification_terms"] = ["without model access"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                Confidential Information means any and all non-public business, financial, technical,
+                customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                by either party.
+
+                Confidential Information does not include bench discovery.
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+
+    def test_independent_development_qualification_terms_come_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        confidential_information = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "confidential_information"
+        )
+        confidential_information["independent_development_terms"] = ["bench discovery"]
+        confidential_information["independent_development_qualification_terms"] = ["without model access"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                Confidential Information means any and all non-public business, financial, technical,
+                customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                by either party.
+
+                Confidential Information does not include bench discovery created without model access.
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "match")
 
     def test_broad_confidentiality_exclusion_still_needs_review(self):
         result = review_nda(
@@ -493,6 +680,30 @@ class CheckerTests(unittest.TestCase):
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
         self.assertEqual(result_clause["status"], "check")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
+    def test_signature_markers_come_from_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        signatures = next(clause for clause in playbook["clauses"] if clause["id"] == "signatures")
+        signatures["search_terms"] = ["signed by:", "role:", "signed date:"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                For Party One Ltd
+                Signed By: __________________
+                Role: Director
+                Signed Date: 2026-05-30
+
+                For Party Two Ltd
+                Signed By: __________________
+                Role: CEO
+                Signed Date: 2026-05-30
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
 
     def test_missing_governing_law_creates_insert_redline_with_jurisdiction_options(self):
         result = review_nda("The parties will discuss a possible transaction.")

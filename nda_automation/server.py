@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
-from .docx_export import DOCX_MIME, build_review_report_docx
+from .docx_export import DOCX_MIME, DocxExportError, build_review_report_docx, build_source_redline_docx
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,12 +62,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_playbook_template_error()
 
     def _handle_text_review(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(raw_body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+        payload = self._read_json_payload()
+        if payload is None:
             return
 
         text = payload.get("text", "")
@@ -78,12 +74,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json(review_nda(text))
 
     def _handle_document_review(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(raw_body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+        payload = self._read_json_payload()
+        if payload is None:
             return
 
         filename = payload.get("filename", "")
@@ -127,12 +119,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json(result)
 
     def _handle_review_docx_export(self) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length)
-        try:
-            payload = json.loads(raw_body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+        payload = self._read_json_payload()
+        if payload is None:
             return
 
         text = payload.get("text", "")
@@ -163,7 +151,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             title = "NDA Review"
 
         try:
-            review_result = self._review_result_for_export(payload, export_text)
+            review_result, source_document_bytes, source_filename = self._review_result_for_export(payload, export_text)
         except DocxExtractionError as error:
             self._send_json({"error": str(error)}, status=400)
             return
@@ -171,14 +159,23 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
 
-        report_bytes = build_review_report_docx(review_result, title=title.strip())
+        if source_document_bytes is not None:
+            try:
+                report_bytes = build_source_redline_docx(source_document_bytes, review_result)
+            except DocxExportError as error:
+                self._send_json({"error": str(error)}, status=400)
+                return
+            download_filename = _redline_download_filename(source_filename)
+        else:
+            report_bytes = build_review_report_docx(review_result, title=title.strip())
+            download_filename = "nda-review-report.docx"
         self._send_download(
             report_bytes,
-            "nda-review-report.docx",
+            download_filename,
             DOCX_MIME,
         )
 
-    def _review_result_for_export(self, payload: dict, fallback_text: str) -> dict:
+    def _review_result_for_export(self, payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
         filename = payload.get("filename", "")
         content_base64 = payload.get("content_base64", "")
         if isinstance(filename, str) and filename.lower().endswith(".docx") and isinstance(content_base64, str) and content_base64:
@@ -192,9 +189,22 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
             extracted_paragraphs = extract_docx_paragraphs(document_bytes)
             extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-            return review_nda(extracted_text, paragraphs=extracted_paragraphs)
+            return review_nda(extracted_text, paragraphs=extracted_paragraphs), document_bytes, filename
 
-        return review_nda(fallback_text)
+        return review_nda(fallback_text), None, ""
+
+    def _read_json_payload(self) -> dict | None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json({"error": "Request body must be valid JSON."}, status=400)
+            return None
+        if not isinstance(payload, dict):
+            self._send_json({"error": "Request body must be a JSON object."}, status=400)
+            return None
+        return payload
 
     def _send_file(self, path: Path, content_type: str | None = None) -> None:
         if not path.is_file():
@@ -229,6 +239,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def _send_playbook_template_error(self) -> None:
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
+
+
+def _redline_download_filename(filename: str) -> str:
+    source_name = Path(filename).stem if filename else ""
+    safe_name = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in source_name)
+    safe_name = safe_name.strip("-_") or "nda"
+    return f"{safe_name}-redlined.docx"
 
 
 def main() -> None:

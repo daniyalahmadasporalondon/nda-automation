@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Dict, Iterable, List, Tuple
-from zipfile import ZIP_DEFLATED, ZipFile
+from typing import Dict, List, Tuple
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -14,13 +15,25 @@ from .redline_actions import (
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 INLINE_DIFF_CELL_LIMIT = 40000
 INLINE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]")
+
+ET.register_namespace("w", W_NS)
+ET.register_namespace("r", R_NS)
 
 ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
+
+
+class DocxExportError(ValueError):
+    """Raised when a DOCX cannot be patched into a redlined export."""
 
 
 def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Review") -> bytes:
@@ -62,6 +75,46 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
             archive.writestr("word/settings.xml", _settings_xml())
             archive.writestr("word/_rels/document.xml.rels", _document_rels_xml())
         return output.getvalue()
+
+
+def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -> bytes:
+    try:
+        with ZipFile(BytesIO(source_docx), "r") as source_archive:
+            source_names = set(source_archive.namelist())
+            document_root = ET.fromstring(source_archive.read("word/document.xml"))
+            _apply_redline_edits_to_source_document(document_root, review_result.get("redline_edits", []))
+
+            overrides: Dict[str, bytes] = {
+                "word/document.xml": _xml_bytes(document_root),
+                "word/settings.xml": _settings_xml_with_track_revisions(
+                    source_archive.read("word/settings.xml") if "word/settings.xml" in source_names else None
+                ),
+                "word/_rels/document.xml.rels": _document_rels_xml_with_settings(
+                    source_archive.read("word/_rels/document.xml.rels")
+                    if "word/_rels/document.xml.rels" in source_names
+                    else None
+                ),
+                "[Content_Types].xml": _content_types_xml_with_settings(
+                    source_archive.read("[Content_Types].xml") if "[Content_Types].xml" in source_names else None
+                ),
+            }
+
+            with BytesIO() as output:
+                with ZipFile(output, "w", ZIP_DEFLATED) as redlined_archive:
+                    written = set()
+                    for item in source_archive.infolist():
+                        if item.filename in overrides:
+                            data = overrides.pop(item.filename)
+                        else:
+                            data = source_archive.read(item.filename)
+                        redlined_archive.writestr(item, data)
+                        written.add(item.filename)
+                    for name, data in overrides.items():
+                        if name not in written:
+                            redlined_archive.writestr(name, data)
+                return output.getvalue()
+    except (BadZipFile, KeyError, ET.ParseError) as exc:
+        raise DocxExportError("The uploaded Word document could not be redlined.") from exc
 
 
 def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
@@ -187,6 +240,149 @@ def _redlines_by_paragraph(redlines: object) -> Dict[str, List[RedlineEdit]]:
     return grouped
 
 
+def _redlines_by_source_index(redlines: object) -> Dict[int, List[RedlineEdit]]:
+    grouped: Dict[int, List[RedlineEdit]] = {}
+    if not isinstance(redlines, list):
+        return grouped
+
+    for redline in redlines:
+        if not isinstance(redline, dict):
+            continue
+        source_index = redline.get("source_index", redline.get("paragraph_index"))
+        try:
+            source_index_int = int(source_index)
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(source_index_int, []).append(redline)
+    return grouped
+
+
+def _apply_redline_edits_to_source_document(document_root: ET.Element, redlines: object) -> None:
+    redlines_by_source_index = _redlines_by_source_index(redlines)
+    if not redlines_by_source_index:
+        return
+
+    revision_id = _next_revision_id(document_root)
+    for source_index, parent, paragraph in reversed(_indexed_source_paragraphs(document_root)):
+        edits = redlines_by_source_index.get(source_index, [])
+        if not edits:
+            continue
+
+        siblings = list(parent)
+        try:
+            paragraph_position = siblings.index(paragraph)
+        except ValueError:
+            continue
+
+        primary_edit = next((edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH), None)
+        if primary_edit and primary_edit.get("action") == REDLINE_REPLACE_PARAGRAPH:
+            replacement_paragraph, revision_id = _source_tracked_replace_paragraph(
+                paragraph,
+                str(primary_edit.get("original_text") or _paragraph_text(paragraph)),
+                str(primary_edit.get("replacement_text") or ""),
+                revision_id,
+            )
+            parent[paragraph_position] = replacement_paragraph
+        elif primary_edit and primary_edit.get("action") == REDLINE_DELETE_PARAGRAPH:
+            parent[paragraph_position] = _source_tracked_delete_paragraph(
+                paragraph,
+                str(primary_edit.get("original_text") or _paragraph_text(paragraph)),
+                revision_id,
+            )
+            revision_id += 1
+
+        insert_position = paragraph_position + 1
+        for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
+            insert_text = str(insertion.get("insert_text") or insertion.get("replacement_text") or "")
+            for inserted_paragraph in _source_tracked_insert_paragraphs(insert_text, revision_id):
+                parent.insert(insert_position, inserted_paragraph)
+                insert_position += 1
+                revision_id += 1
+
+
+def _indexed_source_paragraphs(root: ET.Element) -> List[Tuple[int, ET.Element, ET.Element]]:
+    paragraphs: List[Tuple[int, ET.Element, ET.Element]] = []
+    source_index = 0
+
+    def visit(parent: ET.Element) -> None:
+        nonlocal source_index
+        for child in list(parent):
+            if child.tag == _w_tag("p"):
+                source_index += 1
+                paragraphs.append((source_index, parent, child))
+            visit(child)
+
+    visit(root)
+    return paragraphs
+
+
+def _source_tracked_replace_paragraph(
+    source_paragraph: ET.Element,
+    original: str,
+    replacement: str,
+    first_revision_id: int,
+) -> Tuple[ET.Element, int]:
+    tracked_paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, first_revision_id)
+    return _merge_source_paragraph_properties(source_paragraph, _word_paragraph_from_xml(tracked_paragraph_xml)), next_revision_id
+
+
+def _source_tracked_delete_paragraph(source_paragraph: ET.Element, text: str, revision_id: int) -> ET.Element:
+    return _merge_source_paragraph_properties(
+        source_paragraph,
+        _word_paragraph_from_xml(_tracked_delete_paragraph(text, revision_id)),
+    )
+
+
+def _source_tracked_insert_paragraphs(text: str, first_revision_id: int) -> List[ET.Element]:
+    return [
+        _word_paragraph_from_xml(paragraph_xml)
+        for paragraph_xml in _tracked_insert_paragraphs(text, first_revision_id)
+    ]
+
+
+def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_paragraph: ET.Element) -> ET.Element:
+    merged = ET.Element(source_paragraph.tag, source_paragraph.attrib)
+    source_properties = source_paragraph.find(_w_tag("pPr"))
+    tracked_properties = tracked_paragraph.find(_w_tag("pPr"))
+    merged_properties = _clone_element(source_properties) if source_properties is not None else None
+
+    if tracked_properties is not None:
+        tracked_run_properties = tracked_properties.find(_w_tag("rPr"))
+        if tracked_run_properties is not None:
+            if merged_properties is None:
+                merged_properties = ET.Element(_w_tag("pPr"))
+            merged_run_properties = merged_properties.find(_w_tag("rPr"))
+            if merged_run_properties is None:
+                merged_properties.append(_clone_element(tracked_run_properties))
+            else:
+                for child in list(tracked_run_properties):
+                    merged_run_properties.append(_clone_element(child))
+
+    if merged_properties is not None:
+        merged.append(merged_properties)
+    for child in list(tracked_paragraph):
+        if child.tag != _w_tag("pPr"):
+            merged.append(_clone_element(child))
+    return merged
+
+
+def _word_paragraph_from_xml(paragraph_xml: str) -> ET.Element:
+    wrapper = ET.fromstring(f'<root xmlns:w="{W_NS}">{paragraph_xml}</root>')
+    return wrapper[0]
+
+
+def _paragraph_text(paragraph: ET.Element) -> str:
+    parts = []
+    for node in paragraph.iter():
+        if node.tag == _w_tag("t") and node.text:
+            parts.append(node.text)
+        elif node.tag == _w_tag("tab"):
+            parts.append("\t")
+        elif node.tag in {_w_tag("br"), _w_tag("cr")}:
+            parts.append("\n")
+    return "".join(parts).strip()
+
+
 def _label_value(label: str, value: object) -> str:
     text = str(value or "")
     return _paragraph(label, bold=True) + _paragraph(text or "None.")
@@ -208,11 +404,8 @@ def _run(text: str, bold: bool = False) -> str:
 
 
 def _tracked_delete_paragraph(text: str, revision_id: int) -> str:
-    return f"<w:p>{_tracked_delete(text, revision_id)}</w:p>"
-
-
-def _tracked_insert_paragraph(text: str, revision_id: int) -> str:
-    return f"<w:p>{_tracked_insert(text, revision_id)}</w:p>"
+    revision_attrs = _revision_attrs(revision_id)
+    return f"<w:p>{_paragraph_mark_revision('del', revision_attrs)}{_tracked_delete_with_attrs(text, revision_attrs)}</w:p>"
 
 
 def _tracked_replace_paragraph(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
@@ -267,18 +460,34 @@ def _tracked_insert_paragraphs(text: str, first_revision_id: int) -> List[str]:
     blocks = [block for block in str(text).split("\n\n") if block.strip()]
     if not blocks:
         blocks = [str(text)]
-    return [
-        _tracked_insert_paragraph(block, first_revision_id + index)
-        for index, block in enumerate(blocks)
-    ]
+    paragraphs: List[str] = []
+    for index, block in enumerate(blocks):
+        revision_attrs = _revision_attrs(first_revision_id + index)
+        paragraphs.append(
+            f"<w:p>{_paragraph_mark_revision('ins', revision_attrs)}"
+            f"{_tracked_insert_with_attrs(block, revision_attrs)}</w:p>"
+        )
+    return paragraphs
 
 
 def _tracked_delete(text: str, revision_id: int) -> str:
-    return f'<w:del {_revision_attrs(revision_id)}>{_deleted_run(text)}</w:del>'
+    return _tracked_delete_with_attrs(text, _revision_attrs(revision_id))
 
 
 def _tracked_insert(text: str, revision_id: int) -> str:
-    return f'<w:ins {_revision_attrs(revision_id)}>{_run(text)}</w:ins>'
+    return _tracked_insert_with_attrs(text, _revision_attrs(revision_id))
+
+
+def _tracked_delete_with_attrs(text: str, revision_attrs: str) -> str:
+    return f'<w:del {revision_attrs}>{_deleted_run(text)}</w:del>'
+
+
+def _tracked_insert_with_attrs(text: str, revision_attrs: str) -> str:
+    return f'<w:ins {revision_attrs}>{_run(text)}</w:ins>'
+
+
+def _paragraph_mark_revision(kind: str, revision_attrs: str) -> str:
+    return f"<w:pPr><w:rPr><w:{kind} {revision_attrs}/></w:rPr></w:pPr>"
 
 
 def _deleted_run(text: str) -> str:
@@ -463,7 +672,84 @@ def _package_rels_xml() -> str:
 
 def _document_rels_xml() -> str:
     return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+</Relationships>"""
+
+
+def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
+    if settings_xml:
+        settings_root = ET.fromstring(settings_xml)
+    else:
+        settings_root = ET.Element(_w_tag("settings"))
+
+    revision_view = settings_root.find(_w_tag("revisionView"))
+    if revision_view is None:
+        settings_root.insert(0, ET.Element(_w_tag("revisionView"), {
+            _w_tag("markup"): "1",
+            _w_tag("comments"): "1",
+            _w_tag("insDel"): "1",
+            _w_tag("formatting"): "1",
+            _w_tag("inkAnnotations"): "1",
+        }))
+
+    track_revisions = settings_root.find(_w_tag("trackRevisions"))
+    if track_revisions is None:
+        settings_root.insert(0, ET.Element(_w_tag("trackRevisions")))
+    else:
+        track_revisions.attrib.pop(_w_tag("val"), None)
+        track_revisions.attrib.pop("val", None)
+    return _xml_bytes(settings_root)
+
+
+def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
+    if relationships_xml:
+        relationships_root = ET.fromstring(relationships_xml)
+    else:
+        relationships_root = ET.Element(_rel_tag("Relationships"))
+
+    has_settings = any(
+        relationship.attrib.get("Type") == SETTINGS_RELATIONSHIP_TYPE
+        for relationship in relationships_root.findall(_rel_tag("Relationship"))
+    )
+    if not has_settings:
+        ET.SubElement(relationships_root, _rel_tag("Relationship"), {
+            "Id": _next_relationship_id(relationships_root),
+            "Type": SETTINGS_RELATIONSHIP_TYPE,
+            "Target": "settings.xml",
+        })
+    return _xml_bytes(relationships_root)
+
+
+def _content_types_xml_with_settings(content_types_xml: bytes | None) -> bytes:
+    if content_types_xml:
+        content_types_root = ET.fromstring(content_types_xml)
+    else:
+        content_types_root = ET.Element(_content_type_tag("Types"))
+        ET.SubElement(content_types_root, _content_type_tag("Default"), {
+            "Extension": "rels",
+            "ContentType": "application/vnd.openxmlformats-package.relationships+xml",
+        })
+        ET.SubElement(content_types_root, _content_type_tag("Default"), {
+            "Extension": "xml",
+            "ContentType": "application/xml",
+        })
+        ET.SubElement(content_types_root, _content_type_tag("Override"), {
+            "PartName": "/word/document.xml",
+            "ContentType": f"{DOCX_MIME}.main+xml",
+        })
+
+    has_settings = any(
+        override.attrib.get("PartName") == "/word/settings.xml"
+        for override in content_types_root.findall(_content_type_tag("Override"))
+    )
+    if not has_settings:
+        ET.SubElement(content_types_root, _content_type_tag("Override"), {
+            "PartName": "/word/settings.xml",
+            "ContentType": SETTINGS_CONTENT_TYPE,
+        })
+    return _xml_bytes(content_types_root)
 
 
 def _core_properties_xml(title: str) -> str:
@@ -502,3 +788,46 @@ def _escape_xml(value: str) -> str:
 
 def _escape_attr(value: str) -> str:
     return _escape_xml(value)
+
+
+def _w_tag(tag: str) -> str:
+    return f"{{{W_NS}}}{tag}"
+
+
+def _rel_tag(tag: str) -> str:
+    return f"{{{REL_NS}}}{tag}"
+
+
+def _content_type_tag(tag: str) -> str:
+    return f"{{{CONTENT_TYPES_NS}}}{tag}"
+
+
+def _xml_bytes(root: ET.Element) -> bytes:
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _clone_element(element: ET.Element) -> ET.Element:
+    return ET.fromstring(ET.tostring(element, encoding="utf-8"))
+
+
+def _next_revision_id(root: ET.Element) -> int:
+    revision_ids = []
+    for element in root.iter():
+        value = element.attrib.get(_w_tag("id"))
+        if value is None:
+            continue
+        try:
+            revision_ids.append(int(value))
+        except ValueError:
+            continue
+    return max(revision_ids, default=0) + 1
+
+
+def _next_relationship_id(relationships_root: ET.Element) -> str:
+    relationship_numbers = []
+    for relationship in relationships_root.findall(_rel_tag("Relationship")):
+        relationship_id = relationship.attrib.get("Id", "")
+        match = re.fullmatch(r"rId(\d+)", relationship_id)
+        if match:
+            relationship_numbers.append(int(match.group(1)))
+    return f"rId{max(relationship_numbers, default=0) + 1}"

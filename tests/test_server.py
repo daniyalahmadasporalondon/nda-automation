@@ -81,6 +81,17 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Request body must be valid JSON.")
 
+    def test_text_review_rejects_non_object_json(self):
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            "[]",
+            {"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Request body must be a JSON object.")
+
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})
 
@@ -242,23 +253,23 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_review_docx_export_preserves_word_source_index(self):
-        extracted_paragraphs = [
-            {"source_index": 8, "text": "Intro paragraph."},
-            {"source_index": 12, "text": "This Agreement shall be governed by the laws of California."},
-        ]
-        with patch.object(server_module, "extract_docx_paragraphs", return_value=extracted_paragraphs):
-            status, payload, _headers = self.request_with_headers(
-                "POST",
-                "/api/export-review-docx",
-                {
-                    "text": "Stale browser text should not drive DOCX export.",
-                    "title": "Uploaded NDA",
-                    "filename": "uploaded.docx",
-                    "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
-                },
-            )
+        source_docx = make_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        status, payload, headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "text": "Stale browser text should not drive DOCX export.",
+                "title": "Uploaded NDA",
+                "filename": "uploaded.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
 
         self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="uploaded-redlined.docx"')
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
@@ -267,7 +278,8 @@ class ServerTests(unittest.TestCase):
             "".join(node.text or "" for node in deletion.findall(".//w:delText", W_NS))
             for deletion in document_root.findall(".//w:del", W_NS)
         ]
-        self.assertIn("source paragraph 12", document_xml)
+        self.assertNotIn("NDA Redline", document_xml)
+        self.assertNotIn("source paragraph", document_xml)
         self.assertTrue(any("California" in text for text in deletion_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
         self.assertNotIn("Stale browser text should not drive DOCX export.", document_xml)
@@ -369,6 +381,30 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 404)
         self.assertEqual(payload["error"], "Not found")
+
+
+def make_docx(paragraphs):
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in paragraphs
+    )
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w") as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def escape_xml(value):
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 if __name__ == "__main__":

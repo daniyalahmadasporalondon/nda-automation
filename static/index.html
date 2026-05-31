@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=47">
+    <link rel="stylesheet" href="/static/styles.css?v=48">
   </head>
   <body>
     <div class="app-shell">
@@ -14,9 +14,9 @@
             <img class="brand-logo" src="/static/assets/aspora-logo.png" alt="Aspora">
             <span>Clause Studio</span>
           </div>
-          <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button active" type="button" data-tab="review">Review</button>
-            <button class="tab-button" type="button" data-tab="clauses">Clauses</button>
+          <nav class="tabbar" aria-label="Workspace" role="tablist">
+            <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">Review</button>
+            <button class="tab-button" id="clausesTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="clauses">Clauses</button>
           </nav>
           <div class="topbar-actions">
             <label class="file-button top-upload">
@@ -26,7 +26,7 @@
           </div>
         </header>
 
-        <main class="studio-review view active" id="reviewView" data-view="review">
+        <main class="studio-review view active" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review">
           <header class="studio-matter-card">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
@@ -57,11 +57,11 @@
 
             <section class="studio-document">
               <div class="studio-doc-toolbar">
-                <div class="studio-view-switch">
+                <div class="studio-view-switch" role="group" aria-label="Document view">
                   <span class="vs-label">Views:</span>
-                  <button type="button" class="vs-btn active" data-view-mode="redline">Redline</button>
-                  <button type="button" class="vs-btn" data-view-mode="clean">Clean</button>
-                  <button type="button" class="vs-btn" data-view-mode="sidebyside">Side by Side</button>
+                  <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
+                  <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
+                  <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
                 </div>
                 <div class="studio-zoom">100%</div>
               </div>
@@ -82,7 +82,7 @@
                   <strong id="studioResultMark">-</strong>
                   <div>
                     <h3 id="studioOverallTitle">Awaiting review</h3>
-                    <p id="studioResultMeta">No hard-clause review has run yet.</p>
+                    <p id="studioResultMeta" aria-live="polite">No hard-clause review has run yet.</p>
                   </div>
                 </div>
                 <div class="studio-match-line">
@@ -103,7 +103,7 @@
 
           <footer class="studio-actionbar">
             <div class="studio-file-summary">
-              <strong id="studioFileMeta">No file selected</strong>
+              <strong id="studioFileMeta" aria-live="polite">No file selected</strong>
               <span>Editable review source</span>
             </div>
             <div class="actions">
@@ -114,7 +114,7 @@
           </footer>
         </main>
 
-        <main class="playbook-view view" id="clausesView" data-view="clauses">
+        <main class="playbook-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>
           <section class="playbook-shell">
             <aside class="clause-rail">
               <div class="rail-heading">
@@ -130,6 +130,11 @@
       </section>
     </div>
 
-    <script src="/static/app.js?v=47"></script>
+    <script src="/static/js/config.js?v=48"></script>
+    <script src="/static/js/html-utils.js?v=48"></script>
+    <script src="/static/js/clause-status.js?v=48"></script>
+    <script src="/static/js/inline-diff.js?v=48"></script>
+    <script src="/static/js/redline-rendering.js?v=48"></script>
+    <script src="/static/app.js?v=48"></script>
   </body>
 </html>

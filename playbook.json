@@ -11,8 +11,25 @@
         "each party",
         "both parties",
         "mutual",
+        "reciprocal",
+        "disclosing party and receiving party",
+        "receiving party and disclosing party"
+      ],
+      "role_terms": [
         "disclosing party",
         "receiving party"
+      ],
+      "role_reciprocity_terms": [
+        "a party",
+        "any party",
+        "either party"
+      ],
+      "one_way_terms": [
+        "one-way",
+        "one way",
+        "unilateral",
+        "only the receiving party",
+        "recipient only"
       ],
       "acceptable_language": "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party."
     },
@@ -46,6 +63,25 @@
         "residuals",
         "reverse engineer",
         "reverse engineering"
+      ],
+      "independent_development_terms": [
+        "independently developed"
+      ],
+      "independent_development_qualification_terms": [
+        "without use",
+        "without using",
+        "without access",
+        "without reference"
+      ],
+      "exclusion_context_terms": [
+        "exclusion",
+        "exclusions",
+        "does not include",
+        "shall not include",
+        "not include",
+        "is not confidential information",
+        "excluded from confidential information",
+        "excludes"
       ],
       "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party."
     },
@@ -98,6 +134,11 @@
         "expiration",
         "effective date",
         "years"
+      ],
+      "indefinite_terms": [
+        "indefinitely",
+        "perpetual confidentiality",
+        "for so long as the information remains confidential"
       ],
       "acceptable_language": "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period."
     },

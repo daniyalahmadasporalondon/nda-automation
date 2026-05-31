@@ -20,6 +20,7 @@ const redlineNda = [
 ].join("\n\n");
 
 const tests = [
+  ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["covers inline diff algorithm edge cases", testInlineDiffAlgorithmEdges],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
@@ -130,6 +131,28 @@ async function runReview(page, text) {
   await page.waitForSelector(".studio-issue-card");
 }
 
+async function testAccessibleControlState(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  assert.equal(await page.locator("#studioResultMeta").getAttribute("aria-live"), "polite");
+  assert.equal(await page.locator("#studioFileMeta").getAttribute("aria-live"), "polite");
+  assert.equal(await page.locator("#reviewTab").getAttribute("role"), "tab");
+  assert.equal(await page.locator("#clausesTab").getAttribute("role"), "tab");
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
+
+  await page.getByRole("tab", { name: "Clauses" }).click();
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.getByRole("button", { name: "Clean" }).click();
+  assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "false");
+  assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
+}
+
 async function testInlineDiffAlgorithmEdges(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   const cases = await page.evaluate(() => {
@@ -229,6 +252,43 @@ async function testBackendRedlineModes(page) {
 
 async function testManualViewerEditRedline(page) {
   await runReview(page, passNda);
+  const pasteResult = await page.evaluate(() => {
+    const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+    editable.textContent = "Alpha";
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const originalExecCommand = document.execCommand;
+    let execCommandCalled = false;
+    let defaultPrevented = false;
+    document.execCommand = () => {
+      execCommandCalled = true;
+      return false;
+    };
+    pastePlainText({
+      clipboardData: { getData: (type) => type === "text/plain" ? " Beta" : "" },
+      preventDefault: () => {
+        defaultPrevented = true;
+      },
+    });
+    document.execCommand = originalExecCommand;
+
+    return {
+      defaultPrevented,
+      execCommandCalled,
+      text: editable.textContent,
+    };
+  });
+  assert.deepEqual(pasteResult, {
+    defaultPrevented: true,
+    execCommandCalled: false,
+    text: "Alpha Beta",
+  });
+
   const editedTitle = "Mutual Non-Disclosure AGREEMdasdasdsa";
   await page.locator('[data-editable-paragraph-id="p1"]').fill(editedTitle);
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');

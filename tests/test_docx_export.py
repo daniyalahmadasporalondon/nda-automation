@@ -1,12 +1,21 @@
 from io import BytesIO
 import unittest
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
 from nda_automation.checker import review_nda
-from nda_automation.docx_export import _diff_text_operations, _tracked_replace_paragraph, build_review_report_docx
+from nda_automation.docx_export import (
+    _diff_text_operations,
+    _tracked_replace_paragraph,
+    build_review_report_docx,
+    build_source_redline_docx,
+)
+from nda_automation.docx_text import extract_docx_paragraphs
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+STYLE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 
 
 def docx_xml_roots(docx_bytes):
@@ -15,6 +24,27 @@ def docx_xml_roots(docx_bytes):
         settings_xml = archive.read("word/settings.xml").decode("utf-8")
         document_xml = archive.read("word/document.xml").decode("utf-8")
     return ET.fromstring(settings_xml), ET.fromstring(document_xml), document_xml
+
+
+def docx_document_relationship_targets(docx_bytes):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        relationships_xml = archive.read("word/_rels/document.xml.rels").decode("utf-8")
+    relationships_root = ET.fromstring(relationships_xml)
+    return {
+        relationship.attrib["Type"]: relationship.attrib["Target"]
+        for relationship in relationships_root.findall(".//rel:Relationship", REL_NS)
+    }
+
+
+def docx_content_type_overrides(docx_bytes):
+    content_type_ns = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        content_types_xml = archive.read("[Content_Types].xml").decode("utf-8")
+    content_types_root = ET.fromstring(content_types_xml)
+    return {
+        override.attrib["PartName"]: override.attrib["ContentType"]
+        for override in content_types_root.findall(".//ct:Override", content_type_ns)
+    }
 
 
 def tracked_deleted_text(document_root):
@@ -31,6 +61,10 @@ def tracked_inserted_text(document_root):
     ]
 
 
+def paragraph_mark_revisions(document_root, kind):
+    return document_root.findall(f".//w:pPr/w:rPr/w:{kind}", W_NS)
+
+
 def revision_text_for_state(node, accepted):
     tag = node.tag.rsplit("}", 1)[-1]
     if tag == "del":
@@ -42,6 +76,46 @@ def revision_text_for_state(node, accepted):
     if tag == "br":
         return "\n"
     return "".join(revision_text_for_state(child, accepted) for child in list(node))
+
+
+def make_source_docx(paragraphs):
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in paragraphs
+    )
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>"""
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+    package_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+    document_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types_xml)
+            archive.writestr("_rels/.rels", package_rels_xml)
+            archive.writestr("word/document.xml", document_xml)
+            archive.writestr("word/_rels/document.xml.rels", document_rels_xml)
+            archive.writestr("customXml/item1.xml", "<custom>preserved</custom>")
+        return output.getvalue()
+
+
+def escape_xml(value):
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 class DocxExportTests(unittest.TestCase):
@@ -97,7 +171,10 @@ class DocxExportTests(unittest.TestCase):
         docx_bytes = build_review_report_docx(result, title="California NDA")
 
         settings_root, document_root, document_xml = docx_xml_roots(docx_bytes)
+        relationship_targets = docx_document_relationship_targets(docx_bytes)
 
+        self.assertEqual(relationship_targets[STYLE_RELATIONSHIP_TYPE], "styles.xml")
+        self.assertEqual(relationship_targets[SETTINGS_RELATIONSHIP_TYPE], "settings.xml")
         self.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
         self.assertIsNotNone(settings_root.find(".//w:revisionView", W_NS))
         self.assertIn("NDA Redline", document_xml)
@@ -126,6 +203,56 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("The confidentiality obligations survive for seven years." in text for text in deleted_text))
         self.assertTrue(any("a fixed period of up to five" in text for text in inserted_text))
 
+    def test_source_docx_export_redlines_original_document_inline(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The confidentiality obligations survive for three years.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        settings_root, document_root, document_xml = docx_xml_roots(redlined_docx)
+        relationship_targets = docx_document_relationship_targets(redlined_docx)
+        content_type_overrides = docx_content_type_overrides(redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertEqual(archive.read("customXml/item1.xml").decode("utf-8"), "<custom>preserved</custom>")
+
+        deleted_text = tracked_deleted_text(document_root)
+        inserted_text = tracked_inserted_text(document_root)
+        self.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
+        self.assertEqual(relationship_targets[SETTINGS_RELATIONSHIP_TYPE], "settings.xml")
+        self.assertEqual(
+            content_type_overrides["/word/settings.xml"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml",
+        )
+        self.assertNotIn("NDA Redline", document_xml)
+        self.assertNotIn("Review Notes", document_xml)
+        self.assertIn("Intro paragraph.", document_xml)
+        self.assertTrue(any("California" in text for text in deleted_text))
+        self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
+        self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_export_marks_paragraph_deletes_and_insertions(self):
+        source_docx = make_source_docx([
+            "The parties will discuss a possible transaction.",
+            "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        deleted_text = tracked_deleted_text(document_root)
+        inserted_text = tracked_inserted_text(document_root)
+        self.assertTrue(any("must not circumvent" in text for text in deleted_text))
+        self.assertTrue(any("This Agreement shall be governed by the laws of England and Wales." in text for text in inserted_text))
+        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "del")), 1)
+        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
+
     def test_review_report_docx_marks_delete_paragraph_redlines(self):
         result = review_nda("The Recipient must not circumvent the Company or deal directly with introduced parties.")
 
@@ -138,6 +265,7 @@ class DocxExportTests(unittest.TestCase):
                 for text in deleted_text
             )
         )
+        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "del")), 1)
 
     def test_review_report_docx_marks_insert_after_paragraph_redlines(self):
         result = review_nda("The parties will discuss a possible transaction.")
@@ -146,6 +274,7 @@ class DocxExportTests(unittest.TestCase):
 
         inserted_text = tracked_inserted_text(document_root)
         self.assertTrue(any("This Agreement shall be governed by the laws of England and Wales." in text for text in inserted_text))
+        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
 
     def test_review_report_docx_splits_multi_paragraph_insertions(self):
         result = review_nda(
@@ -159,6 +288,7 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("For [Party 1 legal name]" in text for text in inserted_text))
         self.assertTrue(any("For [Party 2 legal name]" in text for text in inserted_text))
         self.assertGreaterEqual(len([text for text in inserted_text if text.startswith("For [Party")]), 2)
+        self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 2)
 
 
 if __name__ == "__main__":

@@ -744,13 +744,6 @@ h3 {
     0 8px 18px -8px rgba(15, 23, 42, 0.12);
 }
 
-.paragraph-editable.redline-edit-source {
-  color: #991b1b;
-  text-decoration: line-through;
-  text-decoration-color: var(--red);
-  text-decoration-thickness: 2px;
-}
-
 .paragraph-redline-preview {
   cursor: pointer;
   line-height: 1.72;
@@ -939,17 +932,6 @@ textarea::placeholder {
 
 .clause-sxs-col.latest .clause-sxs-tag {
   color: var(--green-ink);
-}
-
-.sxs-removed {
-  color: #991b1b;
-  text-decoration: line-through;
-  text-decoration-color: var(--red);
-  text-decoration-thickness: 2px;
-}
-
-.sxs-inserted {
-  color: #065f46;
 }
 
 .sxs-empty {
@@ -1258,14 +1240,6 @@ textarea::placeholder {
 
 .studio-detail-block.muted p {
   color: var(--ink-muted);
-}
-
-.studio-detail-status {
-  color: var(--brand);
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-top: 11px;
 }
 
 /* Redline detail pieces */
@@ -1712,8 +1686,7 @@ textarea::placeholder {
   color: var(--green-ink);
 }
 
-.status.check,
-.status.fail {
+.status.check {
   background: var(--violet-bg);
   box-shadow: inset 0 0 0 1px var(--violet-border);
   color: var(--violet-ink);

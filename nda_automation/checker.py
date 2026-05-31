@@ -27,22 +27,9 @@ YEAR_WORDS = {
     "nine": 9,
     "ten": 10,
 }
-CONFIDENTIAL_EXCLUSION_CONTEXT_PATTERNS = [
-    r"\bexclusions?\b",
-    r"\bdoes not include\b",
-    r"\bshall not include\b",
-    r"\bnot include\b",
-    r"\bis not confidential information\b",
-    r"\bexcluded from confidential information\b",
-    r"\bexcludes\b",
-]
-INDEPENDENT_DEVELOPMENT_PATTERN = r"\bindependently developed\b"
-QUALIFIED_INDEPENDENT_DEVELOPMENT_PATTERN = (
-    r"\bindependently developed\b.{0,160}\bwithout\s+(?:use|using|access|reference)\b|"
-    r"\bwithout\s+(?:use|using|access|reference)\b.{0,160}\bindependently developed\b"
-)
 YEAR_TERM_PATTERN = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,2}))(?:\s*\(\s*(\d{1,2})\s*\))?(?:\s*-\s*|\s+)years?\b"
 YEAR_TERM_EVIDENCE_PATTERN = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b"
+INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW = 160
 MAX_EVIDENCE_PARAGRAPHS = 3
 ISSUE_TYPE_NONE = "none"
 ISSUE_TYPE_MISSING = "missing"
@@ -175,37 +162,24 @@ def _add_paragraph(paragraphs: List[Paragraph], text: str, start: int, end: int)
     })
 
 
-def _check_mutuality(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_mutuality(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     search_patterns = _clause_term_patterns(clause, "search_terms")
-    mutual_patterns = [
-        r"\bmutual\s+(?:non[- ]disclosure|confidentiality|nda)\b",
-        r"\beach party\b",
-        r"\bboth parties\b",
-        r"\bdisclosing party\b.*\breceiving party\b",
-        r"\breceiving party\b.*\bdisclosing party\b",
-    ]
-    one_way_patterns = [
-        r"\bone[- ]way\b",
-        r"\bunilateral\b",
-        r"\bonly the receiving party\b",
-        r"\brecipient only\b",
-    ]
-    has_mutual_language = any(
-        re.search(pattern, normalized)
-        for pattern in mutual_patterns
-    )
-    one_way_language = any(
-        re.search(pattern, normalized)
-        for pattern in one_way_patterns
-    )
+    one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
+    mutual_paragraphs = _paragraph_matches(paragraphs, search_patterns)
+    separated_role_paragraphs = _mutual_role_paragraphs(normalized, clause, paragraphs)
+    one_way_paragraphs = _paragraph_matches(paragraphs, one_way_patterns)
 
-    if has_mutual_language and not one_way_language:
-        return _match(clause, "Mutual obligation language found.", _paragraph_matches(paragraphs, mutual_patterns + search_patterns))
-    if one_way_language:
+    if (mutual_paragraphs or separated_role_paragraphs) and not one_way_paragraphs:
+        return _match(
+            clause,
+            "Mutual obligation language found.",
+            mutual_paragraphs + separated_role_paragraphs,
+        )
+    if one_way_paragraphs:
         return _check(
             clause,
             "One-way or unilateral confidentiality language needs review.",
-            _paragraph_matches(paragraphs, one_way_patterns),
+            one_way_paragraphs,
             what_to_fix="Revise the NDA so both parties are bound as both Disclosing Party and Receiving Party.",
         )
     return _not_present(
@@ -216,33 +190,62 @@ def _check_mutuality(text: str, normalized: str, clause: Dict[str, object], para
     )
 
 
-def _check_confidential_information(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _mutual_role_paragraphs(
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+) -> List[Paragraph]:
+    role_terms = _clause_terms(clause, "role_terms")
+    reciprocity_patterns = _clause_term_patterns(clause, "role_reciprocity_terms")
+    if len(role_terms) < 2 or not reciprocity_patterns:
+        return []
+    if not all(re.search(_literal_word_pattern(term), normalized, flags=re.IGNORECASE) for term in role_terms):
+        return []
+
+    evidence: List[Paragraph] = []
+    for role_term in role_terms:
+        role_pattern = _literal_word_pattern(role_term)
+        role_evidence = [
+            paragraph
+            for paragraph in paragraphs
+            if re.search(role_pattern, str(paragraph["text"]), flags=re.IGNORECASE)
+            and any(re.search(pattern, str(paragraph["text"]), flags=re.IGNORECASE) for pattern in reciprocity_patterns)
+        ]
+        if not role_evidence:
+            return []
+        evidence.extend(role_evidence)
+
+    return evidence
+
+
+def _check_confidential_information(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+    search_terms = _clause_terms(clause, "search_terms")
     categories = _clause_terms(clause, "definition_categories")
     category_label = _confidential_categories_label(categories)
-    category_hits = [category for category in categories if category in normalized]
-    broad_definition = "confidential information" in normalized and (
-        "any and all information" in normalized or len(category_hits) >= 4
-    )
-    definition_patterns = [
-        r"confidential information\b.{0,80}\bmeans\b",
-        r"confidential information\b.{0,120}\bincluding\b",
-        r"any and all information",
-    ]
-    exclusion_paragraphs = _paragraph_matches(paragraphs, CONFIDENTIAL_EXCLUSION_CONTEXT_PATTERNS)
+    definition_name_terms = search_terms[:1]
+    definition_name_patterns = [_literal_word_pattern(term) for term in definition_name_terms]
+    definition_paragraphs = _paragraph_matches(paragraphs, definition_name_patterns)
+    definition_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in definition_paragraphs))
+    coverage_terms = _dedupe_terms(search_terms[1:] + categories)
+    coverage_hits = [term for term in coverage_terms if term in definition_normalized]
+    broad_definition = bool(definition_paragraphs) and len(coverage_hits) >= 4
+    exclusion_paragraphs = _paragraph_matches(paragraphs, _clause_term_patterns(clause, "exclusion_context_terms"))
     problematic_exclusion_paragraphs = _problematic_confidential_exclusion_paragraphs(
         exclusion_paragraphs,
         _clause_terms(clause, "problematic_exclusion_terms"),
+        _clause_terms(clause, "independent_development_terms"),
+        _clause_terms(clause, "independent_development_qualification_terms"),
     )
 
     if broad_definition and not problematic_exclusion_paragraphs:
         return _match(
             clause,
             "Broad confidential information definition found with no extra exclusions detected.",
-            _paragraph_matches(paragraphs, definition_patterns),
+            definition_paragraphs,
         )
 
     if not broad_definition:
-        if "confidential information" not in normalized:
+        if not definition_paragraphs:
             return _not_present(
                 clause,
                 "No Confidential Information definition was found.",
@@ -255,7 +258,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
         return _check(
             clause,
             "The definition of Confidential Information is missing or too narrow.",
-            _paragraph_matches(paragraphs, [r"confidential information"]),
+            definition_paragraphs,
             what_to_fix=(
                 "Broaden the Confidential Information definition "
                 f"to cover the required {category_label or 'playbook'} categories."
@@ -273,7 +276,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
         )
 
 
-def _check_governing_law(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     governing_anchor_patterns = _governing_anchor_patterns(clause)
     approved_patterns = [_literal_word_pattern(law) for law in _approved_laws(clause)]
     governing_paragraphs = _paragraph_matches(paragraphs, governing_anchor_patterns)
@@ -300,23 +303,17 @@ def _check_governing_law(text: str, normalized: str, clause: Dict[str, object], 
     )
 
 
-def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     max_years = _max_term_years(clause)
     cap_label = _year_count_label(max_years)
     term_context_patterns = _term_context_patterns(clause)
+    indefinite_patterns = _clause_term_patterns(clause, "indefinite_terms")
     term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     year_terms = _extract_year_terms(term_normalized)
     has_term_within_cap = any(1 <= years <= max_years for years in year_terms)
     has_term_over_cap = any(years > max_years for years in year_terms)
-    ordinary_indefinite_term = any(
-        phrase in term_normalized
-        for phrase in [
-            "for so long as the information remains confidential",
-            "indefinitely",
-            "perpetual confidentiality",
-        ]
-    )
+    ordinary_indefinite_term = any(re.search(pattern, term_normalized) for pattern in indefinite_patterns)
 
     if has_term_over_cap:
         return _check(
@@ -332,7 +329,7 @@ def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, objec
         return _check(
             clause,
             f"Ordinary confidentiality appears indefinite rather than capped at {cap_label}.",
-            _paragraph_matches(term_paragraphs, [r"indefinitely", r"perpetual confidentiality", r"for so long as the information remains confidential"]),
+            _paragraph_matches(term_paragraphs, indefinite_patterns),
             what_to_fix=(
                 "Replace indefinite ordinary confidentiality language "
                 f"with a fixed period of {cap_label} or less."
@@ -436,6 +433,18 @@ def _clause_terms(clause: Dict[str, object], field: str) -> List[str]:
     return [str(term).lower().strip() for term in values if str(term).strip()]
 
 
+def _dedupe_terms(terms: Iterable[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for term in terms:
+        cleaned = str(term).lower().strip()
+        if not cleaned or cleaned in seen:
+            continue
+        deduped.append(cleaned)
+        seen.add(cleaned)
+    return deduped
+
+
 def _clause_term_patterns(clause: Dict[str, object], field: str) -> List[str]:
     return [_literal_word_pattern(term) for term in _clause_terms(clause, field)]
 
@@ -452,7 +461,7 @@ def _governing_anchor_patterns(clause: Dict[str, object]) -> List[str]:
 
 def _term_context_patterns(clause: Dict[str, object]) -> List[str]:
     patterns = []
-    for term in _clause_terms(clause, "search_terms"):
+    for term in _dedupe_terms(_clause_terms(clause, "search_terms") + _clause_terms(clause, "indefinite_terms")):
         if term in {"year", "years"}:
             continue
         if term.startswith("surviv"):
@@ -468,6 +477,25 @@ def _signature_evidence_patterns(clause: Dict[str, object]) -> List[str]:
         for term in _clause_terms(clause, "search_terms")
         if term not in {"signature", "signatures"}
     ]
+
+
+def _signature_marker_patterns(clause: Dict[str, object], marker: str) -> List[str]:
+    marker_aliases = {
+        "party": ["by", "for"],
+        "title": ["title", "role", "capacity"],
+        "date": ["date", "dated"],
+    }
+    aliases = marker_aliases.get(marker, [marker])
+    marker_terms = [
+        term
+        for term in _clause_terms(clause, "search_terms")
+        if any(alias in term.replace(" ", "") for alias in aliases)
+    ]
+    return [_literal_word_pattern(term) for term in marker_terms]
+
+
+def _count_pattern_matches(patterns: Iterable[str], text: str) -> int:
+    return sum(len(re.findall(pattern, text, flags=re.IGNORECASE)) for pattern in patterns)
 
 
 def _clause_template_text(
@@ -488,17 +516,22 @@ def _clause_template_text(
 def _problematic_confidential_exclusion_paragraphs(
     exclusion_paragraphs: Iterable[Paragraph],
     problematic_terms: Iterable[str],
+    independent_development_terms: Iterable[str],
+    independent_development_qualification_terms: Iterable[str],
 ) -> List[Paragraph]:
     problematic_patterns = [_literal_word_pattern(term) for term in problematic_terms]
+    independent_development_patterns = [_literal_word_pattern(term) for term in independent_development_terms]
+    qualification_patterns = [_literal_word_pattern(term) for term in independent_development_qualification_terms]
     matches: List[Paragraph] = []
 
     for paragraph in exclusion_paragraphs:
         paragraph_text = str(paragraph["text"])
         paragraph_normalized = _normalize(paragraph_text)
         has_problematic_term = any(re.search(pattern, paragraph_normalized) for pattern in problematic_patterns)
-        has_unqualified_independent_development = (
-            re.search(INDEPENDENT_DEVELOPMENT_PATTERN, paragraph_normalized) is not None
-            and re.search(QUALIFIED_INDEPENDENT_DEVELOPMENT_PATTERN, paragraph_normalized) is None
+        has_unqualified_independent_development = _has_unqualified_independent_development(
+            paragraph_normalized,
+            independent_development_patterns,
+            qualification_patterns,
         )
 
         if not has_problematic_term and not has_unqualified_independent_development:
@@ -509,7 +542,23 @@ def _problematic_confidential_exclusion_paragraphs(
     return matches
 
 
-def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _has_unqualified_independent_development(
+    normalized_text: str,
+    independent_development_patterns: Iterable[str],
+    qualification_patterns: Iterable[str],
+) -> bool:
+    qualification_patterns = list(qualification_patterns)
+    for pattern in independent_development_patterns:
+        for match in re.finditer(pattern, normalized_text):
+            window_start = max(0, match.start() - INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW)
+            window_end = min(len(normalized_text), match.end() + INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW)
+            context = normalized_text[window_start:window_end]
+            if not any(re.search(qualification_pattern, context) for qualification_pattern in qualification_patterns):
+                return True
+    return False
+
+
+def _check_non_circumvention(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     prohibited_patterns = _clause_term_patterns(clause, "search_terms")
     prohibited_language = [pattern for pattern in prohibited_patterns if re.search(pattern, normalized)]
 
@@ -525,9 +574,13 @@ def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, objec
 
 def _check_signatures(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     signature_patterns = _signature_evidence_patterns(clause)
-    party_markers = len(re.findall(r"^\s*for\s+[a-z0-9&.,' -]{2,80}", text, flags=re.IGNORECASE | re.MULTILINE)) + len(re.findall(r"\bby\s*:", normalized))
-    title_markers = len(re.findall(r"\btitle\s*:", normalized))
-    date_markers = len(re.findall(r"\bdate\s*:", normalized)) + len(
+    by_marker_patterns = _signature_marker_patterns(clause, "party")
+    title_marker_patterns = _signature_marker_patterns(clause, "title")
+    date_marker_patterns = _signature_marker_patterns(clause, "date")
+    party_markers = len(re.findall(r"^\s*for\s+[a-z0-9&.,' -]{2,80}", text, flags=re.IGNORECASE | re.MULTILINE))
+    party_markers += _count_pattern_matches(by_marker_patterns, normalized)
+    title_markers = _count_pattern_matches(title_marker_patterns, normalized)
+    date_markers = _count_pattern_matches(date_marker_patterns, normalized) + len(
         re.findall(r"\b\d{1,2}\s+[a-z]{3,9}\s+\d{4}\b|\b\d{4}-\d{2}-\d{2}\b", normalized)
     )
 
@@ -566,10 +619,19 @@ def _validate_check_registry() -> None:
     if duplicate_check_ids:
         raise RuntimeError(f"Duplicate checker IDs: {', '.join(duplicate_check_ids)}")
 
-    playbook_ids = [str(clause["id"]) for clause in load_playbook()["clauses"]]
+    playbook_clauses = load_playbook()["clauses"]
+    playbook_ids = [str(clause["id"]) for clause in playbook_clauses]
     duplicate_playbook_ids = sorted({clause_id for clause_id in playbook_ids if playbook_ids.count(clause_id) > 1})
     if duplicate_playbook_ids:
         raise RuntimeError(f"Duplicate playbook IDs: {', '.join(duplicate_playbook_ids)}")
+
+    missing_search_terms = [
+        str(clause["id"])
+        for clause in playbook_clauses
+        if not _clause_terms(clause, "search_terms")
+    ]
+    if missing_search_terms:
+        raise RuntimeError(f"Playbook clauses missing search_terms: {', '.join(missing_search_terms)}")
 
     missing_checks = sorted(set(playbook_ids) - set(check_ids))
     extra_checks = sorted(set(check_ids) - set(playbook_ids))
@@ -581,8 +643,22 @@ def _validate_check_registry() -> None:
             detail.append(f"checks without playbook clauses: {', '.join(extra_checks)}")
         raise RuntimeError("Checker registry does not match playbook (" + "; ".join(detail) + ")")
 
+    builder_ids = [clause_id for clause_id, _builder in REDLINE_BUILDERS]
+    duplicate_builder_ids = sorted({clause_id for clause_id in builder_ids if builder_ids.count(clause_id) > 1})
+    if duplicate_builder_ids:
+        raise RuntimeError(f"Duplicate redline builder IDs: {', '.join(duplicate_builder_ids)}")
 
-_validate_check_registry()
+    if builder_ids != check_ids:
+        missing_builders = sorted(set(check_ids) - set(builder_ids))
+        extra_builders = sorted(set(builder_ids) - set(check_ids))
+        detail = []
+        if missing_builders:
+            detail.append(f"missing redline builders for: {', '.join(missing_builders)}")
+        if extra_builders:
+            detail.append(f"redline builders without checks: {', '.join(extra_builders)}")
+        if not detail:
+            detail.append("redline builder order differs from checker order")
+        raise RuntimeError("Redline registry does not mirror checker registry (" + "; ".join(detail) + ")")
 
 
 def _match(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:
@@ -649,9 +725,11 @@ def _result(
         "approved_laws",
         "law_phrases",
         "max_term_years",
+        "one_way_terms",
         "preferred_law",
         "redline_template",
-        "search_terms",
+        "exclusion_context_terms",
+        "indefinite_terms",
         "term_years",
         "type",
     ]:
@@ -692,8 +770,8 @@ def _redline_edits_for_clause(
     paragraphs_by_id: Dict[str, Paragraph],
     start_number: int,
 ) -> List[RedlineEdit]:
-    builder = REDLINE_BUILDERS_BY_ID.get(str(clause["id"]))
-    return builder(clause, paragraphs_by_id, start_number) if builder else []
+    builder = REDLINE_BUILDERS_BY_ID[str(clause["id"])]
+    return builder(clause, paragraphs_by_id, start_number)
 
 
 def _is_present_but_wrong_check(clause: ClauseResult) -> bool:
@@ -907,7 +985,17 @@ def _signatures_redlines(
     return [edit] if edit else []
 
 
+def _no_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    return []
+
+
 REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
+    ("mutuality", _no_redlines),
+    ("confidential_information", _no_redlines),
     ("governing_law", _governing_law_redlines),
     ("term_and_survival", _term_and_survival_redlines),
     ("non_circumvention", _non_circumvention_redlines),
@@ -916,19 +1004,7 @@ REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
 REDLINE_BUILDERS_BY_ID: Dict[str, RedlineBuildFn] = dict(REDLINE_BUILDERS)
 
 
-def _validate_redline_registry() -> None:
-    builder_ids = [clause_id for clause_id, _builder in REDLINE_BUILDERS]
-    duplicate_builder_ids = sorted({clause_id for clause_id in builder_ids if builder_ids.count(clause_id) > 1})
-    if duplicate_builder_ids:
-        raise RuntimeError(f"Duplicate redline builder IDs: {', '.join(duplicate_builder_ids)}")
-
-    check_ids = {clause_id for clause_id, _check in CLAUSE_CHECKS}
-    unknown_builder_ids = sorted(set(builder_ids) - check_ids)
-    if unknown_builder_ids:
-        raise RuntimeError(f"Redline builders without checks: {', '.join(unknown_builder_ids)}")
-
-
-_validate_redline_registry()
+_validate_check_registry()
 
 
 def _preferred_governing_law(clause: ClauseResult) -> str | None:

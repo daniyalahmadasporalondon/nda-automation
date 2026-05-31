@@ -18,13 +18,6 @@ const views = document.querySelectorAll("[data-view]");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
 
-const DEFAULT_DOCUMENT_TITLE = "Untitled NDA";
-const SOURCE_PLACEHOLDER = "Paste NDA text here";
-
-const sourceInputs = [studioNdaText];
-const fileMetaDisplays = [studioFileMeta];
-const documentTitleDisplays = [studioDocTitle];
-
 const state = {
   playbookClauses: [],
   selectedClauseId: null,
@@ -36,10 +29,11 @@ const state = {
   reviewDirty: false,
   reviewSourceText: "",
   selectedReviewClauseId: null,
-  documentViewMode: "redline",
+  documentViewMode: VIEW_MODE_REDLINE,
 };
 
 setupSourceEditors();
+setActiveTab("review");
 setupDocumentViewModes();
 
 const emptyState = () => {
@@ -231,9 +225,8 @@ async function fileToBase64(file) {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
+  for (let index = 0; index < bytes.length; index += FILE_BASE64_CHUNK_SIZE) {
+    const chunk = bytes.subarray(index, index + FILE_BASE64_CHUNK_SIZE);
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
@@ -247,7 +240,7 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_DELAY_MS);
 }
 
 function downloadFilename(response) {
@@ -257,43 +250,33 @@ function downloadFilename(response) {
 }
 
 function setSourceText(text) {
-  sourceInputs.forEach((input) => {
-    input.value = text;
-  });
+  studioNdaText.value = text;
 }
 
 function setSourcePlaceholder(placeholder) {
-  sourceInputs.forEach((input) => {
-    input.placeholder = placeholder;
-  });
+  studioNdaText.placeholder = placeholder;
 }
 
 function setFileMeta(message) {
-  fileMetaDisplays.forEach((display) => {
-    display.textContent = message;
-  });
+  studioFileMeta.textContent = message;
 }
 
 function setDocumentTitle(title) {
-  documentTitleDisplays.forEach((display) => {
-    display.textContent = title;
-  });
+  studioDocTitle.textContent = title;
 }
 
 function setupSourceEditors() {
-  sourceInputs.forEach((input) => {
-    input.addEventListener("input", () => {
-      resizeSourceEditor(input);
-      if (input.value.trim()) {
-        markSourceEdited("Text edited");
-      }
-    });
-    resizeSourceEditor(input);
+  studioNdaText.addEventListener("input", () => {
+    resizeSourceEditor(studioNdaText);
+    if (studioNdaText.value.trim()) {
+      markSourceEdited("Text edited");
+    }
   });
+  resizeSourceEditor(studioNdaText);
 }
 
 function resizeSourceEditors() {
-  sourceInputs.forEach(resizeSourceEditor);
+  resizeSourceEditor(studioNdaText);
 }
 
 function resizeSourceEditor(input) {
@@ -365,8 +348,8 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
-  const passedCount = clauses.filter(clausePasses).length;
-  const failedCount = clauses.filter(clauseNeedsReview).length;
+  const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
+  const failedCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
   studioResultMark.textContent = failedCount ? "CHECK" : "PASS";
   studioResultMark.className = failedCount ? "check" : "pass";
@@ -380,13 +363,12 @@ function renderStudioIssueList(clauses) {
   studioIssueList.innerHTML = clauses
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
-      const statusTone = clauseTone(clause);
-      const statusText = clauseStatusLabel(clause);
+      const status = clauseStatus(clause);
       return `
-        <button class="studio-issue-card ${selected} ${statusTone}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}">
+        <button class="studio-issue-card ${selected} ${status.tone}" type="button" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
           <span class="studio-issue-card-top">
             <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
-            <strong class="studio-issue-pill ${statusTone}">${statusText}</strong>
+            <strong class="studio-issue-pill ${status.tone}">${status.pillLabel}</strong>
           </span>
           <span class="studio-issue-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>
         </button>
@@ -399,45 +381,6 @@ function renderStudioIssueList(clauses) {
 
 function getClauseTotal(clauses = []) {
   return clauses.length || state.playbookClauses.length || 0;
-}
-
-function clausePasses(clause) {
-  if (!clause) return false;
-  if (typeof clause.passes === "boolean") return clause.passes;
-  return clause.status === "pass" || clause.status === "match";
-}
-
-function clauseNeedsReview(clause) {
-  return !clausePasses(clause) && clause.status !== "idle";
-}
-
-function clauseTone(clause) {
-  if (clause.status === "idle") return "pending";
-  return clausePasses(clause) ? "pass" : "check";
-}
-
-function clauseDotTone(clause) {
-  if (clause.status === "idle") return "pending";
-  return clausePasses(clause) ? "match" : "verify";
-}
-
-function clauseStatusLabel(clause) {
-  if (clause.status === "idle") return "Pending";
-  return clausePasses(clause) ? "PASS" : "CHECK";
-}
-
-function clauseResultLabel(clause) {
-  if (clause.status === "not_present") return "Not present";
-  if (clause.status === "match") return "Match";
-  if (clause.status === "check") return "Check";
-  if (clause.status === "pass") return "Match";
-  if (clause.status === "fail") return "Check";
-  return "Pending";
-}
-
-function clauseIssueLabel(clause) {
-  if (clause.status === "idle") return "Pending";
-  return clause.issue_label || "Needs review";
 }
 
 function hasReviewResults() {
@@ -479,13 +422,15 @@ function renderStudioClauseLane() {
   studioClauseLane.innerHTML = sourceClauses
     .map((clause, index) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
-      const statusClass = clauseDotTone(clause);
+      const status = clauseStatus(clause);
       const tag = hasReviewResults() ? "button" : "div";
       const type = hasReviewResults() ? ' type="button"' : "";
-      const data = hasReviewResults() ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : "";
+      const data = hasReviewResults()
+        ? ` data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}"`
+        : "";
       return `
         <${tag} class="studio-clause-item ${selected}"${type}${data}>
-          <span class="studio-clause-dot ${statusClass}"></span>
+          <span class="studio-clause-dot ${status.dotTone}"></span>
           <strong>${index + 1}</strong>
           <span>${escapeHtml(clause.name)}</span>
         </${tag}>
@@ -499,11 +444,12 @@ function renderStudioClauseLane() {
 function renderStudioDetail() {
   const clause = getSelectedReviewClause();
   if (!clause) return;
+  const status = clauseStatus(clause);
   const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = clause.matched_text
     ? `<div class="studio-detail-block studio-detail-evidence"><small>Exact paragraph</small><p>${escapeHtml(clause.matched_text)}</p></div>`
     : '<div class="studio-detail-block studio-detail-evidence muted"><small>Exact paragraph</small><p>No matching paragraph identified.</p></div>';
-  const fixBlock = clauseNeedsReview(clause) && clause.what_to_fix
+  const fixBlock = status.needsReview && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
   const redlineEdits = getSelectedRedlineEdits();
@@ -522,7 +468,7 @@ function renderStudioDetail() {
     <p class="eyebrow">selected clause</p>
     <div class="studio-detail-heading">
       <h3>${escapeHtml(clause.name)}</h3>
-      <span class="status ${clauseTone(clause)}">${escapeHtml(clauseStatusLabel(clause))}</span>
+      <span class="status ${status.tone}">${escapeHtml(status.pillLabel)}</span>
     </div>
     <div class="studio-detail-stack">
       <div class="studio-detail-block requirement-block">
@@ -530,9 +476,9 @@ function renderStudioDetail() {
         <p>${escapeHtml(clause.requirement)}</p>
       </div>
       ${excerpt}
-      <div class="studio-detail-block issue-block ${escapeHtml(clauseTone(clause))}">
+      <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
         <small>Issue type</small>
-        <p>${escapeHtml(clauseIssueLabel(clause))}</p>
+        <p>${escapeHtml(status.issueLabel)}</p>
       </div>
       <div class="studio-detail-block finding-block">
         <small>Why</small>
@@ -542,7 +488,7 @@ function renderStudioDetail() {
       ${redlineBlock}
       <div class="studio-detail-block">
         <small>Backend result</small>
-        <p>${escapeHtml(clauseResultLabel(clause))}</p>
+        <p>${escapeHtml(status.resultLabel)}</p>
       </div>
       ${acceptableLanguage}
     </div>
@@ -604,67 +550,15 @@ function renderStudioDocumentHighlights() {
     showStudioSourceEditor();
     return;
   }
-  const clausesByParagraphId = new Map();
-  state.reviewClauses.forEach((clause) => {
-    (clause.matched_paragraph_ids || []).forEach((paragraphId) => {
-      if (!clausesByParagraphId.has(paragraphId)) clausesByParagraphId.set(paragraphId, []);
-      clausesByParagraphId.get(paragraphId).push(clause);
-    });
+  const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
+  studioDocumentRender.innerHTML = renderReviewDocument({
+    clauses: state.reviewClauses,
+    originalParagraphs: state.reviewOriginalParagraphs,
+    paragraphs: state.reviewParagraphs,
+    redlines: state.reviewRedlines,
+    selectedClauseId: state.selectedReviewClauseId,
+    viewMode,
   });
-  const redlinesByParagraphId = new Map();
-  state.reviewRedlines.forEach((edit) => {
-    if (!redlinesByParagraphId.has(edit.paragraph_id)) redlinesByParagraphId.set(edit.paragraph_id, []);
-    redlinesByParagraphId.get(edit.paragraph_id).push(edit);
-  });
-
-  const viewMode = state.documentViewMode || "redline";
-  studioDocumentRender.classList.toggle("doc-mode-clean", viewMode === "clean");
-  studioDocumentRender.classList.toggle("doc-mode-sidebyside", viewMode === "sidebyside");
-
-  studioDocumentRender.innerHTML = state.reviewParagraphs
-    .map((paragraph) => {
-      const redlines = redlinesByParagraphId.get(paragraph.id) || [];
-      const redlineClauses = redlines
-        .map((edit) => state.reviewClauses.find((clause) => clause.id === edit.clause_id))
-        .filter(Boolean);
-      const linked = mergeClauses(clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
-      const selected = linked.find((clause) => clause.id === state.selectedReviewClauseId);
-      const ids = linked.map((clause) => clause.id).join(" ");
-      const manualRedline = manualParagraphRedline(paragraph);
-
-      if (viewMode === "clean") {
-        return renderCleanParagraph(paragraph, redlines, { ids, selected: Boolean(selected) }, manualRedline);
-      }
-      if (viewMode === "sidebyside") {
-        return renderSideBySideParagraph(paragraph, redlines, { ids, selected: Boolean(selected) }, manualRedline);
-      }
-
-      const primary = selected || linked.find((clause) => !clausePasses(clause)) || linked[0];
-      const selectedRedline = redlines.find((edit) => edit.clause_id === state.selectedReviewClauseId);
-      const primaryRedline = manualRedline || selectedRedline || redlines[0];
-      const visibleRedlines = manualRedline
-        ? redlines.filter(isInsertionRedline)
-        : redlines.every(isInsertionRedline)
-        ? (selectedRedline ? [selectedRedline] : redlines)
-        : (primaryRedline ? [primaryRedline] : []);
-      const classes = [
-        "studio-doc-paragraph",
-        linked.length ? "has-clause" : "",
-        redlines.length || manualRedline ? "has-redline" : "",
-        manualRedline ? "manual-redline" : "",
-        primaryRedline?.action === "delete_paragraph" ? "redline-delete" : "",
-        primaryRedline?.action === "insert_after_paragraph" ? "redline-insert" : "",
-        primary && !clausePasses(primary) ? "verify" : "",
-        primary && clausePasses(primary) ? "match" : "",
-        selected ? "selected" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const paragraphHtml = renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines);
-
-      return `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(ids)}">${paragraphHtml}</div>`;
-    })
-    .join("");
 
   studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
     paragraph.addEventListener("click", (event) => {
@@ -682,233 +576,31 @@ function setupDocumentViewModes() {
   const buttons = document.querySelectorAll(".studio-view-switch [data-view-mode]");
   buttons.forEach((button) => {
     button.addEventListener("click", () => {
-      const mode = button.dataset.viewMode;
-      if (state.documentViewMode === mode) return;
-      state.documentViewMode = mode;
-      buttons.forEach((other) => other.classList.toggle("active", other === button));
-      if (state.reviewParagraphs.length && !studioDocumentRender.hidden) {
-        renderStudioDocumentHighlights();
-      }
+      setDocumentViewMode(button.dataset.viewMode, { render: true });
     });
   });
+  updateDocumentViewModeButtons();
 }
 
-function paragraphRedlinePlan(paragraph, redlines, manualRedline = null) {
-  const replace = manualRedline?.action === "replace_paragraph"
-    ? manualRedline
-    : redlines.find((edit) => edit.action === "replace_paragraph");
-  const remove = manualRedline?.action === "delete_paragraph"
-    ? manualRedline
-    : redlines.find((edit) => edit.action === "delete_paragraph");
-  const inserts = redlines.filter((edit) => edit.action === "insert_after_paragraph");
-  const cleanText = remove
-    ? ""
-    : replace
-      ? String(replace.replacement_text || "")
-      : String(paragraph.text || "");
-  return { replace, remove, inserts, cleanText };
-}
-
-function renderCleanParagraph(paragraph, redlines, context, manualRedline = null) {
-  const plan = paragraphRedlinePlan(paragraph, redlines, manualRedline);
-  let html = "";
-  if (!plan.remove) {
-    const classes = ["studio-doc-paragraph", "doc-clean-paragraph", context.selected ? "selected" : ""]
-      .filter(Boolean)
-      .join(" ");
-    html += `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}">${escapeHtml(plan.cleanText)}</div>`;
+function setDocumentViewMode(mode, { render = false } = {}) {
+  if (!DOCUMENT_VIEW_MODES.includes(mode)) return;
+  if (state.documentViewMode === mode && render === false) {
+    updateDocumentViewModeButtons();
+    return;
   }
-  plan.inserts.forEach((edit) => {
-    const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
-    html += `<div class="studio-doc-paragraph doc-clean-paragraph">${inserted}</div>`;
+  state.documentViewMode = mode;
+  updateDocumentViewModeButtons();
+  if (render && state.reviewParagraphs.length && !studioDocumentRender.hidden) {
+    renderStudioDocumentHighlights();
+  }
+}
+
+function updateDocumentViewModeButtons() {
+  document.querySelectorAll(".studio-view-switch [data-view-mode]").forEach((button) => {
+    const active = button.dataset.viewMode === state.documentViewMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
   });
-  return html;
-}
-
-function renderSideBySideParagraph(paragraph, redlines, context, manualRedline = null) {
-  const plan = paragraphRedlinePlan(paragraph, redlines, manualRedline);
-  const original = escapeHtml(originalParagraphText(paragraph));
-  const redlined = renderSideBySideRedline(paragraph, plan) || `<span class="sxs-empty">—</span>`;
-  const classes = ["studio-doc-paragraph", "doc-sxs-paragraph", context.selected ? "selected" : ""]
-    .filter(Boolean)
-    .join(" ");
-  let html = `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div>${original}</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div>${redlined}</div></div></div></div>`;
-  plan.inserts.forEach((edit) => {
-    const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
-    html += `<div class="studio-doc-paragraph doc-sxs-paragraph"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">—</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div><span class="inline-ins">${inserted}</span></div></div></div></div>`;
-  });
-  return html;
-}
-
-function renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines) {
-  const editableParagraph = renderEditableParagraph(paragraph);
-  if (primaryRedline?.action === "replace_paragraph" || primaryRedline?.action === "delete_paragraph") {
-    const replacement = primaryRedline.action === "replace_paragraph" && !primaryRedline.is_manual
-      ? renderRedlineReplacement(primaryRedline, "span")
-      : "";
-    const insertionHtml = visibleRedlines.filter(isInsertionRedline).map(renderParagraphInsertion).join("");
-    return `<div class="paragraph-redline-preview" contenteditable="false">${renderInlineRedline(paragraph, primaryRedline)}</div><div class="paragraph-source-editor">${editableParagraph}</div><div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(primaryRedline))}</span>${replacement}</div>${insertionHtml}`;
-  }
-  const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(paragraph, visibleRedlines) : "";
-  return `<div class="paragraph-redline-preview local-edit-preview" contenteditable="false" hidden></div>${editableParagraph}${redlineHtml}`;
-}
-
-function renderSideBySideRedline(paragraph, plan) {
-  if (plan.replace) {
-    return renderInlineRedline(paragraph, plan.replace);
-  }
-  if (plan.remove) {
-    return `<span class="inline-del">${escapeHtml(String(paragraph.text || ""))}</span>`;
-  }
-  return escapeHtml(String(paragraph.text || ""));
-}
-
-function manualParagraphRedline(paragraph) {
-  const original = originalParagraphText(paragraph);
-  const current = String(paragraph.text || "");
-  if (current === original) return null;
-  const action = current.trim() ? "replace_paragraph" : "delete_paragraph";
-  return {
-    action,
-    action_label: current.trim() ? "Your edit" : "Delete paragraph",
-    is_manual: true,
-    original_text: original,
-    paragraph_id: paragraph.id,
-    paragraph_index: paragraph.index,
-    replacement_text: current,
-  };
-}
-
-function originalParagraphText(paragraph) {
-  const original = state.reviewOriginalParagraphs.find((item) => item.id === paragraph.id);
-  return original ? String(original.text || "") : String(paragraph.text || "");
-}
-
-function renderInlineRedline(paragraph, edit) {
-  const original = String(edit.original_text ?? paragraph.text ?? "");
-  if (edit.action === "delete_paragraph") {
-    return `<span class="inline-del">${escapeHtml(original)}</span>`;
-  }
-  return renderInlineDiff(original, String(edit.replacement_text || ""));
-}
-
-const INLINE_DIFF_CELL_LIMIT = 40000;
-
-function renderInlineDiff(original, replacement) {
-  const oldTokens = tokenizeInlineDiff(original);
-  const newTokens = tokenizeInlineDiff(replacement);
-  if (!oldTokens.length) return renderInlineTokens(newTokens, "inline-ins");
-  if (!newTokens.length) return renderInlineTokens(oldTokens, "inline-del");
-  if (oldTokens.length * newTokens.length > INLINE_DIFF_CELL_LIMIT) {
-    return `${renderInlineTokens(oldTokens, "inline-del")}${renderInlineTokens(newTokens, "inline-ins")}`;
-  }
-
-  return renderDiffOperations(diffTokenOperations(oldTokens, newTokens));
-}
-
-function tokenizeInlineDiff(text) {
-  return String(text || "").match(/[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]/g) || [];
-}
-
-function diffTokenOperations(oldTokens, newTokens) {
-  const rowCount = oldTokens.length + 1;
-  const columnCount = newTokens.length + 1;
-  const dp = Array.from({ length: rowCount }, () => new Array(columnCount).fill(0));
-
-  for (let oldIndex = oldTokens.length - 1; oldIndex >= 0; oldIndex -= 1) {
-    for (let newIndex = newTokens.length - 1; newIndex >= 0; newIndex -= 1) {
-      dp[oldIndex][newIndex] = oldTokens[oldIndex] === newTokens[newIndex]
-        ? dp[oldIndex + 1][newIndex + 1] + 1
-        : Math.max(dp[oldIndex + 1][newIndex], dp[oldIndex][newIndex + 1]);
-    }
-  }
-
-  const operations = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-  while (oldIndex < oldTokens.length && newIndex < newTokens.length) {
-    if (oldTokens[oldIndex] === newTokens[newIndex]) {
-      operations.push({ type: "same", token: oldTokens[oldIndex] });
-      oldIndex += 1;
-      newIndex += 1;
-    } else if (dp[oldIndex + 1][newIndex] >= dp[oldIndex][newIndex + 1]) {
-      operations.push({ type: "delete", token: oldTokens[oldIndex] });
-      oldIndex += 1;
-    } else {
-      operations.push({ type: "insert", token: newTokens[newIndex] });
-      newIndex += 1;
-    }
-  }
-  while (oldIndex < oldTokens.length) {
-    operations.push({ type: "delete", token: oldTokens[oldIndex] });
-    oldIndex += 1;
-  }
-  while (newIndex < newTokens.length) {
-    operations.push({ type: "insert", token: newTokens[newIndex] });
-    newIndex += 1;
-  }
-  return operations;
-}
-
-function renderDiffOperations(operations) {
-  let previousOriginalToken = "";
-  let previousAcceptedToken = "";
-  return operations
-    .map((operation) => {
-      const className = operation.type === "delete"
-        ? "inline-del"
-        : operation.type === "insert"
-          ? "inline-ins"
-          : "";
-      if (operation.type === "delete") {
-        const token = `${needsInlineSpace(previousOriginalToken, operation.token) ? " " : ""}${operation.token}`;
-        previousOriginalToken = operation.token;
-        return renderInlineToken(token, className);
-      }
-      if (operation.type === "insert") {
-        const token = `${needsInlineSpace(previousAcceptedToken, operation.token) ? " " : ""}${operation.token}`;
-        previousAcceptedToken = operation.token;
-        return renderInlineToken(token, className);
-      }
-      const prefix = needsInlineSpace(previousOriginalToken, operation.token) || needsInlineSpace(previousAcceptedToken, operation.token)
-        ? " "
-        : "";
-      previousOriginalToken = operation.token;
-      previousAcceptedToken = operation.token;
-      return `${prefix}${renderInlineToken(operation.token, className)}`;
-    })
-    .join("");
-}
-
-function renderInlineTokens(tokens, className) {
-  let previousToken = "";
-  return tokens
-    .map((token) => {
-      const prefix = needsInlineSpace(previousToken, token) ? " " : "";
-      const html = className
-        ? renderInlineToken(`${prefix}${token}`, className)
-        : `${prefix}${renderInlineToken(token, className)}`;
-      previousToken = token;
-      return html;
-    })
-    .join("");
-}
-
-function renderInlineToken(token, className) {
-  const escapedToken = escapeHtml(token);
-  return className ? `<span class="${className}">${escapedToken}</span>` : escapedToken;
-}
-
-function needsInlineSpace(previousToken, token) {
-  if (!previousToken) return false;
-  if (/^[,.;:!?%)]$/.test(token)) return false;
-  if (/^[(]$/.test(previousToken)) return false;
-  return true;
-}
-
-function renderEditableParagraph(paragraph, extraClasses = []) {
-  const classes = ["paragraph-editable", ...extraClasses].filter(Boolean).join(" ");
-  return `<div class="${classes}" contenteditable="plaintext-only" spellcheck="true" role="textbox" aria-multiline="true" data-editable-paragraph-id="${escapeHtml(paragraph.id)}" aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}">${escapeHtml(String(paragraph.text || ""))}</div>`;
 }
 
 function bindViewerParagraphEditing() {
@@ -942,26 +634,10 @@ function syncViewerParagraphEdit(editable) {
 function updateManualRedlinePreview(editable, paragraph) {
   const container = editable.closest(".studio-doc-paragraph");
   if (!container) return;
-  const manualRedline = manualParagraphRedline(paragraph);
-  const preview = container.querySelector(".paragraph-redline-preview");
+  const manualRedline = manualParagraphRedline(paragraph, state.reviewOriginalParagraphs);
   const backendRedline = selectedBackendRedline(paragraph.id);
   const hasBackendRedline = state.reviewRedlines.some((edit) => edit.paragraph_id === paragraph.id);
-
-  container.classList.toggle("manual-redline", Boolean(manualRedline));
-  container.classList.toggle("has-redline", Boolean(manualRedline) || hasBackendRedline);
-  if (!preview) return;
-
-  const previewRedline = manualRedline || backendRedline;
-  preview.hidden = !previewRedline;
-  preview.innerHTML = previewRedline ? renderInlineRedline(paragraph, previewRedline) : "";
-  const label = container.querySelector(".paragraph-redline-note .redline-label");
-  if (label) {
-    label.textContent = redlineActionLabel(manualRedline || backendRedline || {});
-  }
-  const backendReplacement = container.querySelector(".paragraph-redline-note .redline-replacement");
-  if (backendReplacement) {
-    backendReplacement.hidden = Boolean(manualRedline);
-  }
+  syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });
 }
 
 function selectedBackendRedline(paragraphId) {
@@ -1002,55 +678,24 @@ function pastePlainText(event) {
   const text = event.clipboardData?.getData("text/plain");
   if (!text) return;
   event.preventDefault();
-  document.execCommand("insertText", false, text);
+  insertPlainTextAtSelection(text);
 }
 
-function mergeClauses(primaryClauses, secondaryClauses) {
-  const merged = [...primaryClauses];
-  secondaryClauses.forEach((clause) => {
-    if (!merged.find((item) => item.id === clause.id)) merged.push(clause);
-  });
-  return merged;
-}
+function insertPlainTextAtSelection(text) {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
 
-function renderParagraphRedlines(paragraph, edits) {
-  if (edits.every(isInsertionRedline)) {
-    return edits.map(renderParagraphInsertion).join("");
-  }
-  return renderParagraphRedline(paragraph, edits[0]);
-}
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
 
-function renderParagraphRedline(paragraph, edit) {
-  if (isInsertionRedline(edit)) {
-    return renderParagraphInsertion(edit);
-  }
+  const textNode = document.createTextNode(text);
+  range.insertNode(textNode);
+  range.setStartAfter(textNode);
+  range.setEndAfter(textNode);
+  range.collapse(false);
 
-  return `<div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>${renderRedlineReplacement(edit, "span")}</div>`;
-}
-
-function renderParagraphInsertion(edit) {
-  return `<div class="paragraph-insertion" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
-}
-
-function redlineActionLabel(edit) {
-  if (edit.action === "delete_paragraph") return edit.action_label || "Remove paragraph";
-  if (edit.action === "insert_after_paragraph") return edit.action_label || "Insert after paragraph";
-  if (edit.action === "replace_paragraph") return edit.action_label || "Replace paragraph";
-  return edit.action_label || "Proposed edit";
-}
-
-function renderRedlineReplacement(edit, tagName) {
-  if (edit.action === "delete_paragraph") {
-    return `<${tagName} class="redline-removal">Remove this paragraph.</${tagName}>`;
-  }
-  if (edit.action === "insert_after_paragraph") {
-    return `<${tagName} class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</${tagName}>`;
-  }
-  return `<${tagName} class="redline-replacement">${escapeHtml(edit.replacement_text || "")}</${tagName}>`;
-}
-
-function isInsertionRedline(edit) {
-  return edit?.action === "insert_after_paragraph";
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function selectReviewClause(clauseId, options = {}) {
@@ -1143,11 +788,14 @@ function focusTextRange(input, start, end) {
 
 function scrollTextareaToIndex(input, index) {
   const style = window.getComputedStyle(input);
-  const fontSize = parseFloat(style.fontSize) || 16;
-  const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.7;
+  const fontSize = parseFloat(style.fontSize) || DEFAULT_FONT_SIZE_PX;
+  const lineHeight = parseFloat(style.lineHeight) || fontSize * LINE_HEIGHT_FALLBACK_MULTIPLIER;
   const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
-  const availableWidth = Math.max(input.clientWidth - paddingX, 80);
-  const charsPerLine = Math.max(24, Math.floor(availableWidth / (fontSize * 0.55)));
+  const availableWidth = Math.max(input.clientWidth - paddingX, SOURCE_SCROLL_MIN_WIDTH_PX);
+  const charsPerLine = Math.max(
+    SOURCE_SCROLL_MIN_CHARS_PER_LINE,
+    Math.floor(availableWidth / (fontSize * SOURCE_SCROLL_AVG_CHAR_WIDTH_EM)),
+  );
   const visualLineCount = input.value
     .slice(0, index)
     .split("\n")
@@ -1161,7 +809,7 @@ function scrollTextareaToIndex(input, index) {
   const targetTop = layoutOffsetTop(input) - layoutOffsetTop(container) + visualLineCount * lineHeight;
   container.scrollTo({
     behavior: "smooth",
-    top: Math.max(0, targetTop - container.clientHeight * 0.32),
+    top: Math.max(0, targetTop - container.clientHeight * SOURCE_SCROLL_CONTEXT_RATIO),
   });
 }
 
@@ -1181,7 +829,7 @@ function scrollRenderedClauseToView(clauseId) {
   const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
   container.scrollTo({
     behavior: "smooth",
-    top: Math.max(0, targetTop - container.clientHeight * 0.24),
+    top: Math.max(0, targetTop - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO),
   });
 
   target.classList.remove("paragraph-pulse");
@@ -1231,10 +879,15 @@ async function loadPlaybook() {
 
 function setActiveTab(tabName) {
   tabButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === tabName);
+    const active = button.dataset.tab === tabName;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
   });
   views.forEach((view) => {
-    view.classList.toggle("active", view.dataset.view === tabName);
+    const active = view.dataset.view === tabName;
+    view.classList.toggle("active", active);
+    view.hidden = !active;
   });
 }
 
@@ -1244,7 +897,7 @@ function renderPlaybookList() {
       const selected = clause.id === state.selectedClauseId ? "selected" : "";
       const position = String(index + 1).padStart(2, "0");
       return `
-        <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}">
+        <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
           <span class="clause-number">${position}</span>
           <span>
             <strong>${escapeHtml(clause.name)}</strong>
@@ -1310,13 +963,4 @@ function renderClauseDetail() {
 
     ${approvedLaws}
   `;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }

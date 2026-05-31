@@ -28,7 +28,7 @@ jobs:
           node-version: "20"
 
       - name: Compile Python
-        run: python -m py_compile nda_automation/checker.py nda_automation/docx_text.py nda_automation/server.py
+        run: python -m py_compile nda_automation/*.py
 
       - name: Run Python tests
         run: python -m unittest discover -s tests
