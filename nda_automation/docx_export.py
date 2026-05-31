@@ -19,6 +19,7 @@ R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 INLINE_DIFF_MAX_MATRIX_CELLS = 40000
 INLINE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]")
@@ -96,6 +97,9 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 ),
                 "[Content_Types].xml": _content_types_xml_with_settings(
                     source_archive.read("[Content_Types].xml") if "[Content_Types].xml" in source_names else None
+                ),
+                "_rels/.rels": _package_rels_xml_with_document(
+                    source_archive.read("_rels/.rels") if "_rels/.rels" in source_names else None
                 ),
             }
 
@@ -668,6 +672,25 @@ def _package_rels_xml() -> str:
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
 </Relationships>"""
+
+
+def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
+    if relationships_xml:
+        relationships_root = ET.fromstring(relationships_xml)
+    else:
+        relationships_root = ET.Element(_rel_tag("Relationships"))
+
+    has_document = any(
+        relationship.attrib.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP_TYPE
+        for relationship in relationships_root.findall(_rel_tag("Relationship"))
+    )
+    if not has_document:
+        ET.SubElement(relationships_root, _rel_tag("Relationship"), {
+            "Id": _next_relationship_id(relationships_root),
+            "Type": OFFICE_DOCUMENT_RELATIONSHIP_TYPE,
+            "Target": "word/document.xml",
+        })
+    return _xml_bytes(relationships_root)
 
 
 def _document_rels_xml() -> str:

@@ -199,7 +199,7 @@ def revision_text_for_state(node, accepted):
     return "".join(revision_text_for_state(child, accepted) for child in list(node))
 
 
-def make_source_docx(paragraphs):
+def make_source_docx(paragraphs, include_package_rels=True):
     body = "".join(
         f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
         for paragraph in paragraphs
@@ -223,7 +223,8 @@ def make_source_docx(paragraphs):
     with BytesIO() as output:
         with ZipFile(output, "w", ZIP_DEFLATED) as archive:
             archive.writestr("[Content_Types].xml", content_types_xml)
-            archive.writestr("_rels/.rels", package_rels_xml)
+            if include_package_rels:
+                archive.writestr("_rels/.rels", package_rels_xml)
             archive.writestr("word/document.xml", document_xml)
             archive.writestr("word/_rels/document.xml.rels", document_rels_xml)
             archive.writestr("customXml/item1.xml", "<custom>preserved</custom>")
@@ -439,6 +440,18 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_export_repairs_missing_package_relationships(self):
+        source_docx = make_source_docx(
+            ["This Agreement shall be governed by the laws of California."],
+            include_package_rels=False,
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
 
     def test_source_docx_export_marks_paragraph_deletes_and_insertions(self):
         source_docx = make_source_docx([
