@@ -27,6 +27,12 @@ const RepositoryView = (() => {
 
     gmailSyncButton?.addEventListener("click", () => syncGmail({ button: gmailSyncButton }));
     repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
+    repositoryMatterPanel?.addEventListener("click", (event) => {
+      if (event.target === repositoryMatterPanel) closePanel();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && repositoryMatterPanel && !repositoryMatterPanel.hidden) closePanel();
+    });
 
     async function syncGmail({ button } = {}) {
       const control = button || gmailSyncButton;
@@ -175,90 +181,98 @@ const RepositoryView = (() => {
       const canSendRedline = MatterUtils.canSendRedline(matter) && !outboundDisabled;
       const confirmingSend = pendingSendMatterId === matter.id;
       repositoryMatterPanel.hidden = false;
-      repositoryWorkspace?.classList.add("detail-open");
+      repositoryWorkspace?.classList.remove("detail-open");
+      repositoryMatterPanel.setAttribute("aria-label", `Matter inspector for ${subject}`);
       repositoryMatterPanel.innerHTML = `
-        <header class="repository-detail-head">
-          <div>
-            <p class="repository-detail-kicker">${escapeHtml(sourceTypeLabel(matter.source_type))}</p>
-            <h2>${escapeHtml(subject)}</h2>
-          </div>
-          <button class="repository-detail-close" type="button" aria-label="Close matter panel">x</button>
-        </header>
-        <div class="repository-detail-status">
-          <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
-          <strong>${escapeHtml(boardColumnLabel(matter.board_column))}</strong>
-          <span>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</span>
-          <span>${escapeHtml(matter.redline_draft ? "Draft redline saved" : "No custom draft")}</span>
-        </div>
-        <section class="repository-detail-email">
-          <dl>
-            <div>
-              <dt>From</dt>
-              <dd>${escapeHtml(matterSender(matter))}</dd>
-            </div>
-            ${matter.gmail_account ? `
+        <section class="repository-inspector-dialog" aria-labelledby="repositoryInspectorTitle">
+          <header class="repository-detail-head">
+            <div class="repository-inspector-heading">
+              <span class="repository-inspector-icon" aria-hidden="true"></span>
               <div>
-                <dt>Inbound mailbox</dt>
-                <dd>${escapeHtml(matter.gmail_account)}</dd>
+                <p class="repository-detail-kicker">${escapeHtml(sourceTypeLabel(matter.source_type))}</p>
+                <h2 id="repositoryInspectorTitle">Matter Inspector</h2>
               </div>
-            ` : ""}
-            ${recipient ? `
-              <div>
-                <dt>Reply to</dt>
-                <dd>${escapeHtml(recipient)}</dd>
-              </div>
-            ` : ""}
-            <div>
-              <dt>Received</dt>
-              <dd>${escapeHtml(formatMatterDateTime(matter.received_at || matter.created_at) || "-")}</dd>
             </div>
-            <div>
-              <dt>Attachment</dt>
-              <dd>${escapeHtml(matter.attachment_filename || matter.source_filename || "-")}</dd>
-            </div>
-          </dl>
-          <p>${escapeHtml(matter.message_snippet || "No message preview available.")}</p>
-        </section>
-        <dl class="repository-detail-meta">
-          <div>
-            <dt>Next action</dt>
-            <dd>${escapeHtml(matter.next_action || "Review")}</dd>
+            <button class="repository-detail-close" type="button" aria-label="Close matter inspector">x</button>
+          </header>
+
+          <div class="repository-inspector-body">
+            <section class="repository-inspector-main" aria-label="Matter review details">
+              <section class="repository-inspector-section">
+                <p class="repository-inspector-section-title">Metadata Details</p>
+                <dl class="repository-detail-meta repository-detail-meta-grid">
+                  ${renderInspectorField("File name", matter.source_filename || matter.attachment_filename || subject)}
+                  ${renderInspectorField("Subject", subject)}
+                  ${renderInspectorField("Status", boardColumnLabel(matter.board_column))}
+                  ${renderInspectorField("Review route", triageLabel(matter.triage_status))}
+                  ${renderInspectorField("Date ingested", formatMatterDateTime(matter.created_at) || "-")}
+                  ${renderInspectorField("Last updated", formatMatterDateTime(matter.updated_at) || "-")}
+                </dl>
+              </section>
+
+              <section class="repository-inspector-section">
+                <p class="repository-inspector-section-title">Review Checks</p>
+                <div class="repository-check-grid">
+                  <div class="repository-check-card">
+                    <span>Pass checks</span>
+                    <strong>${Number(matter.requirements_passed || 0)} passed / ${Number(matter.requirements_failed || 0)} failed</strong>
+                  </div>
+                  <div class="repository-check-card">
+                    <span>Playbook match</span>
+                    <strong>${escapeHtml(playbookMatchLabel(matter, reviewResult))}</strong>
+                  </div>
+                  <div class="repository-check-card">
+                    <span>Issues</span>
+                    <strong>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</strong>
+                  </div>
+                  <div class="repository-check-card">
+                    <span>Redline draft</span>
+                    <strong>${escapeHtml(matter.redline_draft ? "Draft redline saved" : "No custom draft")}</strong>
+                  </div>
+                </div>
+              </section>
+
+              <section class="repository-detail-issues">
+                <h3>Key Failed Clauses</h3>
+                ${renderFailedClauses(failedClauses)}
+              </section>
+
+              ${renderSendComposer(matter, recipient, confirmingSend)}
+            </section>
+
+            <aside class="repository-inspector-side" aria-label="Matter routing and timeline">
+              <section class="repository-inspector-section">
+                <p class="repository-inspector-section-title">Gmail Routing</p>
+                <dl class="repository-detail-email">
+                  ${renderInspectorField("From", matterSender(matter))}
+                  ${renderInspectorField("Inbound mailbox", matter.gmail_account || "Manual repository intake")}
+                  ${renderInspectorField("Reply to", recipient || "No reply address detected")}
+                  ${renderInspectorField("Received", formatMatterDateTime(matter.received_at || matter.created_at) || "-")}
+                  ${renderInspectorField("Attachment", matter.attachment_filename || matter.source_filename || "-")}
+                  ${matter.last_outbound_at ? renderInspectorField("Last sent", formatMatterDateTime(matter.last_outbound_at) || "-") : ""}
+                  ${matter.last_outbound_account ? renderInspectorField("Last sent from", matter.last_outbound_account) : ""}
+                  ${matter.last_outbound_to ? renderInspectorField("Last sent to", matter.last_outbound_to) : ""}
+                </dl>
+                <p class="repository-message-preview">${escapeHtml(matter.message_snippet || "No message preview available.")}</p>
+              </section>
+
+              <section class="repository-inspector-section">
+                <p class="repository-inspector-section-title">Matter Timeline</p>
+                ${renderMatterTimeline(matter)}
+              </section>
+            </aside>
           </div>
-          <div>
-            <dt>Requirements</dt>
-            <dd>${Number(matter.requirements_passed || 0)} passed / ${Number(matter.requirements_failed || 0)} failed</dd>
-          </div>
-          ${matter.last_outbound_at ? `
-            <div>
-              <dt>Last sent</dt>
-              <dd>${escapeHtml(formatMatterDateTime(matter.last_outbound_at))}</dd>
+
+          <footer class="repository-inspector-footer">
+            <p class="repository-detail-message" aria-live="polite"></p>
+            <div class="repository-detail-actions">
+              <button type="button" class="repository-open-review">Open Review</button>
+              <button type="button" class="secondary repository-export-redline">Export Redline</button>
+              <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"}>${outboundDisabled ? "Outbound Off" : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
+              <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
             </div>
-          ` : ""}
-          ${matter.last_outbound_account ? `
-            <div>
-              <dt>Last sent from</dt>
-              <dd>${escapeHtml(matter.last_outbound_account)}</dd>
-            </div>
-          ` : ""}
-          ${matter.last_outbound_to ? `
-            <div>
-              <dt>Last sent to</dt>
-              <dd>${escapeHtml(matter.last_outbound_to)}</dd>
-            </div>
-          ` : ""}
-        </dl>
-        <section class="repository-detail-issues">
-          <h3>Key failed clauses</h3>
-          ${renderFailedClauses(failedClauses)}
+          </footer>
         </section>
-        ${renderSendComposer(matter, recipient, confirmingSend)}
-        <div class="repository-detail-actions">
-          <button type="button" class="repository-open-review">Open Review</button>
-          <button type="button" class="secondary repository-export-redline">Export Redline</button>
-          <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"}>${outboundDisabled ? "Outbound Off" : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
-          <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
-        </div>
-        <p class="repository-detail-message" aria-live="polite"></p>
       `;
       repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", closePanel);
       repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => openMatterInReview(matter));
@@ -567,6 +581,75 @@ const RepositoryView = (() => {
           </li>
         `).join("")}
       </ul>
+    `;
+  }
+
+  function renderInspectorField(label, value) {
+    const displayValue = value === undefined || value === null || value === "" ? "-" : String(value);
+    return `
+      <div>
+        <dt>${escapeHtml(label)}</dt>
+        <dd>${escapeHtml(displayValue)}</dd>
+      </div>
+    `;
+  }
+
+  function playbookMatchLabel(matter, reviewResult) {
+    const passed = Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0);
+    const failed = Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0);
+    const total = passed + failed;
+    if (!total) return "Not checked";
+    return `${Math.round((passed / total) * 100)}%`;
+  }
+
+  function renderMatterTimeline(matter) {
+    const reviewResult = matter.review_result || {};
+    const events = [
+      {
+        detail: matter.attachment_filename || matter.source_filename || "Document received for review.",
+        meta: formatMatterDateTime(matter.received_at || matter.created_at) || "-",
+        title: `${sourceTypeLabel(matter.source_type)} intake`,
+      },
+    ];
+    if (reviewResult.checked_at) {
+      events.push({
+        detail: `${Number(matter.requirements_passed || 0)} checks passed, ${Number(matter.requirements_failed || 0)} failed.`,
+        meta: formatMatterDateTime(reviewResult.checked_at) || "-",
+        title: "Playbook checks completed",
+      });
+    }
+    if (matter.redline_draft) {
+      events.push({
+        detail: "Custom redline decisions are saved for this matter.",
+        meta: formatMatterDateTime(matter.updated_at) || "-",
+        title: "Redline draft saved",
+      });
+    }
+    if (matter.last_outbound_at) {
+      events.push({
+        detail: `Sent to ${matter.last_outbound_to || "counterparty"} from ${matter.last_outbound_account || "outbound Gmail"}.`,
+        meta: formatMatterDateTime(matter.last_outbound_at) || "-",
+        title: "Outbound redline sent",
+      });
+    }
+    events.push({
+      detail: matter.next_action || "Review matter and decide next step.",
+      meta: boardColumnLabel(matter.board_column),
+      title: "Current next action",
+    });
+
+    return `
+      <ol class="repository-timeline">
+        ${events.map((event) => `
+          <li>
+            <div>
+              <strong>${escapeHtml(event.title)}</strong>
+              <span>${escapeHtml(event.meta)}</span>
+            </div>
+            <p>${escapeHtml(event.detail)}</p>
+          </li>
+        `).join("")}
+      </ol>
     `;
   }
 

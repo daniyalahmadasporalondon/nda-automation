@@ -545,6 +545,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("button", { name: "Close Matter", exact: true }).click();
   await waitForRepositoryCount(page, "redline_ready", "0");
   await waitForRepositoryCount(page, "signed_closed", "1");
+  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   await page.getByRole("button", { name: "Reset Demo" }).click();
   await waitForText(page, "#repositoryImportStatus", "Demo reset. Removed 1 matters.");
   await waitForRepositoryCount(page, "signed_closed", "0");
