@@ -335,6 +335,10 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
   await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "redline_ready", "0");
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "In Review");
+  assert.equal(await page.locator(".repository-card.active").count(), 1);
+  await page.getByRole("tab", { name: "Review" }).click();
 
   const [reviewMatterExportRequest, reviewMatterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),

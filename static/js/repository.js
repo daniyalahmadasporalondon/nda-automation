@@ -287,7 +287,10 @@ const RepositoryView = (() => {
     async function openMatterInReview(matter) {
       pendingSendMatterId = null;
       const updatedMatter = await moveMatterToColumn(matter.id, "in_review", { quiet: true });
-      loadMatterIntoReview(updatedMatter || matter);
+      selectedMatter = updatedMatter || matter;
+      renderBoard();
+      renderDetailPanel(selectedMatter);
+      loadMatterIntoReview(selectedMatter);
     }
 
     async function exportMatter(matter) {
