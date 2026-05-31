@@ -858,7 +858,7 @@ class ServerTests(unittest.TestCase):
         ]
         self.assertIn(("NON-DISCLOSURE AGREEMENT (NDA)", "Do you see problem?"), revision_states)
 
-    def test_selected_export_redline_rejects_blank_replace_like_manual_redline(self):
+    def test_manual_export_redline_rejects_blank_replace(self):
         redline = {
             "id": "blank-replace",
             "action": "replace_paragraph",
@@ -868,10 +868,9 @@ class ServerTests(unittest.TestCase):
             "replacement_text": "",
         }
 
-        self.assertIsNone(export_service.clean_export_redline(redline))
         self.assertIsNone(export_service.clean_manual_export_redline(redline))
 
-    def test_export_redline_cleaners_trim_direct_api_text_fields(self):
+    def test_manual_export_redline_cleaner_trims_direct_api_text_fields(self):
         redline = {
             "id": "manual-p1",
             "action": "replace_paragraph",
@@ -882,34 +881,11 @@ class ServerTests(unittest.TestCase):
             "insert_text": "  Insert paragraph.  ",
         }
 
-        selected = export_service.clean_export_redline(redline)
         manual = export_service.clean_manual_export_redline(redline)
 
-        self.assertEqual(selected["paragraph_id"], "p1")
-        self.assertEqual(selected["original_text"], "Old paragraph.")
-        self.assertEqual(selected["replacement_text"], "New paragraph.")
-        self.assertEqual(selected["anchor_text"], "Anchor paragraph.")
-        self.assertEqual(selected["insert_text"], "Insert paragraph.")
         self.assertEqual(manual["paragraph_id"], "p1")
         self.assertEqual(manual["original_text"], "Old paragraph.")
         self.assertEqual(manual["replacement_text"], "New paragraph.")
-
-    def test_selected_export_redline_drops_dead_metadata_but_keeps_report_templates(self):
-        cleaned = export_service.clean_export_redline({
-            "id": "template-replace",
-            "action": "replace_paragraph",
-            "paragraph_id": "p1",
-            "original_text": "Old law.",
-            "replacement_text": "New law.",
-            "target_position": "after_paragraph",
-            "selected_template_id": "unused-option-id",
-            "template_options": [{"id": "option-a", "label": "Option A", "text": "New law."}],
-        })
-
-        self.assertIsNotNone(cleaned)
-        self.assertNotIn("target_position", cleaned)
-        self.assertNotIn("selected_template_id", cleaned)
-        self.assertEqual(cleaned["template_options"][0]["id"], "option-a")
 
     def test_selected_export_redlines_rederive_text_server_side(self):
         malicious_selected_redline = {

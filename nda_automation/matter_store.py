@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -8,6 +9,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
+    fcntl = None
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ["NDA_DATA_DIR"]).expanduser() if os.environ.get("NDA_DATA_DIR") else ROOT / "data"
@@ -38,13 +44,13 @@ class MatterStoreError(RuntimeError):
 
 
 def list_matters() -> list[dict[str, Any]]:
-    with _MATTERS_LOCK:
+    with _locked_store():
         matters = _load_matters()
     return sorted(matters, key=lambda matter: str(matter.get("created_at") or ""), reverse=True)
 
 
 def get_matter(matter_id: str) -> dict[str, Any] | None:
-    with _MATTERS_LOCK:
+    with _locked_store():
         for matter in _load_matters():
             if matter.get("id") == matter_id:
                 return matter
@@ -55,16 +61,17 @@ def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
     stored_filename = str(matter.get("stored_filename") or "")
     if not stored_filename:
         return None
-    source_path = (UPLOADS_DIR / stored_filename).resolve()
-    if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
-        return None
-    return source_path.read_bytes()
+    with _locked_store():
+        source_path = (UPLOADS_DIR / stored_filename).resolve()
+        if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
+            return None
+        return source_path.read_bytes()
 
 
 def find_gmail_attachment(message_id: str, attachment_id: str) -> dict[str, Any] | None:
     if not message_id or not attachment_id:
         return None
-    with _MATTERS_LOCK:
+    with _locked_store():
         for matter in _load_matters():
             if matter.get("gmail_message_id") == message_id and matter.get("gmail_attachment_id") == attachment_id:
                 return matter
@@ -73,7 +80,7 @@ def find_gmail_attachment(message_id: str, attachment_id: str) -> dict[str, Any]
 
 def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
-    with _MATTERS_LOCK:
+    with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
             if matter.get("id") != matter_id:
@@ -96,7 +103,7 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, An
         return get_matter(matter_id)
 
     now = datetime.now(timezone.utc).isoformat()
-    with _MATTERS_LOCK:
+    with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
             if matter.get("id") != matter_id:
@@ -131,7 +138,7 @@ def create_matter(
     stored_filename = f"{matter_id}-{safe_source_name}"
     metadata = _intake_metadata(source_filename, now, intake_metadata)
 
-    with _MATTERS_LOCK:
+    with _locked_store():
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         (UPLOADS_DIR / stored_filename).write_bytes(document_bytes)
 
@@ -155,6 +162,20 @@ def create_matter(
         matters.append(matter)
         _save_matters(matters)
     return matter
+
+
+@contextmanager
+def _locked_store():
+    with _MATTERS_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with (DATA_DIR / "matters.lock").open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_matters() -> list[dict[str, Any]]:

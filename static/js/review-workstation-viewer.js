@@ -1,0 +1,336 @@
+function setupDocumentViewModes() {
+  const buttons = document.querySelectorAll(".studio-view-switch [data-view-mode]");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setDocumentViewMode(button.dataset.viewMode, { render: true });
+    });
+  });
+  updateDocumentViewModeButtons();
+}
+
+function setDocumentViewMode(mode, { render = false } = {}) {
+  if (!DOCUMENT_VIEW_MODES.includes(mode)) return;
+  if (state.documentViewMode === mode && render === false) {
+    updateDocumentViewModeButtons();
+    return;
+  }
+  state.documentViewMode = mode;
+  updateDocumentViewModeButtons();
+  if (render && state.reviewParagraphs.length && !studioDocumentRender.hidden) {
+    renderStudioDocumentHighlights();
+  }
+}
+
+function updateDocumentViewModeButtons() {
+  document.querySelectorAll(".studio-view-switch [data-view-mode]").forEach((button) => {
+    const active = button.dataset.viewMode === state.documentViewMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function bindViewerParagraphEditing() {
+  studioDocumentRender.querySelectorAll("[data-editable-paragraph-id]").forEach((editable) => {
+    editable.addEventListener("focus", () => {
+      editable.closest(".studio-doc-paragraph")?.classList.add("is-editing");
+    });
+    editable.addEventListener("blur", () => {
+      editable.closest(".studio-doc-paragraph")?.classList.remove("is-editing");
+    });
+    editable.addEventListener("input", () => {
+      syncViewerParagraphEdit(editable);
+    });
+    editable.addEventListener("paste", pastePlainText);
+  });
+}
+
+function syncViewerParagraphEdit(editable) {
+  const paragraphId = editable.dataset.editableParagraphId;
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  if (!paragraph) return;
+
+  paragraph.text = editableParagraphText(editable);
+  syncReviewSourceFromParagraphs();
+  updateManualRedlinePreview(editable, paragraph);
+  markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
+  studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
+  updateExportButtonState();
+}
+
+function updateManualRedlinePreview(editable, paragraph) {
+  const container = editable.closest(".studio-doc-paragraph");
+  if (!container) return;
+  const manualRedline = manualParagraphRedline(paragraph, state.reviewOriginalParagraphs);
+  const backendRedline = selectedBackendRedline(paragraph.id);
+  const hasBackendRedline = effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id);
+  syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });
+}
+
+function selectedBackendRedline(paragraphId) {
+  const paragraphRedlines = effectiveReviewRedlines().filter((edit) => edit.paragraph_id === paragraphId);
+  return paragraphRedlines.find((edit) => edit.clause_id === state.selectedReviewClauseId) || paragraphRedlines[0] || null;
+}
+
+function editableParagraphText(editable) {
+  return editable.innerText
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function syncReviewSourceFromParagraphs() {
+  const text = state.reviewParagraphs
+    .map((paragraph) => String(paragraph.text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  state.reviewSourceText = text;
+  setSourceText(text);
+}
+
+function markSourceEdited(message, { preserveSourceDocument = false } = {}) {
+  if (state.reviewClauses.length || state.reviewSourceText.trim()) {
+    state.reviewDirty = true;
+  }
+  if (state.selectedDocument && !preserveSourceDocument) {
+    state.selectedDocument = null;
+    fileInput.value = "";
+  }
+  if (message) {
+    setFileMeta(message);
+  }
+}
+
+function pastePlainText(event) {
+  const text = event.clipboardData?.getData("text/plain");
+  if (!text) return;
+  event.preventDefault();
+  insertPlainTextAtSelection(text);
+}
+
+function insertPlainTextAtSelection(text) {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+
+  const textNode = document.createTextNode(text);
+  range.insertNode(textNode);
+  range.setStartAfter(textNode);
+  range.setEndAfter(textNode);
+  range.collapse(false);
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function selectReviewClause(clauseId, options = {}) {
+  state.selectedReviewClauseId = clauseId;
+  renderStudioResult({ clauses: state.reviewClauses });
+
+  if (options.jump) {
+    const clause = state.reviewClauses.find((item) => item.id === clauseId);
+    requestAnimationFrame(() => jumpToClauseSource(clause));
+  }
+}
+
+function jumpToClauseSource(clause) {
+  if (!clause) return;
+
+  if (studioDocumentRender && !studioDocumentRender.hidden) {
+    scrollRenderedClauseToView(clause.id);
+    return;
+  }
+
+  if (!studioNdaText.value.trim() || !clause.matched_text) return;
+  const range = findExactTextRange(studioNdaText.value, clause.matched_text);
+  if (!range) return;
+  focusTextRange(studioNdaText, range.start, range.end);
+}
+
+function findExactTextRange(text, query) {
+  const exactStart = text.indexOf(query);
+  if (exactStart !== -1) {
+    return {
+      start: exactStart,
+      end: exactStart + query.length,
+    };
+  }
+
+  const searchIndex = createExactSearchIndex(text);
+  const normalizedQuery = normalizeExactSearch(query);
+  if (!normalizedQuery) return null;
+  const start = searchIndex.normalized.indexOf(normalizedQuery);
+  if (start === -1) return null;
+  const endIndex = Math.min(start + normalizedQuery.length - 1, searchIndex.map.length - 1);
+  return {
+    start: searchIndex.map[start],
+    end: searchIndex.map[endIndex] + 1,
+  };
+}
+
+function createExactSearchIndex(text) {
+  let normalized = "";
+  const map = [];
+  let previousWasSpace = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      if (normalized && !previousWasSpace) {
+        normalized += " ";
+        map.push(index);
+      }
+      previousWasSpace = true;
+      continue;
+    }
+    normalized += char;
+    map.push(index);
+    previousWasSpace = false;
+  }
+
+  return { normalized: normalized.trim(), map };
+}
+
+function normalizeExactSearch(value) {
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function focusTextRange(input, start, end) {
+  const safeStart = Math.max(0, Math.min(start, input.value.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, input.value.length));
+
+  try {
+    input.focus({ preventScroll: true });
+  } catch {
+    input.focus();
+  }
+
+  input.setSelectionRange(safeStart, safeEnd);
+  resizeSourceEditor(input);
+  scrollTextareaToIndex(input, safeStart);
+  pulseSourcePage(input);
+}
+
+function scrollTextareaToIndex(input, index) {
+  const style = window.getComputedStyle(input);
+  const fontSize = parseFloat(style.fontSize) || DEFAULT_FONT_SIZE_PX;
+  const lineHeight = parseFloat(style.lineHeight) || fontSize * LINE_HEIGHT_FALLBACK_MULTIPLIER;
+  const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const availableWidth = Math.max(input.clientWidth - paddingX, SOURCE_SCROLL_MIN_WIDTH_PX);
+  const charsPerLine = Math.max(
+    SOURCE_SCROLL_MIN_CHARS_PER_LINE,
+    Math.floor(availableWidth / (fontSize * SOURCE_SCROLL_AVG_CHAR_WIDTH_EM)),
+  );
+  const visualLineCount = input.value
+    .slice(0, index)
+    .split("\n")
+    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+
+  input.scrollTop = 0;
+
+  const container = input.closest(".studio-page-wrap");
+  if (!container) return;
+
+  const targetTop = layoutOffsetTop(input) - layoutOffsetTop(container) + visualLineCount * lineHeight;
+  container.scrollTo({
+    behavior: "smooth",
+    top: Math.max(0, targetTop - container.clientHeight * SOURCE_SCROLL_CONTEXT_RATIO),
+  });
+}
+
+function scrollRenderedClauseToView(clauseId) {
+  const container = studioDocumentRender.closest(".studio-page-wrap");
+  if (!container) return;
+
+  const targets = renderedClauseTargets(clauseId);
+  if (!targets.length) return;
+
+  const nextIndex = state.clauseJumpIndexes[clauseId] || 0;
+  const target = targets[nextIndex % targets.length];
+  state.clauseJumpIndexes[clauseId] = (nextIndex + 1) % targets.length;
+  if (!target) return;
+
+  const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
+  container.scrollTo({
+    behavior: "smooth",
+    top: Math.max(0, targetTop - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO),
+  });
+
+  target.classList.remove("paragraph-pulse");
+  void target.offsetWidth;
+  target.classList.add("paragraph-pulse");
+}
+
+function renderedClauseTargets(clauseId) {
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  const targetKeys = [];
+  (clause?.matched_paragraph_ids || []).forEach((paragraphId) => {
+    targetKeys.push({ type: "paragraph", id: paragraphId });
+  });
+  state.reviewRedlines
+    .filter((edit) => edit.clause_id === clauseId)
+    .forEach((edit) => {
+      if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH && edit.id) {
+        targetKeys.push({ type: "redline", id: edit.id });
+      } else if (edit.paragraph_id) {
+        targetKeys.push({ type: "paragraph", id: edit.paragraph_id });
+      }
+    });
+
+  const seen = new Set();
+  return targetKeys
+    .filter((target) => {
+      const key = `${target.type}:${target.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((target) => {
+      if (target.type === "redline") {
+        return studioDocumentRender.querySelector(`[data-redline-edit-id="${cssEscape(target.id)}"]`);
+      }
+      return studioDocumentRender.querySelector(`[data-paragraph-id="${cssEscape(target.id)}"]`);
+    })
+    .filter(Boolean);
+}
+
+function layoutOffsetTop(element) {
+  let offset = 0;
+  let current = element;
+
+  while (current) {
+    offset += current.offsetTop || 0;
+    current = current.offsetParent;
+  }
+
+  return offset;
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function pulseSourcePage(input) {
+  const page = input.closest(".studio-page");
+  if (!page) return;
+  page.classList.remove("source-jump");
+  void page.offsetWidth;
+  page.classList.add("source-jump");
+}
+
+function loadMatterIntoReview(matter) {
+  const reviewResult = matter.review_result || {};
+  state.selectedMatter = matter;
+  state.selectedDocument = null;
+  fileInput.value = "";
+  setSourceText(matter.extracted_text || reviewResult.extracted_text || "");
+  setSourcePlaceholder(SOURCE_PLACEHOLDER);
+  setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
+  setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`);
+  renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
+  setActiveTab("review");
+  requestAnimationFrame(resizeSourceEditors);
+}

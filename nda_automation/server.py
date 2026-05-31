@@ -32,23 +32,16 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        if path == "/":
-            self._send_file(STATIC_DIR / "index.html")
-            return
-        if path == "/playbook":
-            self._send_file(PLAYBOOK_PATH, "application/json")
-            return
-        if path == "/api/health":
-            self._send_json({"status": "ok"})
-            return
-        if path == "/api/gmail/status":
-            self._send_json({"gmail": gmail_integration.gmail_status()})
-            return
-        if path == "/api/matters":
-            try:
-                self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())})
-            except matter_store.MatterStoreError as error:
-                self._send_json({"error": str(error)}, status=500)
+        exact_routes = {
+            "/": lambda: self._send_file(STATIC_DIR / "index.html"),
+            "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json"),
+            "/api/health": lambda: self._send_json({"status": "ok"}),
+            "/api/gmail/status": lambda: self._send_json({"gmail": gmail_integration.gmail_status()}),
+            "/api/matters": self._handle_matter_list,
+        }
+        handler = exact_routes.get(path)
+        if handler is not None:
+            handler()
             return
         if path.startswith("/api/matters/"):
             matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
@@ -85,30 +78,31 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
-            if path == "/api/review":
-                self._handle_text_review()
-                return
-            if path == "/api/review-document":
-                self._handle_document_review()
-                return
-            if path in {"/api/matters", "/api/inbound/upload"}:
-                self._handle_matter_upload()
+            exact_routes = {
+                "/api/review": self._handle_text_review,
+                "/api/review-document": self._handle_document_review,
+                "/api/matters": self._handle_matter_upload,
+                "/api/inbound/upload": self._handle_matter_upload,
+                "/api/gmail/import": self._handle_gmail_import,
+                "/api/gmail/send-redline": self._handle_gmail_send_redline,
+                "/api/export-review-docx": self._handle_review_docx_export,
+            }
+            handler = exact_routes.get(path)
+            if handler is not None:
+                handler()
                 return
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 self._handle_matter_stage_update(path)
                 return
-            if path == "/api/gmail/import":
-                self._handle_gmail_import()
-                return
-            if path == "/api/gmail/send-redline":
-                self._handle_gmail_send_redline()
-                return
-            if path == "/api/export-review-docx":
-                self._handle_review_docx_export()
-                return
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
             self._send_playbook_template_error()
+        except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500)
+
+    def _handle_matter_list(self) -> None:
+        try:
+            self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())})
         except matter_store.MatterStoreError as error:
             self._send_json({"error": str(error)}, status=500)
 

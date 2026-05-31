@@ -94,43 +94,6 @@ def clean_manual_export_redline(redline: object) -> dict | None:
     return cleaned
 
 
-def clean_export_redline(redline: object) -> dict | None:
-    if not isinstance(redline, dict):
-        return None
-
-    common = _clean_export_redline_contract(
-        redline,
-        {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH},
-    )
-    if common is None:
-        return None
-
-    cleaned = {
-        key: value
-        for key, value in redline.items()
-        if key in {
-            "id",
-            "clause_id",
-            "clause_name",
-            "paragraph_id",
-            "paragraph_index",
-            "source_index",
-            "action",
-            "action_label",
-            "status",
-            "original_text",
-            "replacement_text",
-            "reason",
-            "anchor_text",
-            "insert_text",
-            "template_options",
-        }
-    }
-    cleaned.update(common)
-    _copy_redline_indexes(redline, cleaned, remove_invalid=True)
-    return cleaned
-
-
 def _server_redline_with_submitted_decision(server_redline: dict, submitted_redline: dict) -> dict:
     redline = _copy_jsonish_dict(server_redline)
     selected_option_id = _submitted_selected_template_option_id(submitted_redline)
