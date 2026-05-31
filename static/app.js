@@ -42,6 +42,7 @@ const state = {
   redlineDraftDirty: false,
   documentViewMode: VIEW_MODE_REDLINE,
   gmailLastSync: null,
+  gmailStatus: null,
 };
 let pendingReviewSendMatterId = null;
 let adminIntegrationsController;

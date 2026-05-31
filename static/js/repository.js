@@ -297,6 +297,7 @@ const RepositoryView = (() => {
           <h3>Key failed clauses</h3>
           ${renderFailedClauses(failedClauses)}
         </section>
+        ${renderSendComposer(matter, recipient, confirmingSend)}
         <div class="repository-detail-actions">
           <button type="button" class="repository-open-review">Open Review</button>
           <button type="button" class="secondary repository-export-redline">Export Redline</button>
@@ -378,11 +379,19 @@ const RepositoryView = (() => {
       if (pendingSendMatterId !== matter.id) {
         pendingSendMatterId = matter.id;
         renderDetailPanel(matter);
-        setPanelMessage(`Click Confirm Send to email the redline to ${recipient}.`);
+        setPanelMessage("Review outbound email details, then confirm send.");
         return;
       }
 
       const sendButton = repositoryMatterPanel?.querySelector(".repository-send-redline");
+      const subject = repositoryMatterPanel?.querySelector("#repositorySendSubject")?.value || "";
+      const body = repositoryMatterPanel?.querySelector("#repositorySendBody")?.value || "";
+      const sendPayload = {
+        matter_id: matter.id,
+        confirm_send: true,
+      };
+      if (subject.trim()) sendPayload.subject = subject;
+      if (body.trim()) sendPayload.body = body;
       setPanelMessage("");
       if (sendButton) {
         sendButton.disabled = true;
@@ -392,7 +401,7 @@ const RepositoryView = (() => {
         const response = await fetch("/api/gmail/send-redline", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ matter_id: matter.id, confirm_send: true }),
+          body: JSON.stringify(sendPayload),
         });
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Redline email could not send");
@@ -480,6 +489,7 @@ const RepositoryView = (() => {
     }
 
     function renderGmailStatus(status) {
+      state.gmailStatus = status;
       const inboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="inbound"]');
       const outboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="outbound"]');
       renderGmailAccountStatus(inboundNode, status.inbound);
@@ -519,6 +529,51 @@ const RepositoryView = (() => {
         .map(([label, count]) => `${count} ${label}`)
         .join(", ");
       return `skipped ${skipped.length} (${details})`;
+    }
+
+    function renderSendComposer(matter, recipient, confirmingSend) {
+      if (!confirmingSend) return "";
+      const subject = defaultOutboundSubject(matter);
+      const body = defaultOutboundBody(matter);
+      return `
+        <section class="repository-send-composer" aria-label="Outbound redline email">
+          <dl class="repository-send-route">
+            <div>
+              <dt>From</dt>
+              <dd>${escapeHtml(outboundAccountLabel())}</dd>
+            </div>
+            <div>
+              <dt>To</dt>
+              <dd>${escapeHtml(recipient)}</dd>
+            </div>
+          </dl>
+          <label class="repository-send-field" for="repositorySendSubject">
+            <span>Subject</span>
+            <input id="repositorySendSubject" type="text" value="${escapeHtml(subject)}" autocomplete="off">
+          </label>
+          <label class="repository-send-field" for="repositorySendBody">
+            <span>Message</span>
+            <textarea id="repositorySendBody" rows="7">${escapeHtml(body)}</textarea>
+          </label>
+        </section>
+      `;
+    }
+
+    function outboundAccountLabel() {
+      const outbound = state.gmailStatus?.outbound || {};
+      if (outbound.ready && outbound.email) return outbound.email;
+      return outbound.error || outbound.email || "Outbound Gmail not connected";
+    }
+
+    function defaultOutboundSubject(matter) {
+      const subject = String(matter.subject || matter.document_title || matter.source_filename || "NDA redline").trim();
+      if (!subject) return "Re: NDA redline";
+      return subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
+    }
+
+    function defaultOutboundBody(matter) {
+      const subject = matter.subject || matter.document_title || matter.source_filename || "the NDA";
+      return `Hi,\n\nPlease find attached the redlined version of ${subject}.\n\nBest,\nAspora Legal`;
     }
 
     return {

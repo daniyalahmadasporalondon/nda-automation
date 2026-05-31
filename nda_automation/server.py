@@ -40,6 +40,8 @@ MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_clos
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
 MAX_REDLINE_DRAFT_ITEMS = 200
+MAX_OUTBOUND_SUBJECT_CHARS = 240
+MAX_OUTBOUND_BODY_CHARS = 10_000
 _PLAYBOOK_LOCK = threading.RLock()
 
 
@@ -130,6 +132,24 @@ def _clean_dict_list(value: object) -> list[dict]:
             continue
         cleaned.append(json.loads(json.dumps(item)))
     return cleaned
+
+
+def _clean_outbound_subject(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split())
+    if not cleaned:
+        return None
+    return cleaned[:MAX_OUTBOUND_SUBJECT_CHARS]
+
+
+def _clean_outbound_body(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not cleaned:
+        return None
+    return cleaned[:MAX_OUTBOUND_BODY_CHARS]
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -462,6 +482,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if not gmail_integration.recipient_email(matter.get("sender")):
             self._send_json({"error": "Matter sender is not a valid email address."}, status=400)
             return
+        outbound_subject = _clean_outbound_subject(payload.get("subject"))
+        outbound_body = _clean_outbound_body(payload.get("body"))
 
         try:
             redline_export = redline_export_service.build_matter_redline(matter_id.strip(), payload)
@@ -476,7 +498,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            sent = gmail_integration.send_redline_email(matter, redline_export.data, redline_export.filename)
+            sent = gmail_integration.send_redline_email(
+                matter,
+                redline_export.data,
+                redline_export.filename,
+                body=outbound_body,
+                subject=outbound_subject,
+            )
         except gmail_integration.GmailIntegrationError as error:
             self._send_json({"error": str(error)}, status=503)
             return

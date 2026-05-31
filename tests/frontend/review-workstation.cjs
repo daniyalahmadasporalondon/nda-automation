@@ -40,6 +40,7 @@ const tests = [
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
+  ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
@@ -515,6 +516,148 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "signed_closed", "0");
 
   fs.rmSync(docxPath, { force: true });
+}
+
+async function testRepositoryOutboundSendComposer(page) {
+  let matter = {
+    id: "matter_send",
+    attachment_filename: "Counterparty NDA.docx",
+    board_column: "gmail_demo",
+    can_send_redline: true,
+    document_title: "Counterparty NDA",
+    gmail_account: "daniyal.ahmad@aspora.com",
+    issue_count: 1,
+    message_snippet: "Please review the attached NDA.",
+    next_action: "Review redline",
+    received_at: "2026-05-31T12:00:00+00:00",
+    recipient_email: "legal@example.com",
+    requirements_failed: 1,
+    requirements_passed: 5,
+    review_result: {
+      clauses: [{
+        id: "governing_law",
+        issue_label: "Present but wrong",
+        name: "Governing Law",
+        passes: false,
+      }],
+    },
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Counterparty NDA.docx",
+    source_type: "gmail_inbound",
+    subject: "Please review NDA",
+    triage_status: "needs_redline",
+  };
+  let capturedSendPayload = null;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: {
+            configured: true,
+            email: "daniyal.ahmad@aspora.com",
+            query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
+            ready: true,
+          },
+          outbound: {
+            configured: true,
+            email: "daniyal.ahmad@aspora.com",
+            ready: true,
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [matter] }),
+    });
+  });
+  await page.route("**/api/matters/matter_send", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter }),
+    });
+  });
+  await page.route("**/api/gmail/send-redline", async (route) => {
+    capturedSendPayload = route.request().postDataJSON();
+    matter = {
+      ...matter,
+      board_column: "redline_ready",
+      last_outbound_account: "daniyal.ahmad@aspora.com",
+      last_outbound_at: "2026-05-31T20:45:00+00:00",
+      last_outbound_filename: "Counterparty-NDA-redlined.docx",
+      last_outbound_message_id: "msg_outbound",
+      last_outbound_subject: capturedSendPayload.subject,
+      last_outbound_thread_id: "thread_outbound",
+      last_outbound_to: "legal@example.com",
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filename: "Counterparty-NDA-redlined.docx",
+        matter,
+        sent: {
+          message_id: "msg_outbound",
+          outbound_account: "daniyal.ahmad@aspora.com",
+          sent_at: "2026-05-31T20:45:00+00:00",
+          subject: capturedSendPayload.subject,
+          thread_id: "thread_outbound",
+          to: "legal@example.com",
+        },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  const panel = page.locator("#repositoryMatterPanel");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await panel.getByRole("button", { name: "Send Redline" }).click();
+  await page.waitForSelector("#repositorySendSubject");
+  await assertTextContains(panel, "daniyal.ahmad@aspora.com");
+  await assertTextContains(panel, "legal@example.com");
+  assert.equal(await page.locator("#repositorySendSubject").inputValue(), "Re: Please review NDA");
+  assert.equal(
+    await page.locator("#repositorySendBody").inputValue(),
+    "Hi,\n\nPlease find attached the redlined version of Please review NDA.\n\nBest,\nAspora Legal",
+  );
+
+  await page.locator("#repositorySendSubject").fill("Re: Please review NDA - Aspora redline");
+  await page.locator("#repositorySendBody").fill("Please see attached redline.");
+  const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
+  await panel.getByRole("button", { name: "Confirm Send" }).click();
+  await sendRequest;
+  await waitForText(page, "#repositoryMatterPanel", "Sent redline to legal@example.com.");
+  await waitForRepositoryCount(page, "redline_ready", "1");
+
+  assert.deepEqual(capturedSendPayload, {
+    matter_id: "matter_send",
+    confirm_send: true,
+    subject: "Re: Please review NDA - Aspora redline",
+    body: "Please see attached redline.",
+  });
+  await assertTextContains(panel, "LAST SENT FROM");
+  await assertTextContains(panel, "daniyal.ahmad@aspora.com");
+  await assertTextContains(panel, "LAST SENT TO");
+  await assertTextContains(panel, "legal@example.com");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_send");
+  await page.unroute("**/api/gmail/send-redline");
 }
 
 async function testMatterRedlineDraftPersistence(page) {

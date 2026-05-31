@@ -49,6 +49,7 @@ const AdminIntegrationsView = (() => {
     }
 
     function renderGmail(status, matters) {
+      state.gmailStatus = status;
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
       const ready = Boolean(inbound.ready && outbound.ready);

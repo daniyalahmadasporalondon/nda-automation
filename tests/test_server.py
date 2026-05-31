@@ -1133,7 +1133,7 @@ class ServerTests(unittest.TestCase):
                     "message_id": "msg_outbound",
                     "outbound_account": "outbound@example.com",
                     "sent_at": "2026-05-31T12:00:00+00:00",
-                    "subject": "Re: Review Email NDA",
+                    "subject": "Aspora redline Update",
                     "thread_id": "thr_inbound",
                     "to": "legal@example.com",
                 }) as send_redline_email:
@@ -1145,7 +1145,12 @@ class ServerTests(unittest.TestCase):
                     confirmed_status, confirmed_payload = self.request(
                         "POST",
                         "/api/gmail/send-redline",
-                        {"matter_id": matter_id, "confirm_send": True},
+                        {
+                            "matter_id": matter_id,
+                            "confirm_send": True,
+                            "subject": " Aspora redline\r\nUpdate ",
+                            "body": "\r\nAttached redline.\r\nThanks.\r\n",
+                        },
                     )
                     stored_matter = matter_store.get_matter(matter_id)
 
@@ -1158,12 +1163,15 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(confirmed_payload["matter"]["last_outbound_to"], "legal@example.com")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_account"], "outbound@example.com")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_message_id"], "msg_outbound")
+        self.assertEqual(confirmed_payload["matter"]["last_outbound_subject"], "Aspora redline Update")
         self.assertEqual(stored_matter["board_column"], "redline_ready")
         self.assertEqual(stored_matter["last_outbound_filename"], "Email-NDA-redlined.docx")
         send_redline_email.assert_called_once()
         _matter, attachment_bytes, attachment_filename = send_redline_email.call_args.args
         self.assertEqual(attachment_filename, "Email-NDA-redlined.docx")
         self.assertGreater(len(attachment_bytes), 1000)
+        self.assertEqual(send_redline_email.call_args.kwargs["subject"], "Aspora redline Update")
+        self.assertEqual(send_redline_email.call_args.kwargs["body"], "Attached redline.\nThanks.")
 
     def test_gmail_send_redline_applies_review_export_decisions(self):
         source_docx = make_docx([
