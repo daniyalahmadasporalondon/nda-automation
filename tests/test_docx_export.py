@@ -8,12 +8,12 @@ import xml.etree.ElementTree as ET
 
 from nda_automation.checker import review_nda
 from nda_automation.docx_export import (
-    _diff_text_operations,
     _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
     validate_docx_open_health,
 )
+from nda_automation.inline_diff import diff_text_operations
 from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -323,7 +323,7 @@ class DocxExportTests(unittest.TestCase):
         for vector in inline_diff_vectors():
             with self.subTest(vector["name"]):
                 original, replacement, expected_operations = expand_inline_diff_vector(vector)
-                self.assertEqual(_diff_text_operations(original, replacement), expected_operations)
+                self.assertEqual(diff_text_operations(original, replacement), expected_operations)
 
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):
         original = "This Agreement (California) applies."

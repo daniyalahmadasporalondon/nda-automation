@@ -436,9 +436,20 @@ class CheckerTests(unittest.TestCase):
             governing_law_redline["replacement_text"],
             "This Agreement shall be governed by the laws of England and Wales.",
         )
+        self.assertIn(
+            {"type": "delete", "token": "California"},
+            governing_law_redline["inline_diff_operations"],
+        )
+        self.assertIn(
+            {"type": "insert", "token": "England"},
+            governing_law_redline["inline_diff_operations"],
+        )
         self.assertEqual(
             [option["label"] for option in governing_law_redline["template_options"]],
             ["India", "Delaware", "England and Wales", "DIFC"],
+        )
+        self.assertTrue(
+            all(option["inline_diff_operations"] for option in governing_law_redline["template_options"])
         )
         self.assertNotIn("selected_template_id", governing_law_redline)
         self.assertEqual(

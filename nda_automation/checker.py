@@ -12,6 +12,7 @@ from .redline_actions import (
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
+from .inline_diff import diff_text_operation_dicts
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
@@ -1006,9 +1007,30 @@ def _redline_edit(
     if action == REDLINE_INSERT_AFTER_PARAGRAPH:
         edit["anchor_text"] = paragraph["text"]
         edit["insert_text"] = proposed_text
+    elif action == REDLINE_REPLACE_PARAGRAPH:
+        edit["inline_diff_operations"] = diff_text_operation_dicts(str(paragraph["text"]), proposed_text)
     if template_options:
-        edit["template_options"] = template_options
+        edit["template_options"] = _redline_template_options_with_diff(paragraph, action, template_options)
     return edit
+
+
+def _redline_template_options_with_diff(
+    paragraph: Paragraph,
+    action: str,
+    template_options: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    if action != REDLINE_REPLACE_PARAGRAPH:
+        return template_options
+    return [
+        {
+            **option,
+            "inline_diff_operations": diff_text_operation_dicts(
+                str(paragraph["text"]),
+                str(option.get("replacement_text") or option.get("text") or ""),
+            ),
+        }
+        for option in template_options
+    ]
 
 
 def _governing_law_redline(

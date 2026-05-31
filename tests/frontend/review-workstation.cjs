@@ -15,11 +15,6 @@ const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
-// Generated from inline_diff_vectors.source.json; use generate_inline_diff_vectors.mjs.
-const inlineDiffVectors = JSON.parse(fs.readFileSync(
-  path.join(ROOT, "tests", "fixtures", "inline_diff_vectors.json"),
-  "utf8",
-));
 const redlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
@@ -38,7 +33,7 @@ const allActionRedlineNda = [
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["surfaces review and export error details", testFailureUxDetails],
-  ["covers inline diff algorithm edge cases", testInlineDiffAlgorithmEdges],
+  ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
@@ -239,35 +234,8 @@ async function testFailureUxDetails(page) {
   await page.unroute("**/api/export-review-docx");
 }
 
-async function testInlineDiffAlgorithmEdges(page) {
+async function testInlineDiffOperationRendering(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  const operationsByVector = await page.evaluate((vectors) => {
-    const diffTextOperations = (original, replacement) => {
-      const oldTokens = tokenizeInlineDiff(original);
-      const newTokens = tokenizeInlineDiff(replacement);
-      if (!oldTokens.length) return newTokens.map((token) => ({ type: "insert", token }));
-      if (!newTokens.length) return oldTokens.map((token) => ({ type: "delete", token }));
-      if (oldTokens.length * newTokens.length > INLINE_DIFF_MAX_MATRIX_CELLS) {
-        return [
-          ...oldTokens.map((token) => ({ type: "delete", token })),
-          ...newTokens.map((token) => ({ type: "insert", token })),
-        ];
-      }
-      return diffTokenOperations(oldTokens, newTokens);
-    };
-    return vectors.map((vector) => {
-      return {
-        name: vector.name,
-        actual: diffTextOperations(vector.original, vector.replacement),
-        expected: vector.operations,
-      };
-    });
-  }, inlineDiffVectors);
-
-  for (const vector of operationsByVector) {
-    assert.deepEqual(vector.actual, vector.expected, vector.name);
-  }
-
   const cases = await page.evaluate(() => {
     const revisionState = (html) => {
       const container = document.createElement("div");
@@ -283,16 +251,32 @@ async function testInlineDiffAlgorithmEdges(page) {
         inserted: Array.from(container.querySelectorAll(".inline-ins")).map((node) => node.textContent),
       };
     };
-    const oldLong = Array.from({ length: 201 }, (_, index) => `old${index}`).join(" ");
-    const newLong = Array.from({ length: 200 }, (_, index) => `new${index}`).join(" ");
     return {
-      emptyInsert: revisionState(renderInlineDiff("", "Alpha, beta.")),
-      emptyDelete: revisionState(renderInlineDiff("Alpha, beta.", "")),
-      punctuation: revisionState(renderInlineDiff(
-        "This Agreement (California) applies.",
-        "This Agreement (England and Wales) applies.",
-      )),
-      fallback: revisionState(renderInlineDiff(oldLong, newLong)),
+      emptyInsert: revisionState(renderDiffOperations([
+        { type: "insert", token: "Alpha" },
+        { type: "insert", token: "," },
+        { type: "insert", token: "beta" },
+        { type: "insert", token: "." },
+      ])),
+      emptyDelete: revisionState(renderDiffOperations([
+        { type: "delete", token: "Alpha" },
+        { type: "delete", token: "," },
+        { type: "delete", token: "beta" },
+        { type: "delete", token: "." },
+      ])),
+      punctuation: revisionState(renderDiffOperations([
+        { type: "same", token: "This" },
+        { type: "same", token: "Agreement" },
+        { type: "same", token: "(" },
+        { type: "delete", token: "California" },
+        { type: "insert", token: "England" },
+        { type: "insert", token: "and" },
+        { type: "insert", token: "Wales" },
+        { type: "same", token: ")" },
+        { type: "same", token: "applies" },
+        { type: "same", token: "." },
+      ])),
+      fallback: revisionState(renderDiffOperations(fullReplacementOperations("Old paragraph.", "New paragraph."))),
     };
   });
 
@@ -311,12 +295,10 @@ async function testInlineDiffAlgorithmEdges(page) {
   assert.deepEqual(cases.punctuation.deleted, ["California"]);
   assert.deepEqual(cases.punctuation.inserted, ["England", " and", " Wales"]);
 
-  assert.equal(cases.fallback.deleted.length, 201);
-  assert.equal(cases.fallback.inserted.length, 200);
-  assert.equal(cases.fallback.deleted[0], "old0");
-  assert.equal(cases.fallback.inserted[0], "new0");
-  assert.match(cases.fallback.original, /^old0 old1/);
-  assert.match(cases.fallback.accepted, /^new0 new1/);
+  assert.equal(cases.fallback.original, "Old paragraph.");
+  assert.equal(cases.fallback.accepted, "New paragraph.");
+  assert.deepEqual(cases.fallback.deleted, ["Old paragraph."]);
+  assert.deepEqual(cases.fallback.inserted, ["New paragraph."]);
 }
 
 async function testBackendRedlineModes(page) {

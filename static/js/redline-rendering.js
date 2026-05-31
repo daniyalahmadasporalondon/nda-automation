@@ -228,9 +228,9 @@ function sideBySideParagraphColumns(paragraph, plan) {
     const original = String(plan.replace.original_text ?? paragraph.text ?? "");
     const replacement = String(plan.replace.replacement_text || "");
     return {
-      original: renderSideBySideDiffColumn(original, replacement, "original"),
+      original: renderSideBySideDiffColumn(original, replacement, "original", plan.replace),
       originalClass: "clause-sxs-col original removed",
-      latest: renderSideBySideDiffColumn(original, replacement, "latest"),
+      latest: renderSideBySideDiffColumn(original, replacement, "latest", plan.replace),
       latestClass: "clause-sxs-col latest inserted",
     };
   }
@@ -252,15 +252,8 @@ function sideBySideParagraphColumns(paragraph, plan) {
   };
 }
 
-function renderSideBySideDiffColumn(original, replacement, side) {
-  const oldTokens = tokenizeInlineDiff(original);
-  const newTokens = tokenizeInlineDiff(replacement);
-  const operations = oldTokens.length * newTokens.length > INLINE_DIFF_MAX_MATRIX_CELLS
-    ? [
-        ...oldTokens.map((token) => ({ type: "delete", token })),
-        ...newTokens.map((token) => ({ type: "insert", token })),
-      ]
-    : diffTokenOperations(oldTokens, newTokens);
+function renderSideBySideDiffColumn(original, replacement, side, edit = null) {
+  const operations = redlineDiffOperations(edit, original, replacement);
   const visibleOperations = operations.filter((operation) => (
     side === "original" ? operation.type !== "insert" : operation.type !== "delete"
   ));
@@ -311,7 +304,14 @@ function renderInlineRedline(paragraph, edit) {
   if (edit.action === REDLINE_DELETE_PARAGRAPH) {
     return `<span class="inline-del">${escapeHtml(original)}</span>`;
   }
-  return renderInlineDiff(original, String(edit.replacement_text || ""));
+  return renderDiffOperations(redlineDiffOperations(edit, original, String(edit.replacement_text || "")));
+}
+
+function redlineDiffOperations(edit, original, replacement) {
+  if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
+    return edit.inline_diff_operations;
+  }
+  return fullReplacementOperations(original, replacement);
 }
 
 function renderEditableParagraph(paragraph, extraClasses = []) {

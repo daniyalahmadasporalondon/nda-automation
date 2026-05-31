@@ -565,6 +565,11 @@ function applyTemplateSelectionToRedline(edit) {
   } else if (selectedReplacement.trim()) {
     nextEdit.replacement_text = selectedReplacement;
   }
+  if (Array.isArray(selectedOption.inline_diff_operations)) {
+    nextEdit.inline_diff_operations = selectedOption.inline_diff_operations;
+  } else {
+    delete nextEdit.inline_diff_operations;
+  }
   return nextEdit;
 }
 

@@ -159,6 +159,14 @@ class ServerTests(unittest.TestCase):
             else:
                 self.assertTrue(redline["original_text"].strip())
                 self.assertTrue(redline["replacement_text"].strip())
+                self.assertIn("inline_diff_operations", redline)
+                self.assertTrue(redline["inline_diff_operations"])
+                for operation in redline["inline_diff_operations"]:
+                    self.assertIn(operation["type"], {"same", "delete", "insert"})
+                    self.assertIsInstance(operation["token"], str)
+                for option in redline.get("template_options", []):
+                    self.assertIn("inline_diff_operations", option)
+                    self.assertTrue(option["inline_diff_operations"])
 
         if expects_docx_source:
             self.assertEqual(payload["source"]["type"], "docx")
