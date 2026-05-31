@@ -33,6 +33,7 @@ const allActionRedlineNda = [
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["surfaces review and export error details", testFailureUxDetails],
+  ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
@@ -232,6 +233,47 @@ async function testFailureUxDetails(page) {
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
   await page.unroute("**/api/export-review-docx");
+}
+
+async function testSavePickerGuardsAndFallbacks(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  const cases = await page.evaluate(async () => {
+    let callCount = 0;
+    const handle = { createWritable: async () => ({ write: async () => {}, close: async () => {} }) };
+    window.showSaveFilePicker = async () => {
+      callCount += 1;
+      return handle;
+    };
+
+    const webdriverFallback = await chooseExportSaveHandle("fallback.docx");
+    const pickedHandle = await chooseExportSaveHandle("picked.docx", { allowAutomation: true });
+
+    window.showSaveFilePicker = async () => {
+      const error = new Error("cancelled");
+      error.name = "AbortError";
+      throw error;
+    };
+    const cancelled = await chooseExportSaveHandle("cancelled.docx", { allowAutomation: true });
+
+    window.showSaveFilePicker = async () => {
+      throw new Error("not available");
+    };
+    const failedFallback = await chooseExportSaveHandle("failed.docx", { allowAutomation: true });
+
+    return {
+      callCount,
+      webdriverFallbackType: typeof webdriverFallback,
+      picked: pickedHandle === handle,
+      cancelled,
+      failedFallbackType: typeof failedFallback,
+    };
+  });
+
+  assert.equal(cases.callCount, 1);
+  assert.equal(cases.webdriverFallbackType, "undefined");
+  assert.equal(cases.picked, true);
+  assert.equal(cases.cancelled, null);
+  assert.equal(cases.failedFallbackType, "undefined");
 }
 
 async function testInlineDiffOperationRendering(page) {

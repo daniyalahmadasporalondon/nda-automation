@@ -354,6 +354,23 @@ class CheckerTests(unittest.TestCase):
             )
 
         self.assertEqual(validate_clause_evidence_trust(result, text), [])
+        self.assertEqual(result["evidence_trust"], {"status": "verified", "errors": []})
+
+    def test_review_flags_evidence_drift_without_failing_payload(self):
+        with patch(
+            "nda_automation.checker.validate_clause_evidence_trust",
+            return_value=["governing_law: matched_text does not equal matched source paragraphs"],
+        ):
+            result = review_nda("This Agreement shall be governed by the laws of California.")
+
+        self.assertEqual(result["evidence_trust"]["status"], "flagged")
+        self.assertEqual(
+            result["evidence_trust"]["errors"],
+            ["governing_law: matched_text does not equal matched source paragraphs"],
+        )
+        self.assertEqual(result["review_warnings"][0]["type"], "evidence_provenance_drift")
+        self.assertIn("clauses", result)
+        self.assertIn("redline_edits", result)
 
     def test_clause_evidence_trust_fails_loudly_on_drift(self):
         text = (

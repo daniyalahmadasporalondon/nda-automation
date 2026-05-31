@@ -25,6 +25,7 @@ const state = {
   reviewOriginalParagraphs: [],
   reviewParagraphs: [],
   reviewRedlines: [],
+  latestReviewResult: null,
   reviewDirty: false,
   reviewSourceText: "",
   selectedReviewClauseId: null,
@@ -242,8 +243,8 @@ function renderOperationError(error, fallbackMeta) {
   studioResultMeta.textContent = `${fallbackMeta}${details}`;
 }
 
-async function chooseExportSaveHandle(suggestedName) {
-  if (!shouldUseSaveFilePicker()) return undefined;
+async function chooseExportSaveHandle(suggestedName, options = {}) {
+  if (!shouldUseSaveFilePicker(options)) return undefined;
   try {
     return await window.showSaveFilePicker({
       suggestedName,
@@ -256,11 +257,11 @@ async function chooseExportSaveHandle(suggestedName) {
   }
 }
 
-function shouldUseSaveFilePicker() {
+function shouldUseSaveFilePicker({ allowAutomation = false } = {}) {
   return (
     typeof window.showSaveFilePicker === "function"
     && window.isSecureContext
-    && !navigator.webdriver
+    && (!navigator.webdriver || allowAutomation)
   );
 }
 
@@ -431,6 +432,7 @@ function showStudioDocumentRender() {
 }
 
 function renderResult(result, reviewedText) {
+  state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
   state.reviewOriginalParagraphs = state.reviewParagraphs.map((paragraph) => ({
@@ -450,6 +452,7 @@ function renderResult(result, reviewedText) {
 }
 
 function renderStudioEmpty() {
+  state.latestReviewResult = null;
   showStudioSourceEditor();
   studioClauseLane?.classList.add("awaiting-review");
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
@@ -486,9 +489,17 @@ function renderStudioSummary(clauses) {
   studioResultMark.textContent = failedCount ? "CHECK" : "PASS";
   studioResultMark.className = failedCount ? "check" : "pass";
   studioOverallTitle.textContent = failedCount ? "Does not meet requirements" : "Meets requirements";
-  studioResultMeta.textContent = failedCount
+  const warning = reviewWarningSummary();
+  studioResultMeta.textContent = warning || (failedCount
     ? `${failedCount} hard ${failedCount === 1 ? "clause needs" : "clauses need"} checking.`
-    : "All hard clauses are currently satisfied.";
+    : "All hard clauses are currently satisfied.");
+}
+
+function reviewWarningSummary() {
+  const trust = state.latestReviewResult?.evidence_trust;
+  if (trust?.status !== "flagged") return "";
+  const firstError = Array.isArray(trust.errors) && trust.errors.length ? ` ${trust.errors[0]}` : "";
+  return `Evidence provenance warning.${firstError}`;
 }
 
 function renderClauseExportState(clause, canDecide, included) {

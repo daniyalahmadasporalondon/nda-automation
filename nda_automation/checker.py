@@ -94,8 +94,21 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
     }
     evidence_errors = validate_clause_evidence_trust(result, source_text)
     if evidence_errors:
-        raise RuntimeError("Clause evidence provenance drift: " + "; ".join(evidence_errors))
+        _flag_evidence_trust_errors(result, evidence_errors)
+    else:
+        result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
+
+
+def _flag_evidence_trust_errors(result: Dict[str, object], errors: List[str]) -> None:
+    result["evidence_trust"] = {"status": "flagged", "errors": errors}
+    result["review_warnings"] = [
+        {
+            "type": "evidence_provenance_drift",
+            "message": "Clause evidence provenance drift detected.",
+            "details": errors,
+        }
+    ]
 
 
 def split_document_paragraphs(text: str) -> List[Paragraph]:

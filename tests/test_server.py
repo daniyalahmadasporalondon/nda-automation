@@ -94,6 +94,7 @@ class ServerTests(unittest.TestCase):
     def assert_review_payload_contract(self, payload, *, expects_docx_source=False):
         for key in ["overall_status", "checked_at", "requirements_passed", "requirements_failed", "paragraphs", "clauses", "redline_edits"]:
             self.assertIn(key, payload)
+        self.assertEqual(payload.get("evidence_trust"), {"status": "verified", "errors": []})
         self.assertIn(payload["overall_status"], {"meets_requirements", "does_not_meet_requirements"})
         self.assertIsInstance(payload["requirements_passed"], int)
         self.assertIsInstance(payload["requirements_failed"], int)
@@ -464,6 +465,35 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("target_position", cleaned)
         self.assertNotIn("selected_template_id", cleaned)
         self.assertEqual(cleaned["template_options"][0]["id"], "option-a")
+
+    def test_selected_export_redlines_rederive_text_server_side(self):
+        malicious_selected_redline = {
+            "id": "r1",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "source_index": 1,
+            "original_text": "Client supplied fake original.",
+            "replacement_text": "MALICIOUS CLIENT SUPPLIED REDLINE.",
+            "template_options": [
+                {"id": "governing_law_delaware", "selected": True, "text": "MALICIOUS TEMPLATE TEXT."}
+            ],
+        }
+
+        status, payload, _headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "text": "This Agreement shall be governed by the laws of California.",
+                "export_redline_edits": [malicious_selected_redline],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertNotIn("MALICIOUS", document_xml)
+        self.assertIn("Delaware", document_xml)
+        self.assertIn("California", document_xml)
 
     def test_review_docx_export_download_does_not_require_saved_copy(self):
         with patch.object(export_service, "EXPORTS_DIR", None):
