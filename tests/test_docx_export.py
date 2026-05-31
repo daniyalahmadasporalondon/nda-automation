@@ -508,7 +508,9 @@ class DocxExportTests(unittest.TestCase):
             ],
         }
 
-        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        with self.assertLogs("nda_automation.docx_export", level="WARNING") as logs:
+            redlined_docx = build_source_redline_docx(source_docx, review_result)
+        self.assertIn("unresolved or ambiguous anchor", "\n".join(logs.output))
 
         assert_docx_package_healthy(self, redlined_docx)
         _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
+LOGGER = logging.getLogger(__name__)
 
 
 class SourceParagraph(NamedTuple):
@@ -271,6 +273,12 @@ def _redlines_by_source_paragraph(
             continue
         source_paragraph = _resolve_source_paragraph(redline, source_paragraphs, review_paragraphs_by_id)
         if source_paragraph is None:
+            LOGGER.warning(
+                "Skipping source redline with unresolved or ambiguous anchor: id=%s action=%s paragraph_id=%s",
+                redline.get("id"),
+                redline.get("action"),
+                redline.get("paragraph_id"),
+            )
             continue
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
     return grouped
