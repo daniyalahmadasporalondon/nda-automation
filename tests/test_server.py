@@ -3,13 +3,14 @@ import http.client
 import json
 import threading
 import unittest
+from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from io import BytesIO
 from unittest.mock import patch
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
-from nda_automation.checker import ParagraphAlignmentError
+from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
@@ -63,6 +64,12 @@ class ServerTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def malformed_template_playbook(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["redline_template"] = "Custom survival language capped at {unknown_placeholder}."
+        return playbook
+
     def test_text_review_rejects_bad_json(self):
         status, payload = self.request(
             "POST",
@@ -90,6 +97,24 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("clauses", payload)
         self.assertIn("redline_edits", payload)
+
+    def test_text_review_reports_playbook_template_error(self):
+        with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+            status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
+
+    def test_text_review_reports_real_malformed_playbook_template(self):
+        with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
+            status, payload = self.request(
+                "POST",
+                "/api/review",
+                {"text": "The confidentiality obligations survive for seven (7) years."},
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_text_review_returns_structured_redline_edits(self):
         status, payload = self.request(
@@ -194,6 +219,28 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
 
+    def test_review_docx_export_reports_playbook_template_error(self):
+        with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+            status, payload = self.request(
+                "POST",
+                "/api/export-review-docx",
+                {"reviewed_text": "This Agreement shall be governed by the laws of California."},
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
+
+    def test_review_docx_export_reports_real_malformed_playbook_template(self):
+        with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
+            status, payload = self.request(
+                "POST",
+                "/api/export-review-docx",
+                {"reviewed_text": "The confidentiality obligations survive for seven (7) years."},
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
+
     def test_review_docx_export_preserves_word_source_index(self):
         extracted_paragraphs = [
             {"source_index": 8, "text": "Intro paragraph."},
@@ -221,7 +268,8 @@ class ServerTests(unittest.TestCase):
             for deletion in document_root.findall(".//w:del", W_NS)
         ]
         self.assertIn("source paragraph 12", document_xml)
-        self.assertTrue(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
+        self.assertTrue(any("California" in text for text in deletion_text))
+        self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
         self.assertNotIn("Stale browser text should not drive DOCX export.", document_xml)
 
     def test_review_docx_export_rejects_empty_text(self):
@@ -282,6 +330,39 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The extracted document paragraphs could not be aligned to the extracted text.")
+
+    def test_document_review_reports_playbook_template_error(self):
+        with patch.object(server_module, "extract_docx_paragraphs", return_value=[{"source_index": 1, "text": "Paragraph"}]):
+            with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+                status, payload = self.request(
+                    "POST",
+                    "/api/review-document",
+                    {
+                        "filename": "nda.docx",
+                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
+
+    def test_document_review_reports_real_malformed_playbook_template(self):
+        extracted_paragraphs = [
+            {"source_index": 1, "text": "The confidentiality obligations survive for seven (7) years."}
+        ]
+        with patch.object(server_module, "extract_docx_paragraphs", return_value=extracted_paragraphs):
+            with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
+                status, payload = self.request(
+                    "POST",
+                    "/api/review-document",
+                    {
+                        "filename": "nda.docx",
+                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_static_route_blocks_directory_traversal(self):
         status, payload = self.request("GET", "/static/../README.md")

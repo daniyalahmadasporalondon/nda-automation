@@ -9,13 +9,14 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, review_nda
+from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
 from .docx_export import DOCX_MIME, build_review_report_docx
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
@@ -46,16 +47,19 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path == "/api/review":
-            self._handle_text_review()
-            return
-        if path == "/api/review-document":
-            self._handle_document_review()
-            return
-        if path == "/api/export-review-docx":
-            self._handle_review_docx_export()
-            return
-        self._send_json({"error": "Not found"}, status=404)
+        try:
+            if path == "/api/review":
+                self._handle_text_review()
+                return
+            if path == "/api/review-document":
+                self._handle_document_review()
+                return
+            if path == "/api/export-review-docx":
+                self._handle_review_docx_export()
+                return
+            self._send_json({"error": "Not found"}, status=404)
+        except PlaybookTemplateError:
+            self._send_playbook_template_error()
 
     def _handle_text_review(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -222,6 +226,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_playbook_template_error(self) -> None:
+        self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
 
 
 def main() -> None:

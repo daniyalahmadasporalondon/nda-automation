@@ -313,6 +313,28 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("financial, employee, and source code", result_clause["what_to_fix"])
         self.assertNotIn("business", result_clause["what_to_fix"])
 
+    def test_confidential_information_exclusion_terms_come_from_playbook(self):
+        playbook = deepcopy(load_playbook())
+        confidential_information = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "confidential_information"
+        )
+        confidential_information["problematic_exclusion_terms"] = ["model weights"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda(
+                """
+                Confidential Information means any and all non-public business, financial, technical,
+                customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                by either party.
+
+                Confidential Information excludes model weights.
+                """
+            )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+
     def test_broad_confidentiality_exclusion_still_needs_review(self):
         result = review_nda(
             """
@@ -435,6 +457,42 @@ class CheckerTests(unittest.TestCase):
 
         redline = self.redline_for_clause(result, "governing_law")
         self.assertEqual(redline["replacement_text"], "This Agreement shall be governed by the laws of DIFC.")
+
+    def test_governing_law_anchor_terms_come_from_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["search_terms"] = ["subject to"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("This Agreement is subject to California.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
+    def test_term_context_terms_come_from_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["search_terms"] = ["hold period"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("The hold period is seven (7) years.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
+    def test_non_circumvention_terms_come_from_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        non_circumvention = next(clause for clause in playbook["clauses"] if clause["id"] == "non_circumvention")
+        non_circumvention["search_terms"] = ["direct approach"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("The Recipient shall not make a direct approach to introduced customers.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
 
     def test_missing_governing_law_creates_insert_redline_with_jurisdiction_options(self):
         result = review_nda("The parties will discuss a possible transaction.")

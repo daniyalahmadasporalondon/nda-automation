@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
 
+from .redline_actions import (
+    REDLINE_ACTION_LABELS,
+    REDLINE_DELETE_PARAGRAPH,
+    REDLINE_INSERT_AFTER_PARAGRAPH,
+    REDLINE_REPLACE_PARAGRAPH,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
 YEAR_WORDS = {
@@ -20,25 +27,6 @@ YEAR_WORDS = {
     "nine": 9,
     "ten": 10,
 }
-DEFAULT_CONFIDENTIAL_INFORMATION_CATEGORIES = [
-    "financial",
-    "business",
-    "technical",
-    "customer",
-    "employee",
-    "supplier",
-    "pricing",
-    "market",
-    "trade secret",
-    "proprietary",
-    "source code",
-]
-DEFAULT_PROBLEMATIC_EXCLUSION_TERMS = [
-    "residual knowledge",
-    "residuals",
-    "reverse engineer",
-    "reverse engineering",
-]
 CONFIDENTIAL_EXCLUSION_CONTEXT_PATTERNS = [
     r"\bexclusions?\b",
     r"\bdoes not include\b",
@@ -53,18 +41,6 @@ QUALIFIED_INDEPENDENT_DEVELOPMENT_PATTERN = (
     r"\bindependently developed\b.{0,160}\bwithout\s+(?:use|using|access|reference)\b|"
     r"\bwithout\s+(?:use|using|access|reference)\b.{0,160}\bindependently developed\b"
 )
-TERM_CONTEXT_PATTERNS = [
-    r"\bterm\b",
-    r"\bsurviv(?:e|es|ed|ing|al)\b",
-    r"\bconfidentiality obligations?\b",
-    r"\bcontinue(?:s|d)?\b",
-    r"\bremain(?:s|ed)?\s+in\s+effect\b",
-    r"\bin effect\b",
-    r"\bperiod of\b",
-    r"\bduration\b",
-    r"\bexpir(?:e|es|ed|ation)\b",
-    r"\beffective date\b",
-]
 YEAR_TERM_PATTERN = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,2}))(?:\s*\(\s*(\d{1,2})\s*\))?(?:\s*-\s*|\s+)years?\b"
 YEAR_TERM_EVIDENCE_PATTERN = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})(?:\s*\(\s*\d{1,2}\s*\))?(?:\s*-\s*|\s+)years?\b"
 MAX_EVIDENCE_PARAGRAPHS = 3
@@ -78,19 +54,11 @@ ISSUE_TYPE_LABELS = {
     ISSUE_TYPE_PRESENT_BUT_WRONG: "Present but wrong",
     ISSUE_TYPE_UNCLEAR: "Unclear",
 }
-REDLINE_REPLACE_PARAGRAPH = "replace_paragraph"
-REDLINE_DELETE_PARAGRAPH = "delete_paragraph"
-REDLINE_INSERT_AFTER_PARAGRAPH = "insert_after_paragraph"
-REDLINE_ACTION_LABELS = {
-    REDLINE_REPLACE_PARAGRAPH: "Replace paragraph",
-    REDLINE_DELETE_PARAGRAPH: "Remove paragraph",
-    REDLINE_INSERT_AFTER_PARAGRAPH: "Insert after paragraph",
-}
-
 ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 CheckFn = Callable[[str, str, Dict[str, object], List[Paragraph]], ClauseResult]
+RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 
 
 class ParagraphAlignmentError(ValueError):
@@ -208,6 +176,7 @@ def _add_paragraph(paragraphs: List[Paragraph], text: str, start: int, end: int)
 
 
 def _check_mutuality(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+    search_patterns = _clause_term_patterns(clause, "search_terms")
     mutual_patterns = [
         r"\bmutual\s+(?:non[- ]disclosure|confidentiality|nda)\b",
         r"\beach party\b",
@@ -231,7 +200,7 @@ def _check_mutuality(text: str, normalized: str, clause: Dict[str, object], para
     )
 
     if has_mutual_language and not one_way_language:
-        return _match(clause, "Mutual obligation language found.", _paragraph_matches(paragraphs, mutual_patterns))
+        return _match(clause, "Mutual obligation language found.", _paragraph_matches(paragraphs, mutual_patterns + search_patterns))
     if one_way_language:
         return _check(
             clause,
@@ -248,7 +217,7 @@ def _check_mutuality(text: str, normalized: str, clause: Dict[str, object], para
 
 
 def _check_confidential_information(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    categories = _clause_terms(clause, "definition_categories", DEFAULT_CONFIDENTIAL_INFORMATION_CATEGORIES)
+    categories = _clause_terms(clause, "definition_categories")
     category_label = _confidential_categories_label(categories)
     category_hits = [category for category in categories if category in normalized]
     broad_definition = "confidential information" in normalized and (
@@ -262,7 +231,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
     exclusion_paragraphs = _paragraph_matches(paragraphs, CONFIDENTIAL_EXCLUSION_CONTEXT_PATTERNS)
     problematic_exclusion_paragraphs = _problematic_confidential_exclusion_paragraphs(
         exclusion_paragraphs,
-        _clause_terms(clause, "problematic_exclusion_terms", DEFAULT_PROBLEMATIC_EXCLUSION_TERMS),
+        _clause_terms(clause, "problematic_exclusion_terms"),
     )
 
     if broad_definition and not problematic_exclusion_paragraphs:
@@ -280,7 +249,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
                 [],
                 what_to_fix=(
                     "Add a broad Confidential Information definition "
-                    f"covering non-public {category_label} information."
+                    f"covering non-public {category_label or 'required'} information."
                 ),
             )
         return _check(
@@ -289,7 +258,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
             _paragraph_matches(paragraphs, [r"confidential information"]),
             what_to_fix=(
                 "Broaden the Confidential Information definition "
-                f"to cover the required {category_label} categories."
+                f"to cover the required {category_label or 'playbook'} categories."
             ),
         )
     else:
@@ -305,7 +274,7 @@ def _check_confidential_information(text: str, normalized: str, clause: Dict[str
 
 
 def _check_governing_law(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    governing_anchor_patterns = [r"\bgoverning law\b", r"\bgoverned by\b", r"\blaws of\b"]
+    governing_anchor_patterns = _governing_anchor_patterns(clause)
     approved_patterns = [_literal_word_pattern(law) for law in _approved_laws(clause)]
     governing_paragraphs = _paragraph_matches(paragraphs, governing_anchor_patterns)
     approved_governing_paragraphs = [
@@ -334,7 +303,8 @@ def _check_governing_law(text: str, normalized: str, clause: Dict[str, object], 
 def _check_term_and_survival(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     max_years = _max_term_years(clause)
     cap_label = _year_count_label(max_years)
-    term_paragraphs = _paragraph_matches(paragraphs, TERM_CONTEXT_PATTERNS)
+    term_context_patterns = _term_context_patterns(clause)
+    term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     year_terms = _extract_year_terms(term_normalized)
     has_term_within_cap = any(1 <= years <= max_years for years in year_terms)
@@ -459,11 +429,45 @@ def _governing_law_missing_fix(clause: Dict[str, object]) -> str:
     return f"Add a governing law clause using {approved_law_label}."
 
 
-def _clause_terms(clause: Dict[str, object], field: str, default: Iterable[str]) -> List[str]:
-    values = clause.get(field, default)
+def _clause_terms(clause: Dict[str, object], field: str) -> List[str]:
+    values = clause.get(field, [])
     if not isinstance(values, list):
-        return [str(term).lower() for term in default]
-    return [str(term).lower() for term in values]
+        return []
+    return [str(term).lower().strip() for term in values if str(term).strip()]
+
+
+def _clause_term_patterns(clause: Dict[str, object], field: str) -> List[str]:
+    return [_literal_word_pattern(term) for term in _clause_terms(clause, field)]
+
+
+def _governing_anchor_patterns(clause: Dict[str, object]) -> List[str]:
+    approved_laws = {law.lower() for law in _approved_laws(clause)}
+    anchor_terms = [
+        term
+        for term in _clause_terms(clause, "search_terms")
+        if term not in approved_laws
+    ]
+    return [_literal_word_pattern(term) for term in anchor_terms]
+
+
+def _term_context_patterns(clause: Dict[str, object]) -> List[str]:
+    patterns = []
+    for term in _clause_terms(clause, "search_terms"):
+        if term in {"year", "years"}:
+            continue
+        if term.startswith("surviv"):
+            patterns.append(r"\bsurviv(?:e|es|ed|ing|al)\b")
+        else:
+            patterns.append(_literal_word_pattern(term))
+    return patterns
+
+
+def _signature_evidence_patterns(clause: Dict[str, object]) -> List[str]:
+    return [
+        _literal_word_pattern(term)
+        for term in _clause_terms(clause, "search_terms")
+        if term not in {"signature", "signatures"}
+    ]
 
 
 def _clause_template_text(
@@ -506,13 +510,7 @@ def _problematic_confidential_exclusion_paragraphs(
 
 
 def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    prohibited_patterns = [
-        r"\bnon[- ]circumvention\b",
-        r"\bcircumvent(?:ion|s|ed|ing)?\b",
-        r"\bintroduced parties\b",
-        r"\bsubstitute purpose\b",
-        r"\bexclusive dealing\b",
-    ]
+    prohibited_patterns = _clause_term_patterns(clause, "search_terms")
     prohibited_language = [pattern for pattern in prohibited_patterns if re.search(pattern, normalized)]
 
     if not prohibited_language:
@@ -526,7 +524,7 @@ def _check_non_circumvention(text: str, normalized: str, clause: Dict[str, objec
 
 
 def _check_signatures(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    signature_patterns = [r"(?m)^\s*For\s+", r"By\s*:", r"Title\s*:", r"Date\s*:"]
+    signature_patterns = _signature_evidence_patterns(clause)
     party_markers = len(re.findall(r"^\s*for\s+[a-z0-9&.,' -]{2,80}", text, flags=re.IGNORECASE | re.MULTILINE)) + len(re.findall(r"\bby\s*:", normalized))
     title_markers = len(re.findall(r"\btitle\s*:", normalized))
     date_markers = len(re.findall(r"\bdate\s*:", normalized)) + len(
@@ -694,18 +692,8 @@ def _redline_edits_for_clause(
     paragraphs_by_id: Dict[str, Paragraph],
     start_number: int,
 ) -> List[RedlineEdit]:
-    if clause["id"] == "governing_law":
-        edit = _governing_law_redline(clause, paragraphs_by_id, start_number)
-        return [edit] if edit else []
-    if clause["id"] == "term_and_survival":
-        edit = _term_and_survival_redline(clause, paragraphs_by_id, start_number)
-        return [edit] if edit else []
-    if clause["id"] == "non_circumvention":
-        return _non_circumvention_redlines(clause, paragraphs_by_id, start_number)
-    if clause["id"] == "signatures":
-        edit = _signatures_redline(clause, paragraphs_by_id, start_number)
-        return [edit] if edit else []
-    return []
+    builder = REDLINE_BUILDERS_BY_ID.get(str(clause["id"]))
+    return builder(clause, paragraphs_by_id, start_number) if builder else []
 
 
 def _is_present_but_wrong_check(clause: ClauseResult) -> bool:
@@ -817,6 +805,15 @@ def _governing_law_redline(
     )
 
 
+def _governing_law_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    edit = _governing_law_redline(clause, paragraphs_by_id, start_number)
+    return [edit] if edit else []
+
+
 def _term_and_survival_redline(
     clause: ClauseResult,
     paragraphs_by_id: Dict[str, Paragraph],
@@ -848,6 +845,15 @@ def _term_and_survival_redline(
         REDLINE_REPLACE_PARAGRAPH,
         replacement_text=_term_and_survival_replacement_text(clause),
     )
+
+
+def _term_and_survival_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    edit = _term_and_survival_redline(clause, paragraphs_by_id, start_number)
+    return [edit] if edit else []
 
 
 def _non_circumvention_redlines(
@@ -890,6 +896,39 @@ def _signatures_redline(
         REDLINE_INSERT_AFTER_PARAGRAPH,
         insert_text=_signature_block_template(clause),
     )
+
+
+def _signatures_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    edit = _signatures_redline(clause, paragraphs_by_id, start_number)
+    return [edit] if edit else []
+
+
+REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
+    ("governing_law", _governing_law_redlines),
+    ("term_and_survival", _term_and_survival_redlines),
+    ("non_circumvention", _non_circumvention_redlines),
+    ("signatures", _signatures_redlines),
+]
+REDLINE_BUILDERS_BY_ID: Dict[str, RedlineBuildFn] = dict(REDLINE_BUILDERS)
+
+
+def _validate_redline_registry() -> None:
+    builder_ids = [clause_id for clause_id, _builder in REDLINE_BUILDERS]
+    duplicate_builder_ids = sorted({clause_id for clause_id in builder_ids if builder_ids.count(clause_id) > 1})
+    if duplicate_builder_ids:
+        raise RuntimeError(f"Duplicate redline builder IDs: {', '.join(duplicate_builder_ids)}")
+
+    check_ids = {clause_id for clause_id, _check in CLAUSE_CHECKS}
+    unknown_builder_ids = sorted(set(builder_ids) - check_ids)
+    if unknown_builder_ids:
+        raise RuntimeError(f"Redline builders without checks: {', '.join(unknown_builder_ids)}")
+
+
+_validate_redline_registry()
 
 
 def _preferred_governing_law(clause: ClauseResult) -> str | None:
@@ -965,8 +1004,11 @@ def _status_passes_clause_type(status: str, clause: Dict[str, object]) -> bool:
 
 
 def _literal_word_pattern(value: str) -> str:
-    words = re.escape(value.lower()).replace(r"\ ", r"\s+")
-    return rf"\b{words}\b"
+    term = value.lower().strip()
+    words = re.escape(term).replace(r"\ ", r"\s+")
+    prefix = r"\b" if term and term[0].isalnum() else ""
+    suffix = r"\b" if term and term[-1].isalnum() else ""
+    return rf"{prefix}{words}{suffix}"
 
 
 def _paragraph_matches(paragraphs: Iterable[Paragraph], patterns: Iterable[str]) -> List[Paragraph]:

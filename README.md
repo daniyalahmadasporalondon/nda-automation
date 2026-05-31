@@ -26,6 +26,13 @@ http://127.0.0.1:8787
 python3 -m unittest discover -s tests
 ```
 
+Frontend behavior tests run the real app in Chromium and cover review view modes, viewer editing, redline rendering, and DOCX export:
+
+```bash
+npm install
+npm run test:frontend
+```
+
 ## Current checks
 
 - Mutual NDA obligations

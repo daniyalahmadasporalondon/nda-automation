@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
+
+from .redline_actions import (
+    REDLINE_DELETE_PARAGRAPH,
+    REDLINE_INSERT_AFTER_PARAGRAPH,
+    REDLINE_REPLACE_PARAGRAPH,
+)
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+INLINE_DIFF_CELL_LIMIT = 40000
+INLINE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]")
 
 ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
@@ -71,20 +80,22 @@ def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
         paragraph_id = str(paragraph.get("id", ""))
         paragraph_text = str(paragraph.get("text", ""))
         edits = redlines_by_paragraph.get(paragraph_id, [])
-        primary_edit = next((edit for edit in edits if edit.get("action") != "insert_after_paragraph"), None)
+        primary_edit = next((edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH), None)
 
-        if primary_edit and primary_edit.get("action") == "replace_paragraph":
-            output.append(_tracked_delete_paragraph(str(primary_edit.get("original_text") or paragraph_text), revision_id))
-            revision_id += 1
-            output.append(_tracked_insert_paragraph(str(primary_edit.get("replacement_text") or ""), revision_id))
-            revision_id += 1
-        elif primary_edit and primary_edit.get("action") == "delete_paragraph":
+        if primary_edit and primary_edit.get("action") == REDLINE_REPLACE_PARAGRAPH:
+            paragraph_xml, revision_id = _tracked_replace_paragraph(
+                str(primary_edit.get("original_text") or paragraph_text),
+                str(primary_edit.get("replacement_text") or ""),
+                revision_id,
+            )
+            output.append(paragraph_xml)
+        elif primary_edit and primary_edit.get("action") == REDLINE_DELETE_PARAGRAPH:
             output.append(_tracked_delete_paragraph(str(primary_edit.get("original_text") or paragraph_text), revision_id))
             revision_id += 1
         else:
             output.append(_paragraph(paragraph_text))
 
-        for insertion in [edit for edit in edits if edit.get("action") == "insert_after_paragraph"]:
+        for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
             for insert_paragraph in _tracked_insert_paragraphs(str(insertion.get("insert_text") or insertion.get("replacement_text") or ""), revision_id):
                 output.append(insert_paragraph)
                 revision_id += 1
@@ -128,10 +139,10 @@ def _redline_section(redline: RedlineEdit) -> List[str]:
         _label_value("Target", target or "No paragraph target identified."),
     ]
 
-    if redline.get("action") == "insert_after_paragraph":
+    if redline.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH:
         output.append(_label_value("Anchor paragraph", redline.get("anchor_text")))
         output.append(_label_value("Insert text", redline.get("insert_text") or redline.get("replacement_text")))
-    elif redline.get("action") == "delete_paragraph":
+    elif redline.get("action") == REDLINE_DELETE_PARAGRAPH:
         output.append(_label_value("Remove paragraph", redline.get("original_text")))
     else:
         output.append(_label_value("Original paragraph", redline.get("original_text")))
@@ -204,6 +215,54 @@ def _tracked_insert_paragraph(text: str, revision_id: int) -> str:
     return f"<w:p>{_tracked_insert(text, revision_id)}</w:p>"
 
 
+def _tracked_replace_paragraph(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
+    runs: List[str] = []
+    revision_id = first_revision_id
+    current_type = ""
+    current_parts: List[str] = []
+    previous_original_token = ""
+    previous_accepted_token = ""
+
+    def flush_current() -> None:
+        nonlocal revision_id, current_type, current_parts
+        if not current_parts:
+            return
+        text = "".join(current_parts)
+        if current_type == "delete":
+            runs.append(_tracked_delete(text, revision_id))
+            revision_id += 1
+        elif current_type == "insert":
+            runs.append(_tracked_insert(text, revision_id))
+            revision_id += 1
+        else:
+            runs.append(_run(text))
+        current_parts = []
+
+    for operation_type, token in _diff_text_operations(original, replacement):
+        if operation_type != current_type:
+            flush_current()
+            current_type = operation_type
+        if operation_type == "delete":
+            prefix = " " if _needs_inline_space(previous_original_token, token) else ""
+            previous_original_token = token
+        elif operation_type == "insert":
+            prefix = " " if _needs_inline_space(previous_accepted_token, token) else ""
+            previous_accepted_token = token
+        else:
+            prefix = (
+                " "
+                if _needs_inline_space(previous_original_token, token)
+                or _needs_inline_space(previous_accepted_token, token)
+                else ""
+            )
+            previous_original_token = token
+            previous_accepted_token = token
+        current_parts.append(f"{prefix}{token}")
+
+    flush_current()
+    return f"<w:p>{''.join(runs)}</w:p>", revision_id
+
+
 def _tracked_insert_paragraphs(text: str, first_revision_id: int) -> List[str]:
     blocks = [block for block in str(text).split("\n\n") if block.strip()]
     if not blocks:
@@ -229,6 +288,68 @@ def _deleted_run(text: str) -> str:
             parts.append("<w:br/>")
         parts.append(f'<w:delText xml:space="preserve">{_escape_xml(line)}</w:delText>')
     return f"<w:r>{''.join(parts)}</w:r>"
+
+
+def _diff_text_operations(original: str, replacement: str) -> List[Tuple[str, str]]:
+    old_tokens = _tokenize_inline_diff(original)
+    new_tokens = _tokenize_inline_diff(replacement)
+    if not old_tokens:
+        return [("insert", token) for token in new_tokens]
+    if not new_tokens:
+        return [("delete", token) for token in old_tokens]
+    if len(old_tokens) * len(new_tokens) > INLINE_DIFF_CELL_LIMIT:
+        return [("delete", token) for token in old_tokens] + [("insert", token) for token in new_tokens]
+    return _diff_token_operations(old_tokens, new_tokens)
+
+
+def _tokenize_inline_diff(text: str) -> List[str]:
+    return INLINE_TOKEN_PATTERN.findall(str(text or ""))
+
+
+def _diff_token_operations(old_tokens: List[str], new_tokens: List[str]) -> List[Tuple[str, str]]:
+    row_count = len(old_tokens) + 1
+    column_count = len(new_tokens) + 1
+    dp = [[0] * column_count for _ in range(row_count)]
+
+    for old_index in range(len(old_tokens) - 1, -1, -1):
+        for new_index in range(len(new_tokens) - 1, -1, -1):
+            if old_tokens[old_index] == new_tokens[new_index]:
+                dp[old_index][new_index] = dp[old_index + 1][new_index + 1] + 1
+            else:
+                dp[old_index][new_index] = max(dp[old_index + 1][new_index], dp[old_index][new_index + 1])
+
+    operations: List[Tuple[str, str]] = []
+    old_index = 0
+    new_index = 0
+    while old_index < len(old_tokens) and new_index < len(new_tokens):
+        if old_tokens[old_index] == new_tokens[new_index]:
+            operations.append(("same", old_tokens[old_index]))
+            old_index += 1
+            new_index += 1
+        elif dp[old_index + 1][new_index] >= dp[old_index][new_index + 1]:
+            operations.append(("delete", old_tokens[old_index]))
+            old_index += 1
+        else:
+            operations.append(("insert", new_tokens[new_index]))
+            new_index += 1
+
+    while old_index < len(old_tokens):
+        operations.append(("delete", old_tokens[old_index]))
+        old_index += 1
+    while new_index < len(new_tokens):
+        operations.append(("insert", new_tokens[new_index]))
+        new_index += 1
+    return operations
+
+
+def _needs_inline_space(previous_token: str, token: str) -> bool:
+    if not previous_token:
+        return False
+    if re.match(r"^[,.;:!?%)]$", token):
+        return False
+    if re.match(r"^[(]$", previous_token):
+        return False
+    return True
 
 
 def _revision_attrs(revision_id: int) -> str:

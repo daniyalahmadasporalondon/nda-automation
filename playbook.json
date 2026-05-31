@@ -89,7 +89,14 @@
         "term",
         "survive",
         "survival",
+        "continue",
+        "continues",
+        "remain in effect",
+        "in effect",
         "period",
+        "duration",
+        "expiration",
+        "effective date",
         "years"
       ],
       "acceptable_language": "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period."
@@ -104,6 +111,7 @@
         "non circumvention",
         "circumvent",
         "introduced parties",
+        "substitute purpose",
         "exclusive dealing"
       ],
       "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."

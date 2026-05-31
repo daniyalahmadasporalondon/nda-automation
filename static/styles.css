@@ -1,11 +1,17 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
 /* ===========================================================================
    Aspora Clause Studio — Review Workstation
    Modeled on the Legal Review Portal workstation: flat white top bar, compact
    scale, fixed viewport, document pane scrolls internally.
    Display: PP Neue Corp Compact · UI/body/doc: Inter
    =========================================================================== */
+
+@font-face {
+  font-display: swap;
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  src: url("/static/assets/fonts/InterVariable.woff2") format("woff2");
+}
 
 @font-face {
   font-display: swap;
@@ -745,29 +751,45 @@ h3 {
   text-decoration-thickness: 2px;
 }
 
-.paragraph-diff {
-  white-space: pre-wrap;
+.paragraph-redline-preview {
+  cursor: pointer;
+  line-height: 1.72;
 }
 
-.paragraph-diff-removed {
-  opacity: 0.82;
+.paragraph-source-editor {
+  border-top: 1px solid rgba(245, 158, 11, 0.2);
+  display: none;
+  margin-top: 10px;
+  padding-top: 10px;
 }
 
-.diff-del {
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: 3px;
-  color: #b42318;
-  padding: 0 1px;
+.studio-doc-paragraph.selected .paragraph-source-editor,
+.studio-doc-paragraph.is-editing .paragraph-source-editor {
+  display: block;
+}
+
+.paragraph-source-editor .paragraph-editable {
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 0 0 1px rgba(85, 35, 178, 0.08);
+}
+
+.inline-del,
+.inline-ins {
+  border-radius: 4px;
+  padding: 0 2px;
+}
+
+.inline-del {
+  background: rgba(239, 68, 68, 0.12);
+  color: #a21d16;
   text-decoration: line-through;
   text-decoration-color: var(--red);
-  text-decoration-thickness: 2px;
+  text-decoration-thickness: 1.6px;
 }
 
-.diff-ins {
-  background: rgba(16, 185, 129, 0.18);
-  border-radius: 3px;
+.inline-ins {
+  background: rgba(16, 185, 129, 0.16);
   color: #05603a;
-  padding: 0 1px;
 }
 
 .studio-doc-paragraph.has-clause {
@@ -790,6 +812,12 @@ h3 {
   background: #fffaf0;
   border-left-color: var(--amber);
   box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.24);
+}
+
+.studio-doc-paragraph.manual-redline {
+  background: var(--violet-bg);
+  border-left-color: var(--violet);
+  box-shadow: inset 0 0 0 1px var(--violet-border);
 }
 
 .studio-doc-paragraph.selected {

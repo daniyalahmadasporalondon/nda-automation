@@ -30,6 +30,7 @@ const state = {
   selectedClauseId: null,
   selectedDocument: null,
   reviewClauses: [],
+  reviewOriginalParagraphs: [],
   reviewParagraphs: [],
   reviewRedlines: [],
   reviewDirty: false,
@@ -102,6 +103,7 @@ function clearReview() {
 
 function resetReviewResults() {
   state.reviewClauses = [];
+  state.reviewOriginalParagraphs = [];
   state.reviewParagraphs = [];
   state.reviewRedlines = [];
   state.reviewDirty = false;
@@ -317,6 +319,10 @@ function showStudioDocumentRender() {
 function renderResult(result, reviewedText) {
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
+  state.reviewOriginalParagraphs = state.reviewParagraphs.map((paragraph) => ({
+    id: paragraph.id,
+    text: String(paragraph.text || ""),
+  }));
   state.reviewRedlines = result.redline_edits || [];
   state.reviewDirty = false;
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
@@ -624,24 +630,28 @@ function renderStudioDocumentHighlights() {
       const linked = mergeClauses(clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
       const selected = linked.find((clause) => clause.id === state.selectedReviewClauseId);
       const ids = linked.map((clause) => clause.id).join(" ");
+      const manualRedline = manualParagraphRedline(paragraph);
 
       if (viewMode === "clean") {
-        return renderCleanParagraph(paragraph, redlines, { ids, selected: Boolean(selected) });
+        return renderCleanParagraph(paragraph, redlines, { ids, selected: Boolean(selected) }, manualRedline);
       }
       if (viewMode === "sidebyside") {
-        return renderSideBySideParagraph(paragraph, redlines, { ids, selected: Boolean(selected) });
+        return renderSideBySideParagraph(paragraph, redlines, { ids, selected: Boolean(selected) }, manualRedline);
       }
 
       const primary = selected || linked.find((clause) => !clausePasses(clause)) || linked[0];
       const selectedRedline = redlines.find((edit) => edit.clause_id === state.selectedReviewClauseId);
-      const primaryRedline = selectedRedline || redlines[0];
-      const visibleRedlines = redlines.every(isInsertionRedline)
+      const primaryRedline = manualRedline || selectedRedline || redlines[0];
+      const visibleRedlines = manualRedline
+        ? redlines.filter(isInsertionRedline)
+        : redlines.every(isInsertionRedline)
         ? (selectedRedline ? [selectedRedline] : redlines)
         : (primaryRedline ? [primaryRedline] : []);
       const classes = [
         "studio-doc-paragraph",
         linked.length ? "has-clause" : "",
-        redlines.length ? "has-redline" : "",
+        redlines.length || manualRedline ? "has-redline" : "",
+        manualRedline ? "manual-redline" : "",
         primaryRedline?.action === "delete_paragraph" ? "redline-delete" : "",
         primaryRedline?.action === "insert_after_paragraph" ? "redline-insert" : "",
         primary && !clausePasses(primary) ? "verify" : "",
@@ -683,9 +693,13 @@ function setupDocumentViewModes() {
   });
 }
 
-function paragraphRedlinePlan(paragraph, redlines) {
-  const replace = redlines.find((edit) => edit.action === "replace_paragraph");
-  const remove = redlines.find((edit) => edit.action === "delete_paragraph");
+function paragraphRedlinePlan(paragraph, redlines, manualRedline = null) {
+  const replace = manualRedline?.action === "replace_paragraph"
+    ? manualRedline
+    : redlines.find((edit) => edit.action === "replace_paragraph");
+  const remove = manualRedline?.action === "delete_paragraph"
+    ? manualRedline
+    : redlines.find((edit) => edit.action === "delete_paragraph");
   const inserts = redlines.filter((edit) => edit.action === "insert_after_paragraph");
   const cleanText = remove
     ? ""
@@ -695,8 +709,8 @@ function paragraphRedlinePlan(paragraph, redlines) {
   return { replace, remove, inserts, cleanText };
 }
 
-function renderCleanParagraph(paragraph, redlines, context) {
-  const plan = paragraphRedlinePlan(paragraph, redlines);
+function renderCleanParagraph(paragraph, redlines, context, manualRedline = null) {
+  const plan = paragraphRedlinePlan(paragraph, redlines, manualRedline);
   let html = "";
   if (!plan.remove) {
     const classes = ["studio-doc-paragraph", "doc-clean-paragraph", context.selected ? "selected" : ""]
@@ -711,87 +725,190 @@ function renderCleanParagraph(paragraph, redlines, context) {
   return html;
 }
 
-function renderSideBySideParagraph(paragraph, redlines, context) {
-  const plan = paragraphRedlinePlan(paragraph, redlines);
-  const original = escapeHtml(String(paragraph.text || ""));
-  const latest = plan.remove
-    ? `<span class="sxs-removed">${original}</span>`
-    : escapeHtml(plan.cleanText) || `<span class="sxs-empty">—</span>`;
+function renderSideBySideParagraph(paragraph, redlines, context, manualRedline = null) {
+  const plan = paragraphRedlinePlan(paragraph, redlines, manualRedline);
+  const original = escapeHtml(originalParagraphText(paragraph));
+  const redlined = renderSideBySideRedline(paragraph, plan) || `<span class="sxs-empty">—</span>`;
   const classes = ["studio-doc-paragraph", "doc-sxs-paragraph", context.selected ? "selected" : ""]
     .filter(Boolean)
     .join(" ");
-  let html = `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div>${original}</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Latest</span><div>${latest}</div></div></div></div>`;
+  let html = `<div class="${classes}" data-paragraph-id="${escapeHtml(paragraph.id)}" data-clause-ids="${escapeHtml(context.ids)}"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div>${original}</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div>${redlined}</div></div></div></div>`;
   plan.inserts.forEach((edit) => {
     const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
-    html += `<div class="studio-doc-paragraph doc-sxs-paragraph"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">—</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Latest</span><div class="sxs-inserted">${inserted}</div></div></div></div>`;
+    html += `<div class="studio-doc-paragraph doc-sxs-paragraph"><div class="clause-sxs"><div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">—</div></div><div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div><span class="inline-ins">${inserted}</span></div></div></div></div>`;
   });
   return html;
 }
 
 function renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines) {
-  if (primaryRedline?.action === "replace_paragraph") {
-    return `<div class="paragraph-diff" contenteditable="false">${renderWordDiff(paragraph.text, primaryRedline.replacement_text || "")}</div>`;
-  }
-  if (primaryRedline?.action === "delete_paragraph") {
-    return `<div class="paragraph-diff paragraph-diff-removed" contenteditable="false"><span class="diff-del">${escapeHtml(String(paragraph.text || ""))}</span></div><div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(primaryRedline))}</span></div>`;
+  const editableParagraph = renderEditableParagraph(paragraph);
+  if (primaryRedline?.action === "replace_paragraph" || primaryRedline?.action === "delete_paragraph") {
+    const replacement = primaryRedline.action === "replace_paragraph" && !primaryRedline.is_manual
+      ? renderRedlineReplacement(primaryRedline, "span")
+      : "";
+    const insertionHtml = visibleRedlines.filter(isInsertionRedline).map(renderParagraphInsertion).join("");
+    return `<div class="paragraph-redline-preview" contenteditable="false">${renderInlineRedline(paragraph, primaryRedline)}</div><div class="paragraph-source-editor">${editableParagraph}</div><div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(primaryRedline))}</span>${replacement}</div>${insertionHtml}`;
   }
   const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(paragraph, visibleRedlines) : "";
-  return `
-        <div
-          class="paragraph-editable"
-          contenteditable="plaintext-only"
-          spellcheck="true"
-          role="textbox"
-          aria-multiline="true"
-          data-editable-paragraph-id="${escapeHtml(paragraph.id)}"
-          aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}"
-        >${escapeHtml(String(paragraph.text || ""))}</div>
-        ${redlineHtml}
-      `;
+  return `<div class="paragraph-redline-preview local-edit-preview" contenteditable="false" hidden></div>${editableParagraph}${redlineHtml}`;
 }
 
-function tokenizeForDiff(text) {
-  return String(text || "").match(/\s+|\S+/g) || [];
+function renderSideBySideRedline(paragraph, plan) {
+  if (plan.replace) {
+    return renderInlineRedline(paragraph, plan.replace);
+  }
+  if (plan.remove) {
+    return `<span class="inline-del">${escapeHtml(String(paragraph.text || ""))}</span>`;
+  }
+  return escapeHtml(String(paragraph.text || ""));
 }
 
-function renderWordDiff(oldText, newText) {
-  const a = tokenizeForDiff(oldText);
-  const b = tokenizeForDiff(newText);
-  const m = a.length;
-  const n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i -= 1) {
-    for (let j = n - 1; j >= 0; j -= 1) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+function manualParagraphRedline(paragraph) {
+  const original = originalParagraphText(paragraph);
+  const current = String(paragraph.text || "");
+  if (current === original) return null;
+  const action = current.trim() ? "replace_paragraph" : "delete_paragraph";
+  return {
+    action,
+    action_label: current.trim() ? "Your edit" : "Delete paragraph",
+    is_manual: true,
+    original_text: original,
+    paragraph_id: paragraph.id,
+    paragraph_index: paragraph.index,
+    replacement_text: current,
+  };
+}
+
+function originalParagraphText(paragraph) {
+  const original = state.reviewOriginalParagraphs.find((item) => item.id === paragraph.id);
+  return original ? String(original.text || "") : String(paragraph.text || "");
+}
+
+function renderInlineRedline(paragraph, edit) {
+  const original = String(edit.original_text ?? paragraph.text ?? "");
+  if (edit.action === "delete_paragraph") {
+    return `<span class="inline-del">${escapeHtml(original)}</span>`;
+  }
+  return renderInlineDiff(original, String(edit.replacement_text || ""));
+}
+
+const INLINE_DIFF_CELL_LIMIT = 40000;
+
+function renderInlineDiff(original, replacement) {
+  const oldTokens = tokenizeInlineDiff(original);
+  const newTokens = tokenizeInlineDiff(replacement);
+  if (!oldTokens.length) return renderInlineTokens(newTokens, "inline-ins");
+  if (!newTokens.length) return renderInlineTokens(oldTokens, "inline-del");
+  if (oldTokens.length * newTokens.length > INLINE_DIFF_CELL_LIMIT) {
+    return `${renderInlineTokens(oldTokens, "inline-del")}${renderInlineTokens(newTokens, "inline-ins")}`;
+  }
+
+  return renderDiffOperations(diffTokenOperations(oldTokens, newTokens));
+}
+
+function tokenizeInlineDiff(text) {
+  return String(text || "").match(/[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]/g) || [];
+}
+
+function diffTokenOperations(oldTokens, newTokens) {
+  const rowCount = oldTokens.length + 1;
+  const columnCount = newTokens.length + 1;
+  const dp = Array.from({ length: rowCount }, () => new Array(columnCount).fill(0));
+
+  for (let oldIndex = oldTokens.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newTokens.length - 1; newIndex >= 0; newIndex -= 1) {
+      dp[oldIndex][newIndex] = oldTokens[oldIndex] === newTokens[newIndex]
+        ? dp[oldIndex + 1][newIndex + 1] + 1
+        : Math.max(dp[oldIndex + 1][newIndex], dp[oldIndex][newIndex + 1]);
     }
   }
-  const del = (token) => (token.trim() ? `<span class="diff-del">${escapeHtml(token)}</span>` : escapeHtml(token));
-  const ins = (token) => (token.trim() ? `<span class="diff-ins">${escapeHtml(token)}</span>` : escapeHtml(token));
-  let i = 0;
-  let j = 0;
-  let html = "";
-  while (i < m && j < n) {
-    if (a[i] === b[j]) {
-      html += escapeHtml(a[i]);
-      i += 1;
-      j += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      html += del(a[i]);
-      i += 1;
+
+  const operations = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+  while (oldIndex < oldTokens.length && newIndex < newTokens.length) {
+    if (oldTokens[oldIndex] === newTokens[newIndex]) {
+      operations.push({ type: "same", token: oldTokens[oldIndex] });
+      oldIndex += 1;
+      newIndex += 1;
+    } else if (dp[oldIndex + 1][newIndex] >= dp[oldIndex][newIndex + 1]) {
+      operations.push({ type: "delete", token: oldTokens[oldIndex] });
+      oldIndex += 1;
     } else {
-      html += ins(b[j]);
-      j += 1;
+      operations.push({ type: "insert", token: newTokens[newIndex] });
+      newIndex += 1;
     }
   }
-  while (i < m) {
-    html += del(a[i]);
-    i += 1;
+  while (oldIndex < oldTokens.length) {
+    operations.push({ type: "delete", token: oldTokens[oldIndex] });
+    oldIndex += 1;
   }
-  while (j < n) {
-    html += ins(b[j]);
-    j += 1;
+  while (newIndex < newTokens.length) {
+    operations.push({ type: "insert", token: newTokens[newIndex] });
+    newIndex += 1;
   }
-  return html;
+  return operations;
+}
+
+function renderDiffOperations(operations) {
+  let previousOriginalToken = "";
+  let previousAcceptedToken = "";
+  return operations
+    .map((operation) => {
+      const className = operation.type === "delete"
+        ? "inline-del"
+        : operation.type === "insert"
+          ? "inline-ins"
+          : "";
+      if (operation.type === "delete") {
+        const token = `${needsInlineSpace(previousOriginalToken, operation.token) ? " " : ""}${operation.token}`;
+        previousOriginalToken = operation.token;
+        return renderInlineToken(token, className);
+      }
+      if (operation.type === "insert") {
+        const token = `${needsInlineSpace(previousAcceptedToken, operation.token) ? " " : ""}${operation.token}`;
+        previousAcceptedToken = operation.token;
+        return renderInlineToken(token, className);
+      }
+      const prefix = needsInlineSpace(previousOriginalToken, operation.token) || needsInlineSpace(previousAcceptedToken, operation.token)
+        ? " "
+        : "";
+      previousOriginalToken = operation.token;
+      previousAcceptedToken = operation.token;
+      return `${prefix}${renderInlineToken(operation.token, className)}`;
+    })
+    .join("");
+}
+
+function renderInlineTokens(tokens, className) {
+  let previousToken = "";
+  return tokens
+    .map((token) => {
+      const prefix = needsInlineSpace(previousToken, token) ? " " : "";
+      const html = className
+        ? renderInlineToken(`${prefix}${token}`, className)
+        : `${prefix}${renderInlineToken(token, className)}`;
+      previousToken = token;
+      return html;
+    })
+    .join("");
+}
+
+function renderInlineToken(token, className) {
+  const escapedToken = escapeHtml(token);
+  return className ? `<span class="${className}">${escapedToken}</span>` : escapedToken;
+}
+
+function needsInlineSpace(previousToken, token) {
+  if (!previousToken) return false;
+  if (/^[,.;:!?%)]$/.test(token)) return false;
+  if (/^[(]$/.test(previousToken)) return false;
+  return true;
+}
+
+function renderEditableParagraph(paragraph, extraClasses = []) {
+  const classes = ["paragraph-editable", ...extraClasses].filter(Boolean).join(" ");
+  return `<div class="${classes}" contenteditable="plaintext-only" spellcheck="true" role="textbox" aria-multiline="true" data-editable-paragraph-id="${escapeHtml(paragraph.id)}" aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}">${escapeHtml(String(paragraph.text || ""))}</div>`;
 }
 
 function bindViewerParagraphEditing() {
@@ -816,9 +933,40 @@ function syncViewerParagraphEdit(editable) {
 
   paragraph.text = editableParagraphText(editable);
   syncReviewSourceFromParagraphs();
+  updateManualRedlinePreview(editable, paragraph);
   markSourceEdited("Edited in viewer");
   studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
   updateExportButtonState();
+}
+
+function updateManualRedlinePreview(editable, paragraph) {
+  const container = editable.closest(".studio-doc-paragraph");
+  if (!container) return;
+  const manualRedline = manualParagraphRedline(paragraph);
+  const preview = container.querySelector(".paragraph-redline-preview");
+  const backendRedline = selectedBackendRedline(paragraph.id);
+  const hasBackendRedline = state.reviewRedlines.some((edit) => edit.paragraph_id === paragraph.id);
+
+  container.classList.toggle("manual-redline", Boolean(manualRedline));
+  container.classList.toggle("has-redline", Boolean(manualRedline) || hasBackendRedline);
+  if (!preview) return;
+
+  const previewRedline = manualRedline || backendRedline;
+  preview.hidden = !previewRedline;
+  preview.innerHTML = previewRedline ? renderInlineRedline(paragraph, previewRedline) : "";
+  const label = container.querySelector(".paragraph-redline-note .redline-label");
+  if (label) {
+    label.textContent = redlineActionLabel(manualRedline || backendRedline || {});
+  }
+  const backendReplacement = container.querySelector(".paragraph-redline-note .redline-replacement");
+  if (backendReplacement) {
+    backendReplacement.hidden = Boolean(manualRedline);
+  }
+}
+
+function selectedBackendRedline(paragraphId) {
+  const paragraphRedlines = state.reviewRedlines.filter((edit) => edit.paragraph_id === paragraphId);
+  return paragraphRedlines.find((edit) => edit.clause_id === state.selectedReviewClauseId) || paragraphRedlines[0] || null;
 }
 
 function editableParagraphText(editable) {
@@ -877,21 +1025,11 @@ function renderParagraphRedline(paragraph, edit) {
     return renderParagraphInsertion(edit);
   }
 
-  return `
-    <div class="paragraph-redline-note" contenteditable="false">
-      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
-      ${renderRedlineReplacement(edit, "span")}
-    </div>
-  `;
+  return `<div class="paragraph-redline-note" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>${renderRedlineReplacement(edit, "span")}</div>`;
 }
 
 function renderParagraphInsertion(edit) {
-  return `
-    <div class="paragraph-insertion" contenteditable="false">
-      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
-      <span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span>
-    </div>
-  `;
+  return `<div class="paragraph-insertion" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
 }
 
 function redlineActionLabel(edit) {
