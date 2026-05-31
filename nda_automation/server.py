@@ -16,7 +16,8 @@ from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-EXPORTS_DIR = ROOT / "exports"
+DEFAULT_EXPORTS_DIR = Path.home() / "Desktop" / "NDA Exports"
+EXPORTS_DIR = Path(os.environ.get("NDA_EXPORTS_DIR", DEFAULT_EXPORTS_DIR)).expanduser()
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 MAX_SAVED_EXPORTS = 25
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."

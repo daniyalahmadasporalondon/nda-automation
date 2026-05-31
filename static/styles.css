@@ -377,8 +377,8 @@ h3 {
   align-items: center;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-xs);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
   display: flex;
   flex: 0 0 auto;
   gap: 22px;

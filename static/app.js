@@ -191,10 +191,16 @@ async function exportReviewDocx() {
       const payload = await response.json();
       throw new Error(payload.error || "Export could not run");
     }
-    const blob = await response.blob();
     const filename = downloadFilename(response) || "nda-review-report.docx";
-    downloadBlob(blob, filename);
-    renderExportSuccess(filename, response.headers.get("X-Export-Path"), response.headers.get("X-Export-URL"));
+    const savedPath = response.headers.get("X-Export-Path");
+    const savedUrl = response.headers.get("X-Export-URL");
+    renderExportSuccess(filename, savedPath, savedUrl);
+    if (savedUrl) {
+      downloadUrl(savedUrl, filename);
+    } else {
+      const blob = await response.blob();
+      downloadBlob(blob, filename);
+    }
   } catch (error) {
     studioOverallTitle.textContent = error.message;
     studioResultMark.textContent = "!";
@@ -231,13 +237,17 @@ async function fileToBase64(file) {
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
+  downloadUrl(url, filename);
+  window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_DELAY_MS);
+}
+
+function downloadUrl(url, filename) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_DELAY_MS);
 }
 
 function renderExportSuccess(filename, savedPath, savedUrl) {

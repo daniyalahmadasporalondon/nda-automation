@@ -230,6 +230,15 @@ class ServerTests(unittest.TestCase):
         self.assertGreaterEqual(len(document_root.findall(".//w:del", W_NS)), 1)
         self.assertGreaterEqual(len(document_root.findall(".//w:ins", W_NS)), 1)
 
+    def test_default_export_dir_is_desktop_not_project_exports(self):
+        self.assertEqual(
+            server_module.DEFAULT_EXPORTS_DIR,
+            server_module.Path.home() / "Desktop" / "NDA Exports",
+        )
+        if "NDA_EXPORTS_DIR" not in os.environ:
+            self.assertEqual(server_module.EXPORTS_DIR, server_module.DEFAULT_EXPORTS_DIR)
+            self.assertNotEqual(server_module.EXPORTS_DIR, server_module.ROOT / "exports")
+
     def test_review_docx_export_text_path_uses_reviewed_text(self):
         status, payload, _headers = self.request_with_headers(
             "POST",

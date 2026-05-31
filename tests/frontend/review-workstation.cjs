@@ -75,7 +75,11 @@ async function main() {
 function startServer() {
   const server = spawn(PYTHON, ["-m", "nda_automation.server", "--port", String(PORT)], {
     cwd: ROOT,
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    env: {
+      ...process.env,
+      NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
+      PYTHONUNBUFFERED: "1",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   server.stdout.on("data", (chunk) => process.stdout.write(`[server] ${chunk}`));
@@ -157,6 +161,15 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
+  const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      borderRadius: styles.borderRadius,
+      boxShadow: styles.boxShadow,
+    };
+  });
+  assert.equal(matterCardStyles.borderRadius, "12px");
+  assert.match(matterCardStyles.boxShadow, /43, 12, 110/);
 
   await page.getByRole("tab", { name: "Clauses" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
