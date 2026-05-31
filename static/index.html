@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=53">
+    <link rel="stylesheet" href="/static/styles.css?v=54">
   </head>
   <body>
     <div class="app-shell">
@@ -51,7 +51,15 @@
 
           <section class="studio-grid">
             <aside class="studio-clauses" aria-label="Studio clause map">
-              <p class="eyebrow">clauses</p>
+              <div class="studio-clause-head">
+                <div>
+                  <p class="eyebrow">clauses</p>
+                  <strong id="studioMatchSummary">0/6</strong>
+                </div>
+                <span id="studioResultMark">-</span>
+              </div>
+              <p id="studioOverallTitle" class="studio-lane-title">Awaiting review</p>
+              <p id="studioResultMeta" class="studio-lane-meta" aria-live="polite">No hard-clause review has run yet.</p>
               <div class="studio-clause-list" id="studioClauseLane"></div>
             </aside>
 
@@ -74,26 +82,8 @@
               </div>
             </section>
 
-            <aside class="studio-playbook" aria-label="Checklist and selected clauses">
-              <h2>Checklist</h2>
-              <section class="studio-card studio-check-card">
-                <p class="eyebrow">checklist</p>
-                <div class="studio-verdict-line">
-                  <strong id="studioResultMark">-</strong>
-                  <div>
-                    <h3 id="studioOverallTitle">Awaiting review</h3>
-                    <p id="studioResultMeta" aria-live="polite">No hard-clause review has run yet.</p>
-                  </div>
-                </div>
-                <div class="studio-match-line">
-                  <strong id="studioMatchSummary">0/6</strong>
-                  <span>clauses checked</span>
-                </div>
-              </section>
-              <section class="studio-card">
-                <p class="eyebrow">selected clauses</p>
-                <div class="studio-issue-list" id="studioIssueList"></div>
-              </section>
+            <aside class="studio-playbook" aria-label="Selected clause details">
+              <h2>Selected Clause</h2>
               <section class="studio-card" id="studioDetailPanel">
                 <p class="eyebrow">selected clause</p>
                 <p>No review yet.</p>
@@ -130,11 +120,11 @@
       </section>
     </div>
 
-    <script src="/static/js/config.js?v=53"></script>
-    <script src="/static/js/html-utils.js?v=53"></script>
-    <script src="/static/js/clause-status.js?v=53"></script>
-    <script src="/static/js/inline-diff.js?v=53"></script>
-    <script src="/static/js/redline-rendering.js?v=53"></script>
-    <script src="/static/app.js?v=53"></script>
+    <script src="/static/js/config.js?v=54"></script>
+    <script src="/static/js/html-utils.js?v=54"></script>
+    <script src="/static/js/clause-status.js?v=54"></script>
+    <script src="/static/js/inline-diff.js?v=54"></script>
+    <script src="/static/js/redline-rendering.js?v=54"></script>
+    <script src="/static/app.js?v=54"></script>
   </body>
 </html>

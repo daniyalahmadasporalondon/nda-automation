@@ -6,9 +6,7 @@ const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioReviewButton = document.querySelector("#studioReviewButton");
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioClearButton = document.querySelector("#studioClearButton");
-const studioCheckCard = document.querySelector(".studio-check-card");
 const studioClauseLane = document.querySelector("#studioClauseLane");
-const studioIssueList = document.querySelector("#studioIssueList");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioMatchSummary = document.querySelector("#studioMatchSummary");
 const studioOverallTitle = document.querySelector("#studioOverallTitle");
@@ -438,15 +436,13 @@ function renderResult(result, reviewedText) {
 }
 
 function renderStudioEmpty() {
-  if (!studioIssueList) return;
   showStudioSourceEditor();
-  studioCheckCard?.classList.add("awaiting-review");
+  studioClauseLane?.classList.add("awaiting-review");
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioResultMark.textContent = "-";
   studioResultMark.className = "";
   studioOverallTitle.textContent = "Awaiting review";
   studioResultMeta.textContent = "No hard-clause review has run yet.";
-  studioIssueList.innerHTML = '<div class="studio-empty">No review yet</div>';
   studioDetailPanel.innerHTML = `
     <p class="eyebrow">selected clause</p>
     <p>No review yet.</p>
@@ -461,17 +457,15 @@ function updateExportButtonState() {
 }
 
 function renderStudioResult(result) {
-  if (!studioIssueList) return;
   const clauses = result.clauses || [];
   renderStudioSummary(clauses);
-  renderStudioIssueList(clauses);
   renderStudioClauseLane();
   renderStudioDetail();
   renderStudioDocumentHighlights();
 }
 
 function renderStudioSummary(clauses) {
-  studioCheckCard?.classList.remove("awaiting-review");
+  studioClauseLane?.classList.remove("awaiting-review");
   const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
   const failedCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
@@ -483,43 +477,19 @@ function renderStudioSummary(clauses) {
     : "All hard clauses are currently satisfied.";
 }
 
-function renderStudioIssueList(clauses) {
-  studioIssueList.innerHTML = clauses
-    .map((clause) => {
-      const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
-      const status = clauseStatus(clause);
-      const redlineCount = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id).length;
-      const canDecide = redlineCount > 0;
-      const included = clauseExportIncluded(clause.id);
-      const exportState = canDecide
-        ? `<span class="studio-export-state ${included ? "included" : "ignored"}">${included ? "Included in export" : "Ignored in export"}</span>`
-        : "";
-      const exportControls = canDecide
-        ? `
-          <span class="studio-export-controls" role="group" aria-label="${escapeHtml(clause.name)} export decision">
-            <button class="export-choice ${included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Include</button>
-            <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
-          </span>
-        `
-        : "";
-      return `
-        <article class="studio-issue-card ${selected} ${status.tone} ${canDecide ? "decidable" : ""}" data-issue-card-id="${escapeHtml(clause.id)}">
-          <button class="studio-issue-select" type="button" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
-            <span class="studio-issue-card-top">
-              <span class="studio-issue-title">${escapeHtml(clause.name)}</span>
-              <strong class="studio-issue-pill ${status.tone}">${status.pillLabel}</strong>
-            </span>
-            <span class="studio-issue-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>
-            ${exportState}
-          </button>
-          ${exportControls}
-        </article>
-      `;
-    })
-    .join("");
+function renderClauseExportState(clause, canDecide, included) {
+  if (!canDecide) return "";
+  return `<span class="studio-export-state ${included ? "included" : "ignored"}">${included ? "Included in export" : "Ignored in export"}</span>`;
+}
 
-  bindClauseSelection(studioIssueList, "[data-studio-clause-id]", "studioClauseId");
-  bindExportDecisionControls(studioIssueList);
+function renderClauseExportControls(clause, canDecide, included) {
+  if (!canDecide) return "";
+  return `
+    <span class="studio-export-controls" role="group" aria-label="${escapeHtml(clause.name)} export decision">
+      <button class="export-choice ${included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Include</button>
+      <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-clause-id="${escapeHtml(clause.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
+    </span>
+  `;
 }
 
 function getClauseTotal(clauses = []) {
@@ -640,22 +610,46 @@ function renderStudioClauseLane() {
     .map((clause, index) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseStatus(clause);
-      const tag = hasReviewResults() ? "button" : "div";
-      const type = hasReviewResults() ? ' type="button"' : "";
-      const data = hasReviewResults()
-        ? ` data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}"`
+      const redlineCount = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id).length;
+      const canDecide = hasReviewResults() && redlineCount > 0;
+      const included = clauseExportIncluded(clause.id);
+      const exportState = renderClauseExportState(clause, canDecide, included);
+      const exportControls = renderClauseExportControls(clause, canDecide, included);
+      const finding = hasReviewResults()
+        ? `<span class="studio-clause-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>`
         : "";
+      const pill = hasReviewResults()
+        ? `<strong class="studio-issue-pill ${status.tone}">${status.pillLabel}</strong>`
+        : "";
+      const selectable = hasReviewResults()
+        ? `
+          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" data-studio-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
+            <span class="studio-clause-dot ${status.dotTone}"></span>
+            <strong class="studio-clause-number">${index + 1}</strong>
+            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+            ${pill}
+            ${finding}
+            ${exportState}
+          </button>
+        `
+        : `
+          <div class="studio-clause-select">
+            <span class="studio-clause-dot ${status.dotTone}"></span>
+            <strong class="studio-clause-number">${index + 1}</strong>
+            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+          </div>
+        `;
       return `
-        <${tag} class="studio-clause-item ${selected}"${type}${data}>
-          <span class="studio-clause-dot ${status.dotTone}"></span>
-          <strong>${index + 1}</strong>
-          <span>${escapeHtml(clause.name)}</span>
-        </${tag}>
+        <article class="studio-clause-item ${selected} ${status.tone} ${canDecide ? "decidable" : ""}" data-lane-card-id="${escapeHtml(clause.id)}">
+          ${selectable}
+          ${exportControls}
+        </article>
       `;
     })
     .join("");
 
   bindClauseSelection(studioClauseLane, "[data-studio-lane-id]", "studioLaneId");
+  bindExportDecisionControls(studioClauseLane);
 }
 
 function renderStudioDetail() {
