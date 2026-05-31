@@ -37,7 +37,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
     server_version = "nda-automation/0.1"
 
     def log_message(self, format: str, *args: object) -> None:
-        print("%s - - %s" % (self.address_string(), format % args))
+        return
 
     def do_GET(self) -> None:
         self._handle_get(send_body=True)
@@ -434,7 +434,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         headers = {"X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER}
         if redline_export.saved_path is not None:
             headers.update({
-                "X-Export-Path": str(redline_export.saved_path),
                 "X-Export-URL": f"/exports/{quote(redline_export.saved_path.name)}",
             })
         self._send_download(

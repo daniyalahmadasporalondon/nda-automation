@@ -51,8 +51,14 @@ __all__ = [
 
 
 def load_playbook() -> Dict[str, object]:
-    with PLAYBOOK_PATH.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with PLAYBOOK_PATH.open("r", encoding="utf-8") as handle:
+            playbook = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise PlaybookTemplateError("Playbook must be valid JSON.") from exc
+    if not isinstance(playbook, dict):
+        raise PlaybookTemplateError("Playbook must be a JSON object.")
+    return playbook
 
 
 def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str, object]:

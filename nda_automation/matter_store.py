@@ -21,6 +21,7 @@ MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
 DEFAULT_MAX_STORED_MATTERS = 250
+MAX_SOURCE_FILENAME_LENGTH = 180
 GMAIL_METADATA_FIELDS = (
     "gmail_account",
     "gmail_attachment_id",
@@ -144,13 +145,15 @@ def create_matter(
 ) -> dict[str, Any]:
     matter_id = f"matter_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
+    source_filename = _clean_source_filename(source_filename)
     safe_source_name = _safe_filename(source_filename)
     stored_filename = f"{matter_id}-{safe_source_name}"
     metadata = _intake_metadata(source_filename, now, intake_metadata)
 
     with _locked_store():
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        (UPLOADS_DIR / stored_filename).write_bytes(document_bytes)
+        stored_path = UPLOADS_DIR / stored_filename
+        stored_path.write_bytes(document_bytes)
 
         matter: dict[str, Any] = {
             "id": matter_id,
@@ -170,7 +173,11 @@ def create_matter(
         matters = _load_matters()
         matters.append(matter)
         matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
-        _save_matters(matters)
+        try:
+            _save_matters(matters)
+        except Exception:
+            stored_path.unlink(missing_ok=True)
+            raise
     return matter
 
 
@@ -260,7 +267,21 @@ def _safe_filename(filename: str) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip("-._")
     if not safe_name.lower().endswith((".docx", ".pdf")):
         safe_name = f"{safe_name or 'nda'}.docx"
+    if len(safe_name) > MAX_SOURCE_FILENAME_LENGTH:
+        stem = Path(safe_name).stem[: MAX_SOURCE_FILENAME_LENGTH - 5].rstrip("-._") or "nda"
+        suffix = Path(safe_name).suffix if Path(safe_name).suffix.lower() in {".docx", ".pdf"} else ".docx"
+        safe_name = f"{stem}{suffix}"
     return safe_name or "nda.docx"
+
+
+def _clean_source_filename(filename: str) -> str:
+    clean_name = " ".join(str(filename or "").split())
+    if len(clean_name) <= MAX_SOURCE_FILENAME_LENGTH:
+        return clean_name or "nda.docx"
+    suffix = Path(clean_name).suffix
+    suffix = suffix if suffix.lower() in {".docx", ".pdf"} else ".docx"
+    stem_limit = max(1, MAX_SOURCE_FILENAME_LENGTH - len(suffix))
+    return f"{Path(clean_name).stem[:stem_limit].rstrip(' ._-') or 'nda'}{suffix}"
 
 
 def _intake_metadata(source_filename: str, received_at: str, metadata: dict[str, Any] | None) -> dict[str, str]:

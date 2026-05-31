@@ -5,6 +5,14 @@ LEGAL_REVIEW_CLAUSE_IDS = {"non_circumvention"}
 
 def triage_review_result(review_result: dict) -> dict:
     clauses = review_result.get("clauses", [])
+    if not isinstance(clauses, list):
+        return {
+            "triage_status": "needs_redline",
+            "next_action": "Review redline",
+            "issue_count": 1,
+            "requirements_passed": 0,
+            "requirements_failed": 1,
+        }
     failed_clauses = [
         clause
         for clause in clauses

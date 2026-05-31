@@ -23,6 +23,7 @@ from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
+from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -111,7 +112,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(route_headers["Content-Type"], DOCX_MIME)
         self.assertEqual(route_headers["Content-Disposition"], headers["Content-Disposition"])
         self.assertEqual(route_payload, payload)
-        self.assertEqual(server_module.Path(headers["X-Export-Path"]).read_bytes(), payload)
+        self.assertNotIn("X-Export-Path", headers)
 
     def matter_store_patches(self, data_dir):
         data_path = server_module.Path(data_dir)
@@ -503,6 +504,47 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual({matter["id"] for matter in matters}, {second["id"], third["id"]})
         self.assertFalse(first_path.exists())
+
+    def test_matter_create_removes_upload_when_save_fails(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("boom")):
+                    with self.assertRaises(matter_store.MatterStoreError):
+                        matter_store.create_matter(
+                            source_filename="orphan.docx",
+                            document_bytes=b"orphan",
+                            extracted_text="orphan",
+                            review_result={"clauses": []},
+                            triage={},
+                        )
+                uploaded_files = list(matter_store.UPLOADS_DIR.glob("*"))
+
+        self.assertEqual(uploaded_files, [])
+
+    def test_matter_create_caps_source_filename_length(self):
+        long_filename = f"{'a' * 400}.docx"
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename=long_filename,
+                    document_bytes=b"docx",
+                    extracted_text="docx",
+                    review_result={"clauses": []},
+                    triage={},
+                )
+
+        self.assertLessEqual(len(matter["source_filename"]), matter_store.MAX_SOURCE_FILENAME_LENGTH)
+        self.assertLessEqual(len(matter["stored_filename"]), matter_store.MAX_SOURCE_FILENAME_LENGTH + len("matter_000000000000-"))
+        self.assertTrue(matter["stored_filename"].endswith(".docx"))
+
+    def test_triage_fails_closed_when_clauses_is_not_list(self):
+        triage = triage_review_result({"clauses": {"passes": True}})
+
+        self.assertEqual(triage["triage_status"], "needs_redline")
+        self.assertEqual(triage["requirements_failed"], 1)
+        self.assertEqual(triage["issue_count"], 1)
 
     def test_gmail_status_requires_env_token_paths(self):
         with patch.dict(os.environ, {
@@ -1056,14 +1098,14 @@ class ServerTests(unittest.TestCase):
                     "/api/export-review-docx",
                     {"text": "This Agreement shall be governed by the laws of California.", "title": "California NDA"},
                 )
-                saved_payload = server_module.Path(headers["X-Export-Path"]).read_bytes()
+                saved_payload = (server_module.Path(exports_dir) / "nda-review-report.docx").read_bytes()
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], DOCX_MIME)
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="nda-review-report.docx"')
         self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
         self.assertEqual(headers["X-Export-URL"], "/exports/nda-review-report.docx")
-        self.assertTrue(headers["X-Export-Path"].endswith("nda-review-report.docx"))
+        self.assertNotIn("X-Export-Path", headers)
         self.assertEqual(saved_payload, payload)
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
@@ -1504,6 +1546,16 @@ class ServerTests(unittest.TestCase):
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
             status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
+
+    def test_text_review_reports_empty_playbook_json_as_playbook_error(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as playbook:
+            playbook.write("")
+            playbook.flush()
+            with patch("nda_automation.checker.PLAYBOOK_PATH", server_module.Path(playbook.name)):
+                status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
 
         self.assertEqual(status, 500)
         self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
