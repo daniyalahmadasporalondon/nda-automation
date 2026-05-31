@@ -1416,6 +1416,31 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(payload["error"], "Not found")
 
+    def test_static_files_use_etag_cache_validation(self):
+        status, payload, headers = self.request_with_headers("GET", "/static/app.js")
+        etag = headers.get("ETag")
+        cached_status, cached_payload, cached_headers = self.request_with_headers(
+            "GET",
+            "/static/app.js",
+            headers={"If-None-Match": etag},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsInstance(payload, bytes)
+        self.assertTrue(etag)
+        self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+        self.assertEqual(cached_status, 304)
+        self.assertEqual(cached_payload, b"")
+        self.assertEqual(cached_headers["ETag"], etag)
+
+    def test_head_static_route_uses_app_cache_strategy(self):
+        status, payload, headers = self.request_with_headers("HEAD", "/static/app.js")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, b"")
+        self.assertTrue(headers.get("ETag"))
+        self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+
 
 def make_docx(paragraphs):
     body = "".join(

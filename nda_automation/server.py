@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import mimetypes
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -31,13 +32,19 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         print("%s - - %s" % (self.address_string(), format % args))
 
     def do_GET(self) -> None:
+        self._handle_get(send_body=True)
+
+    def do_HEAD(self) -> None:
+        self._handle_get(send_body=False)
+
+    def _handle_get(self, *, send_body: bool) -> None:
         path = urlparse(self.path).path
         exact_routes = {
-            "/": lambda: self._send_file(STATIC_DIR / "index.html"),
-            "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json"),
-            "/api/health": lambda: self._send_json({"status": "ok"}),
-            "/api/gmail/status": lambda: self._send_json({"gmail": gmail_integration.gmail_status()}),
-            "/api/matters": self._handle_matter_list,
+            "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
+            "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
+            "/api/health": lambda: self._send_json({"status": "ok"}, send_body=send_body),
+            "/api/gmail/status": lambda: self._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body),
+            "/api/matters": lambda: self._handle_matter_list(send_body=send_body),
         }
         handler = exact_routes.get(path)
         if handler is not None:
@@ -51,29 +58,29 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": str(error)}, status=500)
                 return
             if matter is None:
-                self._send_json({"error": "Matter not found."}, status=404)
+                self._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
                 return
-            self._send_json({"matter": matter_view.public_matter(matter)})
+            self._send_json({"matter": matter_view.public_matter(matter)}, send_body=send_body)
             return
         if path.startswith("/static/"):
             requested = (STATIC_DIR / path.removeprefix("/static/")).resolve()
             if STATIC_DIR not in requested.parents or not requested.is_file():
-                self._send_json({"error": "Not found"}, status=404)
+                self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
-            self._send_file(requested)
+            self._send_file(requested, send_body=send_body)
             return
         if path.startswith("/exports/"):
             if export_service.EXPORTS_DIR is None:
-                self._send_json({"error": "Not found"}, status=404)
+                self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
             requested_name = unquote(path.removeprefix("/exports/"))
             requested = (export_service.EXPORTS_DIR / requested_name).resolve()
             if requested.parent != export_service.EXPORTS_DIR.resolve() or not requested.is_file():
-                self._send_json({"error": "Not found"}, status=404)
+                self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
-            self._send_download(requested.read_bytes(), requested.name, DOCX_MIME)
+            self._send_download(requested.read_bytes(), requested.name, DOCX_MIME, send_body=send_body)
             return
-        self._send_json({"error": "Not found"}, status=404)
+        self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -100,11 +107,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except matter_store.MatterStoreError as error:
             self._send_json({"error": str(error)}, status=500)
 
-    def _handle_matter_list(self) -> None:
+    def _handle_matter_list(self, *, send_body: bool = True) -> None:
         try:
-            self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())})
+            self._send_json({"matters": matter_view.public_matters(matter_store.list_matters())}, send_body=send_body)
         except matter_store.MatterStoreError as error:
-            self._send_json({"error": str(error)}, status=500)
+            self._send_json({"error": str(error)}, status=500, send_body=send_body)
 
     def _handle_text_review(self) -> None:
         payload = self._read_json_payload()
@@ -428,20 +435,37 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return None
         return payload
 
-    def _send_file(self, path: Path, content_type: str | None = None) -> None:
+    def _send_file(self, path: Path, content_type: str | None = None, *, send_body: bool = True) -> None:
         if not path.is_file():
-            self._send_json({"error": "Not found"}, status=404)
+            self._send_json({"error": "Not found"}, status=404, send_body=send_body)
             return
         data = path.read_bytes()
+        etag = f'"sha256-{hashlib.sha256(data).hexdigest()}"'
         detected_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", detected_type)
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+        self.send_header("ETag", etag)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if send_body:
+            self.wfile.write(data)
 
-    def _send_download(self, data: bytes, filename: str, content_type: str, headers: dict[str, str] | None = None) -> None:
+    def _send_download(
+        self,
+        data: bytes,
+        filename: str,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+        *,
+        send_body: bool = True,
+    ) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
@@ -450,16 +474,18 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         for header, value in (headers or {}).items():
             self.send_header(header, value)
         self.end_headers()
-        self.wfile.write(data)
+        if send_body:
+            self.wfile.write(data)
 
-    def _send_json(self, payload: dict, status: int = 200) -> None:
+    def _send_json(self, payload: dict, status: int = 200, *, send_body: bool = True) -> None:
         data = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if send_body:
+            self.wfile.write(data)
 
     def _send_playbook_template_error(self) -> None:
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
