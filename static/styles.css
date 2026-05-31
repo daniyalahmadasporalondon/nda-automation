@@ -1989,6 +1989,12 @@ textarea::placeholder {
   margin: 0;
 }
 
+.admin-section-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 .integrations-grid {
   display: grid;
   gap: 14px;
@@ -2320,6 +2326,11 @@ textarea::placeholder {
 
   .admin-actions .admin-save-status {
     margin-right: 0;
+  }
+
+  .admin-section-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .studio-clauses {

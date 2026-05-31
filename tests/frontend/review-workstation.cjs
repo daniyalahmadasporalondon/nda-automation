@@ -266,7 +266,7 @@ async function testPlaybookAdminEditor(page) {
           inbound: {
             configured: true,
             email: "inbound@example.com",
-            query: "has:attachment",
+            query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
             ready: true,
           },
           outbound: {
@@ -345,7 +345,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "OUTBOUND ACCOUNT");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
-  await assertTextContains(page.locator("#adminIntegrationsPanel"), "has:attachment");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "confidentiality agreement");
+  assert.equal(await page.locator("#adminGmailSyncButton").isVisible(), true);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");
@@ -390,6 +392,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("tab", { name: "Repository" }).click();
   await assertTextContains(page.locator("#gmailDemoStatus"), "inbound@example.com");
   await assertTextContains(page.locator("#gmailDemoStatus"), "outbound@example.com");
+  assert.equal(await page.locator("#gmailSyncButton").count(), 0);
   let gmailSyncCalled = false;
   await page.route("**/api/gmail/import", async (route) => {
     gmailSyncCalled = true;
@@ -399,14 +402,17 @@ async function testRepositoryMatterImportAndFreshReview(page) {
       body: JSON.stringify({
         account: "inbound@example.com",
         imported: [],
-        query: "has:attachment",
+        query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
         skipped: [{ message_id: "m1", reason: "no_reviewable_attachment" }],
         synced_at: "2026-05-31T12:34:00+00:00",
       }),
     });
   });
-  await page.getByRole("button", { name: "Sync Gmail" }).click();
+  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await page.locator("#adminGmailSyncButton").click();
   await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
+  await page.getByRole("tab", { name: "Repository" }).click();
   await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
   const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
     day: "2-digit",

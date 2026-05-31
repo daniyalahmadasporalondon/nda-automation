@@ -1,5 +1,10 @@
 const AdminIntegrationsView = (() => {
-  const DEFAULT_QUERY_FALLBACK = "has:attachment (filename:docx OR filename:pdf) newer_than:30d";
+  const DEFAULT_QUERY_FALLBACK = [
+    "has:attachment (filename:docx OR filename:pdf) newer_than:30d",
+    '(subject:NDA OR subject:"non-disclosure" OR subject:"non disclosure"',
+    'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement"',
+    'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)',
+  ].join(" ");
 
   function createController({
     state,
@@ -8,9 +13,22 @@ const AdminIntegrationsView = (() => {
     gmailOverall,
     gmailRecentSend,
     gmailRefreshButton,
+    gmailSyncButton,
     reviewErrorFromPayload,
+    syncGmail,
   }) {
     gmailRefreshButton?.addEventListener("click", load);
+    gmailSyncButton?.addEventListener("click", sync);
+
+    async function sync() {
+      if (!syncGmail) return;
+      setOverall("Syncing", "pending");
+      const result = await syncGmail({ button: gmailSyncButton });
+      if (result?.error) {
+        setOverall("Sync failed", "blocked");
+      }
+      await load();
+    }
 
     async function load() {
       if (!gmailCard) return;

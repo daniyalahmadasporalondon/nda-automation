@@ -48,7 +48,7 @@ export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
 export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
 ```
 
-Inbound sync imports recent `.docx` and text-based `.pdf` attachments into the `Gmail Demo` Repository lane. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
+Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the `Gmail Demo` Repository lane. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
 
 ## Current checks
 

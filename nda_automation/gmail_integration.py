@@ -17,7 +17,12 @@ from .ingestion_service import create_matter_from_document, is_supported_documen
 from .pdf_text import PdfExtractionError
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-DEFAULT_INBOUND_QUERY = "has:attachment (filename:docx OR filename:pdf) newer_than:30d"
+NDA_SUBJECT_QUERY = (
+    '(subject:NDA OR subject:"non-disclosure" OR subject:"non disclosure" '
+    'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement" '
+    'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)'
+)
+DEFAULT_INBOUND_QUERY = f"has:attachment (filename:docx OR filename:pdf) newer_than:30d {NDA_SUBJECT_QUERY}"
 MAX_GMAIL_IMPORT_LIMIT = 25
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 

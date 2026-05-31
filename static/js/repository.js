@@ -29,7 +29,7 @@ const RepositoryView = (() => {
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
 
-    gmailSyncButton?.addEventListener("click", syncGmail);
+    gmailSyncButton?.addEventListener("click", () => syncGmail({ button: gmailSyncButton }));
     repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
 
     repositoryFileInput?.addEventListener("change", async (event) => {
@@ -73,11 +73,13 @@ const RepositoryView = (() => {
       }
     }
 
-    async function syncGmail() {
-      if (!gmailSyncButton) return;
-      const originalText = gmailSyncButton.textContent;
-      gmailSyncButton.disabled = true;
-      gmailSyncButton.textContent = "Syncing";
+    async function syncGmail({ button } = {}) {
+      const control = button || gmailSyncButton;
+      const originalText = control?.textContent || "";
+      if (control) {
+        control.disabled = true;
+        control.textContent = "Syncing";
+      }
       setImportStatus("Checking Gmail");
       try {
         const response = await fetch("/api/gmail/import", {
@@ -102,12 +104,18 @@ const RepositoryView = (() => {
         };
         onGmailSync?.(state.gmailLastSync);
         updateLastSync(payload.account || "", payload.synced_at || "");
-        setImportStatus(gmailSyncSummary(imported, skipped));
+        const summary = gmailSyncSummary(imported, skipped);
+        setImportStatus(summary);
+        return { imported, skipped, payload, summary };
       } catch (error) {
-        setImportStatus(error.message || "Gmail sync could not run");
+        const message = error.message || "Gmail sync could not run";
+        setImportStatus(message);
+        return { error: message, imported: [], skipped: [] };
       } finally {
-        gmailSyncButton.disabled = false;
-        gmailSyncButton.textContent = originalText || "Sync Gmail";
+        if (control) {
+          control.disabled = false;
+          control.textContent = originalText || "Sync Gmail";
+        }
       }
     }
 
@@ -513,7 +521,16 @@ const RepositoryView = (() => {
       return `skipped ${skipped.length} (${details})`;
     }
 
-    return { importMatter, loadGmailStatus, loadMatters, markMatterRedlineReady, openMatter, renderBoard, setImportStatus };
+    return {
+      importMatter,
+      loadGmailStatus,
+      loadMatters,
+      markMatterRedlineReady,
+      openMatter,
+      renderBoard,
+      setImportStatus,
+      syncGmail,
+    };
   }
 
   function renderMatterCard(matter) {
