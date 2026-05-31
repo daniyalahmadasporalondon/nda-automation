@@ -571,34 +571,41 @@ class ServerTests(unittest.TestCase):
                 status, payload = self.request(
                     "POST",
                     "/api/gmail/settings",
-                    {"inbound_enabled": False, "outbound_enabled": True, "sync_cadence": "30_minutes"},
+                    {"inbound_enabled": False, "outbound_enabled": True, "sync_frequency": "30_minutes"},
                 )
                 invalid_status, invalid_payload = self.request(
                     "POST",
                     "/api/gmail/settings",
                     {"inbound_enabled": "off"},
                 )
-                invalid_cadence_status, invalid_cadence_payload = self.request(
+                invalid_frequency_status, invalid_frequency_payload = self.request(
                     "POST",
                     "/api/gmail/settings",
-                    {"sync_cadence": "3_minutes"},
+                    {"sync_frequency": "3_minutes"},
+                )
+                legacy_cadence_status, legacy_cadence_payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"sync_cadence": "30_minutes"},
                 )
                 settings = app_settings.gmail_settings()
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["gmail_settings"]["inbound_enabled"], False)
         self.assertEqual(payload["gmail_settings"]["outbound_enabled"], True)
-        self.assertEqual(payload["gmail_settings"]["sync_cadence"], "30_minutes")
+        self.assertEqual(payload["gmail_settings"]["sync_frequency"], "30_minutes")
         self.assertEqual(payload["gmail"]["inbound"]["enabled"], False)
         self.assertEqual(payload["gmail"]["outbound"]["enabled"], True)
-        self.assertEqual(payload["gmail"]["settings"]["sync_cadence"], "30_minutes")
+        self.assertEqual(payload["gmail"]["settings"]["sync_frequency"], "30_minutes")
         self.assertEqual(settings["inbound_enabled"], False)
         self.assertEqual(settings["outbound_enabled"], True)
-        self.assertEqual(settings["sync_cadence"], "30_minutes")
+        self.assertEqual(settings["sync_frequency"], "30_minutes")
         self.assertEqual(invalid_status, 400)
         self.assertEqual(invalid_payload["error"], "Gmail enabled settings must be true or false.")
-        self.assertEqual(invalid_cadence_status, 400)
-        self.assertEqual(invalid_cadence_payload["error"], "Unsupported Gmail sync cadence.")
+        self.assertEqual(invalid_frequency_status, 400)
+        self.assertEqual(invalid_frequency_payload["error"], "Unsupported Gmail sync frequency.")
+        self.assertEqual(legacy_cadence_status, 400)
+        self.assertEqual(legacy_cadence_payload["error"], "Use sync_frequency for Gmail sync frequency.")
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -1024,7 +1031,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(build_matter_redline.call_args_list[1].args[0], matter_id)
         self.assertNotIn("persist", build_matter_redline.call_args_list[1].kwargs)
 
-    def test_gmail_import_endpoint_uses_inbound_connector(self):
+    def test_gmail_import_endpoint_rejects_manual_sync(self):
         with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value={
             "account": "inbound@example.com",
             "imported": [{"id": "matter_1"}],
@@ -1037,24 +1044,9 @@ class ServerTests(unittest.TestCase):
                 {"limit": 2, "query": "has:attachment"},
             )
 
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["imported"][0]["id"], "matter_1")
-        self.assertEqual(payload["imported"][0]["recipient_email"], "")
-        self.assertEqual(payload["imported"][0]["can_send_redline"], False)
-        self.assertEqual(payload["skipped"][0]["reason"], "no_reviewable_attachment")
-        self.assertIsInstance(payload["synced_at"], str)
-        self.assertTrue(payload["synced_at"])
-        import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
-
-    def test_gmail_import_endpoint_rejects_when_inbound_disabled(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                app_settings.update_gmail_settings({"inbound_enabled": False})
-                status, payload = self.request("POST", "/api/gmail/import", {"limit": 1})
-
-        self.assertEqual(status, 503)
-        self.assertEqual(payload["error"], "Gmail inbound is disabled in Admin.")
+        self.assertEqual(status, 410)
+        self.assertEqual(payload["error"], "Manual Gmail sync is disabled. Use Admin sync frequency.")
+        import_inbound_matters.assert_not_called()
 
     def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
         with tempfile.TemporaryDirectory() as token_dir:

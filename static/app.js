@@ -41,7 +41,6 @@ const state = {
   redlineDraft: null,
   redlineDraftDirty: false,
   documentViewMode: VIEW_MODE_REDLINE,
-  gmailLastSync: null,
   gmailStatus: null,
 };
 let pendingReviewSendMatterId = null;
@@ -58,7 +57,6 @@ const repositoryController = createRepositoryController({
   loadMatterIntoReview,
   redlineDownloadFilename,
   reviewErrorFromPayload,
-  onGmailSync: (sync) => adminIntegrationsController?.setLastSync(sync),
 });
 adminIntegrationsController = createAdminIntegrationsController({
   state,
@@ -67,12 +65,10 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailOverall: document.querySelector("#adminGmailOverall"),
   gmailRecentSend: document.querySelector("#adminGmailRecentSend"),
   gmailRefreshButton: document.querySelector("#adminGmailRefreshButton"),
-  gmailSyncButton: document.querySelector("#adminGmailSyncButton"),
   gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
   gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
-  gmailCadenceControl: document.querySelector("#adminGmailCadenceControl"),
+  gmailFrequencyControl: document.querySelector("#adminGmailFrequencyControl"),
   reviewErrorFromPayload,
-  syncGmail: (options) => repositoryController.syncGmail(options),
 });
 const playbookController = createPlaybookController({
   state,

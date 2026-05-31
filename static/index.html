@@ -226,7 +226,6 @@
                   <h1>Connected services</h1>
                 </div>
                 <div class="admin-section-actions">
-                  <button class="secondary" id="adminGmailSyncButton" type="button">Sync Gmail</button>
                   <button class="secondary" id="adminGmailRefreshButton" type="button">Refresh</button>
                 </div>
               </header>
@@ -263,16 +262,15 @@
                   </div>
 
                   <section class="integration-subsection">
-                    <h3>Sync cadence</h3>
-                    <div class="integration-cadence-control" id="adminGmailCadenceControl" role="group" aria-label="Gmail sync cadence">
-                      <button type="button" data-gmail-cadence="manual" aria-pressed="true">Manual</button>
-                      <button type="button" data-gmail-cadence="always_on" aria-pressed="false">Always on</button>
-                      <button type="button" data-gmail-cadence="10_minutes" aria-pressed="false">10 min</button>
-                      <button type="button" data-gmail-cadence="30_minutes" aria-pressed="false">30 min</button>
-                      <button type="button" data-gmail-cadence="1_hour" aria-pressed="false">1 hour</button>
-                      <button type="button" data-gmail-cadence="2_hours" aria-pressed="false">2 hours</button>
+                    <h3>Sync frequency</h3>
+                    <div class="integration-frequency-control" id="adminGmailFrequencyControl" role="group" aria-label="Gmail sync frequency">
+                      <button type="button" data-gmail-frequency="always_on" aria-pressed="false">Always on</button>
+                      <button type="button" data-gmail-frequency="10_minutes" aria-pressed="true">10 min</button>
+                      <button type="button" data-gmail-frequency="30_minutes" aria-pressed="false">30 min</button>
+                      <button type="button" data-gmail-frequency="1_hour" aria-pressed="false">1 hour</button>
+                      <button type="button" data-gmail-frequency="2_hours" aria-pressed="false">2 hours</button>
                     </div>
-                    <p class="integration-cadence-copy" data-admin-gmail="sync-cadence-copy">Manual sync only.</p>
+                    <p class="integration-frequency-copy" data-admin-gmail="sync-frequency-copy">Every 10 minutes.</p>
                   </section>
 
                   <dl class="integration-facts" id="adminGmailFacts">

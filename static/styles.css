@@ -2101,13 +2101,13 @@ textarea::placeholder {
   opacity: 0.58;
 }
 
-.integration-cadence-control {
+.integration-frequency-control {
   display: grid;
   gap: 7px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
-.integration-cadence-control button {
+.integration-frequency-control button {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2120,19 +2120,19 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
-.integration-cadence-control button.active,
-.integration-cadence-control button[aria-pressed="true"] {
+.integration-frequency-control button.active,
+.integration-frequency-control button[aria-pressed="true"] {
   background: var(--brand);
   border-color: var(--brand);
   color: #fff;
 }
 
-.integration-cadence-control button:disabled {
+.integration-frequency-control button:disabled {
   cursor: default;
   opacity: 0.58;
 }
 
-.integration-cadence-copy {
+.integration-frequency-copy {
   color: var(--ink-muted);
   font-size: 12px;
   font-weight: 650;
@@ -2427,7 +2427,7 @@ textarea::placeholder {
   }
 
   .integration-toggle-grid,
-  .integration-cadence-control,
+  .integration-frequency-control,
   .integration-facts,
   .integration-facts.compact {
     grid-template-columns: 1fr;

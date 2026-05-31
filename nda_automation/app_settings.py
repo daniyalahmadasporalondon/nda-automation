@@ -17,10 +17,12 @@ _SETTINGS_LOCK = threading.RLock()
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
     "outbound_enabled": True,
-    "sync_cadence": "manual",
+    "sync_frequency": "10_minutes",
+    "last_sync_at": "",
+    "last_sync_imported_count": 0,
+    "last_sync_skipped_count": 0,
 }
-GMAIL_SYNC_CADENCES = {
-    "manual": None,
+GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
     "30_minutes": 30 * 60,
@@ -65,28 +67,64 @@ def gmail_role_enabled(role: str) -> bool:
     return gmail_settings().get(key, True)
 
 
-def gmail_sync_interval_seconds(cadence: object | None = None) -> int | None:
-    cadence_key = cadence if isinstance(cadence, str) else gmail_settings()["sync_cadence"]
-    return GMAIL_SYNC_CADENCES.get(cadence_key)
+def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
+    frequency_key = frequency if isinstance(frequency, str) else gmail_settings()["sync_frequency"]
+    return GMAIL_SYNC_FREQUENCIES.get(frequency_key, GMAIL_SYNC_FREQUENCIES[DEFAULT_GMAIL_SETTINGS["sync_frequency"]])
+
+
+def record_gmail_sync(result: dict[str, Any], *, synced_at: str) -> dict[str, Any]:
+    imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+    skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        gmail = settings.get("gmail")
+        if not isinstance(gmail, dict):
+            gmail = {}
+        settings["gmail"] = {
+            **gmail_settings_from_payload(gmail),
+            "last_sync_at": synced_at,
+            "last_sync_imported_count": len(imported),
+            "last_sync_skipped_count": len(skipped),
+        }
+        _save_settings_unlocked(settings)
+        return gmail_settings_from_payload(settings["gmail"])
 
 
 def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    sync_cadence = str(payload.get("sync_cadence") or DEFAULT_GMAIL_SETTINGS["sync_cadence"])
-    if sync_cadence not in GMAIL_SYNC_CADENCES:
-        sync_cadence = DEFAULT_GMAIL_SETTINGS["sync_cadence"]
+    raw_frequency = payload.get("sync_frequency", payload.get("sync_cadence", DEFAULT_GMAIL_SETTINGS["sync_frequency"]))
+    sync_frequency = str(raw_frequency or DEFAULT_GMAIL_SETTINGS["sync_frequency"])
+    if sync_frequency not in GMAIL_SYNC_FREQUENCIES:
+        sync_frequency = DEFAULT_GMAIL_SETTINGS["sync_frequency"]
     return {
         "inbound_enabled": bool(payload.get("inbound_enabled", DEFAULT_GMAIL_SETTINGS["inbound_enabled"])),
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
-        "sync_cadence": sync_cadence,
+        "sync_frequency": sync_frequency,
+        "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
+        "last_sync_imported_count": _nonnegative_int(
+            payload.get("last_sync_imported_count"),
+            DEFAULT_GMAIL_SETTINGS["last_sync_imported_count"],
+        ),
+        "last_sync_skipped_count": _nonnegative_int(
+            payload.get("last_sync_skipped_count"),
+            DEFAULT_GMAIL_SETTINGS["last_sync_skipped_count"],
+        ),
     }
 
 
 def _valid_gmail_setting(key: str, value: Any) -> bool:
     if key in ("inbound_enabled", "outbound_enabled"):
         return isinstance(value, bool)
-    if key == "sync_cadence":
-        return isinstance(value, str) and value in GMAIL_SYNC_CADENCES
+    if key == "sync_frequency":
+        return isinstance(value, str) and value in GMAIL_SYNC_FREQUENCIES
     return False
+
+
+def _nonnegative_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, parsed)
 
 
 def _load_settings() -> dict[str, Any]:

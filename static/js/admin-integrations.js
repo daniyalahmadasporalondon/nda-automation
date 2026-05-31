@@ -5,8 +5,8 @@ const AdminIntegrationsView = (() => {
     'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement"',
     'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)',
   ].join(" ");
-  const CADENCE_LABELS = {
-    manual: "Manual sync only",
+  const DEFAULT_FREQUENCY = "10_minutes";
+  const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",
     "10_minutes": "Every 10 minutes",
     "30_minutes": "Every 30 minutes",
@@ -21,34 +21,17 @@ const AdminIntegrationsView = (() => {
     gmailOverall,
     gmailRecentSend,
     gmailRefreshButton,
-    gmailSyncButton,
     gmailInboundToggle,
     gmailOutboundToggle,
-    gmailCadenceControl,
+    gmailFrequencyControl,
     reviewErrorFromPayload,
-    syncGmail,
   }) {
     gmailRefreshButton?.addEventListener("click", load);
-    gmailSyncButton?.addEventListener("click", sync);
     gmailInboundToggle?.addEventListener("click", () => updateGmailToggle("inbound"));
     gmailOutboundToggle?.addEventListener("click", () => updateGmailToggle("outbound"));
-    gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
-      button.addEventListener("click", () => updateGmailCadence(button.dataset.gmailCadence || "manual"));
+    gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
+      button.addEventListener("click", () => updateGmailFrequency(button.dataset.gmailFrequency || DEFAULT_FREQUENCY));
     });
-
-    async function sync() {
-      if (!syncGmail) return;
-      if (state.gmailStatus?.inbound?.enabled === false) {
-        setOverall("Inbound off", "blocked");
-        return;
-      }
-      setOverall("Syncing", "pending");
-      const result = await syncGmail({ button: gmailSyncButton });
-      if (result?.error) {
-        setOverall("Sync failed", "blocked");
-      }
-      await load();
-    }
 
     async function load() {
       if (!gmailCard) return;
@@ -92,26 +75,26 @@ const AdminIntegrationsView = (() => {
       }
     }
 
-    async function updateGmailCadence(syncCadence) {
-      const currentCadence = state.gmailStatus?.settings?.sync_cadence || "manual";
-      if (syncCadence === currentCadence) return;
-      setCadenceDisabled(true);
+    async function updateGmailFrequency(syncFrequency) {
+      const currentFrequency = state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY;
+      if (syncFrequency === currentFrequency) return;
+      setFrequencyDisabled(true);
       setOverall("Saving", "pending");
       try {
         const response = await fetch("/api/gmail/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sync_cadence: syncCadence }),
+          body: JSON.stringify({ sync_frequency: syncFrequency }),
         });
         const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync cadence could not save");
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync frequency could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
-        renderCadenceControl(state.gmailStatus?.settings?.sync_cadence || "manual");
+        renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
       } finally {
-        setCadenceDisabled(false);
+        setFrequencyDisabled(false);
       }
     }
 
@@ -123,20 +106,25 @@ const AdminIntegrationsView = (() => {
       const ready = Boolean(inbound.ready && outbound.ready);
       setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
       renderToggleControls(status);
-      renderCadenceControl(status.settings?.sync_cadence || "manual");
+      renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", configuredLabel(inbound));
       setFact("outbound-configured", configuredLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
-      setFact("last-sync", lastSyncLabel(state.gmailLastSync));
+      setFact("last-sync", lastSyncLabel(status.settings || {}));
       renderRecentSend(matters);
     }
 
     function renderRecentSend(matters) {
       if (!gmailRecentSend) return;
+      const outboundEmail = String(state.gmailStatus?.outbound?.email || "").toLowerCase();
       const recent = matters
-        .filter((matter) => matter && matter.last_outbound_at)
+        .filter((matter) => {
+          if (!matter?.last_outbound_at) return false;
+          if (!outboundEmail) return true;
+          return String(matter.last_outbound_account || "").toLowerCase() === outboundEmail;
+        })
         .sort((left, right) => String(right.last_outbound_at).localeCompare(String(left.last_outbound_at)))[0];
       if (!recent) {
         gmailRecentSend.innerHTML = `
@@ -174,14 +162,9 @@ const AdminIntegrationsView = (() => {
       setFact("inbound-configured", "Unknown");
       setFact("outbound-configured", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
-      setFact("last-sync", lastSyncLabel(state.gmailLastSync));
+      setFact("last-sync", lastSyncLabel(state.gmailStatus?.settings || {}));
       renderToggleControls(state.gmailStatus || {});
-      renderCadenceControl(state.gmailStatus?.settings?.sync_cadence || "manual");
-    }
-
-    function setLastSync(sync) {
-      state.gmailLastSync = sync;
-      setFact("last-sync", lastSyncLabel(sync));
+      renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
     }
 
     function setOverall(label, tone) {
@@ -204,9 +187,6 @@ const AdminIntegrationsView = (() => {
       renderToggle(gmailOutboundToggle, outbound.enabled !== false);
       setFact("inbound-enabled-copy", inbound.enabled === false ? "Off" : "On");
       setFact("outbound-enabled-copy", outbound.enabled === false ? "Off" : "On");
-      if (gmailSyncButton) {
-        gmailSyncButton.disabled = inbound.enabled === false;
-      }
     }
 
     function renderToggle(button, enabled) {
@@ -222,23 +202,23 @@ const AdminIntegrationsView = (() => {
       });
     }
 
-    function renderCadenceControl(syncCadence) {
-      const cadence = CADENCE_LABELS[syncCadence] ? syncCadence : "manual";
-      gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
-        const selected = button.dataset.gmailCadence === cadence;
+    function renderFrequencyControl(syncFrequency) {
+      const frequency = FREQUENCY_LABELS[syncFrequency] ? syncFrequency : DEFAULT_FREQUENCY;
+      gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
+        const selected = button.dataset.gmailFrequency === frequency;
         button.setAttribute("aria-pressed", selected ? "true" : "false");
         button.classList.toggle("active", selected);
       });
-      setFact("sync-cadence-copy", `${CADENCE_LABELS[cadence]}.`);
+      setFact("sync-frequency-copy", `${FREQUENCY_LABELS[frequency]}.`);
     }
 
-    function setCadenceDisabled(disabled) {
-      gmailCadenceControl?.querySelectorAll("[data-gmail-cadence]").forEach((button) => {
+    function setFrequencyDisabled(disabled) {
+      gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
         button.disabled = disabled;
       });
     }
 
-    return { load, setLastSync };
+    return { load };
   }
 
   function accountLabel(account) {
@@ -252,12 +232,11 @@ const AdminIntegrationsView = (() => {
     return account?.ready ? "Yes" : "Unknown";
   }
 
-  function lastSyncLabel(sync) {
-    if (!sync?.synced_at) return "Not run in this session";
-    const parts = [formatDateTime(sync.synced_at) || sync.synced_at];
-    if (sync.account) parts.push(sync.account);
-    const imported = Number(sync.imported_count || 0);
-    const skipped = Number(sync.skipped_count || 0);
+  function lastSyncLabel(settings) {
+    if (!settings?.last_sync_at) return "Waiting for scheduled sync";
+    const parts = [formatDateTime(settings.last_sync_at) || settings.last_sync_at];
+    const imported = Number(settings.last_sync_imported_count || 0);
+    const skipped = Number(settings.last_sync_skipped_count || 0);
     parts.push(`${imported} imported / ${skipped} skipped`);
     return parts.join(" - ");
   }

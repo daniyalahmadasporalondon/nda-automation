@@ -444,31 +444,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"matter": matter_view.public_matter(matter)})
 
     def _handle_gmail_import(self) -> None:
-        payload = self._read_json_payload()
-        if payload is None:
-            return
-
-        limit = payload.get("limit", 10)
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            self._send_json({"error": "Gmail import limit must be a number."}, status=400)
-            return
-        query = payload.get("query")
-        if query is not None and not isinstance(query, str):
-            self._send_json({"error": "Gmail import query must be text."}, status=400)
-            return
-
-        try:
-            with _GMAIL_SYNC_LOCK:
-                result = gmail_integration.import_inbound_matters(limit=limit, query=query)
-        except gmail_integration.GmailIntegrationError as error:
-            self._send_json({"error": str(error)}, status=503)
-            return
-        result = {**result, "synced_at": datetime.now(UTC).isoformat()}
-        if isinstance(result.get("imported"), list):
-            result = {**result, "imported": matter_view.public_matters(result["imported"])}
-        self._send_json(result)
+        self._send_json({"error": "Manual Gmail sync is disabled. Use Admin sync frequency."}, status=410)
 
     def _handle_gmail_settings_update(self) -> None:
         payload = self._read_json_payload()
@@ -485,11 +461,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             updates[key] = value
         if "sync_cadence" in payload:
-            sync_cadence = payload.get("sync_cadence")
-            if not isinstance(sync_cadence, str) or sync_cadence not in app_settings.GMAIL_SYNC_CADENCES:
-                self._send_json({"error": "Unsupported Gmail sync cadence."}, status=400)
+            self._send_json({"error": "Use sync_frequency for Gmail sync frequency."}, status=400)
+            return
+        if "sync_frequency" in payload:
+            sync_frequency = payload.get("sync_frequency")
+            if not isinstance(sync_frequency, str) or sync_frequency not in app_settings.GMAIL_SYNC_FREQUENCIES:
+                self._send_json({"error": "Unsupported Gmail sync frequency."}, status=400)
                 return
-            updates["sync_cadence"] = sync_cadence
+            updates["sync_frequency"] = sync_frequency
         if not updates:
             self._send_json({"error": "Provide a Gmail setting to update."}, status=400)
             return
@@ -782,20 +761,21 @@ def _start_gmail_sync_scheduler() -> None:
 
 def _gmail_sync_scheduler_loop() -> None:
     last_run = 0.0
-    last_cadence = ""
+    last_frequency = ""
     while True:
         try:
             settings = app_settings.gmail_settings()
-            cadence = str(settings.get("sync_cadence") or "manual")
-            interval_seconds = app_settings.gmail_sync_interval_seconds(cadence)
-            if cadence != last_cadence:
+            frequency = str(settings.get("sync_frequency") or app_settings.DEFAULT_GMAIL_SETTINGS["sync_frequency"])
+            interval_seconds = app_settings.gmail_sync_interval_seconds(frequency)
+            if frequency != last_frequency:
                 last_run = 0.0
-                last_cadence = cadence
-            if interval_seconds is not None and settings.get("inbound_enabled", True):
+                last_frequency = frequency
+            if settings.get("inbound_enabled", True):
                 now = time.monotonic()
                 if now - last_run >= interval_seconds and _GMAIL_SYNC_LOCK.acquire(blocking=False):
                     try:
-                        gmail_integration.import_inbound_matters(limit=10)
+                        result = gmail_integration.import_inbound_matters(limit=10)
+                        app_settings.record_gmail_sync(result, synced_at=datetime.now(UTC).isoformat())
                     except Exception as error:  # pragma: no cover - defensive background logging.
                         print(f"Gmail scheduled sync failed: {error}")
                     finally:

@@ -263,7 +263,10 @@ async function testPlaybookAdminEditor(page) {
       settings: {
         inbound_enabled: true,
         outbound_enabled: true,
-        sync_cadence: "manual",
+        sync_frequency: "10_minutes",
+        last_sync_at: "2026-05-31T12:34:00+00:00",
+        last_sync_imported_count: 2,
+        last_sync_skipped_count: 1,
       },
       inbound: {
         configured: true,
@@ -301,8 +304,8 @@ async function testPlaybookAdminEditor(page) {
       gmailStatusPayload.gmail.outbound.ready = gmailSettingsPayload.outbound_enabled;
       gmailStatusPayload.gmail.settings.outbound_enabled = gmailSettingsPayload.outbound_enabled;
     }
-    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "sync_cadence")) {
-      gmailStatusPayload.gmail.settings.sync_cadence = gmailSettingsPayload.sync_cadence;
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "sync_frequency")) {
+      gmailStatusPayload.gmail.settings.sync_frequency = gmailSettingsPayload.sync_frequency;
     }
     await route.fulfill({
       status: 200,
@@ -381,20 +384,30 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
   assert.equal(await page.locator("#adminGmailInboundToggle").getAttribute("aria-checked"), "true");
   assert.equal(await page.locator("#adminGmailOutboundToggle").getAttribute("aria-checked"), "true");
-  assert.equal(await page.locator('[data-gmail-cadence="manual"]').getAttribute("aria-pressed"), "true");
-  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Manual sync only.");
-  await page.locator('[data-gmail-cadence="30_minutes"]').click();
-  await page.waitForFunction(() => document.querySelector('[data-gmail-cadence="30_minutes"]')?.getAttribute("aria-pressed") === "true");
-  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_cadence: "30_minutes" });
+  assert.equal(await page.locator('[data-gmail-frequency="manual"]').count(), 0);
+  assert.equal(await page.locator('[data-gmail-frequency="10_minutes"]').getAttribute("aria-pressed"), "true");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "SYNC FREQUENCY");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Every 10 minutes.");
+  await page.locator('[data-gmail-frequency="30_minutes"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-gmail-frequency="30_minutes"]')?.getAttribute("aria-pressed") === "true");
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_frequency: "30_minutes" });
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Every 30 minutes.");
   await page.locator("#adminGmailInboundToggle").click();
   await page.waitForFunction(() => document.querySelector("#adminGmailInboundToggle")?.getAttribute("aria-checked") === "false");
   assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { inbound_enabled: false });
-  assert.equal(await page.locator("#adminGmailSyncButton").isDisabled(), true);
+  assert.equal(await page.locator("#adminGmailSyncButton").count(), 0);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "confidentiality agreement");
-  assert.equal(await page.locator("#adminGmailSyncButton").isVisible(), true);
+  assert.equal(await page.getByRole("button", { name: "Sync Gmail" }).count(), 0);
+  const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+  }));
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), serverSyncLabel);
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");
@@ -430,6 +443,12 @@ async function testRepositoryMatterImportAndFreshReview(page) {
       contentType: "application/json",
       body: JSON.stringify({
         gmail: {
+          settings: {
+            sync_frequency: "10_minutes",
+            last_sync_at: "2026-05-31T12:34:00+00:00",
+            last_sync_imported_count: 0,
+            last_sync_skipped_count: 1,
+          },
           inbound: { ready: true, email: "inbound@example.com" },
           outbound: { ready: true, email: "outbound@example.com" },
         },
@@ -441,25 +460,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator("#gmailDemoStatus").count(), 0);
   assert.equal(await page.locator("#gmailLastSync").count(), 0);
   assert.equal(await page.locator("#gmailSyncButton").count(), 0);
-  let gmailSyncCalled = false;
-  await page.route("**/api/gmail/import", async (route) => {
-    gmailSyncCalled = true;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        account: "inbound@example.com",
-        imported: [],
-        query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
-        skipped: [{ message_id: "m1", reason: "no_reviewable_attachment" }],
-        synced_at: "2026-05-31T12:34:00+00:00",
-      }),
-    });
-  });
   await page.getByRole("tab", { name: "Admin" }).click();
   await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
-  await page.locator("#adminGmailSyncButton").click();
-  await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
   const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
     day: "2-digit",
     hour: "2-digit",
@@ -468,9 +470,9 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   }));
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), serverSyncLabel);
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "0 imported / 1 skipped");
+  assert.equal(await page.getByRole("button", { name: "Sync Gmail" }).count(), 0);
   await page.getByRole("tab", { name: "Repository" }).click();
-  assert.equal(gmailSyncCalled, true);
-  await page.unroute("**/api/gmail/import");
 
   assert.equal(await page.locator("#repositoryFileInput").count(), 0);
   assert.equal(await page.getByText("Import NDA", { exact: true }).count(), 0);
