@@ -44,6 +44,8 @@ export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
 
 Inbound sync imports recent `.docx` attachments into the `Gmail Demo` Repository lane. Outbound send generates the same native Word redline used by download/export, then emails it back to the matter sender only after the Repository panel's `Send Redline` action is confirmed.
 
+For local development, the bundled default token lookup treats the Aspora account as inbound and the secondary Gmail account as outbound unless the environment variables above are set.
+
 ## Current checks
 
 - Mutual NDA obligations

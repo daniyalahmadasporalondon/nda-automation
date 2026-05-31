@@ -23,8 +23,8 @@ ROLE_TOKEN_ENV = {
     "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
 }
 ROLE_DEFAULT_TOKEN_PATHS = {
-    "inbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json.bak-20260529-160446",
-    "outbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
+    "inbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json",
+    "outbound": Path.home() / "Desktop" / "aspora-nda-reviewer" / "token.json.bak-20260529-160446",
 }
 
 
