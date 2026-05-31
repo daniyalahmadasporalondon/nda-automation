@@ -239,6 +239,26 @@ def make_source_docx(paragraphs, include_package_rels=True):
         return output.getvalue()
 
 
+def replace_docx_parts(docx_bytes, replacements):
+    with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
+        with BytesIO() as output:
+            with ZipFile(output, "w", ZIP_DEFLATED) as patched_archive:
+                written = set()
+                for item in source_archive.infolist():
+                    data = replacements.get(item.filename, source_archive.read(item.filename))
+                    if isinstance(data, str):
+                        data = data.encode("utf-8")
+                    patched_archive.writestr(item, data)
+                    written.add(item.filename)
+                for name, data in replacements.items():
+                    if name in written:
+                        continue
+                    if isinstance(data, str):
+                        data = data.encode("utf-8")
+                    patched_archive.writestr(name, data)
+            return output.getvalue()
+
+
 def escape_xml(value):
     return (
         value.replace("&", "&amp;")
@@ -544,6 +564,52 @@ class DocxExportTests(unittest.TestCase):
         redlined_docx = build_source_redline_docx(source_docx, result)
 
         assert_docx_package_healthy(self, redlined_docx)
+
+    def test_source_docx_export_repairs_malformed_required_package_metadata(self):
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        source_docx = replace_docx_parts(source_docx, {
+            "[Content_Types].xml": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/xml"/>
+  <Default Extension="xml" ContentType="text/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/xml"/>
+</Types>""",
+            "_rels/.rels": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/missing-document.xml"/>
+</Relationships>""",
+            "word/_rels/document.xml.rels": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="missing-settings.xml"/>
+</Relationships>""",
+            "word/settings.xml": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:trackRevisions w:val="0"/>
+</w:settings>""",
+        })
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        defaults, overrides = docx_content_types(redlined_docx)
+        self.assertEqual(defaults["rels"], RELATIONSHIPS_CONTENT_TYPE)
+        self.assertEqual(defaults["xml"], "application/xml")
+        self.assertEqual(overrides["/word/document.xml"], DOCUMENT_CONTENT_TYPE)
+        self.assertEqual(overrides["/word/settings.xml"], SETTINGS_CONTENT_TYPE)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            package_relationships = relationship_targets(archive, "_rels/.rels")
+        office_document_targets = [
+            resolve_relationship_target("_rels/.rels", relationship["Target"])
+            for relationship in package_relationships
+            if relationship.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP_TYPE
+        ]
+        self.assertEqual(office_document_targets, ["word/document.xml"])
+        self.assertEqual(docx_document_relationship_targets(redlined_docx)[SETTINGS_RELATIONSHIP_TYPE], "settings.xml")
 
     def test_source_docx_export_adds_missing_section_properties(self):
         source_docx = make_source_docx([

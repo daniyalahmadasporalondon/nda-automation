@@ -25,6 +25,8 @@ CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
+STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 A4_PAGE_WIDTH_TWIPS = "11906"
 A4_PAGE_HEIGHT_TWIPS = "16838"
 ET.register_namespace("w", W_NS)
@@ -114,7 +116,8 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                     else None
                 ),
                 "[Content_Types].xml": _content_types_xml_with_settings(
-                    source_archive.read("[Content_Types].xml") if "[Content_Types].xml" in source_names else None
+                    source_archive.read("[Content_Types].xml") if "[Content_Types].xml" in source_names else None,
+                    has_styles="word/styles.xml" in source_names,
                 ),
                 "_rels/.rels": _package_rels_xml_with_document(
                     source_archive.read("_rels/.rels") if "_rels/.rels" in source_names else None
@@ -764,16 +767,7 @@ def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
 
-    has_document = any(
-        relationship.attrib.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP_TYPE
-        for relationship in relationships_root.findall(_rel_tag("Relationship"))
-    )
-    if not has_document:
-        ET.SubElement(relationships_root, _rel_tag("Relationship"), {
-            "Id": _next_relationship_id(relationships_root),
-            "Type": OFFICE_DOCUMENT_RELATIONSHIP_TYPE,
-            "Target": "word/document.xml",
-        })
+    _ensure_relationship_target(relationships_root, OFFICE_DOCUMENT_RELATIONSHIP_TYPE, "word/document.xml")
     return _xml_bytes(relationships_root)
 
 
@@ -816,47 +810,82 @@ def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
 
-    has_settings = any(
-        relationship.attrib.get("Type") == SETTINGS_RELATIONSHIP_TYPE
-        for relationship in relationships_root.findall(_rel_tag("Relationship"))
-    )
-    if not has_settings:
-        ET.SubElement(relationships_root, _rel_tag("Relationship"), {
-            "Id": _next_relationship_id(relationships_root),
-            "Type": SETTINGS_RELATIONSHIP_TYPE,
-            "Target": "settings.xml",
-        })
+    _ensure_relationship_target(relationships_root, SETTINGS_RELATIONSHIP_TYPE, "settings.xml")
     return _xml_bytes(relationships_root)
 
 
-def _content_types_xml_with_settings(content_types_xml: bytes | None) -> bytes:
+def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_styles: bool = False) -> bytes:
     if content_types_xml:
         content_types_root = ET.fromstring(content_types_xml)
     else:
         content_types_root = ET.Element(_content_type_tag("Types"))
-        ET.SubElement(content_types_root, _content_type_tag("Default"), {
-            "Extension": "rels",
-            "ContentType": "application/vnd.openxmlformats-package.relationships+xml",
-        })
-        ET.SubElement(content_types_root, _content_type_tag("Default"), {
-            "Extension": "xml",
-            "ContentType": "application/xml",
-        })
-        ET.SubElement(content_types_root, _content_type_tag("Override"), {
-            "PartName": "/word/document.xml",
-            "ContentType": f"{DOCX_MIME}.main+xml",
-        })
 
-    has_settings = any(
-        override.attrib.get("PartName") == "/word/settings.xml"
-        for override in content_types_root.findall(_content_type_tag("Override"))
-    )
-    if not has_settings:
-        ET.SubElement(content_types_root, _content_type_tag("Override"), {
-            "PartName": "/word/settings.xml",
-            "ContentType": SETTINGS_CONTENT_TYPE,
-        })
+    _ensure_content_type_default(content_types_root, "rels", RELATIONSHIPS_CONTENT_TYPE)
+    _ensure_content_type_default(content_types_root, "xml", "application/xml")
+    _ensure_content_type_override(content_types_root, "/word/document.xml", f"{DOCX_MIME}.main+xml")
+    _ensure_content_type_override(content_types_root, "/word/settings.xml", SETTINGS_CONTENT_TYPE)
+    if has_styles:
+        _ensure_content_type_override(content_types_root, "/word/styles.xml", STYLES_CONTENT_TYPE)
     return _xml_bytes(content_types_root)
+
+
+def _ensure_relationship_target(relationships_root: ET.Element, relationship_type: str, target: str) -> None:
+    matches = [
+        relationship
+        for relationship in relationships_root.findall(_rel_tag("Relationship"))
+        if relationship.attrib.get("Type") == relationship_type
+    ]
+    if not matches:
+        ET.SubElement(relationships_root, _rel_tag("Relationship"), {
+            "Id": _next_relationship_id(relationships_root),
+            "Type": relationship_type,
+            "Target": target,
+        })
+        return
+
+    primary = matches[0]
+    primary.attrib["Target"] = target
+    primary.attrib.pop("TargetMode", None)
+    for duplicate in matches[1:]:
+        relationships_root.remove(duplicate)
+
+
+def _ensure_content_type_default(content_types_root: ET.Element, extension: str, content_type: str) -> None:
+    matches = [
+        default
+        for default in content_types_root.findall(_content_type_tag("Default"))
+        if default.attrib.get("Extension") == extension
+    ]
+    if not matches:
+        ET.SubElement(content_types_root, _content_type_tag("Default"), {
+            "Extension": extension,
+            "ContentType": content_type,
+        })
+        return
+
+    primary = matches[0]
+    primary.attrib["ContentType"] = content_type
+    for duplicate in matches[1:]:
+        content_types_root.remove(duplicate)
+
+
+def _ensure_content_type_override(content_types_root: ET.Element, part_name: str, content_type: str) -> None:
+    matches = [
+        override
+        for override in content_types_root.findall(_content_type_tag("Override"))
+        if override.attrib.get("PartName") == part_name
+    ]
+    if not matches:
+        ET.SubElement(content_types_root, _content_type_tag("Override"), {
+            "PartName": part_name,
+            "ContentType": content_type,
+        })
+        return
+
+    primary = matches[0]
+    primary.attrib["ContentType"] = content_type
+    for duplicate in matches[1:]:
+        content_types_root.remove(duplicate)
 
 
 def _core_properties_xml(title: str) -> str:
