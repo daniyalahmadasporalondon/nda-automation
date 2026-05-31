@@ -283,7 +283,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(redline["action"], "insert_after_paragraph")
         self.assertEqual(redline["action_label"], "Insert after paragraph")
         self.assertEqual(redline["paragraph_id"], "p1")
-        self.assertEqual(redline["target_position"], "after_paragraph")
+        self.assertNotIn("target_position", redline)
         self.assertEqual(redline["original_text"], "")
         self.assertIn("up to five years", redline["insert_text"])
 
@@ -440,7 +440,11 @@ class CheckerTests(unittest.TestCase):
             [option["label"] for option in governing_law_redline["template_options"]],
             ["India", "Delaware", "England and Wales", "DIFC"],
         )
-        self.assertEqual(governing_law_redline["selected_template_id"], "governing_law_england_and_wales")
+        self.assertNotIn("selected_template_id", governing_law_redline)
+        self.assertEqual(
+            [option["id"] for option in governing_law_redline["template_options"] if option.get("selected")],
+            ["governing_law_england_and_wales"],
+        )
         self.assertEqual(
             [option["text"] for option in governing_law_redline["template_options"]],
             [

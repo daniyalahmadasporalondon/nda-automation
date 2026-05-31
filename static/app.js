@@ -540,7 +540,6 @@ function applyTemplateSelectionToRedline(edit) {
 
   const nextEdit = {
     ...edit,
-    selected_template_id: selectedOption.id,
     template_options: (edit.template_options || []).map((option) => ({
       ...option,
       selected: option.id === selectedOption.id,

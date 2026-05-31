@@ -1004,13 +1004,10 @@ def _redline_edit(
     if "source_index" in paragraph:
         edit["source_index"] = paragraph["source_index"]
     if action == REDLINE_INSERT_AFTER_PARAGRAPH:
-        edit["target_position"] = "after_paragraph"
         edit["anchor_text"] = paragraph["text"]
         edit["insert_text"] = proposed_text
     if template_options:
         edit["template_options"] = template_options
-        selected_option = next((option for option in template_options if option.get("selected")), template_options[0])
-        edit["selected_template_id"] = selected_option.get("id")
     return edit
 
 
