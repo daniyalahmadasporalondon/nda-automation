@@ -17,6 +17,18 @@ from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
+    "NDA Redline",
+    "Review Notes",
+    "Clause Findings",
+    "Proposed Redline",
+    "Overall status:",
+    "Requirements passed:",
+    "Requirements failed:",
+    "Checked at:",
+    "The Redlined NDA section contains native Word tracked changes.",
+    "source paragraph",
+]
 
 
 class QuietNdaAutomationHandler(NdaAutomationHandler):
@@ -277,6 +289,11 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="uploaded-redlined.docx"')
+        assert_source_export_has_no_report_leakage(
+            self,
+            payload,
+            extra_forbidden=["Stale browser text should not drive DOCX export."],
+        )
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
@@ -285,11 +302,8 @@ class ServerTests(unittest.TestCase):
             "".join(node.text or "" for node in deletion.findall(".//w:delText", W_NS))
             for deletion in document_root.findall(".//w:del", W_NS)
         ]
-        self.assertNotIn("NDA Redline", document_xml)
-        self.assertNotIn("source paragraph", document_xml)
         self.assertTrue(any("California" in text for text in deletion_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
-        self.assertNotIn("Stale browser text should not drive DOCX export.", document_xml)
 
     def test_review_docx_export_uses_uploaded_docx_over_stale_reviewed_text(self):
         source_docx = make_docx([
@@ -306,11 +320,15 @@ class ServerTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 200)
+        assert_source_export_has_no_report_leakage(
+            self,
+            payload,
+            extra_forbidden=["Stale reviewed text should not drive DOCX export."],
+        )
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
-        self.assertNotIn("Stale reviewed text should not drive DOCX export.", document_xml)
 
     def test_docx_review_then_export_round_trip_uses_uploaded_source_revisions(self):
         source_docx = make_docx([
@@ -348,6 +366,11 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(export_status, 200)
         self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="round-trip-redlined.docx"')
+        assert_source_export_has_no_report_leakage(
+            self,
+            export_payload,
+            extra_forbidden=["Stale pasted browser text should not appear in the export."],
+        )
         with ZipFile(BytesIO(export_payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
@@ -360,7 +383,6 @@ class ServerTests(unittest.TestCase):
             for paragraph in document_root.findall(".//w:p", W_NS)
         ]
         self.assertIn("Intro paragraph.", document_xml)
-        self.assertNotIn("Stale pasted browser text should not appear in the export.", document_xml)
         self.assertIn(
             (
                 "This Agreement shall be governed by the laws of California.",
@@ -517,6 +539,14 @@ def escape_xml(value):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def assert_source_export_has_no_report_leakage(testcase, docx_bytes, extra_forbidden=()):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        testcase.assertIsNone(archive.testzip())
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    for phrase in [*SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES, *extra_forbidden]:
+        testcase.assertNotIn(phrase, document_xml)
 
 
 def revision_text_for_state(node, accepted):

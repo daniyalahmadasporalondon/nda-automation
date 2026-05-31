@@ -30,6 +30,18 @@ RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationshi
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
+SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
+    "NDA Redline",
+    "Review Notes",
+    "Clause Findings",
+    "Proposed Redline",
+    "Overall status:",
+    "Requirements passed:",
+    "Requirements failed:",
+    "Checked at:",
+    "The Redlined NDA section contains native Word tracked changes.",
+    "source paragraph",
+]
 
 
 def docx_xml_roots(docx_bytes):
@@ -38,6 +50,14 @@ def docx_xml_roots(docx_bytes):
         settings_xml = archive.read("word/settings.xml").decode("utf-8")
         document_xml = archive.read("word/document.xml").decode("utf-8")
     return ET.fromstring(settings_xml), ET.fromstring(document_xml), document_xml
+
+
+def assert_source_export_has_no_report_leakage(testcase, docx_bytes, extra_forbidden=()):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        testcase.assertIsNone(archive.testzip())
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    for phrase in [*SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES, *extra_forbidden]:
+        testcase.assertNotIn(phrase, document_xml)
 
 
 def docx_document_relationship_targets(docx_bytes):
@@ -426,6 +446,7 @@ class DocxExportTests(unittest.TestCase):
         redlined_docx = build_source_redline_docx(source_docx, result)
 
         assert_docx_package_healthy(self, redlined_docx)
+        assert_source_export_has_no_report_leakage(self, redlined_docx)
         settings_root, document_root, document_xml = docx_xml_roots(redlined_docx)
         relationship_targets = docx_document_relationship_targets(redlined_docx)
         content_type_overrides = docx_content_type_overrides(redlined_docx)
@@ -440,8 +461,6 @@ class DocxExportTests(unittest.TestCase):
             content_type_overrides["/word/settings.xml"],
             "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml",
         )
-        self.assertNotIn("NDA Redline", document_xml)
-        self.assertNotIn("Review Notes", document_xml)
         self.assertIn("Intro paragraph.", document_xml)
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
@@ -457,6 +476,7 @@ class DocxExportTests(unittest.TestCase):
 
         redlined_docx = build_source_redline_docx(source_docx, result)
 
+        assert_source_export_has_no_report_leakage(self, redlined_docx)
         _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
         deleted_text = tracked_deleted_text(document_root)
         inserted_text = tracked_inserted_text(document_root)
@@ -475,6 +495,7 @@ class DocxExportTests(unittest.TestCase):
 
         redlined_docx = build_source_redline_docx(source_docx, review_result)
 
+        assert_source_export_has_no_report_leakage(self, redlined_docx)
         _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
         paragraphs = document_root.findall(".//w:body/w:p", W_NS)
         states = [
