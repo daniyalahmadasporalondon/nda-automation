@@ -611,6 +611,8 @@ async function testClauseDecisionControls(page) {
   await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
   await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "IGNORED IN EXPORT");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
+  await page.locator('[data-lane-card-id="signatures"]').click();
+  assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
   await page.locator('[data-lane-card-id="signatures"] [data-export-clause-id="signatures"][data-export-decision="include"]').click();
   await assertTextContains(page.locator('[data-lane-card-id="signatures"] .studio-export-state'), "INCLUDED IN EXPORT");

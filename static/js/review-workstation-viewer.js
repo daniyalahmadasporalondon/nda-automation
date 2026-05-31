@@ -268,7 +268,7 @@ function renderedClauseTargets(clauseId) {
   (clause?.matched_paragraph_ids || []).forEach((paragraphId) => {
     targetKeys.push({ type: "paragraph", id: paragraphId });
   });
-  state.reviewRedlines
+  effectiveReviewRedlines()
     .filter((edit) => edit.clause_id === clauseId)
     .forEach((edit) => {
       if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH && edit.id) {
