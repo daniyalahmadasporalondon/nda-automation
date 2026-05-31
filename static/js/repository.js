@@ -316,7 +316,7 @@ const RepositoryView = (() => {
       } catch (error) {
         setPanelMessage(error.message || "Export could not run");
       } finally {
-        if (exportButton) {
+        if (exportButton?.isConnected) {
           exportButton.disabled = false;
           exportButton.textContent = "Export Redline";
         }
@@ -375,7 +375,7 @@ const RepositoryView = (() => {
       }
       const movedMatter = await moveMatterToColumn(matter.id, "signed_closed", { quiet: true });
       setPanelMessage(movedMatter ? "Moved to Signed / Closed." : "Matter could not move.");
-      if (closeButton && !movedMatter) {
+      if (closeButton?.isConnected && !movedMatter) {
         closeButton.disabled = false;
         closeButton.textContent = "Close Matter";
       }
