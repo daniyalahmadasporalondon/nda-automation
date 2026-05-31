@@ -398,6 +398,56 @@ class ServerTests(unittest.TestCase):
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
 
+    def test_uploaded_docx_export_preserves_manual_viewer_redlines_on_source(self):
+        source_docx = make_docx([
+            "NON-DISCLOSURE AGREEMENT (NDA)",
+            "This reciprocal confidentiality agreement is dated 2025.",
+        ])
+        status, payload, headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "reviewed_text": "Do you see problem?\n\nHello",
+                "filename": "Orbii - NDA DIFC.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                "manual_redline_edits": [
+                    {
+                        "id": "manual-p1",
+                        "action": "replace_paragraph",
+                        "paragraph_id": "p1",
+                        "paragraph_index": 1,
+                        "source_index": 1,
+                        "original_text": "NON-DISCLOSURE AGREEMENT (NDA)",
+                        "replacement_text": "Do you see problem?",
+                    },
+                    {
+                        "id": "manual-p2",
+                        "action": "replace_paragraph",
+                        "paragraph_id": "p2",
+                        "paragraph_index": 2,
+                        "source_index": 2,
+                        "original_text": "This reciprocal confidentiality agreement is dated 2025.",
+                        "replacement_text": "Hello",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="Orbii---NDA-DIFC-redlined.docx"')
+        assert_source_export_has_no_report_leakage(self, payload)
+        with ZipFile(BytesIO(payload)) as archive:
+            document_root = ET.fromstring(archive.read("word/document.xml"))
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        self.assertIn(("NON-DISCLOSURE AGREEMENT (NDA)", "Do you see problem?"), revision_states)
+        self.assertIn(("This reciprocal confidentiality agreement is dated 2025.", "Hello"), revision_states)
+
     def test_docx_review_then_export_round_trip_uses_uploaded_source_revisions(self):
         source_docx = make_docx([
             "Intro paragraph.",

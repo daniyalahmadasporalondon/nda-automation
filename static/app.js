@@ -743,7 +743,7 @@ function syncViewerParagraphEdit(editable) {
   paragraph.text = editableParagraphText(editable);
   syncReviewSourceFromParagraphs();
   updateManualRedlinePreview(editable, paragraph);
-  markSourceEdited("Edited in viewer");
+  markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
   studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
   updateExportButtonState();
 }
@@ -779,11 +779,11 @@ function syncReviewSourceFromParagraphs() {
   setSourceText(text);
 }
 
-function markSourceEdited(message) {
+function markSourceEdited(message, { preserveSourceDocument = false } = {}) {
   if (state.reviewClauses.length || state.reviewSourceText.trim()) {
     state.reviewDirty = true;
   }
-  if (state.selectedDocument) {
+  if (state.selectedDocument && !preserveSourceDocument) {
     state.selectedDocument = null;
     fileInput.value = "";
   }
