@@ -86,6 +86,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(route_headers["Content-Type"], DOCX_MIME)
         self.assertEqual(route_headers["Content-Disposition"], headers["Content-Disposition"])
         self.assertEqual(route_payload, payload)
+        self.assertEqual(server_module.Path(headers["X-Export-Path"]).read_bytes(), payload)
 
     def malformed_template_playbook(self):
         playbook = deepcopy(load_playbook())
