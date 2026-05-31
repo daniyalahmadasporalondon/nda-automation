@@ -555,6 +555,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status["inbound"]["configured"], False)
         self.assertEqual(status["outbound"]["configured"], False)
+        self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
 
     def test_matter_stage_update_persists_workflow_column(self):

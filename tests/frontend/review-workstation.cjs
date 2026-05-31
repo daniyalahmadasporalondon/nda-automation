@@ -257,8 +257,46 @@ async function testFailureUxDetails(page) {
 }
 
 async function testPlaybookAdminEditor(page) {
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: {
+            configured: true,
+            email: "inbound@example.com",
+            query: "has:attachment",
+            ready: true,
+          },
+          outbound: {
+            configured: true,
+            email: "outbound@example.com",
+            ready: true,
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matters: [{
+          id: "matter_sent",
+          last_outbound_account: "outbound@example.com",
+          last_outbound_at: "2026-05-31T20:30:00+00:00",
+          last_outbound_subject: "Re: NDA",
+          last_outbound_to: "counterparty@example.com",
+          subject: "NDA",
+        }],
+      }),
+    });
+  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Admin" }).click();
+  await assertTextContains(page.locator("#adminPlaybookPanel"), "Aspora playbook");
   await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
@@ -300,7 +338,19 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
   const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
   assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
+  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Gmail");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "INBOUND ACCOUNT");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "OUTBOUND ACCOUNT");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "has:attachment");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

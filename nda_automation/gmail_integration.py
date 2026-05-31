@@ -40,6 +40,8 @@ def gmail_status() -> dict[str, dict[str, Any]]:
             "ready": False,
             "role": role,
         }
+        if role == "inbound":
+            role_status["query"] = DEFAULT_INBOUND_QUERY
         try:
             token_path = _token_path_for_role(role)
         except GmailIntegrationError:

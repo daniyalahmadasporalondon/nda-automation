@@ -254,6 +254,7 @@ h3 {
   display: flex;
 }
 
+.admin-view.view.active,
 .playbook-view.view.active {
   display: block;
 }
@@ -1595,13 +1596,76 @@ textarea::placeholder {
   box-shadow: 0 12px 26px -10px rgba(79, 27, 179, 0.48);
 }
 
-/* ---------- Clauses / playbook view ---------- */
+/* ---------- Admin / playbook view ---------- */
 
-.playbook-view {
+.admin-view {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 18px 24px 24px;
+}
+
+.admin-console {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.admin-nav,
+.admin-section-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-nav {
+  align-self: start;
+  display: grid;
+  gap: 8px;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+
+.admin-section-button {
+  background: transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  color: var(--ink);
+  display: grid;
+  gap: 4px;
+  justify-content: stretch;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.admin-section-button:hover,
+.admin-section-button.active {
+  background: var(--bg-soft);
+  border-left-color: var(--brand);
+}
+
+.admin-section-button strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-section-button span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.admin-section-panel {
+  min-width: 0;
+}
+
+.admin-section-panel[hidden] {
+  display: none;
 }
 
 .playbook-shell {
@@ -1909,6 +1973,125 @@ textarea::placeholder {
   margin-right: auto;
 }
 
+.admin-section-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 18px;
+}
+
+.admin-section-head h1 {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.08;
+  margin: 0;
+}
+
+.integrations-grid {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.integration-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  padding: 14px;
+}
+
+.integration-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.integration-card-head h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.integration-status {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  padding: 6px 9px;
+  text-transform: uppercase;
+}
+
+.integration-status.ready {
+  color: #146a42;
+}
+
+.integration-status.blocked {
+  color: #9a3412;
+}
+
+.integration-status.pending {
+  color: var(--ink-muted);
+}
+
+.integration-facts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.integration-facts.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.integration-facts div {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.integration-facts dt {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.integration-facts dd {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.integration-subsection {
+  display: grid;
+  gap: 10px;
+}
+
+.integration-subsection h3 {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
 .detail-header {
   align-items: flex-start;
   border-bottom: 1px solid var(--border);
@@ -2114,8 +2297,14 @@ textarea::placeholder {
     min-height: 0;
   }
 
+  .admin-console,
   .studio-grid,
   .playbook-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .integration-facts,
+  .integration-facts.compact {
     grid-template-columns: 1fr;
   }
 

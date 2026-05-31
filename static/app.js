@@ -17,6 +17,8 @@ const studioResultMeta = document.querySelector("#studioResultMeta");
 const studioDraftMeta = document.querySelector("#studioDraftMeta");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
+const adminSectionButtons = document.querySelectorAll("[data-admin-section]");
+const adminPanels = document.querySelectorAll("[data-admin-panel]");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
 
@@ -39,8 +41,10 @@ const state = {
   redlineDraft: null,
   redlineDraftDirty: false,
   documentViewMode: VIEW_MODE_REDLINE,
+  gmailLastSync: null,
 };
 let pendingReviewSendMatterId = null;
+let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
   state,
@@ -57,6 +61,16 @@ const repositoryController = createRepositoryController({
   fileToBase64,
   loadMatterIntoReview,
   redlineDownloadFilename,
+  reviewErrorFromPayload,
+  onGmailSync: (sync) => adminIntegrationsController?.setLastSync(sync),
+});
+adminIntegrationsController = createAdminIntegrationsController({
+  state,
+  gmailCard: document.querySelector("#adminGmailCard"),
+  gmailFacts: document.querySelector("#adminGmailFacts"),
+  gmailOverall: document.querySelector("#adminGmailOverall"),
+  gmailRecentSend: document.querySelector("#adminGmailRecentSend"),
+  gmailRefreshButton: document.querySelector("#adminGmailRefreshButton"),
   reviewErrorFromPayload,
 });
 const playbookController = createPlaybookController({
@@ -79,6 +93,7 @@ emptyState();
 playbookController.loadPlaybook();
 repositoryController.loadMatters();
 repositoryController.loadGmailStatus();
+adminIntegrationsController.load();
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -91,6 +106,10 @@ tabButtons.forEach((button) => {
     activateTab(nextTab.dataset.tab);
     nextTab.focus();
   });
+});
+
+adminSectionButtons.forEach((button) => {
+  button.addEventListener("click", () => activateAdminSection(button.dataset.adminSection));
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {
@@ -163,6 +182,29 @@ function activateTab(tabName) {
   if (tabName === "review") {
     requestAnimationFrame(resizeSourceEditors);
   }
+  if (tabName === "clauses" && activeAdminSection() === "integrations") {
+    adminIntegrationsController.load();
+  }
+}
+
+function activateAdminSection(sectionName) {
+  adminSectionButtons.forEach((button) => {
+    const active = button.dataset.adminSection === sectionName;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  adminPanels.forEach((panel) => {
+    const active = panel.dataset.adminPanel === sectionName;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+  if (sectionName === "integrations") {
+    adminIntegrationsController.load();
+  }
+}
+
+function activeAdminSection() {
+  return document.querySelector("[data-admin-section].active")?.dataset.adminSection || "playbook";
 }
 
 function tabForKeyboardEvent(event, currentButton) {

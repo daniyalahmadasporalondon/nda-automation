@@ -22,6 +22,7 @@ const RepositoryView = (() => {
     loadMatterIntoReview,
     redlineDownloadFilename,
     reviewErrorFromPayload,
+    onGmailSync,
   }) {
     let selectedMatter = null;
     let pendingSendMatterId = null;
@@ -92,6 +93,14 @@ const RepositoryView = (() => {
         if (imported[0]?.id) {
           await openMatter(imported[0].id);
         }
+        state.gmailLastSync = {
+          account: payload.account || "",
+          imported_count: imported.length,
+          query: payload.query || "",
+          skipped_count: skipped.length,
+          synced_at: payload.synced_at || "",
+        };
+        onGmailSync?.(state.gmailLastSync);
         updateLastSync(payload.account || "", payload.synced_at || "");
         setImportStatus(gmailSyncSummary(imported, skipped));
       } catch (error) {

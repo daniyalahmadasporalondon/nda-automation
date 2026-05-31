@@ -207,17 +207,95 @@
           </section>
         </main>
 
-        <main class="playbook-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>
-          <section class="playbook-shell">
-            <aside class="clause-rail">
+        <main class="admin-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>
+          <section class="admin-console">
+            <aside class="admin-nav" aria-label="Admin sections">
               <div class="rail-heading">
-                <p class="eyebrow">hard clauses</p>
-                <h2>Aspora playbook</h2>
+                <p class="eyebrow">admin</p>
+                <h2>Settings console</h2>
               </div>
-              <div class="playbook-list" id="playbookList"></div>
+              <button class="admin-section-button active" type="button" data-admin-section="playbook" aria-pressed="true">
+                <strong>Playbook</strong>
+                <span>Clause rules and language</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
+                <strong>Integrations</strong>
+                <span>Gmail accounts and sync state</span>
+              </button>
             </aside>
 
-            <section class="clause-detail" id="clauseDetail"></section>
+            <section class="admin-section-panel active" id="adminPlaybookPanel" data-admin-panel="playbook">
+              <section class="playbook-shell">
+                <aside class="clause-rail">
+                  <div class="rail-heading">
+                    <p class="eyebrow">hard clauses</p>
+                    <h2>Aspora playbook</h2>
+                  </div>
+                  <div class="playbook-list" id="playbookList"></div>
+                </aside>
+
+                <section class="clause-detail" id="clauseDetail"></section>
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminIntegrationsPanel" data-admin-panel="integrations" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">integrations</p>
+                  <h1>Connected services</h1>
+                </div>
+                <button class="secondary" id="adminGmailRefreshButton" type="button">Refresh</button>
+              </header>
+
+              <section class="integrations-grid">
+                <article class="integration-card" id="adminGmailCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">gmail</p>
+                      <h2>Gmail</h2>
+                    </div>
+                    <span class="integration-status" id="adminGmailOverall">Checking</span>
+                  </header>
+
+                  <dl class="integration-facts" id="adminGmailFacts">
+                    <div>
+                      <dt>Inbound account</dt>
+                      <dd data-admin-gmail="inbound-email">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Outbound account</dt>
+                      <dd data-admin-gmail="outbound-email">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Inbound token configured</dt>
+                      <dd data-admin-gmail="inbound-configured">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Outbound token configured</dt>
+                      <dd data-admin-gmail="outbound-configured">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Default import query</dt>
+                      <dd data-admin-gmail="default-query">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Last sync</dt>
+                      <dd data-admin-gmail="last-sync">Not run in this session</dd>
+                    </div>
+                  </dl>
+
+                  <section class="integration-subsection">
+                    <h3>Recent Outbound</h3>
+                    <dl class="integration-facts compact" id="adminGmailRecentSend">
+                      <div>
+                        <dt>Status</dt>
+                        <dd>No outbound sends recorded</dd>
+                      </div>
+                    </dl>
+                  </section>
+                </article>
+              </section>
+            </section>
           </section>
         </main>
       </section>
@@ -230,6 +308,7 @@
     <script src="/static/js/matter-utils.js"></script>
     <script src="/static/js/redline-rendering.js"></script>
     <script src="/static/js/repository.js"></script>
+    <script src="/static/js/admin-integrations.js"></script>
     <script src="/static/js/playbook-view.js"></script>
     <script src="/static/js/review-workstation-actions.js"></script>
     <script src="/static/js/review-workstation-source.js"></script>
