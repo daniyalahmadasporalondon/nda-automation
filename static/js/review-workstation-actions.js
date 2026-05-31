@@ -1,39 +1,3 @@
-async function loadFileIntoReview(file) {
-  const extension = file.name.split(".").pop().toLowerCase();
-
-  if (extension === "docx" || extension === "pdf") {
-    state.selectedDocument = file;
-    state.selectedMatter = null;
-    setSourceText("");
-    showStudioSourceEditor();
-    resizeSourceEditors();
-    setSourcePlaceholder(`${extension.toUpperCase()} document selected`);
-    setFileMeta(`${file.name} ready for review`);
-    setDocumentTitle(file.name);
-    resetReviewResults();
-    renderStudioEmpty();
-    setActiveTab("review");
-    return;
-  }
-
-  state.selectedDocument = null;
-  state.selectedMatter = null;
-  const fileText = await file.text();
-  setSourceText(fileText);
-  showStudioSourceEditor();
-  resizeSourceEditors();
-  setSourcePlaceholder(SOURCE_PLACEHOLDER);
-  setFileMeta(`${file.name} loaded as text`);
-  setDocumentTitle(file.name);
-  resetReviewResults();
-  renderStudioEmpty();
-  setActiveTab("review");
-}
-
-function isWordDocument(file) {
-  return file.name.toLowerCase().endsWith(".docx");
-}
-
 function clearReview() {
   pendingReviewSendMatterId = null;
   setSourceText("");
