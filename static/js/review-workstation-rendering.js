@@ -268,6 +268,12 @@ function renderStudioDetail() {
   const fixBlock = status.needsReview && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
+  const rationaleBlock = clause.rationale
+    ? `<div class="studio-detail-block rationale-block"><small>Playbook rationale</small><p>${escapeHtml(clause.rationale)}</p></div>`
+    : "";
+  const evidenceGuidanceBlock = clause.evidence_guidance
+    ? `<div class="studio-detail-block evidence-guidance-block"><small>Evidence guidance</small><p>${escapeHtml(clause.evidence_guidance)}</p></div>`
+    : "";
   const redlineEdits = getSelectedRedlineEdits();
   const selectedClauseRedlineCount = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id).length;
   const exportDecisionBlock = selectedClauseRedlineCount
@@ -312,6 +318,8 @@ function renderStudioDetail() {
         <small>Why</small>
         <p>${escapeHtml(whyText)}</p>
       </div>
+      ${rationaleBlock}
+      ${evidenceGuidanceBlock}
       ${fixBlock}
       ${exportDecisionBlock}
       ${redlineBlock}

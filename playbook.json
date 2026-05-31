@@ -15,6 +15,18 @@
         "disclosing party and receiving party",
         "receiving party and disclosing party"
       ],
+      "taxonomy_groups": [
+        "party_scope",
+        "reciprocal_obligation"
+      ],
+      "semantic_signals": [
+        "each of the parties",
+        "either party may disclose",
+        "the parties may disclose confidential information to each other",
+        "each party acts as both disclosing party and receiving party"
+      ],
+      "rationale": "A one-way NDA creates asymmetric risk; Aspora's baseline is reciprocal confidentiality unless the matter is deliberately unilateral.",
+      "evidence_guidance": "Look for language tying both parties to disclosing and receiving roles, not only isolated defined terms.",
       "role_terms": [
         "disclosing party",
         "receiving party"
@@ -45,6 +57,18 @@
         "financial",
         "technical"
       ],
+      "taxonomy_groups": [
+        "definition_scope",
+        "exclusions"
+      ],
+      "semantic_signals": [
+        "non-public information",
+        "proprietary information",
+        "information disclosed by either party",
+        "information whether oral written electronic or visual"
+      ],
+      "rationale": "The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.",
+      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph for category breadth and nearby exclusion language.",
       "definition_categories": [
         "financial",
         "business",
@@ -112,6 +136,17 @@
         "Delaware",
         "India"
       ],
+      "taxonomy_groups": [
+        "dispute_framework",
+        "approved_jurisdiction"
+      ],
+      "semantic_signals": [
+        "this agreement is governed",
+        "agreement shall be construed in accordance with",
+        "laws applicable to this agreement"
+      ],
+      "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be changed or reviewed.",
+      "evidence_guidance": "Use the governing-law sentence as evidence, not the whole dispute-resolution section unless needed.",
       "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, or the DIFC."
     },
     {
@@ -135,6 +170,18 @@
         "effective date",
         "years"
       ],
+      "taxonomy_groups": [
+        "duration",
+        "survival"
+      ],
+      "semantic_signals": [
+        "confidentiality obligations continue",
+        "obligations remain binding",
+        "obligations remain in force",
+        "after termination"
+      ],
+      "rationale": "Ordinary confidentiality should be time-limited; indefinite language is only acceptable for narrow trade-secret or legal exceptions.",
+      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording.",
       "indefinite_terms": [
         "indefinitely",
         "perpetual confidentiality",
@@ -155,6 +202,18 @@
         "substitute purpose",
         "exclusive dealing"
       ],
+      "taxonomy_groups": [
+        "prohibited_restriction",
+        "business_restraint"
+      ],
+      "semantic_signals": [
+        "deal directly with introduced",
+        "avoid the company",
+        "bypass the disclosing party",
+        "not solicit introduced contacts"
+      ],
+      "rationale": "Non-circumvention and substitute-purpose restrictions turn the NDA into a broader commercial restraint.",
+      "evidence_guidance": "Flag paragraphs restricting introduced parties, direct dealings, bypassing, substitute transactions, or exclusivity.",
       "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."
     },
     {
@@ -169,6 +228,18 @@
         "date:",
         "by:"
       ],
+      "taxonomy_groups": [
+        "execution",
+        "signing_authority"
+      ],
+      "semantic_signals": [
+        "executed by",
+        "signed for and on behalf of",
+        "authorised signatory",
+        "name title date"
+      ],
+      "rationale": "A complete execution block reduces signing ambiguity and supports clean downstream storage.",
+      "evidence_guidance": "Look for both parties' execution blocks with signatory, title or capacity, and date markers.",
       "redline_template": "For [Party 1 legal name]\nBy:\nName:\nTitle:\nDate:\n\nFor [Party 2 legal name]\nBy:\nName:\nTitle:\nDate:",
       "acceptable_language": "Each party should have an execution block showing the legal entity name, authorised signatory, title, and date."
     }

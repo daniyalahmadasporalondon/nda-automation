@@ -1331,6 +1331,12 @@ textarea::placeholder {
   border-left: 3px solid var(--amber);
 }
 
+.studio-detail-block.rationale-block,
+.studio-detail-block.evidence-guidance-block {
+  background: #fbfaff;
+  border-color: rgba(139, 92, 246, 0.22);
+}
+
 .studio-detail-block.redline-block {
   background: #fffaf0;
   border-color: rgba(245, 158, 11, 0.36);

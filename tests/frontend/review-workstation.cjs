@@ -249,6 +249,9 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
   await assertTextContains(page.locator("#studioDetailPanel"), "WHY");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK RATIONALE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
+  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE GUIDANCE");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {

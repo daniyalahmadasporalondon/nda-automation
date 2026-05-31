@@ -324,6 +324,16 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(governing_law["reason"], "Approved governing law found.")
 
+    def test_semantic_signals_participate_in_clause_detection(self):
+        result = review_nda("Each of the parties may disclose Confidential Information to the other party.")
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+
+        self.assertEqual(mutuality["status"], "match")
+        self.assertTrue(mutuality["passes"])
+        self.assertIn("party_scope", mutuality["taxonomy_groups"])
+        self.assertIn("rationale", mutuality)
+        self.assertIn("evidence_guidance", mutuality)
+
     def test_evidence_paragraph_ids_and_offsets_match_reviewed_source(self):
         text = (
             "Mutual Non-Disclosure Agreement\n\n"
