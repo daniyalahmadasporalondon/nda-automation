@@ -307,6 +307,29 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(server_module._clean_export_redline(redline))
         self.assertIsNone(server_module._clean_manual_export_redline(redline))
 
+    def test_export_redline_cleaners_trim_direct_api_text_fields(self):
+        redline = {
+            "id": "manual-p1",
+            "action": "replace_paragraph",
+            "paragraph_id": " p1 ",
+            "original_text": "  Old paragraph.  ",
+            "replacement_text": "  New paragraph.  ",
+            "anchor_text": "  Anchor paragraph.  ",
+            "insert_text": "  Insert paragraph.  ",
+        }
+
+        selected = server_module._clean_export_redline(redline)
+        manual = server_module._clean_manual_export_redline(redline)
+
+        self.assertEqual(selected["paragraph_id"], "p1")
+        self.assertEqual(selected["original_text"], "Old paragraph.")
+        self.assertEqual(selected["replacement_text"], "New paragraph.")
+        self.assertEqual(selected["anchor_text"], "Anchor paragraph.")
+        self.assertEqual(selected["insert_text"], "Insert paragraph.")
+        self.assertEqual(manual["paragraph_id"], "p1")
+        self.assertEqual(manual["original_text"], "Old paragraph.")
+        self.assertEqual(manual["replacement_text"], "New paragraph.")
+
     def test_selected_export_redline_drops_dead_metadata_but_keeps_report_templates(self):
         cleaned = server_module._clean_export_redline({
             "id": "template-replace",

@@ -394,14 +394,14 @@ def _clean_export_redline_contract(redline: dict, allowed_actions: set[str]) -> 
     if action not in allowed_actions:
         return None
 
-    paragraph_id = str(redline.get("paragraph_id") or "")
+    paragraph_id = str(redline.get("paragraph_id") or "").strip()
     if not paragraph_id:
         return None
 
-    original_text = str(redline.get("original_text") or "")
-    replacement_text = str(redline.get("replacement_text") or "")
-    anchor_text = str(redline.get("anchor_text") or "")
-    insert_text = str(redline.get("insert_text") or "")
+    original_text = str(redline.get("original_text") or "").strip()
+    replacement_text = str(redline.get("replacement_text") or "").strip()
+    anchor_text = str(redline.get("anchor_text") or "").strip()
+    insert_text = str(redline.get("insert_text") or "").strip()
     if action in {"replace_paragraph", "delete_paragraph"} and not original_text.strip():
         return None
     if action == "replace_paragraph" and not replacement_text.strip():
