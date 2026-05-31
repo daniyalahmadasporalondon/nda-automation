@@ -1325,6 +1325,25 @@ textarea::placeholder {
   white-space: pre-wrap;
 }
 
+.evidence-list {
+  display: grid;
+  gap: 8px;
+}
+
+.evidence-item {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.evidence-item figcaption {
+  color: var(--ink-muted);
+  font-size: 0.73rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .studio-detail-block.muted p {
   color: var(--ink-muted);
 }

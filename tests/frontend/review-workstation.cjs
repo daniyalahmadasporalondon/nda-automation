@@ -34,6 +34,7 @@ const allActionRedlineNda = [
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["surfaces review and export error details", testFailureUxDetails],
+  ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
@@ -239,6 +240,17 @@ async function testFailureUxDetails(page) {
   await page.unroute("**/api/export-review-docx");
 }
 
+async function testStructuredEvidenceAndRationale(page) {
+  await runReview(page, "This Agreement shall be governed by the laws of California.");
+  await page.getByRole("button", { name: /Governing Law/ }).click();
+
+  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
+  await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "WHY");
+  await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
+}
+
 async function testRepositoryMatterImportAndFreshReview(page) {
   const docxPath = path.join(os.tmpdir(), `repository-matter-${Date.now()}.docx`);
   makeDocxFixture(docxPath, [
@@ -339,6 +351,9 @@ async function testRepositoryMatterImportAndFreshReview(page) {
 async function testSavePickerGuardsAndFallbacks(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   const cases = await page.evaluate(async () => {
+    delete window.showSaveFilePicker;
+    const missingApiFallback = await chooseExportSaveHandle("missing-api.docx", { allowAutomation: true });
+
     let callCount = 0;
     const handle = { createWritable: async () => ({ write: async () => {}, close: async () => {} }) };
     window.showSaveFilePicker = async () => {
@@ -363,6 +378,7 @@ async function testSavePickerGuardsAndFallbacks(page) {
 
     return {
       callCount,
+      missingApiFallbackType: typeof missingApiFallback,
       webdriverFallbackType: typeof webdriverFallback,
       picked: pickedHandle === handle,
       cancelled,
@@ -371,6 +387,7 @@ async function testSavePickerGuardsAndFallbacks(page) {
   });
 
   assert.equal(cases.callCount, 1);
+  assert.equal(cases.missingApiFallbackType, "undefined");
   assert.equal(cases.webdriverFallbackType, "undefined");
   assert.equal(cases.picked, true);
   assert.equal(cases.cancelled, null);

@@ -264,9 +264,7 @@ function renderStudioDetail() {
   if (!clause) return;
   const status = clauseStatus(clause);
   const whyText = clause.reason || clause.finding || "Clause review available.";
-  const excerpt = clause.matched_text
-    ? `<div class="studio-detail-block studio-detail-evidence"><small>Exact paragraph</small><p>${escapeHtml(clause.matched_text)}</p></div>`
-    : '<div class="studio-detail-block studio-detail-evidence muted"><small>Exact paragraph</small><p>No matching paragraph identified.</p></div>';
+  const excerpt = renderEvidenceBlock(clause);
   const fixBlock = status.needsReview && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
@@ -326,6 +324,34 @@ function renderStudioDetail() {
   `;
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
+}
+
+function renderEvidenceBlock(clause) {
+  const evidenceParagraphs = Array.isArray(clause.evidence_paragraphs)
+    ? clause.evidence_paragraphs.filter((paragraph) => paragraph && paragraph.text)
+    : [];
+  if (evidenceParagraphs.length) {
+    return `
+      <div class="studio-detail-block studio-detail-evidence">
+        <small>Evidence</small>
+        <div class="evidence-list">
+          ${evidenceParagraphs.map((paragraph, index) => {
+            const paragraphNumber = paragraph.index || paragraph.source_index || index + 1;
+            return `
+              <figure class="evidence-item">
+                <figcaption>Paragraph ${escapeHtml(paragraphNumber)}</figcaption>
+                <p>${escapeHtml(paragraph.text)}</p>
+              </figure>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+  if (clause.matched_text) {
+    return `<div class="studio-detail-block studio-detail-evidence"><small>Evidence</small><p>${escapeHtml(clause.matched_text)}</p></div>`;
+  }
+  return '<div class="studio-detail-block studio-detail-evidence muted"><small>Evidence</small><p>No matching paragraph identified.</p></div>';
 }
 
 function renderDetailRedlineEdit(edit) {
