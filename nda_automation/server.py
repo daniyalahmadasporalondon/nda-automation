@@ -5,9 +5,10 @@ import base64
 import binascii
 import json
 import mimetypes
+import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateError, review_nda
 from .docx_export import DOCX_MIME, DocxExportError, build_review_report_docx, build_source_redline_docx
@@ -15,6 +16,7 @@ from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
+EXPORTS_DIR = ROOT / "exports"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 
@@ -42,6 +44,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Not found"}, status=404)
                 return
             self._send_file(requested)
+            return
+        if path.startswith("/exports/"):
+            requested_name = unquote(path.removeprefix("/exports/"))
+            requested = (EXPORTS_DIR / requested_name).resolve()
+            if requested.parent != EXPORTS_DIR.resolve() or not requested.is_file():
+                self._send_json({"error": "Not found"}, status=404)
+                return
+            self._send_download(requested.read_bytes(), requested.name, DOCX_MIME)
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -169,10 +179,15 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         else:
             report_bytes = build_review_report_docx(review_result, title=title.strip())
             download_filename = "nda-review-report.docx"
+        saved_path = _persist_export(report_bytes, download_filename)
         self._send_download(
             report_bytes,
             download_filename,
             DOCX_MIME,
+            headers={
+                "X-Export-Path": str(saved_path),
+                "X-Export-URL": f"/exports/{quote(saved_path.name)}",
+            },
         )
 
     def _review_result_for_export(self, payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
@@ -219,12 +234,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_download(self, data: bytes, filename: str, content_type: str) -> None:
+    def _send_download(self, data: bytes, filename: str, content_type: str, headers: dict[str, str] | None = None) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -246,6 +263,16 @@ def _redline_download_filename(filename: str) -> str:
     safe_name = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in source_name)
     safe_name = safe_name.strip("-_") or "nda"
     return f"{safe_name}-redlined.docx"
+
+
+def _persist_export(data: bytes, filename: str) -> Path:
+    safe_name = os.path.basename(filename) or "nda-review-report.docx"
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = (EXPORTS_DIR / safe_name).resolve()
+    if export_path.parent != EXPORTS_DIR.resolve():
+        export_path = EXPORTS_DIR / "nda-review-report.docx"
+    export_path.write_bytes(data)
+    return export_path
 
 
 def main() -> None:

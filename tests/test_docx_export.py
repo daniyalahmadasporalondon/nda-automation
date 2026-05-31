@@ -258,6 +258,55 @@ class DocxExportTests(unittest.TestCase):
         self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "del")), 1)
         self.assertGreaterEqual(len(paragraph_mark_revisions(document_root, "ins")), 1)
 
+    def test_source_docx_export_matches_redline_actions_at_paragraph_level(self):
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "Insert after this paragraph.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        review_result = {
+            "redline_edits": [
+                {
+                    "action": "replace_paragraph",
+                    "source_index": 1,
+                    "original_text": "This Agreement shall be governed by the laws of California.",
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                },
+                {
+                    "action": "insert_after_paragraph",
+                    "source_index": 2,
+                    "insert_text": "New required clause.",
+                },
+                {
+                    "action": "delete_paragraph",
+                    "source_index": 3,
+                    "original_text": "The Recipient must not circumvent the Company.",
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        self.assertIn(
+            (
+                "This Agreement shall be governed by the laws of California.",
+                "This Agreement shall be governed by the laws of England and Wales.",
+            ),
+            states,
+        )
+        self.assertIn(("Insert after this paragraph.", "Insert after this paragraph."), states)
+        self.assertIn(("", "New required clause."), states)
+        self.assertIn(("The Recipient must not circumvent the Company.", ""), states)
+
     def test_review_report_docx_marks_delete_paragraph_redlines(self):
         result = review_nda("The Recipient must not circumvent the Company or deal directly with introduced parties.")
 

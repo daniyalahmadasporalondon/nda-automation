@@ -22,6 +22,12 @@ const redlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
 ].join("\n\n");
+const allActionRedlineNda = [
+  "The confidentiality obligations survive for seven years.",
+  "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+  "For Aspora Technology Services Private Limited\nBy: __________________\nTitle: Director\nDate: 2026-05-30",
+  "For Counterparty Limited\nBy: __________________\nTitle: Chief Executive Officer\nDate: 2026-05-30",
+].join("\n\n");
 
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
@@ -349,33 +355,41 @@ async function testManualViewerEditRedline(page) {
 }
 
 async function testPreviewMatchesExportedDocx(page) {
-  await runReview(page, redlineNda);
-
-  await page.getByRole("button", { name: "Clean" }).click();
-  const cleanReplacement = await page.locator('[data-paragraph-id="p1"]').innerText();
+  await runReview(page, allActionRedlineNda);
 
   await page.getByRole("button", { name: "Side by Side" }).click();
   const preview = await page.evaluate(() => {
-    const paragraphData = (paragraphId) => {
+    const textWithoutDeleted = (node) => {
+      const clone = node?.cloneNode(true);
+      clone?.querySelectorAll(".inline-del").forEach((item) => item.remove());
+      return clone?.innerText || "";
+    };
+    const paragraphPreview = (edit) => {
+      const paragraphId = edit.paragraph_id;
       const paragraph = document.querySelector(`[data-paragraph-id="${paragraphId}"]`);
       const latest = paragraph?.querySelector(".clause-sxs-col.latest div");
-      const acceptedClone = latest?.cloneNode(true);
-      acceptedClone?.querySelectorAll(".inline-del").forEach((node) => node.remove());
       return {
         original: paragraph?.querySelector(".clause-sxs-col:first-child div")?.innerText || "",
         redline: latest?.innerText || "",
-        acceptedRedline: acceptedClone?.innerText || "",
+        accepted: textWithoutDeleted(latest),
       };
     };
-    return {
-      term: paragraphData("p1"),
-      nonCircumvention: paragraphData("p2"),
+    const insertionPreview = (edit) => {
+      const insertion = document.querySelector(`[data-redline-edit-id="${edit.id}"]`);
+      const latest = insertion?.querySelector(".clause-sxs-col.latest div");
+      return {
+        original: "",
+        redline: latest?.innerText || "",
+        accepted: textWithoutDeleted(latest),
+      };
     };
+    return state.reviewRedlines.map((edit) => ({
+      edit,
+      preview: edit.action === REDLINE_INSERT_AFTER_PARAGRAPH
+        ? insertionPreview(edit)
+        : paragraphPreview(edit),
+    }));
   });
-  assert.equal(preview.term.original, "The confidentiality obligations survive for seven years.");
-  assert.equal(preview.nonCircumvention.original, "The Recipient must not circumvent the Company or deal directly with introduced parties.");
-  assert.equal(normalizeWhitespace(preview.term.acceptedRedline), normalizeWhitespace(cleanReplacement));
-  assert.ok(preview.nonCircumvention.redline.includes(preview.nonCircumvention.original), "delete preview should retain deleted text");
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
@@ -384,31 +398,36 @@ async function testPreviewMatchesExportedDocx(page) {
   const exportedPath = await download.path();
   assert.ok(exportedPath, "download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
-  const termRevision = exportedChanges.revisionParagraphs.find(
-    (paragraph) => normalizeWhitespace(paragraph.original) === normalizeWhitespace(preview.term.original),
-  );
-  const nonCircumventionRevision = exportedChanges.revisionParagraphs.find(
-    (paragraph) => normalizeWhitespace(paragraph.original) === normalizeWhitespace(preview.nonCircumvention.original),
-  );
+  assert.ok(preview.some(({ edit }) => edit.action === "replace_paragraph"), "fixture should include replace redlines");
+  assert.ok(preview.some(({ edit }) => edit.action === "insert_after_paragraph"), "fixture should include insert redlines");
+  assert.ok(preview.some(({ edit }) => edit.action === "delete_paragraph"), "fixture should include delete redlines");
 
-  assert.ok(termRevision, "DOCX should include a revised term paragraph matching the side-by-side original");
-  assert.equal(normalizeWhitespace(termRevision.accepted), normalizeWhitespace(cleanReplacement));
-  assert.ok(termRevision.deletions.some((text) => normalizeWhitespace(text) === "seven"));
-  assert.ok(termRevision.insertions.some((text) => normalizeWhitespace(text).includes("a fixed period of up to five")));
-  assert.equal(
-    termRevision.deletions.some((text) => normalizeWhitespace(text) === normalizeWhitespace(preview.term.original)),
-    false,
-    "replacement redline should be word-level, not a whole-paragraph deletion",
-  );
+  for (const { edit, preview: previewParagraph } of preview) {
+    const expectedOriginal = edit.action === "insert_after_paragraph" ? "" : edit.original_text;
+    const expectedAccepted = edit.action === "delete_paragraph"
+      ? ""
+      : edit.action === "insert_after_paragraph"
+        ? edit.insert_text
+        : edit.replacement_text;
+    assert.equal(normalizeWhitespace(previewParagraph.original), normalizeWhitespace(expectedOriginal), `${edit.id} preview original`);
+    assert.equal(normalizeWhitespace(previewParagraph.accepted), normalizeWhitespace(expectedAccepted), `${edit.id} preview accepted`);
 
-  assert.ok(nonCircumventionRevision, "DOCX should include a revised non-circumvention paragraph matching the side-by-side original");
-  assert.equal(normalizeWhitespace(nonCircumventionRevision.accepted), "");
-  assert.ok(
-    nonCircumventionRevision.deletions.some(
-      (text) => normalizeWhitespace(text) === normalizeWhitespace(preview.nonCircumvention.original),
-    ),
-    "delete-paragraph redline should retain the full deleted paragraph",
-  );
+    const exportedParagraph = exportedChanges.revisionParagraphs.find((paragraph) => (
+      normalizeWhitespace(paragraph.original) === normalizeWhitespace(previewParagraph.original)
+      && normalizeWhitespace(paragraph.accepted) === normalizeWhitespace(previewParagraph.accepted)
+    ));
+    assert.ok(
+      exportedParagraph,
+      `${edit.id} ${edit.action} should match a DOCX revision paragraph`,
+    );
+    if (edit.action === "replace_paragraph") {
+      assert.equal(
+        exportedParagraph.deletions.some((text) => normalizeWhitespace(text) === normalizeWhitespace(previewParagraph.original)),
+        false,
+        `${edit.id} replacement redline should be word-level, not a whole-paragraph deletion`,
+      );
+    }
+  }
 }
 
 async function testExportFlow(page) {
@@ -424,6 +443,9 @@ async function testExportFlow(page) {
   const downloadedPath = await download.path();
   assert.ok(downloadedPath, "download path should be available");
   assert.ok(fs.statSync(downloadedPath).size > 1000, "exported DOCX should not be empty");
+  await assertTextContains(page.locator("#studioFileMeta"), "nda-review-report.docx exported");
+  await assertTextContains(page.locator("#studioFileMeta"), "/exports/nda-review-report.docx");
+  assert.equal(await page.locator("#studioFileMeta a").getAttribute("href"), "/exports/nda-review-report.docx");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Mutual Non-Disclosure Agreement with edits");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');

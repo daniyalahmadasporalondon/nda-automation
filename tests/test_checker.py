@@ -217,6 +217,47 @@ class CheckerTests(unittest.TestCase):
             with self.assertRaisesRegex(PlaybookTemplateError, "term_and_survival"):
                 review_nda("The confidentiality obligations survive for seven (7) years.")
 
+    def test_missing_redline_template_fails_loud(self):
+        playbook = deepcopy(load_playbook())
+        signatures = next(clause for clause in playbook["clauses"] if clause["id"] == "signatures")
+        del signatures["redline_template"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with self.assertRaisesRegex(PlaybookTemplateError, "signatures"):
+                review_nda("This Agreement shall be governed by the laws of the DIFC.")
+
+    def test_unknown_playbook_clause_fails_loud(self):
+        playbook = deepcopy(load_playbook())
+        playbook["clauses"].append({
+            "id": "extra_clause",
+            "name": "Extra Clause",
+            "requirement": "Extra requirement.",
+            "type": "required",
+            "search_terms": ["extra clause"],
+        })
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with self.assertRaisesRegex(PlaybookTemplateError, "unknown clauses: extra_clause"):
+                review_nda("This Agreement shall be governed by the laws of the DIFC.")
+
+    def test_governing_law_preferred_law_must_be_approved(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["preferred_law"] = "California"
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with self.assertRaisesRegex(PlaybookTemplateError, "preferred_law"):
+                review_nda("This Agreement shall be governed by the laws of California.")
+
+    def test_search_terms_must_be_valid_nonempty_list(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["search_terms"] = []
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            with self.assertRaisesRegex(PlaybookTemplateError, "search_terms"):
+                review_nda("Each party must protect Confidential Information.")
+
     def test_term_and_survival_redline_replaces_existing_bad_term(self):
         result = review_nda("The confidentiality obligations survive for seven (7) years.")
 
@@ -281,6 +322,54 @@ class CheckerTests(unittest.TestCase):
             "This Agreement shall be governed in all respects by the laws of the DIFC.",
         )
         self.assertEqual(governing_law["reason"], "Approved governing law found.")
+
+    def test_evidence_paragraph_ids_and_offsets_match_reviewed_source(self):
+        text = (
+            "Mutual Non-Disclosure Agreement\n\n"
+            "This Agreement shall be governed by the laws of California.\n\n"
+            "The confidentiality obligations survive for seven (7) years.\n\n"
+            "The Recipient must not circumvent the Company."
+        )
+
+        result = review_nda(text)
+
+        paragraphs_by_id = {paragraph["id"]: paragraph for paragraph in result["paragraphs"]}
+        for paragraph in result["paragraphs"]:
+            self.assertEqual(text[paragraph["start"]:paragraph["end"]], paragraph["text"])
+
+        for clause in result["clauses"]:
+            matched_ids = clause["matched_paragraph_ids"]
+            self.assertEqual(
+                clause["matched_text"],
+                "\n\n".join(paragraphs_by_id[paragraph_id]["text"] for paragraph_id in matched_ids),
+            )
+            self.assertEqual(
+                clause["evidence"],
+                [paragraphs_by_id[paragraph_id]["text"] for paragraph_id in matched_ids],
+            )
+
+    def test_redline_edits_map_to_review_paragraph_provenance(self):
+        result = review_nda(
+            "Intro paragraph.\n\n"
+            "This Agreement shall be governed by the laws of California.\n\n"
+            "The Recipient must not circumvent the Company.",
+            paragraphs=[
+                {"source_index": 4, "text": "Intro paragraph."},
+                {"source_index": 8, "text": "This Agreement shall be governed by the laws of California."},
+                {"source_index": 12, "text": "The Recipient must not circumvent the Company."},
+            ],
+        )
+
+        paragraphs_by_id = {paragraph["id"]: paragraph for paragraph in result["paragraphs"]}
+        for edit in result["redline_edits"]:
+            paragraph = paragraphs_by_id[edit["paragraph_id"]]
+            self.assertEqual(edit["paragraph_index"], paragraph["index"])
+            self.assertEqual(edit["source_index"], paragraph["source_index"])
+            if edit["action"] == "insert_after_paragraph":
+                self.assertEqual(edit["anchor_text"], paragraph["text"])
+                self.assertEqual(edit["original_text"], "")
+            else:
+                self.assertEqual(edit["original_text"], paragraph["text"])
 
     def test_governing_law_requires_approved_law_in_governing_paragraph(self):
         result = review_nda(
@@ -609,6 +698,7 @@ class CheckerTests(unittest.TestCase):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
         governing_law["approved_laws"] = ["DIFC"]
+        governing_law["preferred_law"] = "DIFC"
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
             result = review_nda("This Agreement shall be governed by the laws of Delaware.")

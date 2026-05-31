@@ -72,6 +72,7 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
 
     normalized = _normalize(source_text)
     playbook = load_playbook()
+    _validate_playbook_contract(playbook)
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
     clause_results = [
@@ -669,6 +670,71 @@ def _validate_check_registry() -> None:
         if not detail:
             detail.append("redline builder order differs from checker order")
         raise RuntimeError("Redline registry does not mirror checker registry (" + "; ".join(detail) + ")")
+
+
+def _validate_playbook_contract(playbook: Dict[str, object]) -> None:
+    clauses = playbook.get("clauses")
+    if not isinstance(clauses, list):
+        raise PlaybookTemplateError("Playbook clauses must be a list.")
+
+    playbook_ids = []
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            raise PlaybookTemplateError("Each playbook clause must be an object.")
+        clause_id = str(clause.get("id", "")).strip()
+        if not clause_id:
+            raise PlaybookTemplateError("Each playbook clause must include an id.")
+        playbook_ids.append(clause_id)
+        for field in ["name", "requirement", "type"]:
+            if not isinstance(clause.get(field), str) or not str(clause.get(field)).strip():
+                raise PlaybookTemplateError(f"Playbook clause {clause_id} must include {field}.")
+        if clause["type"] not in {"required", "prohibited"}:
+            raise PlaybookTemplateError(f"Playbook clause {clause_id} has invalid type.")
+        if not _clause_terms(clause, "search_terms"):
+            raise PlaybookTemplateError(f"Playbook clause {clause_id} must include search_terms.")
+
+    duplicate_ids = sorted({clause_id for clause_id in playbook_ids if playbook_ids.count(clause_id) > 1})
+    if duplicate_ids:
+        raise PlaybookTemplateError(f"Duplicate playbook IDs: {', '.join(duplicate_ids)}")
+
+    check_ids = [clause_id for clause_id, _check in CLAUSE_CHECKS]
+    missing_playbook_ids = sorted(set(check_ids) - set(playbook_ids))
+    extra_playbook_ids = sorted(set(playbook_ids) - set(check_ids))
+    if missing_playbook_ids or extra_playbook_ids:
+        detail = []
+        if missing_playbook_ids:
+            detail.append(f"missing clauses: {', '.join(missing_playbook_ids)}")
+        if extra_playbook_ids:
+            detail.append(f"unknown clauses: {', '.join(extra_playbook_ids)}")
+        raise PlaybookTemplateError("Playbook clause IDs do not match checker IDs (" + "; ".join(detail) + ")")
+
+    clauses_by_id = {str(clause["id"]): clause for clause in clauses}
+    _validate_governing_law_playbook(clauses_by_id["governing_law"])
+    _require_template(clauses_by_id["term_and_survival"], "redline_template")
+    _require_template(clauses_by_id["signatures"], "redline_template")
+
+
+def _validate_governing_law_playbook(clause: Dict[str, object]) -> None:
+    approved_laws = _approved_laws(clause)
+    if not approved_laws:
+        raise PlaybookTemplateError("Playbook clause governing_law must include approved_laws.")
+    preferred_law = str(clause.get("preferred_law", "")).strip()
+    if preferred_law and preferred_law not in approved_laws:
+        raise PlaybookTemplateError("Playbook clause governing_law preferred_law must be approved.")
+    law_phrases = clause.get("law_phrases", {})
+    if not isinstance(law_phrases, dict):
+        raise PlaybookTemplateError("Playbook clause governing_law law_phrases must be an object.")
+    missing_phrases = [law for law in approved_laws if not str(law_phrases.get(law, "")).strip()]
+    if missing_phrases:
+        raise PlaybookTemplateError(
+            "Playbook clause governing_law law_phrases missing: " + ", ".join(missing_phrases)
+        )
+
+
+def _require_template(clause: Dict[str, object], field: str) -> None:
+    clause_id = str(clause.get("id", "unknown"))
+    if not isinstance(clause.get(field), str) or not str(clause.get(field)).strip():
+        raise PlaybookTemplateError(f"Playbook clause {clause_id} must include {field}.")
 
 
 def _match(clause: Dict[str, object], reason: str, matched_paragraphs: Iterable[Paragraph]) -> ClauseResult:

@@ -196,8 +196,9 @@ async function exportReviewDocx() {
       throw new Error(payload.error || "Export could not run");
     }
     const blob = await response.blob();
-    downloadBlob(blob, downloadFilename(response) || "nda-review-report.docx");
-    setFileMeta("Review report exported as Word document");
+    const filename = downloadFilename(response) || "nda-review-report.docx";
+    downloadBlob(blob, filename);
+    renderExportSuccess(filename, response.headers.get("X-Export-Path"), response.headers.get("X-Export-URL"));
   } catch (error) {
     studioOverallTitle.textContent = error.message;
     studioResultMark.textContent = "!";
@@ -241,6 +242,22 @@ function downloadBlob(blob, filename) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_DELAY_MS);
+}
+
+function renderExportSuccess(filename, savedPath, savedUrl) {
+  studioFileMeta.textContent = "";
+  studioFileMeta.append(document.createTextNode(`${filename} exported`));
+  if (savedPath) {
+    studioFileMeta.append(document.createTextNode(` and saved to ${savedPath}`));
+  }
+  if (savedUrl) {
+    studioFileMeta.append(document.createTextNode(" "));
+    const link = document.createElement("a");
+    link.href = savedUrl;
+    link.download = filename;
+    link.textContent = "Open DOCX";
+    studioFileMeta.append(link);
+  }
 }
 
 function downloadFilename(response) {

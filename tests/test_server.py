@@ -1,6 +1,7 @@
 import base64
 import http.client
 import json
+import tempfile
 import threading
 import unittest
 from copy import deepcopy
@@ -180,15 +181,21 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(redlines_by_clause["non_circumvention"]["replacement_text"], "")
 
     def test_review_docx_export_returns_track_changes_enabled_docx(self):
-        status, payload, headers = self.request_with_headers(
-            "POST",
-            "/api/export-review-docx",
-            {"text": "This Agreement shall be governed by the laws of California.", "title": "California NDA"},
-        )
+        with tempfile.TemporaryDirectory() as exports_dir:
+            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+                status, payload, headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"text": "This Agreement shall be governed by the laws of California.", "title": "California NDA"},
+                )
+                saved_payload = server_module.Path(headers["X-Export-Path"]).read_bytes()
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], DOCX_MIME)
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="nda-review-report.docx"')
+        self.assertEqual(headers["X-Export-URL"], "/exports/nda-review-report.docx")
+        self.assertTrue(headers["X-Export-Path"].endswith("nda-review-report.docx"))
+        self.assertEqual(saved_payload, payload)
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
             settings_xml = archive.read("word/settings.xml").decode("utf-8")
@@ -283,6 +290,111 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deletion_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deletion_text))
         self.assertNotIn("Stale browser text should not drive DOCX export.", document_xml)
+
+    def test_review_docx_export_uses_uploaded_docx_over_stale_reviewed_text(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        status, payload, _headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "reviewed_text": "Stale reviewed text should not drive DOCX export.",
+                "filename": "uploaded.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("California", document_xml)
+        self.assertNotIn("Stale reviewed text should not drive DOCX export.", document_xml)
+
+    def test_docx_review_then_export_round_trip_uses_uploaded_source_revisions(self):
+        source_docx = make_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        content_base64 = base64.b64encode(source_docx).decode("ascii")
+
+        review_status, review_payload = self.request(
+            "POST",
+            "/api/review-document",
+            {
+                "filename": "round-trip.docx",
+                "content_base64": content_base64,
+            },
+        )
+        export_status, export_payload, export_headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "reviewed_text": "Stale pasted browser text should not appear in the export.",
+                "filename": "round-trip.docx",
+                "content_base64": content_base64,
+            },
+        )
+
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["source"]["type"], "docx")
+        self.assertEqual(review_payload["paragraphs"][1]["source_index"], 2)
+        governing_law_redline = next(edit for edit in review_payload["redline_edits"] if edit["clause_id"] == "governing_law")
+        non_circumvention_redline = next(edit for edit in review_payload["redline_edits"] if edit["clause_id"] == "non_circumvention")
+        self.assertEqual(governing_law_redline["source_index"], 2)
+        self.assertEqual(non_circumvention_redline["source_index"], 3)
+
+        self.assertEqual(export_status, 200)
+        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="round-trip-redlined.docx"')
+        with ZipFile(BytesIO(export_payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        document_root = ET.fromstring(document_xml)
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        self.assertIn("Intro paragraph.", document_xml)
+        self.assertNotIn("Stale pasted browser text should not appear in the export.", document_xml)
+        self.assertIn(
+            (
+                "This Agreement shall be governed by the laws of California.",
+                "This Agreement shall be governed by the laws of England and Wales.",
+            ),
+            revision_states,
+        )
+        self.assertIn(("The Recipient must not circumvent the Company.", ""), revision_states)
+
+    def test_saved_export_route_returns_exact_docx_bytes(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+                status, payload, headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"text": "This Agreement shall be governed by the laws of California."},
+                )
+                route_status, route_payload, route_headers = self.request_with_headers("GET", headers["X-Export-URL"])
+
+        self.assertEqual(status, 200)
+        self.assertEqual(route_status, 200)
+        self.assertEqual(route_headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(route_payload, payload)
+
+    def test_text_review_reports_malformed_playbook_search_terms(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["search_terms"] = []
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_review_docx_export_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/export-review-docx", {"text": " "})
@@ -405,6 +517,19 @@ def escape_xml(value):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def revision_text_for_state(node, accepted):
+    tag = node.tag.rsplit("}", 1)[-1]
+    if tag == "del":
+        return "".join(item.text or "" for item in node.findall(".//w:delText", W_NS)) if not accepted else ""
+    if tag == "ins":
+        return "".join(item.text or "" for item in node.findall(".//w:t", W_NS)) if accepted else ""
+    if tag == "t":
+        return node.text or ""
+    if tag == "br":
+        return "\n"
+    return "".join(revision_text_for_state(child, accepted) for child in list(node))
 
 
 if __name__ == "__main__":

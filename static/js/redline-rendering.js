@@ -81,7 +81,7 @@ function renderCleanDocumentParagraph(model) {
       classes: ["doc-clean-paragraph"],
     });
   }
-  return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN);
+  return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN, model.paragraph.id);
 }
 
 function renderSideBySideDocumentParagraph(model) {
@@ -96,7 +96,7 @@ function renderSideBySideDocumentParagraph(model) {
   return renderParagraphFrame(model, {
     body,
     classes: ["doc-sxs-paragraph"],
-  }) + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_SIDE_BY_SIDE);
+  }) + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_SIDE_BY_SIDE, model.paragraph.id);
 }
 
 function renderRedlineDocumentParagraph(model) {
@@ -124,20 +124,22 @@ function renderParagraphFrame(model, { body, classes = [] }) {
   });
 }
 
-function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", paragraphId = "", selected = false }) {
-  const attributes = [];
-  if (paragraphId) attributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
-  if (clauseIds) attributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
+function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", paragraphId = "", selected = false, attributes = "" }) {
+  const frameAttributes = [];
+  if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
+  if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
+  if (attributes) frameAttributes.push(attributes);
   return `
-    <div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${attributes.length ? ` ${attributes.join(" ")}` : ""}>
+    <div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>
       ${body}
     </div>
   `;
 }
 
-function renderInsertedParagraphs(inserts, viewMode) {
+function renderInsertedParagraphs(inserts, viewMode, anchorParagraphId = "") {
   return inserts.map((edit) => {
     const inserted = escapeHtml(String(edit.insert_text || edit.replacement_text || ""));
+    const attributes = `data-redline-edit-id="${escapeHtml(edit.id || "")}" data-redline-anchor-id="${escapeHtml(anchorParagraphId)}"`;
     if (viewMode === VIEW_MODE_SIDE_BY_SIDE) {
       return renderStudioParagraphFrame({
         body: `
@@ -146,11 +148,13 @@ function renderInsertedParagraphs(inserts, viewMode) {
             <div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div><span class="inline-ins">${inserted}</span></div></div>
           </div>
         `,
+        attributes,
         classes: ["doc-sxs-paragraph"],
       });
     }
     return renderStudioParagraphFrame({
       body: inserted,
+      attributes,
       classes: ["doc-clean-paragraph"],
     });
   }).join("");
