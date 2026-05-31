@@ -180,6 +180,18 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
 
+  await page.locator("#reviewTab").focus();
+  await page.locator("#reviewTab").press("ArrowRight");
+  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#clausesTab").getAttribute("tabindex"), "0");
+  assert.equal(await page.locator("#reviewTab").getAttribute("tabindex"), "-1");
+  await page.locator("#clausesTab").press("Home");
+  assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
+  await page.locator("#repositoryTab").press("End");
+  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
+  await page.locator("#clausesTab").press("Home");
+  assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
+
   await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
@@ -289,12 +301,14 @@ async function testRepositoryMatterImportAndFreshReview(page) {
         imported: [],
         query: "has:attachment",
         skipped: [{ message_id: "m1", reason: "no_reviewable_attachment" }],
+        synced_at: "2026-05-31T12:34:00+00:00",
       }),
     });
   });
   await page.getByRole("button", { name: "Sync Gmail" }).click();
   await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
   await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
+  await assertTextContains(page.locator("#gmailLastSync"), "31");
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 

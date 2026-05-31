@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import json
 import mimetypes
+from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -302,6 +303,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except gmail_integration.GmailIntegrationError as error:
             self._send_json({"error": str(error)}, status=503)
             return
+        result = {**result, "synced_at": datetime.now(UTC).isoformat()}
         if isinstance(result.get("imported"), list):
             result = {**result, "imported": matter_view.public_matters(result["imported"])}
         self._send_json(result)

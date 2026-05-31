@@ -77,8 +77,14 @@ repositoryController.loadGmailStatus();
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
-    setActiveTab(button.dataset.tab);
-    requestAnimationFrame(resizeSourceEditors);
+    activateTab(button.dataset.tab);
+  });
+  button.addEventListener("keydown", (event) => {
+    const nextTab = tabForKeyboardEvent(event, button);
+    if (!nextTab) return;
+    event.preventDefault();
+    activateTab(nextTab.dataset.tab);
+    nextTab.focus();
   });
 });
 
@@ -134,7 +140,6 @@ function downloadFilename(response) {
 }
 
 function setActiveTab(tabName) {
-  state.activeTab = tabName;
   tabButtons.forEach((button) => {
     const active = button.dataset.tab === tabName;
     button.classList.toggle("active", active);
@@ -146,4 +151,26 @@ function setActiveTab(tabName) {
     view.classList.toggle("active", active);
     view.hidden = !active;
   });
+}
+
+function activateTab(tabName) {
+  setActiveTab(tabName);
+  if (tabName === "review") {
+    requestAnimationFrame(resizeSourceEditors);
+  }
+}
+
+function tabForKeyboardEvent(event, currentButton) {
+  const buttons = Array.from(tabButtons);
+  const currentIndex = buttons.indexOf(currentButton);
+  if (currentIndex < 0) return null;
+  if (event.key === "Home") return buttons[0];
+  if (event.key === "End") return buttons[buttons.length - 1];
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    return buttons[(currentIndex + 1) % buttons.length];
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    return buttons[(currentIndex - 1 + buttons.length) % buttons.length];
+  }
+  return null;
 }

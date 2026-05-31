@@ -92,7 +92,7 @@ const RepositoryView = (() => {
         if (imported[0]?.id) {
           await openMatter(imported[0].id);
         }
-        updateLastSync(payload.account || "");
+        updateLastSync(payload.account || "", payload.synced_at || "");
         setImportStatus(gmailSyncSummary(imported, skipped));
       } catch (error) {
         setImportStatus(error.message || "Gmail sync could not run");
@@ -451,9 +451,9 @@ const RepositoryView = (() => {
       node.textContent = account?.ready ? (account.email || "Connected") : (account?.error || "Not connected");
     }
 
-    function updateLastSync(account) {
+    function updateLastSync(account, syncedAt) {
       if (!gmailLastSync) return;
-      const label = formatMatterDateTime(new Date().toISOString()) || "Just now";
+      const label = formatMatterDateTime(syncedAt) || "Just now";
       gmailLastSync.textContent = account ? `${label} (${account})` : label;
     }
 

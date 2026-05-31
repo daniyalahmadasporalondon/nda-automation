@@ -681,6 +681,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["imported"][0]["recipient_email"], "")
         self.assertEqual(payload["imported"][0]["can_send_redline"], False)
         self.assertEqual(payload["skipped"][0]["reason"], "no_reviewable_attachment")
+        self.assertIsInstance(payload["synced_at"], str)
+        self.assertTrue(payload["synced_at"])
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
     def test_gmail_send_payload_replies_in_thread_only_for_same_account(self):

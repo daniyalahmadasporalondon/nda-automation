@@ -253,7 +253,7 @@ function renderStudioClauseLane() {
           </div>
         `;
       return `
-        <article class="studio-clause-item ${selected} ${status.tone} ${canDecide ? "decidable" : ""}">
+        <article class="studio-clause-item ${selected} ${status.tone}">
           ${selectable}
           ${exportControls}
         </article>
