@@ -42,6 +42,7 @@ const state = {
 const repositoryController = createRepositoryController({
   state,
   fileInput,
+  gmailSyncButton: document.querySelector("#gmailSyncButton"),
   repositoryFileInput: document.querySelector("#repositoryFileInput"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),

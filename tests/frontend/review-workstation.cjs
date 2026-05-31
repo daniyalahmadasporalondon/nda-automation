@@ -248,6 +248,25 @@ async function testRepositoryMatterImportAndFreshReview(page) {
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
+  let gmailSyncCalled = false;
+  await page.route("**/api/gmail/import", async (route) => {
+    gmailSyncCalled = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        account: "inbound@example.com",
+        imported: [],
+        query: "has:attachment",
+        skipped: [],
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Sync Gmail" }).click();
+  await waitForText(page, "#repositoryImportStatus", "No new Gmail attachments");
+  assert.equal(gmailSyncCalled, true);
+  await page.unroute("**/api/gmail/import");
+
   await page.locator("#repositoryFileInput").setInputFiles(docxPath);
   await waitForText(page, "#repositoryImportStatus", "repository-matter-");
   await page.waitForSelector(".repository-card");
@@ -264,6 +283,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Non-Circumvention");
+  assert.equal(await page.getByRole("button", { name: "Send Redline" }).isEnabled(), false);
 
   const [matterExportRequest, matterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),

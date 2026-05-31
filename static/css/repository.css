@@ -137,16 +137,31 @@
 }
 
 .repository-import {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+
+.repository-import-actions {
   align-items: center;
   display: flex;
-  gap: 9px;
-  justify-content: space-between;
-  margin-bottom: 10px;
+  flex: 0 0 auto;
+  gap: 7px;
+  min-width: 0;
 }
 
 .repository-import-button {
   border-radius: 9999px;
   height: 30px;
+}
+
+.repository-gmail-sync {
+  border-radius: 9999px;
+  font-size: 11px;
+  height: 30px;
+  padding: 0 11px;
 }
 
 .repository-import span {
@@ -157,6 +172,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 100%;
+}
+
+.repository-send-redline.confirming {
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 .repository-card-list {

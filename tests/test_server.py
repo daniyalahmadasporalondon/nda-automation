@@ -381,16 +381,29 @@ class ServerTests(unittest.TestCase):
                         "received_at": "2026-05-31T10:15:00+01:00",
                         "message_snippet": "Hi team, please review the attached NDA.",
                         "attachment_filename": "Counterparty NDA.docx",
+                        "source_type": "gmail_inbound",
+                        "gmail_account": "inbound@example.com",
+                        "gmail_attachment_id": "att_123",
+                        "gmail_message_id": "msg_123",
+                        "gmail_thread_id": "thr_123",
                     },
                 )
+                duplicate = matter_store.find_gmail_attachment("msg_123", "att_123")
 
         self.assertEqual(status, 201)
         matter = payload["matter"]
+        self.assertEqual(matter["source_type"], "gmail_inbound")
+        self.assertEqual(matter["board_column"], "gmail_demo")
         self.assertEqual(matter["sender"], "legal@example.com")
         self.assertEqual(matter["subject"], "Please review our NDA")
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
         self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
+        self.assertEqual(matter["gmail_account"], "inbound@example.com")
+        self.assertEqual(matter["gmail_attachment_id"], "att_123")
+        self.assertEqual(matter["gmail_message_id"], "msg_123")
+        self.assertEqual(matter["gmail_thread_id"], "thr_123")
+        self.assertEqual(duplicate["id"], matter["id"])
 
     def test_matter_upload_rejects_invalid_upload_cleanly(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -488,6 +501,81 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 400)
         self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
+
+    def test_gmail_import_endpoint_uses_inbound_connector(self):
+        with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value={
+            "account": "inbound@example.com",
+            "imported": [{"id": "matter_1"}],
+            "query": "has:attachment",
+            "skipped": [],
+        }) as import_inbound_matters:
+            status, payload = self.request(
+                "POST",
+                "/api/gmail/import",
+                {"limit": 2, "query": "has:attachment"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["imported"], [{"id": "matter_1"}])
+        import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
+
+    def test_gmail_send_redline_requires_confirmation_and_records_outbound_send(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Email NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "sender": "Legal Team <legal@example.com>",
+                        "subject": "Review Email NDA",
+                        "source_type": "gmail_inbound",
+                        "gmail_thread_id": "thr_inbound",
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                    "message_id": "msg_outbound",
+                    "outbound_account": "outbound@example.com",
+                    "sent_at": "2026-05-31T12:00:00+00:00",
+                    "subject": "Re: Review Email NDA",
+                    "thread_id": "thr_inbound",
+                    "to": "legal@example.com",
+                }) as send_redline_email:
+                    unconfirmed_status, unconfirmed_payload = self.request(
+                        "POST",
+                        "/api/gmail/send-redline",
+                        {"matter_id": matter_id},
+                    )
+                    confirmed_status, confirmed_payload = self.request(
+                        "POST",
+                        "/api/gmail/send-redline",
+                        {"matter_id": matter_id, "confirm_send": True},
+                    )
+                    stored_matter = matter_store.get_matter(matter_id)
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(unconfirmed_status, 400)
+        self.assertEqual(unconfirmed_payload["error"], "Confirm send is required before emailing a redline.")
+        self.assertEqual(confirmed_status, 200)
+        self.assertEqual(confirmed_payload["filename"], "Email-NDA-redlined.docx")
+        self.assertEqual(confirmed_payload["matter"]["board_column"], "redline_ready")
+        self.assertEqual(confirmed_payload["matter"]["last_outbound_to"], "legal@example.com")
+        self.assertEqual(confirmed_payload["matter"]["last_outbound_account"], "outbound@example.com")
+        self.assertEqual(confirmed_payload["matter"]["last_outbound_message_id"], "msg_outbound")
+        self.assertEqual(stored_matter["board_column"], "redline_ready")
+        self.assertEqual(stored_matter["last_outbound_filename"], "Email-NDA-redlined.docx")
+        send_redline_email.assert_called_once()
+        _matter, attachment_bytes, attachment_filename = send_redline_email.call_args.args
+        self.assertEqual(attachment_filename, "Email-NDA-redlined.docx")
+        self.assertGreater(len(attachment_bytes), 1000)
 
     def test_corrupt_matter_store_does_not_reset_repository(self):
         with tempfile.TemporaryDirectory() as data_dir:

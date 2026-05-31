@@ -2,7 +2,7 @@
 
 A focused NDA hard-clause review portal.
 
-The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The current Repository flow uses a local `Gmail Demo` intake lane only; it is intentionally not a live Gmail or Drive integration yet.
+The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` NDA attachments from a configured inbound Gmail account, while outbound redline sends use a separate configured Gmail account and require an explicit confirmation click.
 
 You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document for one-off review, or import a `.docx` into the Repository for matter-based review.
 
@@ -32,6 +32,17 @@ Frontend behavior tests run the real app in Chromium and cover review view modes
 npm install
 npm run test:frontend
 ```
+
+## Gmail roles
+
+The Gmail integration reads OAuth token files from environment variables:
+
+```bash
+export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
+export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
+```
+
+Inbound sync imports recent `.docx` attachments into the `Gmail Demo` Repository lane. Outbound send generates the same native Word redline used by download/export, then emails it back to the matter sender only after the Repository panel's `Send Redline` action is confirmed.
 
 ## Current checks
 

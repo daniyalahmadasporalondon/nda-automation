@@ -127,10 +127,13 @@
                     <span data-repository-count="gmail_demo">0</span>
                   </header>
                   <div class="repository-import">
-                    <label class="file-button repository-import-button">
-                      <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                      Import NDA
-                    </label>
+                    <div class="repository-import-actions">
+                      <button class="secondary repository-gmail-sync" id="gmailSyncButton" type="button">Sync Gmail</button>
+                      <label class="file-button repository-import-button">
+                        <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                        Import NDA
+                      </label>
+                    </div>
                     <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
                   </div>
                   <div class="repository-card-list" id="gmailDemoMatterList" data-repository-list="gmail_demo">

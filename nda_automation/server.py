@@ -19,7 +19,7 @@ from .docx_export import (
     validate_docx_open_health,
 )
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
-from . import export_service
+from . import export_service, gmail_integration
 from .ingestion_service import create_matter_from_docx
 from . import matter_store
 
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
-MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo"}
+MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 
 
@@ -47,6 +47,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"status": "ok"})
+            return
+        if path == "/api/gmail/status":
+            self._send_json({"gmail": gmail_integration.gmail_status()})
             return
         if path == "/api/matters":
             try:
@@ -100,6 +103,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 self._handle_matter_stage_update(path)
+                return
+            if path == "/api/gmail/import":
+                self._handle_gmail_import()
+                return
+            if path == "/api/gmail/send-redline":
+                self._handle_gmail_send_redline()
                 return
             if path == "/api/export-review-docx":
                 self._handle_review_docx_export()
@@ -217,7 +226,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"matter": matter}, status=201)
 
     def _matter_intake_metadata(self, payload: dict, filename: str) -> dict[str, str]:
-        return {
+        metadata = {
             "sender": self._clean_intake_text(payload.get("sender")) or "Manual upload",
             "subject": self._clean_intake_text(payload.get("subject")) or Path(filename).stem or "Untitled NDA",
             "received_at": self._clean_intake_text(payload.get("received_at")),
@@ -227,6 +236,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             ),
             "attachment_filename": self._clean_intake_text(payload.get("attachment_filename")) or filename,
         }
+        for field in ("gmail_account", "gmail_attachment_id", "gmail_message_id", "gmail_thread_id"):
+            value = self._clean_intake_text(payload.get(field))
+            if value:
+                metadata[field] = value
+        return metadata
 
     @staticmethod
     def _clean_intake_text(value: object, max_length: int = 500) -> str:
@@ -254,6 +268,84 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Matter not found."}, status=404)
             return
         self._send_json({"matter": matter})
+
+    def _handle_gmail_import(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        limit = payload.get("limit", 10)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            self._send_json({"error": "Gmail import limit must be a number."}, status=400)
+            return
+        query = payload.get("query")
+        if query is not None and not isinstance(query, str):
+            self._send_json({"error": "Gmail import query must be text."}, status=400)
+            return
+
+        try:
+            result = gmail_integration.import_inbound_matters(limit=limit, query=query)
+        except gmail_integration.GmailIntegrationError as error:
+            self._send_json({"error": str(error)}, status=503)
+            return
+        self._send_json(result)
+
+    def _handle_gmail_send_redline(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        matter_id = payload.get("matter_id")
+        if not isinstance(matter_id, str) or not matter_id.strip():
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        if payload.get("confirm_send") is not True:
+            self._send_json({"error": "Confirm send is required before emailing a redline."}, status=400)
+            return
+
+        matter = matter_store.get_matter(matter_id.strip())
+        if matter is None:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        if not gmail_integration.recipient_email(matter.get("sender")):
+            self._send_json({"error": "Matter sender is not a valid email address."}, status=400)
+            return
+
+        try:
+            report_bytes, download_filename = self._redline_docx_for_matter(matter_id.strip())
+        except DocxExtractionError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+        except DocxExportError as error:
+            self._send_json({"error": str(error)}, status=400)
+            return
+
+        try:
+            sent = gmail_integration.send_redline_email(matter, report_bytes, download_filename)
+        except gmail_integration.GmailIntegrationError as error:
+            self._send_json({"error": str(error)}, status=503)
+            return
+
+        updated_matter = matter_store.update_matter_fields(
+            matter_id.strip(),
+            {
+                "board_column": "redline_ready",
+                "last_outbound_account": sent.get("outbound_account", ""),
+                "last_outbound_at": sent.get("sent_at", ""),
+                "last_outbound_filename": download_filename,
+                "last_outbound_message_id": sent.get("message_id", ""),
+                "last_outbound_subject": sent.get("subject", ""),
+                "last_outbound_thread_id": sent.get("thread_id", ""),
+                "last_outbound_to": sent.get("to", ""),
+                "status": "active",
+            },
+        )
+        if updated_matter is None:
+            self._send_json({"error": "Matter not found."}, status=404)
+            return
+        self._send_json({"filename": download_filename, "matter": updated_matter, "sent": sent})
 
     def _handle_review_docx_export(self) -> None:
         payload = self._read_json_payload()
@@ -366,6 +458,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return review_nda(extracted_text, paragraphs=extracted_paragraphs), document_bytes, filename
 
         return review_nda(fallback_text), None, ""
+
+    def _redline_docx_for_matter(self, matter_id: str) -> tuple[bytes, str]:
+        review_result, source_document_bytes, source_filename = self._review_result_for_export({"matter_id": matter_id}, "")
+        if source_document_bytes is None:
+            raise DocxExtractionError("Matter source document is missing from storage.")
+        report_bytes = build_source_redline_docx(source_document_bytes, review_result)
+        health_errors = validate_docx_open_health(report_bytes, require_styles=False)
+        if health_errors:
+            print(f"DOCX export health check failed: {'; '.join(health_errors)}")
+            raise DocxExportError("The redlined Word document failed its open-health check.")
+        return report_bytes, export_service.redline_download_filename(source_filename)
 
     def _read_json_payload(self) -> dict | None:
         content_length = int(self.headers.get("Content-Length", "0"))

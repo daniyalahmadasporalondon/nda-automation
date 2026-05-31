@@ -14,6 +14,23 @@ DATA_DIR = Path(os.environ["NDA_DATA_DIR"]).expanduser() if os.environ.get("NDA_
 MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
+GMAIL_METADATA_FIELDS = (
+    "gmail_account",
+    "gmail_attachment_id",
+    "gmail_message_id",
+    "gmail_thread_id",
+)
+MATTER_UPDATE_FIELDS = {
+    "board_column",
+    "last_outbound_account",
+    "last_outbound_at",
+    "last_outbound_filename",
+    "last_outbound_message_id",
+    "last_outbound_subject",
+    "last_outbound_thread_id",
+    "last_outbound_to",
+    "status",
+}
 
 
 class MatterStoreError(RuntimeError):
@@ -44,6 +61,16 @@ def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
     return source_path.read_bytes()
 
 
+def find_gmail_attachment(message_id: str, attachment_id: str) -> dict[str, Any] | None:
+    if not message_id or not attachment_id:
+        return None
+    with _MATTERS_LOCK:
+        for matter in _load_matters():
+            if matter.get("gmail_message_id") == message_id and matter.get("gmail_attachment_id") == attachment_id:
+                return matter
+    return None
+
+
 def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _MATTERS_LOCK:
@@ -57,6 +84,30 @@ def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | N
                 "status": "closed" if board_column == "signed_closed" else "active",
                 "updated_at": now,
             }
+            matters[index] = updated_matter
+            _save_matters(matters)
+            return updated_matter
+    return None
+
+
+def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+    cleaned_fields = {key: value for key, value in fields.items() if key in MATTER_UPDATE_FIELDS}
+    if not cleaned_fields:
+        return get_matter(matter_id)
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _MATTERS_LOCK:
+        matters = _load_matters()
+        for index, matter in enumerate(matters):
+            if matter.get("id") != matter_id:
+                continue
+            updated_matter = {
+                **matter,
+                **cleaned_fields,
+                "updated_at": now,
+            }
+            if "board_column" in cleaned_fields and "status" not in cleaned_fields:
+                updated_matter["status"] = "closed" if cleaned_fields["board_column"] == "signed_closed" else "active"
             matters[index] = updated_matter
             _save_matters(matters)
             return updated_matter
@@ -144,13 +195,18 @@ def _intake_metadata(source_filename: str, received_at: str, metadata: dict[str,
     snippet = _clean_metadata_value(metadata.get("message_snippet")) or f"Manual upload of {Path(source_filename).name or 'NDA document'}."
     attachment_filename = _clean_metadata_value(metadata.get("attachment_filename")) or source_filename
     metadata_received_at = _clean_metadata_value(metadata.get("received_at"))
-    return {
+    intake = {
         "sender": sender,
         "subject": subject,
         "received_at": metadata_received_at or received_at,
         "message_snippet": snippet,
         "attachment_filename": attachment_filename,
     }
+    for field in GMAIL_METADATA_FIELDS:
+        value = _clean_metadata_value(metadata.get(field))
+        if value:
+            intake[field] = value
+    return intake
 
 
 def _clean_metadata_value(value: object, max_length: int = 500) -> str:

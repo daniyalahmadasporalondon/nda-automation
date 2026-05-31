@@ -9,6 +9,7 @@ const RepositoryView = (() => {
   function createController({
     state,
     fileInput,
+    gmailSyncButton,
     repositoryFileInput,
     gmailDemoMatterList,
     repositoryMatterPanel,
@@ -21,8 +22,11 @@ const RepositoryView = (() => {
     reviewErrorFromPayload,
   }) {
     let selectedMatter = null;
+    let pendingSendMatterId = null;
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
+
+    gmailSyncButton?.addEventListener("click", syncGmail);
 
     repositoryFileInput?.addEventListener("change", async (event) => {
       const file = event.target.files[0];
@@ -62,6 +66,34 @@ const RepositoryView = (() => {
         setImportStatus(`${payload.matter.document_title || file.name} imported`);
       } catch (error) {
         setImportStatus(error.message || "Import could not run");
+      }
+    }
+
+    async function syncGmail() {
+      if (!gmailSyncButton) return;
+      const originalText = gmailSyncButton.textContent;
+      gmailSyncButton.disabled = true;
+      gmailSyncButton.textContent = "Syncing";
+      setImportStatus("Checking Gmail");
+      try {
+        const response = await fetch("/api/gmail/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 10 }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync could not run");
+        const imported = Array.isArray(payload.imported) ? payload.imported : [];
+        await loadMatters();
+        if (imported[0]?.id) {
+          await openMatter(imported[0].id);
+        }
+        setImportStatus(imported.length ? `Imported ${imported.length} from Gmail` : "No new Gmail attachments");
+      } catch (error) {
+        setImportStatus(error.message || "Gmail sync could not run");
+      } finally {
+        gmailSyncButton.disabled = false;
+        gmailSyncButton.textContent = originalText || "Sync Gmail";
       }
     }
 
@@ -125,6 +157,9 @@ const RepositoryView = (() => {
         : [];
       const isClosed = matter.board_column === "signed_closed";
       const subject = matterSubject(matter);
+      const recipient = recipientEmail(matter);
+      const canSendRedline = Boolean(recipient);
+      const confirmingSend = pendingSendMatterId === matter.id;
       repositoryMatterPanel.hidden = false;
       repositoryWorkspace?.classList.add("detail-open");
       repositoryMatterPanel.innerHTML = `
@@ -166,6 +201,12 @@ const RepositoryView = (() => {
             <dt>Requirements</dt>
             <dd>${Number(matter.requirements_passed || 0)} passed / ${Number(matter.requirements_failed || 0)} failed</dd>
           </div>
+          ${matter.last_outbound_at ? `
+            <div>
+              <dt>Last sent</dt>
+              <dd>${escapeHtml(formatMatterDateTime(matter.last_outbound_at))}</dd>
+            </div>
+          ` : ""}
         </dl>
         <section class="repository-detail-issues">
           <h3>Key failed clauses</h3>
@@ -174,6 +215,7 @@ const RepositoryView = (() => {
         <div class="repository-detail-actions">
           <button type="button" class="repository-open-review">Open Review</button>
           <button type="button" class="secondary repository-export-redline">Export Redline</button>
+          <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"}>${confirmingSend ? "Confirm Send" : "Send Redline"}</button>
           <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
         </div>
         <p class="repository-detail-message" aria-live="polite"></p>
@@ -181,6 +223,7 @@ const RepositoryView = (() => {
       repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", closePanel);
       repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => openMatterInReview(matter));
       repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => exportMatter(matter));
+      repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => sendRedline(matter));
       repositoryMatterPanel.querySelector(".repository-close-matter")?.addEventListener("click", () => closeMatterWorkflow(matter));
     }
 
@@ -193,16 +236,19 @@ const RepositoryView = (() => {
 
     function closePanel() {
       selectedMatter = null;
+      pendingSendMatterId = null;
       renderEmptyPanel();
       renderBoard();
     }
 
     async function openMatterInReview(matter) {
+      pendingSendMatterId = null;
       const updatedMatter = await moveMatterToColumn(matter.id, "in_review", { quiet: true });
       loadMatterIntoReview(updatedMatter || matter);
     }
 
     async function exportMatter(matter) {
+      pendingSendMatterId = null;
       const exportButton = repositoryMatterPanel?.querySelector(".repository-export-redline");
       setPanelMessage("");
       if (exportButton) {
@@ -234,7 +280,50 @@ const RepositoryView = (() => {
       }
     }
 
+    async function sendRedline(matter) {
+      const recipient = recipientEmail(matter);
+      if (!recipient) {
+        pendingSendMatterId = null;
+        setPanelMessage("Matter sender is not an email address.");
+        return;
+      }
+      if (pendingSendMatterId !== matter.id) {
+        pendingSendMatterId = matter.id;
+        renderDetailPanel(matter);
+        setPanelMessage(`Click Confirm Send to email the redline to ${recipient}.`);
+        return;
+      }
+
+      const sendButton = repositoryMatterPanel?.querySelector(".repository-send-redline");
+      setPanelMessage("");
+      if (sendButton) {
+        sendButton.disabled = true;
+        sendButton.textContent = "Sending";
+      }
+      try {
+        const response = await fetch("/api/gmail/send-redline", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ matter_id: matter.id, confirm_send: true }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Redline email could not send");
+        pendingSendMatterId = null;
+        if (payload.matter?.id) {
+          replaceMatter(payload.matter);
+          renderBoard();
+          renderDetailPanel(payload.matter);
+        }
+        setPanelMessage(`Sent redline to ${recipient}.`);
+      } catch (error) {
+        pendingSendMatterId = null;
+        renderDetailPanel(matter);
+        setPanelMessage(error.message || "Redline email could not send");
+      }
+    }
+
     async function closeMatterWorkflow(matter) {
+      pendingSendMatterId = null;
       const closeButton = repositoryMatterPanel?.querySelector(".repository-close-matter");
       setPanelMessage("");
       if (closeButton) {
@@ -355,8 +444,17 @@ const RepositoryView = (() => {
   function sourceTypeLabel(sourceType) {
     const labels = {
       gmail_demo: "Gmail Demo",
+      gmail_inbound: "Gmail Inbound",
     };
     return labels[sourceType] || sourceType || "Source";
+  }
+
+  function recipientEmail(matter) {
+    const sender = matterSender(matter);
+    const bracketMatch = sender.match(/<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>/);
+    const candidate = bracketMatch ? bracketMatch[1] : sender;
+    const emailMatch = candidate.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    return emailMatch ? emailMatch[0] : "";
   }
 
   function boardColumnLabel(boardColumn) {
