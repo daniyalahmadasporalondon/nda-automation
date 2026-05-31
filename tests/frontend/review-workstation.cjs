@@ -156,6 +156,17 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
+  const activePlaybookRow = await page.locator(".playbook-row.active").first().evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      backgroundColor: styles.backgroundColor,
+      borderLeftColor: styles.borderLeftColor,
+      borderLeftWidth: styles.borderLeftWidth,
+    };
+  });
+  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
+  assert.equal(activePlaybookRow.borderLeftColor, "rgb(85, 35, 178)");
+  assert.equal(activePlaybookRow.borderLeftWidth, "3px");
 
   await page.getByRole("tab", { name: "Review" }).click();
   await page.getByRole("button", { name: "Clean" }).click();

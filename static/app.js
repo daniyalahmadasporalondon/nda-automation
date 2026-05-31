@@ -904,7 +904,7 @@ function setActiveTab(tabName) {
 function renderPlaybookList() {
   playbookList.innerHTML = state.playbookClauses
     .map((clause, index) => {
-      const selected = clause.id === state.selectedClauseId ? "selected" : "";
+      const selected = clause.id === state.selectedClauseId ? "selected active" : "";
       const position = String(index + 1).padStart(2, "0");
       return `
         <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">

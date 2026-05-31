@@ -1505,6 +1505,12 @@ textarea::placeholder {
   box-shadow: var(--shadow-sm);
 }
 
+.playbook-row.active,
+.playbook-row.selected {
+  background: var(--bg-softer);
+  border-left: 3px solid var(--brand);
+}
+
 .clause-number {
   align-items: center;
   background: var(--bg-panel);
