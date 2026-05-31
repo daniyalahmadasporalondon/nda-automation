@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 EXPORTS_DIR = ROOT / "exports"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+MAX_SAVED_EXPORTS = 25
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 
 
@@ -272,7 +273,24 @@ def _persist_export(data: bytes, filename: str) -> Path:
     if export_path.parent != EXPORTS_DIR.resolve():
         export_path = EXPORTS_DIR / "nda-review-report.docx"
     export_path.write_bytes(data)
+    _prune_saved_exports(export_path)
     return export_path
+
+
+def _prune_saved_exports(protected_path: Path) -> None:
+    saved_exports = [
+        path
+        for path in EXPORTS_DIR.glob("*.docx")
+        if path.is_file()
+    ]
+    if len(saved_exports) <= MAX_SAVED_EXPORTS:
+        return
+
+    protected_path = protected_path.resolve()
+    saved_exports.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+    removable_exports = [path for path in saved_exports[MAX_SAVED_EXPORTS:] if path.resolve() != protected_path]
+    for path in removable_exports:
+        path.unlink(missing_ok=True)
 
 
 def main() -> None:

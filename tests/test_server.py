@@ -1,6 +1,7 @@
 import base64
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -433,6 +434,27 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers["X-Export-URL"], "/exports/uploaded-redlined.docx")
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="uploaded-redlined.docx"')
         assert_source_export_has_no_report_leakage(self, payload)
+
+    def test_persisted_exports_prune_old_saved_docx_files(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            exports_path = server_module.Path(exports_dir)
+            with patch.object(server_module, "EXPORTS_DIR", exports_path):
+                with patch.object(server_module, "MAX_SAVED_EXPORTS", 2):
+                    old_one = exports_path / "old-one.docx"
+                    old_two = exports_path / "old-two.docx"
+                    old_one.write_bytes(b"old-one")
+                    old_two.write_bytes(b"old-two")
+                    os.utime(old_one, (1, 1))
+                    os.utime(old_two, (2, 2))
+
+                    saved_path = server_module._persist_export(b"new", "new.docx")
+
+                    self.assertEqual(saved_path.resolve(), (exports_path / "new.docx").resolve())
+                    self.assertEqual(
+                        sorted(path.name for path in exports_path.glob("*.docx")),
+                        ["new.docx", "old-two.docx"],
+                    )
+                    self.assertEqual((exports_path / "new.docx").read_bytes(), b"new")
 
     def test_text_review_reports_malformed_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
