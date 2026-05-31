@@ -261,8 +261,22 @@ async function testRepositoryMatterImportAndFreshReview(page) {
     "The Recipient must not circumvent the Company.",
   ]);
 
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true, email: "inbound@example.com" },
+          outbound: { ready: true, email: "outbound@example.com" },
+        },
+      }),
+    });
+  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
+  await assertTextContains(page.locator("#gmailDemoStatus"), "inbound@example.com");
+  await assertTextContains(page.locator("#gmailDemoStatus"), "outbound@example.com");
   let gmailSyncCalled = false;
   await page.route("**/api/gmail/import", async (route) => {
     gmailSyncCalled = true;
@@ -273,12 +287,13 @@ async function testRepositoryMatterImportAndFreshReview(page) {
         account: "inbound@example.com",
         imported: [],
         query: "has:attachment",
-        skipped: [],
+        skipped: [{ message_id: "m1", reason: "no_docx_attachment" }],
       }),
     });
   });
   await page.getByRole("button", { name: "Sync Gmail" }).click();
-  await waitForText(page, "#repositoryImportStatus", "No new Gmail attachments");
+  await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX)");
+  await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 
@@ -289,6 +304,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
   assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
   await assertTextContains(page.locator(".repository-card"), "Manual upload");
+  await assertTextContains(page.locator(".repository-card"), "Gmail Demo");
   await assertTextContains(page.locator(".repository-card"), "Manual upload of repository-matter");
 
   await page.locator(".repository-card").click();
@@ -347,6 +363,9 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("button", { name: "Close Matter", exact: true }).click();
   await waitForRepositoryCount(page, "redline_ready", "0");
   await waitForRepositoryCount(page, "signed_closed", "1");
+  await page.getByRole("button", { name: "Reset Demo" }).click();
+  await waitForText(page, "#repositoryImportStatus", "Demo reset. Removed 1 matters.");
+  await waitForRepositoryCount(page, "signed_closed", "0");
 
   fs.rmSync(docxPath, { force: true });
 }

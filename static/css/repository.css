@@ -145,23 +145,27 @@
 }
 
 .repository-import-actions {
-  align-items: center;
-  display: flex;
-  flex: 0 0 auto;
+  display: grid;
   gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
 }
 
 .repository-import-button {
   border-radius: 9999px;
+  display: flex;
+  grid-column: 1 / -1;
   height: 30px;
+  justify-content: center;
 }
 
-.repository-gmail-sync {
+.repository-gmail-sync,
+.repository-demo-reset {
   border-radius: 9999px;
   font-size: 11px;
   height: 30px;
   padding: 0 11px;
+  white-space: nowrap;
 }
 
 .repository-import span {
@@ -173,6 +177,54 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
+}
+
+.repository-demo-status {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 8px;
+}
+
+.repository-demo-status div {
+  background: var(--bg-soft);
+  border: 1px solid rgba(230, 225, 240, 0.8);
+  border-radius: 9px;
+  min-width: 0;
+  padding: 7px;
+}
+
+.repository-demo-status small {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.repository-demo-status strong {
+  color: var(--ink);
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-demo-status strong.ready {
+  color: var(--green-ink);
+}
+
+.repository-demo-status strong.blocked {
+  color: var(--amber-ink);
 }
 
 .repository-send-redline.confirming {
@@ -212,6 +264,13 @@
   box-shadow: 0 16px 32px -22px rgba(79, 27, 179, 0.45);
 }
 
+.repository-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
 .repository-card-top,
 .repository-card-foot {
   align-items: center;
@@ -239,6 +298,21 @@
   font-weight: 800;
   line-height: 1;
   padding: 4px 7px;
+}
+
+.repository-source-badge {
+  background: var(--slate-bg);
+  border-radius: var(--r-pill);
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.repository-source-badge.inbound {
+  background: var(--green-bg);
+  color: var(--green-ink);
 }
 
 .repository-card-source {

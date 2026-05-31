@@ -42,8 +42,11 @@ let pendingReviewSendMatterId = null;
 
 const repositoryController = createRepositoryController({
   state,
+  gmailDemoStatus: document.querySelector("#gmailDemoStatus"),
+  gmailLastSync: document.querySelector("#gmailLastSync"),
   gmailSyncButton: document.querySelector("#gmailSyncButton"),
   repositoryFileInput: document.querySelector("#repositoryFileInput"),
+  repositoryDemoResetButton: document.querySelector("#repositoryDemoResetButton"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
   repositoryImportStatus: document.querySelector("#repositoryImportStatus"),
@@ -73,6 +76,7 @@ const emptyState = () => {
 emptyState();
 playbookController.loadPlaybook();
 repositoryController.loadMatters();
+repositoryController.loadGmailStatus();
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {

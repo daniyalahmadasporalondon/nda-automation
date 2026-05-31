@@ -92,6 +92,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "/api/inbound/upload": self._handle_matter_upload,
                 "/api/gmail/import": self._handle_gmail_import,
                 "/api/gmail/send-redline": self._handle_gmail_send_redline,
+                "/api/demo/reset": self._handle_demo_reset,
                 "/api/export-review-docx": self._handle_review_docx_export,
             }
             handler = exact_routes.get(path)
@@ -294,6 +295,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if isinstance(result.get("imported"), list):
             result = {**result, "imported": matter_view.public_matters(result["imported"])}
         self._send_json(result)
+
+    def _handle_demo_reset(self) -> None:
+        removed_count = matter_store.reset_demo_repository()
+        self._send_json({"removed": removed_count, "matters": []})
 
     def _handle_gmail_send_redline(self) -> None:
         payload = self._read_json_payload()

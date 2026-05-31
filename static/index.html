@@ -140,12 +140,27 @@
                   <div class="repository-import">
                     <div class="repository-import-actions">
                       <button class="secondary repository-gmail-sync" id="gmailSyncButton" type="button">Sync Gmail</button>
+                      <button class="secondary repository-demo-reset" id="repositoryDemoResetButton" type="button">Reset Demo</button>
                       <label class="file-button repository-import-button">
                         <input id="repositoryFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
                         Import NDA
                       </label>
                     </div>
                     <span id="repositoryImportStatus" aria-live="polite">Awaiting documents</span>
+                    <div class="repository-demo-status" id="gmailDemoStatus" aria-live="polite">
+                      <div>
+                        <small>Inbound</small>
+                        <strong data-gmail-role="inbound">Checking</strong>
+                      </div>
+                      <div>
+                        <small>Outbound</small>
+                        <strong data-gmail-role="outbound">Checking</strong>
+                      </div>
+                      <div>
+                        <small>Last sync</small>
+                        <strong id="gmailLastSync">Not run</strong>
+                      </div>
+                    </div>
                   </div>
                   <div class="repository-card-list" id="gmailDemoMatterList" data-repository-list="gmail_demo">
                     <div class="repository-dropzone">No documents</div>

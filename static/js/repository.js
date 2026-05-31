@@ -8,8 +8,11 @@ const RepositoryView = (() => {
 
   function createController({
     state,
+    gmailDemoStatus,
+    gmailLastSync,
     gmailSyncButton,
     repositoryFileInput,
+    repositoryDemoResetButton,
     gmailDemoMatterList,
     repositoryMatterPanel,
     repositoryImportStatus,
@@ -26,6 +29,7 @@ const RepositoryView = (() => {
     const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
 
     gmailSyncButton?.addEventListener("click", syncGmail);
+    repositoryDemoResetButton?.addEventListener("click", resetDemoRepository);
 
     repositoryFileInput?.addEventListener("change", async (event) => {
       const file = event.target.files[0];
@@ -83,16 +87,57 @@ const RepositoryView = (() => {
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync could not run");
         const imported = Array.isArray(payload.imported) ? payload.imported : [];
+        const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
         await loadMatters();
         if (imported[0]?.id) {
           await openMatter(imported[0].id);
         }
-        setImportStatus(imported.length ? `Imported ${imported.length} from Gmail` : "No new Gmail attachments");
+        updateLastSync(payload.account || "");
+        setImportStatus(gmailSyncSummary(imported, skipped));
       } catch (error) {
         setImportStatus(error.message || "Gmail sync could not run");
       } finally {
         gmailSyncButton.disabled = false;
         gmailSyncButton.textContent = originalText || "Sync Gmail";
+      }
+    }
+
+    async function resetDemoRepository() {
+      if (!repositoryDemoResetButton) return;
+      const originalText = repositoryDemoResetButton.textContent;
+      repositoryDemoResetButton.disabled = true;
+      repositoryDemoResetButton.textContent = "Resetting";
+      setImportStatus("Resetting demo repository");
+      try {
+        const response = await fetch("/api/demo/reset", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Demo reset could not run");
+        state.matters = [];
+        selectedMatter = null;
+        pendingSendMatterId = null;
+        renderEmptyPanel();
+        renderBoard();
+        setImportStatus(`Demo reset. Removed ${Number(payload.removed || 0)} matters.`);
+      } catch (error) {
+        setImportStatus(error.message || "Demo reset could not run");
+      } finally {
+        repositoryDemoResetButton.disabled = false;
+        repositoryDemoResetButton.textContent = originalText || "Reset Demo";
+      }
+    }
+
+    async function loadGmailStatus() {
+      if (!gmailDemoStatus) return;
+      try {
+        const response = await fetch("/api/gmail/status");
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail status could not load");
+        renderGmailStatus(payload.gmail || {});
+      } catch (error) {
+        renderGmailStatus({
+          inbound: { ready: false, error: error.message || "Status unavailable" },
+          outbound: { ready: false, error: error.message || "Status unavailable" },
+        });
       }
     }
 
@@ -389,7 +434,49 @@ const RepositoryView = (() => {
       if (repositoryImportStatus) repositoryImportStatus.textContent = message;
     }
 
-    return { importMatter, loadMatters, markMatterRedlineReady, openMatter, renderBoard, setImportStatus };
+    function renderGmailStatus(status) {
+      const inboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="inbound"]');
+      const outboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="outbound"]');
+      renderGmailAccountStatus(inboundNode, status.inbound);
+      renderGmailAccountStatus(outboundNode, status.outbound);
+    }
+
+    function renderGmailAccountStatus(node, account) {
+      if (!node) return;
+      node.classList.toggle("ready", Boolean(account?.ready));
+      node.classList.toggle("blocked", !account?.ready);
+      node.textContent = account?.ready ? (account.email || "Connected") : (account?.error || "Not connected");
+    }
+
+    function updateLastSync(account) {
+      if (!gmailLastSync) return;
+      const label = formatMatterDateTime(new Date().toISOString()) || "Just now";
+      gmailLastSync.textContent = account ? `${label} (${account})` : label;
+    }
+
+    function gmailSyncSummary(imported, skipped) {
+      if (imported.length) {
+        const skippedText = skippedReasonSummary(skipped);
+        return skippedText ? `Imported ${imported.length} from Gmail; ${skippedText}` : `Imported ${imported.length} from Gmail`;
+      }
+      const skippedText = skippedReasonSummary(skipped);
+      return skippedText ? `No new imports; ${skippedText}` : "No new Gmail attachments";
+    }
+
+    function skippedReasonSummary(skipped) {
+      if (!skipped.length) return "";
+      const counts = skipped.reduce((totals, item) => {
+        const label = skippedReasonLabel(item?.reason);
+        totals[label] = (totals[label] || 0) + 1;
+        return totals;
+      }, {});
+      const details = Object.entries(counts)
+        .map(([label, count]) => `${count} ${label}`)
+        .join(", ");
+      return `skipped ${skipped.length} (${details})`;
+    }
+
+    return { importMatter, loadGmailStatus, loadMatters, markMatterRedlineReady, openMatter, renderBoard, setImportStatus };
   }
 
   function renderMatterCard(matter) {
@@ -398,7 +485,10 @@ const RepositoryView = (() => {
     return `
       <button class="repository-card" type="button" data-matter-id="${escapeHtml(matter.id)}">
         <span class="repository-card-top">
-          <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
+          <span class="repository-card-badges">
+            <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
+            <span class="repository-source-badge ${escapeHtml(sourceBadgeClass(matter.source_type))}">${escapeHtml(sourceTypeLabel(matter.source_type))}</span>
+          </span>
           <span>${escapeHtml(date)}</span>
         </span>
         <strong>${escapeHtml(matterSubject(matter))}</strong>
@@ -445,6 +535,22 @@ const RepositoryView = (() => {
       gmail_inbound: "Gmail Inbound",
     };
     return labels[sourceType] || sourceType || "Source";
+  }
+
+  function sourceBadgeClass(sourceType) {
+    return sourceType === "gmail_inbound" ? "inbound" : "demo";
+  }
+
+  function skippedReasonLabel(reason) {
+    const labels = {
+      attachment_too_large: "too large",
+      attachment_unavailable: "attachment unavailable",
+      duplicate_attachment: "duplicate",
+      message_unavailable: "message unavailable",
+      no_docx_attachment: "no DOCX",
+      review_failed: "review failed",
+    };
+    return labels[reason] || "skipped";
   }
 
   function boardColumnLabel(boardColumn) {

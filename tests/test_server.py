@@ -318,6 +318,38 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
         self.assertEqual(fetch_payload["matter"]["can_send_redline"], False)
 
+    def test_demo_reset_clears_repository_and_uploaded_documents(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Reset NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "gmail_demo",
+                    },
+                )
+                matter = create_payload["matter"]
+                stored_matter = matter_store.get_matter(matter["id"])
+                stored_path = matter_store.UPLOADS_DIR / stored_matter["stored_filename"]
+                reset_status, reset_payload = self.request("POST", "/api/demo/reset")
+                stored_path_exists = stored_path.exists()
+                list_status, list_payload = self.request("GET", "/api/matters")
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(reset_status, 200)
+        self.assertEqual(reset_payload["removed"], 1)
+        self.assertEqual(reset_payload["matters"], [])
+        self.assertEqual(list_status, 200)
+        self.assertEqual(list_payload["matters"], [])
+        self.assertFalse(stored_path_exists)
+
     def test_public_matter_uses_explicit_allowlist(self):
         public = matter_view.public_matter({
             "id": "matter_1",
@@ -587,7 +619,7 @@ class ServerTests(unittest.TestCase):
             "account": "inbound@example.com",
             "imported": [{"id": "matter_1"}],
             "query": "has:attachment",
-            "skipped": [],
+            "skipped": [{"message_id": "m1", "reason": "no_docx_attachment"}],
         }) as import_inbound_matters:
             status, payload = self.request(
                 "POST",
@@ -599,6 +631,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["imported"][0]["id"], "matter_1")
         self.assertEqual(payload["imported"][0]["recipient_email"], "")
         self.assertEqual(payload["imported"][0]["can_send_redline"], False)
+        self.assertEqual(payload["skipped"][0]["reason"], "no_docx_attachment")
         import_inbound_matters.assert_called_once_with(limit=2, query="has:attachment")
 
     def test_gmail_send_payload_replies_in_thread_only_for_same_account(self):

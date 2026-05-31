@@ -122,6 +122,15 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, An
     return None
 
 
+def reset_demo_repository() -> int:
+    with _locked_store():
+        matters = _load_matters()
+        for matter in matters:
+            _delete_stored_document(matter)
+        _save_matters([])
+    return len(matters)
+
+
 def create_matter(
     *,
     source_filename: str,
