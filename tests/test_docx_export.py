@@ -1,5 +1,6 @@
 from io import BytesIO
 import json
+import posixpath
 from pathlib import Path
 import unittest
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -18,6 +19,11 @@ W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
 STYLE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+DOCUMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
+SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
 
 
@@ -48,6 +54,88 @@ def docx_content_type_overrides(docx_bytes):
         override.attrib["PartName"]: override.attrib["ContentType"]
         for override in content_types_root.findall(".//ct:Override", content_type_ns)
     }
+
+
+def docx_content_types(docx_bytes):
+    content_type_ns = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        content_types_xml = archive.read("[Content_Types].xml").decode("utf-8")
+    content_types_root = ET.fromstring(content_types_xml)
+    defaults = {
+        default.attrib["Extension"]: default.attrib["ContentType"]
+        for default in content_types_root.findall(".//ct:Default", content_type_ns)
+    }
+    overrides = {
+        override.attrib["PartName"]: override.attrib["ContentType"]
+        for override in content_types_root.findall(".//ct:Override", content_type_ns)
+    }
+    return defaults, overrides
+
+
+def relationship_targets(archive, relationship_part):
+    relationships_root = ET.fromstring(archive.read(relationship_part).decode("utf-8"))
+    return [
+        relationship.attrib
+        for relationship in relationships_root.findall(".//rel:Relationship", REL_NS)
+    ]
+
+
+def resolve_relationship_target(relationship_part, target):
+    if target.startswith("/"):
+        return target.removeprefix("/")
+    if relationship_part == "_rels/.rels":
+        base_dir = ""
+    else:
+        rels_dir = posixpath.dirname(relationship_part)
+        base_dir = posixpath.dirname(rels_dir)
+    return posixpath.normpath(posixpath.join(base_dir, target))
+
+
+def assert_docx_package_healthy(testcase, docx_bytes, require_styles=False):
+    required_parts = {
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "word/document.xml",
+        "word/_rels/document.xml.rels",
+        "word/settings.xml",
+    }
+    if require_styles:
+        required_parts.add("word/styles.xml")
+
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        testcase.assertIsNone(archive.testzip())
+        names = set(archive.namelist())
+        testcase.assertTrue(required_parts <= names, f"Missing DOCX parts: {sorted(required_parts - names)}")
+
+        defaults, overrides = docx_content_types(docx_bytes)
+        testcase.assertEqual(defaults.get("rels"), RELATIONSHIPS_CONTENT_TYPE)
+        testcase.assertEqual(defaults.get("xml"), "application/xml")
+        testcase.assertEqual(overrides.get("/word/document.xml"), DOCUMENT_CONTENT_TYPE)
+        testcase.assertEqual(overrides.get("/word/settings.xml"), SETTINGS_CONTENT_TYPE)
+        if "word/styles.xml" in names:
+            testcase.assertEqual(overrides.get("/word/styles.xml"), STYLES_CONTENT_TYPE)
+
+        package_relationships = relationship_targets(archive, "_rels/.rels")
+        office_document_targets = [
+            resolve_relationship_target("_rels/.rels", relationship["Target"])
+            for relationship in package_relationships
+            if relationship.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP_TYPE
+        ]
+        testcase.assertEqual(office_document_targets, ["word/document.xml"])
+
+        document_relationships = relationship_targets(archive, "word/_rels/document.xml.rels")
+        relationship_targets_by_type = {
+            relationship["Type"]: resolve_relationship_target("word/_rels/document.xml.rels", relationship["Target"])
+            for relationship in document_relationships
+            if relationship.get("TargetMode") != "External"
+        }
+        for target in relationship_targets_by_type.values():
+            testcase.assertIn(target, names)
+        testcase.assertEqual(relationship_targets_by_type.get(SETTINGS_RELATIONSHIP_TYPE), "word/settings.xml")
+        if require_styles:
+            testcase.assertEqual(relationship_targets_by_type.get(STYLE_RELATIONSHIP_TYPE), "word/styles.xml")
+        elif STYLE_RELATIONSHIP_TYPE in relationship_targets_by_type:
+            testcase.assertEqual(relationship_targets_by_type[STYLE_RELATIONSHIP_TYPE], "word/styles.xml")
 
 
 def tracked_deleted_text(document_root):
@@ -184,6 +272,7 @@ class DocxExportTests(unittest.TestCase):
 
         docx_bytes = build_review_report_docx(result, title="California NDA")
 
+        assert_docx_package_healthy(self, docx_bytes, require_styles=True)
         settings_root, document_root, document_xml = docx_xml_roots(docx_bytes)
         relationship_targets = docx_document_relationship_targets(docx_bytes)
 
@@ -228,6 +317,7 @@ class DocxExportTests(unittest.TestCase):
 
         redlined_docx = build_source_redline_docx(source_docx, result)
 
+        assert_docx_package_healthy(self, redlined_docx)
         settings_root, document_root, document_xml = docx_xml_roots(redlined_docx)
         relationship_targets = docx_document_relationship_targets(redlined_docx)
         content_type_overrides = docx_content_type_overrides(redlined_docx)
