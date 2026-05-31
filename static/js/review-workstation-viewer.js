@@ -89,9 +89,6 @@ function syncReviewSourceFromParagraphs() {
 }
 
 function markSourceEdited(message, { preserveSourceDocument = false } = {}) {
-  if (state.reviewClauses.length || state.reviewSourceText.trim()) {
-    state.reviewDirty = true;
-  }
   if (state.selectedDocument && !preserveSourceDocument) {
     state.selectedDocument = null;
   }

@@ -54,13 +54,11 @@ function resetReviewResults() {
   state.reviewOriginalParagraphs = [];
   state.reviewParagraphs = [];
   state.reviewRedlines = [];
-  state.reviewDirty = false;
   state.reviewSourceText = "";
   state.selectedReviewClauseId = null;
   state.clauseJumpIndexes = {};
   state.exportClauseDecisions = {};
   state.redlineTemplateSelections = {};
-  state.lastExport = null;
 }
 
 function setupReviewWorkstationActions() {
@@ -292,7 +290,6 @@ async function reviewDocument(file) {
 }
 
 function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported") {
-  state.lastExport = { filename, savedPath, savedUrl, verification };
   studioFileMeta.textContent = "";
   const summary = document.createElement("span");
   summary.className = "export-success";

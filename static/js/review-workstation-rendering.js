@@ -10,7 +10,6 @@ function renderResult(result, reviewedText) {
   state.reviewRedlines = result.redline_edits || [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
-  state.reviewDirty = false;
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
