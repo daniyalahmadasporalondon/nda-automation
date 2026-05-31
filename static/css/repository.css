@@ -179,54 +179,6 @@
   width: 100%;
 }
 
-.repository-demo-status {
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 8px;
-}
-
-.repository-demo-status div {
-  background: var(--bg-soft);
-  border: 1px solid rgba(230, 225, 240, 0.8);
-  border-radius: 9px;
-  min-width: 0;
-  padding: 7px;
-}
-
-.repository-demo-status small {
-  color: var(--ink-muted);
-  display: block;
-  font-size: 8.5px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  margin-bottom: 5px;
-  text-transform: uppercase;
-}
-
-.repository-demo-status strong {
-  color: var(--ink);
-  display: block;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.repository-demo-status strong.ready {
-  color: var(--green-ink);
-}
-
-.repository-demo-status strong.blocked {
-  color: var(--amber-ink);
-}
-
 .repository-send-redline.confirming {
   border-color: var(--brand);
   color: var(--brand);

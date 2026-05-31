@@ -391,8 +391,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
-  await assertTextContains(page.locator("#gmailDemoStatus"), "inbound@example.com");
-  await assertTextContains(page.locator("#gmailDemoStatus"), "outbound@example.com");
+  assert.equal(await page.locator("#gmailDemoStatus").count(), 0);
+  assert.equal(await page.locator("#gmailLastSync").count(), 0);
   assert.equal(await page.locator("#gmailSyncButton").count(), 0);
   let gmailSyncCalled = false;
   await page.route("**/api/gmail/import", async (route) => {
@@ -413,15 +413,15 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
   await page.locator("#adminGmailSyncButton").click();
   await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
-  await page.getByRole("tab", { name: "Repository" }).click();
-  await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
   const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     month: "short",
   }));
-  await assertTextContains(page.locator("#gmailLastSync"), serverSyncLabel);
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), serverSyncLabel);
+  await page.getByRole("tab", { name: "Repository" }).click();
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 

@@ -49,8 +49,6 @@ let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
   state,
-  gmailDemoStatus: document.querySelector("#gmailDemoStatus"),
-  gmailLastSync: document.querySelector("#gmailLastSync"),
   repositoryFileInput: document.querySelector("#repositoryFileInput"),
   repositoryDemoResetButton: document.querySelector("#repositoryDemoResetButton"),
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),

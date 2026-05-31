@@ -8,8 +8,6 @@ const RepositoryView = (() => {
 
   function createController({
     state,
-    gmailDemoStatus,
-    gmailLastSync,
     gmailSyncButton,
     repositoryFileInput,
     repositoryDemoResetButton,
@@ -103,7 +101,6 @@ const RepositoryView = (() => {
           synced_at: payload.synced_at || "",
         };
         onGmailSync?.(state.gmailLastSync);
-        updateLastSync(payload.account || "", payload.synced_at || "");
         const summary = gmailSyncSummary(imported, skipped);
         setImportStatus(summary);
         return { imported, skipped, payload, summary };
@@ -144,17 +141,16 @@ const RepositoryView = (() => {
     }
 
     async function loadGmailStatus() {
-      if (!gmailDemoStatus) return;
       try {
         const response = await fetch("/api/gmail/status");
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail status could not load");
-        renderGmailStatus(payload.gmail || {});
+        state.gmailStatus = payload.gmail || {};
       } catch (error) {
-        renderGmailStatus({
+        state.gmailStatus = {
           inbound: { ready: false, error: error.message || "Status unavailable" },
           outbound: { ready: false, error: error.message || "Status unavailable" },
-        });
+        };
       }
     }
 
@@ -486,27 +482,6 @@ const RepositoryView = (() => {
 
     function setImportStatus(message) {
       if (repositoryImportStatus) repositoryImportStatus.textContent = message;
-    }
-
-    function renderGmailStatus(status) {
-      state.gmailStatus = status;
-      const inboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="inbound"]');
-      const outboundNode = gmailDemoStatus?.querySelector('[data-gmail-role="outbound"]');
-      renderGmailAccountStatus(inboundNode, status.inbound);
-      renderGmailAccountStatus(outboundNode, status.outbound);
-    }
-
-    function renderGmailAccountStatus(node, account) {
-      if (!node) return;
-      node.classList.toggle("ready", Boolean(account?.ready));
-      node.classList.toggle("blocked", !account?.ready);
-      node.textContent = account?.ready ? (account.email || "Connected") : (account?.error || "Not connected");
-    }
-
-    function updateLastSync(account, syncedAt) {
-      if (!gmailLastSync) return;
-      const label = formatMatterDateTime(syncedAt) || "Just now";
-      gmailLastSync.textContent = account ? `${label} (${account})` : label;
     }
 
     function gmailSyncSummary(imported, skipped) {
