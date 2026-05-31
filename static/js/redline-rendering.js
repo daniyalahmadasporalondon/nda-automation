@@ -93,12 +93,11 @@ function renderCleanDocumentParagraph(model) {
 }
 
 function renderSideBySideDocumentParagraph(model) {
-  const original = escapeHtml(originalParagraphText(model.paragraph, model.originalParagraphs));
-  const redlined = renderSideBySideRedline(model.paragraph, model.plan) || '<span class="sxs-empty">-</span>';
+  const sideBySide = sideBySideParagraphColumns(model.paragraph, model.plan);
   const body = `
     <div class="clause-sxs">
-      <div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div>${original}</div></div>
-      <div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div>${redlined}</div></div>
+      <div class="${sideBySide.originalClass}"><span class="clause-sxs-tag">Original</span><div>${sideBySide.original}</div></div>
+      <div class="${sideBySide.latestClass}"><span class="clause-sxs-tag">Proposed</span><div>${sideBySide.latest}</div></div>
     </div>
   `;
   return renderParagraphFrame(model, {
@@ -157,8 +156,8 @@ function renderInsertedParagraphs(inserts, viewMode, anchorParagraphId = "") {
       return renderStudioParagraphFrame({
         body: `
           <div class="clause-sxs">
-            <div class="clause-sxs-col"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">-</div></div>
-            <div class="clause-sxs-col latest"><span class="clause-sxs-tag">Redline</span><div><span class="inline-ins">${inserted}</span></div></div>
+            <div class="clause-sxs-col original empty"><span class="clause-sxs-tag">Original</span><div class="sxs-empty">No source paragraph</div></div>
+            <div class="clause-sxs-col latest inserted"><span class="clause-sxs-tag">Proposed</span><div><span class="inline-ins">${inserted}</span></div></div>
           </div>
         `,
         attributes,
@@ -224,10 +223,66 @@ function syncRenderedManualRedline(container, { paragraph, manualRedline, backen
   }
 }
 
-function renderSideBySideRedline(paragraph, plan) {
-  if (plan.replace) return renderInlineRedline(paragraph, plan.replace);
-  if (plan.remove) return `<span class="inline-del">${escapeHtml(String(paragraph.text || ""))}</span>`;
-  return escapeHtml(String(paragraph.text || ""));
+function sideBySideParagraphColumns(paragraph, plan) {
+  if (plan.replace) {
+    const original = String(plan.replace.original_text ?? paragraph.text ?? "");
+    const replacement = String(plan.replace.replacement_text || "");
+    return {
+      original: renderSideBySideDiffColumn(original, replacement, "original"),
+      originalClass: "clause-sxs-col original removed",
+      latest: renderSideBySideDiffColumn(original, replacement, "latest"),
+      latestClass: "clause-sxs-col latest inserted",
+    };
+  }
+  if (plan.remove) {
+    const original = String(plan.remove.original_text ?? paragraph.text ?? "");
+    return {
+      original: `<span class="inline-del">${escapeHtml(original)}</span>`,
+      originalClass: "clause-sxs-col original removed",
+      latest: '<span class="sxs-empty">Removed in proposed text</span>',
+      latestClass: "clause-sxs-col latest empty",
+    };
+  }
+  const original = String(paragraph.text || "");
+  return {
+    original: escapeHtml(original),
+    originalClass: "clause-sxs-col original",
+    latest: escapeHtml(original),
+    latestClass: "clause-sxs-col latest",
+  };
+}
+
+function renderSideBySideDiffColumn(original, replacement, side) {
+  const oldTokens = tokenizeInlineDiff(original);
+  const newTokens = tokenizeInlineDiff(replacement);
+  const operations = oldTokens.length * newTokens.length > INLINE_DIFF_MAX_MATRIX_CELLS
+    ? [
+        ...oldTokens.map((token) => ({ type: "delete", token })),
+        ...newTokens.map((token) => ({ type: "insert", token })),
+      ]
+    : diffTokenOperations(oldTokens, newTokens);
+  const visibleOperations = operations.filter((operation) => (
+    side === "original" ? operation.type !== "insert" : operation.type !== "delete"
+  ));
+  return renderSideBySideOperations(visibleOperations, side);
+}
+
+function renderSideBySideOperations(operations, side) {
+  let previousToken = "";
+  return operations
+    .map((operation) => {
+      const prefix = needsInlineSpace(previousToken, operation.token) ? " " : "";
+      previousToken = operation.token;
+      const className = operation.type === "delete"
+        ? "inline-del"
+        : operation.type === "insert"
+          ? "inline-ins"
+          : "";
+      const token = `${prefix}${operation.token}`;
+      if (!className && side === "latest") return escapeHtml(token);
+      return renderInlineToken(token, className);
+    })
+    .join("") || '<span class="sxs-empty">No text</span>';
 }
 
 function manualParagraphRedline(paragraph, originalParagraphs = []) {

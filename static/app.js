@@ -29,6 +29,8 @@ const state = {
   reviewDirty: false,
   reviewSourceText: "",
   selectedReviewClauseId: null,
+  clauseJumpIndexes: {},
+  lastExport: null,
   documentViewMode: VIEW_MODE_REDLINE,
 };
 
@@ -103,6 +105,8 @@ function resetReviewResults() {
   state.reviewDirty = false;
   state.reviewSourceText = "";
   state.selectedReviewClauseId = null;
+  state.clauseJumpIndexes = {};
+  state.lastExport = null;
 }
 
 studioClearButton.addEventListener("click", () => {
@@ -237,18 +241,22 @@ function downloadBlob(blob, filename) {
 }
 
 function renderExportSuccess(filename, savedPath, savedUrl) {
+  state.lastExport = { filename, savedPath, savedUrl };
   studioFileMeta.textContent = "";
-  studioFileMeta.append(document.createTextNode(`${filename} exported`));
-  if (savedPath) {
-    studioFileMeta.append(document.createTextNode(` and saved to ${savedPath}`));
-  }
+  const summary = document.createElement("span");
+  summary.className = "export-success";
+  summary.textContent = savedUrl ? `Saved export: ${savedUrl}` : `${filename} exported`;
+  studioFileMeta.append(summary);
   if (savedUrl) {
     studioFileMeta.append(document.createTextNode(" "));
     const link = document.createElement("a");
+    link.className = "download-again";
     link.href = savedUrl;
     link.download = filename;
-    link.textContent = "Open DOCX";
+    link.textContent = "Download again";
     studioFileMeta.append(link);
+  } else if (savedPath) {
+    studioFileMeta.append(document.createTextNode(` ${savedPath}`));
   }
 }
 
@@ -318,6 +326,7 @@ function renderResult(result, reviewedText) {
   state.reviewRedlines = result.redline_edits || [];
   state.reviewDirty = false;
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
+  state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
     state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
@@ -827,13 +836,12 @@ function scrollRenderedClauseToView(clauseId) {
   const container = studioDocumentRender.closest(".studio-page-wrap");
   if (!container) return;
 
-  const clause = state.reviewClauses.find((item) => item.id === clauseId);
-  const redlineParagraphIds = state.reviewRedlines
-    .filter((edit) => edit.clause_id === clauseId)
-    .map((edit) => edit.paragraph_id);
-  const paragraphIds = [...(clause?.matched_paragraph_ids || []), ...redlineParagraphIds];
-  const target = Array.from(studioDocumentRender.querySelectorAll("[data-paragraph-id]"))
-    .find((paragraph) => paragraphIds.includes(paragraph.dataset.paragraphId));
+  const targets = renderedClauseTargets(clauseId);
+  if (!targets.length) return;
+
+  const nextIndex = state.clauseJumpIndexes[clauseId] || 0;
+  const target = targets[nextIndex % targets.length];
+  state.clauseJumpIndexes[clauseId] = (nextIndex + 1) % targets.length;
   if (!target) return;
 
   const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
@@ -847,6 +855,39 @@ function scrollRenderedClauseToView(clauseId) {
   target.classList.add("paragraph-pulse");
 }
 
+function renderedClauseTargets(clauseId) {
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  const targetKeys = [];
+  (clause?.matched_paragraph_ids || []).forEach((paragraphId) => {
+    targetKeys.push({ type: "paragraph", id: paragraphId });
+  });
+  state.reviewRedlines
+    .filter((edit) => edit.clause_id === clauseId)
+    .forEach((edit) => {
+      if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH && edit.id) {
+        targetKeys.push({ type: "redline", id: edit.id });
+      } else if (edit.paragraph_id) {
+        targetKeys.push({ type: "paragraph", id: edit.paragraph_id });
+      }
+    });
+
+  const seen = new Set();
+  return targetKeys
+    .filter((target) => {
+      const key = `${target.type}:${target.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((target) => {
+      if (target.type === "redline") {
+        return studioDocumentRender.querySelector(`[data-redline-edit-id="${cssEscape(target.id)}"]`);
+      }
+      return studioDocumentRender.querySelector(`[data-paragraph-id="${cssEscape(target.id)}"]`);
+    })
+    .filter(Boolean);
+}
+
 function layoutOffsetTop(element) {
   let offset = 0;
   let current = element;
@@ -857,6 +898,11 @@ function layoutOffsetTop(element) {
   }
 
   return offset;
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 function pulseSourcePage(input) {

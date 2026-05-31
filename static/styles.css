@@ -922,18 +922,37 @@ textarea::placeholder {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr 1fr;
+  align-items: stretch;
 }
 
 .clause-sxs-col {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 92px;
   padding: 11px 13px;
 }
 
+.clause-sxs-col.original.removed {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+
 .clause-sxs-col.latest {
+  background: var(--bg-soft);
+  border-color: var(--border);
+}
+
+.clause-sxs-col.latest.inserted {
   background: var(--green-bg);
   border-color: var(--green-border);
+}
+
+.clause-sxs-col.empty {
+  background: var(--slate-bg);
+  border-color: var(--slate-border);
 }
 
 .clause-sxs-tag {
@@ -950,8 +969,21 @@ textarea::placeholder {
   color: var(--green-ink);
 }
 
-.sxs-empty {
+.clause-sxs-col.original.removed .clause-sxs-tag {
+  color: var(--red-ink);
+}
+
+.clause-sxs-col.empty .clause-sxs-tag {
   color: var(--ink-muted);
+}
+
+.sxs-empty {
+  align-items: center;
+  color: var(--ink-muted);
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 48px;
 }
 
 /* ---------- Playbook / checklist rail (right, scrolls internally) ---------- */
@@ -1423,6 +1455,24 @@ textarea::placeholder {
   color: var(--ink);
   font-size: 12.5px;
   font-weight: 600;
+}
+
+.export-success {
+  color: var(--green-ink);
+}
+
+.download-again {
+  background: var(--green-bg);
+  border: 1px solid var(--green-border);
+  border-radius: var(--r-pill);
+  color: var(--green-ink);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  margin-left: 6px;
+  padding: 5px 9px;
+  text-decoration: none;
 }
 
 .studio-file-summary span {

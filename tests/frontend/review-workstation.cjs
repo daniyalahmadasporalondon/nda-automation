@@ -23,6 +23,10 @@ const redlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
 ].join("\n\n");
+const multiAnchorNda = [
+  "The Recipient must not circumvent the Company.",
+  "The Recipient shall not deal directly with introduced parties.",
+].join("\n\n");
 const allActionRedlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
@@ -34,6 +38,7 @@ const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["covers inline diff algorithm edge cases", testInlineDiffAlgorithmEdges],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
+  ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
@@ -323,15 +328,53 @@ async function testBackendRedlineModes(page) {
     labels: Array.from(node.querySelectorAll(".clause-sxs-tag")).map((label) => label.textContent),
     original: node.querySelector(".clause-sxs-col:first-child div")?.innerText || "",
     redline: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
-    delCount: node.querySelectorAll(".clause-sxs-col.latest .inline-del").length,
+    delCount: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
     insCount: node.querySelectorAll(".clause-sxs-col.latest .inline-ins").length,
   }));
-  assert.deepEqual(sideBySide.labels, ["Original", "Redline"]);
+  assert.deepEqual(sideBySide.labels, ["Original", "Proposed"]);
   assert.match(sideBySide.original, /seven years/);
   assert.match(sideBySide.redline, /fixed period of up to five years/);
   assert.ok(sideBySide.delCount >= 1, "side-by-side redline should show deletions");
   assert.ok(sideBySide.insCount >= 1, "side-by-side redline should show insertions");
-  await assertRedGreenPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.latest'));
+  await assertRedPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.original'));
+  await assertGreenPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.latest'));
+
+  const deletedSideBySide = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => ({
+    original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
+    proposed: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
+    originalDeleted: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
+    proposedEmpty: node.querySelector(".clause-sxs-col.latest .sxs-empty")?.textContent || "",
+  }));
+  assert.match(deletedSideBySide.original, /must not circumvent/);
+  assert.equal(deletedSideBySide.originalDeleted, 1);
+  assert.equal(deletedSideBySide.proposed, "Removed in proposed text");
+  assert.equal(deletedSideBySide.proposedEmpty, "Removed in proposed text");
+
+  const insertedBlocks = await page.locator('[data-redline-anchor-id="p2"]').evaluateAll((nodes) => (
+    nodes.map((node) => ({
+      original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
+      proposed: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
+      proposedInserted: node.querySelectorAll(".clause-sxs-col.latest .inline-ins").length,
+    }))
+  ));
+  const insertedSideBySide = insertedBlocks.find((block) => block.proposed.includes("For [Party 1 legal name]"));
+  assert.ok(insertedSideBySide, "signature insertion should render as a side-by-side inserted block");
+  assert.equal(insertedSideBySide.original, "No source paragraph");
+  assert.match(insertedSideBySide.proposed, /For \[Party 1 legal name\]/);
+  assert.equal(insertedSideBySide.proposedInserted, 1);
+}
+
+async function testClauseAnchorCycling(page) {
+  await runReview(page, multiAnchorNda);
+  const nonCircumventionCard = page.locator('[data-studio-clause-id="non_circumvention"]');
+
+  await nonCircumventionCard.click();
+  await page.waitForSelector('[data-paragraph-id="p1"].paragraph-pulse');
+  assert.equal(await page.locator('[data-paragraph-id="p2"]').evaluate((node) => node.classList.contains("paragraph-pulse")), false);
+
+  await nonCircumventionCard.click();
+  await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
+  assert.equal(await page.locator('[data-paragraph-id="p1"]').evaluate((node) => node.classList.contains("paragraph-pulse")), false);
 }
 
 async function testManualViewerEditRedline(page) {
@@ -392,7 +435,7 @@ async function testManualViewerEditRedline(page) {
   const sideBySide = await page.locator('[data-paragraph-id="p1"]').evaluate((node) => ({
     original: node.querySelector(".clause-sxs-col:first-child div")?.innerText || "",
     redline: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
-    delCount: node.querySelectorAll(".clause-sxs-col.latest .inline-del").length,
+    delCount: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
     insCount: node.querySelectorAll(".clause-sxs-col.latest .inline-ins").length,
   }));
   assert.equal(sideBySide.original, "Mutual Non-Disclosure Agreement");
@@ -415,10 +458,11 @@ async function testPreviewMatchesExportedDocx(page) {
       const paragraphId = edit.paragraph_id;
       const paragraph = document.querySelector(`[data-paragraph-id="${paragraphId}"]`);
       const latest = paragraph?.querySelector(".clause-sxs-col.latest div");
+      const accepted = latest?.querySelector(".sxs-empty") ? "" : textWithoutDeleted(latest);
       return {
         original: paragraph?.querySelector(".clause-sxs-col:first-child div")?.innerText || "",
         redline: latest?.innerText || "",
-        accepted: textWithoutDeleted(latest),
+        accepted,
       };
     };
     const insertionPreview = (edit) => {
@@ -490,9 +534,11 @@ async function testExportFlow(page) {
   const downloadedPath = await download.path();
   assert.ok(downloadedPath, "download path should be available");
   assert.ok(fs.statSync(downloadedPath).size > 1000, "exported DOCX should not be empty");
-  await assertTextContains(page.locator("#studioFileMeta"), "nda-review-report.docx exported");
+  await assertTextContains(page.locator("#studioFileMeta"), "Saved export:");
   await assertTextContains(page.locator("#studioFileMeta"), "/exports/nda-review-report.docx");
-  assert.equal(await page.locator("#studioFileMeta a").getAttribute("href"), "/exports/nda-review-report.docx");
+  await assertTextContains(page.locator("#studioFileMeta a.download-again"), "Download again");
+  assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("href"), "/exports/nda-review-report.docx");
+  assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("download"), "nda-review-report.docx");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Mutual Non-Disclosure Agreement with edits");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
@@ -525,6 +571,22 @@ async function assertRedlinePreview(paragraphLocator, { originalText, insertedTe
 }
 
 async function assertRedGreenPixels(locator) {
+  const { redPixels, greenPixels } = await colorPixelCounts(locator);
+  assert.ok(redPixels > 10, `expected visible redline deletion pixels, found ${redPixels}`);
+  assert.ok(greenPixels > 10, `expected visible redline insertion pixels, found ${greenPixels}`);
+}
+
+async function assertRedPixels(locator) {
+  const { redPixels } = await colorPixelCounts(locator);
+  assert.ok(redPixels > 10, `expected visible red pixels, found ${redPixels}`);
+}
+
+async function assertGreenPixels(locator) {
+  const { greenPixels } = await colorPixelCounts(locator);
+  assert.ok(greenPixels > 10, `expected visible green pixels, found ${greenPixels}`);
+}
+
+async function colorPixelCounts(locator) {
   const png = PNG.sync.read(await locator.screenshot());
   let redPixels = 0;
   let greenPixels = 0;
@@ -537,8 +599,7 @@ async function assertRedGreenPixels(locator) {
     if (red > 120 && red > green * 1.18 && red > blue * 1.18) redPixels += 1;
     if (green > 80 && green > red * 1.05 && green > blue * 1.05) greenPixels += 1;
   }
-  assert.ok(redPixels > 10, `expected visible redline deletion pixels, found ${redPixels}`);
-  assert.ok(greenPixels > 10, `expected visible redline insertion pixels, found ${greenPixels}`);
+  return { redPixels, greenPixels };
 }
 
 async function assertTextContains(locator, expected) {
