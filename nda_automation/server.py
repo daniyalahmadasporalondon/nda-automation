@@ -5,7 +5,6 @@ import base64
 import binascii
 import json
 import mimetypes
-import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -19,12 +18,11 @@ from .docx_export import (
     validate_docx_open_health,
 )
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
+from . import export_service
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-EXPORTS_DIR = Path(os.environ["NDA_EXPORTS_DIR"]).expanduser() if os.environ.get("NDA_EXPORTS_DIR") else None
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-MAX_SAVED_EXPORTS = 25
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 
 
@@ -53,12 +51,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_file(requested)
             return
         if path.startswith("/exports/"):
-            if EXPORTS_DIR is None:
+            if export_service.EXPORTS_DIR is None:
                 self._send_json({"error": "Not found"}, status=404)
                 return
             requested_name = unquote(path.removeprefix("/exports/"))
-            requested = (EXPORTS_DIR / requested_name).resolve()
-            if requested.parent != EXPORTS_DIR.resolve() or not requested.is_file():
+            requested = (export_service.EXPORTS_DIR / requested_name).resolve()
+            if requested.parent != export_service.EXPORTS_DIR.resolve() or not requested.is_file():
                 self._send_json({"error": "Not found"}, status=404)
                 return
             self._send_download(requested.read_bytes(), requested.name, DOCX_MIME)
@@ -179,8 +177,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
             return
 
-        _apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
-        _apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
+        export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
+        export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
 
         if source_document_bytes is not None:
             try:
@@ -188,7 +186,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             except DocxExportError as error:
                 self._send_json({"error": str(error)}, status=400)
                 return
-            download_filename = _redline_download_filename(source_filename)
+            download_filename = export_service.redline_download_filename(source_filename)
         else:
             report_bytes = build_review_report_docx(review_result, title=title.strip())
             download_filename = "nda-review-report.docx"
@@ -202,7 +200,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             }, status=500)
             return
 
-        saved_path = _persist_export(report_bytes, download_filename)
+        saved_path = export_service.persist_export(report_bytes, download_filename)
         headers = {"X-Export-Verified": "word-package; track-revisions"}
         if saved_path is not None:
             headers.update({
@@ -282,185 +280,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def _send_playbook_template_error(self) -> None:
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
-
-
-def _redline_download_filename(filename: str) -> str:
-    source_name = Path(filename).stem if filename else ""
-    safe_name = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in source_name)
-    safe_name = safe_name.strip("-_") or "nda"
-    return f"{safe_name}-redlined.docx"
-
-
-def _apply_selected_export_redlines(review_result: dict, selected_redlines: object) -> None:
-    if not isinstance(selected_redlines, list):
-        return
-
-    cleaned_redlines = [
-        redline
-        for redline in (_clean_export_redline(item) for item in selected_redlines)
-        if redline is not None
-    ]
-    review_result["redline_edits"] = cleaned_redlines
-
-
-def _apply_manual_export_redlines(review_result: dict, manual_redlines: object) -> None:
-    if not isinstance(manual_redlines, list):
-        return
-
-    cleaned_redlines = [
-        redline
-        for redline in (_clean_manual_export_redline(item) for item in manual_redlines)
-        if redline is not None
-    ]
-    if not cleaned_redlines:
-        return
-
-    manual_paragraph_ids = {str(redline.get("paragraph_id")) for redline in cleaned_redlines}
-    existing_redlines = review_result.get("redline_edits", [])
-    if not isinstance(existing_redlines, list):
-        existing_redlines = []
-    review_result["redline_edits"] = cleaned_redlines + [
-        redline
-        for redline in existing_redlines
-        if not (isinstance(redline, dict) and str(redline.get("paragraph_id")) in manual_paragraph_ids)
-    ]
-
-
-def _clean_manual_export_redline(redline: object) -> dict | None:
-    if not isinstance(redline, dict):
-        return None
-
-    common = _clean_export_redline_contract(redline, {"replace_paragraph", "delete_paragraph"})
-    if common is None:
-        return None
-
-    action = common["action"]
-    paragraph_id = common["paragraph_id"]
-
-    cleaned = {
-        "id": str(redline.get("id") or f"manual-{paragraph_id}"),
-        "clause_id": "manual_viewer_edit",
-        "status": "proposed",
-        "action": action,
-        "action_label": "Remove paragraph" if action == "delete_paragraph" else "Replace paragraph",
-        "paragraph_id": paragraph_id,
-        "original_text": common["original_text"],
-        "replacement_text": common["replacement_text"],
-    }
-
-    _copy_redline_indexes(redline, cleaned)
-    return cleaned
-
-
-def _clean_export_redline(redline: object) -> dict | None:
-    if not isinstance(redline, dict):
-        return None
-
-    common = _clean_export_redline_contract(
-        redline,
-        {"replace_paragraph", "delete_paragraph", "insert_after_paragraph"},
-    )
-    if common is None:
-        return None
-
-    cleaned = {
-        key: value
-        for key, value in redline.items()
-        if key in {
-            "id",
-            "clause_id",
-            "clause_name",
-            "paragraph_id",
-            "paragraph_index",
-            "source_index",
-            "action",
-            "action_label",
-            "status",
-            "original_text",
-            "replacement_text",
-            "reason",
-            "anchor_text",
-            "insert_text",
-            "template_options",
-        }
-    }
-    cleaned.update(common)
-    _copy_redline_indexes(redline, cleaned, remove_invalid=True)
-    return cleaned
-
-
-def _clean_export_redline_contract(redline: dict, allowed_actions: set[str]) -> dict | None:
-    action = redline.get("action")
-    if action not in allowed_actions:
-        return None
-
-    paragraph_id = str(redline.get("paragraph_id") or "").strip()
-    if not paragraph_id:
-        return None
-
-    original_text = str(redline.get("original_text") or "").strip()
-    replacement_text = str(redline.get("replacement_text") or "").strip()
-    anchor_text = str(redline.get("anchor_text") or "").strip()
-    insert_text = str(redline.get("insert_text") or "").strip()
-    if action in {"replace_paragraph", "delete_paragraph"} and not original_text.strip():
-        return None
-    if action == "replace_paragraph" and not replacement_text.strip():
-        return None
-    if action == "insert_after_paragraph" and not insert_text.strip():
-        return None
-
-    return {
-        "action": action,
-        "paragraph_id": paragraph_id,
-        "original_text": original_text,
-        "replacement_text": "" if action == "delete_paragraph" else replacement_text,
-        "anchor_text": anchor_text,
-        "insert_text": insert_text,
-    }
-
-
-def _copy_redline_indexes(source: dict, target: dict, *, remove_invalid: bool = False) -> None:
-    for key in ("paragraph_index", "source_index"):
-        try:
-            target[key] = int(source.get(key))
-        except (TypeError, ValueError, KeyError):
-            if remove_invalid:
-                target.pop(key, None)
-
-
-def _persist_export(data: bytes, filename: str) -> Path | None:
-    if EXPORTS_DIR is None:
-        return None
-    safe_name = os.path.basename(filename) or "nda-review-report.docx"
-    try:
-        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        export_path = (EXPORTS_DIR / safe_name).resolve()
-        if export_path.parent != EXPORTS_DIR.resolve():
-            export_path = EXPORTS_DIR / "nda-review-report.docx"
-        export_path.write_bytes(data)
-        _prune_saved_exports(export_path)
-        return export_path
-    except OSError as error:
-        print(f"Could not save export copy: {error}")
-        return None
-
-
-def _prune_saved_exports(protected_path: Path) -> None:
-    if EXPORTS_DIR is None:
-        return
-    saved_exports = [
-        path
-        for path in EXPORTS_DIR.glob("*.docx")
-        if path.is_file()
-    ]
-    if len(saved_exports) <= MAX_SAVED_EXPORTS:
-        return
-
-    protected_path = protected_path.resolve()
-    saved_exports.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
-    removable_exports = [path for path in saved_exports[MAX_SAVED_EXPORTS:] if path.resolve() != protected_path]
-    for path in removable_exports:
-        path.unlink(missing_ok=True)
 
 
 def main() -> None:

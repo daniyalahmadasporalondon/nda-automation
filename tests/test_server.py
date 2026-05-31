@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
 from nda_automation.docx_export import DOCX_MIME
+from nda_automation import export_service
 from nda_automation import server as server_module
 from nda_automation.server import NdaAutomationHandler
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -316,7 +317,7 @@ class ServerTests(unittest.TestCase):
 
     def test_review_docx_export_returns_track_changes_enabled_docx(self):
         with tempfile.TemporaryDirectory() as exports_dir:
-            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+            with patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)):
                 status, payload, headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
@@ -344,8 +345,8 @@ class ServerTests(unittest.TestCase):
 
     def test_export_dir_is_opt_in_for_saved_export_routes(self):
         if "NDA_EXPORTS_DIR" not in os.environ:
-            self.assertIsNone(server_module.EXPORTS_DIR)
-            self.assertIsNone(server_module._persist_export(b"data", "export.docx"))
+            self.assertIsNone(export_service.EXPORTS_DIR)
+            self.assertIsNone(export_service.persist_export(b"data", "export.docx"))
 
             status, payload = self.request("GET", "/exports/export.docx")
             self.assertEqual(status, 404)
@@ -413,8 +414,8 @@ class ServerTests(unittest.TestCase):
             "replacement_text": "",
         }
 
-        self.assertIsNone(server_module._clean_export_redline(redline))
-        self.assertIsNone(server_module._clean_manual_export_redline(redline))
+        self.assertIsNone(export_service.clean_export_redline(redline))
+        self.assertIsNone(export_service.clean_manual_export_redline(redline))
 
     def test_export_redline_cleaners_trim_direct_api_text_fields(self):
         redline = {
@@ -427,8 +428,8 @@ class ServerTests(unittest.TestCase):
             "insert_text": "  Insert paragraph.  ",
         }
 
-        selected = server_module._clean_export_redline(redline)
-        manual = server_module._clean_manual_export_redline(redline)
+        selected = export_service.clean_export_redline(redline)
+        manual = export_service.clean_manual_export_redline(redline)
 
         self.assertEqual(selected["paragraph_id"], "p1")
         self.assertEqual(selected["original_text"], "Old paragraph.")
@@ -440,7 +441,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(manual["replacement_text"], "New paragraph.")
 
     def test_selected_export_redline_drops_dead_metadata_but_keeps_report_templates(self):
-        cleaned = server_module._clean_export_redline({
+        cleaned = export_service.clean_export_redline({
             "id": "template-replace",
             "action": "replace_paragraph",
             "paragraph_id": "p1",
@@ -457,7 +458,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(cleaned["template_options"][0]["id"], "option-a")
 
     def test_review_docx_export_download_does_not_require_saved_copy(self):
-        with patch.object(server_module, "EXPORTS_DIR", None):
+        with patch.object(export_service, "EXPORTS_DIR", None):
             status, payload, headers = self.request_with_headers(
                 "POST",
                 "/api/export-review-docx",
@@ -475,7 +476,7 @@ class ServerTests(unittest.TestCase):
     def test_review_docx_export_fails_before_download_when_docx_health_fails(self):
         with tempfile.TemporaryDirectory() as exports_dir:
             with (
-                patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)),
+                patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)),
                 patch.object(server_module, "validate_docx_open_health", return_value=["Missing DOCX parts: _rels/.rels."]),
             ):
                 status, payload, headers = self.request_with_headers(
@@ -702,7 +703,7 @@ class ServerTests(unittest.TestCase):
 
     def test_saved_export_route_returns_exact_docx_bytes(self):
         with tempfile.TemporaryDirectory() as exports_dir:
-            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+            with patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)):
                 status, payload, headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
@@ -717,7 +718,7 @@ class ServerTests(unittest.TestCase):
             "This Agreement shall be governed by the laws of California.",
         ])
         with tempfile.TemporaryDirectory() as exports_dir:
-            with patch.object(server_module, "EXPORTS_DIR", server_module.Path(exports_dir)):
+            with patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)):
                 status, payload, headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
@@ -736,8 +737,8 @@ class ServerTests(unittest.TestCase):
     def test_persisted_exports_prune_old_saved_docx_files(self):
         with tempfile.TemporaryDirectory() as exports_dir:
             exports_path = server_module.Path(exports_dir)
-            with patch.object(server_module, "EXPORTS_DIR", exports_path):
-                with patch.object(server_module, "MAX_SAVED_EXPORTS", 2):
+            with patch.object(export_service, "EXPORTS_DIR", exports_path):
+                with patch.object(export_service, "MAX_SAVED_EXPORTS", 2):
                     old_one = exports_path / "old-one.docx"
                     old_two = exports_path / "old-two.docx"
                     old_one.write_bytes(b"old-one")
@@ -745,7 +746,7 @@ class ServerTests(unittest.TestCase):
                     os.utime(old_one, (1, 1))
                     os.utime(old_two, (2, 2))
 
-                    saved_path = server_module._persist_export(b"new", "new.docx")
+                    saved_path = export_service.persist_export(b"new", "new.docx")
 
                     self.assertEqual(saved_path.resolve(), (exports_path / "new.docx").resolve())
                     self.assertEqual(
