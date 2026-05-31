@@ -161,6 +161,7 @@ async function testAccessibleControlState(page) {
 
   assert.equal(await page.locator("#studioResultMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.locator("#studioFileMeta").getAttribute("aria-live"), "polite");
+  assert.equal(await page.getByRole("tablist", { name: "Workspace" }).count(), 1);
   assert.equal(await page.locator("#reviewTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#clausesTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
@@ -308,7 +309,13 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("button", { name: "Sync Gmail" }).click();
   await waitForText(page, "#repositoryImportStatus", "No new imports; skipped 1 (1 no DOCX/PDF)");
   await assertTextContains(page.locator("#gmailLastSync"), "inbound@example.com");
-  await assertTextContains(page.locator("#gmailLastSync"), "31");
+  const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+  }));
+  await assertTextContains(page.locator("#gmailLastSync"), serverSyncLabel);
   assert.equal(gmailSyncCalled, true);
   await page.unroute("**/api/gmail/import");
 
