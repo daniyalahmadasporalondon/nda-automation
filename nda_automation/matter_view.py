@@ -9,7 +9,6 @@ class PublicMatter(TypedDict, total=False):
     attachment_filename: str
     board_column: str
     can_send_redline: bool
-    counterparty_name: str
     created_at: str
     document_title: str
     extracted_text: str
@@ -41,7 +40,6 @@ class PublicMatter(TypedDict, total=False):
 PUBLIC_MATTER_FIELDS = {
     "attachment_filename",
     "board_column",
-    "counterparty_name",
     "created_at",
     "document_title",
     "extracted_text",

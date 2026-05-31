@@ -47,10 +47,6 @@ def create_matter_from_document(
     )
 
 
-def create_matter_from_docx(**kwargs: Any) -> dict[str, Any]:
-    return create_matter_from_document(**kwargs)
-
-
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     document_type, paragraphs, _quality = extract_document(filename, document_bytes)
     return document_type, paragraphs
@@ -85,7 +81,6 @@ __all__ = [
     "DocxExtractionError",
     "ParagraphAlignmentError",
     "PdfExtractionError",
-    "create_matter_from_docx",
     "create_matter_from_document",
     "extract_document",
     "extract_document_paragraphs",

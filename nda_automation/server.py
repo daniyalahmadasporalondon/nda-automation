@@ -50,7 +50,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         exact_routes = {
             "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
             "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
-            "/api/health": lambda: self._send_json({"status": "ok"}, send_body=send_body),
             "/api/gmail/status": lambda: self._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body),
             "/api/matters": lambda: self._handle_matter_list(send_body=send_body),
         }
@@ -97,7 +96,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "/api/review": self._handle_text_review,
                 "/api/review-document": self._handle_document_review,
                 "/api/matters": self._handle_matter_upload,
-                "/api/inbound/upload": self._handle_matter_upload,
                 "/api/gmail/import": self._handle_gmail_import,
                 "/api/gmail/send-redline": self._handle_gmail_send_redline,
                 "/api/demo/reset": self._handle_demo_reset,

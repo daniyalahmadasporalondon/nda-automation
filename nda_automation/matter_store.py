@@ -160,7 +160,6 @@ def create_matter(
             "source_filename": source_filename,
             "stored_filename": stored_filename,
             "document_title": Path(source_filename).stem or "Untitled NDA",
-            "counterparty_name": "",
             "status": "active",
             "board_column": board_column,
             **metadata,

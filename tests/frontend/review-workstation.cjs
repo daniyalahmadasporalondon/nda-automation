@@ -124,7 +124,7 @@ async function waitForServer() {
 
 function healthCheck() {
   return new Promise((resolve) => {
-    const request = http.get(`${BASE_URL}/api/health`, (response) => {
+    const request = http.get(`${BASE_URL}/`, (response) => {
       response.resume();
       resolve(response.statusCode === 200);
     });
