@@ -508,6 +508,23 @@ class CheckerTests(unittest.TestCase):
             ],
         )
 
+    def test_governing_law_ignores_approved_law_outside_governing_value(self):
+        result = review_nda(
+            "Acme, a Delaware corporation, agrees this Agreement shall be governed by the laws of France."
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "check")
+        self.assertFalse(governing_law["passes"])
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(governing_law["issue_type"], "present_but_wrong")
+        governing_law_redline = self.redline_for_clause(result, "governing_law")
+        self.assertEqual(governing_law_redline["action"], "replace_paragraph")
+        self.assertEqual(
+            governing_law_redline["original_text"],
+            "Acme, a Delaware corporation, agrees this Agreement shall be governed by the laws of France.",
+        )
+
     def test_can_use_supplied_structured_paragraphs(self):
         result = review_nda(
             "First paragraph.\n\nThis Agreement shall be governed by the laws of the DIFC.",

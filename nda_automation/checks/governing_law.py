@@ -9,6 +9,7 @@ from .common import (
     _approved_laws,
     _check,
     _governing_anchor_patterns,
+    _governing_law_phrase,
     _governing_law_change_fix,
     _governing_law_missing_fix,
     _literal_word_pattern,
@@ -16,14 +17,22 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+
+GOVERNING_LAW_VALUE_PATTERNS = (
+    r"\bgoverned\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bconstrued\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bsubject\s+to\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bgoverning\s+law\b.{0,80}?(?:is|shall\s+be|will\s+be|:)\s*(?:the\s+)?(?:laws?\s+of\s+)?(?P<law>[^.;,\n]+)",
+)
+
+
 def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     governing_anchor_patterns = _governing_anchor_patterns(clause)
-    approved_patterns = [_literal_word_pattern(law) for law in _approved_laws(clause)]
     governing_paragraphs = _paragraph_matches(paragraphs, governing_anchor_patterns)
     approved_governing_paragraphs = [
         paragraph
         for paragraph in governing_paragraphs
-        if any(re.search(pattern, str(paragraph["text"]), flags=re.IGNORECASE) for pattern in approved_patterns)
+        if _uses_approved_governing_law(str(paragraph["text"]), clause)
     ]
 
     if approved_governing_paragraphs:
@@ -42,3 +51,36 @@ def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object],
         what_to_fix=_governing_law_missing_fix(clause),
     )
 
+
+def _uses_approved_governing_law(text: str, clause: Dict[str, object]) -> bool:
+    candidates = _governing_law_candidates(text)
+    if candidates:
+        return any(_contains_approved_law(candidate, clause) for candidate in candidates)
+    return _contains_approved_governing_phrase(text, clause)
+
+
+def _governing_law_candidates(text: str) -> List[str]:
+    candidates: List[str] = []
+    for pattern in GOVERNING_LAW_VALUE_PATTERNS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            candidates.append(match.group("law").strip())
+    return candidates
+
+
+def _contains_approved_law(text: str, clause: Dict[str, object]) -> bool:
+    for law in _approved_laws(clause):
+        phrase = _governing_law_phrase(clause, law)
+        if re.search(_literal_word_pattern(law), text, flags=re.IGNORECASE):
+            return True
+        if phrase != law and re.search(_literal_word_pattern(phrase), text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) -> bool:
+    for law in _approved_laws(clause):
+        phrases = {law, _governing_law_phrase(clause, law)}
+        for phrase in phrases:
+            if re.search(rf"\blaws?\s+of\s+{_literal_word_pattern(phrase)}", text, flags=re.IGNORECASE):
+                return True
+    return False
