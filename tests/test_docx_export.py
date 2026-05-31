@@ -30,6 +30,7 @@ RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationshi
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
+# Generated from inline_diff_vectors.source.json; use generate_inline_diff_vectors.mjs.
 SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
     "NDA Redline",
     "Review Notes",

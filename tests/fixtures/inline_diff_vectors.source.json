@@ -1,0 +1,336 @@
+[
+  {
+    "name": "empty original",
+    "original": "",
+    "replacement": "Alpha, beta.",
+    "operations": [
+      {
+        "type": "insert",
+        "token": "Alpha"
+      },
+      {
+        "type": "insert",
+        "token": ","
+      },
+      {
+        "type": "insert",
+        "token": "beta"
+      },
+      {
+        "type": "insert",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "empty replacement",
+    "original": "Alpha, beta.",
+    "replacement": "",
+    "operations": [
+      {
+        "type": "delete",
+        "token": "Alpha"
+      },
+      {
+        "type": "delete",
+        "token": ","
+      },
+      {
+        "type": "delete",
+        "token": "beta"
+      },
+      {
+        "type": "delete",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "simple replacement",
+    "original": "Pay fees, taxes.",
+    "replacement": "Pay charges, taxes.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Pay"
+      },
+      {
+        "type": "delete",
+        "token": "fees"
+      },
+      {
+        "type": "insert",
+        "token": "charges"
+      },
+      {
+        "type": "same",
+        "token": ","
+      },
+      {
+        "type": "same",
+        "token": "taxes"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "insertion",
+    "original": "Confidential Information includes plans.",
+    "replacement": "Confidential Information includes business plans.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Confidential"
+      },
+      {
+        "type": "same",
+        "token": "Information"
+      },
+      {
+        "type": "same",
+        "token": "includes"
+      },
+      {
+        "type": "insert",
+        "token": "business"
+      },
+      {
+        "type": "same",
+        "token": "plans"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "deletion",
+    "original": "The Recipient may disclose audited financial statements.",
+    "replacement": "The Recipient may disclose financial statements.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "The"
+      },
+      {
+        "type": "same",
+        "token": "Recipient"
+      },
+      {
+        "type": "same",
+        "token": "may"
+      },
+      {
+        "type": "same",
+        "token": "disclose"
+      },
+      {
+        "type": "delete",
+        "token": "audited"
+      },
+      {
+        "type": "same",
+        "token": "financial"
+      },
+      {
+        "type": "same",
+        "token": "statements"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "punctuation spacing",
+    "original": "This Agreement (California) applies.",
+    "replacement": "This Agreement (England and Wales) applies.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "This"
+      },
+      {
+        "type": "same",
+        "token": "Agreement"
+      },
+      {
+        "type": "same",
+        "token": "("
+      },
+      {
+        "type": "delete",
+        "token": "California"
+      },
+      {
+        "type": "insert",
+        "token": "England"
+      },
+      {
+        "type": "insert",
+        "token": "and"
+      },
+      {
+        "type": "insert",
+        "token": "Wales"
+      },
+      {
+        "type": "same",
+        "token": ")"
+      },
+      {
+        "type": "same",
+        "token": "applies"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "apostrophes",
+    "original": "Recipient's records aren't covered.",
+    "replacement": "Recipient's records are covered.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Recipient's"
+      },
+      {
+        "type": "same",
+        "token": "records"
+      },
+      {
+        "type": "delete",
+        "token": "aren't"
+      },
+      {
+        "type": "insert",
+        "token": "are"
+      },
+      {
+        "type": "same",
+        "token": "covered"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "hyphenated words",
+    "original": "Non-public information survives post-closing.",
+    "replacement": "Non-public information survives after closing.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Non-public"
+      },
+      {
+        "type": "same",
+        "token": "information"
+      },
+      {
+        "type": "same",
+        "token": "survives"
+      },
+      {
+        "type": "delete",
+        "token": "post-closing"
+      },
+      {
+        "type": "insert",
+        "token": "after"
+      },
+      {
+        "type": "insert",
+        "token": "closing"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "parentheses",
+    "original": "Obligations survive for five (5) years.",
+    "replacement": "Obligations survive for three (3) years.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Obligations"
+      },
+      {
+        "type": "same",
+        "token": "survive"
+      },
+      {
+        "type": "same",
+        "token": "for"
+      },
+      {
+        "type": "delete",
+        "token": "five"
+      },
+      {
+        "type": "insert",
+        "token": "three"
+      },
+      {
+        "type": "same",
+        "token": "("
+      },
+      {
+        "type": "delete",
+        "token": "5"
+      },
+      {
+        "type": "insert",
+        "token": "3"
+      },
+      {
+        "type": "same",
+        "token": ")"
+      },
+      {
+        "type": "same",
+        "token": "years"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "large-input fallback",
+    "originalTokenBlock": {
+      "prefix": "old",
+      "count": 201
+    },
+    "replacementTokenBlock": {
+      "prefix": "new",
+      "count": 200
+    },
+    "operationBlocks": [
+      {
+        "type": "delete",
+        "prefix": "old",
+        "count": 201
+      },
+      {
+        "type": "insert",
+        "prefix": "new",
+        "count": 200
+      }
+    ]
+  }
+]

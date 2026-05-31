@@ -14,6 +14,7 @@ const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
+// Generated from inline_diff_vectors.source.json; use generate_inline_diff_vectors.mjs.
 const inlineDiffVectors = JSON.parse(fs.readFileSync(
   path.join(ROOT, "tests", "fixtures", "inline_diff_vectors.json"),
   "utf8",
