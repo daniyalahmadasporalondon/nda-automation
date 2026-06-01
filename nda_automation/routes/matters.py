@@ -199,11 +199,13 @@ def clean_redline_draft(draft: dict) -> dict:
         "template_selections": clean_text_map(draft.get("template_selections")),
         "export_redline_edits": clean_dict_list(draft.get("export_redline_edits")),
         "manual_redline_edits": manual_redlines,
+        "review_comments": export_service.clean_review_comments(draft.get("review_comments")),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     cleaned["summary"] = {
         "included_redline_count": len(cleaned["export_redline_edits"]),
         "manual_redline_count": len(cleaned["manual_redline_edits"]),
+        "review_comment_count": len(cleaned["review_comments"]),
     }
     return cleaned
 

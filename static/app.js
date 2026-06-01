@@ -36,6 +36,7 @@ const state = {
   reviewParagraphs: [],
   reviewEditHistory: [],
   reviewRedlines: [],
+  reviewComments: [],
   latestReviewResult: null,
   reviewSourceText: "",
   selectedReviewClauseId: null,

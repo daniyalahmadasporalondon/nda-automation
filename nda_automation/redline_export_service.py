@@ -56,6 +56,7 @@ def _build_redline_export(payload: dict, fallback_text: str, *, title: str, pers
     review_result, source_document_bytes, source_filename = _review_result_for_export(payload, fallback_text)
     export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
+    export_service.apply_review_comments(review_result, payload.get("review_comments"))
 
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
         report_bytes = build_source_redline_docx(source_document_bytes, review_result)
@@ -125,7 +126,7 @@ def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:
     draft = matter.get("redline_draft")
     if not isinstance(draft, dict):
         return
-    for field in ["export_redline_edits", "manual_redline_edits"]:
+    for field in ["export_redline_edits", "manual_redline_edits", "review_comments"]:
         if field not in payload and field in draft:
             payload[field] = draft[field]
 

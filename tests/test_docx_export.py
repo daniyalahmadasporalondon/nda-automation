@@ -36,10 +36,12 @@ W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
 STYLE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+COMMENTS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
 OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 DOCUMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
 # Generated from inline_diff_vectors.source.json; use generate_inline_diff_vectors.mjs.
@@ -108,6 +110,13 @@ def docx_content_types(docx_bytes):
         for override in content_types_root.findall(".//ct:Override", content_type_ns)
     }
     return defaults, overrides
+
+
+def docx_comments(docx_bytes):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    return ET.fromstring(comments_xml), ET.fromstring(document_xml), comments_xml, document_xml
 
 
 def relationship_targets(archive, relationship_part):
@@ -540,6 +549,65 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_export_writes_native_word_comments(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result["review_comments"] = [
+            {
+                "author": "Reviewer",
+                "clause_id": "governing_law",
+                "clause_name": "Governing Law",
+                "paragraph_id": "p2",
+                "text": "Confirm England and Wales is acceptable.",
+            }
+        ]
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        relationship_targets = docx_document_relationship_targets(redlined_docx)
+        content_type_overrides = docx_content_type_overrides(redlined_docx)
+        comments_root, document_root, comments_xml, document_xml = docx_comments(redlined_docx)
+        self.assertEqual(relationship_targets[COMMENTS_RELATIONSHIP_TYPE], "comments.xml")
+        self.assertEqual(content_type_overrides["/word/comments.xml"], COMMENTS_CONTENT_TYPE)
+        self.assertIn("Confirm England and Wales is acceptable.", comments_xml)
+        self.assertEqual(len(comments_root.findall(".//w:comment", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentRangeStart", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentRangeEnd", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
+        self.assertIn('w:commentRangeStart w:id="0"', document_xml)
+
+    def test_review_report_docx_writes_native_word_comments(self):
+        result = review_nda(
+            "This Agreement shall be governed by the laws of California.\n\n"
+            "The confidentiality obligations survive for three years."
+        )
+        result["review_comments"] = [
+            {
+                "author": "Reviewer",
+                "clause_id": "term_and_survival",
+                "clause_name": "Term and Survival",
+                "paragraph_id": "p2",
+                "text": "Check whether a three-year term is required commercially.",
+            }
+        ]
+
+        report_docx = build_review_report_docx(result)
+
+        assert_docx_package_healthy(self, report_docx, require_styles=True)
+        relationship_targets = docx_document_relationship_targets(report_docx)
+        content_type_overrides = docx_content_type_overrides(report_docx)
+        comments_root, document_root, comments_xml, _document_xml = docx_comments(report_docx)
+        self.assertEqual(relationship_targets[COMMENTS_RELATIONSHIP_TYPE], "comments.xml")
+        self.assertEqual(content_type_overrides["/word/comments.xml"], COMMENTS_CONTENT_TYPE)
+        self.assertIn("Check whether a three-year term is required commercially.", comments_xml)
+        self.assertEqual(len(comments_root.findall(".//w:comment", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
 
     def test_source_docx_export_preserves_ignorable_namespace_prefixes(self):
         source_text = "This Agreement shall be governed by the laws of California."

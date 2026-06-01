@@ -21,6 +21,7 @@ function resetReviewResults() {
   state.reviewParagraphs = [];
   resetReviewEditHistory();
   state.reviewRedlines = [];
+  state.reviewComments = [];
   state.reviewSourceText = "";
   state.selectedReviewClauseId = null;
   state.clauseJumpIndexes = {};
@@ -133,6 +134,7 @@ async function exportReviewDocx() {
       title: exportTitle,
       export_redline_edits: exportRedlines,
       manual_redline_edits: exportManualRedlines,
+      review_comments: currentReviewComments(),
     };
     if (exportMatter?.id) {
       payload.matter_id = exportMatter.id;
@@ -213,6 +215,7 @@ async function sendReviewRedlineEmail() {
       reviewed_text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
       export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
+      review_comments: currentReviewComments(),
     };
     const response = await fetch("/api/gmail/send-redline", {
       method: "POST",
@@ -278,6 +281,7 @@ function currentRedlineDraftPayload() {
     template_selections: { ...state.redlineTemplateSelections },
     export_redline_edits: effectiveReviewRedlines(),
     manual_redline_edits: manualExportRedlines(),
+    review_comments: currentReviewComments(),
   };
 }
 

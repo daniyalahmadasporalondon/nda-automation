@@ -1023,6 +1023,15 @@ h3 {
   grid-column: 3 / 5;
 }
 
+.studio-clause-select .studio-comment-state {
+  color: var(--violet);
+  font-size: 9px;
+  font-weight: 800;
+  grid-column: 3 / 5;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .studio-clause-item > .studio-export-controls {
   padding-left: 39px;
 }
@@ -1698,6 +1707,27 @@ textarea::placeholder {
   background: #fffaf0;
   border-color: rgba(245, 158, 11, 0.36);
   border-left: 3px solid var(--red);
+}
+
+.studio-detail-block.comment-block {
+  background: #f7fbff;
+  border-color: rgba(14, 116, 144, 0.24);
+  border-left: 3px solid #0e7490;
+}
+
+.review-comment-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  min-height: 82px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
 }
 
 .studio-detail-evidence {

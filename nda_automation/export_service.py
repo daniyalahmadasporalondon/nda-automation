@@ -14,6 +14,8 @@ from .redline_actions import (
 ROOT = Path(__file__).resolve().parent.parent
 EXPORTS_DIR = Path(os.environ["NDA_EXPORTS_DIR"]).expanduser() if os.environ.get("NDA_EXPORTS_DIR") else None
 MAX_SAVED_EXPORTS = 25
+MAX_REVIEW_COMMENTS = 100
+MAX_REVIEW_COMMENT_TEXT_CHARS = 2000
 
 
 def redline_download_filename(filename: str) -> str:
@@ -78,6 +80,42 @@ def apply_manual_export_redlines(review_result: dict, manual_redlines: object) -
         for redline in existing_redlines
         if not (isinstance(redline, dict) and str(redline.get("paragraph_id")) in manual_paragraph_ids)
     ]
+
+
+def apply_review_comments(review_result: dict, review_comments: object) -> None:
+    cleaned_comments = clean_review_comments(review_comments)
+    if cleaned_comments:
+        review_result["review_comments"] = cleaned_comments
+    else:
+        review_result.pop("review_comments", None)
+
+
+def clean_review_comments(review_comments: object) -> list[dict]:
+    if not isinstance(review_comments, list):
+        return []
+
+    cleaned = []
+    for comment in review_comments[:MAX_REVIEW_COMMENTS]:
+        if not isinstance(comment, dict):
+            continue
+        text = " ".join(str(comment.get("text") or "").split())[:MAX_REVIEW_COMMENT_TEXT_CHARS]
+        if not text:
+            continue
+        clause_id = str(comment.get("clause_id") or "").strip()[:120]
+        paragraph_id = str(comment.get("paragraph_id") or "").strip()[:120]
+        if not clause_id and not paragraph_id:
+            continue
+        clean_comment = {
+            "id": str(comment.get("id") or f"comment-{clause_id or paragraph_id}").strip()[:160],
+            "text": text,
+        }
+        for key in ("clause_id", "clause_name", "paragraph_id", "author", "created_at"):
+            value = str(comment.get(key) or "").strip()
+            if value:
+                clean_comment[key] = value[:240]
+        _copy_comment_indexes(comment, clean_comment)
+        cleaned.append(clean_comment)
+    return cleaned
 
 
 def clean_manual_export_redline(redline: object) -> dict | None:
@@ -273,3 +311,11 @@ def _copy_redline_indexes(source: dict, target: dict, *, remove_invalid: bool = 
         except (TypeError, ValueError, OverflowError, KeyError):
             if remove_invalid:
                 target.pop(key, None)
+
+
+def _copy_comment_indexes(source: dict, target: dict) -> None:
+    for key in ("paragraph_index", "source_index"):
+        try:
+            target[key] = int(source.get(key))
+        except (TypeError, ValueError, OverflowError, KeyError):
+            continue

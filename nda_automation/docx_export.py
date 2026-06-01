@@ -24,8 +24,10 @@ R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+COMMENTS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
 OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
 RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 A4_PAGE_WIDTH_TWIPS = "11906"
@@ -102,18 +104,29 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
             continue
         paragraphs.extend(_clause_section(clause, redlines_by_clause.get(str(clause.get("id")), [])))
 
-    document_xml = _document_xml("".join(paragraphs))
+    document_root = parse_docx_xml(_document_xml("".join(paragraphs)), part_name="word/document.xml")
+    report_comments = _targeted_report_comments(review_result)
+    assigned_comments, comments_xml = _comments_xml_with_appended_comments(None, report_comments)
+    if assigned_comments:
+        _apply_comment_anchors_to_report_document(
+            document_root,
+            assigned_comments,
+            review_result.get("paragraphs", []),
+        )
+    document_xml = _xml_bytes(document_root)
 
     with BytesIO() as output:
         with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-            archive.writestr("[Content_Types].xml", _content_types_xml())
+            archive.writestr("[Content_Types].xml", _content_types_xml(include_comments=bool(assigned_comments)))
             archive.writestr("_rels/.rels", _package_rels_xml())
             archive.writestr("docProps/core.xml", _core_properties_xml(title or "NDA Review"))
             archive.writestr("docProps/app.xml", _app_properties_xml())
             archive.writestr("word/document.xml", document_xml)
             archive.writestr("word/styles.xml", _styles_xml())
             archive.writestr("word/settings.xml", _settings_xml())
-            archive.writestr("word/_rels/document.xml.rels", _document_rels_xml())
+            archive.writestr("word/_rels/document.xml.rels", _document_rels_xml(include_comments=bool(assigned_comments)))
+            if assigned_comments:
+                archive.writestr("word/comments.xml", comments_xml)
         return output.getvalue()
 
 
@@ -133,6 +146,13 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 review_result.get("redline_edits", []),
                 review_result.get("paragraphs", []),
             )
+            source_comments = _targeted_source_comments(review_result, document_root)
+            assigned_comments, comments_xml = _comments_xml_with_appended_comments(
+                source_archive.read("word/comments.xml") if "word/comments.xml" in source_names else None,
+                source_comments,
+            )
+            if assigned_comments:
+                _apply_comment_anchors_to_source_document(document_root, assigned_comments)
             _ensure_document_section_properties(document_root)
 
             overrides: Dict[str, bytes] = {
@@ -143,16 +163,20 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 "word/_rels/document.xml.rels": _document_rels_xml_with_settings(
                     source_archive.read("word/_rels/document.xml.rels")
                     if "word/_rels/document.xml.rels" in source_names
-                    else None
+                    else None,
+                    has_comments=bool(assigned_comments),
                 ),
                 "[Content_Types].xml": _content_types_xml_with_settings(
                     source_archive.read("[Content_Types].xml") if "[Content_Types].xml" in source_names else None,
                     has_styles="word/styles.xml" in source_names,
+                    has_comments=bool(assigned_comments),
                 ),
                 "_rels/.rels": _package_rels_xml_with_document(
                     source_archive.read("_rels/.rels") if "_rels/.rels" in source_names else None
                 ),
             }
+            if assigned_comments:
+                overrides["word/comments.xml"] = comments_xml
 
             with BytesIO() as output:
                 with ZipFile(output, "w", ZIP_DEFLATED) as redlined_archive:
@@ -580,6 +604,250 @@ def _paragraph_text(paragraph: ET.Element) -> str:
     return "".join(parts).strip()
 
 
+def _targeted_report_comments(review_result: ReviewResult) -> List[dict]:
+    comments = _prepared_review_comments(review_result)
+    review_paragraphs = _review_paragraphs_by_id(review_result.get("paragraphs", []))
+    targeted: List[dict] = []
+    for comment in comments:
+        paragraph_id = str(comment.get("paragraph_id") or "")
+        if paragraph_id not in review_paragraphs:
+            continue
+        targeted.append({
+            **comment,
+            "_report_paragraph_id": paragraph_id,
+        })
+    return targeted
+
+
+def _targeted_source_comments(review_result: ReviewResult, document_root: ET.Element) -> List[dict]:
+    comments = _prepared_review_comments(review_result)
+    review_paragraphs = _review_paragraphs_by_id(review_result.get("paragraphs", []))
+    source_paragraph_indexes = {paragraph.source_index for paragraph in _indexed_source_paragraphs(document_root)}
+    targeted: List[dict] = []
+    for comment in comments:
+        source_index = _comment_source_index(comment, review_paragraphs)
+        if source_index is None or source_index not in source_paragraph_indexes:
+            continue
+        targeted.append({
+            **comment,
+            "_source_index": source_index,
+        })
+    return targeted
+
+
+def _prepared_review_comments(review_result: ReviewResult) -> List[dict]:
+    comments = review_result.get("review_comments", [])
+    if not isinstance(comments, list):
+        return []
+
+    prepared: List[dict] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        text = str(comment.get("text") or "").strip()
+        if not text:
+            continue
+        paragraph_id = str(comment.get("paragraph_id") or "").strip()
+        if not paragraph_id:
+            paragraph_id = _comment_paragraph_id_from_clause(review_result, str(comment.get("clause_id") or ""))
+        if not paragraph_id:
+            continue
+        prepared.append({
+            "author": str(comment.get("author") or "Reviewer").strip() or "Reviewer",
+            "clause_id": str(comment.get("clause_id") or "").strip(),
+            "clause_name": str(comment.get("clause_name") or "").strip(),
+            "created_at": str(comment.get("created_at") or "").strip(),
+            "id": str(comment.get("id") or "").strip(),
+            "paragraph_id": paragraph_id,
+            "text": text,
+        })
+    return prepared
+
+
+def _comment_paragraph_id_from_clause(review_result: ReviewResult, clause_id: str) -> str:
+    if not clause_id:
+        return ""
+    for clause in review_result.get("clauses", []):
+        if not isinstance(clause, dict) or str(clause.get("id") or "") != clause_id:
+            continue
+        matched_paragraph_ids = clause.get("matched_paragraph_ids")
+        if isinstance(matched_paragraph_ids, list):
+            for paragraph_id in matched_paragraph_ids:
+                paragraph_id = str(paragraph_id or "").strip()
+                if paragraph_id:
+                    return paragraph_id
+    for redline in review_result.get("redline_edits", []):
+        if not isinstance(redline, dict) or str(redline.get("clause_id") or "") != clause_id:
+            continue
+        paragraph_id = str(redline.get("paragraph_id") or "").strip()
+        if paragraph_id:
+            return paragraph_id
+    return ""
+
+
+def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, dict]:
+    if not isinstance(review_paragraphs, list):
+        return {}
+    return {
+        str(paragraph.get("id") or ""): paragraph
+        for paragraph in review_paragraphs
+        if isinstance(paragraph, dict) and paragraph.get("id")
+    }
+
+
+def _comment_source_index(comment: dict, review_paragraphs_by_id: Dict[str, dict]) -> int | None:
+    paragraph = review_paragraphs_by_id.get(str(comment.get("paragraph_id") or ""))
+    if not paragraph:
+        return None
+    for key in ("source_index", "index"):
+        try:
+            value = int(paragraph.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _comments_xml_with_appended_comments(
+    existing_comments_xml: bytes | None,
+    comments: List[dict],
+) -> tuple[List[dict], bytes]:
+    if not comments:
+        return [], b""
+    comments_root, namespaces = _comments_root(existing_comments_xml)
+    next_id = _next_comment_id(comments_root)
+    assigned: List[dict] = []
+    for comment in comments:
+        comment_id = str(next_id)
+        next_id += 1
+        comments_root.append(_word_comment(comment_id, comment))
+        assigned.append({**comment, "_word_comment_id": comment_id})
+    return assigned, _xml_bytes(comments_root, namespace_declarations=namespaces)
+
+
+def _comments_root(existing_comments_xml: bytes | None) -> tuple[ET.Element, Dict[str, str]]:
+    if existing_comments_xml:
+        return _parse_docx_xml_with_namespaces(existing_comments_xml, part_name="word/comments.xml")
+    return ET.Element(_w_tag("comments")), {}
+
+
+def _next_comment_id(comments_root: ET.Element) -> int:
+    comment_ids = []
+    for comment in comments_root.findall(_w_tag("comment")):
+        try:
+            comment_ids.append(int(comment.attrib.get(_w_tag("id"), "")))
+        except ValueError:
+            continue
+    return max(comment_ids, default=-1) + 1
+
+
+def _word_comment(comment_id: str, comment: dict) -> ET.Element:
+    created_at = str(comment.get("created_at") or "").strip()
+    if not created_at:
+        created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    element = ET.Element(_w_tag("comment"), {
+        _w_tag("id"): comment_id,
+        _w_tag("author"): str(comment.get("author") or "Reviewer")[:255],
+        _w_tag("date"): created_at,
+        _w_tag("initials"): _comment_initials(str(comment.get("author") or "Reviewer")),
+    })
+    for paragraph_text in _comment_paragraph_texts(comment):
+        paragraph = ET.SubElement(element, _w_tag("p"))
+        paragraph.append(_word_run(paragraph_text))
+    return element
+
+
+def _comment_paragraph_texts(comment: dict) -> List[str]:
+    parts = []
+    clause_name = str(comment.get("clause_name") or "").strip()
+    clause_id = str(comment.get("clause_id") or "").strip()
+    if clause_name:
+        parts.append(f"{clause_name}:")
+    elif clause_id:
+        parts.append(f"{clause_id}:")
+    parts.append(str(comment.get("text") or "").strip())
+    return [part for part in parts if part]
+
+
+def _comment_initials(author: str) -> str:
+    initials = "".join(part[0] for part in re.findall(r"[A-Za-z0-9]+", author)[:3])
+    return (initials or "R")[:9]
+
+
+def _word_run(text: str) -> ET.Element:
+    run = ET.Element(_w_tag("r"))
+    for index, line in enumerate(str(text).split("\n")):
+        if index:
+            ET.SubElement(run, _w_tag("br"))
+        text_node = ET.SubElement(run, _w_tag("t"), {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
+        text_node.text = line
+    return run
+
+
+def _apply_comment_anchors_to_report_document(
+    document_root: ET.Element,
+    comments: List[dict],
+    review_paragraphs: object,
+) -> None:
+    body = document_root.find(_w_tag("body"))
+    if body is None:
+        return
+    body_paragraphs = [child for child in list(body) if child.tag == _w_tag("p")]
+    if len(body_paragraphs) < 5 or not isinstance(review_paragraphs, list):
+        return
+    report_paragraph_by_id = {}
+    report_paragraph_index = 4
+    for index, paragraph in enumerate(review_paragraphs):
+        if not isinstance(paragraph, dict):
+            continue
+        if report_paragraph_index >= len(body_paragraphs):
+            break
+        expected_text = _normalize_paragraph_text(str(paragraph.get("text") or ""))
+        while report_paragraph_index < len(body_paragraphs):
+            candidate_text = _normalize_paragraph_text(_paragraph_text(body_paragraphs[report_paragraph_index]))
+            if not expected_text or expected_text in candidate_text or candidate_text in expected_text:
+                break
+            report_paragraph_index += 1
+        if report_paragraph_index >= len(body_paragraphs):
+            break
+        paragraph_id = str(paragraph.get("id") or "")
+        if paragraph_id:
+            report_paragraph_by_id[paragraph_id] = body_paragraphs[report_paragraph_index]
+        report_paragraph_index += 1
+    for comment in comments:
+        paragraph = report_paragraph_by_id.get(str(comment.get("_report_paragraph_id") or ""))
+        if paragraph is not None:
+            _apply_comment_anchor(paragraph, str(comment.get("_word_comment_id") or ""))
+
+
+def _apply_comment_anchors_to_source_document(document_root: ET.Element, comments: List[dict]) -> None:
+    source_paragraph_by_index = {
+        paragraph.source_index: paragraph.paragraph
+        for paragraph in _indexed_source_paragraphs(document_root)
+    }
+    for comment in comments:
+        paragraph = source_paragraph_by_index.get(comment.get("_source_index"))
+        if paragraph is not None:
+            _apply_comment_anchor(paragraph, str(comment.get("_word_comment_id") or ""))
+
+
+def _apply_comment_anchor(paragraph: ET.Element, comment_id: str) -> None:
+    if not comment_id:
+        return
+    start = ET.Element(_w_tag("commentRangeStart"), {_w_tag("id"): comment_id})
+    end = ET.Element(_w_tag("commentRangeEnd"), {_w_tag("id"): comment_id})
+    reference_run = ET.Element(_w_tag("r"))
+    reference_props = ET.SubElement(reference_run, _w_tag("rPr"))
+    ET.SubElement(reference_props, _w_tag("rStyle"), {_w_tag("val"): "CommentReference"})
+    ET.SubElement(reference_run, _w_tag("commentReference"), {_w_tag("id"): comment_id})
+
+    insert_position = 1 if len(paragraph) and paragraph[0].tag == _w_tag("pPr") else 0
+    paragraph.insert(insert_position, start)
+    paragraph.append(end)
+    paragraph.append(reference_run)
+
+
 def _label_value(label: str, value: object) -> str:
     text = str(value or "")
     return _paragraph(label, bold=True) + _paragraph(text or "None.")
@@ -825,7 +1093,11 @@ def _styles_xml() -> str:
 </w:styles>"""
 
 
-def _content_types_xml() -> str:
+def _content_types_xml(*, include_comments: bool = False) -> str:
+    comments_override = (
+        f'  <Override PartName="/word/comments.xml" ContentType="{COMMENTS_CONTENT_TYPE}"/>\n'
+        if include_comments else ""
+    )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -833,6 +1105,7 @@ def _content_types_xml() -> str:
   <Override PartName="/word/document.xml" ContentType="{DOCX_MIME}.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+{comments_override.rstrip()}
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
   <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
 </Types>"""
@@ -858,11 +1131,16 @@ def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
     return _xml_bytes(relationships_root, namespace_declarations=namespaces)
 
 
-def _document_rels_xml() -> str:
-    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+def _document_rels_xml(*, include_comments: bool = False) -> str:
+    comments_relationship = (
+        f'  <Relationship Id="rId3" Type="{COMMENTS_RELATIONSHIP_TYPE}" Target="comments.xml"/>\n'
+        if include_comments else ""
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+{comments_relationship.rstrip()}
 </Relationships>"""
 
 
@@ -892,7 +1170,7 @@ def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
     return _xml_bytes(settings_root, namespace_declarations=namespaces)
 
 
-def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
+def _document_rels_xml_with_settings(relationships_xml: bytes | None, *, has_comments: bool = False) -> bytes:
     if relationships_xml:
         relationships_root, namespaces = _parse_docx_xml_with_namespaces(
             relationships_xml,
@@ -903,10 +1181,17 @@ def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
         namespaces = {}
 
     _ensure_relationship_target(relationships_root, SETTINGS_RELATIONSHIP_TYPE, "settings.xml")
+    if has_comments:
+        _ensure_relationship_target(relationships_root, COMMENTS_RELATIONSHIP_TYPE, "comments.xml")
     return _xml_bytes(relationships_root, namespace_declarations=namespaces)
 
 
-def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_styles: bool = False) -> bytes:
+def _content_types_xml_with_settings(
+    content_types_xml: bytes | None,
+    *,
+    has_styles: bool = False,
+    has_comments: bool = False,
+) -> bytes:
     if content_types_xml:
         content_types_root, namespaces = _parse_docx_xml_with_namespaces(
             content_types_xml,
@@ -922,6 +1207,8 @@ def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_sty
     _ensure_content_type_override(content_types_root, "/word/settings.xml", SETTINGS_CONTENT_TYPE)
     if has_styles:
         _ensure_content_type_override(content_types_root, "/word/styles.xml", STYLES_CONTENT_TYPE)
+    if has_comments:
+        _ensure_content_type_override(content_types_root, "/word/comments.xml", COMMENTS_CONTENT_TYPE)
     return _xml_bytes(content_types_root, namespace_declarations=namespaces)
 
 

@@ -6,6 +6,7 @@ function renderResult(result, reviewedText) {
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewRedlines = result.redline_edits || [];
+  state.reviewComments = [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.redlineDraft = null;
@@ -130,6 +131,22 @@ function renderClauseExportControls(clause, canDecide, included) {
   `;
 }
 
+function renderClauseCommentState(clause) {
+  if (!hasReviewResults() || !clauseReviewComment(clause.id)) return "";
+  return '<span class="studio-comment-state">Comment</span>';
+}
+
+function renderClauseCommentBlock(clause) {
+  if (!hasReviewResults()) return "";
+  const comment = clauseReviewComment(clause.id);
+  return `
+    <div class="studio-detail-block comment-block">
+      <small>Word comment</small>
+      <textarea class="review-comment-input" data-review-comment-clause-id="${escapeHtml(clause.id)}" rows="4" placeholder="Leave a comment for Word export">${escapeHtml(comment?.text || "")}</textarea>
+    </div>
+  `;
+}
+
 function getClauseTotal(clauses = []) {
   return clauses.length || state.playbookClauses.length || 0;
 }
@@ -166,6 +183,7 @@ function applyMatterRedlineDraft(draft) {
   applyDraftClauseDecisions(state.redlineDraft.clause_decisions);
   applyDraftTemplateSelections(state.redlineDraft.template_selections);
   applyDraftManualRedlines(state.redlineDraft.manual_redline_edits);
+  applyDraftReviewComments(state.redlineDraft.review_comments);
   renderStudioResult({ clauses: state.reviewClauses });
   resetReviewEditHistory();
   updateRedlineDraftControls();
@@ -174,6 +192,7 @@ function applyMatterRedlineDraft(draft) {
 function resetCurrentRedlineDraftToDefaults() {
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
+  state.reviewComments = [];
   state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
     const original = manualRedlineBaselineParagraphs().find((item) => item.id === paragraph.id);
     return original ? { ...paragraph, text: original.text } : paragraph;
@@ -218,6 +237,78 @@ function applyDraftManualRedlines(manualRedlines) {
     return { ...paragraph, text: replacement };
   });
   syncReviewSourceFromParagraphs();
+}
+
+function applyDraftReviewComments(reviewComments) {
+  state.reviewComments = normalizeReviewComments(reviewComments);
+}
+
+function normalizeReviewComments(reviewComments) {
+  if (!Array.isArray(reviewComments)) return [];
+  return reviewComments
+    .filter((comment) => comment && typeof comment === "object" && String(comment.text || "").trim())
+    .map((comment) => ({
+      ...comment,
+      id: String(comment.id || `comment-${comment.clause_id || comment.paragraph_id || Date.now()}`),
+      text: String(comment.text || "").trim(),
+    }));
+}
+
+function currentReviewComments() {
+  return normalizeReviewComments(state.reviewComments)
+    .map((comment) => ({
+      ...comment,
+      ...reviewCommentTargetForClause(comment.clause_id),
+    }))
+    .filter((comment) => String(comment.text || "").trim() && (comment.paragraph_id || comment.clause_id));
+}
+
+function clauseReviewComment(clauseId) {
+  return normalizeReviewComments(state.reviewComments).find((comment) => comment.clause_id === clauseId) || null;
+}
+
+function setClauseReviewComment(clauseId, text) {
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  if (!clause) return;
+  const existing = clauseReviewComment(clauseId);
+  const trimmedText = String(text || "").trim();
+  state.reviewComments = normalizeReviewComments(state.reviewComments)
+    .filter((comment) => comment.clause_id !== clauseId);
+  if (trimmedText) {
+    state.reviewComments.push({
+      ...(existing || {}),
+      ...reviewCommentTargetForClause(clauseId),
+      author: existing?.author || "Reviewer",
+      clause_id: clauseId,
+      clause_name: clause.name || clauseId,
+      created_at: existing?.created_at || new Date().toISOString(),
+      id: existing?.id || `comment-${clauseId}`,
+      text: trimmedText,
+    });
+  }
+  markRedlineDraftDirty();
+  renderStudioClauseLane();
+  updateExportButtonState();
+}
+
+function reviewCommentTargetForClause(clauseId) {
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  const targetParagraphId = firstClauseParagraphId(clauseId, clause);
+  const paragraph = state.reviewParagraphs.find((item) => item.id === targetParagraphId);
+  const target = {};
+  if (targetParagraphId) target.paragraph_id = targetParagraphId;
+  if (paragraph?.index !== undefined) target.paragraph_index = paragraph.index;
+  if (paragraph?.source_index !== undefined) target.source_index = paragraph.source_index;
+  return target;
+}
+
+function firstClauseParagraphId(clauseId, clause) {
+  const matched = Array.isArray(clause?.matched_paragraph_ids)
+    ? clause.matched_paragraph_ids.find(Boolean)
+    : "";
+  if (matched) return String(matched);
+  const redline = state.reviewRedlines.find((edit) => edit.clause_id === clauseId && edit.paragraph_id);
+  return redline?.paragraph_id ? String(redline.paragraph_id) : "";
 }
 
 function clauseExportIncluded(clauseId) {
@@ -350,6 +441,7 @@ function renderStudioClauseLane() {
       const included = clauseExportIncluded(clause.id);
       const exportState = renderClauseExportState(clause, canDecide, included);
       const exportControls = renderClauseExportControls(clause, canDecide, included);
+      const commentState = renderClauseCommentState(clause);
       const finding = hasReviewResults()
         ? `<span class="studio-clause-finding">${escapeHtml(clause.reason || clause.finding || "Clause review available.")}</span>`
         : "";
@@ -365,6 +457,7 @@ function renderStudioClauseLane() {
             ${pill}
             ${finding}
             ${exportState}
+            ${commentState}
           </button>
         `
         : `
@@ -426,6 +519,7 @@ function renderStudioDetail() {
   const acceptableLanguage = clause.acceptable_language
     ? `<div class="studio-detail-block"><small>Acceptable language</small><p>${escapeHtml(clause.acceptable_language)}</p></div>`
     : "";
+  const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
     <p class="eyebrow">selected clause</p>
     <div class="studio-detail-heading">
@@ -449,6 +543,7 @@ function renderStudioDetail() {
       ${rationaleBlock}
       ${evidenceGuidanceBlock}
       ${fixBlock}
+      ${commentBlock}
       ${exportDecisionBlock}
       ${redlineBlock}
       <div class="studio-detail-block">
@@ -460,6 +555,7 @@ function renderStudioDetail() {
   `;
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
+  bindReviewCommentControls(studioDetailPanel);
 }
 
 function renderEvidenceBlock(clause) {
@@ -537,6 +633,14 @@ function bindTemplateOptionControls(container) {
   container.querySelectorAll("[data-redline-edit-id][data-redline-option-id]").forEach((button) => {
     button.addEventListener("click", () => {
       setRedlineTemplateSelection(button.dataset.redlineEditId, button.dataset.redlineOptionId);
+    });
+  });
+}
+
+function bindReviewCommentControls(container) {
+  container.querySelectorAll("[data-review-comment-clause-id]").forEach((input) => {
+    input.addEventListener("input", () => {
+      setClauseReviewComment(input.dataset.reviewCommentClauseId, input.value);
     });
   });
 }

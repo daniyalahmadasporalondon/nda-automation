@@ -2372,6 +2372,12 @@ class ServerTests(unittest.TestCase):
                             "template_selections": {"redline-governing_law-1": "england_and_wales"},
                             "export_redline_edits": [],
                             "manual_redline_edits": [manual_redline],
+                            "review_comments": [{
+                                "clause_id": "governing_law",
+                                "clause_name": "Governing Law",
+                                "paragraph_id": "p1",
+                                "text": "Confirm fallback position.",
+                            }],
                         },
                     },
                 )
@@ -2394,8 +2400,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(saved_draft["template_selections"], {"redline-governing_law-1": "england_and_wales"})
         self.assertEqual(saved_draft["summary"]["included_redline_count"], 0)
         self.assertEqual(saved_draft["summary"]["manual_redline_count"], 1)
+        self.assertEqual(saved_draft["summary"]["review_comment_count"], 1)
         self.assertIn("saved_at", saved_draft)
         self.assertEqual(stored_after_save["redline_draft"]["manual_redline_edits"][0]["paragraph_id"], "p1")
+        self.assertEqual(stored_after_save["redline_draft"]["review_comments"][0]["text"], "Confirm fallback position.")
         self.assertEqual(reset_status, 200)
         self.assertNotIn("redline_draft", reset_payload["matter"])
         self.assertEqual(reset_payload["matter"]["has_redline_draft"], False)
