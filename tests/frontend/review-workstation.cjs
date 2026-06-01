@@ -413,6 +413,8 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "CONNECTION SETUP");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Inbound connection");
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "inbound@example.com");
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "outbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Local data: data/gmail/inbound-token.json");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Environment: NDA_GMAIL_OUTBOUND_TOKEN_PATH");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Ready for scheduled sync.");

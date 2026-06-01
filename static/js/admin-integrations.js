@@ -147,7 +147,7 @@ const AdminIntegrationsView = (() => {
           <dl>
             <div>
               <dt>Account</dt>
-              <dd>${escapeHtml(maskEmail(account.email) || "Not resolved")}</dd>
+              <dd>${escapeHtml(account.email || "Not resolved")}</dd>
             </div>
             <div>
               <dt>Token</dt>
@@ -333,15 +333,6 @@ const AdminIntegrationsView = (() => {
       return `Add data/gmail/${role}-token.json or set ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"}.`;
     }
     return account?.error || "Reconnect Gmail and refresh status.";
-  }
-
-  function maskEmail(email) {
-    const value = String(email || "").trim();
-    const atIndex = value.indexOf("@");
-    if (atIndex <= 0) return value;
-    const name = value.slice(0, atIndex);
-    const domain = value.slice(atIndex + 1);
-    return `${name.slice(0, 2)}***@${domain}`;
   }
 
   function lastSyncLabel(statusOrSettings) {
