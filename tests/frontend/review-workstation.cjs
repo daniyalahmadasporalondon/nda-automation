@@ -1196,6 +1196,19 @@ async function testInlineDiffOperationRendering(page) {
         { type: "same", token: "applies" },
         { type: "same", token: "." },
       ])),
+      groupedNumber: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: "cap" },
+        { type: "same", token: "is" },
+        { type: "same", token: "1" },
+        { type: "same", token: "," },
+        { type: "same", token: "000" },
+        { type: "same", token: "for" },
+        { type: "same", token: "café" },
+        { type: "delete", token: "records" },
+        { type: "insert", token: "documents" },
+        { type: "same", token: "." },
+      ])),
       fallback: revisionState(renderDiffOperations(fullReplacementOperations("Old paragraph.", "New paragraph."))),
     };
   });
@@ -1214,6 +1227,11 @@ async function testInlineDiffOperationRendering(page) {
   assert.equal(cases.punctuation.accepted, "This Agreement (England and Wales) applies.");
   assert.deepEqual(cases.punctuation.deleted, ["California"]);
   assert.deepEqual(cases.punctuation.inserted, ["England", " and", " Wales"]);
+
+  assert.equal(cases.groupedNumber.original, "Payment cap is 1,000 for café records.");
+  assert.equal(cases.groupedNumber.accepted, "Payment cap is 1,000 for café documents.");
+  assert.deepEqual(cases.groupedNumber.deleted, [" records"]);
+  assert.deepEqual(cases.groupedNumber.inserted, [" documents"]);
 
   assert.equal(cases.fallback.original, "Old paragraph.");
   assert.equal(cases.fallback.accepted, "New paragraph.");

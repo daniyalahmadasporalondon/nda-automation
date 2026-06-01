@@ -370,6 +370,18 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
         self.assertEqual(next_revision_id, 9)
 
+    def test_tracked_replace_paragraph_preserves_grouped_numbers_and_non_ascii_words(self):
+        original = "Payment cap is 1,000 for café records."
+        replacement = "Payment cap is 1,000 for café documents."
+
+        paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, 7)
+
+        root = ET.fromstring(f'<root xmlns:w="{W_NS["w"]}">{paragraph_xml}</root>')
+        paragraph = root.find(".//w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        self.assertEqual(next_revision_id, 9)
+
     def test_tracked_replace_paragraph_preserves_newlines(self):
         original = "Line one\nLine two"
         replacement = "Line one\nLine three"
@@ -466,6 +478,37 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_export_preserves_grouped_numbers_and_non_ascii_words(self):
+        original = "Payment cap is 1,000 for café records."
+        replacement = "Payment cap is 1,000 for café documents."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 1,
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraph = document_root.find(".//w:body/w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
 
     def test_source_docx_export_rejects_suspicious_compression_ratio(self):
         source_docx = make_source_docx(["A" * 4096])

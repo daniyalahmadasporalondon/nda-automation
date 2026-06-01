@@ -311,6 +311,49 @@
     ]
   },
   {
+    "name": "grouped numbers and non-ascii words",
+    "original": "Payment cap is 1,000 for café records.",
+    "replacement": "Payment cap is 1,000 for café documents.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Payment"
+      },
+      {
+        "type": "same",
+        "token": "cap"
+      },
+      {
+        "type": "same",
+        "token": "is"
+      },
+      {
+        "type": "same",
+        "token": "1,000"
+      },
+      {
+        "type": "same",
+        "token": "for"
+      },
+      {
+        "type": "same",
+        "token": "café"
+      },
+      {
+        "type": "delete",
+        "token": "records"
+      },
+      {
+        "type": "insert",
+        "token": "documents"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
     "name": "large-input fallback",
     "original": "old0 old1 old2 old3 old4 old5 old6 old7 old8 old9 old10 old11 old12 old13 old14 old15 old16 old17 old18 old19 old20 old21 old22 old23 old24 old25 old26 old27 old28 old29 old30 old31 old32 old33 old34 old35 old36 old37 old38 old39 old40 old41 old42 old43 old44 old45 old46 old47 old48 old49 old50 old51 old52 old53 old54 old55 old56 old57 old58 old59 old60 old61 old62 old63 old64 old65 old66 old67 old68 old69 old70 old71 old72 old73 old74 old75 old76 old77 old78 old79 old80 old81 old82 old83 old84 old85 old86 old87 old88 old89 old90 old91 old92 old93 old94 old95 old96 old97 old98 old99 old100 old101 old102 old103 old104 old105 old106 old107 old108 old109 old110 old111 old112 old113 old114 old115 old116 old117 old118 old119 old120 old121 old122 old123 old124 old125 old126 old127 old128 old129 old130 old131 old132 old133 old134 old135 old136 old137 old138 old139 old140 old141 old142 old143 old144 old145 old146 old147 old148 old149 old150 old151 old152 old153 old154 old155 old156 old157 old158 old159 old160 old161 old162 old163 old164 old165 old166 old167 old168 old169 old170 old171 old172 old173 old174 old175 old176 old177 old178 old179 old180 old181 old182 old183 old184 old185 old186 old187 old188 old189 old190 old191 old192 old193 old194 old195 old196 old197 old198 old199 old200",
     "replacement": "new0 new1 new2 new3 new4 new5 new6 new7 new8 new9 new10 new11 new12 new13 new14 new15 new16 new17 new18 new19 new20 new21 new22 new23 new24 new25 new26 new27 new28 new29 new30 new31 new32 new33 new34 new35 new36 new37 new38 new39 new40 new41 new42 new43 new44 new45 new46 new47 new48 new49 new50 new51 new52 new53 new54 new55 new56 new57 new58 new59 new60 new61 new62 new63 new64 new65 new66 new67 new68 new69 new70 new71 new72 new73 new74 new75 new76 new77 new78 new79 new80 new81 new82 new83 new84 new85 new86 new87 new88 new89 new90 new91 new92 new93 new94 new95 new96 new97 new98 new99 new100 new101 new102 new103 new104 new105 new106 new107 new108 new109 new110 new111 new112 new113 new114 new115 new116 new117 new118 new119 new120 new121 new122 new123 new124 new125 new126 new127 new128 new129 new130 new131 new132 new133 new134 new135 new136 new137 new138 new139 new140 new141 new142 new143 new144 new145 new146 new147 new148 new149 new150 new151 new152 new153 new154 new155 new156 new157 new158 new159 new160 new161 new162 new163 new164 new165 new166 new167 new168 new169 new170 new171 new172 new173 new174 new175 new176 new177 new178 new179 new180 new181 new182 new183 new184 new185 new186 new187 new188 new189 new190 new191 new192 new193 new194 new195 new196 new197 new198 new199",

@@ -311,6 +311,49 @@
     ]
   },
   {
+    "name": "grouped numbers and non-ascii words",
+    "original": "Payment cap is 1,000 for café records.",
+    "replacement": "Payment cap is 1,000 for café documents.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Payment"
+      },
+      {
+        "type": "same",
+        "token": "cap"
+      },
+      {
+        "type": "same",
+        "token": "is"
+      },
+      {
+        "type": "same",
+        "token": "1,000"
+      },
+      {
+        "type": "same",
+        "token": "for"
+      },
+      {
+        "type": "same",
+        "token": "café"
+      },
+      {
+        "type": "delete",
+        "token": "records"
+      },
+      {
+        "type": "insert",
+        "token": "documents"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
     "name": "large-input fallback",
     "originalTokenBlock": {
       "prefix": "old",

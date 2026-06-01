@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, Tuple
 
 INLINE_DIFF_MAX_MATRIX_CELLS = 40000
-INLINE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*|[^\sA-Za-z0-9]")
+INLINE_TOKEN_PATTERN = re.compile(r"\d+(?:[,.]\d+)*|[^\W_]+(?:[-'’][^\W_]+)*|[^\s]")
 DiffOperation = Tuple[str, str]
 
 

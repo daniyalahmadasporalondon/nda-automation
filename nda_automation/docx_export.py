@@ -652,6 +652,8 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
         return False
     if re.match(r"^[(]$", previous_token):
         return False
+    if previous_token == "," and re.match(r"^\d{3}$", token):
+        return False
     return True
 
 
