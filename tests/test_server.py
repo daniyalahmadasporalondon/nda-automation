@@ -1913,7 +1913,6 @@ class ServerTests(unittest.TestCase):
                     "/api/export-review-docx",
                     {
                         "matter_id": matter_id,
-                        "reviewed_text": "Stale reviewed text should not appear.",
                     },
                 )
 
@@ -1923,11 +1922,45 @@ class ServerTests(unittest.TestCase):
         assert_source_export_has_no_report_leakage(
             self,
             export_payload,
-            extra_forbidden=["Stale reviewed text should not appear."],
         )
         with ZipFile(BytesIO(export_payload)) as archive:
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
+
+    def test_matter_export_rejects_reviewed_text_only_source_text_change_without_manual_redlines(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Reviewed Text Only NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                export_status, export_payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": create_payload["matter"]["id"],
+                        "reviewed_text": "This Agreement shall be governed by the laws of New York.",
+                        "export_redline_edits": [],
+                        "manual_redline_edits": [],
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 409)
+        self.assertEqual(
+            export_payload["error"],
+            "Matter source text was edited after the source document was ingested. "
+            "Export or send after those viewer edits are represented as manual redlines.",
+        )
 
     def test_matter_export_rejects_text_that_differs_from_reviewed_text(self):
         source_docx = make_docx([
@@ -2051,6 +2084,61 @@ class ServerTests(unittest.TestCase):
             ),
             revision_states,
         )
+
+    def test_matter_export_rechecks_edited_source_text_with_manual_redline(self):
+        source_docx = make_docx([
+            "The confidentiality obligations survive for seven (7) years.",
+        ])
+        edited_text = "The confidentiality obligations survive for five (5) years."
+        manual_redline = {
+            "id": "manual-term",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+            "original_text": "The confidentiality obligations survive for seven (7) years.",
+            "replacement_text": edited_text,
+        }
+        captured = {}
+
+        def capture_redline_build(source_bytes, review_result):
+            captured["source_bytes"] = source_bytes
+            captured["paragraph_texts"] = [
+                paragraph.get("text")
+                for paragraph in review_result.get("paragraphs", [])
+                if isinstance(paragraph, dict)
+            ]
+            return source_docx
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Edited Review Source NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                        export_status, _export_payload, _headers = self.request_with_headers(
+                            "POST",
+                            "/api/export-review-docx",
+                            {
+                                "matter_id": create_payload["matter"]["id"],
+                                "text": edited_text,
+                                "reviewed_text": edited_text,
+                                "export_redline_edits": [],
+                                "manual_redline_edits": [manual_redline],
+                            },
+                        )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 200)
+        self.assertEqual(captured["source_bytes"], source_docx)
+        self.assertEqual(captured["paragraph_texts"], [edited_text])
 
     @requires_pypdf
     def test_pdf_matter_export_uses_review_report_docx(self):

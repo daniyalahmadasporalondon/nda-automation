@@ -84,8 +84,18 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
         if source_document_bytes is None:
             raise DocxExtractionError("Matter source document is missing from storage.")
         _apply_saved_redline_draft(payload, matter)
-        _reject_unrepresented_matter_source_text_edits(payload, matter, review_result)
-        return deepcopy(review_result), source_document_bytes, source_filename
+        submitted_text = _submitted_matter_source_text(payload)
+        if _matter_source_text_changed(submitted_text, matter, review_result):
+            if not _has_manual_redline_payload(payload):
+                raise MatterSourceTextChangedError(
+                    "Matter source text was edited after the source document was ingested. "
+                    "Export or send after those viewer edits are represented as manual redlines."
+                )
+            review_result = review_nda(submitted_text)
+            review_result["extracted_text"] = submitted_text
+        else:
+            review_result = deepcopy(review_result)
+        return review_result, source_document_bytes, source_filename
 
     filename = payload.get("filename", "")
     content_base64 = payload.get("content_base64", "")
@@ -116,26 +126,20 @@ def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:
             payload[field] = draft[field]
 
 
-def _reject_unrepresented_matter_source_text_edits(payload: dict, matter: dict, review_result: dict) -> None:
-    submitted_text = _submitted_matter_source_text(payload)
+def _matter_source_text_changed(submitted_text: str, matter: dict, review_result: dict) -> bool:
     if not submitted_text:
-        return
+        return False
 
     stored_text = str(matter.get("extracted_text") or review_result.get("extracted_text") or "")
-    if _normalize_document_text(submitted_text) == _normalize_document_text(stored_text):
-        return
-    if _has_manual_redline_payload(payload):
-        return
-
-    raise MatterSourceTextChangedError(
-        "Matter source text was edited after the source document was ingested. "
-        "Export or send after those viewer edits are represented as manual redlines."
-    )
+    return _normalize_document_text(submitted_text) != _normalize_document_text(stored_text)
 
 
 def _submitted_matter_source_text(payload: dict) -> str:
-    value = payload.get("text")
-    return value if isinstance(value, str) and value.strip() else ""
+    for key in ("text", "reviewed_text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def _has_manual_redline_payload(payload: dict) -> bool:
