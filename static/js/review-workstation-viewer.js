@@ -1,4 +1,8 @@
 const REVIEW_EDIT_HISTORY_LIMIT = 50;
+const VIEWER_REVIEW_REFRESH_DELAY_MS = 650;
+
+let viewerReviewRefreshTimer = null;
+let viewerReviewRefreshSequence = 0;
 
 function setupDocumentViewModes() {
   const buttons = document.querySelectorAll(".studio-view-switch [data-view-mode]");
@@ -23,6 +27,14 @@ function updateReviewUndoButtonState() {
 function resetReviewEditHistory() {
   state.reviewEditHistory = [];
   updateReviewUndoButtonState();
+}
+
+function cancelViewerReviewRefresh() {
+  if (viewerReviewRefreshTimer !== null) {
+    window.clearTimeout(viewerReviewRefreshTimer);
+    viewerReviewRefreshTimer = null;
+  }
+  viewerReviewRefreshSequence += 1;
 }
 
 function setDocumentViewMode(mode, { render = false } = {}) {
@@ -122,8 +134,8 @@ function undoLastViewerEdit() {
   syncReviewSourceFromParagraphs();
   markRedlineDraftDirty();
   markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });
-  studioResultMeta.textContent = "Last viewer edit undone. Run Review NDA again to refresh the checklist.";
   renderStudioDocumentHighlights();
+  scheduleViewerReviewRefresh("Last viewer edit undone");
   updateExportButtonState();
   updateReviewUndoButtonState();
 }
@@ -177,8 +189,82 @@ function syncViewerParagraphEdit(editable) {
   updateManualRedlinePreview(editable, paragraph);
   markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
-  studioResultMeta.textContent = "Document edited. Run Review NDA again to refresh the checklist.";
+  scheduleViewerReviewRefresh("Document edited");
   updateExportButtonState();
+}
+
+function scheduleViewerReviewRefresh(message) {
+  if (!state.reviewParagraphs.length) return;
+  if (viewerReviewRefreshTimer !== null) {
+    window.clearTimeout(viewerReviewRefreshTimer);
+  }
+  const sequence = viewerReviewRefreshSequence + 1;
+  viewerReviewRefreshSequence = sequence;
+  studioResultMeta.textContent = `${message}. Rechecking clause detection.`;
+  viewerReviewRefreshTimer = window.setTimeout(() => {
+    viewerReviewRefreshTimer = null;
+    refreshViewerReviewDetection(sequence);
+  }, VIEWER_REVIEW_REFRESH_DELAY_MS);
+}
+
+async function refreshViewerReviewDetection(sequence) {
+  const text = state.reviewSourceText.trim();
+  if (!text) return;
+  try {
+    const response = await fetch("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not run");
+    if (sequence !== viewerReviewRefreshSequence) return;
+    if (state.reviewSourceText.trim() !== text) {
+      scheduleViewerReviewRefresh("Document edited");
+      return;
+    }
+    applyViewerReviewDetectionResult(payload, text);
+  } catch (error) {
+    if (sequence !== viewerReviewRefreshSequence) return;
+    studioResultMeta.textContent = `Document edited. Clause detection could not refresh: ${error.message || "Review could not run."}`;
+  }
+}
+
+function applyViewerReviewDetectionResult(result, reviewedText) {
+  const previousSelectedClauseId = state.selectedReviewClauseId;
+  const previousExportDecisions = { ...state.exportClauseDecisions };
+  const previousTemplateSelections = { ...state.redlineTemplateSelections };
+  state.latestReviewResult = result;
+  state.reviewClauses = result.clauses || [];
+  state.reviewParagraphs = result.paragraphs || [];
+  state.reviewRedlines = result.redline_edits || [];
+  state.reviewSourceText = reviewedText;
+  state.clauseJumpIndexes = {};
+  state.selectedReviewClauseId = state.reviewClauses.some((clause) => clause.id === previousSelectedClauseId)
+    ? previousSelectedClauseId
+    : state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
+  reconcileExportDecisions(previousExportDecisions);
+  reconcileTemplateSelections(previousTemplateSelections);
+  renderStudioResult({ clauses: state.reviewClauses });
+  updateExportButtonState();
+}
+
+function reconcileExportDecisions(previousExportDecisions) {
+  const clauseIds = new Set(state.reviewClauses.map((clause) => clause.id));
+  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
+  Object.entries(previousExportDecisions || {}).forEach(([clauseId, included]) => {
+    if (clauseIds.has(clauseId)) state.exportClauseDecisions[clauseId] = Boolean(included);
+  });
+}
+
+function reconcileTemplateSelections(previousTemplateSelections) {
+  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
+  state.reviewRedlines.forEach((edit) => {
+    const previousSelection = previousTemplateSelections?.[edit.id];
+    if (previousSelection && (edit.template_options || []).some((option) => option.id === previousSelection)) {
+      state.redlineTemplateSelections[edit.id] = previousSelection;
+    }
+  });
 }
 
 function updateManualRedlinePreview(editable, paragraph) {

@@ -1315,6 +1315,17 @@ async function testManualViewerEditRedline(page) {
     "undo should remove the manual redline preview once the source text is restored",
   );
   await assertTextContains(page.locator("#studioFileMeta"), "Undid viewer edit");
+
+  await page.locator('[data-editable-paragraph-id="p5"]').click();
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await page.keyboard.type("This Agreement shall be governed by the laws of California.");
+  await page.waitForFunction(() => {
+    const governingLaw = document.querySelector('[data-studio-lane-id="governing_law"]')?.closest(".studio-clause-item");
+    return governingLaw?.classList.contains("check");
+  });
+  await assertTextContains(page.locator("#studioOverallTitle"), "Does not meet requirements");
+  await assertTextContains(page.locator("#studioResultMeta"), "1 hard clause needs checking.");
+  await assertTextContains(page.locator('[data-paragraph-id="p5"]'), "California");
 }
 
 async function testPreviewMatchesExportedDocx(page) {

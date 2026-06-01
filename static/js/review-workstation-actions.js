@@ -13,6 +13,7 @@ function clearReview() {
 }
 
 function resetReviewResults() {
+  cancelViewerReviewRefresh();
   pendingReviewSendMatterId = null;
   state.reviewClauses = [];
   state.reviewOriginalParagraphs = [];
@@ -55,6 +56,7 @@ function setupReviewWorkstationActions() {
 }
 
 async function runReview(sourceInput, button) {
+  cancelViewerReviewRefresh();
   const text = sourceInput.value.trim();
   const rerunningLoadedMatter = Boolean(state.selectedMatter?.id && !state.selectedDocument);
   if (!text && !state.selectedDocument) {
