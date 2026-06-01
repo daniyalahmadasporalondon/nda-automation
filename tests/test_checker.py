@@ -893,6 +893,44 @@ class CheckerTests(unittest.TestCase):
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
         self.assertEqual(result_clause["status"], "match")
 
+    def test_independent_development_synonym_exclusions_need_qualification(self):
+        examples = [
+            "Confidential Information does not include independent development.",
+            "Confidential Information does not include information independently created by the Receiving Party.",
+        ]
+
+        for exclusion in examples:
+            with self.subTest(exclusion=exclusion):
+                result = review_nda(
+                    f"""
+                    Confidential Information means any and all non-public business, financial, technical,
+                    customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                    by either party.
+
+                    {exclusion}
+                    """
+                )
+
+                result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+                self.assertEqual(result_clause["status"], "check")
+                self.assertFalse(result_clause["passes"])
+                self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+
+    def test_qualified_independent_development_synonyms_can_pass(self):
+        result = review_nda(
+            """
+            Confidential Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+
+            Confidential Information does not include information independently created without use of
+            or reference to Confidential Information.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "match")
+
     def test_broad_confidentiality_exclusion_still_needs_review(self):
         result = review_nda(
             """
