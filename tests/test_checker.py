@@ -475,6 +475,24 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(governing_law["reason"], "Approved governing law found.")
 
+    def test_governing_law_accepts_approved_adjective_law_forms(self):
+        examples = [
+            "This Agreement shall be governed by Delaware law.",
+            "This Agreement shall be governed by English law.",
+            "This Agreement shall be governed by Indian law.",
+            "This Agreement shall be construed in accordance with English law.",
+            "The governing law shall be Indian law.",
+        ]
+
+        for text in examples:
+            with self.subTest(text=text):
+                result = review_nda(text)
+                governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+                self.assertEqual(governing_law["status"], "match")
+                self.assertTrue(governing_law["passes"])
+                self.assertEqual(governing_law["reason"], "Approved governing law found.")
+
     def test_semantic_signals_participate_in_clause_detection(self):
         result = review_nda("Each of the parties may disclose Confidential Information to the other party.")
         mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")

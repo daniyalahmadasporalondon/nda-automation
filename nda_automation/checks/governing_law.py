@@ -20,10 +20,18 @@ from .common import (
 
 GOVERNING_LAW_VALUE_PATTERNS = (
     r"\bgoverned\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bgoverned\b.{0,120}?\b(?P<law>[^.;,\n]+?)\s+laws?\b",
     r"\bconstrued\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bconstrued\b.{0,120}?\b(?P<law>[^.;,\n]+?)\s+laws?\b",
     r"\bsubject\s+to\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
+    r"\bsubject\s+to\b.{0,120}?\b(?P<law>[^.;,\n]+?)\s+laws?\b",
     r"\bgoverning\s+law\b.{0,80}?(?:is|shall\s+be|will\s+be|:)\s*(?:the\s+)?(?:laws?\s+of\s+)?(?P<law>[^.;,\n]+)",
 )
+
+GOVERNING_LAW_INPUT_ALIASES = {
+    "england and wales": ("english",),
+    "india": ("indian",),
+}
 
 
 def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
@@ -69,18 +77,23 @@ def _governing_law_candidates(text: str) -> List[str]:
 
 def _contains_approved_law(text: str, clause: Dict[str, object]) -> bool:
     for law in _approved_laws(clause):
-        phrase = _governing_law_phrase(clause, law)
-        if re.search(_literal_word_pattern(law), text, flags=re.IGNORECASE):
-            return True
-        if phrase != law and re.search(_literal_word_pattern(phrase), text, flags=re.IGNORECASE):
-            return True
+        for term in _approved_law_input_terms(clause, law):
+            if re.search(_literal_word_pattern(term), text, flags=re.IGNORECASE):
+                return True
     return False
 
 
 def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) -> bool:
     for law in _approved_laws(clause):
-        phrases = {law, _governing_law_phrase(clause, law)}
-        for phrase in phrases:
-            if re.search(rf"\blaws?\s+of\s+{_literal_word_pattern(phrase)}", text, flags=re.IGNORECASE):
+        for term in _approved_law_input_terms(clause, law):
+            if re.search(rf"\blaws?\s+of\s+{_literal_word_pattern(term)}", text, flags=re.IGNORECASE):
+                return True
+            if re.search(rf"{_literal_word_pattern(term)}\s+laws?\b", text, flags=re.IGNORECASE):
                 return True
     return False
+
+
+def _approved_law_input_terms(clause: Dict[str, object], law: str) -> List[str]:
+    terms = [law, _governing_law_phrase(clause, law)]
+    terms.extend(GOVERNING_LAW_INPUT_ALIASES.get(law.lower().strip(), ()))
+    return list(dict.fromkeys(term for term in terms if term))
