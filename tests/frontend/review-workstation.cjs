@@ -49,6 +49,7 @@ const tests = [
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
+  ["preserves viewer caret through auto-refresh", testViewerAutoRefreshSelection],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
   ["guards source-redline export regression", testSourceRedlineExportRegression],
   ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
@@ -1613,6 +1614,80 @@ async function testManualViewerEditRedline(page) {
     [],
     "auto-refresh should re-snapshot paragraph originals after paragraph-count changes",
   );
+}
+
+async function testViewerAutoRefreshSelection(page) {
+  await runReview(page, passNda);
+
+  const selectionState = await page.evaluate(() => {
+    const offsetWithin = (root, node, offset) => {
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      range.setEnd(node, offset);
+      return range.toString().length;
+    };
+    const placeSelection = (start, end) => {
+      const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+      const textNode = editable.firstChild;
+      const range = document.createRange();
+      range.setStart(textNode, start);
+      range.setEnd(textNode, end);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      editable.focus();
+      editable.dataset.editStartText = "Mutual Non-Disclosure Agreement";
+      editable.dataset.editHistoryRecorded = "true";
+    };
+    const applyRefresh = () => {
+      applyViewerReviewDetectionResult({
+        ...state.latestReviewResult,
+        clauses: state.reviewClauses,
+        paragraphs: state.reviewParagraphs.map((paragraph) => ({ ...paragraph })),
+        redline_edits: state.reviewRedlines,
+      }, state.reviewSourceText);
+    };
+    const currentSelection = () => {
+      const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+      const selection = window.getSelection();
+      const range = selection.rangeCount ? selection.getRangeAt(0) : null;
+      return {
+        active: document.activeElement === editable,
+        editHistoryRecorded: editable.dataset.editHistoryRecorded,
+        editStartText: editable.dataset.editStartText,
+        selectedText: selection.toString(),
+        startOffset: range ? offsetWithin(editable, range.startContainer, range.startOffset) : null,
+        endOffset: range ? offsetWithin(editable, range.endContainer, range.endOffset) : null,
+      };
+    };
+
+    placeSelection(7, 21);
+    applyRefresh();
+    const rangeSelection = currentSelection();
+
+    placeSelection(12, 12);
+    applyRefresh();
+    const caretSelection = currentSelection();
+
+    return { caretSelection, rangeSelection };
+  });
+
+  assert.deepEqual(selectionState.rangeSelection, {
+    active: true,
+    editHistoryRecorded: "true",
+    editStartText: "Mutual Non-Disclosure Agreement",
+    selectedText: "Non-Disclosure",
+    startOffset: 7,
+    endOffset: 21,
+  });
+  assert.deepEqual(selectionState.caretSelection, {
+    active: true,
+    editHistoryRecorded: "true",
+    editStartText: "Mutual Non-Disclosure Agreement",
+    selectedText: "",
+    startOffset: 12,
+    endOffset: 12,
+  });
 }
 
 async function testPreviewMatchesExportedDocx(page) {

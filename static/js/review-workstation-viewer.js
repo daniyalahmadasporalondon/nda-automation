@@ -234,6 +234,7 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   const previousSelectedClauseId = state.selectedReviewClauseId;
   const previousExportDecisions = { ...state.exportClauseDecisions };
   const previousTemplateSelections = { ...state.redlineTemplateSelections };
+  const editSelection = snapshotViewerEditSelection();
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
@@ -250,6 +251,7 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   reconcileExportDecisions(previousExportDecisions);
   reconcileTemplateSelections(previousTemplateSelections);
   renderStudioResult({ clauses: state.reviewClauses });
+  restoreViewerEditSelection(editSelection);
   updateExportButtonState();
 }
 
@@ -291,6 +293,98 @@ function editableParagraphText(editable) {
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function snapshotViewerEditSelection() {
+  const editable = document.activeElement?.closest?.("[data-editable-paragraph-id]");
+  if (!editable || !studioDocumentRender?.contains(editable)) return null;
+
+  const snapshot = {
+    editHistoryRecorded: editable.dataset.editHistoryRecorded || "",
+    editStartText: editable.dataset.editStartText || "",
+    endOffset: editableParagraphText(editable).length,
+    paragraphId: editable.dataset.editableParagraphId,
+    startOffset: editableParagraphText(editable).length,
+  };
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return snapshot;
+
+  const range = selection.getRangeAt(0);
+  if (!editable.contains(range.startContainer) || !editable.contains(range.endContainer)) return snapshot;
+
+  snapshot.startOffset = editableSelectionTextOffset(editable, range.startContainer, range.startOffset);
+  snapshot.endOffset = editableSelectionTextOffset(editable, range.endContainer, range.endOffset);
+  return snapshot;
+}
+
+function restoreViewerEditSelection(snapshot) {
+  if (!snapshot?.paragraphId) return;
+  const editable = studioDocumentRender?.querySelector(
+    `[data-editable-paragraph-id="${cssEscape(snapshot.paragraphId)}"]`,
+  );
+  if (!editable) return;
+
+  try {
+    editable.focus({ preventScroll: true });
+  } catch {
+    editable.focus();
+  }
+
+  if (snapshot.editStartText) {
+    editable.dataset.editStartText = snapshot.editStartText;
+  }
+  if (snapshot.editHistoryRecorded) {
+    editable.dataset.editHistoryRecorded = snapshot.editHistoryRecorded;
+  }
+
+  const textLength = editableParagraphText(editable).length;
+  const startOffset = clampTextOffset(snapshot.startOffset, textLength);
+  const endOffset = clampTextOffset(snapshot.endOffset, textLength);
+  const range = document.createRange();
+  const startPosition = editableTextPositionForOffset(editable, startOffset);
+  const endPosition = editableTextPositionForOffset(editable, endOffset);
+  range.setStart(startPosition.node, startPosition.offset);
+  range.setEnd(endPosition.node, endPosition.offset);
+
+  const selection = window.getSelection();
+  if (!selection) return;
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function editableSelectionTextOffset(editable, node, offset) {
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  try {
+    range.setEnd(node, offset);
+  } catch {
+    return editableParagraphText(editable).length;
+  }
+  return range.toString().length;
+}
+
+function editableTextPositionForOffset(editable, offset) {
+  const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
+  let current;
+  let remaining = offset;
+  let lastTextNode = null;
+
+  while ((current = walker.nextNode())) {
+    lastTextNode = current;
+    const length = current.textContent.length;
+    if (remaining <= length) return { node: current, offset: remaining };
+    remaining -= length;
+  }
+
+  if (lastTextNode) {
+    return { node: lastTextNode, offset: lastTextNode.textContent.length };
+  }
+  return { node: editable, offset: 0 };
+}
+
+function clampTextOffset(offset, textLength) {
+  const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : textLength;
+  return Math.max(0, Math.min(numericOffset, textLength));
 }
 
 function syncReviewSourceFromParagraphs() {
