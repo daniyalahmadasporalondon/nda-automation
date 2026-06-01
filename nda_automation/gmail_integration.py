@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+from html import unescape
+from html.parser import HTMLParser
 import hashlib
 import os
 import re
@@ -25,14 +27,22 @@ from .ingestion_service import create_matter_from_document, is_supported_documen
 from .pdf_text import PdfExtractionError
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-NDA_SUBJECT_QUERY = (
-    '(subject:NDA OR subject:"non-disclosure" OR subject:"non disclosure" '
-    'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement" '
-    'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)'
+NDA_DETECTION_TERMS = (
+    ("non-disclosure agreement", r"\bnon[-\s]?disclosure\s+agreement\b"),
+    ("non-disclosure", r"\bnon[-\s]?disclosure\b"),
+    ("confidentiality agreement", r"\bconfidentiality\s+agreement\b"),
+    ("confidentiality", r"\bconfidentiality\b"),
+    ("confidential", r"\bconfidential\b"),
+    ("NDA", r"\bNDA\b"),
 )
-DEFAULT_INBOUND_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me {NDA_SUBJECT_QUERY}"
+NDA_MESSAGE_QUERY = (
+    '(NDA OR "non-disclosure" OR "non disclosure" OR "non-disclosure agreement" '
+    'OR "non disclosure agreement" OR "confidentiality agreement" OR confidentiality OR confidential)'
+)
+DEFAULT_INBOUND_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me {NDA_MESSAGE_QUERY}"
 MAX_GMAIL_IMPORT_LIMIT = 25
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
+GMAIL_BODY_PREVIEW_LIMIT = 5000
 
 ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
@@ -64,6 +74,7 @@ def gmail_status() -> dict[str, Any]:
         }
         if role == "inbound":
             role_status["query"] = DEFAULT_INBOUND_QUERY
+            role_status["parsing"] = gmail_inbound_parsing_summary()
         setup_error = gmail_role_setup_error(role)
         if setup_error:
             role_status["error"] = setup_error
@@ -85,6 +96,20 @@ def gmail_status() -> dict[str, Any]:
         status[role] = role_status
     _apply_account_consistency(status)
     return status
+
+
+def gmail_inbound_parsing_summary() -> dict[str, object]:
+    return {
+        "fields": [
+            "subject headers",
+            "plain text email body",
+            "HTML email body",
+            "Gmail snippet",
+            "attachment filenames",
+        ],
+        "terms": [term for term, _pattern in NDA_DETECTION_TERMS],
+        "mode": "Gmail query prefilters inbox attachments; local parsing verifies each full message before import.",
+    }
 
 
 def gmail_role_setup_error(role: str) -> str:
@@ -169,7 +194,12 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
-        metadata = _message_metadata(message, account_email)
+        detection = _message_nda_detection(message, attachments)
+        if not detection["matched"]:
+            skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
+            continue
+
+        metadata = _message_metadata(message, account_email, detection=detection)
         for attachment in attachments:
             matter, skip = _import_inbound_attachment(service, message_id, attachment, metadata)
             if skip is not None:
@@ -525,7 +555,12 @@ def _email_addresses_match(left: str, right: str) -> bool:
     return bool(left and right and left.strip().casefold() == right.strip().casefold())
 
 
-def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, str]:
+def _message_metadata(
+    message: dict[str, Any],
+    account_email: str,
+    *,
+    detection: dict[str, object] | None = None,
+) -> dict[str, str]:
     headers = message.get("payload", {}).get("headers") or []
     sender = _header(headers, "From")
     reply_to = _header(headers, "Reply-To")
@@ -543,6 +578,16 @@ def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, 
     }
     if reply_to:
         metadata["reply_to"] = reply_to
+    if detection:
+        sources = detection.get("sources") if isinstance(detection.get("sources"), list) else []
+        terms = detection.get("terms") if isinstance(detection.get("terms"), list) else []
+        excerpt = str(detection.get("excerpt") or "")
+        if sources:
+            metadata["gmail_detection_sources"] = ", ".join(str(source) for source in sources if source)
+        if terms:
+            metadata["gmail_detection_terms"] = ", ".join(str(term) for term in terms if term)
+        if excerpt:
+            metadata["gmail_detection_excerpt"] = excerpt
     return metadata
 
 
@@ -563,6 +608,133 @@ def _parse_email_date(value: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.isoformat()
+
+
+def _message_nda_detection(message: dict[str, Any], attachments: list[dict[str, str]]) -> dict[str, object]:
+    headers = message.get("payload", {}).get("headers") or []
+    subject = _header(headers, "Subject")
+    body_text = _message_body_text(message.get("payload") or {})
+    attachment_filenames = " ".join(str(attachment.get("filename") or "") for attachment in attachments)
+    fields = {
+        "subject": subject,
+        "body": body_text,
+        "snippet": str(message.get("snippet") or ""),
+        "attachment_filename": attachment_filenames,
+    }
+    sources: list[str] = []
+    terms: list[str] = []
+    excerpt = ""
+    for source, text in fields.items():
+        source_terms = _nda_terms_in_text(text)
+        if not source_terms:
+            continue
+        sources.append(source)
+        for term in source_terms:
+            if term not in terms:
+                terms.append(term)
+        if not excerpt:
+            excerpt = _detection_excerpt(text, source_terms[0])
+    return {
+        "matched": bool(sources),
+        "sources": sources,
+        "terms": terms,
+        "excerpt": excerpt,
+    }
+
+
+def _nda_terms_in_text(text: object) -> list[str]:
+    value = str(text or "")
+    if not value:
+        return []
+    matches: list[str] = []
+    for term, pattern in NDA_DETECTION_TERMS:
+        if re.search(pattern, value, flags=re.IGNORECASE) and term not in matches:
+            matches.append(term)
+    return matches
+
+
+def _detection_excerpt(text: object, term: str, *, radius: int = 90) -> str:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    index = value.casefold().find(term.casefold())
+    if index < 0:
+        return value[:180]
+    start = max(0, index - radius)
+    end = min(len(value), index + len(term) + radius)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(value) else ""
+    return f"{prefix}{value[start:end]}{suffix}"
+
+
+def _message_body_text(payload: dict[str, Any]) -> str:
+    text_parts: list[str] = []
+    html_parts: list[str] = []
+    for part in _walk_payload_parts(payload):
+        if part.get("filename"):
+            continue
+        mime_type = str(part.get("mimeType") or "").split(";", 1)[0].strip().lower()
+        if mime_type not in {"text/plain", "text/html"}:
+            continue
+        data = str((part.get("body") or {}).get("data") or "")
+        if not data:
+            continue
+        decoded = _decode_message_text_part(data, part)
+        if not decoded:
+            continue
+        if mime_type == "text/html":
+            html_parts.append(_html_to_text(decoded))
+        else:
+            text_parts.append(decoded)
+    combined = "\n".join(part for part in [*text_parts, *html_parts] if part)
+    return combined[:GMAIL_BODY_PREVIEW_LIMIT]
+
+
+def _decode_message_text_part(data: str, part: dict[str, Any]) -> str:
+    try:
+        raw = _decode_gmail_base64(data)
+    except GmailIntegrationError:
+        return ""
+    charset = _part_charset(part) or "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _part_charset(part: dict[str, Any]) -> str:
+    headers = part.get("headers") or []
+    content_type = _header(headers, "Content-Type")
+    match = re.search(r"charset=[\"']?([^\"';\s]+)", content_type, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+class _HTMLTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self._parts.append(text)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"br", "div", "li", "p", "tr"}:
+            self._parts.append("\n")
+
+    def text(self) -> str:
+        return unescape(" ".join(part for part in self._parts if part.strip()))
+
+
+def _html_to_text(value: str) -> str:
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(value)
+        parser.close()
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", value)
+    return parser.text()
 
 
 def _reviewable_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:

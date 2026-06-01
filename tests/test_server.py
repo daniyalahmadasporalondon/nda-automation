@@ -1280,6 +1280,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["enabled"], True)
         self.assertEqual(status["outbound"]["enabled"], True)
         self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
+        self.assertIn("plain text email body", status["inbound"]["parsing"]["fields"])
+        self.assertIn("HTML email body", status["inbound"]["parsing"]["fields"])
+        self.assertIn("NDA", status["inbound"]["parsing"]["terms"])
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
         self.assertIn("data/gmail/inbound-token.json", status["inbound"]["error"])
         self.assertEqual(status["inbound"]["token"], {
@@ -1682,8 +1685,116 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(result["imported"]), 1)
         self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_new")
         self.assertEqual(result["imported"][0]["reply_to"], "Legal <legal@example.com>")
+        self.assertEqual(result["imported"][0]["gmail_detection_sources"], "subject, attachment_filename")
+        self.assertEqual(result["imported"][0]["gmail_detection_terms"], "NDA")
         self.assertEqual(matter_view.public_matter(result["imported"][0])["recipient_email"], "legal@example.com")
         self.assertEqual(len(stored), 2)
+
+    def test_gmail_import_parses_plain_text_and_html_message_bodies_for_nda_signals(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def attachments(self):
+                return self
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        docx_bytes = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        docx_data = inline(docx_bytes)
+        plain_body = inline(b"Please review the attached non-disclosure agreement.")
+        html_body = inline(b"<html><body><p>Please review the attached confidentiality agreement.</p></body></html>")
+        irrelevant_body = inline(b"Please review the attached statement of work.")
+        messages = {
+            "msg_plain_body": {
+                "id": "msg_plain_body",
+                "threadId": "thr_plain",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [{"name": "From", "value": "Founder <founder@example.com>"}, {"name": "Subject", "value": "Documents for review"}],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": plain_body}},
+                        {"partId": "doc", "filename": "Agreement.docx", "body": {"data": docx_data}},
+                    ],
+                },
+            },
+            "msg_html_body": {
+                "id": "msg_html_body",
+                "threadId": "thr_html",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [{"name": "From", "value": "Legal <legal@example.com>"}, {"name": "Subject", "value": "Attached contract"}],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/html", "body": {"data": html_body}},
+                        {"partId": "doc", "filename": "Contract.docx", "body": {"data": docx_data}},
+                    ],
+                },
+            },
+            "msg_irrelevant": {
+                "id": "msg_irrelevant",
+                "threadId": "thr_irrelevant",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [{"name": "From", "value": "Ops <ops@example.com>"}, {"name": "Subject", "value": "Attached contract"}],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": irrelevant_body}},
+                        {"partId": "doc", "filename": "Contract.docx", "body": {"data": docx_data}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                        result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["no_nda_signal"])
+        self.assertEqual(len(result["imported"]), 2)
+        imported_by_id = {item["gmail_message_id"]: item for item in result["imported"]}
+        self.assertEqual(imported_by_id["msg_plain_body"]["gmail_detection_sources"], "body")
+        self.assertIn("non-disclosure agreement", imported_by_id["msg_plain_body"]["gmail_detection_terms"])
+        self.assertEqual(imported_by_id["msg_html_body"]["gmail_detection_sources"], "body")
+        self.assertIn("confidentiality agreement", imported_by_id["msg_html_body"]["gmail_detection_terms"])
 
     def test_gmail_sync_process_lock_blocks_parallel_processes(self):
         if server_module.fcntl is None:

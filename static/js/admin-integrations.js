@@ -1,10 +1,12 @@
 const AdminIntegrationsView = (() => {
   const DEFAULT_QUERY_FALLBACK = [
     "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me",
-    '(subject:NDA OR subject:"non-disclosure" OR subject:"non disclosure"',
-    'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement"',
-    'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)',
+    '(NDA OR "non-disclosure" OR "non disclosure"',
+    'OR "non-disclosure agreement" OR "non disclosure agreement"',
+    'OR "confidentiality agreement" OR confidentiality OR confidential)',
   ].join(" ");
+  const DEFAULT_PARSED_FIELDS = "Subject headers, plain text body, HTML body, Gmail snippet, attachment filenames";
+  const DEFAULT_PARSED_TERMS = "non-disclosure agreement, non-disclosure, confidentiality agreement, confidentiality, confidential, NDA";
   const DEFAULT_FREQUENCY = "10_minutes";
   const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",
@@ -116,6 +118,8 @@ const AdminIntegrationsView = (() => {
       setFact("inbound-token-source", tokenSourceLabel(inbound));
       setFact("outbound-token-source", tokenSourceLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
+      setFact("parsed-fields", parsingFieldsLabel(inbound.parsing));
+      setFact("parsed-terms", parsingTermsLabel(inbound.parsing));
       setFact("last-sync", lastSyncLabel(status));
       renderConnectionSetup(status);
       renderSyncHistory(status.settings?.sync_history || []);
@@ -240,6 +244,8 @@ const AdminIntegrationsView = (() => {
       setFact("inbound-token-source", "Unknown");
       setFact("outbound-token-source", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
+      setFact("parsed-fields", DEFAULT_PARSED_FIELDS);
+      setFact("parsed-terms", DEFAULT_PARSED_TERMS);
       setFact("last-sync", lastSyncLabel(state.gmailStatus || {}));
       renderConnectionSetup(state.gmailStatus || {});
       renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
@@ -321,6 +327,18 @@ const AdminIntegrationsView = (() => {
     if (token.configured === true) return "Configured";
     if (token.configured === false) return "Missing";
     return "Unknown";
+  }
+
+  function parsingFieldsLabel(parsing) {
+    const fields = Array.isArray(parsing?.fields) ? parsing.fields.filter(Boolean) : [];
+    if (!fields.length) return DEFAULT_PARSED_FIELDS;
+    const mode = String(parsing?.mode || "").trim();
+    return mode ? `${fields.join(", ")}. ${mode}` : fields.join(", ");
+  }
+
+  function parsingTermsLabel(parsing) {
+    const terms = Array.isArray(parsing?.terms) ? parsing.terms.filter(Boolean) : [];
+    return terms.length ? terms.join(", ") : DEFAULT_PARSED_TERMS;
   }
 
   function connectionNextStep(role, account, token) {
