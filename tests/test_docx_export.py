@@ -527,6 +527,36 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
 
+    def test_source_docx_export_preserves_ignorable_namespace_prefixes(self):
+        source_text = "This Agreement shall be governed by the laws of California."
+        document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+  mc:Ignorable="w14 wp14">
+  <w:body><w:p><w:r><w:t>{escape_xml(source_text)}</w:t></w:r></w:p></w:body>
+</w:document>"""
+        source_docx = replace_docx_parts(
+            make_source_docx([source_text]),
+            {"word/document.xml": document_xml},
+        )
+        result = review_nda(source_text)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            redlined_xml = archive.read("word/document.xml").decode("utf-8")
+        ET.fromstring(redlined_xml)
+        self.assertIn('mc:Ignorable="w14 wp14"', redlined_xml)
+        self.assertIn('xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"', redlined_xml)
+        self.assertIn('xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"', redlined_xml)
+        self.assertIn('xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"', redlined_xml)
+        self.assertNotIn("ns0:Ignorable", redlined_xml)
+        self.assertNotIn("xmlns:ns", redlined_xml)
+
     def test_source_docx_export_preserves_grouped_numbers_and_non_ascii_words(self):
         original = "Payment cap is 1,000 for café records."
         replacement = "Payment cap is 1,000 for café documents."

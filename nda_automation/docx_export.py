@@ -39,6 +39,8 @@ RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
 INVALID_XML_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]")
+RESERVED_NAMESPACE_PREFIX_PATTERN = re.compile(r"ns\d+$")
+XML_NAMESPACE_PREFIX_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
 
 class SourceParagraph(NamedTuple):
@@ -99,7 +101,11 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
             validate_docx_archive(source_archive)
             source_names = set(source_archive.namelist())
-            document_root = parse_docx_xml(source_archive.read("word/document.xml"), part_name="word/document.xml")
+            document_xml = source_archive.read("word/document.xml")
+            document_root, document_namespaces = _parse_docx_xml_with_namespaces(
+                document_xml,
+                part_name="word/document.xml",
+            )
             _strip_paragraph_property_revisions(document_root)
             _apply_redline_edits_to_source_document(
                 document_root,
@@ -109,7 +115,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
             _ensure_document_section_properties(document_root)
 
             overrides: Dict[str, bytes] = {
-                "word/document.xml": _xml_bytes(document_root),
+                "word/document.xml": _xml_bytes(document_root, namespace_declarations=document_namespaces),
                 "word/settings.xml": _settings_xml_with_track_revisions(
                     source_archive.read("word/settings.xml") if "word/settings.xml" in source_names else None
                 ),
@@ -808,12 +814,13 @@ def _package_rels_xml() -> str:
 
 def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
     if relationships_xml:
-        relationships_root = parse_docx_xml(relationships_xml, part_name="_rels/.rels")
+        relationships_root, namespaces = _parse_docx_xml_with_namespaces(relationships_xml, part_name="_rels/.rels")
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
+        namespaces = {}
 
     _ensure_relationship_target(relationships_root, OFFICE_DOCUMENT_RELATIONSHIP_TYPE, "word/document.xml")
-    return _xml_bytes(relationships_root)
+    return _xml_bytes(relationships_root, namespace_declarations=namespaces)
 
 
 def _document_rels_xml() -> str:
@@ -826,9 +833,10 @@ def _document_rels_xml() -> str:
 
 def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
     if settings_xml:
-        settings_root = parse_docx_xml(settings_xml, part_name="word/settings.xml")
+        settings_root, namespaces = _parse_docx_xml_with_namespaces(settings_xml, part_name="word/settings.xml")
     else:
         settings_root = ET.Element(_w_tag("settings"))
+        namespaces = {}
 
     revision_view = settings_root.find(_w_tag("revisionView"))
     if revision_view is None:
@@ -846,24 +854,32 @@ def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
     else:
         track_revisions.attrib.pop(_w_tag("val"), None)
         track_revisions.attrib.pop("val", None)
-    return _xml_bytes(settings_root)
+    return _xml_bytes(settings_root, namespace_declarations=namespaces)
 
 
 def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
     if relationships_xml:
-        relationships_root = parse_docx_xml(relationships_xml, part_name="word/_rels/document.xml.rels")
+        relationships_root, namespaces = _parse_docx_xml_with_namespaces(
+            relationships_xml,
+            part_name="word/_rels/document.xml.rels",
+        )
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
+        namespaces = {}
 
     _ensure_relationship_target(relationships_root, SETTINGS_RELATIONSHIP_TYPE, "settings.xml")
-    return _xml_bytes(relationships_root)
+    return _xml_bytes(relationships_root, namespace_declarations=namespaces)
 
 
 def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_styles: bool = False) -> bytes:
     if content_types_xml:
-        content_types_root = parse_docx_xml(content_types_xml, part_name="[Content_Types].xml")
+        content_types_root, namespaces = _parse_docx_xml_with_namespaces(
+            content_types_xml,
+            part_name="[Content_Types].xml",
+        )
     else:
         content_types_root = ET.Element(_content_type_tag("Types"))
+        namespaces = {}
 
     _ensure_content_type_default(content_types_root, "rels", RELATIONSHIPS_CONTENT_TYPE)
     _ensure_content_type_default(content_types_root, "xml", "application/xml")
@@ -871,7 +887,7 @@ def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_sty
     _ensure_content_type_override(content_types_root, "/word/settings.xml", SETTINGS_CONTENT_TYPE)
     if has_styles:
         _ensure_content_type_override(content_types_root, "/word/styles.xml", STYLES_CONTENT_TYPE)
-    return _xml_bytes(content_types_root)
+    return _xml_bytes(content_types_root, namespace_declarations=namespaces)
 
 
 def _ensure_relationship_target(relationships_root: ET.Element, relationship_type: str, target: str) -> None:
@@ -983,8 +999,83 @@ def _content_type_tag(tag: str) -> str:
     return f"{{{CONTENT_TYPES_NS}}}{tag}"
 
 
-def _xml_bytes(root: ET.Element) -> bytes:
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+def _parse_docx_xml_with_namespaces(xml: bytes, *, part_name: str) -> tuple[ET.Element, Dict[str, str]]:
+    root = parse_docx_xml(xml, part_name=part_name)
+    namespaces = _xml_namespace_declarations(xml)
+    _register_xml_namespaces(namespaces)
+    return root, namespaces
+
+
+def _xml_namespace_declarations(xml: bytes) -> Dict[str, str]:
+    namespaces: Dict[str, str] = {}
+    for _event, namespace in ET.iterparse(BytesIO(xml), events=("start-ns",)):
+        prefix, uri = namespace
+        if prefix and uri and prefix not in namespaces:
+            namespaces[prefix] = uri
+    return namespaces
+
+
+def _register_xml_namespaces(namespaces: Dict[str, str]) -> None:
+    for prefix, uri in namespaces.items():
+        if not _can_preserve_namespace_prefix(prefix):
+            continue
+        try:
+            ET.register_namespace(prefix, uri)
+        except ValueError:
+            continue
+
+
+def _can_preserve_namespace_prefix(prefix: str) -> bool:
+    if not prefix or prefix in {"xml", "xmlns"}:
+        return False
+    if RESERVED_NAMESPACE_PREFIX_PATTERN.fullmatch(prefix):
+        return False
+    return bool(XML_NAMESPACE_PREFIX_PATTERN.fullmatch(prefix))
+
+
+def _xml_bytes(root: ET.Element, *, namespace_declarations: Dict[str, str] | None = None) -> bytes:
+    xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    if namespace_declarations:
+        xml = _ensure_root_namespace_declarations(xml, namespace_declarations)
+    return xml
+
+
+def _ensure_root_namespace_declarations(xml: bytes, namespace_declarations: Dict[str, str]) -> bytes:
+    root_start, root_end = _root_start_tag_bounds(xml)
+    if root_start is None or root_end is None:
+        return xml
+
+    root_tag = xml[root_start:root_end]
+    missing_declarations = []
+    for prefix, uri in namespace_declarations.items():
+        if not _can_preserve_namespace_prefix(prefix):
+            continue
+        declaration_name = f"xmlns:{prefix}=".encode("utf-8")
+        if declaration_name in root_tag:
+            continue
+        escaped_uri = _escape_attr(uri).encode("utf-8")
+        missing_declarations.append(b' xmlns:' + prefix.encode("utf-8") + b'="' + escaped_uri + b'"')
+
+    if not missing_declarations:
+        return xml
+    insertion_point = root_end - 1 if xml[root_end - 1:root_end] == b"/" else root_end
+    return xml[:insertion_point] + b"".join(missing_declarations) + xml[insertion_point:]
+
+
+def _root_start_tag_bounds(xml: bytes) -> tuple[int | None, int | None]:
+    offset = 0
+    if xml.startswith(b"<?xml"):
+        declaration_end = xml.find(b"?>")
+        if declaration_end != -1:
+            offset = declaration_end + 2
+
+    root_start = xml.find(b"<", offset)
+    if root_start == -1:
+        return None, None
+    root_end = xml.find(b">", root_start)
+    if root_end == -1:
+        return None, None
+    return root_start, root_end
 
 
 def _clone_element(element: ET.Element) -> ET.Element:
