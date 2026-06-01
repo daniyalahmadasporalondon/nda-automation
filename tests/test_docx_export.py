@@ -510,6 +510,55 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
         self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
 
+    def test_source_docx_export_preserves_multiple_redlines_on_same_source_paragraph(self):
+        original = "This Agreement is governed by California. Confidentiality survives for seven years."
+        governing_law_replacement = "This Agreement is governed by the laws of England and Wales."
+        term_replacement = "Confidentiality survives for a fixed period of up to five years."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 2,
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": governing_law_replacement,
+                },
+                {
+                    "id": "r2",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": term_replacement,
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        self.assertIn((original, ""), states)
+        self.assertIn(("", governing_law_replacement), states)
+        self.assertIn(("", term_replacement), states)
+        self.assertEqual(sum(1 for rejected, _accepted in states if rejected == original), 1)
+
     def test_source_docx_export_rejects_suspicious_compression_ratio(self):
         source_docx = make_source_docx(["A" * 4096])
 
