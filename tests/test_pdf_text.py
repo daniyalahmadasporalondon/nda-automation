@@ -105,7 +105,7 @@ def make_pdf_pages(pages):
     object_count = 3 + len(pages) * 2
     kids = " ".join(f"{3 + index * 2} 0 R" for index in range(len(pages)))
     objects = [
-        f"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
         f"2 0 obj << /Type /Pages /Kids [{kids}] /Count {len(pages)} >> endobj\n",
     ]
     for index, lines in enumerate(pages):

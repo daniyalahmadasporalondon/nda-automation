@@ -926,9 +926,6 @@ class ServerTests(unittest.TestCase):
             def list(self, userId, q, maxResults):
                 return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
 
-            def get(self, userId, id, format):
-                return FakeExecutable(self.messages[id])
-
             def attachments(self):
                 return self
 
