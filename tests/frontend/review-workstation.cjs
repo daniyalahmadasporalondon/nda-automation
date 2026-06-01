@@ -270,6 +270,7 @@ async function testPlaybookAdminEditor(page) {
         last_sync_imported_count: 2,
         last_sync_skipped_count: 1,
         sync_history: [{
+          deduplicated_count: 2,
           duplicate_count: 1,
           error: "",
           finished_at: "2026-05-31T12:34:00+00:00",
@@ -422,7 +423,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), serverSyncLabel);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "SYNC AUDIT");
-  await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped / 1 duplicates / 0 review failures");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped / 1 duplicates / 2 stale duplicates removed / 0 review failures");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");

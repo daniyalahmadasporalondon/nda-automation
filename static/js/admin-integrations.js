@@ -129,6 +129,7 @@ const AdminIntegrationsView = (() => {
         const imported = Number(run.imported_count || 0);
         const skipped = Number(run.skipped_count || 0);
         const duplicate = Number(run.duplicate_count || 0);
+        const deduplicated = Number(run.deduplicated_count || 0);
         const reviewFailed = Number(run.review_failed_count || 0);
         const status = run.status === "error" ? "Error" : "Complete";
         const query = run.query ? `<p class="integration-sync-history-query">${escapeHtml(run.query)}</p>` : "";
@@ -139,7 +140,7 @@ const AdminIntegrationsView = (() => {
               <strong>${escapeHtml(formatDateTime(run.finished_at || run.started_at) || run.finished_at || run.started_at || "-")}</strong>
               <span>${escapeHtml(status)}</span>
             </div>
-            <p class="integration-sync-history-counts">${imported} imported / ${skipped} skipped / ${duplicate} duplicates / ${reviewFailed} review failures</p>
+            <p class="integration-sync-history-counts">${imported} imported / ${skipped} skipped / ${duplicate} duplicates / ${deduplicated} stale duplicates removed / ${reviewFailed} review failures</p>
             ${query}
             ${error}
           </article>

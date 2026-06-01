@@ -991,6 +991,7 @@ class ServerTests(unittest.TestCase):
             with patches[0], patches[1], patches[2]:
                 app_settings.record_gmail_sync(
                     {
+                        "deduplicated_count": 2,
                         "imported": [{"id": "matter_1"}],
                         "query": "query one",
                         "skipped": [
@@ -1020,6 +1021,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(settings["sync_history"][1]["imported_count"], 1)
         self.assertEqual(settings["sync_history"][1]["skipped_count"], 2)
         self.assertEqual(settings["sync_history"][1]["duplicate_count"], 1)
+        self.assertEqual(settings["sync_history"][1]["deduplicated_count"], 2)
         self.assertEqual(settings["sync_history"][1]["review_failed_count"], 1)
 
     def test_scheduled_gmail_sync_uses_full_import_window(self):
@@ -1030,12 +1032,14 @@ class ServerTests(unittest.TestCase):
             "skipped": [],
         }
         with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value=result) as import_inbound:
-            with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
-                server_module._run_scheduled_gmail_sync()
+            with patch.object(server_module.matter_store, "deduplicate_gmail_matters", return_value=2) as deduplicate:
+                with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                    server_module._run_scheduled_gmail_sync()
 
         import_inbound.assert_called_once_with(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+        deduplicate.assert_called_once_with()
         record_sync.assert_called_once()
-        self.assertEqual(record_sync.call_args.args[0], result)
+        self.assertEqual(record_sync.call_args.args[0], {**result, "deduplicated_count": 2})
 
     def test_gmail_import_skips_duplicate_and_imports_new_attachment(self):
         class FakeExecutable:

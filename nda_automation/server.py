@@ -998,6 +998,7 @@ def _run_scheduled_gmail_sync() -> None:
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+        result = {**result, "deduplicated_count": matter_store.deduplicate_gmail_matters()}
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
     except Exception as error:  # pragma: no cover - defensive background logging.
