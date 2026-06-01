@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev portabi
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
-MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo"}
+MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo", "manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
@@ -395,6 +395,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             ),
             "attachment_filename": self._clean_intake_text(payload.get("attachment_filename")) or filename,
         }
+        reply_to = self._clean_intake_text(payload.get("reply_to"))
+        reply_to = gmail_integration.recipient_email(reply_to) if reply_to else ""
+        if reply_to:
+            metadata["reply_to"] = reply_to
         for field in ("gmail_account", "gmail_attachment_id", "gmail_attachment_sha256", "gmail_message_id", "gmail_part_id", "gmail_thread_id"):
             value = self._clean_intake_text(payload.get(field))
             if value:
@@ -519,14 +523,20 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if matter is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
-        if not gmail_integration.recipient_email(matter.get("sender")):
-            self._send_json({"error": "Matter sender is not a valid email address."}, status=400)
+        if not gmail_integration.matter_reply_recipient(matter):
+            self._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
             return
         if not app_settings.gmail_role_enabled("outbound"):
-            self._send_json({"error": "Gmail outbound is disabled in Admin."}, status=503)
+            self._send_json({"error": "Gmail outbound is disabled in Admin."}, status=409)
             return
         outbound_subject = _clean_outbound_subject(payload.get("subject"))
         outbound_body = _clean_outbound_body(payload.get("body"))
+
+        try:
+            gmail_integration.validate_outbound_send_ready(matter)
+        except gmail_integration.GmailIntegrationError as error:
+            self._send_json({"error": str(error)}, status=_gmail_send_error_status(error))
+            return
 
         try:
             redline_export = redline_export_service.build_matter_redline(matter_id.strip(), payload)
@@ -549,7 +559,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 subject=outbound_subject,
             )
         except gmail_integration.GmailIntegrationError as error:
-            self._send_json({"error": str(error)}, status=503)
+            self._send_json({"error": str(error)}, status=_gmail_send_error_status(error))
             return
 
         updated_matter = matter_store.update_matter_fields(
@@ -764,6 +774,24 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
 
 
+def _gmail_send_error_status(error: Exception) -> int:
+    message = str(error).lower()
+    if "valid reply recipient" in message:
+        return 400
+    conflict_markers = (
+        "disabled in admin",
+        "does not match inbound gmail account",
+        "mismatch",
+        "self-sent gmail message",
+        "gmail outbound profile",
+        "set nda_gmail_outbound_token_path",
+        "gmail outbound token",
+    )
+    if any(marker in message for marker in conflict_markers):
+        return 409
+    return 503
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the nda-automation local app.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -825,24 +853,29 @@ def _gmail_sync_scheduler_loop() -> None:
                         if not lock_acquired:
                             last_run = now
                             continue
-                        started_at = datetime.now(UTC).isoformat()
                         try:
-                            result = gmail_integration.import_inbound_matters(limit=10)
-                            finished_at = datetime.now(UTC).isoformat()
-                            app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
-                        except Exception as error:  # pragma: no cover - defensive background logging.
-                            finished_at = datetime.now(UTC).isoformat()
-                            app_settings.record_gmail_sync_error(
-                                str(error),
-                                started_at=started_at,
-                                finished_at=finished_at,
-                                query=gmail_integration.DEFAULT_INBOUND_QUERY,
-                            )
-                            print(f"Gmail scheduled sync failed: {error}")
+                            _run_scheduled_gmail_sync()
                         finally:
                             last_run = now
         except Exception as error:  # pragma: no cover - defensive background logging.
             print(f"Gmail sync scheduler failed: {error}")
+
+
+def _run_scheduled_gmail_sync() -> None:
+    started_at = datetime.now(UTC).isoformat()
+    try:
+        result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+        finished_at = datetime.now(UTC).isoformat()
+        app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
+    except Exception as error:  # pragma: no cover - defensive background logging.
+        finished_at = datetime.now(UTC).isoformat()
+        app_settings.record_gmail_sync_error(
+            str(error),
+            started_at=started_at,
+            finished_at=finished_at,
+            query=gmail_integration.DEFAULT_INBOUND_QUERY,
+        )
+        print(f"Gmail scheduled sync failed: {error}")
         time.sleep(5)
 
 

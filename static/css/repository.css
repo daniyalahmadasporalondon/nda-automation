@@ -289,6 +289,11 @@
   color: var(--green-ink);
 }
 
+.repository-source-badge.manual {
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+
 .repository-card-source {
   color: var(--ink-soft);
   font-size: 11.5px;

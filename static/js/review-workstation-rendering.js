@@ -12,6 +12,7 @@ function renderResult(result, reviewedText) {
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.redlineDraft = null;
   state.redlineDraftDirty = false;
+  resetReviewEditHistory();
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
@@ -28,6 +29,7 @@ function renderStudioEmpty() {
   studioResultMark.className = "";
   studioOverallTitle.textContent = "Awaiting review";
   studioResultMeta.textContent = "No hard-clause review has run yet.";
+  resetReviewEditHistory();
   studioDetailPanel.innerHTML = `
     <p class="eyebrow">selected clause</p>
     <p>No review yet.</p>
@@ -42,11 +44,18 @@ function updateExportButtonState() {
     studioExportButton.disabled = !canExport;
   }
   if (!studioSendButton) return;
-  const canSend = Boolean(canExport && state.selectedMatter?.id && MatterUtils.canSendRedline(state.selectedMatter));
+  const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
+  const canSend = Boolean(canExport && state.selectedMatter?.id && !sendBlockReason);
   studioSendButton.disabled = !canSend;
   if (!canSend) {
     pendingReviewSendMatterId = null;
-    studioSendButton.textContent = "Send Redline";
+    studioSendButton.textContent = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
+    studioSendButton.title = sendBlockReason;
+  } else {
+    studioSendButton.title = "";
+    if (pendingReviewSendMatterId !== state.selectedMatter.id) {
+      studioSendButton.textContent = "Send Redline";
+    }
   }
   updateRedlineDraftControls();
 }
@@ -127,6 +136,7 @@ function applyMatterRedlineDraft(draft) {
   state.redlineDraft = draft && typeof draft === "object" ? draft : null;
   state.redlineDraftDirty = false;
   if (!state.redlineDraft) {
+    resetReviewEditHistory();
     updateRedlineDraftControls();
     return;
   }
@@ -134,6 +144,7 @@ function applyMatterRedlineDraft(draft) {
   applyDraftTemplateSelections(state.redlineDraft.template_selections);
   applyDraftManualRedlines(state.redlineDraft.manual_redline_edits);
   renderStudioResult({ clauses: state.reviewClauses });
+  resetReviewEditHistory();
   updateRedlineDraftControls();
 }
 
@@ -147,6 +158,7 @@ function resetCurrentRedlineDraftToDefaults() {
   syncReviewSourceFromParagraphs();
   state.redlineDraft = null;
   state.redlineDraftDirty = false;
+  resetReviewEditHistory();
   renderStudioResult({ clauses: state.reviewClauses });
   updateRedlineDraftControls();
 }
@@ -259,6 +271,17 @@ function bindExportDecisionControls(container) {
 }
 
 function setClauseExportDecision(clauseId, included) {
+  const hadPrevious = Object.prototype.hasOwnProperty.call(state.exportClauseDecisions, clauseId);
+  const previousIncluded = state.exportClauseDecisions[clauseId];
+  const currentIncluded = clauseExportIncluded(clauseId);
+  if (currentIncluded !== included) {
+    pushReviewEditHistoryEntry({
+      clauseId,
+      hadPrevious,
+      previousIncluded,
+      type: "clause_export_decision",
+    });
+  }
   state.exportClauseDecisions[clauseId] = included;
   state.selectedReviewClauseId = clauseId;
   markRedlineDraftDirty();
@@ -271,6 +294,15 @@ function setClauseExportDecision(clauseId, included) {
 }
 
 function setRedlineTemplateSelection(editId, optionId) {
+  const hadPrevious = Object.prototype.hasOwnProperty.call(state.redlineTemplateSelections, editId);
+  const previousOptionId = state.redlineTemplateSelections[editId];
+  if (previousOptionId === optionId) return;
+  pushReviewEditHistoryEntry({
+    editId,
+    hadPrevious,
+    previousOptionId,
+    type: "redline_template_selection",
+  });
   state.redlineTemplateSelections[editId] = optionId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });

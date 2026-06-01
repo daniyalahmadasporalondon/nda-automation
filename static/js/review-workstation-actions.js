@@ -17,6 +17,7 @@ function resetReviewResults() {
   state.reviewClauses = [];
   state.reviewOriginalParagraphs = [];
   state.reviewParagraphs = [];
+  resetReviewEditHistory();
   state.reviewRedlines = [];
   state.reviewSourceText = "";
   state.selectedReviewClauseId = null;
@@ -167,11 +168,19 @@ async function exportReviewDocx() {
 
 async function sendReviewRedlineEmail() {
   if (!state.selectedMatter?.id) return;
+  const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
+  if (sendBlockReason) {
+    pendingReviewSendMatterId = null;
+    studioSendButton.textContent = MatterUtils.gmailSendButtonLabel(sendBlockReason);
+    setFileMeta(sendBlockReason);
+    updateExportButtonState();
+    return;
+  }
   const recipient = MatterUtils.recipientEmail(state.selectedMatter);
   if (!recipient) {
     pendingReviewSendMatterId = null;
     studioSendButton.textContent = "Send Redline";
-    setFileMeta("Matter sender is not an email address");
+    setFileMeta("Matter does not have a valid reply recipient email address");
     updateExportButtonState();
     return;
   }

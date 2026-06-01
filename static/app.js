@@ -8,6 +8,7 @@ const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButt
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioSendButton = document.querySelector("#studioSendButton");
 const studioClearButton = document.querySelector("#studioClearButton");
+const studioUndoEditButton = document.querySelector("#studioUndoEditButton");
 const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioMatchSummary = document.querySelector("#studioMatchSummary");
@@ -32,6 +33,7 @@ const state = {
   reviewClauses: [],
   reviewOriginalParagraphs: [],
   reviewParagraphs: [],
+  reviewEditHistory: [],
   reviewRedlines: [],
   latestReviewResult: null,
   reviewSourceText: "",
@@ -55,6 +57,22 @@ const repositoryController = createRepositoryController({
   downloadFilename,
   loadMatterIntoReview,
   redlineDownloadFilename,
+  reviewErrorFromPayload,
+});
+createManualUploadController({
+  fileInput: document.querySelector("#manualUploadFileInput"),
+  form: document.querySelector("#manualUploadForm"),
+  selectedFileNode: document.querySelector("#manualUploadSelectedFile"),
+  statusNode: document.querySelector("#manualUploadStatus"),
+  subjectInput: document.querySelector("#manualUploadSubjectInput"),
+  senderInput: document.querySelector("#manualUploadSenderInput"),
+  noteInput: document.querySelector("#manualUploadNoteInput"),
+  submitButton: document.querySelector("#manualUploadSubmitButton"),
+  clearButton: document.querySelector("#manualUploadClearButton"),
+  dropzone: document.querySelector("#manualUploadDropzone"),
+  fileToBase64,
+  repositoryController,
+  activateTab,
   reviewErrorFromPayload,
 });
 adminIntegrationsController = createAdminIntegrationsController({
@@ -81,6 +99,7 @@ setupSourceEditors();
 setupReviewWorkstationActions();
 setActiveTab("review");
 setupDocumentViewModes();
+setupReviewUndoControls();
 
 const emptyState = () => {
   renderStudioEmpty();

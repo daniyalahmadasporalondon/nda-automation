@@ -1,6 +1,6 @@
 const AdminIntegrationsView = (() => {
   const DEFAULT_QUERY_FALLBACK = [
-    "has:attachment (filename:docx OR filename:pdf) newer_than:30d",
+    "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me",
     '(subject:NDA OR subject:"non-disclosure" OR subject:"non disclosure"',
     'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement"',
     'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)',
@@ -110,8 +110,8 @@ const AdminIntegrationsView = (() => {
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
-      setFact("inbound-configured", configuredLabel(inbound));
-      setFact("outbound-configured", configuredLabel(outbound));
+      setFact("inbound-configured", inbound.error || configuredLabel(inbound));
+      setFact("outbound-configured", outbound.error || configuredLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(status.settings || {}));
       renderSyncHistory(status.settings?.sync_history || []);

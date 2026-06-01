@@ -409,10 +409,43 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_bytes, source_docx)
         self.assertEqual(list_status, 200)
         self.assertEqual([item["id"] for item in list_payload["matters"]], [matter["id"]])
+        self.assertNotIn("extracted_text", list_payload["matters"][0])
+        self.assertNotIn("review_result", list_payload["matters"][0])
+        self.assertNotIn("redline_draft", list_payload["matters"][0])
         self.assertEqual(fetch_status, 200)
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
         self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
         self.assertEqual(fetch_payload["matter"]["can_send_redline"], False)
+        self.assertIn("extracted_text", fetch_payload["matter"])
+        self.assertIn("review_result", fetch_payload["matter"])
+
+    def test_matter_upload_supports_manual_upload_source(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of Delaware.",
+            "The Recipient shall keep Confidential Information confidential for five years.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Manual NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "manual_upload",
+                        "sender": "counterparty@example.com",
+                        "subject": "Uploaded NDA",
+                    },
+                )
+
+        matter = payload["matter"]
+        self.assertEqual(status, 201)
+        self.assertEqual(matter["source_type"], "manual_upload")
+        self.assertEqual(matter["board_column"], "in_review")
+        self.assertEqual(matter["sender"], "counterparty@example.com")
+        self.assertEqual(matter["recipient_email"], "counterparty@example.com")
+        self.assertEqual(matter["subject"], "Uploaded NDA")
 
     def test_demo_reset_clears_repository_and_uploaded_documents(self):
         source_docx = make_docx([
@@ -494,6 +527,22 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("gmail_message_id", public)
         self.assertNotIn("gmail_attachment_id", public)
 
+    def test_public_matters_list_omits_heavy_detail_fields(self):
+        public = matter_view.public_matters([{
+            "id": "matter_1",
+            "sender": "Sender <sender@example.com>",
+            "subject": "NDA",
+            "extracted_text": "Large extracted document text",
+            "redline_draft": {"manual_redline_edits": []},
+            "review_result": {"clauses": []},
+        }])[0]
+
+        self.assertEqual(public["id"], "matter_1")
+        self.assertEqual(public["recipient_email"], "sender@example.com")
+        self.assertNotIn("extracted_text", public)
+        self.assertNotIn("redline_draft", public)
+        self.assertNotIn("review_result", public)
+
     def test_public_matter_rejects_sender_display_name_email_spoof(self):
         public = matter_view.public_matter({
             "id": "matter_1",
@@ -503,6 +552,29 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(public["recipient_email"], "")
         self.assertEqual(public["can_send_redline"], False)
+
+    def test_public_matter_prefers_reply_to_recipient(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "reply_to": "Counsel <reply@example.com>",
+            "sender": "Noreply <noreply@example.com>",
+            "subject": "NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "reply@example.com")
+        self.assertEqual(public["can_send_redline"], True)
+
+    def test_public_matter_blocks_connected_account_sender(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "gmail_account": "daniyal.ahmad@aspora.com",
+            "sender": "Daniyal Ahmad <daniyal.ahmad@aspora.com>",
+            "subject": "Re: NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "daniyal.ahmad@aspora.com")
+        self.assertEqual(public["can_send_redline"], False)
+        self.assertIn("self-sent Gmail message", public["send_block_reason"])
 
     def test_matter_retention_prunes_old_closed_uploads(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -700,6 +772,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
 
+    def test_gmail_status_blocks_outbound_when_accounts_do_not_match(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            def __init__(self, email):
+                self.email = email
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": self.email})
+
+        class FakeGmailService:
+            def __init__(self, email):
+                self.users_api = FakeUsers(email)
+
+            def users(self):
+                return self.users_api
+
+        with tempfile.TemporaryDirectory() as data_dir, tempfile.TemporaryDirectory() as token_dir:
+            token_path = server_module.Path(token_dir)
+            inbound_token = token_path / "inbound.json"
+            outbound_token = token_path / "outbound.json"
+            inbound_token.write_text("{}", encoding="utf-8")
+            outbound_token.write_text("{}", encoding="utf-8")
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: str(inbound_token),
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: str(outbound_token),
+                }, clear=False):
+                    with patch.object(gmail_integration, "_gmail_service", side_effect=lambda role: FakeGmailService(
+                        "inbound@aspora.com" if role == "inbound" else "outbound@aspora.com"
+                    )):
+                        status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["account_match"], False)
+        self.assertEqual(status["inbound"]["ready"], True)
+        self.assertEqual(status["outbound"]["ready"], False)
+        self.assertIn("does not match inbound Gmail account inbound@aspora.com", status["outbound"]["error"])
+
     def test_gmail_settings_endpoint_persists_toggles(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -779,6 +895,135 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(settings["sync_history"][1]["skipped_count"], 2)
         self.assertEqual(settings["sync_history"][1]["duplicate_count"], 1)
         self.assertEqual(settings["sync_history"][1]["review_failed_count"], 1)
+
+    def test_scheduled_gmail_sync_uses_full_import_window(self):
+        result = {
+            "account": "inbound@aspora.com",
+            "imported": [{"id": "matter_1"}],
+            "query": gmail_integration.DEFAULT_INBOUND_QUERY,
+            "skipped": [],
+        }
+        with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value=result) as import_inbound:
+            with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                server_module._run_scheduled_gmail_sync()
+
+        import_inbound.assert_called_once_with(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+        record_sync.assert_called_once()
+        self.assertEqual(record_sync.call_args.args[0], result)
+
+    def test_gmail_import_skips_duplicate_and_imports_new_attachment(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId, id, format):
+                return FakeExecutable(self.messages[id])
+
+            def attachments(self):
+                return self
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                if messageId:
+                    return FakeExecutable({"data": ""})
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "daniyal.ahmad@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        docx_bytes = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient must not circumvent the Company.",
+        ])
+        inline_data = base64.urlsafe_b64encode(docx_bytes).decode("ascii").rstrip("=")
+        messages = {
+            "msg_duplicate": {
+                "id": "msg_duplicate",
+                "threadId": "thr_duplicate",
+                "labelIds": ["INBOX"],
+                "payload": {
+                    "headers": [{"name": "From", "value": "Legal <legal@example.com>"}, {"name": "Subject", "value": "NDA"}],
+                    "parts": [{"partId": "1", "filename": "Duplicate NDA.docx", "body": {"attachmentId": "att_duplicate"}}],
+                },
+            },
+            "msg_self": {
+                "id": "msg_self",
+                "threadId": "thr_self",
+                "labelIds": ["SENT"],
+                "snippet": "Please find attached the redlined version.",
+                "payload": {
+                    "headers": [{"name": "From", "value": "Daniyal Ahmad <daniyal.ahmad@aspora.com>"}, {"name": "Subject", "value": "Re: NDA"}],
+                    "parts": [{"partId": "1", "filename": "New NDA-redlined.docx", "body": {"data": inline_data}}],
+                },
+            },
+            "msg_new": {
+                "id": "msg_new",
+                "threadId": "thr_new",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Noreply <noreply@example.com>"},
+                        {"name": "Reply-To", "value": "Legal <legal@example.com>"},
+                        {"name": "Subject", "value": "NDA"},
+                    ],
+                    "parts": [{"partId": "1", "filename": "New NDA.docx", "body": {"data": inline_data}}],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_store.create_matter(
+                    source_filename="Duplicate NDA.docx",
+                    document_bytes=docx_bytes,
+                    extracted_text="Duplicate",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "gmail_attachment_id": "att_duplicate",
+                        "gmail_message_id": "msg_duplicate",
+                        "gmail_part_id": "1",
+                    },
+                    dedupe_gmail=True,
+                )
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                        result = gmail_integration.import_inbound_matters(limit=25)
+                stored = matter_store.list_matters()
+
+        self.assertEqual(result["account"], "daniyal.ahmad@aspora.com")
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["duplicate_attachment", "self_sent_or_outbound"])
+        self.assertEqual(len(result["imported"]), 1)
+        self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_new")
+        self.assertEqual(result["imported"][0]["reply_to"], "Legal <legal@example.com>")
+        self.assertEqual(matter_view.public_matter(result["imported"][0])["recipient_email"], "legal@example.com")
+        self.assertEqual(len(stored), 2)
 
     def test_gmail_sync_process_lock_blocks_parallel_processes(self):
         if server_module.fcntl is None:
@@ -886,7 +1131,8 @@ class ServerTests(unittest.TestCase):
                     {
                         "filename": "Attached NDA.docx",
                         "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                        "sender": "legal@example.com",
+                        "sender": "noreply@example.com",
+                        "reply_to": "Legal <legal@example.com>",
                         "subject": "Please review our NDA",
                         "received_at": "2026-05-31T10:15:00+01:00",
                         "message_snippet": "Hi team, please review the attached NDA.",
@@ -907,7 +1153,8 @@ class ServerTests(unittest.TestCase):
         matter = payload["matter"]
         self.assertEqual(matter["source_type"], "gmail_inbound")
         self.assertEqual(matter["board_column"], "gmail_demo")
-        self.assertEqual(matter["sender"], "legal@example.com")
+        self.assertEqual(matter["sender"], "noreply@example.com")
+        self.assertEqual(matter["reply_to"], "legal@example.com")
         self.assertEqual(matter["recipient_email"], "legal@example.com")
         self.assertEqual(matter["can_send_redline"], True)
         self.assertEqual(matter["subject"], "Please review our NDA")
@@ -925,6 +1172,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
         self.assertEqual(stored_matter["gmail_part_id"], "part_1")
         self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")
+        self.assertEqual(stored_matter["reply_to"], "legal@example.com")
         self.assertEqual(duplicate["id"], matter["id"])
 
     def test_matter_upload_rejects_spoofed_sender_for_redline_recipient(self):
@@ -1178,24 +1426,25 @@ class ServerTests(unittest.TestCase):
                 )
                 with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
-                        with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
-                            "message_id": "msg_outbound",
-                            "outbound_account": "legal@aspora.com",
-                            "sent_at": "2026-05-31T12:00:00+00:00",
-                            "subject": "Re: Saved Draft NDA",
-                            "thread_id": "thread_outbound",
-                            "to": "legal@example.com",
-                        }):
-                            export_status, _export_payload = self.request(
-                                "POST",
-                                "/api/export-review-docx",
-                                {"matter_id": matter["id"]},
-                            )
-                            send_status, _send_payload = self.request(
-                                "POST",
-                                "/api/gmail/send-redline",
-                                {"matter_id": matter["id"], "confirm_send": True},
-                            )
+                        with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                            with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                                "message_id": "msg_outbound",
+                                "outbound_account": "legal@aspora.com",
+                                "sent_at": "2026-05-31T12:00:00+00:00",
+                                "subject": "Re: Saved Draft NDA",
+                                "thread_id": "thread_outbound",
+                                "to": "legal@example.com",
+                            }):
+                                export_status, _export_payload = self.request(
+                                    "POST",
+                                    "/api/export-review-docx",
+                                    {"matter_id": matter["id"]},
+                                )
+                                send_status, _send_payload = self.request(
+                                    "POST",
+                                    "/api/gmail/send-redline",
+                                    {"matter_id": matter["id"], "confirm_send": True},
+                                )
 
         self.assertEqual(create_status, 201)
         self.assertEqual(draft_status, 200)
@@ -1218,24 +1467,25 @@ class ServerTests(unittest.TestCase):
         with patch.object(server_module.redline_export_service, "build_matter_redline", return_value=redline_export) as build_matter_redline:
             with patch.object(server_module.matter_store, "get_matter", return_value=matter):
                 with patch.object(server_module.matter_store, "update_matter_fields", return_value=matter):
-                    with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
-                        "message_id": "msg_outbound",
-                        "outbound_account": "legal@aspora.com",
-                        "sent_at": "2026-05-31T12:00:00+00:00",
-                        "subject": "Re: Shared matter",
-                        "thread_id": "thread_outbound",
-                        "to": "legal@example.com",
-                    }):
-                        export_status, export_payload, export_headers = self.request_with_headers(
-                            "POST",
-                            "/api/export-review-docx",
-                            {"matter_id": matter_id, "export_redline_edits": []},
-                        )
-                        send_status, send_payload = self.request(
-                            "POST",
-                            "/api/gmail/send-redline",
-                            {"matter_id": matter_id, "confirm_send": True},
-                        )
+                    with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                        with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                            "message_id": "msg_outbound",
+                            "outbound_account": "legal@aspora.com",
+                            "sent_at": "2026-05-31T12:00:00+00:00",
+                            "subject": "Re: Shared matter",
+                            "thread_id": "thread_outbound",
+                            "to": "legal@example.com",
+                        }):
+                            export_status, export_payload, export_headers = self.request_with_headers(
+                                "POST",
+                                "/api/export-review-docx",
+                                {"matter_id": matter_id, "export_redline_edits": []},
+                            )
+                            send_status, send_payload = self.request(
+                                "POST",
+                                "/api/gmail/send-redline",
+                                {"matter_id": matter_id, "confirm_send": True},
+                            )
 
         self.assertEqual(export_status, 200)
         self.assertEqual(export_payload, b"shared redline docx")
@@ -1264,6 +1514,52 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 410)
         self.assertEqual(payload["error"], "Manual Gmail sync is disabled. Use Admin sync frequency.")
         import_inbound_matters.assert_not_called()
+
+    def test_gmail_send_redline_preflights_outbound_before_building_attachment(self):
+        matter = {
+            "id": "matter_mismatch",
+            "gmail_account": "daniyal.ahmad@aspora.com",
+            "sender": "Legal <legal@example.com>",
+            "subject": "NDA",
+        }
+        with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+            with patch.object(server_module.app_settings, "gmail_role_enabled", return_value=True):
+                with patch.object(
+                    server_module.gmail_integration,
+                    "validate_outbound_send_ready",
+                    side_effect=server_module.gmail_integration.GmailIntegrationError("Outbound Gmail account mismatch."),
+                ) as validate_ready:
+                    with patch.object(server_module.redline_export_service, "build_matter_redline") as build_matter_redline:
+                        status, payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {"matter_id": "matter_mismatch", "confirm_send": True},
+                        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"], "Outbound Gmail account mismatch.")
+        validate_ready.assert_called_once_with(matter)
+        build_matter_redline.assert_not_called()
+
+    def test_gmail_send_redline_rejects_missing_reply_recipient_as_bad_request(self):
+        matter = {
+            "id": "matter_no_reply",
+            "sender": "Manual upload",
+            "subject": "NDA",
+        }
+        with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+            with patch.object(server_module.gmail_integration, "validate_outbound_send_ready") as validate_ready:
+                with patch.object(server_module.redline_export_service, "build_matter_redline") as build_matter_redline:
+                    status, payload = self.request(
+                        "POST",
+                        "/api/gmail/send-redline",
+                        {"matter_id": "matter_no_reply", "confirm_send": True},
+                    )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Matter does not have a valid reply recipient email address.")
+        validate_ready.assert_not_called()
+        build_matter_redline.assert_not_called()
 
     def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
         with tempfile.TemporaryDirectory() as token_dir:
@@ -1318,7 +1614,8 @@ class ServerTests(unittest.TestCase):
         base_matter = {
             "gmail_account": "legal@aspora.com",
             "gmail_thread_id": "thread_inbound",
-            "sender": "Counterparty <legal@example.com>",
+            "reply_to": "Counterparty Counsel <legal@example.com>",
+            "sender": "Noreply <noreply@example.com>",
             "subject": "Please review",
         }
 
@@ -1377,6 +1674,48 @@ class ServerTests(unittest.TestCase):
 
         self.assertIsNone(service.users_api.sent_body)
 
+    def test_gmail_send_redline_rejects_connected_account_as_recipient(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            sent_body = None
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "daniyal.ahmad@aspora.com"})
+
+            def messages(self):
+                return self
+
+            def send(self, userId, body):
+                self.sent_body = body
+                return FakeExecutable({"id": "sent_1"})
+
+        class FakeGmailService:
+            def __init__(self):
+                self.users_api = FakeUsers()
+
+            def users(self):
+                return self.users_api
+
+        service = FakeGmailService()
+        matter = {
+            "gmail_account": "daniyal.ahmad@aspora.com",
+            "sender": "Daniyal Ahmad <daniyal.ahmad@aspora.com>",
+            "subject": "Re: NDA",
+        }
+
+        with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
+            with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
+                with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "self-sent Gmail message"):
+                    server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+
+        self.assertIsNone(service.users_api.sent_body)
+
     def test_gmail_send_redline_rejects_when_outbound_disabled(self):
         matter = {
             "sender": "Counterparty <legal@example.com>",
@@ -1400,7 +1739,7 @@ class ServerTests(unittest.TestCase):
         }
 
         with patch.object(server_module.gmail_integration, "_gmail_service") as gmail_service:
-            with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "valid email"):
+            with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "valid reply recipient"):
                 server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
 
         gmail_service.assert_not_called()
@@ -1427,30 +1766,31 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter_id = create_payload["matter"]["id"]
-                with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
-                    "message_id": "msg_outbound",
-                    "outbound_account": "outbound@example.com",
-                    "sent_at": "2026-05-31T12:00:00+00:00",
-                    "subject": "Aspora redline Update",
-                    "thread_id": "thr_inbound",
-                    "to": "legal@example.com",
-                }) as send_redline_email:
-                    unconfirmed_status, unconfirmed_payload = self.request(
-                        "POST",
-                        "/api/gmail/send-redline",
-                        {"matter_id": matter_id},
-                    )
-                    confirmed_status, confirmed_payload = self.request(
-                        "POST",
-                        "/api/gmail/send-redline",
-                        {
-                            "matter_id": matter_id,
-                            "confirm_send": True,
-                            "subject": " Aspora redline\r\nUpdate ",
-                            "body": "\r\nAttached redline.\r\nThanks.\r\n",
-                        },
-                    )
-                    stored_matter = matter_store.get_matter(matter_id)
+                with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                    with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                        "message_id": "msg_outbound",
+                        "outbound_account": "outbound@example.com",
+                        "sent_at": "2026-05-31T12:00:00+00:00",
+                        "subject": "Aspora redline Update",
+                        "thread_id": "thr_inbound",
+                        "to": "legal@example.com",
+                    }) as send_redline_email:
+                        unconfirmed_status, unconfirmed_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {"matter_id": matter_id},
+                        )
+                        confirmed_status, confirmed_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {
+                                "matter_id": matter_id,
+                                "confirm_send": True,
+                                "subject": " Aspora redline\r\nUpdate ",
+                                "body": "\r\nAttached redline.\r\nThanks.\r\n",
+                            },
+                        )
+                        stored_matter = matter_store.get_matter(matter_id)
 
         self.assertEqual(create_status, 201)
         self.assertEqual(unconfirmed_status, 400)
@@ -1498,23 +1838,24 @@ class ServerTests(unittest.TestCase):
                 self.assertGreater(len(matter["review_result"].get("redline_edits") or []), 0)
                 with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
-                        with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
-                            "message_id": "msg_outbound",
-                            "outbound_account": "legal@aspora.com",
-                            "sent_at": "2026-05-31T12:00:00+00:00",
-                            "subject": "Re: Decision NDA",
-                            "thread_id": "thread_outbound",
-                            "to": "legal@example.com",
-                        }):
-                            send_status, send_payload = self.request(
-                                "POST",
-                                "/api/gmail/send-redline",
-                                {
-                                    "matter_id": matter["id"],
-                                    "confirm_send": True,
-                                    "export_redline_edits": [],
-                                },
-                            )
+                        with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                            with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
+                                "message_id": "msg_outbound",
+                                "outbound_account": "legal@aspora.com",
+                                "sent_at": "2026-05-31T12:00:00+00:00",
+                                "subject": "Re: Decision NDA",
+                                "thread_id": "thread_outbound",
+                                "to": "legal@example.com",
+                            }):
+                                send_status, send_payload = self.request(
+                                    "POST",
+                                    "/api/gmail/send-redline",
+                                    {
+                                        "matter_id": matter["id"],
+                                        "confirm_send": True,
+                                        "export_redline_edits": [],
+                                    },
+                                )
 
         self.assertEqual(create_status, 201)
         self.assertEqual(send_status, 200)

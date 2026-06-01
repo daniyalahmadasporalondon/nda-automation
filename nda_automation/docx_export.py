@@ -98,6 +98,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
             validate_docx_archive(source_archive)
             source_names = set(source_archive.namelist())
             document_root = ET.fromstring(source_archive.read("word/document.xml"))
+            _strip_paragraph_property_revisions(document_root)
             _apply_redline_edits_to_source_document(
                 document_root,
                 review_result.get("redline_edits", []),
@@ -466,6 +467,8 @@ def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_par
     source_properties = source_paragraph.find(_w_tag("pPr"))
     tracked_properties = tracked_paragraph.find(_w_tag("pPr"))
     merged_properties = _clone_element(source_properties) if source_properties is not None else None
+    if merged_properties is not None:
+        _strip_paragraph_property_revisions(merged_properties)
 
     if tracked_properties is not None:
         tracked_run_properties = tracked_properties.find(_w_tag("rPr"))
@@ -485,6 +488,13 @@ def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_par
         if child.tag != _w_tag("pPr"):
             merged.append(_clone_element(child))
     return merged
+
+
+def _strip_paragraph_property_revisions(root: ET.Element) -> None:
+    for run_properties in root.findall(f".//{_w_tag('pPr')}/{_w_tag('rPr')}"):
+        for revision_tag in (_w_tag("ins"), _w_tag("del")):
+            for revision in list(run_properties.findall(revision_tag)):
+                run_properties.remove(revision)
 
 
 def _word_paragraph_from_xml(paragraph_xml: str) -> ET.Element:

@@ -1,3 +1,5 @@
+const REVIEW_EDIT_HISTORY_LIMIT = 50;
+
 function setupDocumentViewModes() {
   const buttons = document.querySelectorAll(".studio-view-switch [data-view-mode]");
   buttons.forEach((button) => {
@@ -6,6 +8,21 @@ function setupDocumentViewModes() {
     });
   });
   updateDocumentViewModeButtons();
+}
+
+function setupReviewUndoControls() {
+  studioUndoEditButton?.addEventListener("click", undoLastViewerEdit);
+  updateReviewUndoButtonState();
+}
+
+function updateReviewUndoButtonState() {
+  if (!studioUndoEditButton) return;
+  studioUndoEditButton.disabled = !(state.reviewEditHistory || []).length;
+}
+
+function resetReviewEditHistory() {
+  state.reviewEditHistory = [];
+  updateReviewUndoButtonState();
 }
 
 function setDocumentViewMode(mode, { render = false } = {}) {
@@ -32,16 +49,122 @@ function updateDocumentViewModeButtons() {
 function bindViewerParagraphEditing() {
   studioDocumentRender.querySelectorAll("[data-editable-paragraph-id]").forEach((editable) => {
     editable.addEventListener("focus", () => {
+      editable.dataset.editStartText = editableParagraphText(editable);
+      delete editable.dataset.editHistoryRecorded;
       editable.closest(".studio-doc-paragraph")?.classList.add("is-editing");
     });
     editable.addEventListener("blur", () => {
+      delete editable.dataset.editStartText;
+      delete editable.dataset.editHistoryRecorded;
       editable.closest(".studio-doc-paragraph")?.classList.remove("is-editing");
     });
     editable.addEventListener("input", () => {
+      recordViewerEditHistoryEntry(editable);
       syncViewerParagraphEdit(editable);
     });
     editable.addEventListener("paste", pastePlainText);
   });
+}
+
+function recordViewerEditHistoryEntry(editable) {
+  if (editable.dataset.editHistoryRecorded === "true") return;
+  const paragraphId = editable.dataset.editableParagraphId;
+  const beforeText = editable.dataset.editStartText ?? currentParagraphText(paragraphId);
+  const afterText = editableParagraphText(editable);
+  if (beforeText === afterText) return;
+
+  pushReviewEditHistoryEntry({
+    paragraphId,
+    previousText: beforeText,
+    type: "paragraph_text",
+  });
+  editable.dataset.editHistoryRecorded = "true";
+}
+
+function pushReviewEditHistoryEntry(entry) {
+  if (!entry || typeof entry !== "object") return;
+  state.reviewEditHistory = [
+    ...(state.reviewEditHistory || []),
+    entry,
+  ].slice(-REVIEW_EDIT_HISTORY_LIMIT);
+  updateReviewUndoButtonState();
+}
+
+function currentParagraphText(paragraphId) {
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  return String(paragraph?.text || "");
+}
+
+function undoLastViewerEdit() {
+  const lastEdit = state.reviewEditHistory?.pop();
+  if (!lastEdit) {
+    updateReviewUndoButtonState();
+    return;
+  }
+
+  if (lastEdit.type === "clause_export_decision") {
+    restoreClauseExportDecision(lastEdit);
+    return;
+  }
+
+  if (lastEdit.type === "redline_template_selection") {
+    restoreRedlineTemplateSelection(lastEdit);
+    return;
+  }
+
+  const paragraph = state.reviewParagraphs.find((item) => item.id === lastEdit.paragraphId);
+  if (!paragraph) {
+    updateReviewUndoButtonState();
+    return;
+  }
+
+  paragraph.text = lastEdit.previousText;
+  syncReviewSourceFromParagraphs();
+  markRedlineDraftDirty();
+  markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });
+  studioResultMeta.textContent = "Last viewer edit undone. Run Review NDA again to refresh the checklist.";
+  renderStudioDocumentHighlights();
+  updateExportButtonState();
+  updateReviewUndoButtonState();
+}
+
+function restoreClauseExportDecision(historyEntry) {
+  if (!historyEntry.clauseId) {
+    updateReviewUndoButtonState();
+    return;
+  }
+  if (historyEntry.hadPrevious) {
+    state.exportClauseDecisions[historyEntry.clauseId] = Boolean(historyEntry.previousIncluded);
+  } else {
+    delete state.exportClauseDecisions[historyEntry.clauseId];
+  }
+  state.selectedReviewClauseId = historyEntry.clauseId;
+  markRedlineDraftDirty();
+  renderStudioResult({ clauses: state.reviewClauses });
+  setFileMeta("Undid clause suggestion change");
+  studioResultMeta.textContent = "Clause suggestion change undone.";
+  updateExportButtonState();
+  updateReviewUndoButtonState();
+}
+
+function restoreRedlineTemplateSelection(historyEntry) {
+  if (!historyEntry.editId) {
+    updateReviewUndoButtonState();
+    return;
+  }
+  if (historyEntry.hadPrevious) {
+    state.redlineTemplateSelections[historyEntry.editId] = historyEntry.previousOptionId;
+  } else {
+    delete state.redlineTemplateSelections[historyEntry.editId];
+  }
+  const edit = state.reviewRedlines.find((item) => item.id === historyEntry.editId);
+  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
+  markRedlineDraftDirty();
+  renderStudioResult({ clauses: state.reviewClauses });
+  setFileMeta("Undid clause suggestion change");
+  studioResultMeta.textContent = "Clause suggestion change undone.";
+  updateExportButtonState();
+  updateReviewUndoButtonState();
 }
 
 function syncViewerParagraphEdit(editable) {
@@ -102,7 +225,14 @@ function pastePlainText(event) {
   const text = event.clipboardData?.getData("text/plain");
   if (!text) return;
   event.preventDefault();
+  const editable = event.target?.closest?.("[data-editable-paragraph-id]");
   insertPlainTextAtSelection(text);
+  if (editable) {
+    const inputEvent = typeof InputEvent === "function"
+      ? new InputEvent("input", { bubbles: true, data: text, inputType: "insertFromPaste" })
+      : new Event("input", { bubbles: true });
+    editable.dispatchEvent(inputEvent);
+  }
 }
 
 function insertPlainTextAtSelection(text) {

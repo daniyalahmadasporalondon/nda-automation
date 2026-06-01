@@ -40,7 +40,9 @@ const tests = [
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
+  ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
+  ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
@@ -519,7 +521,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Non-Circumvention");
-  assert.equal(await page.getByRole("button", { name: "Send Redline" }).isEnabled(), false);
+  assert.equal(await page.getByRole("button", { name: "No Reply" }).isEnabled(), false);
 
   const [matterExportRequest, matterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
@@ -583,6 +585,51 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await waitForRepositoryCount(page, "signed_closed", "0");
+
+  fs.rmSync(docxPath, { force: true });
+}
+
+async function testManualUploadTab(page) {
+  const docxPath = path.join(os.tmpdir(), `manual-upload-${Date.now()}.docx`);
+  const filename = path.basename(docxPath);
+  const stem = path.basename(docxPath, ".docx");
+  makeDocxFixture(docxPath, [
+    "This Agreement shall be governed by the laws of California.",
+    "The Recipient must not circumvent the Company.",
+  ]);
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Upload" }).click();
+  assert.equal(await page.locator("#uploadTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#uploadView").isHidden(), false);
+  assert.equal(await page.locator("#manualUploadSubmitButton").isEnabled(), false);
+
+  await page.locator("#manualUploadFileInput").setInputFiles(docxPath);
+  await assertTextContains(page.locator("#manualUploadSelectedFile"), filename);
+  assert.equal(await page.locator("#manualUploadSubjectInput").inputValue(), stem);
+  await page.locator("#manualUploadSenderInput").fill("counterparty@example.com");
+  await page.locator("#manualUploadNoteInput").fill("Uploaded outside Gmail.");
+  assert.equal(await page.locator("#manualUploadSubmitButton").isEnabled(), true);
+
+  await page.getByRole("button", { name: "Upload NDA" }).click();
+  await page.waitForSelector("#repositoryView:not([hidden])");
+  assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), filename);
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "MANUAL UPLOAD");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "In Review");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "counterparty@example.com");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Uploaded outside Gmail.");
+  await assertTextContains(page.locator('[data-repository-list="in_review"]'), stem);
+  await assertTextContains(page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem }), "Manual Upload");
+
+  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
+  await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
+  await page.waitForFunction(
+    (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
+    stem,
+  );
 
   fs.rmSync(docxPath, { force: true });
 }
@@ -726,6 +773,99 @@ async function testRepositoryOutboundSendComposer(page) {
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/matter_send");
+  await page.unroute("**/api/gmail/send-redline");
+}
+
+async function testRepositoryOutboundSendBlocked(page) {
+  const matter = {
+    id: "matter_blocked_send",
+    attachment_filename: "Blocked NDA.docx",
+    board_column: "gmail_demo",
+    can_send_redline: true,
+    document_title: "Blocked NDA",
+    gmail_account: "daniyal.ahmad@aspora.com",
+    issue_count: 1,
+    message_snippet: "Please review the attached NDA.",
+    next_action: "Review redline",
+    received_at: "2026-05-31T12:00:00+00:00",
+    recipient_email: "legal@example.com",
+    requirements_failed: 1,
+    requirements_passed: 5,
+    review_result: { clauses: [] },
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Blocked NDA.docx",
+    source_type: "gmail_inbound",
+    subject: "Please review NDA",
+    triage_status: "needs_redline",
+  };
+  let sendAttempted = false;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          account_match: false,
+          inbound: {
+            configured: true,
+            email: "daniyal.ahmad@aspora.com",
+            query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA)',
+            ready: true,
+          },
+          outbound: {
+            configured: true,
+            email: "personal@example.com",
+            error: "Outbound Gmail account personal@example.com does not match inbound Gmail account daniyal.ahmad@aspora.com.",
+            ready: false,
+          },
+          settings: {
+            inbound_enabled: true,
+            outbound_enabled: true,
+            sync_frequency: "10_minutes",
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [matter] }),
+    });
+  });
+  await page.route("**/api/matters/matter_blocked_send", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter }),
+    });
+  });
+  await page.route("**/api/gmail/send-redline", async (route) => {
+    sendAttempted = true;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "should not send" }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  const panel = page.locator("#repositoryMatterPanel");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(panel, "OUTBOUND STATUS");
+  await assertTextContains(panel, "does not match inbound Gmail account");
+  const sendButton = panel.getByRole("button", { name: "Account Mismatch" });
+  assert.equal(await sendButton.isEnabled(), false);
+  assert.equal(sendAttempted, false);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_blocked_send");
   await page.unroute("**/api/gmail/send-redline");
 }
 
@@ -1031,6 +1171,10 @@ async function testClauseDecisionControls(page) {
   await page.locator('[data-studio-lane-id="governing_law"]').click();
   await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
   await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
+  await page.locator("#studioUndoEditButton").click();
+  assert.equal(await page.locator(".redline-option.selected").filter({ hasText: "DIFC" }).count(), 0);
+  await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
+  await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
 
   await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
   await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
@@ -1038,6 +1182,16 @@ async function testClauseDecisionControls(page) {
   await page.locator('[data-studio-lane-id="signatures"]').click();
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
+
+  await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
+  await assertTextContains(signaturesCard.locator(".studio-export-state"), "INCLUDED IN EXPORT");
+  await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
+  await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
+
+  await page.locator("#studioUndoEditButton").click();
+  await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
+  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
+  await assertTextContains(page.locator("#studioFileMeta"), "Undid clause suggestion change");
 
   await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
   await assertTextContains(signaturesCard.locator(".studio-export-state"), "INCLUDED IN EXPORT");
@@ -1072,6 +1226,7 @@ async function testClauseDecisionControls(page) {
 
 async function testManualViewerEditRedline(page) {
   await runReview(page, passNda);
+  assert.equal(await page.locator("#studioUndoEditButton").isEnabled(), false);
   const pasteResult = await page.evaluate(() => {
     const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
     editable.textContent = "Alpha";
@@ -1108,10 +1263,14 @@ async function testManualViewerEditRedline(page) {
     execCommandCalled: false,
     text: "Alpha Beta",
   });
+  await page.locator('[data-view-mode="redline"]').click();
 
   const editedTitle = "Mutual Non-Disclosure AGREEMdasdasdsa";
-  await page.locator('[data-editable-paragraph-id="p1"]').fill(editedTitle);
+  await page.locator('[data-editable-paragraph-id="p1"]').click();
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await page.keyboard.type(editedTitle);
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
+  assert.equal(await page.locator("#studioUndoEditButton").isEnabled(), true);
 
   const paragraph = page.locator('[data-paragraph-id="p1"]');
   await assertRedlinePreview(paragraph, {
@@ -1135,6 +1294,18 @@ async function testManualViewerEditRedline(page) {
   assert.match(sideBySide.redline, /AGREEMdasdasdsa/);
   assert.ok(sideBySide.delCount >= 1, "manual side-by-side redline should show deletions");
   assert.ok(sideBySide.insCount >= 1, "manual side-by-side redline should show insertions");
+
+  await page.locator('[data-view-mode="redline"]').click();
+  await page.locator("#studioUndoEditButton").click();
+  await page.waitForSelector('[data-paragraph-id="p1"]:not(.manual-redline)');
+  assert.equal(await page.locator("#studioUndoEditButton").isEnabled(), false);
+  await assertTextContains(page.locator('[data-paragraph-id="p1"]'), "Mutual Non-Disclosure Agreement");
+  assert.equal(
+    await page.locator('[data-paragraph-id="p1"] .paragraph-redline-preview:not([hidden])').count(),
+    0,
+    "undo should remove the manual redline preview once the source text is restored",
+  );
+  await assertTextContains(page.locator("#studioFileMeta"), "Undid viewer edit");
 }
 
 async function testPreviewMatchesExportedDocx(page) {

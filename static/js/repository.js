@@ -168,13 +168,15 @@ const RepositoryView = (() => {
         : [];
       const isClosed = matter.board_column === "signed_closed";
       const subject = matterSubject(matter);
+      const fileName = matter.source_filename || matter.attachment_filename || subject;
       const recipient = MatterUtils.recipientEmail(matter);
-      const outboundDisabled = state.gmailStatus?.outbound?.enabled === false;
-      const canSendRedline = MatterUtils.canSendRedline(matter) && !outboundDisabled;
+      const sendBlockReason = MatterUtils.gmailSendBlock(matter, state.gmailStatus);
+      const sendBlockLabel = MatterUtils.gmailSendButtonLabel(sendBlockReason);
+      const canSendRedline = !sendBlockReason;
       const confirmingSend = pendingSendMatterId === matter.id;
       repositoryMatterPanel.hidden = false;
       repositoryWorkspace?.classList.remove("detail-open");
-      repositoryMatterPanel.setAttribute("aria-label", `Matter inspector for ${subject}`);
+      repositoryMatterPanel.setAttribute("aria-label", `Matter inspector for ${fileName}`);
       repositoryMatterPanel.innerHTML = `
         <section class="repository-inspector-dialog" aria-labelledby="repositoryInspectorTitle">
           <header class="repository-detail-head">
@@ -182,7 +184,7 @@ const RepositoryView = (() => {
               <span class="repository-inspector-icon" aria-hidden="true"></span>
               <div>
                 <p class="repository-detail-kicker">${escapeHtml(sourceTypeLabel(matter.source_type))}</p>
-                <h2 id="repositoryInspectorTitle">Matter Inspector</h2>
+                <h2 id="repositoryInspectorTitle">${escapeHtml(fileName)}</h2>
               </div>
             </div>
             <button class="repository-detail-close" type="button" aria-label="Close matter inspector">x</button>
@@ -193,7 +195,7 @@ const RepositoryView = (() => {
               <section class="repository-inspector-section">
                 <p class="repository-inspector-section-title">Metadata Details</p>
                 <dl class="repository-detail-meta repository-detail-meta-grid">
-                  ${renderInspectorField("File name", matter.source_filename || matter.attachment_filename || subject)}
+                  ${renderInspectorField("File name", fileName)}
                   ${renderInspectorField("Subject", subject)}
                   ${renderInspectorField("Status", boardColumnLabel(matter.board_column))}
                   ${renderInspectorField("Review route", triageLabel(matter.triage_status))}
@@ -238,6 +240,7 @@ const RepositoryView = (() => {
                 <dl class="repository-detail-email">
                   ${renderInspectorField("From", matterSender(matter))}
                   ${renderInspectorField("Inbound mailbox", matter.gmail_account || "Manual repository intake")}
+                  ${renderInspectorField("Outbound status", sendBlockReason || "Ready")}
                   ${renderInspectorField("Reply to", recipient || "No reply address detected")}
                   ${renderInspectorField("Received", formatMatterDateTime(matter.received_at || matter.created_at) || "-")}
                   ${renderInspectorField("Attachment", matter.attachment_filename || matter.source_filename || "-")}
@@ -260,7 +263,7 @@ const RepositoryView = (() => {
             <div class="repository-detail-actions">
               <button type="button" class="repository-open-review">Open Review</button>
               <button type="button" class="secondary repository-export-redline">Export Redline</button>
-              <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"}>${outboundDisabled ? "Outbound Off" : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
+              <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
               <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
             </div>
           </footer>
@@ -330,10 +333,17 @@ const RepositoryView = (() => {
     }
 
     async function sendRedline(matter) {
+      const sendBlockReason = MatterUtils.gmailSendBlock(matter, state.gmailStatus);
+      if (sendBlockReason) {
+        pendingSendMatterId = null;
+        renderDetailPanel(matter);
+        setPanelMessage(sendBlockReason);
+        return;
+      }
       const recipient = MatterUtils.recipientEmail(matter);
       if (!recipient) {
         pendingSendMatterId = null;
-        setPanelMessage("Matter sender is not an email address.");
+        setPanelMessage("Matter does not have a valid reply recipient email address.");
         return;
       }
       if (pendingSendMatterId !== matter.id) {
@@ -624,12 +634,15 @@ const RepositoryView = (() => {
     const labels = {
       gmail_demo: "Gmail Demo",
       gmail_inbound: "Gmail Inbound",
+      manual_upload: "Manual Upload",
     };
     return labels[sourceType] || sourceType || "Source";
   }
 
   function sourceBadgeClass(sourceType) {
-    return sourceType === "gmail_inbound" ? "inbound" : "demo";
+    if (sourceType === "gmail_inbound") return "inbound";
+    if (sourceType === "manual_upload") return "manual";
+    return "demo";
   }
 
   function boardColumnLabel(boardColumn) {

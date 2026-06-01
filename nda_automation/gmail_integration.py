@@ -30,7 +30,7 @@ NDA_SUBJECT_QUERY = (
     'OR subject:"non-disclosure agreement" OR subject:"non disclosure agreement" '
     'OR subject:"confidentiality agreement" OR subject:confidentiality OR subject:confidential)'
 )
-DEFAULT_INBOUND_QUERY = f"has:attachment (filename:docx OR filename:pdf) newer_than:30d {NDA_SUBJECT_QUERY}"
+DEFAULT_INBOUND_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me {NDA_SUBJECT_QUERY}"
 MAX_GMAIL_IMPORT_LIMIT = 25
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 
@@ -47,7 +47,7 @@ class GmailIntegrationError(RuntimeError):
 
 def gmail_status() -> dict[str, Any]:
     settings = app_settings.gmail_settings()
-    status: dict[str, dict[str, Any]] = {"settings": settings}
+    status: dict[str, Any] = {"settings": settings, "account_match": True}
     for role in ("inbound", "outbound"):
         enabled = bool(settings.get(f"{role}_enabled", True))
         role_status: dict[str, Any] = {
@@ -76,11 +76,14 @@ def gmail_status() -> dict[str, Any]:
             role_status["error"] = str(error)
         else:
             role_status["email"] = str(profile.get("emailAddress") or "")
-            if enabled:
+            if enabled and _is_valid_email_address(role_status["email"]):
                 role_status["ready"] = True
+            elif enabled:
+                role_status["error"] = f"Gmail {role} profile did not include a valid email address."
             else:
                 role_status["error"] = f"Gmail {role} is disabled in Admin."
         status[role] = role_status
+    _apply_account_consistency(status)
     return status
 
 
@@ -90,7 +93,13 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
     service = _gmail_service("inbound")
     profile = _gmail_profile(service)
     inbound_query = query.strip() if isinstance(query, str) and query.strip() else DEFAULT_INBOUND_QUERY
-    import_limit = max(1, min(int(limit or 10), MAX_GMAIL_IMPORT_LIMIT))
+    try:
+        requested_limit = int(limit or 10)
+    except (TypeError, ValueError):
+        requested_limit = 10
+    import_limit = max(1, min(requested_limit, MAX_GMAIL_IMPORT_LIMIT))
+
+    account_email = str(profile.get("emailAddress") or "")
 
     try:
         result = service.users().messages().list(
@@ -113,12 +122,16 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             skipped.append({"message_id": message_id, "reason": "message_unavailable"})
             continue
 
+        if _is_self_or_outbound_message(message, account_email):
+            skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
+            continue
+
         attachments = list(_reviewable_attachments(message.get("payload") or {}))
         if not attachments:
             skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
-        metadata = _message_metadata(message, str(profile.get("emailAddress") or ""))
+        metadata = _message_metadata(message, account_email)
         for attachment in attachments:
             attachment_id = str(attachment.get("attachment_id") or "")
             attachment_filename = str(attachment.get("filename") or "")
@@ -200,7 +213,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             imported.append(matter)
 
     return {
-        "account": str(profile.get("emailAddress") or ""),
+        "account": account_email,
         "imported": imported,
         "query": inbound_query,
         "skipped": skipped,
@@ -215,16 +228,7 @@ def send_redline_email(
     body: str | None = None,
     subject: str | None = None,
 ) -> dict[str, str]:
-    recipient = recipient_email(matter.get("sender"))
-    if not recipient:
-        raise GmailIntegrationError("Matter sender is not a valid email address.")
-    if not app_settings.gmail_role_enabled("outbound"):
-        raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
-
-    service = _gmail_service("outbound")
-    profile = _gmail_profile(service)
-    outbound_account = str(profile.get("emailAddress") or "")
-    _ensure_outbound_matches_inbound(matter, outbound_account)
+    recipient, service, outbound_account = _outbound_send_context(matter)
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
     message = EmailMessage()
     message["To"] = recipient
@@ -259,6 +263,32 @@ def send_redline_email(
     }
 
 
+def validate_outbound_send_ready(matter: dict[str, Any]) -> dict[str, str]:
+    recipient, _service, outbound_account = _outbound_send_context(matter)
+    return {"outbound_account": outbound_account, "to": recipient}
+
+
+def _outbound_send_context(matter: dict[str, Any]) -> tuple[str, Any, str]:
+    recipient = matter_reply_recipient(matter)
+    if not recipient:
+        raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
+    if not app_settings.gmail_role_enabled("outbound"):
+        raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
+
+    service = _gmail_service("outbound")
+    profile = _gmail_profile(service)
+    outbound_account = str(profile.get("emailAddress") or "")
+    if not _is_valid_email_address(outbound_account):
+        raise GmailIntegrationError("Gmail outbound profile did not include a valid email address.")
+    _ensure_recipient_is_not_own_account(matter, recipient, outbound_account)
+    _ensure_outbound_matches_inbound(matter, outbound_account)
+    return recipient, service, outbound_account
+
+
+def matter_reply_recipient(matter: dict[str, Any]) -> str:
+    return recipient_email(matter.get("reply_to")) or recipient_email(matter.get("sender"))
+
+
 def recipient_email(value: object) -> str:
     if not isinstance(value, str):
         return ""
@@ -282,6 +312,28 @@ def _is_valid_email_address(email_address: str) -> bool:
     if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
         return False
     return True
+
+
+def _apply_account_consistency(status: dict[str, Any]) -> None:
+    inbound = status.get("inbound") if isinstance(status.get("inbound"), dict) else {}
+    outbound = status.get("outbound") if isinstance(status.get("outbound"), dict) else {}
+    inbound_email = str(inbound.get("email") or "").strip()
+    outbound_email = str(outbound.get("email") or "").strip()
+    if not inbound_email or not outbound_email:
+        return
+    if not _is_valid_email_address(inbound_email) or not _is_valid_email_address(outbound_email):
+        return
+    if inbound_email.casefold() == outbound_email.casefold():
+        return
+
+    message = (
+        f"Outbound Gmail account {outbound_email} does not match inbound Gmail account {inbound_email}. "
+        f"Reconnect outbound Gmail as {inbound_email}."
+    )
+    status["account_match"] = False
+    status["account_error"] = message
+    outbound["ready"] = False
+    outbound["error"] = message
 
 
 def _gmail_service(role: str) -> Any:
@@ -396,13 +448,39 @@ def _ensure_outbound_matches_inbound(matter: dict[str, Any], outbound_account: s
     )
 
 
+def _ensure_recipient_is_not_own_account(matter: dict[str, Any], recipient: str, outbound_account: str) -> None:
+    own_accounts = [
+        str(matter.get("gmail_account") or ""),
+        outbound_account,
+    ]
+    if any(_email_addresses_match(recipient, own_account) for own_account in own_accounts):
+        raise GmailIntegrationError(
+            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
+            f"back to {recipient}."
+        )
+
+
+def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) -> bool:
+    label_ids = {str(label).upper() for label in message.get("labelIds") or []}
+    if "SENT" in label_ids or "DRAFT" in label_ids:
+        return True
+    headers = message.get("payload", {}).get("headers") or []
+    sender = recipient_email(_header(headers, "From"))
+    return bool(sender and _email_addresses_match(sender, account_email))
+
+
+def _email_addresses_match(left: str, right: str) -> bool:
+    return bool(left and right and left.strip().casefold() == right.strip().casefold())
+
+
 def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, str]:
     headers = message.get("payload", {}).get("headers") or []
     sender = _header(headers, "From")
+    reply_to = _header(headers, "Reply-To")
     subject = _header(headers, "Subject") or "NDA for review"
     received_at = _header(headers, "Date")
     parsed_received_at = _parse_email_date(received_at)
-    return {
+    metadata = {
         "gmail_account": account_email,
         "gmail_message_id": str(message.get("id") or ""),
         "gmail_thread_id": str(message.get("threadId") or ""),
@@ -411,6 +489,9 @@ def _message_metadata(message: dict[str, Any], account_email: str) -> dict[str, 
         "sender": sender,
         "subject": subject,
     }
+    if reply_to:
+        metadata["reply_to"] = reply_to
+    return metadata
 
 
 def _header(headers: list[dict[str, Any]], name: str) -> str:

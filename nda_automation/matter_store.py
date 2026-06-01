@@ -30,6 +30,7 @@ GMAIL_METADATA_FIELDS = (
     "gmail_message_id",
     "gmail_part_id",
     "gmail_thread_id",
+    "reply_to",
 )
 MATTER_UPDATE_FIELDS = {
     "board_column",

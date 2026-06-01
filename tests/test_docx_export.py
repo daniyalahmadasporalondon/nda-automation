@@ -648,6 +648,32 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(paragraph_property_revisions(document_root, "del"), [])
         self.assertEqual(paragraph_property_revisions(document_root, "ins"), [])
 
+    def test_source_docx_export_strips_source_paragraph_property_revisions(self):
+        source_docx = make_source_docx([
+            "The parties will discuss a possible transaction.",
+            "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+        ])
+        with ZipFile(BytesIO(source_docx)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        document_xml = document_xml.replace(
+            "<w:p><w:r><w:t>The parties will discuss a possible transaction.</w:t></w:r></w:p>",
+            '<w:p><w:pPr><w:rPr><w:ins w:id="97" w:author="source" w:date="2026-06-01T00:00:00Z" />'
+            '<w:del w:id="98" w:author="source" w:date="2026-06-01T00:00:00Z" /></w:rPr></w:pPr>'
+            "<w:r><w:t>The parties will discuss a possible transaction.</w:t></w:r></w:p>",
+        )
+        source_docx = replace_docx_parts(source_docx, {"word/document.xml": document_xml})
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        self.assertEqual(paragraph_property_revisions(document_root, "del"), [])
+        self.assertEqual(paragraph_property_revisions(document_root, "ins"), [])
+        self.assertTrue(any("must not circumvent" in text for text in tracked_deleted_text(document_root)))
+        self.assertTrue(any("England and Wales" in text for text in tracked_inserted_text(document_root)))
+
     def test_source_docx_export_matches_redline_actions_at_paragraph_level(self):
         source_docx = make_source_docx([
             "This Agreement shall be governed by the laws of California.",

@@ -25,6 +25,14 @@
               </svg>
               <span>Repository</span>
             </button>
+            <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
+              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M12 16V4"/>
+                <path d="m7 9 5-5 5 5"/>
+                <path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>
+              </svg>
+              <span>Upload</span>
+            </button>
             <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
               <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
                 <path d="M12 3.5 19 7v5.2c0 4.1-2.9 7.5-7 8.3-4.1-.8-7-4.2-7-8.3V7l7-3.5Z"/>
@@ -80,11 +88,14 @@
 
             <section class="studio-document">
               <div class="studio-doc-toolbar">
-                <div class="studio-view-switch" role="group" aria-label="Document view">
-                  <span class="vs-label">Views:</span>
-                  <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
-                  <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
-                  <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
+                <div class="studio-toolbar-left">
+                  <button id="studioUndoEditButton" class="studio-undo-edit" type="button" disabled aria-label="Undo last edit" title="Undo last edit">Undo</button>
+                  <div class="studio-view-switch" role="group" aria-label="Document view">
+                    <span class="vs-label">Views:</span>
+                    <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
+                    <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
+                    <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
+                  </div>
                 </div>
                 <div class="studio-zoom">100%</div>
               </div>
@@ -120,6 +131,75 @@
               <button id="studioClearButton" class="secondary" type="button">Clear</button>
             </div>
           </footer>
+        </main>
+
+        <main class="manual-upload-view view" id="uploadView" role="tabpanel" aria-labelledby="uploadTab" data-view="upload" hidden>
+          <section class="upload-shell">
+            <header class="upload-header">
+              <div class="repository-title">
+                <span class="upload-icon" aria-hidden="true"></span>
+                <h1>Manual Upload</h1>
+              </div>
+              <p class="upload-header-copy">Create a repository matter from a local NDA.</p>
+            </header>
+
+            <section class="upload-workspace">
+              <form class="upload-panel" id="manualUploadForm">
+                <label class="upload-dropzone" id="manualUploadDropzone" for="manualUploadFileInput">
+                  <input id="manualUploadFileInput" type="file" accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf">
+                  <span class="upload-dropzone-mark" aria-hidden="true"></span>
+                  <strong>Select NDA document</strong>
+                  <span>.docx or text-based .pdf</span>
+                </label>
+
+                <div class="upload-selected-file empty" id="manualUploadSelectedFile" aria-live="polite">
+                  No file selected
+                </div>
+
+                <div class="upload-field-grid">
+                  <label class="upload-field" for="manualUploadSubjectInput">
+                    <span>Subject</span>
+                    <input id="manualUploadSubjectInput" type="text" autocomplete="off" placeholder="Defaults to file name">
+                  </label>
+                  <label class="upload-field" for="manualUploadSenderInput">
+                    <span>Counterparty email</span>
+                    <input id="manualUploadSenderInput" type="email" autocomplete="email" placeholder="Optional">
+                  </label>
+                  <label class="upload-field upload-field-wide" for="manualUploadNoteInput">
+                    <span>Intake note</span>
+                    <textarea id="manualUploadNoteInput" rows="3" placeholder="Optional repository note"></textarea>
+                  </label>
+                </div>
+
+                <footer class="upload-actions">
+                  <p class="upload-status" id="manualUploadStatus" aria-live="polite"></p>
+                  <div>
+                    <button class="secondary" id="manualUploadClearButton" type="button">Clear</button>
+                    <button id="manualUploadSubmitButton" type="submit" disabled>Upload NDA</button>
+                  </div>
+                </footer>
+              </form>
+
+              <aside class="upload-side-panel" aria-label="Manual intake details">
+                <p class="eyebrow">intake route</p>
+                <h2>Review queue</h2>
+                <dl>
+                  <div>
+                    <dt>Source</dt>
+                    <dd>Manual Upload</dd>
+                  </div>
+                  <div>
+                    <dt>Repository stage</dt>
+                    <dd>In Review</dd>
+                  </div>
+                  <div>
+                    <dt>Pipeline</dt>
+                    <dd>Pass checks and redline draft</dd>
+                  </div>
+                </dl>
+              </aside>
+            </section>
+          </section>
         </main>
 
         <main class="repository-view view" id="repositoryView" role="tabpanel" aria-labelledby="repositoryTab" data-view="repository" hidden>
@@ -328,6 +408,7 @@
     <script src="/static/js/matter-utils.js"></script>
     <script src="/static/js/redline-rendering.js"></script>
     <script src="/static/js/repository.js"></script>
+    <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/admin-integrations.js"></script>
     <script src="/static/js/playbook-view.js"></script>
     <script src="/static/js/review-workstation-actions.js"></script>

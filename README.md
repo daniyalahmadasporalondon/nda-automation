@@ -20,6 +20,24 @@ Then open:
 http://127.0.0.1:8787
 ```
 
+## Deploy
+
+The app needs a Python web service because the static frontend calls the local API routes served by `nda_automation.server`.
+
+This repo includes a Render blueprint:
+
+```bash
+render.yaml
+```
+
+The production start command is:
+
+```bash
+python -m nda_automation.server --host 0.0.0.0 --port $PORT
+```
+
+Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
+
 ## Test
 
 ```bash

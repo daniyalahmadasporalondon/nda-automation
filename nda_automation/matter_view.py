@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from .gmail_integration import recipient_email
+from .gmail_integration import matter_reply_recipient
 
 
 class PublicMatter(TypedDict, total=False):
@@ -30,7 +30,9 @@ class PublicMatter(TypedDict, total=False):
     requirements_failed: int
     requirements_passed: int
     review_result: dict[str, Any]
+    reply_to: str
     sender: str
+    send_block_reason: str
     source_filename: str
     source_type: str
     status: str
@@ -62,7 +64,9 @@ PUBLIC_MATTER_FIELDS = {
     "requirements_failed",
     "requirements_passed",
     "review_result",
+    "reply_to",
     "sender",
+    "send_block_reason",
     "source_filename",
     "source_type",
     "status",
@@ -71,20 +75,39 @@ PUBLIC_MATTER_FIELDS = {
     "updated_at",
 }
 
+SUMMARY_MATTER_OMIT_FIELDS = {
+    "extracted_text",
+    "redline_draft",
+    "review_result",
+}
 
-def public_matter(matter: dict[str, Any]) -> PublicMatter:
-    recipient = recipient_email(matter.get("sender"))
+
+def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatter:
+    recipient = matter_reply_recipient(matter)
+    send_block_reason = ""
+    if recipient and _same_email_address(recipient, str(matter.get("gmail_account") or "")):
+        send_block_reason = (
+            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
+            f"back to {recipient}."
+        )
+    allowed_fields = PUBLIC_MATTER_FIELDS if detail else PUBLIC_MATTER_FIELDS - SUMMARY_MATTER_OMIT_FIELDS
     public = {
         key: value
         for key, value in matter.items()
-        if key in PUBLIC_MATTER_FIELDS
+        if key in allowed_fields
     }
     public.update({
         "recipient_email": recipient,
-        "can_send_redline": bool(recipient),
+        "can_send_redline": bool(recipient and not send_block_reason),
     })
+    if send_block_reason:
+        public["send_block_reason"] = send_block_reason
     return public
 
 
 def public_matters(matters: list[dict[str, Any]]) -> list[PublicMatter]:
-    return [public_matter(matter) for matter in matters]
+    return [public_matter(matter, detail=False) for matter in matters]
+
+
+def _same_email_address(left: str, right: str) -> bool:
+    return bool(left and right and left.strip().casefold() == right.strip().casefold())
