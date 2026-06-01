@@ -434,10 +434,10 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
 
-    def test_review_report_docx_strips_invalid_xml_control_characters(self):
-        result = review_nda("This Agreement shall be governed by the laws of California.\x08")
+    def test_review_report_docx_strips_invalid_xml_characters(self):
+        result = review_nda("This Agreement shall be governed by the laws of California.\x08\ud800")
 
-        docx_bytes = build_review_report_docx(result, title="California\x08NDA")
+        docx_bytes = build_review_report_docx(result, title="California\x08\udfffNDA")
 
         assert_docx_package_healthy(self, docx_bytes, require_styles=True)
         with ZipFile(BytesIO(docx_bytes)) as archive:
@@ -447,6 +447,42 @@ class DocxExportTests(unittest.TestCase):
         ET.fromstring(core_xml)
         self.assertNotIn("\x08", document_xml)
         self.assertNotIn("\x08", core_xml)
+        self.assertNotIn("\ud800", document_xml)
+        self.assertNotIn("\udfff", core_xml)
+
+    def test_source_docx_export_strips_invalid_xml_characters_from_redlines(self):
+        source_docx = make_source_docx(["This Agreement shall be governed by the laws of California."])
+        review_result = {
+            "paragraphs": [
+                {
+                    "id": "p1",
+                    "index": 1,
+                    "source_index": 1,
+                    "text": "This Agreement shall be governed by the laws of California.",
+                }
+            ],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "original_text": "This Agreement shall be governed by the laws of California.\ud800",
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.\udfff",
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        ET.fromstring(document_xml)
+        self.assertIn("England and Wales", document_xml)
+        self.assertNotIn("\ud800", document_xml)
+        self.assertNotIn("\udfff", document_xml)
 
     def test_review_report_docx_marks_replace_paragraph_redlines_inline(self):
         result = review_nda("The confidentiality obligations survive for seven years.")

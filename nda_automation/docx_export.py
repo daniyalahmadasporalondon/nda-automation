@@ -38,7 +38,7 @@ Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
-INVALID_XML_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+INVALID_XML_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]")
 
 
 class SourceParagraph(NamedTuple):

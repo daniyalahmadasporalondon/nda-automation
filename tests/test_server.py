@@ -2953,6 +2953,28 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Reviewed Text NDA", document_xml)
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
 
+    def test_review_docx_export_strips_lone_surrogates(self):
+        status, payload, _headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "reviewed_text": "This Agreement shall be governed by the laws of California.\ud800",
+                "title": "Surrogate\udfffNDA",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        with ZipFile(BytesIO(payload)) as archive:
+            self.assertIsNone(archive.testzip())
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+            core_xml = archive.read("docProps/core.xml").decode("utf-8")
+        ET.fromstring(document_xml)
+        ET.fromstring(core_xml)
+        self.assertIn("SurrogateNDA", core_xml)
+        self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
+        self.assertNotIn("\ud800", document_xml)
+        self.assertNotIn("\udfff", core_xml)
+
     def test_review_docx_export_preserves_manual_viewer_redlines(self):
         manual_redlines = [
             {
