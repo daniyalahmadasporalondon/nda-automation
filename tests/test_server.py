@@ -2677,6 +2677,44 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(manual["original_text"], "Old paragraph.")
         self.assertEqual(manual["replacement_text"], "New paragraph.")
 
+    def test_manual_export_redline_cleaner_ignores_non_finite_indexes(self):
+        redline = {
+            "id": "manual-p1",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": float("inf"),
+            "original_text": "Old paragraph.",
+            "replacement_text": "New paragraph.",
+        }
+
+        manual = export_service.clean_manual_export_redline(redline)
+
+        self.assertEqual(manual["paragraph_index"], 1)
+        self.assertNotIn("source_index", manual)
+
+    def test_export_rejects_non_finite_json_constants(self):
+        for constant in ("Infinity", "-Infinity", "NaN"):
+            with self.subTest(constant=constant):
+                status, payload, _headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    body=f"""{{
+                        "text": "Do you see problem?",
+                        "manual_redline_edits": [{{
+                            "action": "replace_paragraph",
+                            "paragraph_id": "p1",
+                            "source_index": {constant},
+                            "original_text": "Old paragraph.",
+                            "replacement_text": "New paragraph."
+                        }}]
+                    }}""",
+                    headers={"Content-Type": "application/json"},
+                )
+
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["error"], "Request body must be valid JSON.")
+
     def test_selected_export_redlines_rederive_text_server_side(self):
         malicious_selected_redline = {
             "id": "r1",

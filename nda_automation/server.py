@@ -221,8 +221,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return None
         raw_body = self.rfile.read(content_length)
         try:
-            payload = json.loads(raw_body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
+            payload = json.loads(raw_body.decode("utf-8") or "{}", parse_constant=_reject_non_finite_json_constant)
+        except (json.JSONDecodeError, ValueError):
             self._send_json({"error": "Request body must be valid JSON."}, status=400)
             return None
         if not isinstance(payload, dict):
@@ -353,6 +353,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             send_body=send_body,
         )
         return False
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"Non-finite JSON value is not allowed: {value}.")
 
 
 def _log_background_error(message: str, error: Exception) -> None:

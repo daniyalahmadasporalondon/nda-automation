@@ -239,6 +239,6 @@ def _copy_redline_indexes(source: dict, target: dict, *, remove_invalid: bool = 
     for key in ("paragraph_index", "source_index"):
         try:
             target[key] = int(source.get(key))
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError, OverflowError, KeyError):
             if remove_invalid:
                 target.pop(key, None)
