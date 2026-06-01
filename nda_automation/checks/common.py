@@ -39,21 +39,6 @@ class PlaybookTemplateError(ValueError):
     pass
 
 
-def _extract_year_terms(normalized: str) -> List[float]:
-    terms: List[float] = []
-    for match in re.finditer(YEAR_TERM_PATTERN, normalized):
-        word_value, digit_value, parenthetical_value, unit = match.groups()
-        if parenthetical_value:
-            value = int(parenthetical_value)
-        elif digit_value:
-            value = int(digit_value)
-        elif word_value:
-            value = YEAR_WORDS[word_value]
-        else:
-            continue
-        terms.append(value / 12 if unit.startswith("month") else value)
-    return terms
-
 def _year_count_label(years: int) -> str:
     number_label = next((word for word, value in YEAR_WORDS.items() if value == years), str(years))
     unit = "year" if years == 1 else "years"

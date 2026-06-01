@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 from copy import deepcopy
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from io import BytesIO
 from unittest.mock import patch
@@ -117,6 +118,10 @@ class ServerTests(unittest.TestCase):
     def basic_auth_headers(self, username="nda-admin", password="secret"):
         token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {token}"}
+
+    @contextmanager
+    def acquired_gmail_sync_lock(self):
+        yield True
 
     def assert_saved_export_url_matches_response(self, headers, payload):
         self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
@@ -1063,6 +1068,19 @@ class ServerTests(unittest.TestCase):
         self.assertLessEqual(len(matter["stored_filename"]), matter_store.MAX_SOURCE_FILENAME_LENGTH + len("matter_000000000000-"))
         self.assertTrue(matter["stored_filename"].endswith(".docx"))
 
+    def test_matter_retention_prunes_by_entry_not_duplicate_id(self):
+        matters = [
+            {"id": "matter_old", "updated_at": "2026-01-01T00:00:00+00:00", "board_column": "signed_closed"},
+            {"id": "matter_old", "updated_at": "2026-01-02T00:00:00+00:00", "board_column": "in_review"},
+            {"id": "matter_new", "updated_at": "2026-01-03T00:00:00+00:00", "board_column": "in_review"},
+        ]
+
+        with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "2"}):
+            kept, pruned = matter_store._prune_stored_matters(matters, protected_matter_id="matter_new")
+
+        self.assertEqual(kept, [matters[1], matters[2]])
+        self.assertEqual(pruned, [matters[0]])
+
     def test_gmail_attachment_dedupe_uses_stable_message_filename_key(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -1490,11 +1508,12 @@ class ServerTests(unittest.TestCase):
             with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
                 with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
                     with patch.object(server_module.time, "monotonic", return_value=120.0):
-                        with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
-                            last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
-                                0.0,
-                                "always_on",
-                            )
+                        with patch.object(server_module, "_gmail_sync_process_lock", self.acquired_gmail_sync_lock):
+                            with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                                    0.0,
+                                    "always_on",
+                                )
 
         self.assertEqual(last_run, 120.0)
         self.assertEqual(last_frequency, "always_on")
@@ -3093,6 +3112,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertEqual(payload["error"], "Export file could not be read.")
 
+    def test_saved_export_head_uses_metadata_without_reading_body(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            export_path = server_module.Path(exports_dir) / "saved.docx"
+            export_path.write_bytes(b"docx")
+            with (
+                patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)),
+                patch.object(server_module.Path, "read_bytes", side_effect=AssertionError("HEAD should not read file bytes")),
+            ):
+                status, payload, headers = self.request_with_headers("HEAD", "/exports/saved.docx")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, b"")
+        self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="saved.docx"')
+
     def test_saved_uploaded_docx_export_route_returns_exact_docx_bytes(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
@@ -3429,6 +3464,7 @@ class ServerTests(unittest.TestCase):
 
                     self.assertEqual(response.status, 500)
                     self.assertEqual(raw_body, b"")
+                    self.assertEqual(response.getheader("Content-Length"), "0")
 
 
 def make_docx(paragraphs):

@@ -174,12 +174,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if requested.parent != export_service.EXPORTS_DIR.resolve() or not requested.is_file():
                 self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
-            try:
-                data = requested.read_bytes()
-            except OSError:
-                self._send_json({"error": "Export file could not be read."}, status=500, send_body=send_body)
-                return
-            self._send_download(data, requested.name, DOCX_MIME, send_body=send_body)
+            self._send_download_file(requested, requested.name, DOCX_MIME, send_body=send_body)
             return
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
@@ -300,6 +295,33 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
+    def _send_download_file(
+        self,
+        path: Path,
+        filename: str,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+        *,
+        send_body: bool = True,
+    ) -> None:
+        try:
+            size = path.stat().st_size
+            data = path.read_bytes() if send_body else b""
+        except OSError:
+            self._send_json({"error": "Export file could not be read."}, status=500, send_body=send_body)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(size))
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
+        self.end_headers()
+        if send_body:
+            self.wfile.write(data)
+
     def _send_json(
         self,
         payload: dict,
@@ -312,7 +334,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             telemetry.increment("http_5xx_responses")
         elif status >= 400:
             telemetry.increment("http_4xx_responses")
-        data = json.dumps(payload, indent=2).encode("utf-8")
+        data = json.dumps(payload, indent=2).encode("utf-8") if send_body else b""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")

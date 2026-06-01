@@ -40,6 +40,7 @@ const tests = [
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
+  ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
@@ -616,6 +617,72 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "signed_closed", "0");
 
   fs.rmSync(docxPath, { force: true });
+}
+
+async function testRepositoryLoadErrorClearsBoard(page) {
+  let failMattersLoad = false;
+  const matters = [
+    {
+      id: "matter_success_1",
+      source_type: "manual_upload",
+      source_filename: "Loaded NDA.docx",
+      subject: "Loaded NDA",
+      sender: "legal@example.com",
+      message_snippet: "Previously loaded matter",
+      board_column: "in_review",
+      triage_status: "legal_review",
+      issue_count: 1,
+      created_at: "2026-06-01T12:00:00+00:00",
+    },
+    {
+      id: "matter_success_2",
+      source_type: "gmail_inbound",
+      attachment_filename: "Ready NDA.docx",
+      subject: "Ready NDA",
+      sender: "counterparty@example.com",
+      message_snippet: "Ready matter",
+      board_column: "redline_ready",
+      triage_status: "needs_redline",
+      issue_count: 2,
+      created_at: "2026-06-01T12:01:00+00:00",
+    },
+  ];
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true } } }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: failMattersLoad ? 500 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(failMattersLoad ? { error: "Matter store is not valid JSON." } : { matters }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=repository-error-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await waitForRepositoryCount(page, "in_review", "1");
+  await waitForRepositoryCount(page, "redline_ready", "1");
+  assert.equal(await page.locator(".repository-card").count(), 2);
+
+  failMattersLoad = true;
+  await page.evaluate(() => repositoryController.loadMatters());
+  await waitForRepositoryCount(page, "in_review", "0");
+  await waitForRepositoryCount(page, "redline_ready", "0");
+  assert.equal(await page.locator(".repository-card").count(), 0);
+  for (const column of ["gmail_demo", "in_review", "redline_ready", "signed_closed"]) {
+    await assertTextContains(page.locator(`[data-repository-list="${column}"]`), "Matter store is not valid JSON.");
+  }
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
 }
 
 async function testManualUploadTab(page) {

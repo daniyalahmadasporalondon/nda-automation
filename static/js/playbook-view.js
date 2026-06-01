@@ -336,17 +336,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     `;
   }
 
-  function selectInput(label, name, value, options) {
-    return `
-      <label class="admin-field">
-        <span>${escapeHtml(label)}</span>
-        <select name="${escapeHtml(name)}">
-          ${options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
-        </select>
-      </label>
-    `;
-  }
-
   function textArea(label, name, value, rows) {
     return `
       <label class="admin-field">

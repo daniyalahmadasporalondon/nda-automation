@@ -370,15 +370,16 @@ def _prune_stored_matters(
         return matters, []
 
     removable = [
-        matter
-        for matter in matters
+        (index, matter)
+        for index, matter in enumerate(matters)
         if matter.get("id") != protected_matter_id
     ]
-    removable.sort(key=_matter_retention_sort_key)
+    removable.sort(key=lambda item: _matter_retention_sort_key(item[1]))
     remove_count = len(matters) - retention_limit
-    remove_ids = {str(matter.get("id")) for matter in removable[:remove_count]}
-    kept = [matter for matter in matters if str(matter.get("id")) not in remove_ids]
-    return kept, removable[:remove_count]
+    removed_indexes = {index for index, _matter in removable[:remove_count]}
+    kept = [matter for index, matter in enumerate(matters) if index not in removed_indexes]
+    pruned = [matter for _index, matter in removable[:remove_count]]
+    return kept, pruned
 
 
 def _stored_matter_limit() -> int:

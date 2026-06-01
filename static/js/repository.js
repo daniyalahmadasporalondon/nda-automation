@@ -61,11 +61,15 @@ const RepositoryView = (() => {
         }
         renderBoard();
       } catch (error) {
-        gmailDemoMatterList.innerHTML = `<div class="repository-dropzone">${escapeHtml(error.message)}</div>`;
+        state.matters = [];
+        selectedMatter = null;
+        pendingDeleteMatterId = null;
+        renderEmptyPanel();
+        renderBoard({ errorMessage: error.message || "Repository could not load" });
       }
     }
 
-    function renderBoard() {
+    function renderBoard({ errorMessage = "" } = {}) {
       const mattersByColumn = new Map(BOARD_COLUMNS.map((column) => [column.id, []]));
       state.matters.forEach((matter) => {
         const column = boardColumnIds.has(matter.board_column) ? matter.board_column : "gmail_demo";
@@ -78,7 +82,9 @@ const RepositoryView = (() => {
       renderSyncStatus();
       document.querySelectorAll("[data-repository-list]").forEach((list) => {
         const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
-        list.innerHTML = matters.length
+        list.innerHTML = errorMessage
+          ? `<div class="repository-dropzone">${escapeHtml(errorMessage)}</div>`
+          : matters.length
           ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
           : '<div class="repository-dropzone">No documents</div>';
         list.querySelectorAll("[data-matter-id]").forEach((card) => {
