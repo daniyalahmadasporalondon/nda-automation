@@ -2,6 +2,7 @@ function renderReviewDocument({
   clauses,
   originalParagraphs,
   paragraphs,
+  comments = [],
   redlines,
   selectedClauseId,
   viewMode,
@@ -24,6 +25,7 @@ function renderReviewDocument({
     .map((paragraph) => renderDocumentParagraph(paragraphViewModel(paragraph, {
       clauses,
       clausesByParagraphId,
+      comments,
       originalParagraphs,
       redlinesByParagraphId,
       selectedClauseId,
@@ -51,6 +53,7 @@ function paragraphViewModel(paragraph, context) {
   const visibleRedlines = visibleParagraphRedlines(redlines, manualRedline, selectedRedline, primaryRedline);
 
   return {
+    commentCount: paragraphCommentCount(paragraph.id, context.comments),
     ids: linkedClauses.map((clause) => clause.id).join(" "),
     linkedClauses,
     manualRedline,
@@ -134,21 +137,40 @@ function renderParagraphFrame(model, { body, classes = [] }) {
     body,
     classes,
     clauseIds: model.ids,
+    commentCount: model.commentCount,
     paragraphId: model.paragraph.id,
     selected: model.selected,
   });
 }
 
-function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", paragraphId = "", selected = false, attributes = "" }) {
+function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "" }) {
   const frameAttributes = [];
   if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
   if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
   if (attributes) frameAttributes.push(attributes);
+  const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount) : "";
   return `
     <div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>
+      ${commentTools}
       ${body}
     </div>
   `;
+}
+
+function renderParagraphCommentTools(paragraphId, commentCount) {
+  const count = Number(commentCount || 0);
+  return `
+    <div class="paragraph-comment-tools" contenteditable="false">
+      <button type="button" data-add-paragraph-comment-id="${escapeHtml(paragraphId)}">Comment</button>
+      <button type="button" data-add-selection-comment-id="${escapeHtml(paragraphId)}">Selection</button>
+      ${count ? `<span>${count}</span>` : ""}
+    </div>
+  `;
+}
+
+function paragraphCommentCount(paragraphId, comments) {
+  if (!Array.isArray(comments)) return 0;
+  return comments.filter((comment) => comment?.paragraph_id === paragraphId).length;
 }
 
 function renderInsertedParagraphs(inserts, viewMode) {

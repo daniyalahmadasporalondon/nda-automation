@@ -2376,6 +2376,10 @@ class ServerTests(unittest.TestCase):
                                 "clause_id": "governing_law",
                                 "clause_name": "Governing Law",
                                 "paragraph_id": "p1",
+                                "scope": "selection",
+                                "selected_text": "California",
+                                "selection_start": 53,
+                                "selection_end": 63,
                                 "text": "Confirm fallback position.",
                             }],
                         },
@@ -2404,6 +2408,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn("saved_at", saved_draft)
         self.assertEqual(stored_after_save["redline_draft"]["manual_redline_edits"][0]["paragraph_id"], "p1")
         self.assertEqual(stored_after_save["redline_draft"]["review_comments"][0]["text"], "Confirm fallback position.")
+        self.assertEqual(stored_after_save["redline_draft"]["review_comments"][0]["selected_text"], "California")
         self.assertEqual(reset_status, 200)
         self.assertNotIn("redline_draft", reset_payload["matter"])
         self.assertEqual(reset_payload["matter"]["has_redline_draft"], False)

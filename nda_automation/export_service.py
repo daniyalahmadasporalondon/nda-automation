@@ -109,11 +109,12 @@ def clean_review_comments(review_comments: object) -> list[dict]:
             "id": str(comment.get("id") or f"comment-{clause_id or paragraph_id}").strip()[:160],
             "text": text,
         }
-        for key in ("clause_id", "clause_name", "paragraph_id", "author", "created_at"):
+        for key in ("clause_id", "clause_name", "paragraph_id", "author", "created_at", "scope", "selected_text"):
             value = str(comment.get(key) or "").strip()
             if value:
-                clean_comment[key] = value[:240]
+                clean_comment[key] = value[:1000 if key == "selected_text" else 240]
         _copy_comment_indexes(comment, clean_comment)
+        _copy_comment_offsets(comment, clean_comment)
         cleaned.append(clean_comment)
     return cleaned
 
@@ -319,3 +320,13 @@ def _copy_comment_indexes(source: dict, target: dict) -> None:
             target[key] = int(source.get(key))
         except (TypeError, ValueError, OverflowError, KeyError):
             continue
+
+
+def _copy_comment_offsets(source: dict, target: dict) -> None:
+    for key in ("selection_start", "selection_end"):
+        try:
+            value = int(source.get(key))
+        except (TypeError, ValueError, OverflowError, KeyError):
+            continue
+        if value >= 0:
+            target[key] = value

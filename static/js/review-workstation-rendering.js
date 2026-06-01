@@ -250,16 +250,16 @@ function normalizeReviewComments(reviewComments) {
     .map((comment) => ({
       ...comment,
       id: String(comment.id || `comment-${comment.clause_id || comment.paragraph_id || Date.now()}`),
+      scope: String(comment.scope || (comment.selected_text ? "selection" : comment.clause_id ? "clause" : "paragraph")),
       text: String(comment.text || "").trim(),
     }));
 }
 
 function currentReviewComments() {
   return normalizeReviewComments(state.reviewComments)
-    .map((comment) => ({
-      ...comment,
-      ...reviewCommentTargetForClause(comment.clause_id),
-    }))
+    .map((comment) => (comment.scope === "clause" || (comment.clause_id && !comment.paragraph_id)
+      ? { ...comment, ...reviewCommentTargetForClause(comment.clause_id) }
+      : { ...comment, ...reviewCommentTargetForParagraph(comment.paragraph_id) }))
     .filter((comment) => String(comment.text || "").trim() && (comment.paragraph_id || comment.clause_id));
 }
 
@@ -283,6 +283,7 @@ function setClauseReviewComment(clauseId, text) {
       clause_name: clause.name || clauseId,
       created_at: existing?.created_at || new Date().toISOString(),
       id: existing?.id || `comment-${clauseId}`,
+      scope: "clause",
       text: trimmedText,
     });
   }
@@ -300,6 +301,61 @@ function reviewCommentTargetForClause(clauseId) {
   if (paragraph?.index !== undefined) target.paragraph_index = paragraph.index;
   if (paragraph?.source_index !== undefined) target.source_index = paragraph.source_index;
   return target;
+}
+
+function reviewCommentTargetForParagraph(paragraphId) {
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  const target = {};
+  if (paragraph?.id) target.paragraph_id = paragraph.id;
+  if (paragraph?.index !== undefined) target.paragraph_index = paragraph.index;
+  if (paragraph?.source_index !== undefined) target.source_index = paragraph.source_index;
+  return target;
+}
+
+function setParagraphReviewComment(paragraphId, text) {
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  if (!paragraph) return;
+  const commentId = `comment-paragraph-${paragraphId}`;
+  upsertReviewComment({
+    ...reviewCommentTargetForParagraph(paragraphId),
+    author: "Reviewer",
+    created_at: new Date().toISOString(),
+    id: commentId,
+    scope: "paragraph",
+    text,
+  });
+}
+
+function setSelectedTextReviewComment(paragraphId, selectionInfo, text) {
+  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
+  if (!paragraph || !selectionInfo?.selectedText) return;
+  const commentId = `comment-selection-${paragraphId}-${selectionInfo.startOffset}-${selectionInfo.endOffset}`;
+  upsertReviewComment({
+    ...reviewCommentTargetForParagraph(paragraphId),
+    author: "Reviewer",
+    created_at: new Date().toISOString(),
+    id: commentId,
+    scope: "selection",
+    selected_text: selectionInfo.selectedText,
+    selection_end: selectionInfo.endOffset,
+    selection_start: selectionInfo.startOffset,
+    text,
+  });
+}
+
+function upsertReviewComment(comment) {
+  const trimmedText = String(comment.text || "").trim();
+  state.reviewComments = normalizeReviewComments(state.reviewComments).filter((item) => item.id !== comment.id);
+  if (trimmedText) {
+    state.reviewComments.push({
+      ...comment,
+      text: trimmedText,
+    });
+  }
+  markRedlineDraftDirty();
+  renderStudioDocumentHighlights();
+  renderStudioClauseLane();
+  updateExportButtonState();
 }
 
 function firstClauseParagraphId(clauseId, clause) {
@@ -645,6 +701,59 @@ function bindReviewCommentControls(container) {
   });
 }
 
+function bindParagraphCommentControls(container) {
+  container.querySelectorAll("[data-add-paragraph-comment-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const paragraphId = button.dataset.addParagraphCommentId;
+      const existing = normalizeReviewComments(state.reviewComments)
+        .find((comment) => comment.scope === "paragraph" && comment.paragraph_id === paragraphId);
+      const text = window.prompt("Paragraph comment", existing?.text || "");
+      if (text === null) return;
+      setParagraphReviewComment(paragraphId, text);
+    });
+  });
+  container.querySelectorAll("[data-add-selection-comment-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const paragraphId = button.dataset.addSelectionCommentId;
+      const selectionInfo = selectedTextInParagraph(paragraphId);
+      if (!selectionInfo?.selectedText) {
+        setFileMeta("Select text in this paragraph before adding a selected-text comment");
+        return;
+      }
+      const text = window.prompt("Selected-text comment", "");
+      if (text === null) return;
+      setSelectedTextReviewComment(paragraphId, selectionInfo, text);
+    });
+  });
+}
+
+function selectedTextInParagraph(paragraphId) {
+  const editable = studioDocumentRender?.querySelector(
+    `[data-editable-paragraph-id="${cssEscape(paragraphId)}"]`,
+  );
+  const selection = window.getSelection();
+  if (!editable || !selection || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (
+    selection.isCollapsed
+    || !editable.contains(range.startContainer)
+    || !editable.contains(range.endContainer)
+  ) {
+    return null;
+  }
+  const startOffset = editableSelectionTextOffset(editable, range.startContainer, range.startOffset);
+  const endOffset = editableSelectionTextOffset(editable, range.endContainer, range.endOffset);
+  const selectedText = editableParagraphText(editable).slice(startOffset, endOffset).trim();
+  if (!selectedText) return null;
+  return {
+    endOffset,
+    selectedText,
+    startOffset,
+  };
+}
+
 function renderStudioDocumentHighlights() {
   if (!studioDocumentRender) return;
 
@@ -660,6 +769,7 @@ function renderStudioDocumentHighlights() {
   const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
   studioDocumentRender.innerHTML = renderReviewDocument({
     clauses: state.reviewClauses,
+    comments: currentReviewComments(),
     originalParagraphs: manualRedlineBaselineParagraphs(),
     paragraphs: state.reviewParagraphs,
     redlines: effectiveReviewRedlines(),
@@ -675,6 +785,7 @@ function renderStudioDocumentHighlights() {
     });
   });
   bindViewerParagraphEditing();
+  bindParagraphCommentControls(studioDocumentRender);
 
   showStudioDocumentRender();
 }

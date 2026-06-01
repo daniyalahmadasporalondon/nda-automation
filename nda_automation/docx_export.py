@@ -659,6 +659,10 @@ def _prepared_review_comments(review_result: ReviewResult) -> List[dict]:
             "created_at": str(comment.get("created_at") or "").strip(),
             "id": str(comment.get("id") or "").strip(),
             "paragraph_id": paragraph_id,
+            "scope": str(comment.get("scope") or "").strip(),
+            "selected_text": str(comment.get("selected_text") or "").strip(),
+            "selection_start": comment.get("selection_start"),
+            "selection_end": comment.get("selection_end"),
             "text": text,
         })
     return prepared
@@ -818,7 +822,7 @@ def _apply_comment_anchors_to_report_document(
     for comment in comments:
         paragraph = report_paragraph_by_id.get(str(comment.get("_report_paragraph_id") or ""))
         if paragraph is not None:
-            _apply_comment_anchor(paragraph, str(comment.get("_word_comment_id") or ""))
+            _apply_comment_anchor(paragraph, comment)
 
 
 def _apply_comment_anchors_to_source_document(document_root: ET.Element, comments: List[dict]) -> None:
@@ -829,23 +833,147 @@ def _apply_comment_anchors_to_source_document(document_root: ET.Element, comment
     for comment in comments:
         paragraph = source_paragraph_by_index.get(comment.get("_source_index"))
         if paragraph is not None:
-            _apply_comment_anchor(paragraph, str(comment.get("_word_comment_id") or ""))
+            _apply_comment_anchor(paragraph, comment)
 
 
-def _apply_comment_anchor(paragraph: ET.Element, comment_id: str) -> None:
+def _apply_comment_anchor(paragraph: ET.Element, comment: dict) -> None:
+    comment_id = str(comment.get("_word_comment_id") or "")
     if not comment_id:
+        return
+    if _apply_comment_anchor_to_text_selection(paragraph, comment_id, comment):
         return
     start = ET.Element(_w_tag("commentRangeStart"), {_w_tag("id"): comment_id})
     end = ET.Element(_w_tag("commentRangeEnd"), {_w_tag("id"): comment_id})
-    reference_run = ET.Element(_w_tag("r"))
-    reference_props = ET.SubElement(reference_run, _w_tag("rPr"))
-    ET.SubElement(reference_props, _w_tag("rStyle"), {_w_tag("val"): "CommentReference"})
-    ET.SubElement(reference_run, _w_tag("commentReference"), {_w_tag("id"): comment_id})
+    reference_run = _comment_reference_run(comment_id)
 
     insert_position = 1 if len(paragraph) and paragraph[0].tag == _w_tag("pPr") else 0
     paragraph.insert(insert_position, start)
     paragraph.append(end)
     paragraph.append(reference_run)
+
+
+def _apply_comment_anchor_to_text_selection(paragraph: ET.Element, comment_id: str, comment: dict) -> bool:
+    selected_text = str(comment.get("selected_text") or "")
+    selection = _comment_selection_range(paragraph, comment)
+    if selection is None:
+        return False
+    selection_start, selection_end = selection
+    if selection_start >= selection_end:
+        return False
+    paragraph_text = _paragraph_direct_text(paragraph)
+    if not paragraph_text or selection_end > len(paragraph_text):
+        return False
+    if selected_text and _normalize_paragraph_text(paragraph_text[selection_start:selection_end]) != _normalize_paragraph_text(selected_text):
+        return False
+
+    children = list(paragraph)
+    new_children: list[ET.Element] = []
+    position = 0
+    started = False
+    ended = False
+    for child in children:
+        run_text = _direct_run_text(child)
+        if run_text is None:
+            new_children.append(child)
+            continue
+        run_start = position
+        run_end = position + len(run_text)
+        position = run_end
+        if run_end <= selection_start or run_start >= selection_end:
+            new_children.append(child)
+            continue
+
+        local_start = max(0, selection_start - run_start)
+        local_end = min(len(run_text), selection_end - run_start)
+        before = run_text[:local_start]
+        selected = run_text[local_start:local_end]
+        after = run_text[local_end:]
+        if before:
+            new_children.append(_clone_run_with_text(child, before))
+        if selected and not started:
+            new_children.append(ET.Element(_w_tag("commentRangeStart"), {_w_tag("id"): comment_id}))
+            started = True
+        if selected:
+            new_children.append(_clone_run_with_text(child, selected))
+        if selected and not ended and run_end >= selection_end:
+            new_children.append(ET.Element(_w_tag("commentRangeEnd"), {_w_tag("id"): comment_id}))
+            ended = True
+        if after:
+            new_children.append(_clone_run_with_text(child, after))
+
+    if not started or not ended:
+        return False
+    new_children.append(_comment_reference_run(comment_id))
+    paragraph[:] = new_children
+    return True
+
+
+def _comment_selection_range(paragraph: ET.Element, comment: dict) -> tuple[int, int] | None:
+    paragraph_text = _paragraph_direct_text(paragraph)
+    if not paragraph_text:
+        return None
+    try:
+        selection_start = int(comment.get("selection_start"))
+        selection_end = int(comment.get("selection_end"))
+    except (TypeError, ValueError):
+        selection_start = -1
+        selection_end = -1
+    selected_text = str(comment.get("selected_text") or "")
+    if (
+        0 <= selection_start < selection_end <= len(paragraph_text)
+        and (
+            not selected_text
+            or _normalize_paragraph_text(paragraph_text[selection_start:selection_end]) == _normalize_paragraph_text(selected_text)
+        )
+    ):
+        return selection_start, selection_end
+    if selected_text:
+        index = paragraph_text.find(selected_text)
+        if index >= 0:
+            return index, index + len(selected_text)
+    return None
+
+
+def _paragraph_direct_text(paragraph: ET.Element) -> str:
+    parts = []
+    for child in list(paragraph):
+        run_text = _direct_run_text(child)
+        if run_text is None:
+            continue
+        parts.append(run_text)
+    return "".join(parts)
+
+
+def _direct_run_text(run: ET.Element) -> str | None:
+    if run.tag != _w_tag("r"):
+        return None
+    text_nodes = [child for child in list(run) if child.tag == _w_tag("t")]
+    other_text_nodes = [
+        child
+        for child in list(run)
+        if child.tag in {_w_tag("tab"), _w_tag("br"), _w_tag("cr"), _w_tag("delText")}
+    ]
+    if len(text_nodes) != 1 or other_text_nodes:
+        return None
+    return text_nodes[0].text or ""
+
+
+def _clone_run_with_text(run: ET.Element, text: str) -> ET.Element:
+    cloned = ET.Element(run.tag, run.attrib)
+    run_properties = run.find(_w_tag("rPr"))
+    if run_properties is not None:
+        cloned.append(_clone_element(run_properties))
+    text_node = ET.SubElement(cloned, _w_tag("t"), {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
+    text_node.text = text
+    return cloned
+
+
+def _comment_reference_run(comment_id: str) -> ET.Element:
+    reference_run = ET.Element(_w_tag("r"))
+    reference_props = ET.SubElement(reference_run, _w_tag("rPr"))
+    ET.SubElement(reference_props, _w_tag("rStyle"), {_w_tag("val"): "CommentReference"})
+    ET.SubElement(reference_run, _w_tag("commentReference"), {_w_tag("id"): comment_id})
+    return reference_run
 
 
 def _label_value(label: str, value: object) -> str:

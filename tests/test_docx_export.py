@@ -582,6 +582,37 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
         self.assertIn('w:commentRangeStart w:id="0"', document_xml)
 
+    def test_source_docx_export_anchors_selected_text_comments(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement includes ordinary operational terms.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result["review_comments"] = [
+            {
+                "author": "Reviewer",
+                "paragraph_id": "p1",
+                "scope": "selection",
+                "selected_text": "Intro",
+                "selection_start": 0,
+                "selection_end": 5,
+                "text": "Selected text comment.",
+            }
+        ]
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _comments_root, document_root, comments_xml, document_xml = docx_comments(redlined_docx)
+        self.assertIn("Selected text comment.", comments_xml)
+        self.assertEqual(len(document_root.findall(".//w:commentRangeStart", W_NS)), 1)
+        start_index = document_xml.index("commentRangeStart")
+        selected_index = document_xml.index("Intro")
+        end_index = document_xml.index("commentRangeEnd")
+        self.assertLess(start_index, selected_index)
+        self.assertLess(selected_index, end_index)
+
     def test_review_report_docx_writes_native_word_comments(self):
         result = review_nda(
             "This Agreement shall be governed by the laws of California.\n\n"

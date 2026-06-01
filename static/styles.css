@@ -1221,6 +1221,40 @@ h3 {
   white-space: pre-wrap;
 }
 
+.paragraph-comment-tools {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.paragraph-comment-tools button {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  min-height: 22px;
+  padding: 4px 7px;
+}
+
+.paragraph-comment-tools span {
+  align-items: center;
+  background: #f7fbff;
+  border: 1px solid rgba(14, 116, 144, 0.24);
+  border-radius: var(--r-pill);
+  color: #0e7490;
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 800;
+  justify-content: center;
+  min-height: 20px;
+  min-width: 20px;
+}
+
 .paragraph-editable {
   border-radius: 6px;
   cursor: text;
