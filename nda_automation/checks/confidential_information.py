@@ -18,6 +18,29 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+
+USAGE_RIGHT_ACTION_PATTERN = (
+    r"(?:use|using|retain|retaining|disclose|disclosing|exploit|exploiting|"
+    r"reverse\s+engineer(?:ing)?)"
+)
+USAGE_RIGHT_BEFORE_PATTERN = (
+    rf"(?:\b(?:may|can)\s+{USAGE_RIGHT_ACTION_PATTERN}"
+    rf"|\b(?:shall|will|is|are|be|remain(?:s)?)\s+(?:free|permitted|allowed|entitled)\s+to\s+"
+    rf"{USAGE_RIGHT_ACTION_PATTERN}"
+    rf"|\b(?:has|have)\s+(?:the\s+)?right\s+to\s+{USAGE_RIGHT_ACTION_PATTERN}"
+    rf"|\bnothing\b[^.;]{{0,120}}\b(?:prohibits|prevents|restricts|limits)\b[^.;]{{0,80}}\bfrom\s+"
+    rf"{USAGE_RIGHT_ACTION_PATTERN})(?:\s+\w+){{0,8}}\s*$"
+)
+REVERSE_ENGINEERING_RIGHT_BEFORE_PATTERN = (
+    r"(?:\b(?:may|can)\s+"
+    r"|\b(?:shall|will|is|are|be|remain(?:s)?)\s+(?:free|permitted|allowed|entitled)\s+to\s+"
+    r"|\b(?:has|have)\s+(?:the\s+)?right\s+to\s+)$"
+)
+USAGE_RIGHT_AFTER_PATTERN = (
+    r"^(?:\s+\w+){0,8}\s+\b(?:may|can|shall|will)\s+be\s+"
+    r"(?:used|retained|disclosed|exploited|reverse\s+engineered)\b"
+)
+NEGATED_RIGHT_BEFORE_PATTERN = r"\b(?:must|shall|may|can|will)\s+not\b[^.;]{0,80}$|\b(?:not|never)\s+[^.;]{0,40}$"
 def _check_confidential_information(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     definition_name_terms, definition_coverage_terms = _confidential_definition_search_terms(clause)
     categories = _clause_terms(clause, "definition_categories")
@@ -28,9 +51,9 @@ def _check_confidential_information(_text: str, normalized: str, clause: Dict[st
     coverage_terms = _dedupe_terms(definition_coverage_terms + categories)
     coverage_hits = [term for term in coverage_terms if term in definition_normalized]
     broad_definition = bool(definition_paragraphs) and len(coverage_hits) >= 4
-    exclusion_paragraphs = _paragraph_matches(paragraphs, _clause_term_patterns(clause, "exclusion_context_terms"))
     problematic_exclusion_paragraphs = _problematic_confidential_exclusion_paragraphs(
-        exclusion_paragraphs,
+        paragraphs,
+        _clause_term_patterns(clause, "exclusion_context_terms"),
         _clause_terms(clause, "problematic_exclusion_terms"),
         _clause_terms(clause, "independent_development_terms"),
         _clause_terms(clause, "independent_development_qualification_terms"),
@@ -87,19 +110,29 @@ def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[Li
     return definition_terms, search_terms[1:]
 
 def _problematic_confidential_exclusion_paragraphs(
-    exclusion_paragraphs: Iterable[Paragraph],
+    paragraphs: Iterable[Paragraph],
+    exclusion_context_patterns: Iterable[str],
     problematic_terms: Iterable[str],
     independent_development_terms: Iterable[str],
     independent_development_qualification_terms: Iterable[str],
 ) -> List[Paragraph]:
+    exclusion_context_patterns = list(exclusion_context_patterns)
     problematic_patterns = [_literal_word_pattern(term) for term in problematic_terms]
     independent_development_patterns = [_literal_word_pattern(term) for term in independent_development_terms]
     qualification_patterns = [_literal_word_pattern(term) for term in independent_development_qualification_terms]
     matches: List[Paragraph] = []
 
-    for paragraph in exclusion_paragraphs:
+    for paragraph in paragraphs:
         paragraph_text = str(paragraph["text"])
         paragraph_normalized = _normalize(paragraph_text)
+        has_exclusion_context = any(re.search(pattern, paragraph_normalized) for pattern in exclusion_context_patterns)
+        has_usage_right_context = _has_problematic_usage_right(
+            paragraph_normalized,
+            [*problematic_patterns, *independent_development_patterns],
+        )
+        if not has_exclusion_context and not has_usage_right_context:
+            continue
+
         has_problematic_term = any(re.search(pattern, paragraph_normalized) for pattern in problematic_patterns)
         has_unqualified_independent_development = _has_unqualified_independent_development(
             paragraph_normalized,
@@ -113,6 +146,40 @@ def _problematic_confidential_exclusion_paragraphs(
         matches.append(paragraph)
 
     return matches
+
+def _has_problematic_usage_right(normalized_text: str, problematic_patterns: Iterable[str]) -> bool:
+    for pattern in problematic_patterns:
+        for match in re.finditer(pattern, normalized_text):
+            before = _current_clause_prefix(normalized_text, match.start())
+            after = _current_clause_suffix(normalized_text, match.end())
+            if re.search(NEGATED_RIGHT_BEFORE_PATTERN, before):
+                continue
+            if (
+                re.search(USAGE_RIGHT_BEFORE_PATTERN, before)
+                or (
+                    _pattern_matches_reverse_engineering(pattern)
+                    and re.search(REVERSE_ENGINEERING_RIGHT_BEFORE_PATTERN, before)
+                )
+                or re.search(USAGE_RIGHT_AFTER_PATTERN, after)
+            ):
+                return True
+    return False
+
+def _current_clause_prefix(text: str, end: int) -> str:
+    left = max(text.rfind(separator, 0, end) for separator in (".", ";"))
+    return text[left + 1:end]
+
+def _current_clause_suffix(text: str, start: int) -> str:
+    right_candidates = [
+        position
+        for position in (text.find(separator, start) for separator in (".", ";"))
+        if position != -1
+    ]
+    right = min(right_candidates) if right_candidates else len(text)
+    return text[start:right]
+
+def _pattern_matches_reverse_engineering(pattern: str) -> bool:
+    return "reverse" in pattern and "engineer" in pattern
 
 def _has_unqualified_independent_development(
     normalized_text: str,

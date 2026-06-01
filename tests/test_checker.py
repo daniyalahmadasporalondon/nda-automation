@@ -906,6 +906,33 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(confidential_information["status"], "match")
         self.assertTrue(confidential_information["passes"])
 
+    def test_usage_rights_for_problematic_confidential_exclusions_need_review(self):
+        examples = [
+            "The Receiving Party may use residual knowledge retained in unaided memory.",
+            "The Receiving Party shall be free to use residuals retained in unaided memory.",
+            "The Receiving Party may reverse engineer samples supplied by the Disclosing Party.",
+            "The Receiving Party may use information independently created by its personnel.",
+        ]
+
+        for usage_right in examples:
+            with self.subTest(usage_right=usage_right):
+                result = review_nda(
+                    f"""
+                    Confidential Information means any and all non-public business, financial, technical,
+                    customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                    by either party.
+
+                    {usage_right}
+                    """
+                )
+
+                confidential_information = next(
+                    clause for clause in result["clauses"] if clause["id"] == "confidential_information"
+                )
+                self.assertEqual(confidential_information["status"], "check")
+                self.assertFalse(confidential_information["passes"])
+                self.assertEqual(confidential_information["matched_paragraph_ids"], ["p2"])
+
     def test_proprietary_information_definition_satisfies_confidential_definition(self):
         result = review_nda(
             """
@@ -1078,6 +1105,21 @@ class CheckerTests(unittest.TestCase):
 
             Confidential Information does not include information independently created without use of
             or reference to Confidential Information.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "match")
+
+    def test_qualified_independent_development_usage_right_can_pass(self):
+        result = review_nda(
+            """
+            Confidential Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+
+            The Receiving Party may use information independently created without use of or
+            reference to Confidential Information.
             """
         )
 
