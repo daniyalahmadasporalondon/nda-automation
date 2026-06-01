@@ -108,6 +108,16 @@ def _is_allowed_carve_out_fragment(normalized: str, start: int, end: int, clause
     return bool(
         re.search(CARVE_OUT_MARKER_PATTERN, fragment)
         or any(re.match(pattern, fragment.lstrip()) for pattern in carve_out_patterns)
+        or any(_term_scoped_to_carve_out(fragment, pattern) for pattern in carve_out_patterns)
+    )
+
+
+def _term_scoped_to_carve_out(fragment: str, carve_out_pattern: str) -> bool:
+    return bool(
+        re.search(
+            rf"\b(?:for|as\s+to|with\s+respect\s+to|in\s+respect\s+of|solely\s+for|limited\s+to)\s+(?:the\s+)?{carve_out_pattern}\b",
+            fragment,
+        )
     )
 
 

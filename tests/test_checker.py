@@ -243,6 +243,26 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(term_clause["passes"])
         self.assertIn("within the cap of five years", term_clause["finding"])
 
+    def test_term_and_survival_allows_unmarked_duration_scoped_to_trade_secret_carve_out(self):
+        result = review_nda(
+            """
+            The confidentiality obligations survive for a fixed period of up to five years.
+            The obligations survive for ten years for trade secrets.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+
+    def test_term_and_survival_does_not_treat_standalone_trade_secret_carve_out_as_ordinary_term(self):
+        result = review_nda("The confidentiality obligations survive for ten years for trade secrets.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "not_present")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "missing")
+
     def test_term_and_survival_allows_perpetual_trade_secret_and_personal_data_carveouts(self):
         result = review_nda(
             """
