@@ -82,6 +82,12 @@ class DocxTextTests(unittest.TestCase):
             with self.assertRaisesRegex(DocxExtractionError, "suspicious compression ratio"):
                 extract_docx_paragraphs(data)
 
+    def test_rejects_docx_xml_dtd_entity_declarations_before_parsing(self):
+        data = make_docx(["Safe body text."], extra_parts={"word/header1.xml": unsafe_xml_part()})
+
+        with self.assertRaisesRegex(DocxExtractionError, "unsupported XML DTD/entity declarations"):
+            extract_docx_paragraphs(data)
+
 
 def make_docx(paragraphs, *, body_xml="", extra_parts=None):
     body = "".join(
@@ -105,6 +111,17 @@ def part_xml(text):
 <w:part xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:p><w:r><w:t>{escape_xml(text)}</w:t></w:r></w:p>
 </w:part>"""
+
+
+def unsafe_xml_part():
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE w:document [
+  <!ENTITY a "aaaaaaaaaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+]>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body>
+</w:document>"""
 
 
 def escape_xml(value):

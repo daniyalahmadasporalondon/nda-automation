@@ -5,6 +5,8 @@ from typing import Dict, List
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
+from .docx_xml import UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
+
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
@@ -55,6 +57,11 @@ def validate_docx_archive(document: ZipFile) -> None:
             raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
         if item.compress_size and item.file_size / item.compress_size > MAX_DOCX_ENTRY_COMPRESSION_RATIO:
             raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
+        if is_docx_xml_part(item.filename):
+            try:
+                reject_unsafe_docx_xml(document.read(item.filename), part_name=item.filename)
+            except UnsafeDocxXmlError as exc:
+                raise DocxExtractionError(str(exc)) from exc
 
 
 def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
@@ -110,7 +117,7 @@ def _read_xml_part(document: ZipFile, part_name: str, missing_message: str | Non
         raise DocxExtractionError(missing_message or f"The Word document part {part_name} is missing.") from exc
 
     try:
-        root = ET.fromstring(document_xml)
-    except ET.ParseError as exc:
+        root = parse_docx_xml(document_xml, part_name=part_name)
+    except (ET.ParseError, UnsafeDocxXmlError) as exc:
         raise DocxExtractionError(f"The Word document part {part_name} could not be read.") from exc
     return root

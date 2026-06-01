@@ -259,6 +259,17 @@ def replace_docx_parts(docx_bytes, replacements):
             return output.getvalue()
 
 
+def unsafe_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE w:document [
+  <!ENTITY a "aaaaaaaaaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+]>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body>
+</w:document>"""
+
+
 def escape_xml(value):
     return (
         value.replace("&", "&amp;")
@@ -436,6 +447,15 @@ class DocxExportTests(unittest.TestCase):
         with patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2):
             with self.assertRaises(DocxExportError):
                 build_source_redline_docx(source_docx, {"paragraphs": [], "redline_edits": []})
+
+    def test_source_docx_export_rejects_xml_dtd_entity_declarations(self):
+        source_docx = replace_docx_parts(
+            make_source_docx(["Safe body text."]),
+            {"word/document.xml": unsafe_document_xml()},
+        )
+
+        with self.assertRaises(DocxExportError):
+            build_source_redline_docx(source_docx, {"paragraphs": [], "redline_edits": []})
 
     def test_source_docx_export_prefers_text_anchors_over_stale_source_index(self):
         source_docx = make_source_docx([
@@ -749,6 +769,19 @@ class DocxExportTests(unittest.TestCase):
         errors = validate_docx_open_health(patched_docx, require_styles=True)
 
         self.assertIn("document.xml contains insertion revision markup inside paragraph properties.", errors)
+
+    def test_docx_open_health_rejects_xml_dtd_entity_declarations(self):
+        docx_bytes = replace_docx_parts(
+            build_review_report_docx(review_nda("The parties will discuss a possible transaction.")),
+            {"word/document.xml": unsafe_document_xml()},
+        )
+
+        errors = validate_docx_open_health(docx_bytes, require_styles=True)
+
+        self.assertTrue(
+            any("unsupported XML DTD/entity declarations" in error for error in errors),
+            errors,
+        )
 
     def test_review_report_docx_preserves_track_changes_contract_by_redline_action(self):
         result = track_changes_contract_review_result()

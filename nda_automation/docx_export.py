@@ -16,6 +16,7 @@ from .redline_actions import (
 from .inline_diff import diff_text_operations
 from .docx_health import validate_docx_open_health as validate_docx_open_health
 from .docx_text import DocxExtractionError, validate_docx_archive
+from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -97,7 +98,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
             validate_docx_archive(source_archive)
             source_names = set(source_archive.namelist())
-            document_root = ET.fromstring(source_archive.read("word/document.xml"))
+            document_root = parse_docx_xml(source_archive.read("word/document.xml"), part_name="word/document.xml")
             _strip_paragraph_property_revisions(document_root)
             _apply_redline_edits_to_source_document(
                 document_root,
@@ -139,7 +140,7 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                         if name not in written:
                             redlined_archive.writestr(name, data)
                 return output.getvalue()
-    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError) as exc:
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
         raise DocxExportError("The uploaded Word document could not be redlined.") from exc
 
 
@@ -498,7 +499,7 @@ def _strip_paragraph_property_revisions(root: ET.Element) -> None:
 
 
 def _word_paragraph_from_xml(paragraph_xml: str) -> ET.Element:
-    wrapper = ET.fromstring(f'<root xmlns:w="{W_NS}">{paragraph_xml}</root>')
+    wrapper = parse_docx_xml(f'<root xmlns:w="{W_NS}">{paragraph_xml}</root>', part_name="redline paragraph")
     return wrapper[0]
 
 
@@ -773,7 +774,7 @@ def _package_rels_xml() -> str:
 
 def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
     if relationships_xml:
-        relationships_root = ET.fromstring(relationships_xml)
+        relationships_root = parse_docx_xml(relationships_xml, part_name="_rels/.rels")
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
 
@@ -791,7 +792,7 @@ def _document_rels_xml() -> str:
 
 def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
     if settings_xml:
-        settings_root = ET.fromstring(settings_xml)
+        settings_root = parse_docx_xml(settings_xml, part_name="word/settings.xml")
     else:
         settings_root = ET.Element(_w_tag("settings"))
 
@@ -816,7 +817,7 @@ def _settings_xml_with_track_revisions(settings_xml: bytes | None) -> bytes:
 
 def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
     if relationships_xml:
-        relationships_root = ET.fromstring(relationships_xml)
+        relationships_root = parse_docx_xml(relationships_xml, part_name="word/_rels/document.xml.rels")
     else:
         relationships_root = ET.Element(_rel_tag("Relationships"))
 
@@ -826,7 +827,7 @@ def _document_rels_xml_with_settings(relationships_xml: bytes | None) -> bytes:
 
 def _content_types_xml_with_settings(content_types_xml: bytes | None, *, has_styles: bool = False) -> bytes:
     if content_types_xml:
-        content_types_root = ET.fromstring(content_types_xml)
+        content_types_root = parse_docx_xml(content_types_xml, part_name="[Content_Types].xml")
     else:
         content_types_root = ET.Element(_content_type_tag("Types"))
 
@@ -953,7 +954,7 @@ def _xml_bytes(root: ET.Element) -> bytes:
 
 
 def _clone_element(element: ET.Element) -> ET.Element:
-    return ET.fromstring(ET.tostring(element, encoding="utf-8"))
+    return parse_docx_xml(ET.tostring(element, encoding="utf-8"), part_name="cloned XML")
 
 
 def _next_revision_id(root: ET.Element) -> int:

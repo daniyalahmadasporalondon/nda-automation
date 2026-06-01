@@ -639,6 +639,35 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assert_review_payload_contract(payload, expected_source_type="docx")
 
+    def test_docx_review_and_matter_upload_reject_xml_dtd_entities(self):
+        source_docx = make_unsafe_docx()
+
+        review_status, review_payload = self.request(
+            "POST",
+            "/api/review-document",
+            {
+                "filename": "unsafe.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_status, matter_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "unsafe.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "manual_upload",
+                    },
+                )
+
+        self.assertEqual(review_status, 400)
+        self.assertIn("unsupported XML DTD/entity declarations", review_payload["error"])
+        self.assertEqual(matter_status, 400)
+        self.assertIn("unsupported XML DTD/entity declarations", matter_payload["error"])
+
     @requires_pypdf
     def test_review_payload_contract_covers_uploaded_pdf_flow(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
@@ -1484,6 +1513,7 @@ class ServerTests(unittest.TestCase):
             "The Recipient must not circumvent the Company.",
         ])
         inline_data = base64.urlsafe_b64encode(docx_bytes).decode("ascii").rstrip("=")
+        unsafe_inline_data = base64.urlsafe_b64encode(make_unsafe_docx()).decode("ascii").rstrip("=")
         messages = {
             "msg_duplicate": {
                 "id": "msg_duplicate",
@@ -1518,6 +1548,16 @@ class ServerTests(unittest.TestCase):
                     "parts": [{"partId": "1", "filename": "New NDA.docx", "body": {"data": inline_data}}],
                 },
             },
+            "msg_unsafe": {
+                "id": "msg_unsafe",
+                "threadId": "thr_unsafe",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [{"name": "From", "value": "Legal <legal@example.com>"}, {"name": "Subject", "value": "NDA"}],
+                    "parts": [{"partId": "1", "filename": "Unsafe NDA.docx", "body": {"data": unsafe_inline_data}}],
+                },
+            },
         }
 
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1543,7 +1583,7 @@ class ServerTests(unittest.TestCase):
                 stored = matter_store.list_matters()
 
         self.assertEqual(result["account"], "daniyal.ahmad@aspora.com")
-        self.assertEqual([item["reason"] for item in result["skipped"]], ["duplicate_attachment", "self_sent_or_outbound"])
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["duplicate_attachment", "self_sent_or_outbound", "review_failed"])
         self.assertEqual(len(result["imported"]), 1)
         self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_new")
         self.assertEqual(result["imported"][0]["reply_to"], "Legal <legal@example.com>")
@@ -3254,6 +3294,21 @@ def make_docx(paragraphs):
 </w:document>"""
     with BytesIO() as output:
         with ZipFile(output, "w") as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def make_unsafe_docx():
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE w:document [
+  <!ENTITY a "aaaaaaaaaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+]>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body>
+</w:document>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
             archive.writestr("word/document.xml", document_xml)
         return output.getvalue()
 

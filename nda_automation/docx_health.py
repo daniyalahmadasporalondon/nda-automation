@@ -6,6 +6,8 @@ from io import BytesIO
 from typing import Dict, List, Tuple
 from zipfile import BadZipFile, ZipFile
 
+from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
+
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -44,7 +46,7 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
 
             try:
                 defaults, overrides = _docx_content_types(archive)
-            except (KeyError, ET.ParseError) as exc:
+            except (KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
                 errors.append(f"Content types are unreadable: {exc}.")
                 return errors
 
@@ -62,7 +64,7 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
             try:
                 package_relationships = _relationship_targets(archive, "_rels/.rels")
                 document_relationships = _relationship_targets(archive, "word/_rels/document.xml.rels")
-            except (KeyError, ET.ParseError) as exc:
+            except (KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
                 errors.append(f"Relationships are unreadable: {exc}.")
                 return errors
 
@@ -90,16 +92,16 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
                 errors.append("Document styles relationship does not resolve styles.xml.")
 
             try:
-                settings_root = ET.fromstring(archive.read("word/settings.xml"))
-            except (KeyError, ET.ParseError) as exc:
+                settings_root = parse_docx_xml(archive.read("word/settings.xml"), part_name="word/settings.xml")
+            except (KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
                 errors.append(f"settings.xml is unreadable: {exc}.")
                 return errors
             if settings_root.find(_w_tag("trackRevisions")) is None:
                 errors.append("settings.xml does not enable Track Changes.")
 
             try:
-                document_root = ET.fromstring(archive.read("word/document.xml"))
-            except (KeyError, ET.ParseError) as exc:
+                document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
+            except (KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
                 errors.append(f"document.xml is unreadable: {exc}.")
                 return errors
             body = document_root.find(_w_tag("body"))
@@ -117,7 +119,7 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
 
 
 def _docx_content_types(archive: ZipFile) -> Tuple[Dict[str, str], Dict[str, str]]:
-    content_types_root = ET.fromstring(archive.read("[Content_Types].xml"))
+    content_types_root = parse_docx_xml(archive.read("[Content_Types].xml"), part_name="[Content_Types].xml")
     defaults = {
         default.attrib["Extension"]: default.attrib["ContentType"]
         for default in content_types_root.findall(_content_type_tag("Default"))
@@ -132,7 +134,7 @@ def _docx_content_types(archive: ZipFile) -> Tuple[Dict[str, str], Dict[str, str
 
 
 def _relationship_targets(archive: ZipFile, relationship_part: str) -> List[Dict[str, str]]:
-    relationships_root = ET.fromstring(archive.read(relationship_part))
+    relationships_root = parse_docx_xml(archive.read(relationship_part), part_name=relationship_part)
     return [
         dict(relationship.attrib)
         for relationship in relationships_root.findall(_rel_tag("Relationship"))
