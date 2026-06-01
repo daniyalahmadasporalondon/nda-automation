@@ -12,7 +12,15 @@ from .common import (
     _paragraph_matches,
 )
 
-LAWFUL_CIRCUMVENTION_PATTERN = r"\bcircumvent(?:ing|ion)?\b.{0,50}\b(?:applicable\s+law|law|laws|legal|regulatory|regulation|statute|sanctions)\b"
+LEGAL_CIRCUMVENTION_OBJECT = (
+    r"(?:(?:any|all|applicable|relevant|mandatory|its|their|the)\s+)*"
+    r"(?:law|laws|legal\s+(?:requirements?|obligations?)|regulatory\s+(?:requirements?|obligations?)|"
+    r"regulations?|statutes?|sanctions)"
+)
+LAWFUL_CIRCUMVENTION_PATTERN = (
+    rf"\bcircumvent(?:ing)?\s+{LEGAL_CIRCUMVENTION_OBJECT}\b"
+    rf"|\bcircumvention\s+of\s+{LEGAL_CIRCUMVENTION_OBJECT}\b"
+)
 
 
 def _check_non_circumvention(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:

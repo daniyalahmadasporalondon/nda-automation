@@ -16,6 +16,13 @@ from .common import (
     _signature_marker_patterns,
 )
 
+SIGNATURE_FOR_LINE_PATTERN = (
+    r"^\s*for\s+"
+    r"(?!(?:a\s+period|the\s+avoidance|avoidance|purposes?|the\s+purposes?|"
+    r"clarity|example|information|convenience|the\s+foregoing|any|each|either|both|all|this)\b)"
+    r"[a-z0-9&.,' -]{2,80}\s*$"
+)
+
 
 def _check_signatures(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     signature_patterns = _signature_evidence_patterns(clause)
@@ -25,7 +32,7 @@ def _check_signatures(text: str, normalized: str, clause: Dict[str, object], par
     partial_matches = _signature_evidence_paragraphs(paragraphs, signature_patterns)
     signature_text = "\n".join(str(paragraph["text"]) for paragraph in partial_matches)
     signature_normalized = " ".join(signature_text.lower().split())
-    party_markers = len(re.findall(r"^\s*for\s+[a-z0-9&.,' -]{2,80}", signature_text, flags=re.IGNORECASE | re.MULTILINE))
+    party_markers = len(_signature_for_lines(signature_text))
     party_markers += _count_pattern_matches(by_marker_patterns, signature_normalized)
     title_markers = _count_pattern_matches(title_marker_patterns, signature_normalized)
     date_markers = _count_pattern_matches(date_marker_patterns, signature_normalized) + len(
@@ -55,7 +62,8 @@ def _signature_evidence_paragraphs(paragraphs: List[Paragraph], signature_patter
     for_line_matches = [
         paragraph
         for paragraph in paragraphs
-        if re.search(r"^\s*for\s+[a-z0-9&.,' -]{2,80}", str(paragraph["text"]), flags=re.IGNORECASE | re.MULTILINE)
+        if _signature_for_lines(str(paragraph["text"]))
+        and any(re.search(pattern, str(paragraph["text"]), flags=re.IGNORECASE) for pattern in signature_patterns)
     ]
     seen = set()
     evidence: List[Paragraph] = []
@@ -66,3 +74,7 @@ def _signature_evidence_paragraphs(paragraphs: List[Paragraph], signature_patter
         seen.add(paragraph_id)
         evidence.append(paragraph)
     return evidence
+
+
+def _signature_for_lines(text: str) -> List[str]:
+    return re.findall(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE)

@@ -15,11 +15,18 @@ from .common import (
     _paragraph_matches,
 )
 
-NEGATED_MUTUALITY_PATTERN = r"\b(?:not|no|neither|nor|without)\b.{0,40}\b(?:mutual|reciprocal)\b"
+MUTUALITY_VARIANT_PATTERNS = {
+    "mutual": r"\bmutual(?:ity|ly)?\b",
+    "reciprocal": r"\breciprocal(?:ly)?\b",
+}
+NEGATED_MUTUALITY_PATTERN = (
+    r"\b(?:not|no|without)\s+(?:a\s+|any\s+)?(?:mutual(?:ly)?|reciprocal(?:ly)?|reciprocity)\b"
+    r"|\bnon[-\s]?mutual\b"
+)
 
 
 def _check_mutuality(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
-    search_patterns = _clause_term_patterns(clause, "search_terms")
+    search_patterns = _mutuality_search_patterns(clause)
     one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
     mutual_paragraphs = [
         paragraph
@@ -79,3 +86,10 @@ def _mutual_role_paragraphs(
 
 def _negates_mutuality(text: str) -> bool:
     return bool(re.search(NEGATED_MUTUALITY_PATTERN, text, flags=re.IGNORECASE))
+
+
+def _mutuality_search_patterns(clause: Dict[str, object]) -> List[str]:
+    return [
+        MUTUALITY_VARIANT_PATTERNS.get(term, _literal_word_pattern(term))
+        for term in _clause_terms(clause, "search_terms")
+    ]

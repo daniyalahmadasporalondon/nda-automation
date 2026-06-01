@@ -31,7 +31,7 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
     term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     year_terms = _extract_year_terms_with_context(term_normalized)
-    has_term_within_cap = any(1 <= term["years"] <= max_years for term in year_terms)
+    has_term_within_cap = any(0 < term["years"] <= max_years for term in year_terms)
     ordinary_over_cap_terms = [
         term
         for term in year_terms

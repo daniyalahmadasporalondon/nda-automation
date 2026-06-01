@@ -110,6 +110,14 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(result_clause["status"], "match")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
 
+    def test_mutuality_accepts_reciprocally_binding_language(self):
+        result = review_nda("The parties shall keep each other's Confidential Information confidential on a reciprocally binding basis.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertTrue(result_clause["passes"])
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
     def test_mutuality_rejects_fixed_one_way_role_labels(self):
         result = review_nda(
             """
@@ -184,6 +192,14 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
         self.assertIn("36 months", term_clause["matched_text"])
+
+    def test_term_and_survival_accepts_sub_year_month_terms(self):
+        result = review_nda("The confidentiality obligations survive for six (6) months after termination.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("six (6) months", term_clause["matched_text"])
 
     def test_term_and_survival_ignores_unrelated_year_references(self):
         result = review_nda("The parties have worked together for two years on commercial discussions.")
@@ -907,6 +923,14 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(non_circumvention["status"], "not_present")
         self.assertTrue(non_circumvention["passes"])
 
+    def test_non_circumvention_does_not_ignore_company_restriction_near_law(self):
+        result = review_nda("The Recipient must not circumvent the Company under applicable law.")
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+
     def test_non_circumvention_redlines_each_detected_paragraph(self):
         result = review_nda(
             """
@@ -1035,6 +1059,14 @@ class CheckerTests(unittest.TestCase):
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
         self.assertNotEqual(result_clause["status"], "match")
         self.assertFalse(result_clause["passes"])
+
+    def test_signature_for_line_does_not_match_ordinary_prose(self):
+        result = review_nda("For the avoidance of doubt, this Agreement does not create an agency relationship.")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
+        self.assertEqual(result_clause["status"], "not_present")
+        self.assertFalse(result_clause["passes"])
+        self.assertEqual(result_clause["matched_paragraph_ids"], [])
 
     def test_missing_governing_law_creates_insert_redline_with_jurisdiction_options(self):
         result = review_nda("The parties will discuss a possible transaction.")
