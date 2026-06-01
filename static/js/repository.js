@@ -18,6 +18,7 @@ const RepositoryView = (() => {
   }) {
     let selectedMatter = null;
     let pendingSendMatterId = null;
+    let pendingDeleteMatterId = null;
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const boardColumnIds = new Set(BOARD_COLUMNS.map((column) => column.id));
 
@@ -55,6 +56,9 @@ const RepositoryView = (() => {
           selectedMatter = null;
           renderEmptyPanel();
         }
+        if (pendingDeleteMatterId && !state.matters.find((matter) => matter.id === pendingDeleteMatterId)) {
+          pendingDeleteMatterId = null;
+        }
         renderBoard();
       } catch (error) {
         gmailDemoMatterList.innerHTML = `<div class="repository-dropzone">${escapeHtml(error.message)}</div>`;
@@ -75,7 +79,7 @@ const RepositoryView = (() => {
       document.querySelectorAll("[data-repository-list]").forEach((list) => {
         const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
         list.innerHTML = matters.length
-          ? matters.map(renderMatterCard).join("")
+          ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
           : '<div class="repository-dropzone">No documents</div>';
         list.querySelectorAll("[data-matter-id]").forEach((card) => {
           card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
@@ -89,7 +93,24 @@ const RepositoryView = (() => {
         list.querySelectorAll("[data-delete-matter-id]").forEach((button) => {
           button.addEventListener("click", (event) => {
             event.stopPropagation();
-            deleteMatter(button.dataset.deleteMatterId, button);
+            requestDeleteMatter(button.dataset.deleteMatterId);
+          });
+        });
+        list.querySelectorAll("[data-delete-confirmation-id]").forEach((confirmation) => {
+          confirmation.addEventListener("click", (event) => {
+            event.stopPropagation();
+          });
+        });
+        list.querySelectorAll("[data-cancel-delete-matter-id]").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            cancelDeleteMatter(button.dataset.cancelDeleteMatterId);
+          });
+        });
+        list.querySelectorAll("[data-confirm-delete-matter-id]").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteMatter(button.dataset.confirmDeleteMatterId, button);
           });
         });
       });
@@ -116,6 +137,7 @@ const RepositoryView = (() => {
 
     async function openMatter(matterId) {
       try {
+        pendingDeleteMatterId = null;
         const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}`);
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Matter could not load");
@@ -127,8 +149,28 @@ const RepositoryView = (() => {
       }
     }
 
+    function requestDeleteMatter(matterId) {
+      if (!matterId) return;
+      pendingSendMatterId = null;
+      pendingDeleteMatterId = matterId;
+      renderBoard();
+      document.querySelectorAll("[data-confirm-delete-matter-id]").forEach((button) => {
+        if (button.dataset.confirmDeleteMatterId === matterId) button.focus();
+      });
+    }
+
+    function cancelDeleteMatter(matterId) {
+      if (pendingDeleteMatterId !== matterId) return;
+      pendingDeleteMatterId = null;
+      renderBoard();
+    }
+
     async function deleteMatter(matterId, control) {
       if (!matterId) return;
+      if (pendingDeleteMatterId !== matterId) {
+        requestDeleteMatter(matterId);
+        return;
+      }
       pendingSendMatterId = null;
       if (control) {
         control.disabled = true;
@@ -139,6 +181,7 @@ const RepositoryView = (() => {
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Matter could not be deleted");
         state.matters = state.matters.filter((matter) => matter.id !== matterId);
+        pendingDeleteMatterId = null;
         if (selectedMatter?.id === matterId) {
           selectedMatter = null;
           renderEmptyPanel();
@@ -286,12 +329,14 @@ const RepositoryView = (() => {
     function closePanel() {
       selectedMatter = null;
       pendingSendMatterId = null;
+      pendingDeleteMatterId = null;
       renderEmptyPanel();
       renderBoard();
     }
 
     async function openMatterInReview(matter) {
       pendingSendMatterId = null;
+      pendingDeleteMatterId = null;
       const updatedMatter = await moveMatterToColumn(matter.id, "in_review", { quiet: true });
       selectedMatter = updatedMatter || matter;
       renderBoard();
@@ -323,6 +368,7 @@ const RepositoryView = (() => {
 
     async function exportMatter(matter) {
       pendingSendMatterId = null;
+      pendingDeleteMatterId = null;
       const exportButton = repositoryMatterPanel?.querySelector(".repository-export-redline");
       setPanelMessage("");
       if (exportButton) {
@@ -358,6 +404,7 @@ const RepositoryView = (() => {
       const sendBlockReason = MatterUtils.gmailSendBlock(matter, state.gmailStatus);
       if (sendBlockReason) {
         pendingSendMatterId = null;
+        pendingDeleteMatterId = null;
         renderDetailPanel(matter);
         setPanelMessage(sendBlockReason);
         return;
@@ -365,6 +412,7 @@ const RepositoryView = (() => {
       const recipient = MatterUtils.recipientEmail(matter);
       if (!recipient) {
         pendingSendMatterId = null;
+        pendingDeleteMatterId = null;
         setPanelMessage("Matter does not have a valid reply recipient email address.");
         return;
       }
@@ -413,6 +461,7 @@ const RepositoryView = (() => {
 
     async function closeMatterWorkflow(matter) {
       pendingSendMatterId = null;
+      pendingDeleteMatterId = null;
       const closeButton = repositoryMatterPanel?.querySelector(".repository-close-matter");
       setPanelMessage("");
       if (closeButton) {
@@ -530,11 +579,12 @@ const RepositoryView = (() => {
     };
   }
 
-  function renderMatterCard(matter) {
+  function renderMatterCard(matter, options = {}) {
     const issueCount = Number(matter.issue_count || 0);
     const date = formatMatterDate(matter.received_at || matter.created_at);
+    const confirmingDelete = Boolean(options.confirmingDelete);
     return `
-      <article class="repository-card" role="button" tabindex="0" data-matter-id="${escapeHtml(matter.id)}" aria-label="Open matter ${escapeHtml(matterSubject(matter))}">
+      <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${escapeHtml(matter.id)}" aria-label="Open matter ${escapeHtml(matterSubject(matter))}">
         <span class="repository-card-top">
           <span class="repository-card-badges">
             <span class="repository-priority">${escapeHtml(triageLabel(matter.triage_status))}</span>
@@ -542,18 +592,32 @@ const RepositoryView = (() => {
           </span>
           <span class="repository-card-top-actions">
             <span>${escapeHtml(date)}</span>
-            <button class="repository-card-delete" type="button" data-delete-matter-id="${escapeHtml(matter.id)}" aria-label="Delete matter" title="Delete matter">x</button>
+            <button class="repository-card-delete" type="button" data-delete-matter-id="${escapeHtml(matter.id)}" aria-label="Delete matter" title="Delete matter" aria-expanded="${confirmingDelete ? "true" : "false"}">x</button>
           </span>
         </span>
         <strong>${escapeHtml(matterSubject(matter))}</strong>
         <span class="repository-card-source">${escapeHtml(matterSender(matter))}</span>
         <span class="repository-card-snippet">${escapeHtml(matter.message_snippet || matter.attachment_filename || matter.source_filename || sourceTypeLabel(matter.source_type))}</span>
+        ${confirmingDelete ? renderMatterDeleteConfirmation(matter) : ""}
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
           <span>${escapeHtml(boardColumnLabel(matter.board_column))}</span>
         </span>
       </article>
+    `;
+  }
+
+  function renderMatterDeleteConfirmation(matter) {
+    const matterId = escapeHtml(matter.id);
+    return `
+      <div class="repository-delete-confirmation" role="group" aria-label="Delete matter confirmation" data-delete-confirmation-id="${matterId}">
+        <span>Delete matter and stored document?</span>
+        <span class="repository-delete-confirmation-actions">
+          <button class="secondary repository-delete-cancel" type="button" data-cancel-delete-matter-id="${matterId}" aria-label="Cancel delete matter">Cancel</button>
+          <button class="repository-delete-confirm-button" type="button" data-confirm-delete-matter-id="${matterId}" aria-label="Confirm delete matter">Delete</button>
+        </span>
+      </div>
     `;
   }
 

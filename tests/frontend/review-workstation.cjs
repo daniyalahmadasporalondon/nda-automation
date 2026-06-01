@@ -505,6 +505,13 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
+  await assertTextContains(deleteCard, "Delete matter and stored document?");
+  assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
+  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "2");
+  await deleteCard.getByRole("button", { name: "Cancel delete matter" }).click();
+  assert.equal(await deleteCard.getByRole("group", { name: "Delete matter confirmation" }).count(), 0);
+  await deleteCard.getByRole("button", { name: "Delete matter" }).click();
+  await deleteCard.getByRole("button", { name: "Confirm delete matter" }).click();
   await waitForRepositoryCount(page, "gmail_demo", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
@@ -625,6 +632,8 @@ async function testManualUploadTab(page) {
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
   await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
+  await assertTextContains(uploadedCard, "Delete matter and stored document?");
+  await uploadedCard.getByRole("button", { name: "Confirm delete matter" }).click();
   await page.waitForFunction(
     (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     stem,

@@ -206,6 +206,11 @@
   box-shadow: 0 16px 32px -22px rgba(79, 27, 179, 0.45);
 }
 
+.repository-card.deleting {
+  border-color: var(--red-border);
+  box-shadow: 0 16px 32px -24px rgba(180, 35, 24, 0.34);
+}
+
 .repository-card-badges {
   display: flex;
   flex-wrap: wrap;
@@ -254,6 +259,47 @@
 
 .repository-card-delete:disabled {
   opacity: 0.45;
+}
+
+.repository-delete-confirmation {
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  border-radius: 8px;
+  color: var(--red-ink);
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.repository-delete-confirmation > span:first-child {
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.repository-delete-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.repository-delete-confirmation-actions button {
+  flex: 1 1 74px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 9px;
+}
+
+.repository-delete-confirm-button {
+  background: var(--red-ink);
+  color: #fff;
+}
+
+.repository-delete-confirm-button:hover:not(:disabled),
+.repository-delete-confirm-button:focus-visible {
+  background: #8f1d13;
+  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.14);
+  outline: none;
 }
 
 .repository-card strong {
