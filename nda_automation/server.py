@@ -10,7 +10,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -93,7 +93,7 @@ def _clean_redline_draft(draft: dict) -> dict:
         "template_selections": _clean_text_map(draft.get("template_selections")),
         "export_redline_edits": _clean_dict_list(draft.get("export_redline_edits")),
         "manual_redline_edits": manual_redlines,
-        "saved_at": datetime.now(UTC).isoformat(),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     cleaned["summary"] = {
         "included_redline_count": len(cleaned["export_redline_edits"]),
@@ -680,7 +680,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Playbook could not be saved."}, status=500)
             return
 
-        self._send_json({"playbook": playbook, "saved_at": datetime.now(UTC).isoformat()})
+        self._send_json({"playbook": playbook, "saved_at": datetime.now(timezone.utc).isoformat()})
 
     def _read_json_payload(self) -> dict | None:
         content_length = self._read_content_length()
@@ -862,13 +862,13 @@ def _gmail_sync_scheduler_loop() -> None:
 
 
 def _run_scheduled_gmail_sync() -> None:
-    started_at = datetime.now(UTC).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
-        finished_at = datetime.now(UTC).isoformat()
+        finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
     except Exception as error:  # pragma: no cover - defensive background logging.
-        finished_at = datetime.now(UTC).isoformat()
+        finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync_error(
             str(error),
             started_at=started_at,
