@@ -1092,6 +1092,9 @@ class CheckerTests(unittest.TestCase):
         examples = [
             "Confidential Information does not include independent development.",
             "Confidential Information does not include information independently created by the Receiving Party.",
+            "Confidential Information does not include independent creation by the Receiving Party.",
+            "Confidential Information does not include information independently codeveloped by the Receiving Party.",
+            "Confidential Information does not include information independently co-developed by the Receiving Party.",
         ]
 
         for exclusion in examples:
