@@ -11,6 +11,12 @@ class DeploymentConfigTests(unittest.TestCase):
         node_versions = re.findall(r'node-version:\s*"([^"]+)"', workflow)
 
         self.assertRegex(workflow, r"FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:\s+true")
+        self.assertNotIn("actions/checkout@v4", workflow)
+        self.assertNotIn("actions/setup-node@v4", workflow)
+        self.assertNotIn("actions/setup-python@v5", workflow)
+        self.assertIn("actions/checkout@v6", workflow)
+        self.assertIn("actions/setup-node@v6", workflow)
+        self.assertIn("actions/setup-python@v6", workflow)
         self.assertGreaterEqual(len(node_versions), 2)
         self.assertEqual(set(node_versions), {"24"})
 
