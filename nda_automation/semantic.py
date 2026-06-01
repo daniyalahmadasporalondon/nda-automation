@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 from functools import lru_cache
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 from .checks.common import (
     ISSUE_TYPE_PRESENT_BUT_WRONG,
@@ -14,7 +14,7 @@ from .checks.common import (
 )
 
 SEMANTIC_EVALUATOR_ENV = "NDA_SEMANTIC_EVALUATOR"
-SemanticEvaluateFn = Callable[..., Dict[str, object] | None]
+SemanticEvaluateFn = Callable[..., Optional[Dict[str, object]]]
 
 
 def apply_semantic_fallback(
