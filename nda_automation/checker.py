@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -30,6 +31,7 @@ from .checks.common import (
     _year_count_label,
 )
 from .review_document import (
+    EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
     ParagraphAlignmentError as ParagraphAlignmentError,
     align_document_paragraphs,
@@ -41,6 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 __all__ = [
+    "EvidenceProvenanceError",
     "ParagraphAlignmentError",
     "PlaybookTemplateError",
     "_paragraph_matches",
@@ -99,21 +102,9 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
     }
     evidence_errors = validate_clause_evidence_trust(result, source_text)
     if evidence_errors:
-        _flag_evidence_trust_errors(result, evidence_errors)
-    else:
-        result["evidence_trust"] = {"status": "verified", "errors": []}
+        raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
+    result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
-
-
-def _flag_evidence_trust_errors(result: Dict[str, object], errors: List[str]) -> None:
-    result["evidence_trust"] = {"status": "flagged", "errors": errors}
-    result["review_warnings"] = [
-        {
-            "type": "evidence_provenance_drift",
-            "message": "Clause evidence provenance drift detected.",
-            "details": errors,
-        }
-    ]
 
 
 def _validate_check_registry() -> None:
@@ -211,7 +202,11 @@ def _validate_playbook_contract(playbook: Dict[str, object]) -> None:
     _require_template(clauses_by_id["mutuality"], "redline_template")
     _require_template(clauses_by_id["confidential_information"], "redline_template")
     _require_template(clauses_by_id["confidential_information"], "standard_exclusions_template")
-    _require_template(clauses_by_id["term_and_survival"], "redline_template")
+    _require_template(
+        clauses_by_id["term_and_survival"],
+        "redline_template",
+        allowed_placeholders={"max_term_years", "max_term_years_label"},
+    )
     _require_template(clauses_by_id["signatures"], "redline_template")
 
 
@@ -232,10 +227,46 @@ def _validate_governing_law_playbook(clause: Dict[str, object]) -> None:
         )
 
 
-def _require_template(clause: Dict[str, object], field: str) -> None:
+def _require_template(
+    clause: Dict[str, object],
+    field: str,
+    *,
+    allowed_placeholders: set[str] | None = None,
+) -> None:
     clause_id = str(clause.get("id", "unknown"))
-    if not isinstance(clause.get(field), str) or not str(clause.get(field)).strip():
+    template = clause.get(field)
+    if not isinstance(template, str) or not template.strip():
         raise PlaybookTemplateError(f"Playbook clause {clause_id} must include {field}.")
+    unknown_placeholders = sorted(
+        placeholder
+        for placeholder in _template_placeholders(template, clause_id=clause_id, field=field)
+        if placeholder not in (allowed_placeholders or set())
+    )
+    if unknown_placeholders:
+        raise PlaybookTemplateError(
+            f"Playbook clause {clause_id} {field} has unknown placeholder(s): "
+            + ", ".join(unknown_placeholders)
+        )
+
+
+def _template_placeholders(template: str, *, clause_id: str, field: str) -> set[str]:
+    placeholders: set[str] = set()
+    formatter = string.Formatter()
+    try:
+        for _literal_text, field_name, format_spec, _conversion in formatter.parse(template):
+            if field_name is not None:
+                if not field_name or "." in field_name or "[" in field_name:
+                    raise PlaybookTemplateError(
+                        f"Playbook clause {clause_id} {field} has invalid placeholder: {field_name!r}."
+                    )
+                placeholders.add(field_name)
+            if format_spec:
+                placeholders.update(_template_placeholders(format_spec, clause_id=clause_id, field=field))
+    except PlaybookTemplateError:
+        raise
+    except ValueError as error:
+        raise PlaybookTemplateError(f"Playbook clause {clause_id} {field} has invalid placeholder syntax.") from error
+    return placeholders
 
 
 def _required_clause_terms(clause: Dict[str, object], field: str) -> List[str]:

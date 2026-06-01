@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry
-from .checker import PLAYBOOK_PATH, PlaybookTemplateError, review_nda
+from .checker import PLAYBOOK_PATH, EvidenceProvenanceError, PlaybookTemplateError, review_nda
 from .deployment import (
     DURABLE_DATA_DIR_REQUIRED_MESSAGE as DURABLE_DATA_DIR_REQUIRED_MESSAGE,
     EPHEMERAL_DATA_DIR_MESSAGE as EPHEMERAL_DATA_DIR_MESSAGE,
@@ -174,7 +174,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if requested.parent != export_service.EXPORTS_DIR.resolve() or not requested.is_file():
                 self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
-            self._send_download(requested.read_bytes(), requested.name, DOCX_MIME, send_body=send_body)
+            try:
+                data = requested.read_bytes()
+            except OSError:
+                self._send_json({"error": "Export file could not be read."}, status=500, send_body=send_body)
+                return
+            self._send_download(data, requested.name, DOCX_MIME, send_body=send_body)
             return
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
@@ -198,6 +203,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
             self._send_playbook_template_error()
+        except EvidenceProvenanceError:
+            self._send_json({"error": "Clause evidence provenance drift detected."}, status=500)
         except matter_store.MatterStoreError as error:
             self._send_json({"error": str(error)}, status=500)
         except app_settings.AppSettingsError as error:
@@ -222,7 +229,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         raw_body = self.rfile.read(content_length)
         try:
             payload = json.loads(raw_body.decode("utf-8") or "{}", parse_constant=_reject_non_finite_json_constant)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, RecursionError, ValueError):
             self._send_json({"error": "Request body must be valid JSON."}, status=400)
             return None
         if not isinstance(payload, dict):

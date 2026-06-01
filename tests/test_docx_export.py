@@ -398,6 +398,20 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
 
+    def test_review_report_docx_strips_invalid_xml_control_characters(self):
+        result = review_nda("This Agreement shall be governed by the laws of California.\x08")
+
+        docx_bytes = build_review_report_docx(result, title="California\x08NDA")
+
+        assert_docx_package_healthy(self, docx_bytes, require_styles=True)
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+            core_xml = archive.read("docProps/core.xml").decode("utf-8")
+        ET.fromstring(document_xml)
+        ET.fromstring(core_xml)
+        self.assertNotIn("\x08", document_xml)
+        self.assertNotIn("\x08", core_xml)
+
     def test_review_report_docx_marks_replace_paragraph_redlines_inline(self):
         result = review_nda("The confidentiality obligations survive for seven years.")
 

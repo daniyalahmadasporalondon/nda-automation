@@ -38,6 +38,7 @@ Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
+INVALID_XML_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
 class SourceParagraph(NamedTuple):
@@ -925,7 +926,7 @@ def _app_properties_xml() -> str:
 
 def _escape_xml(value: str) -> str:
     return (
-        str(value)
+        INVALID_XML_CHAR_PATTERN.sub("", str(value))
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")

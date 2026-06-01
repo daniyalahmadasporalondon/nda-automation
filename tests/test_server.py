@@ -16,7 +16,7 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
-from nda_automation.checker import ParagraphAlignmentError, PlaybookTemplateError, load_playbook
+from nda_automation.checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, load_playbook
 from nda_automation import app_settings
 from nda_automation import document_limits
 from nda_automation import docx_text
@@ -600,6 +600,19 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Provide NDA text to review.")
+
+    def test_json_payload_rejects_excessively_nested_json(self):
+        nested_json = "[" * 100000 + "0" + "]" * 100000
+
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            nested_json,
+            headers={"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Request body must be valid JSON.")
 
     def test_text_review_returns_clause_results(self):
         status, payload = self.request(
@@ -2508,6 +2521,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
+    def test_text_review_reports_evidence_provenance_drift_as_error(self):
+        with patch.object(server_module, "review_nda", side_effect=EvidenceProvenanceError("drift")):
+            status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], "Clause evidence provenance drift detected.")
+
     def test_text_review_returns_structured_redline_edits(self):
         status, payload = self.request(
             "POST",
@@ -3027,6 +3047,19 @@ class ServerTests(unittest.TestCase):
                 self.assert_saved_export_url_matches_response(headers, payload)
 
         self.assertEqual(status, 200)
+
+    def test_saved_export_route_reports_read_errors(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            export_path = server_module.Path(exports_dir) / "saved.docx"
+            export_path.write_bytes(b"docx")
+            with (
+                patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)),
+                patch.object(server_module.Path, "read_bytes", side_effect=OSError("cannot read export")),
+            ):
+                status, payload = self.request("GET", "/exports/saved.docx")
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], "Export file could not be read.")
 
     def test_saved_uploaded_docx_export_route_returns_exact_docx_bytes(self):
         source_docx = make_docx([

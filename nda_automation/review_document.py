@@ -10,6 +10,10 @@ class ParagraphAlignmentError(ValueError):
     pass
 
 
+class EvidenceProvenanceError(RuntimeError):
+    pass
+
+
 def split_document_paragraphs(text: str) -> List[Paragraph]:
     source_text = text or ""
     has_blank_line_breaks = re.search(r"\n\s*\n", source_text) is not None
