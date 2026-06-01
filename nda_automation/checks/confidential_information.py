@@ -122,9 +122,16 @@ def _has_unqualified_independent_development(
     qualification_patterns = list(qualification_patterns)
     for pattern in independent_development_patterns:
         for match in re.finditer(pattern, normalized_text):
-            window_start = max(0, match.start() - INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW)
-            window_end = min(len(normalized_text), match.end() + INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW)
-            context = normalized_text[window_start:window_end]
+            context = _independent_development_qualification_context(normalized_text, match.end())
             if not any(re.search(qualification_pattern, context) for qualification_pattern in qualification_patterns):
                 return True
     return False
+
+
+def _independent_development_qualification_context(normalized_text: str, start: int) -> str:
+    window_end = min(len(normalized_text), start + INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW)
+    context = normalized_text[start:window_end]
+    boundary = re.search(r"[.;]|,\s+(?:and|or)\b", context)
+    if boundary:
+        return context[:boundary.start()]
+    return context
