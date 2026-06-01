@@ -1,10 +1,14 @@
 import json
+import os
+import sys
+import types
 import unittest
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import checker as checker_module
+from nda_automation import semantic as semantic_module
 from nda_automation.checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
@@ -534,6 +538,100 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("party_scope", mutuality["taxonomy_groups"])
         self.assertIn("rationale", mutuality)
         self.assertIn("evidence_guidance", mutuality)
+
+    def test_semantic_fallback_is_disabled_by_default(self):
+        with patch.dict(os.environ, {semantic_module.SEMANTIC_EVALUATOR_ENV: ""}):
+            semantic_module._load_configured_semantic_evaluator.cache_clear()
+            try:
+                result = review_nda("Each side may exchange sensitive materials with the other side under balanced duties.")
+            finally:
+                semantic_module._load_configured_semantic_evaluator.cache_clear()
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(mutuality["status"], "not_present")
+        self.assertNotIn("semantic_fallback", mutuality)
+
+    def test_semantic_fallback_can_promote_missed_required_clause_to_match(self):
+        calls = []
+
+        def evaluator(**kwargs):
+            clause = kwargs["clause"]
+            calls.append(clause["id"])
+            if clause["id"] != "mutuality":
+                return None
+            return {
+                "status": "match",
+                "reason": "Semantic fallback found reciprocal confidentiality obligations.",
+                "matched_paragraph_ids": ["p1"],
+                "confidence": 0.86,
+            }
+
+        result = review_nda(
+            "Each side may exchange sensitive materials with the other side under balanced duties.",
+            semantic_evaluator=evaluator,
+        )
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertIn("mutuality", calls)
+        self.assertEqual(mutuality["status"], "match")
+        self.assertTrue(mutuality["passes"])
+        self.assertEqual(mutuality["matched_paragraph_ids"], ["p1"])
+        self.assertTrue(mutuality["semantic_fallback"])
+        self.assertEqual(mutuality["semantic_confidence"], 0.86)
+        self.assertEqual(mutuality["reason"], "Semantic fallback found reciprocal confidentiality obligations.")
+
+    def test_semantic_fallback_can_flag_missed_prohibited_clause(self):
+        def evaluator(**kwargs):
+            clause = kwargs["clause"]
+            if clause["id"] != "non_circumvention":
+                return None
+            return {
+                "status": "check",
+                "reason": "Semantic fallback found an introduced-contact non-solicit.",
+                "matched_paragraph_ids": ["p1"],
+                "what_to_fix": "Remove introduced-contact non-solicit language.",
+            }
+
+        result = review_nda(
+            "The Recipient shall not solicit contacts introduced by the Company.",
+            semantic_evaluator=evaluator,
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+        self.assertTrue(non_circumvention["semantic_fallback"])
+        redline = self.redline_for_clause(result, "non_circumvention")
+        self.assertEqual(redline["action"], "delete_paragraph")
+        self.assertEqual(redline["paragraph_id"], "p1")
+
+    def test_semantic_fallback_can_lazy_load_configured_evaluator(self):
+        module_name = "test_semantic_evaluator_module"
+        fake_module = types.ModuleType(module_name)
+
+        def evaluate_clause(**kwargs):
+            if kwargs["clause"]["id"] != "mutuality":
+                return None
+            return {
+                "status": "match",
+                "reason": "Configured semantic evaluator found mutuality.",
+                "matched_paragraph_ids": ["p1"],
+            }
+
+        fake_module.evaluate_clause = evaluate_clause
+
+        with patch.dict(sys.modules, {module_name: fake_module}):
+            with patch.dict(os.environ, {semantic_module.SEMANTIC_EVALUATOR_ENV: module_name}):
+                semantic_module._load_configured_semantic_evaluator.cache_clear()
+                try:
+                    result = review_nda("The parties exchange private information and owe the same duties.")
+                finally:
+                    semantic_module._load_configured_semantic_evaluator.cache_clear()
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(mutuality["status"], "match")
+        self.assertTrue(mutuality["semantic_fallback"])
 
     def test_evidence_paragraph_ids_and_offsets_match_reviewed_source(self):
         text = (

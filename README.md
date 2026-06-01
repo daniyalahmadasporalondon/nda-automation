@@ -32,6 +32,14 @@ Without the `pdf` extra, PDF uploads fail with a "PDF support is not installed" 
 of treating the user's file as invalid. The Render blueprint installs `.[pdf,gmail]`
 deliberately because the hosted product enables both PDF intake and Gmail workflows.
 
+Regex/rule checks are the default. If you want an optional semantic fallback for missed
+phrase variations, set `NDA_SEMANTIC_EVALUATOR=module.path[:callable_name]`. The callable is
+lazy-loaded only when configured and receives keyword arguments `text`, `normalized`,
+`clause`, `paragraphs`, and `current_result`. It should return `None` or a small decision
+dict such as `{"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}`.
+No semantic provider is bundled, and the core server still has no required semantic or LLM
+dependency.
+
 ## Deploy
 
 The app needs a Python web service because the static frontend calls the local API routes served by `nda_automation.server`.

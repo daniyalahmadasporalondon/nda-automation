@@ -16,6 +16,7 @@ from .redline_actions import (
 from .inline_diff import diff_text_operation_dicts
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
+from .semantic import SemanticEvaluateFn, apply_semantic_fallback
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
@@ -94,7 +95,12 @@ def validate_playbook(playbook: Dict[str, object]) -> None:
     _validate_playbook_contract(playbook)
 
 
-def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str, object]:
+def review_nda(
+    text: str,
+    paragraphs: List[Paragraph] | None = None,
+    *,
+    semantic_evaluator: SemanticEvaluateFn | None = None,
+) -> Dict[str, object]:
     source_text = text or ""
     if paragraphs is None:
         document_paragraphs = split_document_paragraphs(source_text)
@@ -108,10 +114,20 @@ def review_nda(text: str, paragraphs: List[Paragraph] | None = None) -> Dict[str
     _validate_playbook_contract(playbook)
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
-    clause_results = [
-        check(source_text, normalized, clauses_by_id[clause_id], document_paragraphs)
-        for clause_id, check in CLAUSE_CHECKS
-    ]
+    clause_results = []
+    for clause_id, check in CLAUSE_CHECKS:
+        clause = clauses_by_id[clause_id]
+        clause_result = check(source_text, normalized, clause, document_paragraphs)
+        clause_results.append(
+            apply_semantic_fallback(
+                text=source_text,
+                normalized=normalized,
+                clause=clause,
+                paragraphs=document_paragraphs,
+                current_result=clause_result,
+                evaluator=semantic_evaluator,
+            )
+        )
     failed = [clause for clause in clause_results if not clause["passes"]]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
 
