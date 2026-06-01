@@ -395,7 +395,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             ),
             "attachment_filename": self._clean_intake_text(payload.get("attachment_filename")) or filename,
         }
-        for field in ("gmail_account", "gmail_attachment_id", "gmail_message_id", "gmail_part_id", "gmail_thread_id"):
+        for field in ("gmail_account", "gmail_attachment_id", "gmail_attachment_sha256", "gmail_message_id", "gmail_part_id", "gmail_thread_id"):
             value = self._clean_intake_text(payload.get(field))
             if value:
                 metadata[field] = value
@@ -781,6 +781,32 @@ def _start_gmail_sync_scheduler() -> None:
     scheduler.start()
 
 
+@contextmanager
+def _gmail_sync_process_lock():
+    if not _GMAIL_SYNC_LOCK.acquire(blocking=False):
+        yield False
+        return
+    lock_file = None
+    locked = False
+    try:
+        matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        lock_file = (matter_store.DATA_DIR / "gmail_sync.lock").open("a+", encoding="utf-8")
+        if fcntl is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            locked = True
+        yield True
+    finally:
+        if lock_file is not None:
+            if locked and fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+        _GMAIL_SYNC_LOCK.release()
+
+
 def _gmail_sync_scheduler_loop() -> None:
     last_run = 0.0
     last_frequency = ""
@@ -794,15 +820,27 @@ def _gmail_sync_scheduler_loop() -> None:
                 last_frequency = frequency
             if settings.get("inbound_enabled", True):
                 now = time.monotonic()
-                if now - last_run >= interval_seconds and _GMAIL_SYNC_LOCK.acquire(blocking=False):
-                    try:
-                        result = gmail_integration.import_inbound_matters(limit=10)
-                        app_settings.record_gmail_sync(result, synced_at=datetime.now(UTC).isoformat())
-                    except Exception as error:  # pragma: no cover - defensive background logging.
-                        print(f"Gmail scheduled sync failed: {error}")
-                    finally:
-                        last_run = now
-                        _GMAIL_SYNC_LOCK.release()
+                if now - last_run >= interval_seconds:
+                    with _gmail_sync_process_lock() as lock_acquired:
+                        if not lock_acquired:
+                            last_run = now
+                            continue
+                        started_at = datetime.now(UTC).isoformat()
+                        try:
+                            result = gmail_integration.import_inbound_matters(limit=10)
+                            finished_at = datetime.now(UTC).isoformat()
+                            app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
+                        except Exception as error:  # pragma: no cover - defensive background logging.
+                            finished_at = datetime.now(UTC).isoformat()
+                            app_settings.record_gmail_sync_error(
+                                str(error),
+                                started_at=started_at,
+                                finished_at=finished_at,
+                                query=gmail_integration.DEFAULT_INBOUND_QUERY,
+                            )
+                            print(f"Gmail scheduled sync failed: {error}")
+                        finally:
+                            last_run = now
         except Exception as error:  # pragma: no cover - defensive background logging.
             print(f"Gmail sync scheduler failed: {error}")
         time.sleep(5)

@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev portabi
     fcntl = None
 
 _SETTINGS_LOCK = threading.RLock()
+MAX_GMAIL_SYNC_HISTORY = 5
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
     "outbound_enabled": True,
@@ -21,6 +22,7 @@ DEFAULT_GMAIL_SETTINGS = {
     "last_sync_at": "",
     "last_sync_imported_count": 0,
     "last_sync_skipped_count": 0,
+    "sync_history": [],
 }
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
@@ -72,19 +74,64 @@ def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
     return GMAIL_SYNC_FREQUENCIES.get(frequency_key, GMAIL_SYNC_FREQUENCIES[DEFAULT_GMAIL_SETTINGS["sync_frequency"]])
 
 
-def record_gmail_sync(result: dict[str, Any], *, synced_at: str) -> dict[str, Any]:
+def record_gmail_sync(
+    result: dict[str, Any],
+    *,
+    synced_at: str,
+    started_at: str = "",
+    finished_at: str = "",
+) -> dict[str, Any]:
     imported = result.get("imported") if isinstance(result.get("imported"), list) else []
     skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    sync_run = _sync_history_entry(
+        result,
+        started_at=started_at or synced_at,
+        finished_at=finished_at or synced_at,
+        status="success",
+    )
     with _locked_settings():
         settings = _load_settings_unlocked()
         gmail = settings.get("gmail")
         if not isinstance(gmail, dict):
             gmail = {}
+        current_gmail = gmail_settings_from_payload(gmail)
         settings["gmail"] = {
-            **gmail_settings_from_payload(gmail),
+            **current_gmail,
             "last_sync_at": synced_at,
             "last_sync_imported_count": len(imported),
             "last_sync_skipped_count": len(skipped),
+            "sync_history": _prepend_sync_history(current_gmail.get("sync_history"), sync_run),
+        }
+        _save_settings_unlocked(settings)
+        return gmail_settings_from_payload(settings["gmail"])
+
+
+def record_gmail_sync_error(
+    error: str,
+    *,
+    started_at: str,
+    finished_at: str,
+    query: str = "",
+) -> dict[str, Any]:
+    sync_run = _sync_history_entry(
+        {"imported": [], "skipped": [], "query": query},
+        started_at=started_at,
+        finished_at=finished_at,
+        status="error",
+        error=error,
+    )
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        gmail = settings.get("gmail")
+        if not isinstance(gmail, dict):
+            gmail = {}
+        current_gmail = gmail_settings_from_payload(gmail)
+        settings["gmail"] = {
+            **current_gmail,
+            "last_sync_at": finished_at,
+            "last_sync_imported_count": 0,
+            "last_sync_skipped_count": 0,
+            "sync_history": _prepend_sync_history(current_gmail.get("sync_history"), sync_run),
         }
         _save_settings_unlocked(settings)
         return gmail_settings_from_payload(settings["gmail"])
@@ -108,6 +155,7 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             payload.get("last_sync_skipped_count"),
             DEFAULT_GMAIL_SETTINGS["last_sync_skipped_count"],
         ),
+        "sync_history": _sync_history_from_payload(payload.get("sync_history")),
     }
 
 
@@ -125,6 +173,58 @@ def _nonnegative_int(value: Any, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return max(0, parsed)
+
+
+def _sync_history_entry(
+    result: dict[str, Any],
+    *,
+    started_at: str,
+    finished_at: str,
+    status: str,
+    error: str = "",
+) -> dict[str, Any]:
+    imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+    skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    duplicate_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "duplicate_attachment")
+    review_failed_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "review_failed")
+    return {
+        "started_at": str(started_at or ""),
+        "finished_at": str(finished_at or ""),
+        "query": str(result.get("query") or ""),
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "duplicate_count": duplicate_count,
+        "review_failed_count": review_failed_count,
+        "status": "error" if status == "error" else "success",
+        "error": str(error or "")[:500],
+    }
+
+
+def _prepend_sync_history(history: object, sync_run: dict[str, Any]) -> list[dict[str, Any]]:
+    return [sync_run, *_sync_history_from_payload(history)][:MAX_GMAIL_SYNC_HISTORY]
+
+
+def _sync_history_from_payload(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    history: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        history.append({
+            "started_at": str(item.get("started_at") or ""),
+            "finished_at": str(item.get("finished_at") or ""),
+            "query": str(item.get("query") or ""),
+            "imported_count": _nonnegative_int(item.get("imported_count"), 0),
+            "skipped_count": _nonnegative_int(item.get("skipped_count"), 0),
+            "duplicate_count": _nonnegative_int(item.get("duplicate_count"), 0),
+            "review_failed_count": _nonnegative_int(item.get("review_failed_count"), 0),
+            "status": "error" if item.get("status") == "error" else "success",
+            "error": str(item.get("error") or "")[:500],
+        })
+        if len(history) >= MAX_GMAIL_SYNC_HISTORY:
+            break
+    return history
 
 
 def _load_settings() -> dict[str, Any]:

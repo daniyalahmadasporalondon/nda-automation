@@ -67,6 +67,7 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
   gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
   gmailFrequencyControl: document.querySelector("#adminGmailFrequencyControl"),
+  gmailSyncHistory: document.querySelector("#adminGmailSyncHistory"),
   reviewErrorFromPayload,
 });
 const playbookController = createPlaybookController({

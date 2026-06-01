@@ -24,6 +24,7 @@ const AdminIntegrationsView = (() => {
     gmailInboundToggle,
     gmailOutboundToggle,
     gmailFrequencyControl,
+    gmailSyncHistory,
     reviewErrorFromPayload,
   }) {
     gmailRefreshButton?.addEventListener("click", load);
@@ -113,7 +114,37 @@ const AdminIntegrationsView = (() => {
       setFact("outbound-configured", configuredLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(status.settings || {}));
+      renderSyncHistory(status.settings?.sync_history || []);
       renderRecentSend(matters);
+    }
+
+    function renderSyncHistory(syncHistory) {
+      if (!gmailSyncHistory) return;
+      const runs = Array.isArray(syncHistory) ? syncHistory.slice(0, 5) : [];
+      if (!runs.length) {
+        gmailSyncHistory.innerHTML = '<div class="integration-sync-history-empty">No sync runs recorded</div>';
+        return;
+      }
+      gmailSyncHistory.innerHTML = runs.map((run) => {
+        const imported = Number(run.imported_count || 0);
+        const skipped = Number(run.skipped_count || 0);
+        const duplicate = Number(run.duplicate_count || 0);
+        const reviewFailed = Number(run.review_failed_count || 0);
+        const status = run.status === "error" ? "Error" : "Complete";
+        const query = run.query ? `<p class="integration-sync-history-query">${escapeHtml(run.query)}</p>` : "";
+        const error = run.error ? `<p class="integration-sync-history-error">${escapeHtml(run.error)}</p>` : "";
+        return `
+          <article class="integration-sync-history-item ${run.status === "error" ? "error" : ""}">
+            <div class="integration-sync-history-top">
+              <strong>${escapeHtml(formatDateTime(run.finished_at || run.started_at) || run.finished_at || run.started_at || "-")}</strong>
+              <span>${escapeHtml(status)}</span>
+            </div>
+            <p class="integration-sync-history-counts">${imported} imported / ${skipped} skipped / ${duplicate} duplicates / ${reviewFailed} review failures</p>
+            ${query}
+            ${error}
+          </article>
+        `;
+      }).join("");
     }
 
     function renderRecentSend(matters) {
@@ -163,6 +194,7 @@ const AdminIntegrationsView = (() => {
       setFact("outbound-configured", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(state.gmailStatus?.settings || {}));
+      renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
     }

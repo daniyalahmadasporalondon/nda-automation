@@ -20,6 +20,7 @@ def create_matter_from_document(
     source_type: str = "gmail_demo",
     board_column: str = "gmail_demo",
     intake_metadata: dict[str, Any] | None = None,
+    dedupe_gmail: bool = False,
 ) -> dict[str, Any]:
     ensure_document_size(document_bytes)
     document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
@@ -44,6 +45,7 @@ def create_matter_from_document(
         source_type=source_type,
         board_column=board_column,
         intake_metadata=intake_metadata,
+        dedupe_gmail=dedupe_gmail,
     )
 
 

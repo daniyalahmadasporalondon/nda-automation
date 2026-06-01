@@ -3,6 +3,8 @@ import http.client
 import json
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -619,6 +621,61 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(first_path_exists, kept_id == first["id"])
         self.assertEqual(second_path_exists, kept_id == second["id"])
 
+    def test_gmail_matter_create_is_idempotent_by_attachment_hash(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                first = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"same attachment",
+                    extracted_text="same attachment",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_sha256": "hash_a",
+                        "gmail_message_id": "msg_123",
+                    },
+                    dedupe_gmail=True,
+                )
+                duplicate = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"same attachment",
+                    extracted_text="same attachment",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_sha256": "hash_a",
+                        "gmail_message_id": "msg_123",
+                    },
+                    dedupe_gmail=True,
+                )
+                different_attachment = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"different attachment",
+                    extracted_text="different attachment",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_sha256": "hash_b",
+                        "gmail_message_id": "msg_123",
+                    },
+                    dedupe_gmail=True,
+                )
+                matters = matter_store.list_matters()
+                uploaded_files = list(matter_store.UPLOADS_DIR.glob("*"))
+
+        self.assertEqual(duplicate["id"], first["id"])
+        self.assertEqual(duplicate["_existing_gmail_duplicate"], True)
+        self.assertNotEqual(different_attachment["id"], first["id"])
+        self.assertEqual({matter["id"] for matter in matters}, {first["id"], different_attachment["id"]})
+        self.assertEqual(len(uploaded_files), 2)
+
     def test_triage_fails_closed_when_clauses_is_not_list(self):
         triage = triage_review_result({"clauses": {"passes": True}})
 
@@ -685,6 +742,82 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(invalid_frequency_payload["error"], "Unsupported Gmail sync frequency.")
         self.assertEqual(legacy_cadence_status, 400)
         self.assertEqual(legacy_cadence_payload["error"], "Use sync_frequency for Gmail sync frequency.")
+
+    def test_gmail_sync_history_records_recent_counts_and_errors(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.record_gmail_sync(
+                    {
+                        "imported": [{"id": "matter_1"}],
+                        "query": "query one",
+                        "skipped": [
+                            {"reason": "duplicate_attachment"},
+                            {"reason": "review_failed"},
+                        ],
+                    },
+                    started_at="2026-06-01T00:00:00+00:00",
+                    synced_at="2026-06-01T00:00:02+00:00",
+                    finished_at="2026-06-01T00:00:02+00:00",
+                )
+                app_settings.record_gmail_sync_error(
+                    "token missing",
+                    started_at="2026-06-01T00:01:00+00:00",
+                    finished_at="2026-06-01T00:01:01+00:00",
+                    query="query two",
+                )
+                settings = app_settings.gmail_settings()
+
+        self.assertEqual(settings["last_sync_at"], "2026-06-01T00:01:01+00:00")
+        self.assertEqual(settings["last_sync_imported_count"], 0)
+        self.assertEqual(settings["last_sync_skipped_count"], 0)
+        self.assertEqual(len(settings["sync_history"]), 2)
+        self.assertEqual(settings["sync_history"][0]["status"], "error")
+        self.assertEqual(settings["sync_history"][0]["error"], "token missing")
+        self.assertEqual(settings["sync_history"][1]["query"], "query one")
+        self.assertEqual(settings["sync_history"][1]["imported_count"], 1)
+        self.assertEqual(settings["sync_history"][1]["skipped_count"], 2)
+        self.assertEqual(settings["sync_history"][1]["duplicate_count"], 1)
+        self.assertEqual(settings["sync_history"][1]["review_failed_count"], 1)
+
+    def test_gmail_sync_process_lock_blocks_parallel_processes(self):
+        if server_module.fcntl is None:
+            self.skipTest("fcntl is unavailable")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                lock_path = matter_store.DATA_DIR / "gmail_sync.lock"
+                holder = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import fcntl, sys, time\n"
+                            "lock_file = open(sys.argv[1], 'a+', encoding='utf-8')\n"
+                            "fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)\n"
+                            "print('locked', flush=True)\n"
+                            "time.sleep(10)\n"
+                        ),
+                        str(lock_path),
+                    ],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                try:
+                    self.assertEqual(holder.stdout.readline().strip(), "locked")
+                    with server_module._gmail_sync_process_lock() as acquired:
+                        blocked_acquired = acquired
+                finally:
+                    holder.terminate()
+                    holder.wait(timeout=5)
+                    if holder.stdout is not None:
+                        holder.stdout.close()
+                with server_module._gmail_sync_process_lock() as acquired:
+                    free_acquired = acquired
+
+        self.assertEqual(blocked_acquired, False)
+        self.assertEqual(free_acquired, True)
 
     def test_matter_stage_update_persists_workflow_column(self):
         source_docx = make_docx([
@@ -761,6 +894,7 @@ class ServerTests(unittest.TestCase):
                         "source_type": "gmail_inbound",
                         "gmail_account": "inbound@example.com",
                         "gmail_attachment_id": "att_123",
+                        "gmail_attachment_sha256": "sha_123",
                         "gmail_message_id": "msg_123",
                         "gmail_part_id": "part_1",
                         "gmail_thread_id": "thr_123",
@@ -781,11 +915,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
         self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
         self.assertEqual(matter["gmail_account"], "inbound@example.com")
+        self.assertNotIn("gmail_attachment_sha256", matter)
         self.assertNotIn("gmail_attachment_id", matter)
         self.assertNotIn("gmail_message_id", matter)
         self.assertNotIn("gmail_thread_id", matter)
         self.assertEqual(stored_matter["gmail_account"], "inbound@example.com")
         self.assertEqual(stored_matter["gmail_attachment_id"], "att_123")
+        self.assertEqual(stored_matter["gmail_attachment_sha256"], "sha_123")
         self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
         self.assertEqual(stored_matter["gmail_part_id"], "part_1")
         self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")

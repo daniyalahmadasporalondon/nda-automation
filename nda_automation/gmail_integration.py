@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import hashlib
 import os
 import re
 import threading
@@ -125,7 +126,6 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             if matter_store.find_gmail_attachment(
                 message_id,
                 attachment_id,
-                attachment_filename=attachment_filename,
                 part_id=part_id,
             ) is not None:
                 skipped.append({
@@ -153,6 +153,20 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                     "reason": "attachment_too_large",
                 })
                 continue
+            attachment_sha256 = hashlib.sha256(document_bytes).hexdigest()
+            if matter_store.find_gmail_attachment(
+                message_id,
+                attachment_id,
+                attachment_filename=attachment_filename,
+                attachment_sha256=attachment_sha256,
+                part_id=part_id,
+            ) is not None:
+                skipped.append({
+                    "attachment_filename": attachment_filename,
+                    "message_id": message_id,
+                    "reason": "duplicate_attachment",
+                })
+                continue
 
             try:
                 matter = create_matter_from_document(
@@ -164,14 +178,23 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                         **metadata,
                         "attachment_filename": attachment_filename or "nda.docx",
                         "gmail_attachment_id": attachment_id,
+                        "gmail_attachment_sha256": attachment_sha256,
                         "gmail_part_id": part_id,
                     },
+                    dedupe_gmail=True,
                 )
             except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
                 skipped.append({
                     "attachment_filename": attachment_filename,
                     "message_id": message_id,
                     "reason": "review_failed",
+                })
+                continue
+            if matter.get("_existing_gmail_duplicate"):
+                skipped.append({
+                    "attachment_filename": attachment_filename,
+                    "message_id": message_id,
+                    "reason": "duplicate_attachment",
                 })
                 continue
             imported.append(matter)

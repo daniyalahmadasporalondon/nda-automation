@@ -267,6 +267,17 @@ async function testPlaybookAdminEditor(page) {
         last_sync_at: "2026-05-31T12:34:00+00:00",
         last_sync_imported_count: 2,
         last_sync_skipped_count: 1,
+        sync_history: [{
+          duplicate_count: 1,
+          error: "",
+          finished_at: "2026-05-31T12:34:00+00:00",
+          imported_count: 2,
+          query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
+          review_failed_count: 0,
+          skipped_count: 1,
+          started_at: "2026-05-31T12:33:58+00:00",
+          status: "success",
+        }],
       },
       inbound: {
         configured: true,
@@ -408,6 +419,8 @@ async function testPlaybookAdminEditor(page) {
   }));
   await assertTextContains(page.locator("#adminIntegrationsPanel"), serverSyncLabel);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "SYNC AUDIT");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped / 1 duplicates / 0 review failures");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
   await page.unroute("**/api/playbook");
@@ -481,12 +494,13 @@ async function testRepositoryMatterImportAndFreshReview(page) {
 
   assert.equal(await page.locator("#repositoryFileInput").count(), 0);
   assert.equal(await page.getByText("Import NDA", { exact: true }).count(), 0);
-  await createRepositoryMatter(page, docxPath);
-  await createRepositoryMatter(page, deleteDocxPath);
+  await createRepositoryMatter(page, docxPath, { received_at: "2026-05-31T12:00:00+00:00" });
+  await createRepositoryMatter(page, deleteDocxPath, { received_at: "2026-06-01T12:00:00+00:00" });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
   assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "2");
+  await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await waitForRepositoryCount(page, "gmail_demo", "1");

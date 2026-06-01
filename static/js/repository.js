@@ -34,11 +34,13 @@ const RepositoryView = (() => {
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail status could not load");
         state.gmailStatus = payload.gmail || {};
+        renderSyncStatus();
       } catch (error) {
         state.gmailStatus = {
           inbound: { ready: false, error: error.message || "Status unavailable" },
           outbound: { ready: false, error: error.message || "Status unavailable" },
         };
+        renderSyncStatus();
       }
     }
 
@@ -65,9 +67,11 @@ const RepositoryView = (() => {
         const column = boardColumnIds.has(matter.board_column) ? matter.board_column : "gmail_demo";
         mattersByColumn.get(column).push(matter);
       });
+      mattersByColumn.forEach((matters) => matters.sort(compareMatterRecency));
       document.querySelectorAll("[data-repository-count]").forEach((count) => {
         count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
       });
+      renderSyncStatus();
       document.querySelectorAll("[data-repository-list]").forEach((list) => {
         const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
         list.innerHTML = matters.length
@@ -89,6 +93,25 @@ const RepositoryView = (() => {
           });
         });
       });
+    }
+
+    function renderSyncStatus() {
+      const node = document.querySelector("[data-repository-sync-status]");
+      if (!node) return;
+      const settings = state.gmailStatus?.settings || {};
+      const recentRun = Array.isArray(settings.sync_history) ? settings.sync_history[0] : null;
+      node.classList.toggle("error", recentRun?.status === "error");
+      if (recentRun?.status === "error") {
+        node.textContent = `Last sync error: ${recentRun.error || "check Admin"}`;
+        return;
+      }
+      if (!settings.last_sync_at) {
+        node.textContent = "Waiting for scheduled sync";
+        return;
+      }
+      const imported = Number(settings.last_sync_imported_count || 0);
+      const skipped = Number(settings.last_sync_skipped_count || 0);
+      node.textContent = `Last sync ${formatMatterDateTime(settings.last_sync_at) || settings.last_sync_at} - ${imported} imported / ${skipped} skipped`;
     }
 
     async function openMatter(matterId) {
@@ -619,6 +642,15 @@ const RepositoryView = (() => {
 
   function matterSender(matter) {
     return matter.sender || sourceTypeLabel(matter.source_type);
+  }
+
+  function compareMatterRecency(left, right) {
+    return matterTimeValue(right) - matterTimeValue(left);
+  }
+
+  function matterTimeValue(matter) {
+    const timestamp = Date.parse(matter.received_at || matter.created_at || matter.updated_at || "");
+    return Number.isNaN(timestamp) ? 0 : timestamp;
   }
 
   function formatMatterDate(value) {

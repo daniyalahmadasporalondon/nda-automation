@@ -129,7 +129,10 @@
                 <span class="repository-icon" aria-hidden="true"></span>
                 <h1>Contract Repository</h1>
               </div>
-              <button class="repository-undo" type="button" disabled>Undo Move (0)</button>
+              <div class="repository-header-actions">
+                <span class="repository-sync-status" data-repository-sync-status>Sync status loading</span>
+                <button class="repository-undo" type="button" disabled>Undo Move (0)</button>
+              </div>
             </header>
 
             <section class="repository-workspace">
@@ -293,6 +296,13 @@
                       <dd data-admin-gmail="last-sync">Not run in this session</dd>
                     </div>
                   </dl>
+
+                  <section class="integration-subsection">
+                    <h3>Sync Audit</h3>
+                    <div class="integration-sync-history" id="adminGmailSyncHistory">
+                      <div class="integration-sync-history-empty">No sync runs recorded</div>
+                    </div>
+                  </section>
 
                   <section class="integration-subsection">
                     <h3>Recent Outbound</h3>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ MAX_SOURCE_FILENAME_LENGTH = 180
 GMAIL_METADATA_FIELDS = (
     "gmail_account",
     "gmail_attachment_id",
+    "gmail_attachment_sha256",
     "gmail_message_id",
     "gmail_part_id",
     "gmail_thread_id",
@@ -76,25 +78,22 @@ def find_gmail_attachment(
     attachment_id: str,
     *,
     attachment_filename: str = "",
+    attachment_sha256: str = "",
     part_id: str = "",
 ) -> dict[str, Any] | None:
     if not message_id:
         return None
-    filename_key = _gmail_attachment_filename_key(attachment_filename)
     with _locked_store():
-        for matter in _load_matters():
-            if matter.get("gmail_message_id") != message_id:
-                continue
-            if part_id and matter.get("gmail_part_id") == part_id:
-                return matter
-            if attachment_id and matter.get("gmail_attachment_id") == attachment_id:
-                return matter
-            matter_filename_key = _gmail_attachment_filename_key(
-                str(matter.get("attachment_filename") or matter.get("source_filename") or "")
-            )
-            if filename_key and matter_filename_key == filename_key:
-                return matter
-    return None
+        return _find_gmail_duplicate_unlocked(
+            _load_matters(),
+            {
+                "attachment_filename": attachment_filename,
+                "gmail_attachment_id": attachment_id,
+                "gmail_attachment_sha256": attachment_sha256,
+                "gmail_message_id": message_id,
+                "gmail_part_id": part_id,
+            },
+        )
 
 
 def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | None:
@@ -221,6 +220,7 @@ def create_matter(
     source_type: str = "gmail_demo",
     board_column: str = "gmail_demo",
     intake_metadata: dict[str, Any] | None = None,
+    dedupe_gmail: bool = False,
 ) -> dict[str, Any]:
     matter_id = f"matter_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
@@ -228,8 +228,16 @@ def create_matter(
     safe_source_name = _safe_filename(source_filename)
     stored_filename = f"{matter_id}-{safe_source_name}"
     metadata = _intake_metadata(source_filename, now, intake_metadata)
+    if dedupe_gmail and not metadata.get("gmail_attachment_sha256"):
+        metadata["gmail_attachment_sha256"] = hashlib.sha256(document_bytes).hexdigest()
 
     with _locked_store():
+        matters = _load_matters()
+        if dedupe_gmail:
+            existing_matter = _find_gmail_duplicate_unlocked(matters, metadata)
+            if existing_matter is not None:
+                return {**existing_matter, "_existing_gmail_duplicate": True}
+
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         stored_path = UPLOADS_DIR / stored_filename
         stored_path.write_bytes(document_bytes)
@@ -249,7 +257,6 @@ def create_matter(
             "review_result": review_result,
             **triage,
         }
-        matters = _load_matters()
         matters.append(matter)
         matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
         try:
@@ -333,6 +340,9 @@ def _gmail_attachment_key_for_matter(matter: dict[str, Any]) -> tuple[str, str] 
     message_id = str(matter.get("gmail_message_id") or "")
     if not message_id:
         return None
+    attachment_sha256 = str(matter.get("gmail_attachment_sha256") or "")
+    if attachment_sha256:
+        return (message_id, f"sha256:{attachment_sha256}")
     filename_key = _gmail_attachment_filename_key(
         str(matter.get("attachment_filename") or matter.get("source_filename") or "")
     )
@@ -355,6 +365,40 @@ def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
         "signed_closed": 3,
     }.get(str(matter.get("board_column") or ""), 0)
     return (board_rank, str(matter.get("updated_at") or matter.get("created_at") or ""))
+
+
+def _find_gmail_duplicate_unlocked(
+    matters: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    message_id = str(metadata.get("gmail_message_id") or "")
+    if not message_id:
+        return None
+    attachment_sha256 = str(metadata.get("gmail_attachment_sha256") or "")
+    attachment_id = str(metadata.get("gmail_attachment_id") or "")
+    part_id = str(metadata.get("gmail_part_id") or "")
+    filename_key = _gmail_attachment_filename_key(
+        str(metadata.get("attachment_filename") or metadata.get("source_filename") or "")
+    )
+    for matter in matters:
+        if matter.get("gmail_message_id") != message_id:
+            continue
+        matter_sha256 = str(matter.get("gmail_attachment_sha256") or "")
+        if attachment_sha256 and matter_sha256 == attachment_sha256:
+            return matter
+        if part_id and matter.get("gmail_part_id") == part_id:
+            return matter
+        if attachment_id and matter.get("gmail_attachment_id") == attachment_id:
+            return matter
+        matter_filename_key = _gmail_attachment_filename_key(
+            str(matter.get("attachment_filename") or matter.get("source_filename") or "")
+        )
+        if not filename_key or matter_filename_key != filename_key:
+            continue
+        if attachment_sha256 and matter_sha256 and attachment_sha256 != matter_sha256:
+            continue
+        return matter
+    return None
 
 
 def _gmail_attachment_filename_key(filename: str) -> str:
