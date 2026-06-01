@@ -288,6 +288,11 @@ class ServerTests(unittest.TestCase):
                 "/api/matters",
                 headers=self.basic_auth_headers(password="wrong"),
             )
+            non_ascii_status, non_ascii_payload = self.request(
+                "GET",
+                "/api/matters",
+                headers=self.basic_auth_headers(password="secrét"),
+            )
             delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
             detail_status, detail_payload = self.request("GET", "/api/matters/matter_missing")
             review_status, review_payload = self.request("GET", "/api/matters/matter_missing/review")
@@ -302,6 +307,8 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Basic", unauth_headers["WWW-Authenticate"])
         self.assertEqual(bad_status, 401)
         self.assertEqual(bad_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(non_ascii_status, 401)
+        self.assertEqual(non_ascii_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
         self.assertEqual(delete_status, 401)
         self.assertEqual(delete_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
         self.assertEqual(detail_status, 401)

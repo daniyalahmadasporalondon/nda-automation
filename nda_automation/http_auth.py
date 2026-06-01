@@ -21,7 +21,13 @@ def _basic_auth_matches(header: str, username: str, password: str) -> bool:
     supplied_username, separator, supplied_password = decoded.partition(":")
     if not separator:
         return False
-    return hmac.compare_digest(supplied_username, username) and hmac.compare_digest(supplied_password, password)
+    return hmac.compare_digest(
+        supplied_username.encode("utf-8"),
+        username.encode("utf-8"),
+    ) and hmac.compare_digest(
+        supplied_password.encode("utf-8"),
+        password.encode("utf-8"),
+    )
 
 
 def _auth_required_for_host(host: str) -> bool:
