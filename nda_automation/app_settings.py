@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+from pathlib import Path
 import threading
 from typing import Any
 
@@ -280,9 +281,26 @@ def _save_settings_unlocked(settings: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, settings_path)
+        _fsync_directory(settings_path.parent)
     except OSError as exc:
         try:
             temporary_path.unlink()
         except FileNotFoundError:
             pass
         raise AppSettingsError("App settings could not be saved.") from exc
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)

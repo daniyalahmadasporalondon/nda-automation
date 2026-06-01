@@ -612,6 +612,31 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(saved, [{"id": "matter_1"}])
         self.assertGreaterEqual(fsync.call_count, 1)
 
+    def test_app_settings_save_flushes_parent_directory(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            settings_path = server_module.Path(data_dir) / "app_settings.json"
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "_fsync_directory") as fsync_directory:
+                    app_settings._save_settings_unlocked({"gmail": {"sync_frequency": "30_minutes"}})
+
+                saved = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, {"gmail": {"sync_frequency": "30_minutes"}})
+        fsync_directory.assert_called_once_with(server_module.Path(data_dir))
+
+    def test_app_settings_directory_fsync_uses_directory_fd(self):
+        with (
+            patch.object(app_settings.os, "open", return_value=123) as directory_open,
+            patch.object(app_settings.os, "fsync") as fsync,
+            patch.object(app_settings.os, "close") as close,
+        ):
+            app_settings._fsync_directory(server_module.Path("/tmp/nda-settings-test"))
+
+        directory_open.assert_called_once()
+        fsync.assert_called_once_with(123)
+        close.assert_called_once_with(123)
+
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})
 
