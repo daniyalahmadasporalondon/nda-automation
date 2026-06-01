@@ -21,7 +21,7 @@ from .checker import PLAYBOOK_PATH, ParagraphAlignmentError, PlaybookTemplateErr
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import DOCX_MIME, DocxExportError
 from .docx_text import DocxExtractionError
-from . import app_settings, export_service, gmail_integration, matter_view, redline_export_service
+from . import app_settings, export_service, gmail_integration, matter_view, redline_export_service, telemetry
 from .ingestion_service import (
     create_matter_from_document,
     extract_document,
@@ -189,10 +189,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         exact_routes = {
             "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
+            "/api/deployment/status": lambda: self._handle_deployment_status(send_body=send_body),
             "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
             "/api/gmail/status": lambda: self._handle_gmail_status(send_body=send_body),
             "/api/matters": lambda: self._handle_matter_list(send_body=send_body),
             "/api/matters/export": lambda: self._handle_matter_backup(send_body=send_body),
+            "/api/telemetry": lambda: self._handle_telemetry(send_body=send_body),
         }
         handler = exact_routes.get(path)
         if handler is not None:
@@ -305,7 +307,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500, send_body=send_body)
 
+    def _handle_deployment_status(self, *, send_body: bool = True) -> None:
+        self._send_json(
+            {"deployment": _deployment_status_for_host(str(self.server.server_address[0]))},
+            send_body=send_body,
+        )
+
+    def _handle_telemetry(self, *, send_body: bool = True) -> None:
+        self._send_json({"telemetry": telemetry.snapshot()}, send_body=send_body)
+
     def _handle_matter_backup(self, *, send_body: bool = True) -> None:
+        telemetry.increment("matter_backup_requests")
         try:
             backup = matter_store.export_matters_backup()
         except matter_store.MatterStoreError as error:
@@ -322,6 +334,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         )
 
     def _handle_text_review(self) -> None:
+        telemetry.increment("review_requests")
         payload = self._read_json_payload()
         if payload is None:
             return
@@ -334,6 +347,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json(review_nda(text))
 
     def _handle_document_review(self) -> None:
+        telemetry.increment("document_review_requests")
         payload = self._read_json_payload()
         if payload is None:
             return
@@ -386,6 +400,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json(result)
 
     def _handle_matter_upload(self) -> None:
+        telemetry.increment("matter_upload_requests")
         payload = self._read_json_payload()
         if payload is None:
             return
@@ -564,6 +579,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"removed": removed_count, "matters": []})
 
     def _handle_gmail_send_redline(self) -> None:
+        telemetry.increment("gmail_send_redline_requests")
         payload = self._read_json_payload()
         if payload is None:
             return
@@ -643,6 +659,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_review_docx_export(self) -> None:
+        telemetry.increment("review_docx_export_requests")
         payload = self._read_json_payload()
         if payload is None:
             return
@@ -825,6 +842,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         *,
         send_body: bool = True,
     ) -> None:
+        if status >= 500:
+            telemetry.increment("http_5xx_responses")
+        elif status >= 400:
+            telemetry.increment("http_4xx_responses")
         data = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -865,6 +886,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         )
         if retry_after <= 0:
             return True
+        telemetry.increment("rate_limit_hits")
         self._send_json(
             {"error": RATE_LIMITED_MESSAGE},
             status=429,
@@ -912,6 +934,52 @@ def _validate_public_storage(host: str) -> None:
         raise RuntimeError(EPHEMERAL_DATA_DIR_MESSAGE)
     if export_service.EXPORTS_DIR is not None and _is_ephemeral_storage_path(export_service.EXPORTS_DIR):
         raise RuntimeError(EPHEMERAL_EXPORTS_DIR_MESSAGE)
+
+
+def _deployment_status_for_host(host: str) -> dict[str, object]:
+    auth_required = _auth_required_for_host(host)
+    auth_configured = bool(os.environ.get("NDA_AUTH_USERNAME", "").strip() and os.environ.get("NDA_AUTH_PASSWORD", ""))
+    data_dir_configured = bool(os.environ.get("NDA_DATA_DIR"))
+    data_dir_ephemeral = _is_ephemeral_storage_path(matter_store.DATA_DIR)
+    exports_dir = export_service.EXPORTS_DIR
+    exports_dir_ephemeral = exports_dir is not None and _is_ephemeral_storage_path(exports_dir)
+    rate_limit_per_minute = _rate_limit_per_window()
+    checks = [
+        {
+            "id": "auth",
+            "ok": (not auth_required) or auth_configured,
+            "message": "HTTP Basic auth is configured." if auth_configured else "HTTP Basic auth credentials are not configured.",
+        },
+        {
+            "id": "data_dir",
+            "ok": _is_loopback_host(host) or _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA") or (data_dir_configured and not data_dir_ephemeral),
+            "message": "Matter data uses configured durable storage." if data_dir_configured and not data_dir_ephemeral else "Matter data is not on configured durable storage.",
+        },
+        {
+            "id": "exports_dir",
+            "ok": not exports_dir_ephemeral,
+            "message": "Saved export storage is durable or disabled." if not exports_dir_ephemeral else "Saved export storage points at ephemeral storage.",
+        },
+        {
+            "id": "rate_limit",
+            "ok": rate_limit_per_minute > 0,
+            "message": "Expensive endpoint rate limiting is enabled." if rate_limit_per_minute > 0 else "Expensive endpoint rate limiting is disabled.",
+        },
+    ]
+    return {
+        "host": host,
+        "public_host": not _is_loopback_host(host),
+        "auth_required": auth_required,
+        "auth_configured": auth_configured,
+        "data_dir_configured": data_dir_configured,
+        "data_dir_ephemeral": data_dir_ephemeral,
+        "exports_dir_configured": exports_dir is not None,
+        "exports_dir_ephemeral": exports_dir_ephemeral,
+        "rate_limit_per_minute": rate_limit_per_minute,
+        "health_check_path": "/healthz",
+        "status": "ok" if all(bool(check["ok"]) for check in checks) else "needs_attention",
+        "checks": checks,
+    }
 
 
 def _is_ephemeral_storage_path(path: Path) -> bool:
@@ -1096,12 +1164,15 @@ def _gmail_sync_scheduler_loop() -> None:
 
 def _run_scheduled_gmail_sync() -> None:
     started_at = datetime.now(timezone.utc).isoformat()
+    telemetry.increment("gmail_sync_runs")
     try:
         result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
         result = {**result, "deduplicated_count": matter_store.deduplicate_gmail_matters()}
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
+        telemetry.increment("gmail_sync_successes")
     except Exception as error:  # pragma: no cover - defensive background logging.
+        telemetry.increment("gmail_sync_failures")
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync_error(
             str(error),

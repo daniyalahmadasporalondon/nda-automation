@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export_service, matter_store
+from . import export_service, matter_store, telemetry
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
@@ -113,5 +113,6 @@ def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:
 def _validate_export(report_bytes: bytes, *, require_styles: bool) -> None:
     health_errors = validate_docx_open_health(report_bytes, require_styles=require_styles)
     if health_errors:
-        print(f"DOCX export health check failed: {'; '.join(health_errors)}")
+        telemetry.increment("docx_export_health_failures")
+        print(f"DOCX export health check failed: {len(health_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its open-health check.", health_errors)

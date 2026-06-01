@@ -26,6 +26,7 @@ from nda_automation import gmail_integration
 from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
+from nda_automation import telemetry
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -62,6 +63,7 @@ class ServerTests(unittest.TestCase):
 
     def setUp(self):
         server_module._reset_rate_limits()
+        telemetry.reset()
 
     @classmethod
     def tearDownClass(cls):
@@ -339,6 +341,52 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(authed_payload["documents"][0]["size_bytes"], len(b"backup-source-docx"))
         self.assertNotIn("content_base64", authed_payload["documents"][0])
 
+    def test_admin_deployment_status_requires_auth_and_omits_secrets(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+            "NDA_DATA_DIR": "/var/data",
+            "NDA_RATE_LIMIT_PER_MINUTE": "120",
+        }
+        with patch.dict(os.environ, auth_env):
+            unauth_status, unauth_payload = self.request("GET", "/api/deployment/status")
+            authed_status, authed_payload = self.request(
+                "GET",
+                "/api/deployment/status",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(authed_status, 200)
+        deployment = authed_payload["deployment"]
+        self.assertEqual(deployment["health_check_path"], "/healthz")
+        self.assertTrue(deployment["auth_required"])
+        self.assertTrue(deployment["auth_configured"])
+        self.assertEqual(deployment["rate_limit_per_minute"], 120)
+        self.assertIn(deployment["status"], {"ok", "needs_attention"})
+        self.assertNotIn("secret", json.dumps(deployment).lower())
+
+    def test_public_deployment_status_flags_missing_hardening(self):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_DATA_DIR": "",
+            "NDA_RATE_LIMIT_PER_MINUTE": "0",
+            "NDA_ALLOW_EPHEMERAL_DATA": "",
+        }):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda-automation-data")):
+                deployment = server_module._deployment_status_for_host("0.0.0.0")
+
+        checks = {check["id"]: check for check in deployment["checks"]}
+        self.assertEqual(deployment["status"], "needs_attention")
+        self.assertTrue(deployment["auth_required"])
+        self.assertFalse(checks["auth"]["ok"])
+        self.assertFalse(checks["data_dir"]["ok"])
+        self.assertFalse(checks["rate_limit"]["ok"])
+
     def test_public_bind_requires_configured_durable_data_dir(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
             with self.assertRaisesRegex(RuntimeError, server_module.DURABLE_DATA_DIR_REQUIRED_MESSAGE):
@@ -462,6 +510,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(third_status, 429)
         self.assertEqual(third_payload["error"], server_module.RATE_LIMITED_MESSAGE)
         self.assertGreaterEqual(int(third_headers["Retry-After"]), 1)
+        self.assertEqual(telemetry.snapshot()["counters"]["rate_limit_hits"], 1)
 
     def test_background_error_logging_omits_exception_message(self):
         with patch("builtins.print") as mocked_print:
@@ -471,6 +520,51 @@ class ServerTests(unittest.TestCase):
             )
 
         mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
+
+    def test_telemetry_requires_auth_and_counts_without_sensitive_text(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+            "NDA_RATE_LIMIT_PER_MINUTE": "0",
+        }
+        review_text = "Sensitive counterparty NDA text governed by California."
+        with patch.dict(os.environ, auth_env):
+            unauth_status, unauth_payload = self.request("GET", "/api/telemetry")
+            review_status, _review_payload = self.request(
+                "POST",
+                "/api/review",
+                {"text": review_text},
+                headers=self.basic_auth_headers(),
+            )
+            telemetry_status, telemetry_payload = self.request(
+                "GET",
+                "/api/telemetry",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(review_status, 200)
+        self.assertEqual(telemetry_status, 200)
+        counters = telemetry_payload["telemetry"]["counters"]
+        self.assertEqual(counters["review_requests"], 1)
+        self.assertEqual(counters["http_4xx_responses"], 1)
+        self.assertNotIn(review_text, json.dumps(telemetry_payload))
+
+    def test_export_copy_failure_logging_omits_exception_message(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            exports_path = server_module.Path(temp_dir) / "not-a-directory"
+            exports_path.write_text("blocked", encoding="utf-8")
+            with (
+                patch.object(export_service, "EXPORTS_DIR", exports_path),
+                patch("builtins.print") as mocked_print,
+            ):
+                saved_path = export_service.persist_export(b"data", "export.docx")
+
+        self.assertIsNone(saved_path)
+        mocked_print.assert_called_once_with("Could not save export copy: FileExistsError")
+        self.assertEqual(telemetry.snapshot()["counters"]["export_copy_failures"], 1)
 
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})
@@ -2324,6 +2418,7 @@ class ServerTests(unittest.TestCase):
                     "validate_docx_open_health",
                     return_value=["Missing DOCX parts: _rels/.rels."],
                 ),
+                patch("builtins.print") as mocked_print,
             ):
                 status, payload, headers = self.request_with_headers(
                     "POST",
@@ -2337,6 +2432,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["details"], ["Missing DOCX parts: _rels/.rels."])
         self.assertNotEqual(headers.get("Content-Type"), DOCX_MIME)
         self.assertEqual(saved_files, [])
+        mocked_print.assert_called_once_with("DOCX export health check failed: 1 issue(s)")
+        self.assertEqual(telemetry.snapshot()["counters"]["docx_export_health_failures"], 1)
 
     def test_review_docx_export_rejects_text_that_differs_from_reviewed_text(self):
         status, payload = self.request(

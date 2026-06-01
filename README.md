@@ -71,6 +71,10 @@ Authenticated admins can download a sensitive JSON backup from `/api/matters/exp
 backup includes full matter records plus a stored-document manifest; it does not embed the
 uploaded source document bytes.
 
+Authenticated admins can also check `/api/deployment/status` for the live auth, storage,
+health-check, and rate-limit shape, and `/api/telemetry` for non-sensitive counters such as
+review request counts, export failures, Gmail sync failures, and rate-limit hits.
+
 Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
 
 ## Test
