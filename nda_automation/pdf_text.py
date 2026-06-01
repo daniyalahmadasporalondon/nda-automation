@@ -208,5 +208,10 @@ def _pdf_quality_report(
 def _garbled_text_ratio(text: str) -> float:
     if not text:
         return 1.0
-    suspicious = len(re.findall(r"[^A-Za-z0-9\s.,;:!?()\\[\\]{}'\"“”‘’/@&%$#*+\\-–—]", text))
+    allowed_punctuation = set(".,;:!?()[]{}'\"“”‘’/@&%$#*+-–—\\")
+    suspicious = sum(
+        1
+        for character in text
+        if not character.isalnum() and not character.isspace() and character not in allowed_punctuation
+    )
     return suspicious / max(1, len(text))
