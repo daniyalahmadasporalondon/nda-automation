@@ -2867,6 +2867,96 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Delaware", document_xml)
         self.assertIn("California", document_xml)
 
+    def test_selected_export_redlines_ignore_id_collision_for_different_clause(self):
+        review_result = {
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "governing_law",
+                    "paragraph_id": "p1",
+                    "action": "replace_paragraph",
+                    "original_text": "This Agreement shall be governed by the laws of California.",
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                }
+            ],
+        }
+
+        export_service.apply_selected_export_redlines(
+            review_result,
+            [
+                {
+                    "id": "r1",
+                    "clause_id": "signatures",
+                    "paragraph_id": "p2",
+                    "action": "insert_after_paragraph",
+                }
+            ],
+        )
+
+        self.assertEqual(review_result["redline_edits"], [])
+
+    def test_selected_source_redlines_rederive_original_anchor_server_side(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Selected Source NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                stored_matter = matter_store.get_matter(matter_id)
+                governing_law_redline = next(
+                    edit
+                    for edit in stored_matter["review_result"]["redline_edits"]
+                    if edit["clause_id"] == "governing_law"
+                )
+                edited_text_anchored_redline = {
+                    "id": governing_law_redline["id"],
+                    "clause_id": governing_law_redline["clause_id"],
+                    "paragraph_id": governing_law_redline["paragraph_id"],
+                    "action": governing_law_redline["action"],
+                    "original_text": "Edited browser text that is not present in the uploaded DOCX.",
+                    "replacement_text": "CLIENT SUPPLIED REPLACEMENT.",
+                }
+                export_status, export_payload, _headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": matter_id,
+                        "export_redline_edits": [edited_text_anchored_redline],
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 200)
+        with ZipFile(BytesIO(export_payload)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+            document_root = ET.fromstring(document_xml)
+        self.assertNotIn("CLIENT SUPPLIED", document_xml)
+        self.assertNotIn("Edited browser text", document_xml)
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        self.assertIn(
+            (
+                "This Agreement shall be governed by the laws of California.",
+                "This Agreement shall be governed by the laws of England and Wales.",
+            ),
+            revision_states,
+        )
+
     def test_review_docx_export_download_does_not_require_saved_copy(self):
         with patch.object(export_service, "EXPORTS_DIR", None):
             status, payload, headers = self.request_with_headers(

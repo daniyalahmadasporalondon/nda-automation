@@ -43,8 +43,18 @@ def apply_selected_export_redlines(review_result: dict, selected_redlines: objec
         server_redline = server_redlines_by_id.get(str(submitted.get("id") or ""))
         if server_redline is None:
             continue
+        if not _submitted_redline_identifies_server_redline(server_redline, submitted):
+            continue
         selected.append(_server_redline_with_submitted_decision(server_redline, submitted))
     review_result["redline_edits"] = selected
+
+
+def _submitted_redline_identifies_server_redline(server_redline: dict, submitted_redline: dict) -> bool:
+    for key in ("clause_id", "paragraph_id", "action"):
+        submitted_value = str(submitted_redline.get(key) or "").strip()
+        if submitted_value and submitted_value != str(server_redline.get(key) or "").strip():
+            return False
+    return True
 
 
 def apply_manual_export_redlines(review_result: dict, manual_redlines: object) -> None:
