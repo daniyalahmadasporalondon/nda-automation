@@ -480,6 +480,8 @@ class CheckerTests(unittest.TestCase):
             "This Agreement shall be governed by Delaware law.",
             "This Agreement shall be governed by English law.",
             "This Agreement shall be governed by Indian law.",
+            "This Agreement shall be governed by Dubai International Financial Centre law.",
+            "This Agreement shall be governed by the laws of Dubai International Financial Centre.",
             "This Agreement shall be construed in accordance with English law.",
             "The governing law shall be Indian law.",
         ]

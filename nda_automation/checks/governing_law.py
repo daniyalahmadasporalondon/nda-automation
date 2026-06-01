@@ -31,6 +31,7 @@ GOVERNING_LAW_VALUE_PATTERNS = (
 GOVERNING_LAW_INPUT_ALIASES = {
     "england and wales": ("english",),
     "india": ("indian",),
+    "difc": ("dubai international financial centre", "dubai international financial center"),
 }
 
 
