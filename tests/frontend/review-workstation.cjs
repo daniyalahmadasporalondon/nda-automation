@@ -525,29 +525,28 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
-  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await assertTextContains(deleteCard, "Delete matter and stored document?");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
-  assert.equal(await page.locator('[data-repository-count="gmail_demo"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await deleteCard.getByRole("button", { name: "Cancel delete matter" }).click();
   assert.equal(await deleteCard.getByRole("group", { name: "Delete matter confirmation" }).count(), 0);
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await deleteCard.getByRole("button", { name: "Confirm delete matter" }).click();
-  await waitForRepositoryCount(page, "gmail_demo", "1");
+  await waitForRepositoryCount(page, "in_review", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
-  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
   assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
   await assertTextContains(page.locator(".repository-card"), "Manual upload");
-  await assertTextContains(page.locator(".repository-card"), "Gmail Demo");
+  await assertTextContains(page.locator(".repository-card"), "Manual Upload");
   await assertTextContains(page.locator(".repository-card"), "Manual upload of repository-matter");
 
   await page.locator(".repository-card").click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "MANUAL UPLOAD");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Manual upload");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
@@ -561,7 +560,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const matterExportPayload = matterExportRequest.postDataJSON();
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
   assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
-  await waitForRepositoryCount(page, "gmail_demo", "0");
+  await waitForRepositoryCount(page, "in_review", "0");
   await waitForRepositoryCount(page, "redline_ready", "1");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Redline Ready");
 
@@ -569,7 +568,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");
-  await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
+  await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
   await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "redline_ready", "0");
   await page.getByRole("tab", { name: "Repository" }).click();
@@ -1556,14 +1555,14 @@ async function testSourceRedlineExportRegression(page) {
   await page.waitForSelector(".repository-card");
   await page.locator(".repository-card").filter({ hasText: "Source Redline NDA" }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "GMAIL DEMO");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "MANUAL UPLOAD");
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#studioDocumentRender:not([hidden])");
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
 
   assert.equal(await page.locator("#studioDocTitle").innerText(), "Source Redline NDA");
-  await assertTextContains(page.locator("#studioFileMeta"), "Gmail Demo matter loaded");
+  await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
   assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "source-redline review should produce CHECK findings");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");
@@ -1720,7 +1719,7 @@ async function createRepositoryMatter(page, docxPath, overrides = {}) {
   const payload = {
     filename,
     content_base64: fs.readFileSync(docxPath).toString("base64"),
-    source_type: "gmail_demo",
+    source_type: "manual_upload",
     sender: "Manual upload",
     subject: filename.replace(/\.[^.]*$/, ""),
     received_at: "2026-05-31T12:00:00+00:00",

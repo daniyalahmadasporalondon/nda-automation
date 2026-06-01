@@ -695,7 +695,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["source"]["extraction_quality"]["pages_with_text"], 1)
         self.assertIn("warnings", payload["source"]["extraction_quality"])
 
-    def test_matter_upload_creates_persisted_gmail_demo_matter(self):
+    def test_matter_upload_creates_persisted_manual_matter(self):
         source_docx = make_docx([
             "Intro paragraph.",
             "This Agreement shall be governed by the laws of California.",
@@ -710,7 +710,6 @@ class ServerTests(unittest.TestCase):
                     {
                         "filename": "Acme NDA.docx",
                         "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                        "source_type": "gmail_demo",
                     },
                 )
                 list_status, list_payload = self.request("GET", "/api/matters")
@@ -722,8 +721,8 @@ class ServerTests(unittest.TestCase):
                 stored_bytes = stored_path.read_bytes()
 
         self.assertEqual(status, 201)
-        self.assertEqual(matter["source_type"], "gmail_demo")
-        self.assertEqual(matter["board_column"], "gmail_demo")
+        self.assertEqual(matter["source_type"], "manual_upload")
+        self.assertEqual(matter["board_column"], "in_review")
         self.assertEqual(matter["source_filename"], "Acme NDA.docx")
         self.assertEqual(matter["document_title"], "Acme NDA")
         self.assertEqual(matter["sender"], "Manual upload")
@@ -806,7 +805,7 @@ class ServerTests(unittest.TestCase):
                     {
                         "filename": "Reset NDA.docx",
                         "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                        "source_type": "gmail_demo",
+                        "source_type": "manual_upload",
                     },
                 )
                 matter = create_payload["matter"]
@@ -1689,7 +1688,32 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_status, 404)
         self.assertEqual(missing_payload["error"], "Matter not found.")
 
-    def test_matter_upload_preserves_email_intake_metadata(self):
+    def test_matter_upload_rejects_gmail_inbound_source(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Forged Gmail NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "gmail_inbound",
+                        "gmail_message_id": "msg_123",
+                        "gmail_attachment_id": "att_123",
+                    },
+                )
+                matters = matter_store.list_matters()
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Unsupported matter source.")
+        self.assertEqual(matters, [])
+
+    def test_matter_upload_strips_forged_gmail_metadata(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
         ])
@@ -1709,7 +1733,7 @@ class ServerTests(unittest.TestCase):
                         "received_at": "2026-05-31T10:15:00+01:00",
                         "message_snippet": "Hi team, please review the attached NDA.",
                         "attachment_filename": "Counterparty NDA.docx",
-                        "source_type": "gmail_inbound",
+                        "source_type": "manual_upload",
                         "gmail_account": "inbound@example.com",
                         "gmail_attachment_id": "att_123",
                         "gmail_attachment_sha256": "sha_123",
@@ -1723,8 +1747,8 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 201)
         matter = payload["matter"]
-        self.assertEqual(matter["source_type"], "gmail_inbound")
-        self.assertEqual(matter["board_column"], "gmail_demo")
+        self.assertEqual(matter["source_type"], "manual_upload")
+        self.assertEqual(matter["board_column"], "in_review")
         self.assertEqual(matter["sender"], "noreply@example.com")
         self.assertEqual(matter["reply_to"], "legal@example.com")
         self.assertEqual(matter["recipient_email"], "legal@example.com")
@@ -1733,19 +1757,18 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
         self.assertEqual(matter["attachment_filename"], "Counterparty NDA.docx")
-        self.assertEqual(matter["gmail_account"], "inbound@example.com")
-        self.assertNotIn("gmail_attachment_sha256", matter)
-        self.assertNotIn("gmail_attachment_id", matter)
-        self.assertNotIn("gmail_message_id", matter)
-        self.assertNotIn("gmail_thread_id", matter)
-        self.assertEqual(stored_matter["gmail_account"], "inbound@example.com")
-        self.assertEqual(stored_matter["gmail_attachment_id"], "att_123")
-        self.assertEqual(stored_matter["gmail_attachment_sha256"], "sha_123")
-        self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
-        self.assertEqual(stored_matter["gmail_part_id"], "part_1")
-        self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")
+        for field in (
+            "gmail_account",
+            "gmail_attachment_id",
+            "gmail_attachment_sha256",
+            "gmail_message_id",
+            "gmail_part_id",
+            "gmail_thread_id",
+        ):
+            self.assertNotIn(field, matter)
+            self.assertNotIn(field, stored_matter)
         self.assertEqual(stored_matter["reply_to"], "legal@example.com")
-        self.assertEqual(duplicate["id"], matter["id"])
+        self.assertIsNone(duplicate)
 
     def test_matter_upload_rejects_spoofed_sender_for_redline_recipient(self):
         source_docx = make_docx([
@@ -2348,19 +2371,18 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Email NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                matter = server_module.create_matter_from_document(
+                    filename="Email NDA.docx",
+                    document_bytes=source_docx,
+                    source_type="gmail_inbound",
+                    board_column="gmail_demo",
+                    intake_metadata={
                         "sender": "Legal Team <legal@example.com>",
                         "subject": "Review Email NDA",
-                        "source_type": "gmail_inbound",
                         "gmail_thread_id": "thr_inbound",
                     },
                 )
-                matter_id = create_payload["matter"]["id"]
+                matter_id = matter["id"]
                 with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                     with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
                         "message_id": "msg_outbound",
@@ -2387,7 +2409,6 @@ class ServerTests(unittest.TestCase):
                         )
                         stored_matter = matter_store.get_matter(matter_id)
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(unconfirmed_status, 400)
         self.assertEqual(unconfirmed_payload["error"], "Confirm send is required before emailing a redline.")
         self.assertEqual(confirmed_status, 200)

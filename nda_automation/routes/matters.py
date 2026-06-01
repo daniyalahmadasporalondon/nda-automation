@@ -14,7 +14,7 @@ from ..ingestion_service import create_matter_from_document, is_supported_docume
 from ..pdf_text import PdfExtractionError
 from .common import parse_matter_id
 
-MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_demo", "manual_upload": "in_review"}
+HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REDLINE_DRAFT_ITEMS = 200
 
@@ -66,7 +66,7 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
 
     filename = payload.get("filename", "")
     content_base64 = payload.get("content_base64", "")
-    source_type = payload.get("source_type", "gmail_demo")
+    source_type = payload.get("source_type", "manual_upload")
     if not is_supported_document_filename(filename):
         handler._send_json({"error": "Upload a .docx Word document or text-based PDF."}, status=400)
         return
@@ -74,9 +74,9 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
         handler._send_json({"error": "Provide a document to import."}, status=400)
         return
     if not isinstance(source_type, str) or not source_type.strip():
-        source_type = "gmail_demo"
+        source_type = "manual_upload"
     source_type = source_type.strip()
-    board_column = MATTER_SOURCE_COLUMNS.get(source_type)
+    board_column = HTTP_MATTER_SOURCE_COLUMNS.get(source_type)
     if board_column is None:
         handler._send_json({"error": "Unsupported matter source."}, status=400)
         return
@@ -128,10 +128,6 @@ def matter_intake_metadata(payload: dict, filename: str) -> dict[str, str]:
     reply_to = gmail_integration.recipient_email(reply_to) if reply_to else ""
     if reply_to:
         metadata["reply_to"] = reply_to
-    for field in ("gmail_account", "gmail_attachment_id", "gmail_attachment_sha256", "gmail_message_id", "gmail_part_id", "gmail_thread_id"):
-        value = clean_intake_text(payload.get(field))
-        if value:
-            metadata[field] = value
     return metadata
 
 
