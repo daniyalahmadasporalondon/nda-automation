@@ -146,6 +146,17 @@ class CheckerTests(unittest.TestCase):
         self.assertNotEqual(result_clause["status"], "match")
         self.assertFalse(result_clause["passes"])
 
+    def test_mutuality_accepts_positive_language_despite_negated_label(self):
+        result = review_nda(
+            "This Agreement is not mutual in name only; each party may disclose Confidential Information "
+            "and each party acts as both a Disclosing Party and a Receiving Party."
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertTrue(result_clause["passes"])
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+
     def test_mutuality_check_returns_playbook_redline(self):
         result = review_nda("This is a unilateral NDA and only the Receiving Party receives Confidential Information.")
 

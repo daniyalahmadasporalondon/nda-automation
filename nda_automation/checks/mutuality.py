@@ -28,11 +28,7 @@ NEGATED_MUTUALITY_PATTERN = (
 def _check_mutuality(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
     search_patterns = _mutuality_search_patterns(clause)
     one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
-    mutual_paragraphs = [
-        paragraph
-        for paragraph in _paragraph_matches(paragraphs, search_patterns)
-        if not _negates_mutuality(str(paragraph["text"]))
-    ]
+    mutual_paragraphs = _mutuality_paragraphs(paragraphs, search_patterns)
     separated_role_paragraphs = _mutual_role_paragraphs(normalized, clause, paragraphs)
     one_way_paragraphs = _paragraph_matches(paragraphs, one_way_patterns)
 
@@ -84,8 +80,36 @@ def _mutual_role_paragraphs(
     return evidence
 
 
-def _negates_mutuality(text: str) -> bool:
-    return bool(re.search(NEGATED_MUTUALITY_PATTERN, text, flags=re.IGNORECASE))
+def _mutuality_paragraphs(paragraphs: List[Paragraph], search_patterns: List[str]) -> List[Paragraph]:
+    matches: List[Paragraph] = []
+    seen = set()
+    for paragraph in paragraphs:
+        paragraph_text = str(paragraph["text"])
+        if not _has_unnegated_mutuality_signal(paragraph_text, search_patterns):
+            continue
+        dedup_key = paragraph.get("id") or (paragraph.get("start"), paragraph.get("end"), paragraph.get("text"))
+        if dedup_key in seen:
+            continue
+        matches.append(paragraph)
+        seen.add(dedup_key)
+    return matches
+
+
+def _has_unnegated_mutuality_signal(text: str, search_patterns: List[str]) -> bool:
+    negated_spans = [
+        match.span()
+        for match in re.finditer(NEGATED_MUTUALITY_PATTERN, text, flags=re.IGNORECASE)
+    ]
+    for pattern in search_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            if not _match_inside_any_span(match.span(), negated_spans):
+                return True
+    return False
+
+
+def _match_inside_any_span(match_span: tuple[int, int], spans: List[tuple[int, int]]) -> bool:
+    match_start, match_end = match_span
+    return any(start <= match_start and match_end <= end for start, end in spans)
 
 
 def _mutuality_search_patterns(clause: Dict[str, object]) -> List[str]:
