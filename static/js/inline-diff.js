@@ -44,6 +44,5 @@ function needsInlineSpace(previousToken, token) {
   if (!previousToken) return false;
   if (/^[,.;:!?%)]$/.test(token)) return false;
   if (/^[(]$/.test(previousToken)) return false;
-  if (previousToken === "," && /^\d{3}$/.test(token)) return false;
   return true;
 }

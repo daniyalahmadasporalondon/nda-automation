@@ -1200,13 +1200,27 @@ async function testInlineDiffOperationRendering(page) {
         { type: "same", token: "Payment" },
         { type: "same", token: "cap" },
         { type: "same", token: "is" },
-        { type: "same", token: "1" },
-        { type: "same", token: "," },
-        { type: "same", token: "000" },
+        { type: "same", token: "1,000" },
         { type: "same", token: "for" },
         { type: "same", token: "café" },
         { type: "delete", token: "records" },
         { type: "insert", token: "documents" },
+        { type: "same", token: "." },
+      ])),
+      spacedNumberList: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: "caps" },
+        { type: "same", token: "are" },
+        { type: "same", token: "1" },
+        { type: "same", token: "," },
+        { type: "same", token: "2" },
+        { type: "same", token: "," },
+        { type: "same", token: "3" },
+        { type: "same", token: "," },
+        { type: "same", token: "400" },
+        { type: "same", token: "for" },
+        { type: "delete", token: "classes" },
+        { type: "insert", token: "categories" },
         { type: "same", token: "." },
       ])),
       fallback: revisionState(renderDiffOperations(fullReplacementOperations("Old paragraph.", "New paragraph."))),
@@ -1232,6 +1246,11 @@ async function testInlineDiffOperationRendering(page) {
   assert.equal(cases.groupedNumber.accepted, "Payment cap is 1,000 for café documents.");
   assert.deepEqual(cases.groupedNumber.deleted, [" records"]);
   assert.deepEqual(cases.groupedNumber.inserted, [" documents"]);
+
+  assert.equal(cases.spacedNumberList.original, "Payment caps are 1, 2, 3, 400 for classes.");
+  assert.equal(cases.spacedNumberList.accepted, "Payment caps are 1, 2, 3, 400 for categories.");
+  assert.deepEqual(cases.spacedNumberList.deleted, [" classes"]);
+  assert.deepEqual(cases.spacedNumberList.inserted, [" categories"]);
 
   assert.equal(cases.fallback.original, "Old paragraph.");
   assert.equal(cases.fallback.accepted, "New paragraph.");
