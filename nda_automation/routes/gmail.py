@@ -88,6 +88,9 @@ def handle_gmail_send_redline(handler) -> None:
     except redline_export_service.DocxOpenHealthError as error:
         handler._send_json({"error": str(error), "details": error.details}, status=500)
         return
+    except redline_export_service.MatterSourceTextChangedError as error:
+        handler._send_json({"error": str(error)}, status=409)
+        return
     except DocxExtractionError as error:
         handler._send_json({"error": str(error)}, status=400)
         return

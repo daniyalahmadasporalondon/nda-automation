@@ -16,6 +16,7 @@ function resetReviewResults() {
   cancelViewerReviewRefresh();
   pendingReviewSendMatterId = null;
   state.reviewClauses = [];
+  state.reviewExportOriginalParagraphs = [];
   state.reviewOriginalParagraphs = [];
   state.reviewParagraphs = [];
   resetReviewEditHistory();
@@ -202,6 +203,8 @@ async function sendReviewRedlineEmail() {
     const payload = {
       matter_id: state.selectedMatter.id,
       confirm_send: true,
+      text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
+      reviewed_text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
       export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
     };

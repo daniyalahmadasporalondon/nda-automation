@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,10 @@ class DocxOpenHealthError(DocxExportError):
     def __init__(self, message: str, details: list[str]):
         super().__init__(message)
         self.details = details
+
+
+class MatterSourceTextChangedError(DocxExportError):
+    """Raised when a matter source edit would not be represented in the source DOCX export."""
 
 
 def build_review_export(payload: dict, fallback_text: str, *, title: str = "NDA Review") -> RedlineExport:
@@ -79,6 +84,7 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
         if source_document_bytes is None:
             raise DocxExtractionError("Matter source document is missing from storage.")
         _apply_saved_redline_draft(payload, matter)
+        _reject_unrepresented_matter_source_text_edits(payload, matter, review_result)
         return deepcopy(review_result), source_document_bytes, source_filename
 
     filename = payload.get("filename", "")
@@ -108,6 +114,40 @@ def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:
     for field in ["export_redline_edits", "manual_redline_edits"]:
         if field not in payload and field in draft:
             payload[field] = draft[field]
+
+
+def _reject_unrepresented_matter_source_text_edits(payload: dict, matter: dict, review_result: dict) -> None:
+    submitted_text = _submitted_matter_source_text(payload)
+    if not submitted_text:
+        return
+
+    stored_text = str(matter.get("extracted_text") or review_result.get("extracted_text") or "")
+    if _normalize_document_text(submitted_text) == _normalize_document_text(stored_text):
+        return
+    if _has_manual_redline_payload(payload):
+        return
+
+    raise MatterSourceTextChangedError(
+        "Matter source text was edited after the source document was ingested. "
+        "Export or send after those viewer edits are represented as manual redlines."
+    )
+
+
+def _submitted_matter_source_text(payload: dict) -> str:
+    value = payload.get("text")
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _has_manual_redline_payload(payload: dict) -> bool:
+    manual_redlines = payload.get("manual_redline_edits")
+    return isinstance(manual_redlines, list) and any(
+        export_service.clean_manual_export_redline(item) is not None
+        for item in manual_redlines
+    )
+
+
+def _normalize_document_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _validate_export(report_bytes: bytes, *, require_styles: bool) -> None:

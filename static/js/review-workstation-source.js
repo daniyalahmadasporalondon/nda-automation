@@ -1,5 +1,5 @@
 function manualExportRedlines() {
-  const originalById = new Map(state.reviewOriginalParagraphs.map((paragraph) => [paragraph.id, paragraph]));
+  const originalById = new Map(manualRedlineBaselineParagraphs().map((paragraph) => [paragraph.id, paragraph]));
   return state.reviewParagraphs
     .map((paragraph) => {
       const original = originalById.get(paragraph.id);
@@ -8,18 +8,22 @@ function manualExportRedlines() {
       const replacementText = String(paragraph.text || "").trim();
       if (originalText === replacementText) return null;
       const isDelete = !replacementText;
-      return {
+      const redline = {
         id: `manual-${paragraph.id}`,
         clause_id: "manual_viewer_edit",
         status: "proposed",
         action: isDelete ? REDLINE_DELETE_PARAGRAPH : REDLINE_REPLACE_PARAGRAPH,
         action_label: isDelete ? "Remove paragraph" : "Replace paragraph",
         paragraph_id: paragraph.id,
-        paragraph_index: paragraph.index,
-        source_index: paragraph.source_index || paragraph.index,
+        paragraph_index: original.index || paragraph.index,
         original_text: originalText,
         replacement_text: replacementText,
       };
+      if (original.source_index !== undefined || paragraph.source_index !== undefined) {
+        redline.source_index = original.source_index || paragraph.source_index || paragraph.index;
+      }
+      if (original.source_part) redline.source_part = original.source_part;
+      return redline;
     })
     .filter(Boolean);
 }

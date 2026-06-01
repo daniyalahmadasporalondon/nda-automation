@@ -1960,6 +1960,98 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 409)
         self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
 
+    def test_matter_export_rejects_source_text_change_without_manual_redlines(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Edited Source NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                export_status, export_payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": create_payload["matter"]["id"],
+                        "text": "This Agreement shall be governed by the laws of New York.",
+                        "reviewed_text": "This Agreement shall be governed by the laws of New York.",
+                        "export_redline_edits": [],
+                        "manual_redline_edits": [],
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 409)
+        self.assertEqual(
+            export_payload["error"],
+            "Matter source text was edited after the source document was ingested. "
+            "Export or send after those viewer edits are represented as manual redlines.",
+        )
+
+    def test_matter_export_allows_source_text_change_with_manual_redline(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        manual_redline = {
+            "id": "manual-p1",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+            "original_text": "This Agreement shall be governed by the laws of California.",
+            "replacement_text": "This Agreement shall be governed by the laws of New York.",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Manual Source NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                export_status, export_payload, _headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": create_payload["matter"]["id"],
+                        "text": "This Agreement shall be governed by the laws of New York.",
+                        "reviewed_text": "This Agreement shall be governed by the laws of New York.",
+                        "export_redline_edits": [],
+                        "manual_redline_edits": [manual_redline],
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 200)
+        with ZipFile(BytesIO(export_payload)) as archive:
+            document_root = ET.fromstring(archive.read("word/document.xml"))
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        self.assertIn(
+            (
+                "This Agreement shall be governed by the laws of California.",
+                "This Agreement shall be governed by the laws of New York.",
+            ),
+            revision_states,
+        )
+
     @requires_pypdf
     def test_pdf_matter_export_uses_review_report_docx(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
@@ -2573,6 +2665,43 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(send_status, 200)
         self.assertEqual(send_payload["matter"]["board_column"], "redline_ready")
         self.assertEqual(captured["redline_count"], 0)
+
+    def test_gmail_send_redline_rejects_source_text_change_without_manual_redlines(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Send Edited Source NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "sender": "legal@example.com",
+                    },
+                )
+                with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                    with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
+                        send_status, send_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {
+                                "matter_id": create_payload["matter"]["id"],
+                                "confirm_send": True,
+                                "text": "This Agreement shall be governed by the laws of New York.",
+                                "reviewed_text": "This Agreement shall be governed by the laws of New York.",
+                                "export_redline_edits": [],
+                                "manual_redline_edits": [],
+                            },
+                        )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(send_status, 409)
+        self.assertIn("Matter source text was edited", send_payload["error"])
+        send_redline_email.assert_not_called()
 
     def test_corrupt_matter_store_does_not_reset_repository(self):
         with tempfile.TemporaryDirectory() as data_dir:

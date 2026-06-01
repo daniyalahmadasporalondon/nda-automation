@@ -238,6 +238,9 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
+  if (!paragraphsAlignWithBaseline(state.reviewParagraphs, state.reviewExportOriginalParagraphs)) {
+    state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
+  }
   state.reviewRedlines = result.redline_edits || [];
   state.reviewSourceText = reviewedText;
   state.clauseJumpIndexes = {};
@@ -271,7 +274,7 @@ function reconcileTemplateSelections(previousTemplateSelections) {
 function updateManualRedlinePreview(editable, paragraph) {
   const container = editable.closest(".studio-doc-paragraph");
   if (!container) return;
-  const manualRedline = manualParagraphRedline(paragraph, state.reviewOriginalParagraphs);
+  const manualRedline = manualParagraphRedline(paragraph, manualRedlineBaselineParagraphs());
   const backendRedline = selectedBackendRedline(paragraph.id);
   const hasBackendRedline = effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id);
   syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });

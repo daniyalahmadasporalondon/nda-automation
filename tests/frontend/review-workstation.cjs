@@ -1653,6 +1653,20 @@ async function testSourceRedlineExportRegression(page) {
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
   await assertTextContains(page.locator("#studioFileMeta"), "Edited in viewer");
+  const reviewTimestampBeforeRefresh = await page.evaluate(() => state.latestReviewResult?.checked_at || "");
+  await page.waitForFunction((previousCheckedAt) => (
+    state.latestReviewResult?.checked_at
+    && state.latestReviewResult.checked_at !== previousCheckedAt
+    && !document.querySelector("#studioResultMeta")?.textContent.includes("Rechecking")
+  ), reviewTimestampBeforeRefresh);
+  await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
+  const manualRedlinesAfterRefresh = await page.evaluate(() => manualExportRedlines());
+  assert.equal(manualRedlinesAfterRefresh.length, 1, "viewer edit should remain exportable after auto-refresh");
+  assert.equal(
+    manualRedlinesAfterRefresh[0].source_index,
+    1,
+    "viewer edit should keep the original DOCX source anchor after auto-refresh",
+  );
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),

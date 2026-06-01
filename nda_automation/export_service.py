@@ -103,6 +103,9 @@ def clean_manual_export_redline(redline: object) -> dict | None:
     }
 
     _copy_redline_indexes(redline, cleaned)
+    source_part = str(redline.get("source_part") or "").strip()
+    if source_part:
+        cleaned["source_part"] = source_part
     return cleaned
 
 

@@ -31,6 +31,7 @@ const state = {
   selectedMatter: null,
   matters: [],
   reviewClauses: [],
+  reviewExportOriginalParagraphs: [],
   reviewOriginalParagraphs: [],
   reviewParagraphs: [],
   reviewEditHistory: [],

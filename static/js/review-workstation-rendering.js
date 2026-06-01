@@ -4,6 +4,7 @@ function renderResult(result, reviewedText) {
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
+  state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewRedlines = result.redline_edits || [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
@@ -19,10 +20,28 @@ function renderResult(result, reviewedText) {
 }
 
 function snapshotReviewParagraphs(paragraphs) {
-  return (paragraphs || []).map((paragraph) => ({
-    id: paragraph.id,
-    text: String(paragraph.text || ""),
-  }));
+  return (paragraphs || []).map((paragraph) => {
+    const snapshot = {
+      id: paragraph.id,
+      index: paragraph.index,
+      text: String(paragraph.text || ""),
+    };
+    if (paragraph.source_index !== undefined) snapshot.source_index = paragraph.source_index;
+    if (paragraph.source_part !== undefined) snapshot.source_part = paragraph.source_part;
+    return snapshot;
+  });
+}
+
+function manualRedlineBaselineParagraphs() {
+  return state.reviewExportOriginalParagraphs.length
+    ? state.reviewExportOriginalParagraphs
+    : state.reviewOriginalParagraphs;
+}
+
+function paragraphsAlignWithBaseline(paragraphs, baseline) {
+  if (!Array.isArray(paragraphs) || !Array.isArray(baseline) || !baseline.length) return false;
+  if (paragraphs.length !== baseline.length) return false;
+  return paragraphs.every((paragraph, index) => String(paragraph.id || "") === String(baseline[index]?.id || ""));
 }
 
 function renderStudioEmpty() {
@@ -156,7 +175,7 @@ function resetCurrentRedlineDraftToDefaults() {
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
-    const original = state.reviewOriginalParagraphs.find((item) => item.id === paragraph.id);
+    const original = manualRedlineBaselineParagraphs().find((item) => item.id === paragraph.id);
     return original ? { ...paragraph, text: original.text } : paragraph;
   });
   syncReviewSourceFromParagraphs();
@@ -537,7 +556,7 @@ function renderStudioDocumentHighlights() {
   const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
   studioDocumentRender.innerHTML = renderReviewDocument({
     clauses: state.reviewClauses,
-    originalParagraphs: state.reviewOriginalParagraphs,
+    originalParagraphs: manualRedlineBaselineParagraphs(),
     paragraphs: state.reviewParagraphs,
     redlines: effectiveReviewRedlines(),
     selectedClauseId: state.selectedReviewClauseId,
