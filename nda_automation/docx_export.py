@@ -550,7 +550,14 @@ def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_par
 
 
 def _strip_paragraph_property_revisions(root: ET.Element) -> None:
-    for run_properties in root.findall(f".//{_w_tag('pPr')}/{_w_tag('rPr')}"):
+    paragraph_properties = []
+    if root.tag == _w_tag("pPr"):
+        paragraph_properties.append(root)
+    paragraph_properties.extend(root.findall(f".//{_w_tag('pPr')}"))
+    for properties in paragraph_properties:
+        run_properties = properties.find(_w_tag("rPr"))
+        if run_properties is None:
+            continue
         for revision_tag in (_w_tag("ins"), _w_tag("del")):
             for revision in list(run_properties.findall(revision_tag)):
                 run_properties.remove(revision)

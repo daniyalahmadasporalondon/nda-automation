@@ -12,6 +12,7 @@ from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
     DocxExportError,
+    _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
@@ -955,6 +956,20 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(paragraph_property_revisions(document_root, "ins"), [])
         self.assertTrue(any("must not circumvent" in text for text in tracked_deleted_text(document_root)))
         self.assertTrue(any("England and Wales" in text for text in tracked_inserted_text(document_root)))
+
+    def test_strip_paragraph_property_revisions_handles_paragraph_properties_root(self):
+        paragraph_properties = ET.fromstring(
+            '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:rPr><w:b/><w:ins w:id="97" w:author="source" w:date="2026-06-01T00:00:00Z" />'
+            '<w:del w:id="98" w:author="source" w:date="2026-06-01T00:00:00Z" /></w:rPr>'
+            "</w:pPr>"
+        )
+
+        _strip_paragraph_property_revisions(paragraph_properties)
+
+        self.assertEqual(paragraph_properties.findall(".//w:ins", W_NS), [])
+        self.assertEqual(paragraph_properties.findall(".//w:del", W_NS), [])
+        self.assertIsNotNone(paragraph_properties.find(".//w:b", W_NS))
 
     def test_source_docx_export_matches_redline_actions_at_paragraph_level(self):
         source_docx = make_source_docx([
