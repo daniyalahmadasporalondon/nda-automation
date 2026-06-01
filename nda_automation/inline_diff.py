@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, Tuple
 
 INLINE_DIFF_MAX_MATRIX_CELLS = 40000
-INLINE_TOKEN_PATTERN = re.compile(r"\d+(?:[,.]\d+)*|[^\W_]+(?:[-'’][^\W_]+)*|[^\s]")
+INLINE_TOKEN_PATTERN = re.compile(r"\s*(?:\d+(?:[,.]\d+)*|[^\W_]+(?:[-'’][^\W_]+)*|[^\s])|\s+")
 DiffOperation = Tuple[str, str]
 
 
@@ -16,7 +16,7 @@ def diff_text_operations(original: str, replacement: str) -> List[DiffOperation]
     if not new_tokens:
         return [("delete", token) for token in old_tokens]
     if len(old_tokens) * len(new_tokens) > INLINE_DIFF_MAX_MATRIX_CELLS:
-        return [("delete", token) for token in old_tokens] + [("insert", token) for token in new_tokens]
+        return [("delete", str(original or "")), ("insert", str(replacement or ""))]
     return diff_token_operations(old_tokens, new_tokens)
 
 

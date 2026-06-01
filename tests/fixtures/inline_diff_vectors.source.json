@@ -14,7 +14,7 @@
       },
       {
         "type": "insert",
-        "token": "beta"
+        "token": " beta"
       },
       {
         "type": "insert",
@@ -37,7 +37,7 @@
       },
       {
         "type": "delete",
-        "token": "beta"
+        "token": " beta"
       },
       {
         "type": "delete",
@@ -56,11 +56,11 @@
       },
       {
         "type": "delete",
-        "token": "fees"
+        "token": " fees"
       },
       {
         "type": "insert",
-        "token": "charges"
+        "token": " charges"
       },
       {
         "type": "same",
@@ -68,7 +68,7 @@
       },
       {
         "type": "same",
-        "token": "taxes"
+        "token": " taxes"
       },
       {
         "type": "same",
@@ -87,19 +87,19 @@
       },
       {
         "type": "same",
-        "token": "Information"
+        "token": " Information"
       },
       {
         "type": "same",
-        "token": "includes"
+        "token": " includes"
       },
       {
         "type": "insert",
-        "token": "business"
+        "token": " business"
       },
       {
         "type": "same",
-        "token": "plans"
+        "token": " plans"
       },
       {
         "type": "same",
@@ -118,27 +118,27 @@
       },
       {
         "type": "same",
-        "token": "Recipient"
+        "token": " Recipient"
       },
       {
         "type": "same",
-        "token": "may"
+        "token": " may"
       },
       {
         "type": "same",
-        "token": "disclose"
+        "token": " disclose"
       },
       {
         "type": "delete",
-        "token": "audited"
+        "token": " audited"
       },
       {
         "type": "same",
-        "token": "financial"
+        "token": " financial"
       },
       {
         "type": "same",
-        "token": "statements"
+        "token": " statements"
       },
       {
         "type": "same",
@@ -157,11 +157,11 @@
       },
       {
         "type": "same",
-        "token": "Agreement"
+        "token": " Agreement"
       },
       {
         "type": "same",
-        "token": "("
+        "token": " ("
       },
       {
         "type": "delete",
@@ -173,11 +173,11 @@
       },
       {
         "type": "insert",
-        "token": "and"
+        "token": " and"
       },
       {
         "type": "insert",
-        "token": "Wales"
+        "token": " Wales"
       },
       {
         "type": "same",
@@ -185,7 +185,7 @@
       },
       {
         "type": "same",
-        "token": "applies"
+        "token": " applies"
       },
       {
         "type": "same",
@@ -204,19 +204,19 @@
       },
       {
         "type": "same",
-        "token": "records"
+        "token": " records"
       },
       {
         "type": "delete",
-        "token": "aren't"
+        "token": " aren't"
       },
       {
         "type": "insert",
-        "token": "are"
+        "token": " are"
       },
       {
         "type": "same",
-        "token": "covered"
+        "token": " covered"
       },
       {
         "type": "same",
@@ -235,23 +235,23 @@
       },
       {
         "type": "same",
-        "token": "information"
+        "token": " information"
       },
       {
         "type": "same",
-        "token": "survives"
+        "token": " survives"
       },
       {
         "type": "delete",
-        "token": "post-closing"
+        "token": " post-closing"
       },
       {
         "type": "insert",
-        "token": "after"
+        "token": " after"
       },
       {
         "type": "insert",
-        "token": "closing"
+        "token": " closing"
       },
       {
         "type": "same",
@@ -270,23 +270,23 @@
       },
       {
         "type": "same",
-        "token": "survive"
+        "token": " survive"
       },
       {
         "type": "same",
-        "token": "for"
+        "token": " for"
       },
       {
         "type": "delete",
-        "token": "five"
+        "token": " five"
       },
       {
         "type": "insert",
-        "token": "three"
+        "token": " three"
       },
       {
         "type": "same",
-        "token": "("
+        "token": " ("
       },
       {
         "type": "delete",
@@ -302,7 +302,7 @@
       },
       {
         "type": "same",
-        "token": "years"
+        "token": " years"
       },
       {
         "type": "same",
@@ -321,31 +321,31 @@
       },
       {
         "type": "same",
-        "token": "cap"
+        "token": " cap"
       },
       {
         "type": "same",
-        "token": "is"
+        "token": " is"
       },
       {
         "type": "same",
-        "token": "1,000"
+        "token": " 1,000"
       },
       {
         "type": "same",
-        "token": "for"
+        "token": " for"
       },
       {
         "type": "same",
-        "token": "café"
+        "token": " café"
       },
       {
         "type": "delete",
-        "token": "records"
+        "token": " records"
       },
       {
         "type": "insert",
-        "token": "documents"
+        "token": " documents"
       },
       {
         "type": "same",
@@ -363,16 +363,14 @@
       "prefix": "new",
       "count": 200
     },
-    "operationBlocks": [
+    "operationSources": [
       {
         "type": "delete",
-        "prefix": "old",
-        "count": 201
+        "source": "original"
       },
       {
         "type": "insert",
-        "prefix": "new",
-        "count": 200
+        "source": "replacement"
       }
     ]
   }

@@ -1197,6 +1197,18 @@ async function testInlineDiffOperationRendering(page) {
         { type: "same", token: "applies" },
         { type: "same", token: "." },
       ])),
+      punctuationSourceSpacing: revisionState(renderDiffOperations([
+        { type: "same", token: "This" },
+        { type: "same", token: " Agreement" },
+        { type: "same", token: " (" },
+        { type: "delete", token: "California" },
+        { type: "insert", token: "England" },
+        { type: "insert", token: " and" },
+        { type: "insert", token: " Wales" },
+        { type: "same", token: ")" },
+        { type: "same", token: " applies" },
+        { type: "same", token: "." },
+      ])),
       groupedNumber: revisionState(renderDiffOperations([
         { type: "same", token: "Payment" },
         { type: "same", token: "cap" },
@@ -1206,6 +1218,17 @@ async function testInlineDiffOperationRendering(page) {
         { type: "same", token: "café" },
         { type: "delete", token: "records" },
         { type: "insert", token: "documents" },
+        { type: "same", token: "." },
+      ])),
+      groupedNumberSourceSpacing: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: " cap" },
+        { type: "same", token: " is" },
+        { type: "same", token: " 1,000" },
+        { type: "same", token: " for" },
+        { type: "same", token: " café" },
+        { type: "delete", token: " records" },
+        { type: "insert", token: " documents" },
         { type: "same", token: "." },
       ])),
       spacedNumberList: revisionState(renderDiffOperations([
@@ -1222,6 +1245,22 @@ async function testInlineDiffOperationRendering(page) {
         { type: "same", token: "for" },
         { type: "delete", token: "classes" },
         { type: "insert", token: "categories" },
+        { type: "same", token: "." },
+      ])),
+      spacedNumberListSourceSpacing: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: " caps" },
+        { type: "same", token: " are" },
+        { type: "same", token: " 1" },
+        { type: "same", token: "," },
+        { type: "same", token: " 2" },
+        { type: "same", token: "," },
+        { type: "same", token: " 3" },
+        { type: "same", token: "," },
+        { type: "same", token: " 400" },
+        { type: "same", token: " for" },
+        { type: "delete", token: " classes" },
+        { type: "insert", token: " categories" },
         { type: "same", token: "." },
       ])),
       fallback: revisionState(renderDiffOperations(fullReplacementOperations("Old paragraph.", "New paragraph."))),
@@ -1242,16 +1281,28 @@ async function testInlineDiffOperationRendering(page) {
   assert.equal(cases.punctuation.accepted, "This Agreement (England and Wales) applies.");
   assert.deepEqual(cases.punctuation.deleted, ["California"]);
   assert.deepEqual(cases.punctuation.inserted, ["England", " and", " Wales"]);
+  assert.equal(cases.punctuationSourceSpacing.original, "This Agreement (California) applies.");
+  assert.equal(cases.punctuationSourceSpacing.accepted, "This Agreement (England and Wales) applies.");
+  assert.deepEqual(cases.punctuationSourceSpacing.deleted, ["California"]);
+  assert.deepEqual(cases.punctuationSourceSpacing.inserted, ["England", " and", " Wales"]);
 
   assert.equal(cases.groupedNumber.original, "Payment cap is 1,000 for café records.");
   assert.equal(cases.groupedNumber.accepted, "Payment cap is 1,000 for café documents.");
   assert.deepEqual(cases.groupedNumber.deleted, [" records"]);
   assert.deepEqual(cases.groupedNumber.inserted, [" documents"]);
+  assert.equal(cases.groupedNumberSourceSpacing.original, "Payment cap is 1,000 for café records.");
+  assert.equal(cases.groupedNumberSourceSpacing.accepted, "Payment cap is 1,000 for café documents.");
+  assert.deepEqual(cases.groupedNumberSourceSpacing.deleted, [" records"]);
+  assert.deepEqual(cases.groupedNumberSourceSpacing.inserted, [" documents"]);
 
   assert.equal(cases.spacedNumberList.original, "Payment caps are 1, 2, 3, 400 for classes.");
   assert.equal(cases.spacedNumberList.accepted, "Payment caps are 1, 2, 3, 400 for categories.");
   assert.deepEqual(cases.spacedNumberList.deleted, [" classes"]);
   assert.deepEqual(cases.spacedNumberList.inserted, [" categories"]);
+  assert.equal(cases.spacedNumberListSourceSpacing.original, "Payment caps are 1, 2, 3, 400 for classes.");
+  assert.equal(cases.spacedNumberListSourceSpacing.accepted, "Payment caps are 1, 2, 3, 400 for categories.");
+  assert.deepEqual(cases.spacedNumberListSourceSpacing.deleted, [" classes"]);
+  assert.deepEqual(cases.spacedNumberListSourceSpacing.inserted, [" categories"]);
 
   assert.equal(cases.fallback.original, "Old paragraph.");
   assert.equal(cases.fallback.accepted, "New paragraph.");

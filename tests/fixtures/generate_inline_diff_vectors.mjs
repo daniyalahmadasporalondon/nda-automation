@@ -18,6 +18,13 @@ const vectors = sourceVectors.map((vector) => {
     expanded.replacement = tokenBlockText(expanded.replacementTokenBlock);
     delete expanded.replacementTokenBlock;
   }
+  if (expanded.operationSources) {
+    expanded.operations = expanded.operationSources.map((operation) => ({
+      type: operation.type,
+      token: expanded[operation.source],
+    }));
+    delete expanded.operationSources;
+  }
   if (expanded.operationBlocks) {
     const blockOperations = expanded.operationBlocks.flatMap((block) => (
       Array.from({ length: block.count }, (_, index) => ({

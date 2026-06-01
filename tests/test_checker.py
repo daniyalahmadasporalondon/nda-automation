@@ -774,11 +774,11 @@ class CheckerTests(unittest.TestCase):
             "This Agreement shall be governed by the laws of England and Wales.",
         )
         self.assertIn(
-            {"type": "delete", "token": "California"},
+            {"type": "delete", "token": " California"},
             governing_law_redline["inline_diff_operations"],
         )
         self.assertIn(
-            {"type": "insert", "token": "England"},
+            {"type": "insert", "token": " England"},
             governing_law_redline["inline_diff_operations"],
         )
         self.assertEqual(

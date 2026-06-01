@@ -669,9 +669,13 @@ def _deleted_run(text: str) -> str:
 def _needs_inline_space(previous_token: str, token: str) -> bool:
     if not previous_token:
         return False
-    if re.match(r"^[,.;:!?%)]$", token):
+    if re.match(r"^\s", token) or re.search(r"\s$", previous_token):
         return False
-    if re.match(r"^[(]$", previous_token):
+    token_core = re.sub(r"^\s+", "", token)
+    previous_core = re.sub(r"^\s+", "", previous_token)
+    if re.match(r"^[,.;:!?%)]$", token_core):
+        return False
+    if re.match(r"^[(]$", previous_core):
         return False
     return True
 

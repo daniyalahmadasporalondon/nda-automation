@@ -42,7 +42,10 @@ function renderInlineToken(token, className) {
 
 function needsInlineSpace(previousToken, token) {
   if (!previousToken) return false;
-  if (/^[,.;:!?%)]$/.test(token)) return false;
-  if (/^[(]$/.test(previousToken)) return false;
+  if (/^\s/.test(token) || /\s$/.test(previousToken)) return false;
+  const tokenCore = String(token).trimStart();
+  const previousCore = String(previousToken).trimStart();
+  if (/^[,.;:!?%)]$/.test(tokenCore)) return false;
+  if (/^[(]$/.test(previousCore)) return false;
   return true;
 }
