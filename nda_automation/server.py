@@ -395,7 +395,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             ),
             "attachment_filename": self._clean_intake_text(payload.get("attachment_filename")) or filename,
         }
-        for field in ("gmail_account", "gmail_attachment_id", "gmail_message_id", "gmail_thread_id"):
+        for field in ("gmail_account", "gmail_attachment_id", "gmail_message_id", "gmail_part_id", "gmail_thread_id"):
             value = self._clean_intake_text(payload.get(field))
             if value:
                 metadata[field] = value

@@ -569,6 +569,56 @@ class ServerTests(unittest.TestCase):
         self.assertLessEqual(len(matter["stored_filename"]), matter_store.MAX_SOURCE_FILENAME_LENGTH + len("matter_000000000000-"))
         self.assertTrue(matter["stored_filename"].endswith(".docx"))
 
+    def test_gmail_attachment_dedupe_uses_stable_message_filename_key(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                first = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"first",
+                    extracted_text="first",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_id": "unstable_att_1",
+                        "gmail_message_id": "msg_123",
+                    },
+                )
+                first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                second = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"second",
+                    extracted_text="second",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_id": "unstable_att_2",
+                        "gmail_message_id": "msg_123",
+                    },
+                )
+                second_path = matter_store.UPLOADS_DIR / second["stored_filename"]
+                duplicate = matter_store.find_gmail_attachment(
+                    "msg_123",
+                    "unstable_att_3",
+                    attachment_filename="Counterparty NDA.docx",
+                )
+                removed = matter_store.deduplicate_gmail_matters()
+                matters = matter_store.list_matters()
+                kept_id = matters[0]["id"]
+                first_path_exists = first_path.exists()
+                second_path_exists = second_path.exists()
+
+        self.assertIn(duplicate["id"], {first["id"], second["id"]})
+        self.assertEqual(removed, 1)
+        self.assertIn(kept_id, {first["id"], second["id"]})
+        self.assertEqual(len(matters), 1)
+        self.assertEqual(first_path_exists, kept_id == first["id"])
+        self.assertEqual(second_path_exists, kept_id == second["id"])
+
     def test_triage_fails_closed_when_clauses_is_not_list(self):
         triage = triage_review_result({"clauses": {"passes": True}})
 
@@ -712,6 +762,7 @@ class ServerTests(unittest.TestCase):
                         "gmail_account": "inbound@example.com",
                         "gmail_attachment_id": "att_123",
                         "gmail_message_id": "msg_123",
+                        "gmail_part_id": "part_1",
                         "gmail_thread_id": "thr_123",
                     },
                 )
@@ -736,6 +787,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["gmail_account"], "inbound@example.com")
         self.assertEqual(stored_matter["gmail_attachment_id"], "att_123")
         self.assertEqual(stored_matter["gmail_message_id"], "msg_123")
+        self.assertEqual(stored_matter["gmail_part_id"], "part_1")
         self.assertEqual(stored_matter["gmail_thread_id"], "thr_123")
         self.assertEqual(duplicate["id"], matter["id"])
 

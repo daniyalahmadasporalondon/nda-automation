@@ -120,9 +120,16 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
         metadata = _message_metadata(message, str(profile.get("emailAddress") or ""))
         for attachment in attachments:
             attachment_id = str(attachment.get("attachment_id") or "")
-            if matter_store.find_gmail_attachment(message_id, attachment_id) is not None:
+            attachment_filename = str(attachment.get("filename") or "")
+            part_id = str(attachment.get("part_id") or "")
+            if matter_store.find_gmail_attachment(
+                message_id,
+                attachment_id,
+                attachment_filename=attachment_filename,
+                part_id=part_id,
+            ) is not None:
                 skipped.append({
-                    "attachment_filename": str(attachment.get("filename") or ""),
+                    "attachment_filename": attachment_filename,
                     "message_id": message_id,
                     "reason": "duplicate_attachment",
                 })
@@ -132,7 +139,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                 document_bytes = _attachment_bytes(service, message_id, attachment)
             except GmailIntegrationError:
                 skipped.append({
-                    "attachment_filename": str(attachment.get("filename") or ""),
+                    "attachment_filename": attachment_filename,
                     "message_id": message_id,
                     "reason": "attachment_unavailable",
                 })
@@ -141,7 +148,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
                 ensure_document_size(document_bytes)
             except DocumentSizeError:
                 skipped.append({
-                    "attachment_filename": str(attachment.get("filename") or ""),
+                    "attachment_filename": attachment_filename,
                     "message_id": message_id,
                     "reason": "attachment_too_large",
                 })
@@ -149,19 +156,20 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
 
             try:
                 matter = create_matter_from_document(
-                    filename=str(attachment.get("filename") or "nda.docx"),
+                    filename=attachment_filename or "nda.docx",
                     document_bytes=document_bytes,
                     source_type="gmail_inbound",
                     board_column="gmail_demo",
                     intake_metadata={
                         **metadata,
-                        "attachment_filename": str(attachment.get("filename") or "nda.docx"),
+                        "attachment_filename": attachment_filename or "nda.docx",
                         "gmail_attachment_id": attachment_id,
+                        "gmail_part_id": part_id,
                     },
                 )
             except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
                 skipped.append({
-                    "attachment_filename": str(attachment.get("filename") or ""),
+                    "attachment_filename": attachment_filename,
                     "message_id": message_id,
                     "reason": "review_failed",
                 })
@@ -407,6 +415,7 @@ def _reviewable_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:
         filename = str(part.get("filename") or "")
         if not is_supported_document_filename(filename):
             continue
+        part_id = str(part.get("partId") or "")
         body = part.get("body") or {}
         attachment_id = str(body.get("attachmentId") or "")
         inline_data = str(body.get("data") or "")
@@ -416,6 +425,7 @@ def _reviewable_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:
             "attachment_id": attachment_id or f"inline:{part.get('partId') or filename}",
             "data": inline_data,
             "filename": filename,
+            "part_id": part_id,
         })
     return attachments
 

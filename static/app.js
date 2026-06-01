@@ -21,6 +21,7 @@ const adminSectionButtons = document.querySelectorAll("[data-admin-section]");
 const adminPanels = document.querySelectorAll("[data-admin-panel]");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
+const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
 const state = {
   playbookClauses: [],
@@ -89,6 +90,12 @@ playbookController.loadPlaybook();
 repositoryController.loadMatters();
 repositoryController.loadGmailStatus();
 adminIntegrationsController.load();
+window.setInterval(() => {
+  if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
+    repositoryController.loadMatters();
+    repositoryController.loadGmailStatus();
+  }
+}, REPOSITORY_REFRESH_INTERVAL_MS);
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -176,6 +183,10 @@ function activateTab(tabName) {
   setActiveTab(tabName);
   if (tabName === "review") {
     requestAnimationFrame(resizeSourceEditors);
+  }
+  if (tabName === "repository") {
+    repositoryController.loadMatters();
+    repositoryController.loadGmailStatus();
   }
   if (tabName === "clauses" && activeAdminSection() === "integrations") {
     adminIntegrationsController.load();

@@ -26,6 +26,7 @@ GMAIL_METADATA_FIELDS = (
     "gmail_account",
     "gmail_attachment_id",
     "gmail_message_id",
+    "gmail_part_id",
     "gmail_thread_id",
 )
 MATTER_UPDATE_FIELDS = {
@@ -70,12 +71,28 @@ def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
         return source_path.read_bytes()
 
 
-def find_gmail_attachment(message_id: str, attachment_id: str) -> dict[str, Any] | None:
-    if not message_id or not attachment_id:
+def find_gmail_attachment(
+    message_id: str,
+    attachment_id: str,
+    *,
+    attachment_filename: str = "",
+    part_id: str = "",
+) -> dict[str, Any] | None:
+    if not message_id:
         return None
+    filename_key = _gmail_attachment_filename_key(attachment_filename)
     with _locked_store():
         for matter in _load_matters():
-            if matter.get("gmail_message_id") == message_id and matter.get("gmail_attachment_id") == attachment_id:
+            if matter.get("gmail_message_id") != message_id:
+                continue
+            if part_id and matter.get("gmail_part_id") == part_id:
+                return matter
+            if attachment_id and matter.get("gmail_attachment_id") == attachment_id:
+                return matter
+            matter_filename_key = _gmail_attachment_filename_key(
+                str(matter.get("attachment_filename") or matter.get("source_filename") or "")
+            )
+            if filename_key and matter_filename_key == filename_key:
                 return matter
     return None
 
@@ -163,6 +180,35 @@ def delete_matter(matter_id: str) -> dict[str, Any] | None:
         _save_matters(kept_matters)
         _delete_stored_document(deleted_matter)
         return deleted_matter
+
+
+def deduplicate_gmail_matters() -> int:
+    with _locked_store():
+        matters = _load_matters()
+        winners: dict[tuple[str, str], dict[str, Any]] = {}
+        for matter in matters:
+            key = _gmail_attachment_key_for_matter(matter)
+            if key is None:
+                continue
+            winner = winners.get(key)
+            if winner is None or _matter_duplicate_rank(matter) > _matter_duplicate_rank(winner):
+                winners[key] = matter
+
+        removed: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
+        for matter in matters:
+            key = _gmail_attachment_key_for_matter(matter)
+            if key is not None and winners.get(key) is not matter:
+                removed.append(matter)
+                continue
+            kept.append(matter)
+
+        if not removed:
+            return 0
+        _save_matters(kept)
+        for matter in removed:
+            _delete_stored_document(matter)
+        return len(removed)
 
 
 def create_matter(
@@ -281,6 +327,38 @@ def _stored_matter_limit() -> int:
 def _matter_retention_sort_key(matter: dict[str, Any]) -> tuple[int, str]:
     is_closed = 0 if matter.get("status") == "closed" or matter.get("board_column") == "signed_closed" else 1
     return (is_closed, str(matter.get("updated_at") or matter.get("created_at") or ""))
+
+
+def _gmail_attachment_key_for_matter(matter: dict[str, Any]) -> tuple[str, str] | None:
+    message_id = str(matter.get("gmail_message_id") or "")
+    if not message_id:
+        return None
+    filename_key = _gmail_attachment_filename_key(
+        str(matter.get("attachment_filename") or matter.get("source_filename") or "")
+    )
+    if filename_key:
+        return (message_id, filename_key)
+    part_id = str(matter.get("gmail_part_id") or "")
+    if part_id:
+        return (message_id, f"part:{part_id}")
+    attachment_id = str(matter.get("gmail_attachment_id") or "")
+    if attachment_id:
+        return (message_id, f"attachment:{attachment_id}")
+    return None
+
+
+def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
+    board_rank = {
+        "gmail_demo": 0,
+        "in_review": 1,
+        "redline_ready": 2,
+        "signed_closed": 3,
+    }.get(str(matter.get("board_column") or ""), 0)
+    return (board_rank, str(matter.get("updated_at") or matter.get("created_at") or ""))
+
+
+def _gmail_attachment_filename_key(filename: str) -> str:
+    return _clean_source_filename(filename).casefold() if filename else ""
 
 
 def _delete_stored_document(matter: dict[str, Any]) -> None:
