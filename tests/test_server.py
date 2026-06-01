@@ -2227,6 +2227,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(redlines_by_clause["signatures"]["action"], "insert_after_paragraph")
         self.assertIn("For [Party 1 legal name]", redlines_by_clause["signatures"]["insert_text"])
 
+    def test_text_review_returns_replace_redline_for_deficient_signature_block(self):
+        status, payload = self.request(
+            "POST",
+            "/api/review",
+            {
+                "text": (
+                    "This Agreement shall be governed by the laws of the DIFC.\n\n"
+                    "By: __________________\n"
+                    "Date: 2026-05-30"
+                )
+            },
+        )
+
+        self.assertEqual(status, 200)
+        signatures_redline = next(edit for edit in payload["redline_edits"] if edit["clause_id"] == "signatures")
+        self.assertEqual(signatures_redline["action"], "replace_paragraph")
+        self.assertEqual(signatures_redline["paragraph_id"], "p2")
+        self.assertIn("For [Party 1 legal name]", signatures_redline["replacement_text"])
+        self.assertIn("For [Party 2 legal name]", signatures_redline["replacement_text"])
+
     def test_text_review_returns_term_and_non_circumvention_redlines(self):
         status, payload = self.request(
             "POST",

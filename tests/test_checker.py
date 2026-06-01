@@ -1070,6 +1070,48 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("Title:", redline["insert_text"])
         self.assertIn("Date:", redline["insert_text"])
 
+    def test_deficient_signature_block_creates_replace_redline(self):
+        result = review_nda(
+            """
+            This Agreement shall be governed by the laws of the DIFC.
+
+            By: __________________
+            Date: 2026-05-30
+            """
+        )
+
+        signatures = next(clause for clause in result["clauses"] if clause["id"] == "signatures")
+        self.assertEqual(signatures["status"], "check")
+        redline = self.redline_for_clause(result, "signatures")
+        self.assertEqual(redline["action"], "replace_paragraph")
+        self.assertEqual(redline["paragraph_id"], "p2")
+        self.assertIn("By: __________________", redline["original_text"])
+        self.assertIn("Date: 2026-05-30", redline["original_text"])
+        self.assertIn("For [Party 1 legal name]", redline["replacement_text"])
+        self.assertIn("For [Party 2 legal name]", redline["replacement_text"])
+        self.assertIn("Title:", redline["replacement_text"])
+
+    def test_deficient_multi_paragraph_signature_blocks_replace_then_delete(self):
+        result = review_nda(
+            """
+            This Agreement shall be governed by the laws of the DIFC.
+
+            For Party One Ltd
+            By: __________________
+            Date: 2026-05-30
+
+            For Party Two Ltd
+            By: __________________
+            Date: 2026-05-30
+            """
+        )
+
+        redlines = self.redlines_for_clause(result, "signatures")
+        self.assertEqual([redline["action"] for redline in redlines], ["replace_paragraph", "delete_paragraph"])
+        self.assertIn("For [Party 1 legal name]", redlines[0]["replacement_text"])
+        self.assertEqual(redlines[0]["paragraph_id"], "p2")
+        self.assertEqual(redlines[1]["paragraph_id"], "p3")
+
     def test_signature_redline_template_comes_from_playbook(self):
         playbook = deepcopy(load_playbook())
         signatures = next(clause for clause in playbook["clauses"] if clause["id"] == "signatures")

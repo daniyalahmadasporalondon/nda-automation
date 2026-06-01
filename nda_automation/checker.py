@@ -17,6 +17,7 @@ from .checks import CLAUSE_CHECKS
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
+    ISSUE_TYPE_UNCLEAR,
     ClauseResult,
     PlaybookTemplateError,
     RedlineEdit,
@@ -537,19 +538,32 @@ def _signatures_redline(
     paragraphs_by_id: Dict[str, Paragraph],
     edit_number: int,
 ) -> RedlineEdit | None:
-    if not _is_missing_required_check(clause):
+    if _is_missing_required_check(clause):
+        anchor = _insertion_anchor_paragraph(clause, paragraphs_by_id)
+        if not anchor:
+            return None
+
+        return _redline_edit(
+            edit_number,
+            clause,
+            anchor,
+            REDLINE_INSERT_AFTER_PARAGRAPH,
+            insert_text=_signature_block_template(clause),
+        )
+
+    if clause.get("status") != "check" or clause.get("issue_type") != ISSUE_TYPE_UNCLEAR:
         return None
 
-    anchor = _insertion_anchor_paragraph(clause, paragraphs_by_id)
-    if not anchor:
+    paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
+    if not paragraphs:
         return None
 
     return _redline_edit(
         edit_number,
         clause,
-        anchor,
-        REDLINE_INSERT_AFTER_PARAGRAPH,
-        insert_text=_signature_block_template(clause),
+        paragraphs[0],
+        REDLINE_REPLACE_PARAGRAPH,
+        replacement_text=_signature_block_template(clause),
     )
 
 
@@ -559,7 +573,21 @@ def _signatures_redlines(
     start_number: int,
 ) -> List[RedlineEdit]:
     edit = _signatures_redline(clause, paragraphs_by_id, start_number)
-    return [edit] if edit else []
+    if not edit:
+        return []
+    edits = [edit]
+    if edit["action"] != REDLINE_REPLACE_PARAGRAPH:
+        return edits
+    for paragraph in _matched_redline_paragraphs(clause, paragraphs_by_id)[1:]:
+        edits.append(
+            _redline_edit(
+                start_number + len(edits),
+                clause,
+                paragraph,
+                REDLINE_DELETE_PARAGRAPH,
+            )
+        )
+    return edits
 
 
 def _no_redlines(
