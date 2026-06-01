@@ -400,6 +400,15 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(checks["data_dir"]["ok"])
         self.assertFalse(checks["rate_limit"]["ok"])
 
+    def test_local_deployment_status_message_matches_ok_data_dir_check(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda-automation-data")):
+                deployment = server_module._deployment_status_for_host("127.0.0.1")
+
+        checks = {check["id"]: check for check in deployment["checks"]}
+        self.assertTrue(checks["data_dir"]["ok"])
+        self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local matter data storage.")
+
     def test_public_bind_requires_configured_durable_data_dir(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
             with self.assertRaisesRegex(RuntimeError, server_module.DURABLE_DATA_DIR_REQUIRED_MESSAGE):
@@ -930,6 +939,32 @@ class ServerTests(unittest.TestCase):
                 uploaded_files = list(matter_store.UPLOADS_DIR.glob("*"))
 
         self.assertEqual(uploaded_files, [])
+
+    def test_matter_create_prunes_uploads_after_successful_save(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    first = matter_store.create_matter(
+                        source_filename="first.docx",
+                        document_bytes=b"first",
+                        extracted_text="first",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    with patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("boom")):
+                        with self.assertRaises(matter_store.MatterStoreError):
+                            matter_store.create_matter(
+                                source_filename="second.docx",
+                                document_bytes=b"second",
+                                extracted_text="second",
+                                review_result={"clauses": []},
+                                triage={},
+                            )
+                    uploaded_files = list(matter_store.UPLOADS_DIR.glob("*"))
+                    self.assertTrue(first_path.exists())
+                    self.assertEqual(uploaded_files, [first_path])
 
     def test_matter_create_caps_source_filename_length(self):
         long_filename = f"{'a' * 400}.docx"
@@ -2023,6 +2058,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Outbound Gmail account mismatch.")
         validate_ready.assert_called_once_with(matter)
         build_matter_redline.assert_not_called()
+
+    def test_gmail_send_error_status_does_not_treat_generic_mismatch_as_conflict(self):
+        self.assertEqual(
+            server_module.gmail_routes.gmail_send_error_status(
+                server_module.gmail_integration.GmailIntegrationError("Attachment checksum mismatch."),
+            ),
+            503,
+        )
+        self.assertEqual(
+            server_module.gmail_routes.gmail_send_error_status(
+                server_module.gmail_integration.GmailIntegrationError("Outbound Gmail account mismatch."),
+            ),
+            409,
+        )
 
     def test_gmail_send_redline_rejects_missing_reply_recipient_as_bad_request(self):
         matter = {
@@ -3161,6 +3210,21 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload, b"")
         self.assertTrue(headers.get("ETag"))
         self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+
+    def test_head_matter_routes_do_not_send_error_body(self):
+        with patch.object(matter_store, "get_matter", side_effect=matter_store.MatterStoreError("store failed")):
+            for path in ("/api/matters/matter_1", "/api/matters/matter_1/review"):
+                with self.subTest(path=path):
+                    connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
+                    try:
+                        connection.request("HEAD", path)
+                        response = connection.getresponse()
+                        raw_body = response.read()
+                    finally:
+                        connection.close()
+
+                    self.assertEqual(response.status, 500)
+                    self.assertEqual(raw_body, b"")
 
 
 def make_docx(paragraphs):

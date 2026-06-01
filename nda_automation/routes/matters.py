@@ -34,7 +34,7 @@ def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
     try:
         matter = matter_store.get_matter(matter_id)
     except matter_store.MatterStoreError as error:
-        handler._send_json({"error": str(error)}, status=500)
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
@@ -50,7 +50,7 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
     try:
         matter = matter_store.get_matter(matter_id)
     except matter_store.MatterStoreError as error:
-        handler._send_json({"error": str(error)}, status=500)
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)

@@ -292,12 +292,14 @@ def create_matter(
             **triage,
         }
         matters.append(matter)
-        matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
+        matters, pruned_matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
         try:
             _save_matters(matters)
         except Exception:
             stored_path.unlink(missing_ok=True)
             raise
+        for pruned_matter in pruned_matters:
+            _delete_stored_document(pruned_matter)
     return matter
 
 
@@ -338,10 +340,14 @@ def _save_matters(matters: list[dict[str, Any]]) -> None:
     temporary_path.replace(MATTERS_PATH)
 
 
-def _prune_stored_matters(matters: list[dict[str, Any]], *, protected_matter_id: str) -> list[dict[str, Any]]:
+def _prune_stored_matters(
+    matters: list[dict[str, Any]],
+    *,
+    protected_matter_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     retention_limit = _stored_matter_limit()
     if retention_limit <= 0 or len(matters) <= retention_limit:
-        return matters
+        return matters, []
 
     removable = [
         matter
@@ -352,9 +358,7 @@ def _prune_stored_matters(matters: list[dict[str, Any]], *, protected_matter_id:
     remove_count = len(matters) - retention_limit
     remove_ids = {str(matter.get("id")) for matter in removable[:remove_count]}
     kept = [matter for matter in matters if str(matter.get("id")) not in remove_ids]
-    for matter in removable[:remove_count]:
-        _delete_stored_document(matter)
-    return kept
+    return kept, removable[:remove_count]
 
 
 def _stored_matter_limit() -> int:

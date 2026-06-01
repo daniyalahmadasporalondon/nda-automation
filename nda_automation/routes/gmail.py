@@ -156,7 +156,7 @@ def gmail_send_error_status(error: Exception) -> int:
     conflict_markers = (
         "disabled in admin",
         "does not match inbound gmail account",
-        "mismatch",
+        "outbound gmail account mismatch",
         "self-sent gmail message",
         "gmail outbound profile",
         "set nda_gmail_outbound_token_path",

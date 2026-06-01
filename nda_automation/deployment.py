@@ -39,6 +39,7 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
     exports_dir = export_service.EXPORTS_DIR
     exports_dir_ephemeral = exports_dir is not None and _is_ephemeral_storage_path(exports_dir)
     rate_limit_per_minute = _rate_limit_per_window()
+    data_dir_check = _deployment_data_dir_check(host, data_dir_configured, data_dir_ephemeral)
     checks = [
         {
             "id": "auth",
@@ -47,8 +48,8 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         },
         {
             "id": "data_dir",
-            "ok": _is_loopback_host(host) or _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA") or (data_dir_configured and not data_dir_ephemeral),
-            "message": "Matter data uses configured durable storage." if data_dir_configured and not data_dir_ephemeral else "Matter data is not on configured durable storage.",
+            "ok": data_dir_check["ok"],
+            "message": data_dir_check["message"],
         },
         {
             "id": "exports_dir",
@@ -75,6 +76,16 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "status": "ok" if all(bool(check["ok"]) for check in checks) else "needs_attention",
         "checks": checks,
     }
+
+
+def _deployment_data_dir_check(host: str, data_dir_configured: bool, data_dir_ephemeral: bool) -> dict[str, object]:
+    if data_dir_configured and not data_dir_ephemeral:
+        return {"ok": True, "message": "Matter data uses configured durable storage."}
+    if _is_loopback_host(host):
+        return {"ok": True, "message": "Local deployment may use local matter data storage."}
+    if _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA"):
+        return {"ok": True, "message": "Ephemeral matter data is explicitly allowed."}
+    return {"ok": False, "message": "Matter data is not on configured durable storage."}
 
 
 def _is_ephemeral_storage_path(path: Path) -> bool:
