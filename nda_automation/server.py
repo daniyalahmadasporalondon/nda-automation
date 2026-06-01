@@ -191,6 +191,21 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if handler is not None:
             handler()
             return
+        if path.startswith("/api/matters/") and path.endswith("/review"):
+            matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/review")).strip("/")
+            if not matter_id or "/" in matter_id:
+                self._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+                return
+            try:
+                matter = matter_store.get_matter(matter_id)
+            except matter_store.MatterStoreError as error:
+                self._send_json({"error": str(error)}, status=500)
+                return
+            if matter is None:
+                self._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+                return
+            self._send_json(matter_view.review_matter(matter), send_body=send_body)
+            return
         if path.startswith("/api/matters/"):
             matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
             try:
@@ -840,6 +855,13 @@ def _auth_required_for_host(host: str) -> bool:
     return not _is_loopback_host(host)
 
 
+def _validate_public_auth(host: str) -> None:
+    if not _auth_required_for_host(host):
+        return
+    if not os.environ.get("NDA_AUTH_USERNAME", "").strip() or not os.environ.get("NDA_AUTH_PASSWORD", ""):
+        raise RuntimeError(AUTH_NOT_CONFIGURED_MESSAGE)
+
+
 def _validate_public_storage(host: str) -> None:
     if _is_loopback_host(host) or _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA"):
         return
@@ -904,6 +926,7 @@ def main() -> None:
     parser.add_argument("--port", default=8787, type=int)
     args = parser.parse_args()
     try:
+        _validate_public_auth(args.host)
         _validate_public_storage(args.host)
     except RuntimeError as error:
         parser.error(str(error))

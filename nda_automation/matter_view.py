@@ -11,8 +11,8 @@ class PublicMatter(TypedDict, total=False):
     can_send_redline: bool
     created_at: str
     document_title: str
-    extracted_text: str
     gmail_account: str
+    has_redline_draft: bool
     id: str
     issue_count: int
     last_outbound_account: str
@@ -25,11 +25,9 @@ class PublicMatter(TypedDict, total=False):
     message_snippet: str
     next_action: str
     recipient_email: str
-    redline_draft: dict[str, Any]
     received_at: str
     requirements_failed: int
     requirements_passed: int
-    review_result: dict[str, Any]
     reply_to: str
     sender: str
     send_block_reason: str
@@ -46,7 +44,6 @@ PUBLIC_MATTER_FIELDS = {
     "board_column",
     "created_at",
     "document_title",
-    "extracted_text",
     "gmail_account",
     "id",
     "issue_count",
@@ -59,11 +56,9 @@ PUBLIC_MATTER_FIELDS = {
     "last_outbound_to",
     "message_snippet",
     "next_action",
-    "redline_draft",
     "received_at",
     "requirements_failed",
     "requirements_passed",
-    "review_result",
     "reply_to",
     "sender",
     "send_block_reason",
@@ -75,12 +70,6 @@ PUBLIC_MATTER_FIELDS = {
     "updated_at",
 }
 
-SUMMARY_MATTER_OMIT_FIELDS = {
-    "extracted_text",
-    "redline_draft",
-    "review_result",
-}
-
 
 def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatter:
     recipient = matter_reply_recipient(matter)
@@ -90,19 +79,33 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
             "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
-    allowed_fields = PUBLIC_MATTER_FIELDS if detail else PUBLIC_MATTER_FIELDS - SUMMARY_MATTER_OMIT_FIELDS
     public = {
         key: value
         for key, value in matter.items()
-        if key in allowed_fields
+        if key in PUBLIC_MATTER_FIELDS
     }
     public.update({
         "recipient_email": recipient,
         "can_send_redline": bool(recipient and not send_block_reason),
+        "has_redline_draft": isinstance(matter.get("redline_draft"), dict),
     })
     if send_block_reason:
         public["send_block_reason"] = send_block_reason
     return public
+
+
+def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
+    review_payload = {
+        "matter": public_matter(matter),
+        "extracted_text": str(matter.get("extracted_text") or ""),
+    }
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        review_payload["review_result"] = review_result
+    redline_draft = matter.get("redline_draft")
+    if isinstance(redline_draft, dict):
+        review_payload["redline_draft"] = redline_draft
+    return review_payload
 
 
 def public_matters(matters: list[dict[str, Any]]) -> list[PublicMatter]:

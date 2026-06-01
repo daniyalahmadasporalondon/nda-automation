@@ -520,7 +520,6 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Manual upload");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "Non-Circumvention");
   assert.equal(await page.getByRole("button", { name: "No Reply" }).isEnabled(), false);
 
   const [matterExportRequest, matterDownload] = await Promise.all([

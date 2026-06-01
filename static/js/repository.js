@@ -221,7 +221,7 @@ const RepositoryView = (() => {
                   </div>
                   <div class="repository-check-card">
                     <span>Redline draft</span>
-                    <strong>${escapeHtml(matter.redline_draft ? "Draft redline saved" : "No custom draft")}</strong>
+                    <strong>${escapeHtml(matter.has_redline_draft ? "Draft redline saved" : "No custom draft")}</strong>
                   </div>
                 </div>
               </section>
@@ -296,7 +296,29 @@ const RepositoryView = (() => {
       selectedMatter = updatedMatter || matter;
       renderBoard();
       renderDetailPanel(selectedMatter);
-      loadMatterIntoReview(selectedMatter);
+      const reviewMatter = await loadMatterReview(selectedMatter.id);
+      if (!reviewMatter) {
+        setPanelMessage("Matter review details could not load.");
+        return;
+      }
+      loadMatterIntoReview(reviewMatter);
+    }
+
+    async function loadMatterReview(matterId) {
+      try {
+        const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review`);
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Matter review details could not load");
+        return {
+          ...(payload.matter || {}),
+          extracted_text: payload.extracted_text || "",
+          redline_draft: payload.redline_draft || null,
+          review_result: payload.review_result || {},
+        };
+      } catch (error) {
+        console.warn(error.message || "Matter review details could not load");
+        return null;
+      }
     }
 
     async function exportMatter(matter) {
@@ -595,7 +617,7 @@ const RepositoryView = (() => {
         title: "Playbook checks completed",
       });
     }
-    if (matter.redline_draft) {
+    if (matter.has_redline_draft) {
       events.push({
         detail: "Custom redline decisions are saved for this matter.",
         meta: formatMatterDateTime(matter.updated_at) || "-",

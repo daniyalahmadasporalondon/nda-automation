@@ -229,16 +229,31 @@ class ServerTests(unittest.TestCase):
             self.assertTrue(server_module._auth_required_for_host("0.0.0.0"))
             self.assertTrue(server_module._auth_required_for_host("::"))
 
+    def test_public_bind_refuses_startup_without_auth_credentials(self):
+        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+            with self.assertRaisesRegex(RuntimeError, "Authentication is required"):
+                server_module._validate_public_auth("0.0.0.0")
+
+    def test_public_bind_accepts_startup_with_auth_credentials(self):
+        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "nda-admin", "NDA_AUTH_PASSWORD": "secret"}):
+            server_module._validate_public_auth("0.0.0.0")
+
     def test_required_auth_fails_closed_without_credentials(self):
         with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "true", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
             health_status, health_payload = self.request("GET", "/healthz")
             matter_status, matter_payload = self.request("GET", "/api/matters")
+            matter_detail_status, matter_detail_payload = self.request("GET", "/api/matters/matter_1")
+            matter_review_status, matter_review_payload = self.request("GET", "/api/matters/matter_1/review")
             delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
 
         self.assertEqual(health_status, 200)
         self.assertEqual(health_payload, {"status": "ok"})
         self.assertEqual(matter_status, 503)
         self.assertEqual(matter_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
+        self.assertEqual(matter_detail_status, 503)
+        self.assertEqual(matter_detail_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
+        self.assertEqual(matter_review_status, 503)
+        self.assertEqual(matter_review_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
         self.assertEqual(delete_status, 503)
         self.assertEqual(delete_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
 
@@ -256,6 +271,8 @@ class ServerTests(unittest.TestCase):
                 headers=self.basic_auth_headers(password="wrong"),
             )
             delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
+            detail_status, detail_payload = self.request("GET", "/api/matters/matter_missing")
+            review_status, review_payload = self.request("GET", "/api/matters/matter_missing/review")
             authed_status, authed_payload = self.request(
                 "GET",
                 "/api/matters",
@@ -269,6 +286,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(bad_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
         self.assertEqual(delete_status, 401)
         self.assertEqual(delete_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(detail_status, 401)
+        self.assertEqual(detail_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(review_status, 401)
+        self.assertEqual(review_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
         self.assertEqual(authed_status, 200)
         self.assertIn("matters", authed_payload)
 
@@ -471,6 +492,7 @@ class ServerTests(unittest.TestCase):
                 list_status, list_payload = self.request("GET", "/api/matters")
                 matter = payload["matter"]
                 fetch_status, fetch_payload = self.request("GET", f"/api/matters/{matter['id']}")
+                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
                 stored_matter = matter_store.get_matter(matter["id"])
                 stored_path = matter_store.UPLOADS_DIR / stored_matter["stored_filename"]
                 stored_bytes = stored_path.read_bytes()
@@ -490,10 +512,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["triage_status"], "legal_review")
         self.assertEqual(matter["next_action"], "Needs legal review")
         self.assertGreaterEqual(matter["issue_count"], 1)
-        self.assertIn("review_result", matter)
-        self.assertIn("extracted_text", matter)
+        self.assertNotIn("review_result", matter)
+        self.assertNotIn("extracted_text", matter)
+        self.assertNotIn("redline_draft", matter)
         self.assertNotIn("stored_filename", matter)
         self.assertNotIn("gmail_message_id", matter)
+        self.assertIn("review_result", stored_matter)
+        self.assertIn("extracted_text", stored_matter)
         self.assertEqual(stored_bytes, source_docx)
         self.assertEqual(list_status, 200)
         self.assertEqual([item["id"] for item in list_payload["matters"]], [matter["id"]])
@@ -504,8 +529,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(fetch_payload["matter"]["id"], matter["id"])
         self.assertEqual(fetch_payload["matter"]["sender"], "Manual upload")
         self.assertEqual(fetch_payload["matter"]["can_send_redline"], False)
-        self.assertIn("extracted_text", fetch_payload["matter"])
-        self.assertIn("review_result", fetch_payload["matter"])
+        self.assertNotIn("extracted_text", fetch_payload["matter"])
+        self.assertNotIn("review_result", fetch_payload["matter"])
+        self.assertNotIn("redline_draft", fetch_payload["matter"])
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["matter"]["id"], matter["id"])
+        self.assertNotIn("extracted_text", review_payload["matter"])
+        self.assertNotIn("review_result", review_payload["matter"])
+        self.assertNotIn("redline_draft", review_payload["matter"])
+        self.assertIn("extracted_text", review_payload)
+        self.assertIn("review_result", review_payload)
 
     def test_matter_upload_supports_manual_upload_source(self):
         source_docx = make_docx([
@@ -606,6 +639,7 @@ class ServerTests(unittest.TestCase):
             "gmail_attachment_id": "att_123",
             "review_result": {"clauses": []},
             "extracted_text": "Text",
+            "redline_draft": {"manual_redline_edits": []},
         })
 
         self.assertEqual(public["id"], "matter_1")
@@ -614,6 +648,10 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("stored_filename", public)
         self.assertNotIn("gmail_message_id", public)
         self.assertNotIn("gmail_attachment_id", public)
+        self.assertNotIn("review_result", public)
+        self.assertNotIn("extracted_text", public)
+        self.assertNotIn("redline_draft", public)
+        self.assertEqual(public["has_redline_draft"], True)
 
     def test_public_matters_list_omits_heavy_detail_fields(self):
         public = matter_view.public_matters([{
@@ -1370,6 +1408,7 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter = create_payload["matter"]
+                stored_matter = matter_store.get_matter(matter["id"])
                 export_status, export_payload, export_headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
@@ -1378,7 +1417,8 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(matter["source_filename"], "Acme NDA.pdf")
-        self.assertEqual(matter["review_result"]["source"]["type"], "pdf")
+        self.assertNotIn("review_result", matter)
+        self.assertEqual(stored_matter["review_result"]["source"]["type"], "pdf")
         self.assertEqual(export_status, 200)
         self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Acme-NDA-redlined.docx"')
         with ZipFile(BytesIO(export_payload)) as archive:
@@ -1453,6 +1493,7 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 stored_after_save = matter_store.get_matter(matter_id)
+                review_status, review_payload = self.request("GET", f"/api/matters/{matter_id}/review")
                 reset_status, reset_payload = self.request(
                     "POST",
                     f"/api/matters/{matter_id}/redline-draft",
@@ -1462,7 +1503,10 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(save_status, 200)
-        saved_draft = save_payload["matter"]["redline_draft"]
+        self.assertNotIn("redline_draft", save_payload["matter"])
+        self.assertEqual(save_payload["matter"]["has_redline_draft"], True)
+        self.assertEqual(review_status, 200)
+        saved_draft = review_payload["redline_draft"]
         self.assertEqual(saved_draft["clause_decisions"], {"governing_law": False})
         self.assertEqual(saved_draft["template_selections"], {"redline-governing_law-1": "england_and_wales"})
         self.assertEqual(saved_draft["summary"]["included_redline_count"], 0)
@@ -1471,6 +1515,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_after_save["redline_draft"]["manual_redline_edits"][0]["paragraph_id"], "p1")
         self.assertEqual(reset_status, 200)
         self.assertNotIn("redline_draft", reset_payload["matter"])
+        self.assertEqual(reset_payload["matter"]["has_redline_draft"], False)
         self.assertNotIn("redline_draft", stored_after_reset)
 
     def test_matter_export_and_send_use_saved_redline_draft_without_payload_decisions(self):
@@ -1497,7 +1542,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter = create_payload["matter"]
-                self.assertGreater(len(matter["review_result"].get("redline_edits") or []), 0)
+                stored_matter = matter_store.get_matter(matter["id"])
+                self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
                 draft_status, _draft_payload = self.request(
                     "POST",
                     f"/api/matters/{matter['id']}/redline-draft",
@@ -1921,7 +1967,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter = create_payload["matter"]
-                self.assertGreater(len(matter["review_result"].get("redline_edits") or []), 0)
+                stored_matter = matter_store.get_matter(matter["id"])
+                self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
                 with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):

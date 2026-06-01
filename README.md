@@ -51,8 +51,10 @@ python -m nda_automation.server --host 0.0.0.0 --port $PORT
 Public deployments require HTTP Basic authentication. Non-loopback binds such as `0.0.0.0`
 require auth automatically, and the Render blueprint also sets `NDA_REQUIRE_AUTH=true`.
 Set `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD` before using a hosted service; if auth is
-required but credentials are missing, protected routes fail closed with 503. The only
-unauthenticated route is `/healthz` for platform health checks.
+required but credentials are missing, the server refuses to start. The only unauthenticated
+route is `/healthz` for platform health checks. Repository matter API responses expose only
+metadata; extracted text, review results, and redline drafts are available only through the
+auth-gated matter review workflow.
 
 The Render blueprint uses a paid web service with a persistent disk mounted at `/var/data`.
 `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for a public deployment,

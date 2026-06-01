@@ -277,16 +277,17 @@ async function saveReviewRedlineDraft({ quiet = false } = {}) {
     studioSaveDraftButton.textContent = "Saving";
   }
   try {
+    const draftPayload = currentRedlineDraftPayload();
     const response = await fetch(`/api/matters/${encodeURIComponent(state.selectedMatter.id)}/redline-draft`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redline_draft: currentRedlineDraftPayload() }),
+      body: JSON.stringify({ redline_draft: draftPayload }),
     });
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Draft could not save");
     if (payload.matter?.id) {
       state.selectedMatter = payload.matter;
-      state.redlineDraft = payload.matter.redline_draft || null;
+      state.redlineDraft = draftPayload;
       state.redlineDraftDirty = false;
       await repositoryController.openMatter(payload.matter.id);
     }
