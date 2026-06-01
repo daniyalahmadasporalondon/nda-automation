@@ -128,11 +128,19 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         expected_text = "\n\n".join(expected_texts)
         if clause.get("matched_text", "") != expected_text:
             errors.append(f"{clause_id}: matched_text does not equal matched source paragraphs")
-        if evidence != expected_texts:
-            errors.append(f"{clause_id}: evidence text does not equal matched source paragraphs")
-        if [str(item.get("id")) for item in evidence_paragraphs if isinstance(item, dict)] != [str(paragraph.get("id")) for paragraph in expected_paragraphs]:
-            errors.append(f"{clause_id}: evidence_paragraphs ids do not equal matched_paragraph_ids")
-        for evidence_paragraph, source_paragraph in zip(evidence_paragraphs, expected_paragraphs):
+        expected_evidence_paragraphs = expected_paragraphs[:len(evidence_paragraphs)]
+        expected_evidence_texts = [str(paragraph.get("text", "")) for paragraph in expected_paragraphs[:len(evidence)]]
+        if len(evidence) > len(expected_paragraphs):
+            errors.append(f"{clause_id}: evidence has more entries than matched source paragraphs")
+        if len(evidence_paragraphs) > len(expected_paragraphs):
+            errors.append(f"{clause_id}: evidence_paragraphs has more entries than matched source paragraphs")
+        if len(evidence) != len(evidence_paragraphs):
+            errors.append(f"{clause_id}: evidence and evidence_paragraphs have different lengths")
+        if evidence != expected_evidence_texts:
+            errors.append(f"{clause_id}: evidence text does not equal evidence source paragraphs")
+        if [str(item.get("id")) for item in evidence_paragraphs if isinstance(item, dict)] != [str(paragraph.get("id")) for paragraph in expected_evidence_paragraphs]:
+            errors.append(f"{clause_id}: evidence_paragraphs ids do not match evidence source paragraphs")
+        for evidence_paragraph, source_paragraph in zip(evidence_paragraphs, expected_evidence_paragraphs):
             if not isinstance(evidence_paragraph, dict):
                 errors.append(f"{clause_id}: evidence_paragraph is not an object")
                 continue

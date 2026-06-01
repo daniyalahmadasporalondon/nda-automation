@@ -1266,14 +1266,23 @@ class CheckerTests(unittest.TestCase):
             The Recipient must not circumvent the Company.
 
             The Recipient must not engage in exclusive dealing with introduced parties.
+
+            The Recipient must not use introduced parties for any substitute purpose.
+
+            This Agreement contains a non-circumvention covenant.
             """
         )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1", "p2", "p3", "p4"])
+        self.assertEqual([paragraph["id"] for paragraph in non_circumvention["evidence_paragraphs"]], ["p1", "p2", "p3"])
+        self.assertEqual(non_circumvention["evidence"], [paragraph["text"] for paragraph in result["paragraphs"][:3]])
 
         non_circumvention_redlines = [
             edit for edit in result["redline_edits"] if edit["clause_id"] == "non_circumvention"
         ]
-        self.assertEqual([edit["action"] for edit in non_circumvention_redlines], ["delete_paragraph", "delete_paragraph"])
-        self.assertEqual([edit["paragraph_id"] for edit in non_circumvention_redlines], ["p1", "p2"])
+        self.assertEqual([edit["action"] for edit in non_circumvention_redlines], ["delete_paragraph"] * 4)
+        self.assertEqual([edit["paragraph_id"] for edit in non_circumvention_redlines], ["p1", "p2", "p3", "p4"])
 
     def test_approved_laws_are_read_from_playbook(self):
         playbook = deepcopy(load_playbook())

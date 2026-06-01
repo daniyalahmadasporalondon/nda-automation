@@ -210,9 +210,10 @@ def _result(
     issue_type: str,
     what_to_fix: str,
 ) -> ClauseResult:
-    paragraph_matches = _select_evidence_paragraphs(matched_paragraphs)
+    paragraph_matches = _dedupe_matched_paragraphs(matched_paragraphs)
+    evidence_matches = paragraph_matches[:MAX_EVIDENCE_PARAGRAPHS]
     matched_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraph_matches)
-    evidence_paragraphs = [_evidence_paragraph(paragraph) for paragraph in paragraph_matches]
+    evidence_paragraphs = [_evidence_paragraph(paragraph) for paragraph in evidence_matches]
     passes = _status_passes_clause_type(status, clause)
     result = {
         "id": clause["id"],
@@ -227,7 +228,7 @@ def _result(
         "finding": reason,
         "matched_paragraph_ids": [paragraph["id"] for paragraph in paragraph_matches],
         "matched_text": matched_text,
-        "evidence": [paragraph["text"] for paragraph in paragraph_matches],
+        "evidence": [paragraph["text"] for paragraph in evidence_matches],
         "evidence_paragraphs": evidence_paragraphs,
     }
     for field in [
@@ -270,7 +271,7 @@ def _evidence_paragraph(paragraph: Paragraph) -> Paragraph:
         evidence["source_part"] = paragraph["source_part"]
     return evidence
 
-def _select_evidence_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List[Paragraph]:
+def _dedupe_matched_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List[Paragraph]:
     selected: List[Paragraph] = []
     seen = set()
 
@@ -281,8 +282,6 @@ def _select_evidence_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List
 
         selected.append(paragraph)
         seen.add(dedup_key)
-        if len(selected) == MAX_EVIDENCE_PARAGRAPHS:
-            break
 
     return selected
 
