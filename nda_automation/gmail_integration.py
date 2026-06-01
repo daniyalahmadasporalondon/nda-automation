@@ -142,90 +142,98 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
 
         metadata = _message_metadata(message, account_email)
         for attachment in attachments:
-            attachment_id = str(attachment.get("attachment_id") or "")
-            attachment_filename = str(attachment.get("filename") or "")
-            part_id = str(attachment.get("part_id") or "")
-            if matter_store.find_gmail_attachment(
-                message_id,
-                attachment_id,
-                part_id=part_id,
-            ) is not None:
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "duplicate_attachment",
-                })
-                continue
-
-            try:
-                document_bytes = _attachment_bytes(service, message_id, attachment)
-            except GmailIntegrationError:
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "attachment_unavailable",
-                })
-                continue
-            try:
-                ensure_document_size(document_bytes)
-            except DocumentSizeError:
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "attachment_too_large",
-                })
-                continue
-            attachment_sha256 = hashlib.sha256(document_bytes).hexdigest()
-            if matter_store.find_gmail_attachment(
-                message_id,
-                attachment_id,
-                attachment_filename=attachment_filename,
-                attachment_sha256=attachment_sha256,
-                part_id=part_id,
-            ) is not None:
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "duplicate_attachment",
-                })
-                continue
-
-            try:
-                matter = create_matter_from_document(
-                    filename=attachment_filename or "nda.docx",
-                    document_bytes=document_bytes,
-                    source_type="gmail_inbound",
-                    board_column="gmail_demo",
-                    intake_metadata={
-                        **metadata,
-                        "attachment_filename": attachment_filename or "nda.docx",
-                        "gmail_attachment_id": attachment_id,
-                        "gmail_attachment_sha256": attachment_sha256,
-                        "gmail_part_id": part_id,
-                    },
-                    dedupe_gmail=True,
-                )
-            except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "review_failed",
-                })
-                continue
-            if matter.get("_existing_gmail_duplicate"):
-                skipped.append({
-                    "attachment_filename": attachment_filename,
-                    "message_id": message_id,
-                    "reason": "duplicate_attachment",
-                })
-                continue
-            imported.append(matter)
+            matter, skip = _import_inbound_attachment(service, message_id, attachment, metadata)
+            if skip is not None:
+                skipped.append(skip)
+            elif matter is not None:
+                imported.append(matter)
 
     return {
         "account": account_email,
         "imported": imported,
         "query": inbound_query,
         "skipped": skipped,
+    }
+
+
+def _import_inbound_attachment(
+    service: Any,
+    message_id: str,
+    attachment: dict[str, Any],
+    metadata: dict[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    attachment_id = str(attachment.get("attachment_id") or "")
+    attachment_filename = str(attachment.get("filename") or "")
+    part_id = str(attachment.get("part_id") or "")
+
+    if _gmail_attachment_already_imported(message_id, attachment_id, part_id=part_id):
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
+
+    try:
+        document_bytes = _attachment_bytes(service, message_id, attachment)
+    except GmailIntegrationError:
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
+
+    try:
+        ensure_document_size(document_bytes)
+    except DocumentSizeError:
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_too_large")
+
+    attachment_sha256 = hashlib.sha256(document_bytes).hexdigest()
+    if _gmail_attachment_already_imported(
+        message_id,
+        attachment_id,
+        attachment_filename=attachment_filename,
+        attachment_sha256=attachment_sha256,
+        part_id=part_id,
+    ):
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
+
+    try:
+        matter = create_matter_from_document(
+            filename=attachment_filename or "nda.docx",
+            document_bytes=document_bytes,
+            source_type="gmail_inbound",
+            board_column="gmail_demo",
+            intake_metadata={
+                **metadata,
+                "attachment_filename": attachment_filename or "nda.docx",
+                "gmail_attachment_id": attachment_id,
+                "gmail_attachment_sha256": attachment_sha256,
+                "gmail_part_id": part_id,
+            },
+            dedupe_gmail=True,
+        )
+    except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "review_failed")
+
+    if matter.get("_existing_gmail_duplicate"):
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
+    return matter, None
+
+
+def _gmail_attachment_already_imported(
+    message_id: str,
+    attachment_id: str,
+    *,
+    attachment_filename: str = "",
+    attachment_sha256: str = "",
+    part_id: str = "",
+) -> bool:
+    return matter_store.find_gmail_attachment(
+        message_id,
+        attachment_id,
+        attachment_filename=attachment_filename,
+        attachment_sha256=attachment_sha256,
+        part_id=part_id,
+    ) is not None
+
+
+def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str) -> dict[str, str]:
+    return {
+        "attachment_filename": attachment_filename,
+        "message_id": message_id,
+        "reason": reason,
     }
 
 
