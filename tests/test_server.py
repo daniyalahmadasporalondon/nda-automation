@@ -1,5 +1,6 @@
 import base64
 import http.client
+import importlib.util
 import json
 import os
 import socket
@@ -42,6 +43,8 @@ SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
     "The Redlined NDA section contains native Word tracked changes.",
     "source paragraph",
 ]
+PYPDF_AVAILABLE = importlib.util.find_spec("pypdf") is not None
+requires_pypdf = unittest.skipUnless(PYPDF_AVAILABLE, "pypdf is not installed")
 
 
 class QuietNdaAutomationHandler(NdaAutomationHandler):
@@ -427,6 +430,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assert_review_payload_contract(payload, expected_source_type="docx")
 
+    @requires_pypdf
     def test_review_payload_contract_covers_uploaded_pdf_flow(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
 
@@ -1351,6 +1355,7 @@ class ServerTests(unittest.TestCase):
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
 
+    @requires_pypdf
     def test_pdf_matter_export_uses_review_report_docx(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
 

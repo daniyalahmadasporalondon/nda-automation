@@ -1,9 +1,8 @@
 import builtins
+import importlib.util
 import unittest
 from io import BytesIO
 from unittest.mock import patch
-
-from pypdf import PdfWriter
 
 from nda_automation import pdf_text
 from nda_automation.pdf_text import (
@@ -14,8 +13,16 @@ from nda_automation.pdf_text import (
     extract_pdf_text,
 )
 
+PYPDF_AVAILABLE = importlib.util.find_spec("pypdf") is not None
+if PYPDF_AVAILABLE:
+    from pypdf import PdfWriter
+else:
+    PdfWriter = None
+requires_pypdf = unittest.skipUnless(PYPDF_AVAILABLE, "pypdf is not installed")
+
 
 class PdfTextTests(unittest.TestCase):
+    @requires_pypdf
     def test_extracts_text_from_pdf(self):
         data = make_pdf("This Agreement shall be governed by the laws of California.")
 
@@ -32,6 +39,7 @@ class PdfTextTests(unittest.TestCase):
         self.assertEqual(extraction.quality["extracted_paragraphs"], 1)
         self.assertIn("California", extract_pdf_text(data))
 
+    @requires_pypdf
     def test_reconstructs_wrapped_clause_paragraphs(self):
         data = make_pdf_lines([
             "1. Definitions",
@@ -51,6 +59,7 @@ class PdfTextTests(unittest.TestCase):
             ],
         )
 
+    @requires_pypdf
     def test_removes_repeated_pdf_headers_and_page_numbers(self):
         data = make_pdf_pages([
             [
@@ -74,6 +83,7 @@ class PdfTextTests(unittest.TestCase):
         self.assertNotIn("\n\n1\n\n", f"\n\n{extracted_text}\n\n")
         self.assertEqual(extraction.quality["repeated_margin_lines_removed"], 1)
 
+    @requires_pypdf
     def test_quality_report_warns_when_some_pages_have_no_text(self):
         data = make_pdf_pages([
             ["This Agreement shall be governed by the laws of California."],
@@ -87,6 +97,7 @@ class PdfTextTests(unittest.TestCase):
         warning_types = {warning["type"] for warning in extraction.quality["warnings"]}
         self.assertIn("pdf_pages_without_text", warning_types)
 
+    @requires_pypdf
     def test_rejects_pdf_with_too_many_pages(self):
         data = make_pdf_pages([
             ["This Agreement shall be governed by the laws of California."],
@@ -97,6 +108,7 @@ class PdfTextTests(unittest.TestCase):
             with self.assertRaisesRegex(PdfExtractionError, "exceeds the 1 page review limit"):
                 extract_pdf_paragraphs(data)
 
+    @requires_pypdf
     def test_rejects_pdf_with_too_much_extracted_text(self):
         data = make_pdf("This Agreement shall be governed by the laws of California.")
 
@@ -104,6 +116,7 @@ class PdfTextTests(unittest.TestCase):
             with self.assertRaisesRegex(PdfExtractionError, "more than the 20 character extraction limit"):
                 extract_pdf_paragraphs(data)
 
+    @requires_pypdf
     def test_rejects_pdf_without_extractable_text(self):
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)
