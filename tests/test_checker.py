@@ -1199,6 +1199,17 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(non_circumvention["status"], "not_present")
         self.assertTrue(non_circumvention["passes"])
 
+    def test_non_circumvention_keeps_prohibited_language_near_lawful_circumvention(self):
+        result = review_nda(
+            "Nothing in this Agreement requires a party to circumvent applicable law, "
+            "and the Recipient must not circumvent the Company or deal directly with introduced parties."
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+
     def test_non_circumvention_does_not_ignore_company_restriction_near_law(self):
         result = review_nda("The Recipient must not circumvent the Company under applicable law.")
 
