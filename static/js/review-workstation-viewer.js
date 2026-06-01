@@ -237,6 +237,7 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
+  state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewRedlines = result.redline_edits || [];
   state.reviewSourceText = reviewedText;
   state.clauseJumpIndexes = {};

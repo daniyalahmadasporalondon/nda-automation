@@ -1434,6 +1434,30 @@ async function testManualViewerEditRedline(page) {
   await assertTextContains(page.locator("#studioOverallTitle"), "Does not meet requirements");
   await assertTextContains(page.locator("#studioResultMeta"), "1 hard clause needs checking.");
   await assertTextContains(page.locator('[data-paragraph-id="p5"]'), "California");
+
+  const refreshedBaseline = await page.evaluate(() => {
+    const paragraphs = [
+      { id: "p1", index: 1, start: 0, end: 21, text: "First refreshed block." },
+      { id: "p2", index: 2, start: 23, end: 45, text: "Second refreshed block." },
+    ];
+    applyViewerReviewDetectionResult({
+      ...state.latestReviewResult,
+      clauses: state.reviewClauses,
+      paragraphs,
+      redline_edits: [],
+    }, paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+    return {
+      manualRedlines: manualExportRedlines(),
+      originalTexts: state.reviewOriginalParagraphs.map((paragraph) => paragraph.text),
+      paragraphTexts: state.reviewParagraphs.map((paragraph) => paragraph.text),
+    };
+  });
+  assert.deepEqual(refreshedBaseline.originalTexts, refreshedBaseline.paragraphTexts);
+  assert.deepEqual(
+    refreshedBaseline.manualRedlines,
+    [],
+    "auto-refresh should re-snapshot paragraph originals after paragraph-count changes",
+  );
 }
 
 async function testPreviewMatchesExportedDocx(page) {

@@ -3,10 +3,7 @@ function renderResult(result, reviewedText) {
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
-  state.reviewOriginalParagraphs = state.reviewParagraphs.map((paragraph) => ({
-    id: paragraph.id,
-    text: String(paragraph.text || ""),
-  }));
+  state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewRedlines = result.redline_edits || [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
@@ -19,6 +16,13 @@ function renderResult(result, reviewedText) {
     state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
   updateExportButtonState();
+}
+
+function snapshotReviewParagraphs(paragraphs) {
+  return (paragraphs || []).map((paragraph) => ({
+    id: paragraph.id,
+    text: String(paragraph.text || ""),
+  }));
 }
 
 function renderStudioEmpty() {
