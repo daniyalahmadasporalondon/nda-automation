@@ -20,6 +20,18 @@ Then open:
 http://127.0.0.1:8787
 ```
 
+## Dependency policy
+
+The core NDA review server is intentionally stdlib-only. Optional integrations are installed
+only when the corresponding capability is enabled:
+
+- PDF intake uses `pypdf` and requires `python3 -m pip install ".[pdf]"`.
+- Gmail intake/send uses the Google API packages and requires `python3 -m pip install ".[gmail]"`.
+
+Without the `pdf` extra, PDF uploads fail with a "PDF support is not installed" error instead
+of treating the user's file as invalid. The Render blueprint installs `.[pdf,gmail]`
+deliberately because the hosted product enables both PDF intake and Gmail workflows.
+
 ## Deploy
 
 The app needs a Python web service because the static frontend calls the local API routes served by `nda_automation.server`.
@@ -54,6 +66,7 @@ Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN
 ## Test
 
 ```bash
+python3 -m pip install -e ".[pdf]"
 python3 -m unittest discover -s tests
 ```
 
@@ -66,10 +79,12 @@ npm run test:frontend
 
 ## Gmail roles
 
-Install the optional Gmail dependencies before using the connector:
+Install the optional Gmail dependencies before using the connector. If Gmail should import
+PDF attachments too, install both extras:
 
 ```bash
 python3 -m pip install ".[gmail]"
+python3 -m pip install ".[pdf,gmail]"
 ```
 
 The Gmail integration reads OAuth token files from environment variables:

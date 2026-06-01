@@ -3,7 +3,7 @@ services:
     name: nda-automation
     runtime: python
     plan: starter
-    buildCommand: python -m pip install --upgrade pip && python -m pip install ".[gmail]"
+    buildCommand: python -m pip install --upgrade pip && python -m pip install ".[pdf,gmail]"
     startCommand: python -m nda_automation.server --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:

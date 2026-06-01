@@ -31,7 +31,7 @@ jobs:
         run: python -m pip install ruff
 
       - name: Install Python dependencies
-        run: python -m pip install -e .
+        run: python -m pip install -e ".[pdf]"
 
       - name: Lint Python
         run: ruff check nda_automation tests
@@ -67,7 +67,7 @@ jobs:
           node-version: "20"
 
       - name: Install Python dependencies
-        run: python -m pip install -e .
+        run: python -m pip install -e ".[pdf]"
 
       - name: Install browser test dependencies
         run: npm install
