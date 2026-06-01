@@ -198,20 +198,40 @@ def delete_matter(matter_id: str) -> dict[str, Any] | None:
 def deduplicate_gmail_matters() -> int:
     with _locked_store():
         matters = _load_matters()
-        winners: dict[tuple[str, str], dict[str, Any]] = {}
+        duplicate_groups: list[list[dict[str, Any]]] = []
         for matter in matters:
-            key = _gmail_attachment_key_for_matter(matter)
-            if key is None:
+            if not _gmail_attachment_keys_for_metadata(matter):
                 continue
-            winner = winners.get(key)
-            if winner is None or _matter_duplicate_rank(matter) > _matter_duplicate_rank(winner):
-                winners[key] = matter
+            matching_groups = [
+                group
+                for group in duplicate_groups
+                if any(_gmail_attachments_match(matter, existing_matter) for existing_matter in group)
+            ]
+            if not matching_groups:
+                duplicate_groups.append([matter])
+                continue
+            primary_group = matching_groups[0]
+            primary_group.append(matter)
+            for extra_group in matching_groups[1:]:
+                primary_group.extend(extra_group)
+                duplicate_groups.remove(extra_group)
+
+        duplicate_member_ids = {
+            id(matter)
+            for group in duplicate_groups
+            if len(group) > 1
+            for matter in group
+        }
+        winner_ids = {
+            id(max(group, key=_matter_duplicate_rank))
+            for group in duplicate_groups
+            if len(group) > 1
+        }
 
         removed: list[dict[str, Any]] = []
         kept: list[dict[str, Any]] = []
         for matter in matters:
-            key = _gmail_attachment_key_for_matter(matter)
-            if key is not None and winners.get(key) is not matter:
+            if id(matter) in duplicate_member_ids and id(matter) not in winner_ids:
                 removed.append(matter)
                 continue
             kept.append(matter)
@@ -350,25 +370,26 @@ def _matter_retention_sort_key(matter: dict[str, Any]) -> tuple[int, str]:
     return (is_closed, str(matter.get("updated_at") or matter.get("created_at") or ""))
 
 
-def _gmail_attachment_key_for_matter(matter: dict[str, Any]) -> tuple[str, str] | None:
-    message_id = str(matter.get("gmail_message_id") or "")
+def _gmail_attachment_keys_for_metadata(metadata: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    message_id = str(metadata.get("gmail_message_id") or "")
     if not message_id:
-        return None
-    attachment_sha256 = str(matter.get("gmail_attachment_sha256") or "")
+        return ()
+    keys: list[tuple[str, str]] = []
+    attachment_sha256 = str(metadata.get("gmail_attachment_sha256") or "")
     if attachment_sha256:
-        return (message_id, f"sha256:{attachment_sha256}")
+        keys.append((message_id, f"sha256:{attachment_sha256}"))
+    part_id = str(metadata.get("gmail_part_id") or "")
+    if part_id:
+        keys.append((message_id, f"part:{part_id}"))
+    attachment_id = str(metadata.get("gmail_attachment_id") or "")
+    if attachment_id:
+        keys.append((message_id, f"attachment:{attachment_id}"))
     filename_key = _gmail_attachment_filename_key(
-        str(matter.get("attachment_filename") or matter.get("source_filename") or "")
+        str(metadata.get("attachment_filename") or metadata.get("source_filename") or "")
     )
     if filename_key:
-        return (message_id, filename_key)
-    part_id = str(matter.get("gmail_part_id") or "")
-    if part_id:
-        return (message_id, f"part:{part_id}")
-    attachment_id = str(matter.get("gmail_attachment_id") or "")
-    if attachment_id:
-        return (message_id, f"attachment:{attachment_id}")
-    return None
+        keys.append((message_id, f"filename:{filename_key}"))
+    return tuple(keys)
 
 
 def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
@@ -385,34 +406,23 @@ def _find_gmail_duplicate_unlocked(
     matters: list[dict[str, Any]],
     metadata: dict[str, Any],
 ) -> dict[str, Any] | None:
-    message_id = str(metadata.get("gmail_message_id") or "")
-    if not message_id:
+    if not _gmail_attachment_keys_for_metadata(metadata):
         return None
-    attachment_sha256 = str(metadata.get("gmail_attachment_sha256") or "")
-    attachment_id = str(metadata.get("gmail_attachment_id") or "")
-    part_id = str(metadata.get("gmail_part_id") or "")
-    filename_key = _gmail_attachment_filename_key(
-        str(metadata.get("attachment_filename") or metadata.get("source_filename") or "")
-    )
     for matter in matters:
-        if matter.get("gmail_message_id") != message_id:
-            continue
-        matter_sha256 = str(matter.get("gmail_attachment_sha256") or "")
-        if attachment_sha256 and matter_sha256 == attachment_sha256:
+        if _gmail_attachments_match(metadata, matter):
             return matter
-        if part_id and matter.get("gmail_part_id") == part_id:
-            return matter
-        if attachment_id and matter.get("gmail_attachment_id") == attachment_id:
-            return matter
-        matter_filename_key = _gmail_attachment_filename_key(
-            str(matter.get("attachment_filename") or matter.get("source_filename") or "")
-        )
-        if not filename_key or matter_filename_key != filename_key:
-            continue
-        if attachment_sha256 and matter_sha256 and attachment_sha256 != matter_sha256:
-            continue
-        return matter
     return None
+
+
+def _gmail_attachments_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    shared_keys = set(_gmail_attachment_keys_for_metadata(left)) & set(_gmail_attachment_keys_for_metadata(right))
+    if not shared_keys:
+        return False
+    if any(not key[1].startswith("filename:") for key in shared_keys):
+        return True
+    left_sha256 = str(left.get("gmail_attachment_sha256") or "")
+    right_sha256 = str(right.get("gmail_attachment_sha256") or "")
+    return not (left_sha256 and right_sha256 and left_sha256 != right_sha256)
 
 
 def _gmail_attachment_filename_key(filename: str) -> str:

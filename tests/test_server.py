@@ -985,6 +985,51 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(first_path_exists, kept_id == first["id"])
         self.assertEqual(second_path_exists, kept_id == second["id"])
 
+    def test_gmail_attachment_dedupe_cleanup_uses_live_lookup_keys(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                legacy = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"legacy",
+                    extracted_text="legacy",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_id": "unstable_att_1",
+                        "gmail_message_id": "msg_123",
+                    },
+                )
+                hashed = matter_store.create_matter(
+                    source_filename="Counterparty NDA.docx",
+                    document_bytes=b"hashed",
+                    extracted_text="hashed",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "attachment_filename": "Counterparty NDA.docx",
+                        "gmail_attachment_id": "unstable_att_2",
+                        "gmail_attachment_sha256": "hash_a",
+                        "gmail_message_id": "msg_123",
+                    },
+                )
+                duplicate = matter_store.find_gmail_attachment(
+                    "msg_123",
+                    "unstable_att_3",
+                    attachment_filename="Counterparty NDA.docx",
+                    attachment_sha256="hash_a",
+                )
+                removed = matter_store.deduplicate_gmail_matters()
+                matters = matter_store.list_matters()
+
+        self.assertIn(duplicate["id"], {legacy["id"], hashed["id"]})
+        self.assertEqual(removed, 1)
+        self.assertEqual(len(matters), 1)
+        self.assertIn(matters[0]["id"], {legacy["id"], hashed["id"]})
+
     def test_gmail_matter_create_is_idempotent_by_attachment_hash(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -1031,12 +1076,14 @@ class ServerTests(unittest.TestCase):
                     },
                     dedupe_gmail=True,
                 )
+                removed = matter_store.deduplicate_gmail_matters()
                 matters = matter_store.list_matters()
                 uploaded_files = list(matter_store.UPLOADS_DIR.glob("*"))
 
         self.assertEqual(duplicate["id"], first["id"])
         self.assertEqual(duplicate["_existing_gmail_duplicate"], True)
         self.assertNotEqual(different_attachment["id"], first["id"])
+        self.assertEqual(removed, 0)
         self.assertEqual({matter["id"] for matter in matters}, {first["id"], different_attachment["id"]})
         self.assertEqual(len(uploaded_files), 2)
 
