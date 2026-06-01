@@ -4,6 +4,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -45,6 +46,9 @@ MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
 _PLAYBOOK_LOCK = threading.RLock()
 _GMAIL_SYNC_LOCK = threading.Lock()
+AUTH_REALM = "nda-automation"
+AUTH_REQUIRED_MESSAGE = "Authentication required."
+AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but NDA_AUTH_USERNAME and NDA_AUTH_PASSWORD are not configured."
 
 
 @contextmanager
@@ -168,6 +172,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def _handle_get(self, *, send_body: bool) -> None:
         path = urlparse(self.path).path
+        if path == "/healthz":
+            self._send_json({"status": "ok"}, send_body=send_body)
+            return
+        if not self._authorize_request(send_body=send_body):
+            return
         exact_routes = {
             "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
             "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
@@ -212,6 +221,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         try:
             exact_routes = {
                 "/api/review": self._handle_text_review,
@@ -244,6 +255,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         try:
             if path.startswith("/api/matters/"):
                 self._handle_matter_delete(path)
@@ -760,18 +773,71 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
-    def _send_json(self, payload: dict, status: int = 200, *, send_body: bool = True) -> None:
+    def _send_json(
+        self,
+        payload: dict,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        *,
+        send_body: bool = True,
+    ) -> None:
         data = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
         self.end_headers()
         if send_body:
             self.wfile.write(data)
 
     def _send_playbook_template_error(self) -> None:
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
+
+    def _authorize_request(self, *, send_body: bool = True) -> bool:
+        if not _auth_required_for_host(str(self.server.server_address[0])):
+            return True
+        username = os.environ.get("NDA_AUTH_USERNAME", "").strip()
+        password = os.environ.get("NDA_AUTH_PASSWORD", "")
+        if not username or not password:
+            self._send_json({"error": AUTH_NOT_CONFIGURED_MESSAGE}, status=503, send_body=send_body)
+            return False
+        if _basic_auth_matches(self.headers.get("Authorization", ""), username, password):
+            return True
+        self._send_json(
+            {"error": AUTH_REQUIRED_MESSAGE},
+            status=401,
+            headers={"WWW-Authenticate": f'Basic realm="{AUTH_REALM}", charset="UTF-8"'},
+            send_body=send_body,
+        )
+        return False
+
+
+def _basic_auth_matches(header: str, username: str, password: str) -> bool:
+    prefix = "Basic "
+    if not header.startswith(prefix):
+        return False
+    try:
+        decoded = base64.b64decode(header[len(prefix) :], validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+    supplied_username, separator, supplied_password = decoded.partition(":")
+    if not separator:
+        return False
+    return hmac.compare_digest(supplied_username, username) and hmac.compare_digest(supplied_password, password)
+
+
+def _auth_required_for_host(host: str) -> bool:
+    if _env_flag_enabled("NDA_REQUIRE_AUTH"):
+        return True
+    if os.environ.get("NDA_AUTH_USERNAME") or os.environ.get("NDA_AUTH_PASSWORD"):
+        return True
+    return host not in {"127.0.0.1", "::1", "localhost"}
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _gmail_send_error_status(error: Exception) -> int:

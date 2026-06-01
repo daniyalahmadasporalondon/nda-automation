@@ -106,6 +106,10 @@ class ServerTests(unittest.TestCase):
         status = int(status_line.split()[1])
         return status, json.loads(body.decode("utf-8"))
 
+    def basic_auth_headers(self, username="nda-admin", password="secret"):
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
     def assert_saved_export_url_matches_response(self, headers, payload):
         self.assertEqual(headers["X-Export-Verified"], "word-package; track-revisions")
         self.assertIn("X-Export-URL", headers)
@@ -214,6 +218,56 @@ class ServerTests(unittest.TestCase):
         term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
         term["redline_template"] = "Custom survival language capped at {unknown_placeholder}."
         return playbook
+
+    def test_public_bind_requires_auth_even_without_explicit_flag(self):
+        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+            self.assertFalse(server_module._auth_required_for_host("127.0.0.1"))
+            self.assertFalse(server_module._auth_required_for_host("localhost"))
+            self.assertTrue(server_module._auth_required_for_host("0.0.0.0"))
+            self.assertTrue(server_module._auth_required_for_host("::"))
+
+    def test_required_auth_fails_closed_without_credentials(self):
+        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "true", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+            health_status, health_payload = self.request("GET", "/healthz")
+            matter_status, matter_payload = self.request("GET", "/api/matters")
+            delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
+
+        self.assertEqual(health_status, 200)
+        self.assertEqual(health_payload, {"status": "ok"})
+        self.assertEqual(matter_status, 503)
+        self.assertEqual(matter_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
+        self.assertEqual(delete_status, 503)
+        self.assertEqual(delete_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
+
+    def test_required_auth_challenges_and_accepts_basic_credentials(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, auth_env):
+            unauth_status, unauth_payload, unauth_headers = self.request_with_headers("GET", "/api/matters")
+            bad_status, bad_payload = self.request(
+                "GET",
+                "/api/matters",
+                headers=self.basic_auth_headers(password="wrong"),
+            )
+            delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
+            authed_status, authed_payload = self.request(
+                "GET",
+                "/api/matters",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertIn("Basic", unauth_headers["WWW-Authenticate"])
+        self.assertEqual(bad_status, 401)
+        self.assertEqual(bad_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(delete_status, 401)
+        self.assertEqual(delete_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(authed_status, 200)
+        self.assertIn("matters", authed_payload)
 
     def test_text_review_rejects_bad_json(self):
         status, payload = self.request(
