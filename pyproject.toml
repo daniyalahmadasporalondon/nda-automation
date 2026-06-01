@@ -19,8 +19,8 @@ gmail = [
   "google-auth>=2.0",
 ]
 
-[tool.setuptools]
-packages = ["nda_automation"]
+[tool.setuptools.packages.find]
+include = ["nda_automation*"]
 
 [tool.ruff.lint]
 select = ["F"]
