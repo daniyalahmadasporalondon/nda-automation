@@ -38,6 +38,10 @@ class MatterSourceTextChangedError(DocxExportError):
     """Raised when a matter source edit would not be represented in the source DOCX export."""
 
 
+class MatterNotFoundError(DocxExportError):
+    pass
+
+
 def build_review_export(payload: dict, fallback_text: str, *, title: str = "NDA Review") -> RedlineExport:
     return _build_redline_export(payload, fallback_text, title=title, persist=True)
 
@@ -75,7 +79,7 @@ def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, 
     if isinstance(matter_id, str) and matter_id.strip():
         matter = matter_store.get_matter(matter_id.strip())
         if matter is None:
-            raise DocxExtractionError("Matter not found.")
+            raise MatterNotFoundError("Matter not found.")
         review_result = matter.get("review_result")
         if not isinstance(review_result, dict):
             raise DocxExtractionError("Matter does not have a stored review result.")

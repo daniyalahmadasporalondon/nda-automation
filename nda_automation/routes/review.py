@@ -134,6 +134,9 @@ def handle_review_docx_export(handler) -> None:
     except redline_export_service.MatterSourceTextChangedError as error:
         handler._send_json({"error": str(error)}, status=409)
         return
+    except redline_export_service.MatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404)
+        return
     except DocxExtractionError as error:
         handler._send_json({"error": str(error)}, status=400)
         return

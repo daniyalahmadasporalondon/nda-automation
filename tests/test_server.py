@@ -2978,6 +2978,19 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Reviewed Text NDA", document_xml)
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
 
+    def test_review_docx_export_returns_404_for_missing_matter(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"matter_id": "matter_missing"},
+                )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], "Matter not found.")
+
     def test_review_docx_export_strips_lone_surrogates(self):
         status, payload, _headers = self.request_with_headers(
             "POST",
