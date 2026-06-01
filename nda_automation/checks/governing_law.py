@@ -64,7 +64,7 @@ def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object],
 def _uses_approved_governing_law(text: str, clause: Dict[str, object]) -> bool:
     candidates = _governing_law_candidates(text)
     if candidates:
-        return any(_contains_approved_law(candidate, clause) for candidate in candidates)
+        return any(_starts_with_approved_law(candidate, clause) for candidate in candidates)
     return _contains_approved_governing_phrase(text, clause)
 
 
@@ -76,12 +76,22 @@ def _governing_law_candidates(text: str) -> List[str]:
     return candidates
 
 
-def _contains_approved_law(text: str, clause: Dict[str, object]) -> bool:
+def _starts_with_approved_law(text: str, clause: Dict[str, object]) -> bool:
+    candidate = _trim_governing_law_candidate(text)
     for law in _approved_laws(clause):
         for term in _approved_law_input_terms(clause, law):
-            if re.search(_literal_word_pattern(term), text, flags=re.IGNORECASE):
+            if re.search(rf"^\s*(?:the\s+)?{_literal_word_pattern(term)}", candidate, flags=re.IGNORECASE):
                 return True
     return False
+
+
+def _trim_governing_law_candidate(text: str) -> str:
+    return re.sub(
+        r"^\s*(?:by|under|in\s+accordance\s+with|according\s+to|pursuant\s+to)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
 
 
 def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) -> bool:
