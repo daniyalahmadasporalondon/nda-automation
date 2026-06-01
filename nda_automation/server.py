@@ -61,6 +61,7 @@ STATIC_DIR = ROOT / "static"
 PLAYBOOK_TEMPLATE_ERROR_MESSAGE = "The playbook contains an invalid redline template."
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
+MAX_GMAIL_SYNC_IDLE_SECONDS = 30
 _GMAIL_SYNC_LOCK = threading.Lock()
 
 
@@ -410,26 +411,37 @@ def _gmail_sync_scheduler_loop() -> None:
     last_run = 0.0
     last_frequency = ""
     while True:
+        sleep_seconds = MAX_GMAIL_SYNC_IDLE_SECONDS
         try:
-            settings = app_settings.gmail_settings()
-            frequency = str(settings.get("sync_frequency") or app_settings.DEFAULT_GMAIL_SETTINGS["sync_frequency"])
-            interval_seconds = app_settings.gmail_sync_interval_seconds(frequency)
-            if frequency != last_frequency:
-                last_run = 0.0
-                last_frequency = frequency
-            if settings.get("inbound_enabled", True):
-                now = time.monotonic()
-                if now - last_run >= interval_seconds:
-                    with _gmail_sync_process_lock() as lock_acquired:
-                        if not lock_acquired:
-                            last_run = now
-                            continue
-                        try:
-                            _run_scheduled_gmail_sync()
-                        finally:
-                            last_run = now
+            last_run, last_frequency, sleep_seconds = _gmail_sync_scheduler_step(last_run, last_frequency)
         except Exception as error:  # pragma: no cover - defensive background logging.
             _log_background_error("Gmail sync scheduler failed", error)
+        time.sleep(sleep_seconds)
+
+
+def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[float, str, int]:
+    settings = app_settings.gmail_settings()
+    frequency = str(settings.get("sync_frequency") or app_settings.DEFAULT_GMAIL_SETTINGS["sync_frequency"])
+    interval_seconds = app_settings.gmail_sync_interval_seconds(frequency)
+    if frequency != last_frequency:
+        last_run = 0.0
+        last_frequency = frequency
+    if settings.get("inbound_enabled", True):
+        now = time.monotonic()
+        if now - last_run >= interval_seconds:
+            with _gmail_sync_process_lock() as lock_acquired:
+                if lock_acquired:
+                    try:
+                        _run_scheduled_gmail_sync()
+                    finally:
+                        last_run = now
+                else:
+                    last_run = now
+    return last_run, last_frequency, _gmail_sync_scheduler_sleep_seconds(interval_seconds)
+
+
+def _gmail_sync_scheduler_sleep_seconds(interval_seconds: int) -> int:
+    return min(max(1, interval_seconds), MAX_GMAIL_SYNC_IDLE_SECONDS)
 
 
 def _run_scheduled_gmail_sync() -> None:

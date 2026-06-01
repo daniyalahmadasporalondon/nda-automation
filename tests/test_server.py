@@ -1267,6 +1267,43 @@ class ServerTests(unittest.TestCase):
         record_sync.assert_called_once()
         self.assertEqual(record_sync.call_args.args[0], {**result, "deduplicated_count": 2})
 
+    def test_gmail_sync_scheduler_step_idles_when_interval_has_not_elapsed(self):
+        with patch.object(
+            server_module.app_settings,
+            "gmail_settings",
+            return_value={"inbound_enabled": True, "sync_frequency": "10_minutes"},
+        ):
+            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=600):
+                with patch.object(server_module.time, "monotonic", return_value=100.0):
+                    with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                        last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                            99.0,
+                            "10_minutes",
+                        )
+
+        self.assertEqual(last_run, 99.0)
+        self.assertEqual(last_frequency, "10_minutes")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        run_sync.assert_not_called()
+
+    def test_gmail_sync_scheduler_sleep_seconds_is_bounded(self):
+        self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(0), 1)
+        self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(10), 10)
+        self.assertEqual(
+            server_module._gmail_sync_scheduler_sleep_seconds(600),
+            server_module.MAX_GMAIL_SYNC_IDLE_SECONDS,
+        )
+
+    def test_gmail_sync_scheduler_loop_sleeps_after_step_errors(self):
+        with patch.object(server_module, "_gmail_sync_scheduler_step", side_effect=RuntimeError("settings failed")):
+            with patch.object(server_module, "_log_background_error") as log_error:
+                with patch.object(server_module.time, "sleep", side_effect=KeyboardInterrupt) as sleep:
+                    with self.assertRaises(KeyboardInterrupt):
+                        server_module._gmail_sync_scheduler_loop()
+
+        log_error.assert_called_once()
+        sleep.assert_called_once_with(server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+
     def test_gmail_import_skips_duplicate_and_imports_new_attachment(self):
         class FakeExecutable:
             def __init__(self, payload):
