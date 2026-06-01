@@ -38,7 +38,28 @@ Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
-INVALID_XML_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]")
+INVALID_XML_CHAR_PATTERN = re.compile(
+    "[\x00-\x08\x0B\x0C\x0E-\x1F"
+    "\uD800-\uDFFF"
+    "\uFDD0-\uFDEF"
+    "\uFFFE\uFFFF"
+    "\U0001FFFE\U0001FFFF"
+    "\U0002FFFE\U0002FFFF"
+    "\U0003FFFE\U0003FFFF"
+    "\U0004FFFE\U0004FFFF"
+    "\U0005FFFE\U0005FFFF"
+    "\U0006FFFE\U0006FFFF"
+    "\U0007FFFE\U0007FFFF"
+    "\U0008FFFE\U0008FFFF"
+    "\U0009FFFE\U0009FFFF"
+    "\U000AFFFE\U000AFFFF"
+    "\U000BFFFE\U000BFFFF"
+    "\U000CFFFE\U000CFFFF"
+    "\U000DFFFE\U000DFFFF"
+    "\U000EFFFE\U000EFFFF"
+    "\U000FFFFE\U000FFFFF"
+    "\U0010FFFE\U0010FFFF]"
+)
 RESERVED_NAMESPACE_PREFIX_PATTERN = re.compile(r"ns\d+$")
 XML_NAMESPACE_PREFIX_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
@@ -982,7 +1003,7 @@ def _app_properties_xml() -> str:
 
 def _escape_xml(value: str) -> str:
     return (
-        INVALID_XML_CHAR_PATTERN.sub("", str(value))
+        _strip_invalid_xml_chars(value)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -992,6 +1013,10 @@ def _escape_xml(value: str) -> str:
 
 def _escape_attr(value: str) -> str:
     return _escape_xml(value)
+
+
+def _strip_invalid_xml_chars(value: object) -> str:
+    return INVALID_XML_CHAR_PATTERN.sub("", str(value))
 
 
 def _w_tag(tag: str) -> str:
@@ -1041,10 +1066,21 @@ def _can_preserve_namespace_prefix(prefix: str) -> bool:
 
 
 def _xml_bytes(root: ET.Element, *, namespace_declarations: Dict[str, str] | None = None) -> bytes:
+    _strip_invalid_xml_chars_from_tree(root)
     xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     if namespace_declarations:
         xml = _ensure_root_namespace_declarations(xml, namespace_declarations)
     return xml
+
+
+def _strip_invalid_xml_chars_from_tree(root: ET.Element) -> None:
+    for element in root.iter():
+        if element.text:
+            element.text = _strip_invalid_xml_chars(element.text)
+        if element.tail:
+            element.tail = _strip_invalid_xml_chars(element.tail)
+        for key, value in list(element.attrib.items()):
+            element.attrib[key] = _strip_invalid_xml_chars(value)
 
 
 def _ensure_root_namespace_declarations(xml: bytes, namespace_declarations: Dict[str, str]) -> bytes:

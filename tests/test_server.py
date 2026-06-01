@@ -2958,8 +2958,8 @@ class ServerTests(unittest.TestCase):
             "POST",
             "/api/export-review-docx",
             {
-                "reviewed_text": "This Agreement shall be governed by the laws of California.\ud800",
-                "title": "Surrogate\udfffNDA",
+                "reviewed_text": "This Agreement shall be governed by the laws of California.\ud800\ufdd0\U0001fffe",
+                "title": "Surrogate\udfff\ufdef\U0010ffffNDA",
             },
         )
 
@@ -2974,6 +2974,10 @@ class ServerTests(unittest.TestCase):
         self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
         self.assertNotIn("\ud800", document_xml)
         self.assertNotIn("\udfff", core_xml)
+        self.assertNotIn("\ufdd0", document_xml)
+        self.assertNotIn("\ufdef", core_xml)
+        self.assertNotIn("\U0001fffe", document_xml)
+        self.assertNotIn("\U0010ffff", core_xml)
 
     def test_review_docx_export_preserves_manual_viewer_redlines(self):
         manual_redlines = [
