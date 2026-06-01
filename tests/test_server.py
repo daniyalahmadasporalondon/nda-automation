@@ -1286,6 +1286,46 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
         run_sync.assert_not_called()
 
+    def test_gmail_sync_scheduler_step_skips_when_inbound_setup_is_missing(self):
+        with patch.object(
+            server_module.app_settings,
+            "gmail_settings",
+            return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+        ):
+            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value="Set token"):
+                    with patch.object(server_module.time, "monotonic", return_value=120.0):
+                        with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                            last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                                0.0,
+                                "always_on",
+                            )
+
+        self.assertEqual(last_run, 120.0)
+        self.assertEqual(last_frequency, "always_on")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        run_sync.assert_not_called()
+
+    def test_gmail_sync_scheduler_step_runs_when_inbound_setup_is_ready(self):
+        with patch.object(
+            server_module.app_settings,
+            "gmail_settings",
+            return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+        ):
+            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
+                    with patch.object(server_module.time, "monotonic", return_value=120.0):
+                        with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                            last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                                0.0,
+                                "always_on",
+                            )
+
+        self.assertEqual(last_run, 120.0)
+        self.assertEqual(last_frequency, "always_on")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        run_sync.assert_called_once_with()
+
     def test_gmail_sync_scheduler_sleep_seconds_is_bounded(self):
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(0), 1)
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(10), 10)

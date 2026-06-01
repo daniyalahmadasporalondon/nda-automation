@@ -113,7 +113,7 @@ const AdminIntegrationsView = (() => {
       setFact("inbound-configured", inbound.error || configuredLabel(inbound));
       setFact("outbound-configured", outbound.error || configuredLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
-      setFact("last-sync", lastSyncLabel(status.settings || {}));
+      setFact("last-sync", lastSyncLabel(status));
       renderSyncHistory(status.settings?.sync_history || []);
       renderRecentSend(matters);
     }
@@ -194,7 +194,7 @@ const AdminIntegrationsView = (() => {
       setFact("inbound-configured", "Unknown");
       setFact("outbound-configured", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
-      setFact("last-sync", lastSyncLabel(state.gmailStatus?.settings || {}));
+      setFact("last-sync", lastSyncLabel(state.gmailStatus || {}));
       renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
@@ -265,7 +265,11 @@ const AdminIntegrationsView = (() => {
     return account?.ready ? "Yes" : "Unknown";
   }
 
-  function lastSyncLabel(settings) {
+  function lastSyncLabel(statusOrSettings) {
+    const settings = statusOrSettings?.settings || statusOrSettings || {};
+    const inbound = statusOrSettings?.inbound || {};
+    if (inbound.enabled === false) return "Gmail inbound paused";
+    if (inbound.ready === false) return `Gmail inbound setup required: ${inbound.error || "check inbound setup"}`;
     if (!settings?.last_sync_at) return "Waiting for scheduled sync";
     const parts = [formatDateTime(settings.last_sync_at) || settings.last_sync_at];
     const imported = Number(settings.last_sync_imported_count || 0);

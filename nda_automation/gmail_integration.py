@@ -59,17 +59,12 @@ def gmail_status() -> dict[str, Any]:
         }
         if role == "inbound":
             role_status["query"] = DEFAULT_INBOUND_QUERY
-        try:
-            token_path = _token_path_for_role(role)
-        except GmailIntegrationError:
-            role_status["error"] = f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+        setup_error = gmail_role_setup_error(role)
+        if setup_error:
+            role_status["error"] = setup_error
             status[role] = role_status
             continue
-        role_status["configured"] = token_path.is_file()
-        if not token_path.is_file():
-            role_status["error"] = f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
-            status[role] = role_status
-            continue
+        role_status["configured"] = True
         try:
             profile = _gmail_profile(_gmail_service(role))
         except GmailIntegrationError as error:
@@ -85,6 +80,16 @@ def gmail_status() -> dict[str, Any]:
         status[role] = role_status
     _apply_account_consistency(status)
     return status
+
+
+def gmail_role_setup_error(role: str) -> str:
+    try:
+        token_path = _token_path_for_role(role)
+    except GmailIntegrationError:
+        return f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+    if not token_path.is_file():
+        return f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+    return ""
 
 
 def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict[str, Any]:

@@ -423,12 +423,15 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
     settings = app_settings.gmail_settings()
     frequency = str(settings.get("sync_frequency") or app_settings.DEFAULT_GMAIL_SETTINGS["sync_frequency"])
     interval_seconds = app_settings.gmail_sync_interval_seconds(frequency)
+    sleep_seconds = _gmail_sync_scheduler_sleep_seconds(interval_seconds)
     if frequency != last_frequency:
         last_run = 0.0
         last_frequency = frequency
     if settings.get("inbound_enabled", True):
         now = time.monotonic()
         if now - last_run >= interval_seconds:
+            if not _gmail_inbound_configured_for_scheduled_sync():
+                return now, last_frequency, sleep_seconds
             with _gmail_sync_process_lock() as lock_acquired:
                 if lock_acquired:
                     try:
@@ -437,7 +440,11 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
                         last_run = now
                 else:
                     last_run = now
-    return last_run, last_frequency, _gmail_sync_scheduler_sleep_seconds(interval_seconds)
+    return last_run, last_frequency, sleep_seconds
+
+
+def _gmail_inbound_configured_for_scheduled_sync() -> bool:
+    return not gmail_integration.gmail_role_setup_error("inbound")
 
 
 def _gmail_sync_scheduler_sleep_seconds(interval_seconds: int) -> int:

@@ -120,8 +120,18 @@ const RepositoryView = (() => {
       const node = document.querySelector("[data-repository-sync-status]");
       if (!node) return;
       const settings = state.gmailStatus?.settings || {};
+      const inbound = state.gmailStatus?.inbound || {};
       const recentRun = Array.isArray(settings.sync_history) ? settings.sync_history[0] : null;
-      node.classList.toggle("error", recentRun?.status === "error");
+      const inboundSetupBlocked = inbound.enabled !== false && inbound.ready === false;
+      node.classList.toggle("error", inboundSetupBlocked || recentRun?.status === "error");
+      if (inbound.enabled === false) {
+        node.textContent = "Gmail inbound paused";
+        return;
+      }
+      if (inboundSetupBlocked) {
+        node.textContent = `Gmail inbound setup required: ${inbound.error || "check Admin"}`;
+        return;
+      }
       if (recentRun?.status === "error") {
         node.textContent = `Last sync error: ${recentRun.error || "check Admin"}`;
         return;

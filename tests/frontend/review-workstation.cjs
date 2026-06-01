@@ -43,6 +43,7 @@ const tests = [
   ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
+  ["shows Gmail setup required instead of stale sync errors", testGmailSetupRequiredStatus],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
@@ -880,6 +881,79 @@ async function testRepositoryOutboundSendBlocked(page) {
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/matter_blocked_send");
   await page.unroute("**/api/gmail/send-redline");
+}
+
+async function testGmailSetupRequiredStatus(page) {
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          settings: {
+            inbound_enabled: true,
+            outbound_enabled: true,
+            last_sync_at: "2026-06-01T13:08:23+00:00",
+            last_sync_imported_count: 0,
+            last_sync_skipped_count: 0,
+            sync_frequency: "always_on",
+            sync_history: [{
+              deduplicated_count: 0,
+              duplicate_count: 0,
+              error: "Set NDA_GMAIL_INBOUND_TOKEN_PATH for the inbound Gmail account.",
+              finished_at: "2026-06-01T13:08:23+00:00",
+              imported_count: 0,
+              query: "in:inbox has:attachment",
+              review_failed_count: 0,
+              skipped_count: 0,
+              started_at: "2026-06-01T13:08:23+00:00",
+              status: "error",
+            }],
+          },
+          inbound: {
+            configured: false,
+            enabled: true,
+            error: "Set NDA_GMAIL_INBOUND_TOKEN_PATH for the inbound Gmail account.",
+            query: "in:inbox has:attachment",
+            ready: false,
+          },
+          outbound: {
+            configured: false,
+            enabled: true,
+            error: "Set NDA_GMAIL_OUTBOUND_TOKEN_PATH for the outbound Gmail account.",
+            ready: false,
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [] }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  const syncStatus = page.locator("[data-repository-sync-status]");
+  await assertTextContains(syncStatus, "Gmail inbound setup required");
+  assert.equal((await syncStatus.innerText()).includes("Last sync error"), false);
+
+  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await waitForText(page, "#adminGmailOverall", "NEEDS SETUP");
+  const adminPanel = page.locator("#adminIntegrationsPanel");
+  await assertTextContains(adminPanel, "NEEDS SETUP");
+  await assertTextContains(adminPanel, "Gmail inbound setup required");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
 }
 
 async function testMatterRedlineDraftPersistence(page) {
