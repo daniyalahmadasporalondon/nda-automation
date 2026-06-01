@@ -1929,6 +1929,37 @@ class ServerTests(unittest.TestCase):
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("California", document_xml)
 
+    def test_matter_export_rejects_text_that_differs_from_reviewed_text(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Acme NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                )
+                matter_id = create_payload["matter"]["id"]
+                export_status, export_payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": matter_id,
+                        "text": "This Agreement shall be governed by the laws of England and Wales.",
+                        "reviewed_text": "This Agreement shall be governed by the laws of California.",
+                    },
+                )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(export_status, 409)
+        self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
+
     @requires_pypdf
     def test_pdf_matter_export_uses_review_report_docx(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")

@@ -97,12 +97,12 @@ def handle_review_docx_export(handler) -> None:
     )
     export_text = reviewed_text if isinstance(reviewed_text, str) and reviewed_text.strip() else text
     has_matter_payload = isinstance(payload.get("matter_id"), str) and bool(payload.get("matter_id", "").strip())
+    uses_uploaded_docx_export = has_docx_payload and not has_matter_payload
     if (not isinstance(export_text, str) or not export_text.strip()) and not has_docx_payload and not has_matter_payload:
         handler._send_json({"error": "Provide NDA text to export."}, status=400)
         return
     if (
-        not has_matter_payload
-        and not has_docx_payload
+        not uses_uploaded_docx_export
         and isinstance(text, str)
         and text.strip()
         and isinstance(reviewed_text, str)
