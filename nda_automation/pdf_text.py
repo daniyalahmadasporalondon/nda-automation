@@ -11,7 +11,10 @@ class PdfExtractionError(ValueError):
     """Raised when a PDF file cannot be converted into reviewable text."""
 
 
+INVALID_PDF_MESSAGE = "The uploaded file is not a valid PDF document."
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
+MAX_PDF_PAGES = 100
+MAX_PDF_EXTRACTED_CHARACTERS = 500_000
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,9 @@ def extract_pdf_paragraphs(data: bytes) -> List[Paragraph]:
 
 
 def extract_pdf_document(data: bytes) -> PdfExtraction:
+    if not data.lstrip().startswith(b"%PDF-"):
+        raise PdfExtractionError(INVALID_PDF_MESSAGE)
+
     try:
         from io import BytesIO
         from pypdf import PdfReader
@@ -39,22 +45,28 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     try:
         reader = PdfReader(BytesIO(data))
     except Exception as exc:
-        raise PdfExtractionError("The uploaded file is not a valid PDF document.") from exc
+        raise PdfExtractionError(INVALID_PDF_MESSAGE) from exc
 
     page_lines: list[list[str]] = []
-    page_texts: list[str] = []
     page_count = len(reader.pages)
+    if page_count > MAX_PDF_PAGES:
+        raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
     pages_without_text = 0
     pages_with_text = 0
+    extracted_character_count = 0
     repeated_margins: set[str] = set()
     for page in reader.pages:
         try:
             page_text = page.extract_text() or ""
         except Exception as exc:
             raise PdfExtractionError("The PDF text could not be extracted.") from exc
+        extracted_character_count += len(page_text)
+        if extracted_character_count > MAX_PDF_EXTRACTED_CHARACTERS:
+            raise PdfExtractionError(
+                f"The PDF produced more than the {MAX_PDF_EXTRACTED_CHARACTERS:,} character extraction limit."
+            )
         normalized_lines = _normalized_lines(page_text)
         page_lines.append(normalized_lines)
-        page_texts.append("\n".join(normalized_lines))
         if normalized_lines:
             pages_with_text += 1
         else:

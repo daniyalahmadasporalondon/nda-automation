@@ -2591,6 +2591,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
 
+    def test_document_review_rejects_oversize_pdf_before_extraction(self):
+        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
+            with patch.object(server_module, "extract_document", side_effect=AssertionError("PDF extraction should not run")) as extract_document:
+                status, payload = self.request(
+                    "POST",
+                    "/api/review-document",
+                    {
+                        "filename": "nda.pdf",
+                        "content_base64": base64.b64encode(b"too large").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
+        extract_document.assert_not_called()
+
     def test_document_review_rejects_docx_decompression_bomb(self):
         source_docx = make_compressed_docx("A" * 4096)
 
@@ -2620,6 +2636,26 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
+
+    def test_matter_upload_rejects_oversize_pdf_before_ingestion(self):
+        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
+            with patch.object(
+                server_module,
+                "create_matter_from_document",
+                side_effect=AssertionError("Matter ingestion should not run"),
+            ) as create_matter_from_document:
+                status, payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "nda.pdf",
+                        "content_base64": base64.b64encode(b"too large").decode("ascii"),
+                    },
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
+        create_matter_from_document.assert_not_called()
 
     def test_document_review_reports_paragraph_alignment_failure(self):
         with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):

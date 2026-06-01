@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from pypdf import PdfWriter
 
+from nda_automation import pdf_text
 from nda_automation.pdf_text import (
     PDF_SUPPORT_NOT_INSTALLED_MESSAGE,
     PdfExtractionError,
@@ -86,6 +87,23 @@ class PdfTextTests(unittest.TestCase):
         warning_types = {warning["type"] for warning in extraction.quality["warnings"]}
         self.assertIn("pdf_pages_without_text", warning_types)
 
+    def test_rejects_pdf_with_too_many_pages(self):
+        data = make_pdf_pages([
+            ["This Agreement shall be governed by the laws of California."],
+            ["The confidentiality obligations survive for two years."],
+        ])
+
+        with patch.object(pdf_text, "MAX_PDF_PAGES", 1):
+            with self.assertRaisesRegex(PdfExtractionError, "exceeds the 1 page review limit"):
+                extract_pdf_paragraphs(data)
+
+    def test_rejects_pdf_with_too_much_extracted_text(self):
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        with patch.object(pdf_text, "MAX_PDF_EXTRACTED_CHARACTERS", 20):
+            with self.assertRaisesRegex(PdfExtractionError, "more than the 20 character extraction limit"):
+                extract_pdf_paragraphs(data)
+
     def test_rejects_pdf_without_extractable_text(self):
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)
@@ -99,6 +117,18 @@ class PdfTextTests(unittest.TestCase):
     def test_rejects_non_pdf_bytes(self):
         with self.assertRaisesRegex(PdfExtractionError, "not a valid PDF"):
             extract_pdf_paragraphs(b"not a pdf")
+
+    def test_rejects_non_pdf_bytes_before_importing_pypdf(self):
+        real_import = builtins.__import__
+
+        def fail_if_pypdf_is_imported(name, *args, **kwargs):
+            if name == "pypdf":
+                raise AssertionError("pypdf should not parse bytes without a PDF signature")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_if_pypdf_is_imported):
+            with self.assertRaisesRegex(PdfExtractionError, "not a valid PDF"):
+                extract_pdf_paragraphs(b"not a pdf")
 
     def test_reports_missing_pdf_support_separately_from_bad_pdf(self):
         real_import = builtins.__import__
