@@ -108,7 +108,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
     const editor = clauseDetail.querySelector("#playbookEditor");
     editor.addEventListener("input", handleEditorInput);
-    editor.addEventListener("change", handleEditorInput);
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
     setupSpecialControls(clause);
@@ -124,6 +123,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     clause.preferred_position = String(data.get("preferred_position") || "").trim();
     clause.check_trigger = String(data.get("check_trigger") || "").trim();
     clause.redline_template = String(data.get("redline_template") || "").trim();
+    clause.standard_exclusions_template = String(data.get("standard_exclusions_template") || "").trim();
     if (clause.id === "term_and_survival") {
       clause.max_term_years = Math.max(1, Number.parseInt(data.get("max_term_years"), 10) || 5);
     }
