@@ -15,6 +15,7 @@ from .redline_actions import (
 )
 from .inline_diff import diff_text_operation_dicts
 from .checks import CLAUSE_CHECKS
+from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
@@ -42,6 +43,29 @@ from .review_document import (
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
+SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
+MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
+    "confidential_information": (
+        r"\b(?:each|both|either)\s+part(?:y|ies)\b",
+        r"\b(?:disclosing|receiving)\s+part(?:y|ies)\b",
+        r"\bmutual(?:ly)?\b",
+    ),
+    "term_and_survival": (
+        r"\bconfidential information\b",
+        r"\bconfidentiality\b",
+        r"\b(?:does not include|shall not include|exclusions?)\b",
+    ),
+    "governing_law": (
+        r"\b(?:term|surviv(?:e|es|ed|ing|al)|expir(?:e|es|y|ation)|terminat(?:e|es|ed|ion))\b",
+        r"\bconfidentiality obligations?\b",
+    ),
+}
+FOLLOWING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
+    "term_and_survival": (
+        r"\bgoverning\s+law\b",
+        r"\bgoverned\b.{0,120}?\blaws?\s+of\b",
+    ),
+}
 __all__ = [
     "EvidenceProvenanceError",
     "ParagraphAlignmentError",
@@ -322,9 +346,94 @@ def _insertion_anchor_paragraph(clause: ClauseResult, paragraphs_by_id: Dict[str
     matched_paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
     if matched_paragraphs:
         return matched_paragraphs[-1]
-    if not paragraphs_by_id:
+    paragraphs = _ordered_paragraphs(paragraphs_by_id)
+    if not paragraphs:
         return None
-    return max(paragraphs_by_id.values(), key=lambda paragraph: int(paragraph.get("index", 0)))
+    if str(clause.get("id")) == "signatures":
+        return paragraphs[-1]
+
+    anchor = _logical_missing_clause_anchor(clause, paragraphs)
+    if anchor:
+        return anchor
+    return _last_non_signature_paragraph(paragraphs) or paragraphs[-1]
+
+
+def _logical_missing_clause_anchor(clause: ClauseResult, paragraphs: List[Paragraph]) -> Paragraph | None:
+    clause_id = str(clause.get("id"))
+    if clause_id == "mutuality":
+        return _first_non_signature_paragraph(paragraphs)
+
+    anchor = _last_matching_non_signature_paragraph(
+        paragraphs,
+        MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE.get(clause_id, ()),
+    )
+    if anchor:
+        return anchor
+
+    anchor = _paragraph_before_first_matching(
+        paragraphs,
+        FOLLOWING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE.get(clause_id, ()),
+    )
+    if anchor:
+        return anchor
+
+    return _paragraph_before_first_signature_block(paragraphs)
+
+
+def _ordered_paragraphs(paragraphs_by_id: Dict[str, Paragraph]) -> List[Paragraph]:
+    return sorted(paragraphs_by_id.values(), key=lambda paragraph: int(paragraph.get("index", 0)))
+
+
+def _first_non_signature_paragraph(paragraphs: List[Paragraph]) -> Paragraph | None:
+    return next((paragraph for paragraph in paragraphs if not _is_signature_anchor_paragraph(paragraph)), None)
+
+
+def _last_non_signature_paragraph(paragraphs: List[Paragraph]) -> Paragraph | None:
+    return next((paragraph for paragraph in reversed(paragraphs) if not _is_signature_anchor_paragraph(paragraph)), None)
+
+
+def _last_matching_non_signature_paragraph(paragraphs: List[Paragraph], patterns: tuple[str, ...]) -> Paragraph | None:
+    if not patterns:
+        return None
+    return next(
+        (
+            paragraph
+            for paragraph in reversed(paragraphs)
+            if not _is_signature_anchor_paragraph(paragraph)
+            and any(re.search(pattern, str(paragraph["text"]), flags=re.IGNORECASE) for pattern in patterns)
+        ),
+        None,
+    )
+
+
+def _paragraph_before_first_matching(paragraphs: List[Paragraph], patterns: tuple[str, ...]) -> Paragraph | None:
+    if not patterns:
+        return None
+    previous: Paragraph | None = None
+    for paragraph in paragraphs:
+        if any(re.search(pattern, str(paragraph["text"]), flags=re.IGNORECASE) for pattern in patterns):
+            if previous and not _is_signature_anchor_paragraph(previous):
+                return previous
+            return None
+        if not _is_signature_anchor_paragraph(paragraph):
+            previous = paragraph
+    return None
+
+
+def _paragraph_before_first_signature_block(paragraphs: List[Paragraph]) -> Paragraph | None:
+    previous: Paragraph | None = None
+    for paragraph in paragraphs:
+        if _is_signature_anchor_paragraph(paragraph):
+            return previous
+        previous = paragraph
+    return None
+
+
+def _is_signature_anchor_paragraph(paragraph: Paragraph) -> bool:
+    text = str(paragraph["text"])
+    marker_count = len(re.findall(SIGNATURE_MARKER_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE))
+    has_for_line = bool(re.search(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE))
+    return marker_count >= 2 or (has_for_line and marker_count >= 1)
 
 
 def _redline_edit(

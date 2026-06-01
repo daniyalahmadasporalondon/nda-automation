@@ -438,6 +438,36 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(redline["original_text"], "")
         self.assertIn("up to five years", redline["insert_text"])
 
+    def test_missing_term_inserts_after_confidentiality_before_later_sections(self):
+        result = review_nda(
+            """
+            Each party may disclose Confidential Information to the other party.
+
+            Confidential Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+
+            This Agreement shall be governed by the laws of England and Wales.
+
+            For Aspora Ltd
+            By: A. Signatory
+            Title: Director
+            Date: 2026-05-30
+
+            For Counterparty Ltd
+            By: B. Signatory
+            Title: CEO
+            Date: 2026-05-30
+            """
+        )
+
+        redline = self.redline_for_clause(result, "term_and_survival")
+        self.assertEqual(redline["action"], "insert_after_paragraph")
+        self.assertEqual(redline["paragraph_id"], "p2")
+        self.assertIn("Confidential Information means any and all non-public", redline["anchor_text"])
+        self.assertNotIn("governed by", redline["anchor_text"])
+        self.assertNotIn("By:", redline["anchor_text"])
+
     def test_returns_numbered_paragraph_model(self):
         paragraphs = split_document_paragraphs("First paragraph.\n\nSecond paragraph.")
 
@@ -1170,6 +1200,37 @@ class CheckerTests(unittest.TestCase):
             [option["label"] for option in redline["template_options"]],
             ["India", "Delaware", "England and Wales", "DIFC"],
         )
+
+    def test_missing_required_redlines_anchor_before_signature_blocks(self):
+        result = review_nda(
+            """
+            Non-Disclosure Agreement
+
+            Confidential Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+
+            The confidentiality obligations survive for three (3) years.
+
+            For Aspora Ltd
+            By: A. Signatory
+            Title: Director
+            Date: 2026-05-30
+
+            For Counterparty Ltd
+            By: B. Signatory
+            Title: CEO
+            Date: 2026-05-30
+            """
+        )
+
+        redlines_by_clause = {edit["clause_id"]: edit for edit in result["redline_edits"]}
+        self.assertEqual(redlines_by_clause["mutuality"]["action"], "insert_after_paragraph")
+        self.assertEqual(redlines_by_clause["mutuality"]["paragraph_id"], "p1")
+        self.assertEqual(redlines_by_clause["mutuality"]["anchor_text"], "Non-Disclosure Agreement")
+        self.assertEqual(redlines_by_clause["governing_law"]["action"], "insert_after_paragraph")
+        self.assertEqual(redlines_by_clause["governing_law"]["paragraph_id"], "p3")
+        self.assertNotIn("By:", redlines_by_clause["governing_law"]["anchor_text"])
 
     def test_missing_signatures_creates_insert_redline_at_end(self):
         result = review_nda(
