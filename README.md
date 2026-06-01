@@ -108,6 +108,9 @@ export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
 export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
 ```
 
+For local development, the app also checks ignored project-local token files:
+`data/gmail/inbound-token.json` and `data/gmail/outbound-token.json`.
+
 Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the `Gmail Demo` Repository lane. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
 
 ## Current checks

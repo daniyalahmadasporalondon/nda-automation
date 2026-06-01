@@ -60,6 +60,7 @@ def gmail_status() -> dict[str, Any]:
             "enabled": enabled,
             "ready": False,
             "role": role,
+            "token": gmail_role_token_status(role),
         }
         if role == "inbound":
             role_status["query"] = DEFAULT_INBOUND_QUERY
@@ -87,13 +88,41 @@ def gmail_status() -> dict[str, Any]:
 
 
 def gmail_role_setup_error(role: str) -> str:
-    try:
-        token_path = _token_path_for_role(role)
-    except GmailIntegrationError:
-        return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
-    if not token_path.is_file():
-        return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
-    return ""
+    token = gmail_role_token_status(role)
+    if token["configured"]:
+        return ""
+    if token["source"] == "environment":
+        return (
+            f"{ROLE_TOKEN_ENV[role]} points to a missing token file. "
+            f"Fix it or unset it to use data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
+        )
+    return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
+
+
+def gmail_role_token_status(role: str) -> dict[str, object]:
+    if role not in ROLE_TOKEN_ENV:
+        raise GmailIntegrationError("Unsupported Gmail role.")
+    env_name = ROLE_TOKEN_ENV[role]
+    local_label = f"data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]}"
+    configured_path = os.environ.get(env_name)
+    if configured_path:
+        return {
+            "configured": Path(configured_path).expanduser().is_file(),
+            "label": env_name,
+            "source": "environment",
+        }
+    local_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
+    if local_path.is_file():
+        return {
+            "configured": True,
+            "label": local_label,
+            "source": "local_data",
+        }
+    return {
+        "configured": False,
+        "label": f"{env_name} or {local_label}",
+        "source": "missing",
+    }
 
 
 def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict[str, Any]:

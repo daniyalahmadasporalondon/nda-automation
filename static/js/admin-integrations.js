@@ -21,6 +21,7 @@ const AdminIntegrationsView = (() => {
     gmailOverall,
     gmailRecentSend,
     gmailRefreshButton,
+    gmailSetupPanel,
     gmailInboundToggle,
     gmailOutboundToggle,
     gmailFrequencyControl,
@@ -112,10 +113,53 @@ const AdminIntegrationsView = (() => {
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", inbound.error || configuredLabel(inbound));
       setFact("outbound-configured", outbound.error || configuredLabel(outbound));
+      setFact("inbound-token-source", tokenSourceLabel(inbound));
+      setFact("outbound-token-source", tokenSourceLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(status));
+      renderConnectionSetup(status);
       renderSyncHistory(status.settings?.sync_history || []);
       renderRecentSend(matters);
+    }
+
+    function renderConnectionSetup(status) {
+      if (!gmailSetupPanel) return;
+      const roles = [
+        { account: status.inbound || {}, id: "inbound", title: "Inbound connection" },
+        { account: status.outbound || {}, id: "outbound", title: "Outbound connection" },
+      ];
+      gmailSetupPanel.innerHTML = roles.map((role) => renderConnectionRow(role)).join("");
+    }
+
+    function renderConnectionRow(role) {
+      const account = role.account || {};
+      const token = account.token || {};
+      const paused = account.enabled === false;
+      const ready = account.ready === true;
+      const tone = ready ? "ready" : paused ? "pending" : "blocked";
+      const statusLabel = paused ? "Paused" : ready ? "Ready" : "Needs setup";
+      return `
+        <div class="integration-connection-row ${tone}">
+          <div class="integration-connection-top">
+            <strong>${escapeHtml(role.title)}</strong>
+            <span>${escapeHtml(statusLabel)}</span>
+          </div>
+          <dl>
+            <div>
+              <dt>Account</dt>
+              <dd>${escapeHtml(maskEmail(account.email) || "Not resolved")}</dd>
+            </div>
+            <div>
+              <dt>Token</dt>
+              <dd>${escapeHtml(tokenSourceLabel(account))}</dd>
+            </div>
+            <div>
+              <dt>Next step</dt>
+              <dd>${escapeHtml(connectionNextStep(role.id, account, token))}</dd>
+            </div>
+          </dl>
+        </div>
+      `;
     }
 
     function renderSyncHistory(syncHistory) {
@@ -193,8 +237,11 @@ const AdminIntegrationsView = (() => {
       setFact("outbound-email", message);
       setFact("inbound-configured", "Unknown");
       setFact("outbound-configured", "Unknown");
+      setFact("inbound-token-source", "Unknown");
+      setFact("outbound-token-source", "Unknown");
       setFact("default-query", DEFAULT_QUERY_FALLBACK);
       setFact("last-sync", lastSyncLabel(state.gmailStatus || {}));
+      renderConnectionSetup(state.gmailStatus || {});
       renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
@@ -263,6 +310,38 @@ const AdminIntegrationsView = (() => {
     if (account?.configured === true) return "Yes";
     if (account?.configured === false) return "No";
     return account?.ready ? "Yes" : "Unknown";
+  }
+
+  function tokenSourceLabel(account) {
+    const token = account?.token || {};
+    const label = String(token.label || "").trim();
+    if (token.source === "environment") return `Environment: ${label || "configured env var"}`;
+    if (token.source === "local_data") return `Local data: ${label || "data/gmail token"}`;
+    if (token.source === "missing") return `Missing: ${label || "token path"}`;
+    if (token.configured === true) return "Configured";
+    if (token.configured === false) return "Missing";
+    return "Unknown";
+  }
+
+  function connectionNextStep(role, account, token) {
+    if (account?.enabled === false) return `Turn on ${role} email when this mailbox should be active.`;
+    if (account?.ready === true) return role === "inbound" ? "Ready for scheduled sync." : "Ready to send redlines.";
+    if (token?.source === "environment" && token?.configured === false) {
+      return `Fix ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"} or unset it to use data/gmail/${role}-token.json.`;
+    }
+    if (token?.configured === false) {
+      return `Add data/gmail/${role}-token.json or set ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"}.`;
+    }
+    return account?.error || "Reconnect Gmail and refresh status.";
+  }
+
+  function maskEmail(email) {
+    const value = String(email || "").trim();
+    const atIndex = value.indexOf("@");
+    if (atIndex <= 0) return value;
+    const name = value.slice(0, atIndex);
+    const domain = value.slice(atIndex + 1);
+    return `${name.slice(0, 2)}***@${domain}`;
   }
 
   function lastSyncLabel(statusOrSettings) {

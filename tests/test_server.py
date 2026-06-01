@@ -1159,6 +1159,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
         self.assertIn("data/gmail/inbound-token.json", status["inbound"]["error"])
+        self.assertEqual(status["inbound"]["token"], {
+            "configured": False,
+            "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
+            "source": "missing",
+        })
 
     def test_gmail_status_uses_local_data_tokens_when_env_paths_are_missing(self):
         class FakeExecutable:
@@ -1202,6 +1207,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["ready"], True)
         self.assertEqual(status["outbound"]["ready"], True)
         self.assertEqual(status["inbound"]["email"], "legal@aspora.com")
+        self.assertEqual(status["inbound"]["token"], {
+            "configured": True,
+            "label": "data/gmail/inbound-token.json",
+            "source": "local_data",
+        })
 
     def test_gmail_status_blocks_outbound_when_accounts_do_not_match(self):
         class FakeExecutable:
@@ -1246,6 +1256,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["ready"], True)
         self.assertEqual(status["outbound"]["ready"], False)
         self.assertIn("does not match inbound Gmail account inbound@aspora.com", status["outbound"]["error"])
+        self.assertEqual(status["inbound"]["token"], {
+            "configured": True,
+            "label": gmail_integration.ROLE_TOKEN_ENV["inbound"],
+            "source": "environment",
+        })
+        self.assertNotIn(str(token_path), json.dumps(status))
 
     def test_gmail_settings_endpoint_persists_toggles(self):
         with tempfile.TemporaryDirectory() as data_dir:

@@ -289,12 +289,22 @@ async function testPlaybookAdminEditor(page) {
         enabled: true,
         query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA OR subject:"confidentiality agreement")',
         ready: true,
+        token: {
+          configured: true,
+          label: "data/gmail/inbound-token.json",
+          source: "local_data",
+        },
       },
       outbound: {
         configured: true,
         email: "outbound@example.com",
         enabled: true,
         ready: true,
+        token: {
+          configured: true,
+          label: "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
+          source: "environment",
+        },
       },
     },
   };
@@ -401,6 +411,12 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "OUTBOUND ACCOUNT");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "outbound@example.com");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "CONNECTION SETUP");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Inbound connection");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Local data: data/gmail/inbound-token.json");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Environment: NDA_GMAIL_OUTBOUND_TOKEN_PATH");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Ready for scheduled sync.");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "Ready to send redlines.");
   assert.equal(await page.locator("#adminGmailInboundToggle").getAttribute("aria-checked"), "true");
   assert.equal(await page.locator("#adminGmailOutboundToggle").getAttribute("aria-checked"), "true");
   assert.equal(await page.locator('[data-gmail-frequency="manual"]').count(), 0);
@@ -916,12 +932,22 @@ async function testGmailSetupRequiredStatus(page) {
             error: "Set NDA_GMAIL_INBOUND_TOKEN_PATH for the inbound Gmail account.",
             query: "in:inbox has:attachment",
             ready: false,
+            token: {
+              configured: false,
+              label: "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
+              source: "missing",
+            },
           },
           outbound: {
             configured: false,
             enabled: true,
             error: "Set NDA_GMAIL_OUTBOUND_TOKEN_PATH for the outbound Gmail account.",
             ready: false,
+            token: {
+              configured: false,
+              label: "NDA_GMAIL_OUTBOUND_TOKEN_PATH or data/gmail/outbound-token.json",
+              source: "missing",
+            },
           },
         },
       }),
@@ -951,6 +977,8 @@ async function testGmailSetupRequiredStatus(page) {
   const adminPanel = page.locator("#adminIntegrationsPanel");
   await assertTextContains(adminPanel, "NEEDS SETUP");
   await assertTextContains(adminPanel, "Gmail inbound setup required");
+  await assertTextContains(adminPanel, "Missing: NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json");
+  await assertTextContains(adminPanel, "Add data/gmail/inbound-token.json or set NDA_GMAIL_INBOUND_TOKEN_PATH.");
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");

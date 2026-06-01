@@ -82,6 +82,7 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailOverall: document.querySelector("#adminGmailOverall"),
   gmailRecentSend: document.querySelector("#adminGmailRecentSend"),
   gmailRefreshButton: document.querySelector("#adminGmailRefreshButton"),
+  gmailSetupPanel: document.querySelector("#adminGmailSetupPanel"),
   gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
   gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
   gmailFrequencyControl: document.querySelector("#adminGmailFrequencyControl"),
