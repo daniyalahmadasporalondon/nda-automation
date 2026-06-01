@@ -632,10 +632,10 @@ class DocxExportTests(unittest.TestCase):
             )
             for paragraph in paragraphs
         ]
-        self.assertIn((original, ""), states)
-        self.assertIn(("", governing_law_replacement), states)
-        self.assertIn(("", term_replacement), states)
-        self.assertEqual(sum(1 for rejected, _accepted in states if rejected == original), 1)
+        self.assertIn((original, governing_law_replacement), states)
+        self.assertIn((original, term_replacement), states)
+        self.assertEqual(sum(1 for rejected, _accepted in states if rejected == original), 2)
+        assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
 
     def test_source_docx_export_rejects_suspicious_compression_ratio(self):
         source_docx = make_source_docx(["A" * 4096])

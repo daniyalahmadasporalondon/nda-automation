@@ -409,36 +409,21 @@ def _apply_redline_edits_to_source_document(
 
         primary_edits = [edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH]
         insert_position = paragraph_position + 1
-        if len(primary_edits) == 1:
-            primary_edit = primary_edits[0]
-            if primary_edit.get("action") == REDLINE_REPLACE_PARAGRAPH:
-                replacement_paragraph, revision_id = _source_tracked_replace_paragraph(
-                    source_paragraph.paragraph,
-                    str(primary_edit.get("original_text") or _paragraph_text(source_paragraph.paragraph)),
-                    str(primary_edit.get("replacement_text") or ""),
-                    revision_id,
-                )
-                source_paragraph.parent[paragraph_position] = replacement_paragraph
-            elif primary_edit.get("action") == REDLINE_DELETE_PARAGRAPH:
-                source_paragraph.parent[paragraph_position] = _source_tracked_delete_paragraph(
-                    source_paragraph.paragraph,
-                    str(primary_edit.get("original_text") or _paragraph_text(source_paragraph.paragraph)),
-                    revision_id,
-                )
-                revision_id += 1
-        elif primary_edits:
-            source_paragraph.parent[paragraph_position] = _source_tracked_delete_paragraph(
+        primary_applied = False
+        for primary_edit in primary_edits:
+            primary_paragraph, revision_id = _source_tracked_primary_redline_paragraph(
                 source_paragraph.paragraph,
-                _paragraph_text(source_paragraph.paragraph),
+                primary_edit,
                 revision_id,
             )
-            revision_id += 1
-            for replacement_edit in [edit for edit in primary_edits if edit.get("action") == REDLINE_REPLACE_PARAGRAPH]:
-                replacement_text = str(replacement_edit.get("replacement_text") or "")
-                for inserted_paragraph in _source_tracked_insert_paragraphs(replacement_text, revision_id):
-                    source_paragraph.parent.insert(insert_position, inserted_paragraph)
-                    insert_position += 1
-                    revision_id += 1
+            if primary_paragraph is None:
+                continue
+            if primary_applied:
+                source_paragraph.parent.insert(insert_position, primary_paragraph)
+                insert_position += 1
+            else:
+                source_paragraph.parent[paragraph_position] = primary_paragraph
+                primary_applied = True
 
         for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
             insert_text = str(insertion.get("insert_text") or insertion.get("replacement_text") or "")
@@ -471,6 +456,24 @@ def _indexed_source_paragraphs(root: ET.Element) -> List[SourceParagraph]:
 
     visit(root)
     return paragraphs
+
+
+def _source_tracked_primary_redline_paragraph(
+    source_paragraph: ET.Element,
+    redline: RedlineEdit,
+    revision_id: int,
+) -> Tuple[ET.Element | None, int]:
+    original_text = str(redline.get("original_text") or _paragraph_text(source_paragraph))
+    if redline.get("action") == REDLINE_REPLACE_PARAGRAPH:
+        return _source_tracked_replace_paragraph(
+            source_paragraph,
+            original_text,
+            str(redline.get("replacement_text") or ""),
+            revision_id,
+        )
+    if redline.get("action") == REDLINE_DELETE_PARAGRAPH:
+        return _source_tracked_delete_paragraph(source_paragraph, original_text, revision_id), revision_id + 1
+    return None, revision_id
 
 
 def _source_tracked_replace_paragraph(
