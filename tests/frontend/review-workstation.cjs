@@ -559,7 +559,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   ]);
   const matterExportPayload = matterExportRequest.postDataJSON();
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
-  assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
+  assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await waitForRepositoryCount(page, "in_review", "0");
   await waitForRepositoryCount(page, "redline_ready", "1");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Redline Ready");
@@ -583,7 +583,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   ]);
   const reviewMatterExportPayload = reviewMatterExportRequest.postDataJSON();
   assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
-  assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined\.docx$/);
+  assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await waitForRepositoryCount(page, "in_review", "0");
   await waitForRepositoryCount(page, "redline_ready", "1");
 
@@ -596,7 +596,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
     page.getByRole("button", { name: "Export DOCX" }).click(),
   ]);
   const exportPayload = exportRequest.postDataJSON();
-  assert.equal(download.suggestedFilename(), "nda-review-report.docx");
+  assert.match(download.suggestedFilename(), /^nda-review-report(?:-[0-9a-f]{12})?\.docx$/);
   assert.equal(Object.prototype.hasOwnProperty.call(exportPayload, "matter_id"), false);
 
   await page.getByRole("tab", { name: "Repository" }).click();
@@ -1573,7 +1573,7 @@ async function testSourceRedlineExportRegression(page) {
     page.waitForEvent("download"),
     page.locator("#studioExportButton").click(),
   ]);
-  assert.equal(download.suggestedFilename(), "Source-Redline-NDA-redlined.docx");
+  assert.match(download.suggestedFilename(), /^Source-Redline-NDA-redlined(?:-[0-9a-f]{12})?\.docx$/);
   const exportedPath = await download.path();
   assert.ok(exportedPath, "source-redline export download path should be available");
 
@@ -1614,16 +1614,19 @@ async function testExportFlow(page) {
     page.waitForEvent("download"),
     exportButton.click(),
   ]);
-  assert.equal(download.suggestedFilename(), "nda-review-report.docx");
+  assert.match(download.suggestedFilename(), /^nda-review-report(?:-[0-9a-f]{12})?\.docx$/);
   const downloadedPath = await download.path();
   assert.ok(downloadedPath, "download path should be available");
   assert.ok(fs.statSync(downloadedPath).size > 1000, "exported DOCX should not be empty");
   await assertTextContains(page.locator("#studioFileMeta"), "Saved export:");
-  await assertTextContains(page.locator("#studioFileMeta"), "/exports/nda-review-report.docx");
+  assert.match(await page.locator("#studioFileMeta").innerText(), /\/exports\/nda-review-report(?:-[0-9a-f]{12})?\.docx/);
   await assertTextContains(page.locator("#studioFileMeta"), "Word package verified");
   await assertTextContains(page.locator("#studioFileMeta"), "Track Changes enabled");
   await assertTextContains(page.locator("#studioFileMeta a.download-again"), "Download again");
-  assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("href"), "/exports/nda-review-report.docx");
+  assert.match(
+    await page.locator("#studioFileMeta a.download-again").getAttribute("href"),
+    /^\/exports\/nda-review-report(?:-[0-9a-f]{12})?\.docx$/,
+  );
   assert.equal(await page.locator("#studioFileMeta a.download-again").getAttribute("download"), "nda-review-report.docx");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Mutual Non-Disclosure Agreement with edits");

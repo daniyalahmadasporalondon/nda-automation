@@ -309,6 +309,8 @@ def _resolve_source_paragraph(
     source_paragraphs: List[SourceParagraph],
     review_paragraphs_by_id: Dict[str, Paragraph],
 ) -> SourceParagraph | None:
+    if _redline_source_part(redline, review_paragraphs_by_id):
+        return None
     source_index = _redline_source_index(redline)
     anchor_texts = _redline_anchor_texts(redline, review_paragraphs_by_id)
     for anchor_text in anchor_texts:
@@ -339,6 +341,16 @@ def _redline_source_index(redline: RedlineEdit) -> int | None:
         return int(source_index)
     except (TypeError, ValueError):
         return None
+
+
+def _redline_source_part(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> str:
+    source_part = str(redline.get("source_part") or "").strip()
+    if source_part:
+        return source_part
+    review_paragraph = review_paragraphs_by_id.get(str(redline.get("paragraph_id") or ""))
+    if isinstance(review_paragraph, dict):
+        return str(review_paragraph.get("source_part") or "").strip()
+    return ""
 
 
 def _redline_anchor_texts(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> List[str]:
@@ -542,6 +554,12 @@ def _tracked_delete_paragraph(text: str, revision_id: int) -> str:
 
 
 def _tracked_replace_paragraph(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
+    if "\n" in str(original) or "\n" in str(replacement):
+        return (
+            f"<w:p>{_tracked_delete(str(original), first_revision_id)}{_tracked_insert(str(replacement), first_revision_id + 1)}</w:p>",
+            first_revision_id + 2,
+        )
+
     runs: List[str] = []
     revision_id = first_revision_id
     current_type = ""

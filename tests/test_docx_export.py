@@ -197,10 +197,10 @@ def paragraph_mark_revisions(document_root, kind):
 def revision_text_for_state(node, accepted):
     tag = node.tag.rsplit("}", 1)[-1]
     if tag == "del":
-        return "".join(item.text or "" for item in node.findall(".//w:delText", W_NS)) if not accepted else ""
+        return "" if accepted else "".join(revision_text_for_state(child, accepted=False) for child in list(node))
     if tag == "ins":
-        return "".join(item.text or "" for item in node.findall(".//w:t", W_NS)) if accepted else ""
-    if tag == "t":
+        return "".join(revision_text_for_state(child, accepted=True) for child in list(node)) if accepted else ""
+    if tag in {"t", "delText"}:
         return node.text or ""
     if tag == "br":
         return "\n"
@@ -361,6 +361,18 @@ class DocxExportTests(unittest.TestCase):
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):
         original = "This Agreement (California) applies."
         replacement = "This Agreement (England and Wales) applies."
+
+        paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, 7)
+
+        root = ET.fromstring(f'<root xmlns:w="{W_NS["w"]}">{paragraph_xml}</root>')
+        paragraph = root.find(".//w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        self.assertEqual(next_revision_id, 9)
+
+    def test_tracked_replace_paragraph_preserves_newlines(self):
+        original = "Line one\nLine two"
+        replacement = "Line one\nLine three"
 
         paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, 7)
 
@@ -586,6 +598,59 @@ class DocxExportTests(unittest.TestCase):
             for paragraph in paragraphs
         ]
         self.assertEqual(states, [("Duplicate paragraph.", "Duplicate paragraph.")] * 2)
+
+    def test_source_docx_export_skips_supplemental_part_redlines(self):
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 1,
+            "checked_at": "2026-05-31T00:00:00+00:00",
+            "paragraphs": [
+                {
+                    "id": "p1",
+                    "index": 1,
+                    "source_part": "header1",
+                    "text": "This Agreement shall be governed by the laws of California.",
+                },
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_part": "header1",
+                    "original_text": "This Agreement shall be governed by the laws of California.",
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                },
+            ],
+        }
+
+        with self.assertLogs("nda_automation.docx_export", level="WARNING") as logs:
+            redlined_docx = build_source_redline_docx(source_docx, review_result)
+        self.assertIn("unresolved or ambiguous anchor", "\n".join(logs.output))
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        self.assertEqual(
+            [
+                (
+                    revision_text_for_state(paragraph, accepted=False),
+                    revision_text_for_state(paragraph, accepted=True),
+                )
+                for paragraph in paragraphs
+            ],
+            [
+                (
+                    "This Agreement shall be governed by the laws of California.",
+                    "This Agreement shall be governed by the laws of California.",
+                ),
+            ],
+        )
 
     def test_source_docx_export_repairs_missing_package_relationships(self):
         source_docx = make_source_docx(

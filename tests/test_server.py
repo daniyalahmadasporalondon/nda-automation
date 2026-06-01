@@ -595,6 +595,18 @@ class ServerTests(unittest.TestCase):
         mocked_print.assert_called_once_with("Could not save export copy: FileExistsError")
         self.assertEqual(telemetry.snapshot()["counters"]["export_copy_failures"], 1)
 
+    def test_matter_store_save_flushes_to_disk(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(matter_store.os, "fsync", wraps=matter_store.os.fsync) as fsync:
+                    matter_store._save_matters([{"id": "matter_1"}])
+
+                saved = json.loads(matter_store.MATTERS_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, [{"id": "matter_1"}])
+        self.assertGreaterEqual(fsync.call_count, 1)
+
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})
 
@@ -835,6 +847,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(list_status, 200)
         self.assertEqual(list_payload["matters"], [])
         self.assertFalse(stored_path_exists)
+
+    def test_demo_reset_does_not_delete_documents_when_save_fails(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_store.create_matter(
+                    source_filename="Reset Failure NDA.docx",
+                    document_bytes=b"source-doc",
+                    extracted_text="source doc",
+                    review_result={"clauses": []},
+                    triage={},
+                )
+                with (
+                    patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("save failed")),
+                    patch.object(matter_store, "_delete_stored_document") as delete_stored_document,
+                ):
+                    with self.assertRaisesRegex(matter_store.MatterStoreError, "save failed"):
+                        matter_store.reset_demo_repository()
+
+        delete_stored_document.assert_not_called()
 
     def test_matter_delete_removes_repository_item_and_uploaded_document(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -3102,6 +3134,23 @@ class ServerTests(unittest.TestCase):
                         ["new.docx", "old-two.docx"],
                     )
                     self.assertEqual((exports_path / "new.docx").read_bytes(), b"new")
+
+    def test_persisted_exports_do_not_overwrite_same_name_exports(self):
+        with tempfile.TemporaryDirectory() as exports_dir:
+            exports_path = server_module.Path(exports_dir)
+            with patch.object(export_service, "EXPORTS_DIR", exports_path):
+                first_path = export_service.persist_export(b"first", "same.docx")
+                second_path = export_service.persist_export(b"second", "same.docx")
+                first_bytes = first_path.read_bytes()
+                second_bytes = second_path.read_bytes()
+
+        self.assertIsNotNone(first_path)
+        self.assertIsNotNone(second_path)
+        self.assertNotEqual(first_path, second_path)
+        self.assertEqual(first_path.name, "same.docx")
+        self.assertRegex(second_path.name, r"^same-[0-9a-f]{12}\.docx$")
+        self.assertEqual(first_bytes, b"first")
+        self.assertEqual(second_bytes, b"second")
 
     def test_playbook_save_updates_local_playbook_file_after_validation(self):
         playbook = deepcopy(load_playbook())

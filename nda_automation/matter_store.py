@@ -177,9 +177,9 @@ def update_redline_draft(matter_id: str, redline_draft: dict[str, Any] | None) -
 def reset_demo_repository() -> int:
     with _locked_store():
         matters = _load_matters()
+        _save_matters([])
         for matter in matters:
             _delete_stored_document(matter)
-        _save_matters([])
     return len(matters)
 
 
@@ -337,7 +337,27 @@ def _save_matters(matters: list[dict[str, Any]]) -> None:
     temporary_path = MATTERS_PATH.with_suffix(".json.tmp")
     with temporary_path.open("w", encoding="utf-8") as handle:
         json.dump(matters, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temporary_path.replace(MATTERS_PATH)
+    _fsync_directory(DATA_DIR)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _prune_stored_matters(

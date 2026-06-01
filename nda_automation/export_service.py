@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from . import telemetry
 from .redline_actions import (
@@ -175,9 +176,7 @@ def persist_export(data: bytes, filename: str) -> Path | None:
     safe_name = os.path.basename(filename) or "nda-review-report.docx"
     try:
         EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        export_path = (EXPORTS_DIR / safe_name).resolve()
-        if export_path.parent != EXPORTS_DIR.resolve():
-            export_path = EXPORTS_DIR / "nda-review-report.docx"
+        export_path = _collision_safe_export_path(safe_name)
         export_path.write_bytes(data)
         prune_saved_exports(export_path)
         return export_path
@@ -185,6 +184,25 @@ def persist_export(data: bytes, filename: str) -> Path | None:
         telemetry.increment("export_copy_failures")
         print(f"Could not save export copy: {error.__class__.__name__}")
         return None
+
+
+def _collision_safe_export_path(safe_name: str) -> Path:
+    if EXPORTS_DIR is None:
+        raise OSError("Export directory is not configured.")
+    export_path = (EXPORTS_DIR / safe_name).resolve()
+    exports_dir = EXPORTS_DIR.resolve()
+    if export_path.parent != exports_dir:
+        export_path = (EXPORTS_DIR / "nda-review-report.docx").resolve()
+    if not export_path.exists():
+        return export_path
+
+    suffix = export_path.suffix or ".docx"
+    stem = export_path.stem or "nda-review-report"
+    for _attempt in range(100):
+        candidate = (EXPORTS_DIR / f"{stem}-{uuid4().hex[:12]}{suffix}").resolve()
+        if candidate.parent == exports_dir and not candidate.exists():
+            return candidate
+    return (EXPORTS_DIR / f"{stem}-{uuid4().hex}{suffix}").resolve()
 
 
 def prune_saved_exports(protected_path: Path) -> None:
