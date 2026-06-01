@@ -51,6 +51,7 @@ const tests = [
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
   ["guards source-redline export regression", testSourceRedlineExportRegression],
+  ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
 ];
 
@@ -1721,6 +1722,95 @@ async function testSourceRedlineExportRegression(page) {
     )),
     "delete redline must remain a native deletion against the source paragraph",
   );
+}
+
+async function testExportMarksCapturedMatterReady(page) {
+  await page.goto(`${BASE_URL}/?v=export-matter-race-test`, { waitUntil: "domcontentloaded" });
+
+  let capturedExportPayload = null;
+  let exportStartedResolve;
+  let releaseExport;
+  const exportStarted = new Promise((resolve) => {
+    exportStartedResolve = resolve;
+  });
+  const exportCanFinish = new Promise((resolve) => {
+    releaseExport = resolve;
+  });
+  await page.route("**/api/export-review-docx", async (route) => {
+    capturedExportPayload = route.request().postDataJSON();
+    exportStartedResolve();
+    await exportCanFinish;
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Disposition": 'attachment; filename="matter-a-redlined.docx"',
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "X-Export-Verified": "word-package; track-revisions",
+      },
+      body: "fake-docx",
+    });
+  });
+
+  await page.evaluate(() => {
+    const sourceText = "This Agreement shall be governed by the laws of California.";
+    window.__markedRedlineReadyMatterIds = [];
+    window.__exportRaceDownloads = [];
+    window.downloadBlob = (_blob, filename) => {
+      window.__exportRaceDownloads.push(filename);
+    };
+    repositoryController.markMatterRedlineReady = async (matter) => {
+      window.__markedRedlineReadyMatterIds.push(matter?.id || null);
+      return matter ? { ...matter, board_column: "redline_ready" } : null;
+    };
+    state.selectedMatter = {
+      board_column: "in_review",
+      id: "matter_a",
+      source_filename: "Matter A.docx",
+      title: "Matter A",
+    };
+    state.selectedDocument = null;
+    state.reviewSourceText = sourceText;
+    state.reviewClauses = [{
+      id: "governing_law",
+      name: "Governing Law",
+      passes: false,
+      status: "check",
+    }];
+    state.reviewRedlines = [];
+    state.reviewParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+    state.reviewOriginalParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+    state.reviewExportOriginalParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+    state.exportClauseDecisions = {};
+    state.redlineTemplateSelections = {};
+    state.redlineDraftDirty = false;
+    studioNdaText.value = sourceText;
+    studioDocTitle.textContent = "Matter A";
+  });
+
+  const exportPromise = page.evaluate(() => exportReviewDocx());
+  await exportStarted;
+  await page.evaluate(() => {
+    state.selectedMatter = {
+      board_column: "in_review",
+      id: "matter_b",
+      source_filename: "Matter B.docx",
+      title: "Matter B",
+    };
+  });
+  releaseExport();
+  await exportPromise;
+
+  const exportRaceState = await page.evaluate(() => ({
+    downloads: window.__exportRaceDownloads,
+    markedReadyMatterIds: window.__markedRedlineReadyMatterIds,
+    selectedMatterId: state.selectedMatter?.id || null,
+  }));
+  assert.equal(capturedExportPayload.matter_id, "matter_a");
+  assert.deepEqual(exportRaceState.markedReadyMatterIds, ["matter_a"]);
+  assert.deepEqual(exportRaceState.downloads, ["matter-a-redlined.docx"]);
+  assert.equal(exportRaceState.selectedMatterId, "matter_b");
+
+  await page.unroute("**/api/export-review-docx");
 }
 
 async function testExportFlow(page) {

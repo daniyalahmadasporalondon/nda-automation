@@ -106,33 +106,39 @@ async function exportReviewDocx() {
   pendingReviewSendMatterId = null;
   const text = studioNdaText.value.trim() || state.reviewSourceText.trim();
   if (!text) return;
+  const exportMatter = state.selectedMatter?.id ? state.selectedMatter : null;
+  const exportDocument = !exportMatter && state.selectedDocument ? state.selectedDocument : null;
+  const exportTitle = studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE;
+  const exportRedlines = effectiveReviewRedlines();
+  const exportManualRedlines = manualExportRedlines();
+  const exportDraftDirty = Boolean(exportMatter?.id && state.redlineDraftDirty);
 
   studioExportButton.disabled = true;
   studioExportButton.textContent = "Choosing file";
 
   try {
-    const saveHandle = await chooseExportSaveHandle(suggestedExportFilename());
+    const saveHandle = await chooseExportSaveHandle(suggestedExportFilenameForContext(exportMatter, exportDocument));
     if (saveHandle === null) {
       studioFileMeta.textContent = "Export cancelled";
       return;
     }
 
     studioExportButton.textContent = "Exporting";
-    if (state.selectedMatter?.id && state.redlineDraftDirty) {
+    if (exportDraftDirty && state.selectedMatter?.id === exportMatter.id) {
       await saveReviewRedlineDraft({ quiet: true });
     }
     const payload = {
       text,
       reviewed_text: text,
-      title: studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE,
-      export_redline_edits: effectiveReviewRedlines(),
-      manual_redline_edits: manualExportRedlines(),
+      title: exportTitle,
+      export_redline_edits: exportRedlines,
+      manual_redline_edits: exportManualRedlines,
     };
-    if (state.selectedMatter?.id) {
-      payload.matter_id = state.selectedMatter.id;
-    } else if (state.selectedDocument) {
-      payload.filename = state.selectedDocument.name;
-      payload.content_base64 = await fileToBase64(state.selectedDocument);
+    if (exportMatter?.id) {
+      payload.matter_id = exportMatter.id;
+    } else if (exportDocument) {
+      payload.filename = exportDocument.name;
+      payload.content_base64 = await fileToBase64(exportDocument);
     }
 
     const response = await fetch("/api/export-review-docx", {
@@ -160,7 +166,7 @@ async function exportReviewDocx() {
       downloadBlob(blob, filename);
       renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading");
     }
-    await repositoryController.markMatterRedlineReady(state.selectedMatter);
+    await repositoryController.markMatterRedlineReady(exportMatter);
   } catch (error) {
     renderOperationError(error, "Export could not run.");
   } finally {
@@ -402,7 +408,11 @@ function renderExportSuccess(filename, savedPath, savedUrl, verification, fallba
 }
 
 function suggestedExportFilename() {
-  if (state.selectedMatter?.source_filename) return redlineDownloadFilename(state.selectedMatter.source_filename);
-  if (state.selectedDocument?.name) return redlineDownloadFilename(state.selectedDocument.name);
+  return suggestedExportFilenameForContext(state.selectedMatter, state.selectedDocument);
+}
+
+function suggestedExportFilenameForContext(matter, document) {
+  if (matter?.source_filename) return redlineDownloadFilename(matter.source_filename);
+  if (document?.name) return redlineDownloadFilename(document.name);
   return "nda-review-report.docx";
 }
