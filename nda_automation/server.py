@@ -68,6 +68,64 @@ def _parse_matter_id(path: str, *, suffix: str = "") -> str | None:
     return _route_parse_matter_id(path, suffix=suffix)
 
 
+def _handle_index_get(handler, *, send_body: bool) -> None:
+    handler._send_file(STATIC_DIR / "index.html", send_body=send_body)
+
+
+def _handle_playbook_get(handler, *, send_body: bool) -> None:
+    handler._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body)
+
+
+def _handle_text_review_post(handler) -> None:
+    review_routes.handle_text_review(handler, review_nda_func=review_nda)
+
+
+def _handle_document_review_post(handler) -> None:
+    review_routes.handle_document_review(
+        handler,
+        extract_document_func=extract_document,
+        review_nda_func=review_nda,
+    )
+
+
+def _handle_matter_upload_post(handler) -> None:
+    matter_routes.handle_matter_upload(
+        handler,
+        create_matter_from_document_func=create_matter_from_document,
+    )
+
+
+def _handle_playbook_save_post(handler) -> None:
+    playbook_routes.handle_playbook_save(
+        handler,
+        playbook_path=PLAYBOOK_PATH,
+        replace_file=os.replace,
+    )
+
+
+_GET_EXACT_ROUTES = {
+    "/": _handle_index_get,
+    "/api/deployment/status": admin_routes.handle_deployment_status,
+    "/playbook": _handle_playbook_get,
+    "/api/gmail/status": gmail_routes.handle_gmail_status,
+    "/api/matters": matter_routes.handle_matter_list,
+    "/api/matters/export": admin_routes.handle_matter_backup,
+    "/api/telemetry": admin_routes.handle_telemetry,
+}
+
+_POST_EXACT_ROUTES = {
+    "/api/review": _handle_text_review_post,
+    "/api/review-document": _handle_document_review_post,
+    "/api/matters": _handle_matter_upload_post,
+    "/api/gmail/import": gmail_routes.handle_gmail_import,
+    "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
+    "/api/gmail/settings": gmail_routes.handle_gmail_settings_update,
+    "/api/demo/reset": matter_routes.handle_demo_reset,
+    "/api/export-review-docx": review_routes.handle_review_docx_export,
+    "/api/playbook": _handle_playbook_save_post,
+}
+
+
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
     server_version = "nda-automation/0.1"
 
@@ -89,18 +147,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if not self._rate_limit_request("GET", path, send_body=send_body):
             return
-        exact_routes = {
-            "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
-            "/api/deployment/status": lambda: admin_routes.handle_deployment_status(self, send_body=send_body),
-            "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
-            "/api/gmail/status": lambda: gmail_routes.handle_gmail_status(self, send_body=send_body),
-            "/api/matters": lambda: matter_routes.handle_matter_list(self, send_body=send_body),
-            "/api/matters/export": lambda: admin_routes.handle_matter_backup(self, send_body=send_body),
-            "/api/telemetry": lambda: admin_routes.handle_telemetry(self, send_body=send_body),
-        }
-        handler = exact_routes.get(path)
+        handler = _GET_EXACT_ROUTES.get(path)
         if handler is not None:
-            handler()
+            handler(self, send_body=send_body)
             return
         if path.startswith("/api/matters/") and path.endswith("/review"):
             matter_routes.handle_matter_review(self, path, send_body=send_body)
@@ -135,31 +184,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if not self._rate_limit_request("POST", path):
             return
         try:
-            exact_routes = {
-                "/api/review": lambda: review_routes.handle_text_review(self, review_nda_func=review_nda),
-                "/api/review-document": lambda: review_routes.handle_document_review(
-                    self,
-                    extract_document_func=extract_document,
-                    review_nda_func=review_nda,
-                ),
-                "/api/matters": lambda: matter_routes.handle_matter_upload(
-                    self,
-                    create_matter_from_document_func=create_matter_from_document,
-                ),
-                "/api/gmail/import": lambda: gmail_routes.handle_gmail_import(self),
-                "/api/gmail/send-redline": lambda: gmail_routes.handle_gmail_send_redline(self),
-                "/api/gmail/settings": lambda: gmail_routes.handle_gmail_settings_update(self),
-                "/api/demo/reset": lambda: matter_routes.handle_demo_reset(self),
-                "/api/export-review-docx": lambda: review_routes.handle_review_docx_export(self),
-                "/api/playbook": lambda: playbook_routes.handle_playbook_save(
-                    self,
-                    playbook_path=PLAYBOOK_PATH,
-                    replace_file=os.replace,
-                ),
-            }
-            handler = exact_routes.get(path)
+            handler = _POST_EXACT_ROUTES.get(path)
             if handler is not None:
-                handler()
+                handler(self)
                 return
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 matter_routes.handle_matter_stage_update(self, path)
