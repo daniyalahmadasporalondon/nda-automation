@@ -269,6 +269,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(authed_status, 200)
         self.assertIn("matters", authed_payload)
 
+    def test_public_bind_requires_configured_durable_data_dir(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with self.assertRaisesRegex(RuntimeError, server_module.DURABLE_DATA_DIR_REQUIRED_MESSAGE):
+                server_module._validate_public_storage("0.0.0.0")
+
+    def test_public_bind_rejects_ephemeral_data_dir(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/tmp/nda-automation-data", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda-automation-data")):
+                with self.assertRaisesRegex(RuntimeError, server_module.EPHEMERAL_DATA_DIR_MESSAGE):
+                    server_module._validate_public_storage("0.0.0.0")
+
+    def test_public_bind_rejects_ephemeral_exports_dir(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/var/data", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/tmp/nda-automation-exports")):
+                    with self.assertRaisesRegex(RuntimeError, server_module.EPHEMERAL_EXPORTS_DIR_MESSAGE):
+                        server_module._validate_public_storage("0.0.0.0")
+
+    def test_public_bind_accepts_persistent_data_paths(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/var/data", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/var/data/exports")):
+                    server_module._validate_public_storage("0.0.0.0")
+
+    def test_loopback_allows_ephemeral_data_paths_for_local_tests(self):
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/tmp/nda-automation-data", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda-automation-data")):
+                with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/tmp/nda-automation-exports")):
+                    server_module._validate_public_storage("127.0.0.1")
+
     def test_text_review_rejects_bad_json(self):
         status, payload = self.request(
             "POST",

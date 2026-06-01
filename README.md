@@ -42,9 +42,14 @@ Set `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD` before using a hosted service; i
 required but credentials are missing, protected routes fail closed with 503. The only
 unauthenticated route is `/healthz` for platform health checks.
 
-Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
+The Render blueprint uses a paid web service with a persistent disk mounted at `/var/data`.
+`NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for a public deployment,
+because Repository matters include extracted NDA text, uploaded source documents, review
+results, redline drafts, app settings, and Gmail sync state. The server refuses to start on
+non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as
+`/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
-The default blueprint uses ephemeral storage so it can deploy without a paid persistent disk. Repository matters and exports can be lost on redeploy/restart unless you later add persistent storage or move matter data to an external store.
+Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
 
 ## Test
 

@@ -8,6 +8,7 @@ import hmac
 import json
 import mimetypes
 import os
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -49,6 +50,9 @@ _GMAIL_SYNC_LOCK = threading.Lock()
 AUTH_REALM = "nda-automation"
 AUTH_REQUIRED_MESSAGE = "Authentication required."
 AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but NDA_AUTH_USERNAME and NDA_AUTH_PASSWORD are not configured."
+DURABLE_DATA_DIR_REQUIRED_MESSAGE = "Public deployments must set NDA_DATA_DIR to a durable storage path."
+EPHEMERAL_DATA_DIR_MESSAGE = "NDA_DATA_DIR points at ephemeral storage; use a persistent disk or external store."
+EPHEMERAL_EXPORTS_DIR_MESSAGE = "NDA_EXPORTS_DIR points at ephemeral storage; use a persistent disk or disable saved export URLs."
 
 
 @contextmanager
@@ -833,7 +837,43 @@ def _auth_required_for_host(host: str) -> bool:
         return True
     if os.environ.get("NDA_AUTH_USERNAME") or os.environ.get("NDA_AUTH_PASSWORD"):
         return True
-    return host not in {"127.0.0.1", "::1", "localhost"}
+    return not _is_loopback_host(host)
+
+
+def _validate_public_storage(host: str) -> None:
+    if _is_loopback_host(host) or _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA"):
+        return
+    if not os.environ.get("NDA_DATA_DIR"):
+        raise RuntimeError(DURABLE_DATA_DIR_REQUIRED_MESSAGE)
+    if _is_ephemeral_storage_path(matter_store.DATA_DIR):
+        raise RuntimeError(EPHEMERAL_DATA_DIR_MESSAGE)
+    if export_service.EXPORTS_DIR is not None and _is_ephemeral_storage_path(export_service.EXPORTS_DIR):
+        raise RuntimeError(EPHEMERAL_EXPORTS_DIR_MESSAGE)
+
+
+def _is_ephemeral_storage_path(path: Path) -> bool:
+    try:
+        resolved_path = path.expanduser().resolve(strict=False)
+    except OSError:
+        resolved_path = path.expanduser().absolute()
+    ephemeral_roots = {
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/var/tmp"),
+        Path(tempfile.gettempdir()).expanduser().resolve(strict=False),
+    }
+    for root in ephemeral_roots:
+        try:
+            resolved_root = root.resolve(strict=False)
+        except OSError:
+            resolved_root = root.absolute()
+        if resolved_path == resolved_root or resolved_root in resolved_path.parents:
+            return True
+    return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "::1", "localhost"}
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -863,6 +903,10 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
     args = parser.parse_args()
+    try:
+        _validate_public_storage(args.host)
+    except RuntimeError as error:
+        parser.error(str(error))
 
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
     _start_gmail_sync_scheduler()

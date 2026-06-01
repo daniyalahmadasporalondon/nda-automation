@@ -2,7 +2,7 @@ services:
   - type: web
     name: nda-automation
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: python -m pip install --upgrade pip && python -m pip install ".[gmail]"
     startCommand: python -m nda_automation.server --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
@@ -16,6 +16,10 @@ services:
       - key: NDA_AUTH_PASSWORD
         sync: false
       - key: NDA_DATA_DIR
-        value: /tmp/nda-automation-data
+        value: /var/data
       - key: NDA_EXPORTS_DIR
-        value: /tmp/nda-automation-exports
+        value: /var/data/exports
+    disk:
+      name: nda-automation-data
+      mountPath: /var/data
+      sizeGB: 1
