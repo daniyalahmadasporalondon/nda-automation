@@ -1,12 +1,29 @@
 # nda-automation
 
-A focused NDA hard-clause review portal.
+A focused NDA review and redline workstation for hard-clause review, matter intake, and Gmail-based NDA workflows.
 
-The app supports direct NDA review, native `.docx` redline export, and a lightweight Repository board for imported matters. The Repository can import `.docx` and text-based `.pdf` NDA attachments from a configured inbound Gmail account, while outbound redline sends use the configured outbound Gmail role and require an explicit confirmation click.
+The app reviews pasted text, `.docx` files, and text-based PDFs against a configurable playbook. It returns clause findings with evidence paragraphs, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
 
-You can paste NDA text directly, upload a plain text file, upload a `.docx` Word document or text-based `.pdf` for one-off review, or import a `.docx`/`.pdf` into the Repository for matter-based review. Scanned image-only PDFs need OCR before review.
+## Features
 
-## Run locally
+- Review pasted NDA text, plain text files, `.docx` Word documents, and text-based PDFs.
+- Detect required and prohibited hard clauses with paragraph-level evidence.
+- Generate Word review reports and source `.docx` redlines with tracked changes.
+- Import uploaded matters into a Repository board with review state, source documents, redline drafts, and stage tracking.
+- Sync inbound Gmail NDA attachments into the Repository when Gmail is configured.
+- Send outbound Gmail redlines only after an explicit confirmation action.
+- Edit the review playbook from the Admin interface.
+- Inspect deployment status and non-sensitive telemetry from auth-gated admin endpoints.
+- Download a sensitive matter backup from an auth-gated backup endpoint.
+
+## Product Areas
+
+- **Review Workstation**: one-off text/document review, clause checklist, evidence navigation, viewer edits, and DOCX export.
+- **Repository**: imported matters, board lanes, stored source documents, redline drafts, and matter review views.
+- **Admin**: playbook editor, Gmail connection state/settings, deployment status, telemetry, and matter backup.
+- **Gmail workflows**: inbound attachment import and outbound redline reply/send.
+
+## Run Locally
 
 Requires Python 3.9 or newer.
 
@@ -20,29 +37,53 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-## Dependency policy
+Local development can use the default local data directory. Public or non-loopback deployments must use durable storage and authentication.
 
-The core NDA review server is intentionally stdlib-only. Optional integrations are installed
-only when the corresponding capability is enabled:
+## Optional Dependencies
 
-- PDF intake uses `pypdf` and requires `python3 -m pip install ".[pdf]"`.
-- Gmail intake/send uses the Google API packages and requires `python3 -m pip install ".[gmail]"`.
+The core review server is intentionally stdlib-first. Optional capabilities are installed with extras:
 
-Without the `pdf` extra, PDF uploads fail with a "PDF support is not installed" error instead
-of treating the user's file as invalid. The Render blueprint installs `.[pdf,gmail]`
-deliberately because the hosted product enables both PDF intake and Gmail workflows.
+```bash
+python3 -m pip install -e ".[pdf]"
+python3 -m pip install -e ".[gmail]"
+python3 -m pip install -e ".[pdf,gmail]"
+```
 
-Regex/rule checks are the default. If you want an optional semantic fallback for missed
-phrase variations, set `NDA_SEMANTIC_EVALUATOR=module.path[:callable_name]`. The callable is
-lazy-loaded only when configured and receives keyword arguments `text`, `normalized`,
-`clause`, `paragraphs`, and `current_result`. It should return `None` or a small decision
-dict such as `{"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}`.
-No semantic provider is bundled, and the core server still has no required semantic or LLM
-dependency.
+- PDF intake uses `pypdf`.
+- Gmail intake/send uses the Google API packages.
+- Without the `pdf` extra, PDF uploads fail with a clear "PDF support is not installed" error.
+- The Render blueprint installs `.[pdf,gmail]` because the hosted product enables both PDF and Gmail workflows.
+
+## Configuration
+
+Common environment variables:
+
+- `NDA_DATA_DIR`: directory for matter records, source uploads, app settings, and Gmail sync state.
+- `NDA_EXPORTS_DIR`: directory for persisted export downloads.
+- `NDA_REQUIRE_AUTH`: set to `true` to require HTTP Basic auth.
+- `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: Basic auth credentials.
+- `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
+- `NDA_GMAIL_INBOUND_TOKEN_PATH`: OAuth token file for inbound Gmail sync.
+- `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
+- `NDA_ALLOW_EPHEMERAL_DATA`: set to `true` only for short-lived public demos using ephemeral storage.
+
+Optional semantic fallback:
+
+```bash
+export NDA_SEMANTIC_EVALUATOR=module.path[:callable_name]
+```
+
+The callable is lazy-loaded only when configured and receives keyword arguments `text`, `normalized`, `clause`, `paragraphs`, and `current_result`. It should return `None` or a small decision dictionary such as:
+
+```json
+{"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}
+```
+
+No semantic provider, LLM client, or external AI dependency is bundled.
 
 ## Deploy
 
-The app needs a Python web service because the static frontend calls the local API routes served by `nda_automation.server`.
+The app needs a Python web service because the static frontend calls API routes served by `nda_automation.server`.
 
 This repo includes a Render blueprint:
 
@@ -56,60 +97,43 @@ The production start command is:
 python -m nda_automation.server --host 0.0.0.0 --port $PORT
 ```
 
-Public deployments require HTTP Basic authentication. Non-loopback binds such as `0.0.0.0`
-require auth automatically, and the Render blueprint also sets `NDA_REQUIRE_AUTH=true`.
-Set `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD` before using a hosted service; if auth is
-required but credentials are missing, the server refuses to start. The only unauthenticated
-route is `/healthz` for platform health checks. Repository matter API responses expose only
-metadata; extracted text, review results, and redline drafts are available only through the
-auth-gated matter review workflow.
+Public deployments require HTTP Basic authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. If auth is required but credentials are missing, the server refuses to start.
 
-The Render blueprint uses a paid web service with a persistent disk mounted at `/var/data`.
-`NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for a public deployment,
-because Repository matters include extracted NDA text, uploaded source documents, review
-results, redline drafts, app settings, and Gmail sync state. The server refuses to start on
-non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as
-`/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
+The only unauthenticated route is `/healthz` for platform health checks.
 
-The hosted blueprint also sets `NDA_RATE_LIMIT_PER_MINUTE=120` for expensive endpoints such
-as review, document upload, matter import, DOCX export, Gmail send, and matter backup. Set it
-to a different positive integer for your deployment, or `0` only for trusted local testing.
+The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
-Authenticated admins can download a sensitive JSON backup from `/api/matters/export`. The
-backup includes full matter records plus a stored-document manifest; it does not embed the
-uploaded source document bytes.
+Authenticated admins can check:
 
-Authenticated admins can also check `/api/deployment/status` for the live auth, storage,
-health-check, and rate-limit shape, and `/api/telemetry` for non-sensitive counters such as
-review request counts, export failures, Gmail sync failures, and rate-limit hits.
+- `/api/deployment/status`: auth, storage, health-check, and rate-limit shape.
+- `/api/telemetry`: non-sensitive counters such as review requests, export failures, Gmail sync failures, and rate-limit hits.
+- `/api/matters/export`: sensitive JSON backup of matter records plus stored-document manifest. It does not embed uploaded source document bytes.
 
-Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
+## Security and Data Notes
 
-## Test
+- Matter list/detail API responses expose metadata only.
+- Extracted NDA text, review results, and redline drafts are returned only through the auth-gated matter review workflow.
+- Public deployments are rate-limited on expensive review, upload, export, Gmail send, and backup endpoints.
+- Atomic JSON saves fsync file contents and parent directories for durability.
+- DOCX XML parsing rejects unsupported DTD/entity declarations.
+- DOCX export strips invalid XML characters and protects against malformed tracked-change markup.
+- Uploaded source documents and matter backups are sensitive and should be protected as legal work product.
+
+## Gmail Roles
+
+Install Gmail dependencies before using the connector:
 
 ```bash
-python3 -m pip install -e ".[pdf]"
-python3 -m unittest discover -s tests
+python3 -m pip install -e ".[gmail]"
 ```
 
-Frontend behavior tests run the real app in Chromium and cover review view modes, viewer editing, redline rendering, and DOCX export:
+If Gmail should import PDF attachments too:
 
 ```bash
-npm install
-npm run test:frontend
+python3 -m pip install -e ".[pdf,gmail]"
 ```
 
-## Gmail roles
-
-Install the optional Gmail dependencies before using the connector. If Gmail should import
-PDF attachments too, install both extras:
-
-```bash
-python3 -m pip install ".[gmail]"
-python3 -m pip install ".[pdf,gmail]"
-```
-
-The Gmail integration reads OAuth token files from environment variables:
+Configure token files:
 
 ```bash
 export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
@@ -117,28 +141,61 @@ export NDA_GMAIL_OUTBOUND_TOKEN_PATH=/path/to/outbound-token.json
 ```
 
 For local development, the app also checks ignored project-local token files:
-`data/gmail/inbound-token.json` and `data/gmail/outbound-token.json`.
 
-Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the `Gmail Demo` Repository lane. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after `Send Redline` is confirmed.
+```text
+data/gmail/inbound-token.json
+data/gmail/outbound-token.json
+```
 
-## Current checks
+Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the Repository. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after confirmation.
 
-- Mutual NDA obligations
-- Broad confidential information definition
-- Approved governing law
-- Term and ordinary confidentiality survival up to five years
-- No non-circumvention or substitute-purpose exclusivity
-- Complete execution block
+Gmail remains disabled until token files are configured and readable by the service.
 
-## Review output
+## Current Checks
 
-The backend splits each uploaded document into numbered paragraphs (`p1`, `p2`, `p3`) and returns clause results with backend-identified paragraph evidence, issue labels, fix text, and review-only proposed redlines. DOCX uploads preserve the source Word paragraph index; PDF uploads preserve extracted page metadata. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+- Mutual NDA obligations.
+- Broad Confidential Information definition.
+- Standard Confidential Information exclusions, including qualified independent-development carve-outs.
+- Approved governing law: India, Delaware, England and Wales, or DIFC.
+- Term and ordinary confidentiality survival up to five years.
+- No non-circumvention or substitute-purpose exclusivity.
+- Complete execution/signature block.
 
-PDF extraction also reports basic quality metadata, including page counts, pages without extractable text, extracted character/paragraph counts, repeated header/footer removal, and warnings when extraction looks sparse or degraded.
+## Review Output
 
-Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. PDF matter exports generate a Word review report because PDFs cannot be patched with native Word tracked changes. If a Repository matter is re-reviewed as edited text, export switches to the normal review-report flow rather than reusing stale stored matter results.
+The backend splits each uploaded document into numbered paragraphs such as `p1`, `p2`, and `p3`. Clause results include backend-identified paragraph evidence, issue labels, fix text, and proposed redlines. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
 
-## Policy decisions to confirm
+DOCX uploads preserve the source Word paragraph index. PDF uploads preserve extracted page metadata. PDF extraction reports basic quality metadata, including page counts, pages without extractable text, extracted character/paragraph counts, repeated header/footer removal, and sparse-extraction warnings.
 
-- Confidentiality residuals and reverse-engineering terms are flagged only when they appear in exclusion-context paragraphs.
-- DOCX paragraph alignment fails the whole review if any extracted paragraph cannot be aligned to the source text.
+Repository imports preserve the original uploaded `.docx` so matter exports can generate native Word tracked changes against the source document. PDF matter exports generate a Word review report because PDFs cannot be patched with native Word tracked changes.
+
+## Test
+
+Install the test extras you need:
+
+```bash
+python3 -m pip install -e ".[pdf]"
+```
+
+Run backend tests:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+Run frontend behavior tests:
+
+```bash
+npm install
+npm run test:frontend
+```
+
+Frontend tests run the real app in Chromium and cover review view modes, viewer editing, redline rendering, Gmail/admin surfaces, and DOCX export behavior.
+
+## Roadmap
+
+- Matter activity timeline for imports, reviews, draft saves, exports, sends, stage changes, and Gmail sync events.
+- Export/send preflight that summarizes selected redlines, manual edits, recipient, filename, and source-text warnings.
+- Matter search and filtering by counterparty, sender, filename, status, issue, date, stage, and source.
+- Review decision memory for recurring counterparty positions.
+- Continued Gmail onboarding polish and recovery guidance.
