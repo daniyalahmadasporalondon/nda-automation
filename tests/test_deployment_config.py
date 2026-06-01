@@ -10,6 +10,7 @@ class DeploymentConfigTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         node_versions = re.findall(r'node-version:\s*"([^"]+)"', workflow)
 
+        self.assertRegex(workflow, r"FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:\s+true")
         self.assertGreaterEqual(len(node_versions), 2)
         self.assertEqual(set(node_versions), {"24"})
 
