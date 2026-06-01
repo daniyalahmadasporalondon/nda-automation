@@ -42,11 +42,15 @@ MATTER_SOURCE_COLUMNS = {"gmail_demo": "gmail_demo", "gmail_inbound": "gmail_dem
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
+DEFAULT_RATE_LIMIT_PER_MINUTE = 300
+RATE_LIMITED_MESSAGE = "Too many requests. Try again shortly."
 MAX_REDLINE_DRAFT_ITEMS = 200
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
 _PLAYBOOK_LOCK = threading.RLock()
 _GMAIL_SYNC_LOCK = threading.Lock()
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
 AUTH_REALM = "nda-automation"
 AUTH_REQUIRED_MESSAGE = "Authentication required."
 AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but NDA_AUTH_USERNAME and NDA_AUTH_PASSWORD are not configured."
@@ -181,11 +185,14 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if not self._authorize_request(send_body=send_body):
             return
+        if not self._rate_limit_request("GET", path, send_body=send_body):
+            return
         exact_routes = {
             "/": lambda: self._send_file(STATIC_DIR / "index.html", send_body=send_body),
             "/playbook": lambda: self._send_file(PLAYBOOK_PATH, "application/json", send_body=send_body),
             "/api/gmail/status": lambda: self._handle_gmail_status(send_body=send_body),
             "/api/matters": lambda: self._handle_matter_list(send_body=send_body),
+            "/api/matters/export": lambda: self._handle_matter_backup(send_body=send_body),
         }
         handler = exact_routes.get(path)
         if handler is not None:
@@ -242,6 +249,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_request():
             return
+        if not self._rate_limit_request("POST", path):
+            return
         try:
             exact_routes = {
                 "/api/review": self._handle_text_review,
@@ -295,6 +304,22 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body)
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500, send_body=send_body)
+
+    def _handle_matter_backup(self, *, send_body: bool = True) -> None:
+        try:
+            backup = matter_store.export_matters_backup()
+        except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500, send_body=send_body)
+            return
+        data = json.dumps(backup, indent=2).encode("utf-8") + b"\n"
+        exported_at = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+        self._send_download(
+            data,
+            f"nda-matters-backup-{exported_at}.json",
+            "application/json",
+            headers={"X-Backup-Contains": "matter-json"},
+            send_body=send_body,
+        )
 
     def _handle_text_review(self) -> None:
         payload = self._read_json_payload()
@@ -832,6 +857,22 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         )
         return False
 
+    def _rate_limit_request(self, method: str, path: str, *, send_body: bool = True) -> bool:
+        retry_after = _rate_limit_retry_after(
+            method,
+            path,
+            self.client_address[0] if self.client_address else "unknown",
+        )
+        if retry_after <= 0:
+            return True
+        self._send_json(
+            {"error": RATE_LIMITED_MESSAGE},
+            status=429,
+            headers={"Retry-After": str(retry_after)},
+            send_body=send_body,
+        )
+        return False
+
 
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:
     prefix = "Basic "
@@ -900,6 +941,65 @@ def _is_loopback_host(host: str) -> bool:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _rate_limit_retry_after(method: str, path: str, client_host: str) -> int:
+    bucket_name = _rate_limit_bucket_name(method, path)
+    if not bucket_name:
+        return 0
+    limit = _rate_limit_per_window()
+    if limit <= 0:
+        return 0
+    window_seconds = _rate_limit_window_seconds()
+    now = time.monotonic()
+    key = (client_host, bucket_name)
+    with _RATE_LIMIT_LOCK:
+        window_start, count = _RATE_LIMIT_BUCKETS.get(key, (now, 0))
+        if now - window_start >= window_seconds:
+            window_start = now
+            count = 0
+        if count >= limit:
+            return max(1, int(window_seconds - (now - window_start)))
+        _RATE_LIMIT_BUCKETS[key] = (window_start, count + 1)
+    return 0
+
+
+def _rate_limit_bucket_name(method: str, path: str) -> str:
+    if method == "GET" and path == "/api/matters/export":
+        return "matter-backup"
+    if method != "POST":
+        return ""
+    buckets = {
+        "/api/review": "review",
+        "/api/review-document": "document-review",
+        "/api/matters": "matter-upload",
+        "/api/export-review-docx": "docx-export",
+        "/api/gmail/send-redline": "gmail-send-redline",
+    }
+    return buckets.get(path, "")
+
+
+def _rate_limit_per_window() -> int:
+    try:
+        return max(0, int(os.environ.get("NDA_RATE_LIMIT_PER_MINUTE", str(DEFAULT_RATE_LIMIT_PER_MINUTE))))
+    except ValueError:
+        return DEFAULT_RATE_LIMIT_PER_MINUTE
+
+
+def _rate_limit_window_seconds() -> int:
+    try:
+        return max(1, int(os.environ.get("NDA_RATE_LIMIT_WINDOW_SECONDS", "60")))
+    except ValueError:
+        return 60
+
+
+def _reset_rate_limits() -> None:
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_BUCKETS.clear()
+
+
+def _log_background_error(message: str, error: Exception) -> None:
+    print(f"{message}: {error.__class__.__name__}")
 
 
 def _gmail_send_error_status(error: Exception) -> int:
@@ -991,7 +1091,7 @@ def _gmail_sync_scheduler_loop() -> None:
                         finally:
                             last_run = now
         except Exception as error:  # pragma: no cover - defensive background logging.
-            print(f"Gmail sync scheduler failed: {error}")
+            _log_background_error("Gmail sync scheduler failed", error)
 
 
 def _run_scheduled_gmail_sync() -> None:
@@ -1009,7 +1109,7 @@ def _run_scheduled_gmail_sync() -> None:
             finished_at=finished_at,
             query=gmail_integration.DEFAULT_INBOUND_QUERY,
         )
-        print(f"Gmail scheduled sync failed: {error}")
+        _log_background_error("Gmail scheduled sync failed", error)
         time.sleep(5)
 
 

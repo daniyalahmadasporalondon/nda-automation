@@ -19,6 +19,8 @@ services:
         value: /var/data
       - key: NDA_EXPORTS_DIR
         value: /var/data/exports
+      - key: NDA_RATE_LIMIT_PER_MINUTE
+        value: "120"
     disk:
       name: nda-automation-data
       mountPath: /var/data

@@ -55,6 +55,19 @@ def list_matters() -> list[dict[str, Any]]:
     return sorted(matters, key=lambda matter: str(matter.get("created_at") or ""), reverse=True)
 
 
+def export_matters_backup() -> dict[str, Any]:
+    with _locked_store():
+        matters = _load_matters()
+        documents = [_stored_document_manifest(matter) for matter in matters]
+    return {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "matter_count": len(matters),
+        "matters": matters,
+        "documents": [document for document in documents if document is not None],
+    }
+
+
 def get_matter(matter_id: str) -> dict[str, Any] | None:
     with _locked_store():
         for matter in _load_matters():
@@ -404,6 +417,28 @@ def _find_gmail_duplicate_unlocked(
 
 def _gmail_attachment_filename_key(filename: str) -> str:
     return _clean_source_filename(filename).casefold() if filename else ""
+
+
+def _stored_document_manifest(matter: dict[str, Any]) -> dict[str, Any] | None:
+    stored_filename = str(matter.get("stored_filename") or "")
+    if not stored_filename:
+        return None
+    manifest: dict[str, Any] = {
+        "matter_id": str(matter.get("id") or ""),
+        "source_filename": str(matter.get("source_filename") or ""),
+        "stored_filename": stored_filename,
+        "present": False,
+    }
+    source_path = (UPLOADS_DIR / stored_filename).resolve()
+    if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
+        return manifest
+    stat = source_path.stat()
+    manifest.update({
+        "present": True,
+        "size_bytes": stat.st_size,
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+    })
+    return manifest
 
 
 def _delete_stored_document(matter: dict[str, Any]) -> None:

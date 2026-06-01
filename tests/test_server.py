@@ -60,6 +60,9 @@ class ServerTests(unittest.TestCase):
         cls.thread.start()
         cls.host, cls.port = cls.server.server_address
 
+    def setUp(self):
+        server_module._reset_rate_limits()
+
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
@@ -293,6 +296,49 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(authed_status, 200)
         self.assertIn("matters", authed_payload)
 
+    def test_matter_backup_export_requires_auth_when_auth_is_enabled(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Backup NDA.docx",
+                    document_bytes=b"backup-source-docx",
+                    extracted_text="Sensitive extracted NDA text",
+                    review_result={"clauses": [{"id": "governing_law", "status": "check"}]},
+                    triage={"triage_status": "legal_review", "issue_count": 1},
+                )
+                matter_store.update_redline_draft(matter["id"], {"manual_redline_edits": []})
+                with patch.dict(os.environ, auth_env):
+                    unauth_status, unauth_payload = self.request("GET", "/api/matters/export")
+                    authed_status, authed_payload, authed_headers = self.request_with_headers(
+                        "GET",
+                        "/api/matters/export",
+                        headers=self.basic_auth_headers(),
+                    )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(authed_status, 200)
+        self.assertEqual(authed_headers["Content-Type"], "application/json")
+        self.assertIn("attachment; filename=\"nda-matters-backup-", authed_headers["Content-Disposition"])
+        self.assertEqual(authed_headers["X-Backup-Contains"], "matter-json")
+        self.assertEqual(authed_payload["version"], 1)
+        self.assertEqual(authed_payload["matter_count"], 1)
+        self.assertEqual(authed_payload["matters"][0]["id"], matter["id"])
+        self.assertEqual(authed_payload["matters"][0]["extracted_text"], "Sensitive extracted NDA text")
+        self.assertIn("review_result", authed_payload["matters"][0])
+        self.assertIn("redline_draft", authed_payload["matters"][0])
+        self.assertEqual(authed_payload["documents"][0]["matter_id"], matter["id"])
+        self.assertEqual(authed_payload["documents"][0]["stored_filename"], matter["stored_filename"])
+        self.assertTrue(authed_payload["documents"][0]["present"])
+        self.assertEqual(authed_payload["documents"][0]["size_bytes"], len(b"backup-source-docx"))
+        self.assertNotIn("content_base64", authed_payload["documents"][0])
+
     def test_public_bind_requires_configured_durable_data_dir(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
             with self.assertRaisesRegex(RuntimeError, server_module.DURABLE_DATA_DIR_REQUIRED_MESSAGE):
@@ -399,6 +445,32 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 413)
         self.assertEqual(payload["error"], server_module.REQUEST_BODY_TOO_LARGE_MESSAGE)
+
+    def test_expensive_endpoints_are_rate_limited_per_client(self):
+        rate_env = {
+            "NDA_RATE_LIMIT_PER_MINUTE": "2",
+            "NDA_RATE_LIMIT_WINDOW_SECONDS": "60",
+        }
+        body = {"text": "This Agreement shall be governed by the laws of California."}
+        with patch.dict(os.environ, rate_env):
+            first_status, _first_payload = self.request("POST", "/api/review", body)
+            second_status, _second_payload = self.request("POST", "/api/review", body)
+            third_status, third_payload, third_headers = self.request_with_headers("POST", "/api/review", body)
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(third_status, 429)
+        self.assertEqual(third_payload["error"], server_module.RATE_LIMITED_MESSAGE)
+        self.assertGreaterEqual(int(third_headers["Retry-After"]), 1)
+
+    def test_background_error_logging_omits_exception_message(self):
+        with patch("builtins.print") as mocked_print:
+            server_module._log_background_error(
+                "Gmail scheduled sync failed",
+                RuntimeError("Sensitive extracted NDA text"),
+            )
+
+        mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
 
     def test_text_review_rejects_empty_text(self):
         status, payload = self.request("POST", "/api/review", {"text": "   "})

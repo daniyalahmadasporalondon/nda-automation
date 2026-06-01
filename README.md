@@ -63,6 +63,14 @@ results, redline drafts, app settings, and Gmail sync state. The server refuses 
 non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as
 `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
+The hosted blueprint also sets `NDA_RATE_LIMIT_PER_MINUTE=120` for expensive endpoints such
+as review, document upload, matter import, DOCX export, Gmail send, and matter backup. Set it
+to a different positive integer for your deployment, or `0` only for trusted local testing.
+
+Authenticated admins can download a sensitive JSON backup from `/api/matters/export`. The
+backup includes full matter records plus a stored-document manifest; it does not embed the
+uploaded source document bytes.
+
 Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
 
 ## Test
