@@ -38,6 +38,10 @@ ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
     "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
 }
+ROLE_LOCAL_TOKEN_FILENAME = {
+    "inbound": "inbound-token.json",
+    "outbound": "outbound-token.json",
+}
 _TOKEN_LOCK = threading.RLock()
 
 
@@ -86,9 +90,9 @@ def gmail_role_setup_error(role: str) -> str:
     try:
         token_path = _token_path_for_role(role)
     except GmailIntegrationError:
-        return f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+        return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
     if not token_path.is_file():
-        return f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account."
+        return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
     return ""
 
 
@@ -424,7 +428,13 @@ def _token_path_for_role(role: str) -> Path:
     configured_path = os.environ.get(ROLE_TOKEN_ENV[role])
     if configured_path:
         return Path(configured_path).expanduser()
-    raise GmailIntegrationError(f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account.")
+    local_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
+    if local_path.is_file():
+        return local_path
+    raise GmailIntegrationError(
+        f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} "
+        f"for the {role} Gmail account."
+    )
 
 
 def _gmail_profile(service: Any) -> dict[str, Any]:

@@ -1107,7 +1107,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(triage["requirements_failed"], 1)
         self.assertEqual(triage["issue_count"], 1)
 
-    def test_gmail_status_requires_env_token_paths(self):
+    def test_gmail_status_requires_token_paths_or_local_tokens(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -1123,6 +1123,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["outbound"]["enabled"], True)
         self.assertEqual(status["inbound"]["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
+        self.assertIn("data/gmail/inbound-token.json", status["inbound"]["error"])
+
+    def test_gmail_status_uses_local_data_tokens_when_env_paths_are_missing(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            def __init__(self, email):
+                self.email = email
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": self.email})
+
+        class FakeGmailService:
+            def __init__(self, email):
+                self.users_api = FakeUsers(email)
+
+            def users(self):
+                return self.users_api
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                token_dir = matter_store.DATA_DIR / "gmail"
+                token_dir.mkdir(parents=True)
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text("{}", encoding="utf-8")
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]).write_text("{}", encoding="utf-8")
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService("legal@aspora.com")):
+                        status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["account_match"], True)
+        self.assertEqual(status["inbound"]["configured"], True)
+        self.assertEqual(status["outbound"]["configured"], True)
+        self.assertEqual(status["inbound"]["ready"], True)
+        self.assertEqual(status["outbound"]["ready"], True)
+        self.assertEqual(status["inbound"]["email"], "legal@aspora.com")
 
     def test_gmail_status_blocks_outbound_when_accounts_do_not_match(self):
         class FakeExecutable:
