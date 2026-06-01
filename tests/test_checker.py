@@ -203,6 +203,14 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(term_clause["passes"])
         self.assertIn("six (6) months", term_clause["matched_text"])
 
+    def test_term_and_survival_accepts_numeric_sub_year_month_terms(self):
+        result = review_nda("The confidentiality obligations survive for 6 months after termination.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("6 months", term_clause["matched_text"])
+
     def test_term_and_survival_ignores_unrelated_year_references(self):
         result = review_nda("The parties have worked together for two years on commercial discussions.")
 
