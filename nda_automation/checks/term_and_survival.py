@@ -20,7 +20,15 @@ from .common import (
     _year_count_label,
 )
 
-CARVE_OUT_MARKER_PATTERN = r"\b(?:except|excluding|other\s+than|save\s+for|provided\s+that)\b"
+CARVE_OUT_SURVIVAL_PATTERN = (
+    r"\b(?:surviv(?:e|es|ed|ing|al)|remain(?:s|ed|ing)?|continu(?:e|es|ed|ing)|"
+    r"last(?:s|ed|ing)?|in\s+effect|binding|required?|requires?)\b"
+)
+ORDINARY_SURVIVAL_SUBJECT_PATTERN = (
+    r"\b(?:(?:all|the|such|ordinary|confidentiality|confidential|parties'?|party)\s+)"
+    r"(?:confidentiality\s+)?(?:obligations?|undertakings?|provisions?|duties?)\b"
+    r"|\bconfidentiality\s+(?:surviv(?:e|es)|continu(?:e|es)|remain(?:s)?)\b"
+)
 
 
 def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
@@ -101,24 +109,47 @@ def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Di
 
 
 def _is_allowed_carve_out_fragment(normalized: str, start: int, end: int, clause: Dict[str, object]) -> bool:
-    fragment = _term_fragment(normalized, start, end)
+    fragment, relative_start, relative_end = _term_fragment_bounds(normalized, start, end)
     carve_out_patterns = _carve_out_context_patterns(clause)
     if not any(re.search(pattern, fragment) for pattern in carve_out_patterns):
         return False
     return bool(
-        re.search(CARVE_OUT_MARKER_PATTERN, fragment)
-        or any(re.match(pattern, fragment.lstrip()) for pattern in carve_out_patterns)
-        or any(_term_scoped_to_carve_out(fragment, pattern) for pattern in carve_out_patterns)
+        any(_carve_out_scoped_before_term(fragment, relative_start, pattern) for pattern in carve_out_patterns)
+        or any(_term_scoped_to_carve_out(fragment, relative_end, pattern) for pattern in carve_out_patterns)
     )
 
 
-def _term_scoped_to_carve_out(fragment: str, carve_out_pattern: str) -> bool:
+def _carve_out_scoped_before_term(fragment: str, term_start: int, carve_out_pattern: str) -> bool:
+    before_term = fragment[:term_start]
+    carve_out_matches = list(re.finditer(carve_out_pattern, before_term))
+    if not carve_out_matches:
+        return False
+
+    last_carve_out = carve_out_matches[-1]
+    scoped_text = before_term[last_carve_out.start():]
+    if not re.search(CARVE_OUT_SURVIVAL_PATTERN, scoped_text):
+        return False
+    if re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, before_term[last_carve_out.end():]):
+        return False
+    return True
+
+
+def _term_scoped_to_carve_out(fragment: str, term_end: int, carve_out_pattern: str) -> bool:
+    after_term = _fragment_after_term_until_next_duration(fragment, term_end)
     return bool(
         re.search(
             rf"\b(?:for|as\s+to|with\s+respect\s+to|in\s+respect\s+of|solely\s+for|limited\s+to)\s+(?:the\s+)?{carve_out_pattern}\b",
-            fragment,
+            after_term,
         )
     )
+
+
+def _fragment_after_term_until_next_duration(fragment: str, term_end: int) -> str:
+    after_term = fragment[term_end:]
+    next_duration = re.search(YEAR_TERM_PATTERN, after_term)
+    if next_duration:
+        return after_term[:next_duration.start()]
+    return after_term
 
 
 def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
@@ -141,7 +172,7 @@ def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
     ]
 
 
-def _term_fragment(normalized: str, start: int, end: int) -> str:
+def _term_fragment_bounds(normalized: str, start: int, end: int) -> tuple[str, int, int]:
     left_candidates = [
         normalized.rfind(separator, 0, start)
         for separator in (".", ";", ",")
@@ -153,4 +184,8 @@ def _term_fragment(normalized: str, start: int, end: int) -> str:
     ]
     left = max(left_candidates) + 1
     right = min(right_candidates) if right_candidates else len(normalized)
-    return normalized[left:right].strip()
+    while left < right and normalized[left].isspace():
+        left += 1
+    while right > left and normalized[right - 1].isspace():
+        right -= 1
+    return normalized[left:right], start - left, end - left

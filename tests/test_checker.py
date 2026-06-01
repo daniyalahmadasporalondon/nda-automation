@@ -331,6 +331,20 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["issue_type"], "present_but_wrong")
         self.assertIn("exceeds the cap of five years", term_clause["finding"])
 
+    def test_term_and_survival_rejects_over_cap_term_after_carve_out_subject(self):
+        result = review_nda(
+            """
+            The Agreement continues for three years.
+            Trade secrets are excluded from the ordinary cap and confidentiality obligations survive for seven years.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "present_but_wrong")
+        self.assertIn("exceeds the cap of five years", term_clause["finding"])
+
     def test_term_and_survival_rejects_perpetual_survival(self):
         result = review_nda(
             """
