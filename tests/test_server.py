@@ -227,6 +227,19 @@ class ServerTests(unittest.TestCase):
         term["redline_template"] = "Custom survival language capped at {unknown_placeholder}."
         return playbook
 
+    def test_parse_matter_id_handles_suffixes_and_rejects_nested_paths(self):
+        self.assertEqual(server_module._parse_matter_id("/api/matters/matter_123"), "matter_123")
+        self.assertEqual(server_module._parse_matter_id("/api/matters/matter%20123"), "matter 123")
+        self.assertEqual(
+            server_module._parse_matter_id("/api/matters/matter_123/review", suffix="/review"),
+            "matter_123",
+        )
+        self.assertIsNone(server_module._parse_matter_id("/api/matters/matter_123/stage", suffix="/review"))
+        self.assertIsNone(server_module._parse_matter_id("/api/matters/"))
+        self.assertIsNone(server_module._parse_matter_id("/api/matters/matter_123/stage"))
+        self.assertIsNone(server_module._parse_matter_id("/api/matters/matter%2F123"))
+        self.assertIsNone(server_module._parse_matter_id("/api/gmail/status"))
+
     def test_public_bind_requires_auth_even_without_explicit_flag(self):
         with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
             self.assertFalse(server_module._auth_required_for_host("127.0.0.1"))

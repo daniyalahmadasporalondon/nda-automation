@@ -201,8 +201,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             handler()
             return
         if path.startswith("/api/matters/") and path.endswith("/review"):
-            matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/review")).strip("/")
-            if not matter_id or "/" in matter_id:
+            matter_id = _parse_matter_id(path, suffix="/review")
+            if matter_id is None:
                 self._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
                 return
             try:
@@ -216,7 +216,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json(matter_view.review_matter(matter), send_body=send_body)
             return
         if path.startswith("/api/matters/"):
-            matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
+            matter_id = _parse_matter_id(path)
+            if matter_id is None:
+                self._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+                return
             try:
                 matter = matter_store.get_matter(matter_id)
             except matter_store.MatterStoreError as error:
@@ -484,8 +487,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         return " ".join(value.split())[:max_length]
 
     def _handle_matter_stage_update(self, path: str) -> None:
-        matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/stage")).strip("/")
-        if not matter_id or "/" in matter_id:
+        matter_id = _parse_matter_id(path, suffix="/stage")
+        if matter_id is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
 
@@ -505,8 +508,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"matter": matter_view.public_matter(matter)})
 
     def _handle_matter_redline_draft_update(self, path: str) -> None:
-        matter_id = unquote(path.removeprefix("/api/matters/").removesuffix("/redline-draft")).strip("/")
-        if not matter_id or "/" in matter_id:
+        matter_id = _parse_matter_id(path, suffix="/redline-draft")
+        if matter_id is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
 
@@ -530,8 +533,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"matter": matter_view.public_matter(matter)})
 
     def _handle_matter_delete(self, path: str) -> None:
-        matter_id = unquote(path.removeprefix("/api/matters/")).strip("/")
-        if not matter_id or "/" in matter_id:
+        matter_id = _parse_matter_id(path)
+        if matter_id is None:
             self._send_json({"error": "Matter not found."}, status=404)
             return
 
@@ -908,6 +911,21 @@ def _basic_auth_matches(header: str, username: str, password: str) -> bool:
     if not separator:
         return False
     return hmac.compare_digest(supplied_username, username) and hmac.compare_digest(supplied_password, password)
+
+
+def _parse_matter_id(path: str, *, suffix: str = "") -> str | None:
+    prefix = "/api/matters/"
+    if not path.startswith(prefix):
+        return None
+    if suffix and not path.endswith(suffix):
+        return None
+    raw_matter_id = path.removeprefix(prefix)
+    if suffix:
+        raw_matter_id = raw_matter_id.removesuffix(suffix)
+    matter_id = unquote(raw_matter_id).strip("/")
+    if not matter_id or "/" in matter_id:
+        return None
+    return matter_id
 
 
 def _auth_required_for_host(host: str) -> bool:
