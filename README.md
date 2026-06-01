@@ -38,6 +38,8 @@ python -m nda_automation.server --host 0.0.0.0 --port $PORT
 
 Gmail will stay disabled until the deployed service has `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` configured with token files available to the service.
 
+The default blueprint uses ephemeral storage so it can deploy without a paid persistent disk. Repository matters and exports can be lost on redeploy/restart unless you later add persistent storage or move matter data to an external store.
+
 ## Test
 
 ```bash

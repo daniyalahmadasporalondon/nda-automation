@@ -10,10 +10,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: NDA_DATA_DIR
-        value: /var/data
+        value: /tmp/nda-automation-data
       - key: NDA_EXPORTS_DIR
-        value: /var/data/exports
-    disk:
-      name: nda-automation-data
-      mountPath: /var/data
-      sizeGB: 1
+        value: /tmp/nda-automation-exports
