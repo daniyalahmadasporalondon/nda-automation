@@ -11,6 +11,9 @@ class PdfExtractionError(ValueError):
     """Raised when a PDF file cannot be converted into reviewable text."""
 
 
+PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
+
+
 @dataclass(frozen=True)
 class PdfExtraction:
     paragraphs: List[Paragraph]
@@ -29,9 +32,11 @@ def extract_pdf_paragraphs(data: bytes) -> List[Paragraph]:
 def extract_pdf_document(data: bytes) -> PdfExtraction:
     try:
         from io import BytesIO
-
         from pypdf import PdfReader
+    except ImportError as exc:
+        raise PdfExtractionError(PDF_SUPPORT_NOT_INSTALLED_MESSAGE) from exc
 
+    try:
         reader = PdfReader(BytesIO(data))
     except Exception as exc:
         raise PdfExtractionError("The uploaded file is not a valid PDF document.") from exc

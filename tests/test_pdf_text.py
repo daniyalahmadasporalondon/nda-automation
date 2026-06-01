@@ -1,9 +1,17 @@
+import builtins
 import unittest
 from io import BytesIO
+from unittest.mock import patch
 
 from pypdf import PdfWriter
 
-from nda_automation.pdf_text import PdfExtractionError, extract_pdf_document, extract_pdf_paragraphs, extract_pdf_text
+from nda_automation.pdf_text import (
+    PDF_SUPPORT_NOT_INSTALLED_MESSAGE,
+    PdfExtractionError,
+    extract_pdf_document,
+    extract_pdf_paragraphs,
+    extract_pdf_text,
+)
 
 
 class PdfTextTests(unittest.TestCase):
@@ -91,6 +99,20 @@ class PdfTextTests(unittest.TestCase):
     def test_rejects_non_pdf_bytes(self):
         with self.assertRaisesRegex(PdfExtractionError, "not a valid PDF"):
             extract_pdf_paragraphs(b"not a pdf")
+
+    def test_reports_missing_pdf_support_separately_from_bad_pdf(self):
+        real_import = builtins.__import__
+
+        def import_without_pypdf(name, *args, **kwargs):
+            if name == "pypdf":
+                raise ModuleNotFoundError("No module named 'pypdf'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_pypdf):
+            with self.assertRaisesRegex(PdfExtractionError, "PDF support is not installed") as context:
+                extract_pdf_paragraphs(make_pdf("This is a valid PDF with extractable text."))
+
+        self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
 
 
 def make_pdf(text):
