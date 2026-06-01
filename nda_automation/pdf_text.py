@@ -33,14 +33,14 @@ def extract_pdf_paragraphs(data: bytes) -> List[Paragraph]:
 
 
 def extract_pdf_document(data: bytes) -> PdfExtraction:
-    if not data.lstrip().startswith(b"%PDF-"):
-        raise PdfExtractionError(INVALID_PDF_MESSAGE)
-
     try:
         from io import BytesIO
         from pypdf import PdfReader
     except ImportError as exc:
         raise PdfExtractionError(PDF_SUPPORT_NOT_INSTALLED_MESSAGE) from exc
+
+    if not data.lstrip().startswith(b"%PDF-"):
+        raise PdfExtractionError(INVALID_PDF_MESSAGE)
 
     try:
         reader = PdfReader(BytesIO(data))

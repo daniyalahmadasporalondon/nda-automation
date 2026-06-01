@@ -127,21 +127,17 @@ class PdfTextTests(unittest.TestCase):
         with self.assertRaisesRegex(PdfExtractionError, "No readable text"):
             extract_pdf_paragraphs(data)
 
+    @requires_pypdf
     def test_rejects_non_pdf_bytes(self):
         with self.assertRaisesRegex(PdfExtractionError, "not a valid PDF"):
             extract_pdf_paragraphs(b"not a pdf")
 
-    def test_rejects_non_pdf_bytes_before_importing_pypdf(self):
-        real_import = builtins.__import__
-
-        def fail_if_pypdf_is_imported(name, *args, **kwargs):
-            if name == "pypdf":
-                raise AssertionError("pypdf should not parse bytes without a PDF signature")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=fail_if_pypdf_is_imported):
+    @requires_pypdf
+    def test_rejects_non_pdf_bytes_before_parsing_pdf(self):
+        with patch("pypdf.PdfReader") as reader:
             with self.assertRaisesRegex(PdfExtractionError, "not a valid PDF"):
                 extract_pdf_paragraphs(b"not a pdf")
+        reader.assert_not_called()
 
     def test_reports_missing_pdf_support_separately_from_bad_pdf(self):
         real_import = builtins.__import__
@@ -154,6 +150,20 @@ class PdfTextTests(unittest.TestCase):
         with patch("builtins.__import__", side_effect=import_without_pypdf):
             with self.assertRaisesRegex(PdfExtractionError, "PDF support is not installed") as context:
                 extract_pdf_paragraphs(make_pdf("This is a valid PDF with extractable text."))
+
+        self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
+
+    def test_reports_missing_pdf_support_before_file_validation(self):
+        real_import = builtins.__import__
+
+        def import_without_pypdf(name, *args, **kwargs):
+            if name == "pypdf":
+                raise ModuleNotFoundError("No module named 'pypdf'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_pypdf):
+            with self.assertRaisesRegex(PdfExtractionError, "PDF support is not installed") as context:
+                extract_pdf_paragraphs(b"not a pdf")
 
         self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
 
