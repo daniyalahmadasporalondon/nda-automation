@@ -1003,7 +1003,7 @@ class CheckerTests(unittest.TestCase):
             }
 
         result = review_nda(
-            "The Recipient shall not solicit contacts introduced by the Company.",
+            "The Recipient shall not poach contacts surfaced by the Company.",
             semantic_evaluator=evaluator,
         )
 
@@ -1859,6 +1859,41 @@ class CheckerTests(unittest.TestCase):
                 self.assertEqual(non_circumvention["status"], "check")
                 self.assertFalse(non_circumvention["passes"])
                 self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+
+    def test_non_circumvention_paraphrase_restrictions_are_flagged(self):
+        examples = [
+            "The Recipient shall not contact or transact with any party introduced by the Company.",
+            "The Recipient shall not bypass the Company.",
+            "The Recipient agrees to deal exclusively with the Company.",
+        ]
+
+        for example in examples:
+            with self.subTest(example=example):
+                result = review_nda(example)
+
+                non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+                self.assertEqual(non_circumvention["status"], "check")
+                self.assertFalse(non_circumvention["passes"])
+                self.assertEqual(non_circumvention["decision"], "fail")
+                self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+                self.assertEqual(
+                    non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+                    ["p1"],
+                )
+
+    def test_non_circumvention_paraphrased_introduced_party_reference_needs_review(self):
+        result = review_nda(
+            "The Recipient may contact parties introduced by the Company solely to evaluate the Purpose."
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["issue_type"], "unclear")
+        self.assertEqual(non_circumvention["decision"], "review")
+        self.assertTrue(non_circumvention["needs_review"])
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p1"])
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
 
     def test_non_circumvention_redlines_each_detected_paragraph(self):
         result = review_nda(

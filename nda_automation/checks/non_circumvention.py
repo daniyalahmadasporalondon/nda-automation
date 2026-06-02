@@ -23,6 +23,15 @@ LAWFUL_CIRCUMVENTION_PATTERN = (
     rf"\bcircumvent(?:ing)?\s+{LEGAL_CIRCUMVENTION_OBJECT}\b"
     rf"|\bcircumvention\s+of\s+{LEGAL_CIRCUMVENTION_OBJECT}\b"
 )
+FLEXIBLE_NON_CIRCUMVENTION_CANDIDATE_PATTERNS = [
+    r"\bcircumvent\w*\b",
+    r"\bbypass\w*\b",
+    r"\bdeal(?:s|ing)?\s+(?:directly|exclusiv\w+)\b",
+    r"\bexclusiv\w+\b",
+    r"\bsolicit\w*\b",
+    r"\bintroduced\b.{0,60}\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b",
+    r"\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b.{0,60}\bintroduced\b",
+]
 NEGATED_NON_CIRCUMVENTION_REFERENCE_PATTERN = (
     r"\b(?:does|do|doesn't|don't|shall|will|may|can|must)\s+not\s+"
     r"(?:include|create|impose|establish|grant|constitute|amount\s+to)\b"
@@ -50,6 +59,7 @@ RESTRICTIVE_NON_CIRCUMVENTION_PATTERN = (
     r".{0,100}\b(?:non[-\s]?solicitation|non[-\s]?solicit|exclusive\s+dealing|exclusivity|substitute\s+purpose)\b"
     r"|\b(?:exclusive\s+dealing|exclusivity|substitute\s+purpose)\b"
     r".{0,100}\b(?:introduced|contacts?|customers?|parties)\b"
+    r"|\bdeal(?:s|ing)?\s+exclusiv\w+\s+with\b"
 )
 
 
@@ -62,11 +72,12 @@ def _check_non_circumvention(
 ) -> ClauseResult:
     context_concepts = ["non_circumvention"]
     prohibited_patterns = _clause_term_patterns(clause, "search_terms")
+    candidate_patterns = prohibited_patterns + FLEXIBLE_NON_CIRCUMVENTION_CANDIDATE_PATTERNS
     candidate_paragraphs = merge_paragraphs(
-        _paragraph_matches(paragraphs, prohibited_patterns),
+        _paragraph_matches(paragraphs, candidate_patterns),
         paragraphs_with_concepts(paragraphs, review_context, context_concepts),
     )
-    analysis = _non_circumvention_analysis(candidate_paragraphs, prohibited_patterns)
+    analysis = _non_circumvention_analysis(candidate_paragraphs, candidate_patterns)
     prohibited_paragraphs = analysis["prohibited_paragraphs"]
     review_paragraphs = analysis["review_paragraphs"]
 
