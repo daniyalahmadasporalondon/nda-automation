@@ -1,12 +1,12 @@
 function createContractStructureController({ state, root }) {
   function render() {
     if (!root) return;
-    const structure = state.latestReviewResult?.contract_structure;
+    const structure = effectiveStructure();
     const sections = Array.isArray(structure?.sections) ? structure.sections : [];
     const aliases = Array.isArray(structure?.aliases) ? structure.aliases : [];
     const stats = structure?.stats || {};
 
-    if (!state.latestReviewResult) {
+    if (!state.latestReviewResult && !loadedParagraphs().length) {
       root.innerHTML = '<div class="structure-empty">Load or review an NDA to generate its structure map.</div>';
       return;
     }
@@ -34,6 +34,26 @@ function createContractStructureController({ state, root }) {
 
       ${renderAliases(aliases)}
     `;
+  }
+
+  function effectiveStructure() {
+    const existing = state.latestReviewResult?.contract_structure;
+    if (existing && typeof existing === "object") return existing;
+
+    const paragraphs = loadedParagraphs();
+    if (!paragraphs.length) return existing;
+
+    const fallback = buildStructureFromParagraphs(paragraphs);
+    if (state.latestReviewResult && !state.latestReviewResult.contract_structure) {
+      state.latestReviewResult.contract_structure = fallback;
+    }
+    return fallback;
+  }
+
+  function loadedParagraphs() {
+    if (Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length) return state.reviewParagraphs;
+    if (Array.isArray(state.latestReviewResult?.paragraphs)) return state.latestReviewResult.paragraphs;
+    return [];
   }
 
   function renderSection(section) {
@@ -117,6 +137,238 @@ function createContractStructureController({ state, root }) {
 
   function confidenceLabel(confidence) {
     return `${confidence || "unknown"} confidence`;
+  }
+
+  function buildStructureFromParagraphs(paragraphs) {
+    const documentParagraphs = paragraphs.filter((paragraph) => String(paragraph?.text || "").trim());
+    const candidates = documentParagraphs
+      .map((paragraph, position) => candidateForParagraph(paragraph, position))
+      .filter(Boolean);
+    const sections = [];
+
+    if (documentParagraphs.length && (!candidates.length || candidates[0].position > 0)) {
+      const end = candidates.length ? candidates[0].position : documentParagraphs.length;
+      if (end > 0) {
+        sections.push(sectionFromParagraphs({
+          confidence: "high",
+          heading: "Preamble",
+          headingText: "Preamble",
+          kind: "preamble",
+          label: "Preamble",
+          level: 0,
+          number: null,
+          paragraphs: documentParagraphs.slice(0, end),
+          parentId: null,
+          sectionId: "section-1",
+        }));
+      }
+    }
+
+    candidates.forEach((candidate, index) => {
+      const nextPosition = candidates[index + 1]?.position ?? documentParagraphs.length;
+      const sectionParagraphs = documentParagraphs.slice(candidate.position, nextPosition);
+      if (!sectionParagraphs.length) return;
+      const sectionId = `section-${sections.length + 1}`;
+      sections.push(sectionFromParagraphs({
+        ...candidate,
+        paragraphs: sectionParagraphs,
+        parentId: parentForCandidate(sections, candidate),
+        sectionId,
+      }));
+    });
+
+    const aliases = aliasesForSections(sections);
+    const mappedParagraphIds = new Set();
+    sections.forEach((section) => (section.paragraph_ids || []).forEach((id) => mappedParagraphIds.add(String(id))));
+    const allParagraphIds = new Set(documentParagraphs.map(paragraphId).filter(Boolean));
+    return {
+      aliases,
+      sections,
+      stats: {
+        mapped_paragraph_count: mappedParagraphIds.size,
+        section_count: sections.length,
+        unmapped_paragraph_count: [...allParagraphIds].filter((id) => !mappedParagraphIds.has(id)).length,
+      },
+      version: 1,
+    };
+  }
+
+  function candidateForParagraph(paragraph, position) {
+    const text = collapseWhitespace(paragraph.text || "");
+    if (!text) return null;
+
+    const explicit = text.match(/^(clause|article|section|schedule|annex|annexure|appendix)\s+([A-Za-z]|\d+(?:\.\d+)*)(?:\s*[:.-]\s*|\s+)(.*)$/i);
+    if (explicit) {
+      const kind = explicit[1].toLowerCase();
+      const number = explicit[2].replace(/\.$/, "");
+      const heading = cleanHeading(explicit[3]) || displayKind(kind);
+      return {
+        confidence: "high",
+        heading,
+        headingText: preview(text),
+        kind,
+        label: `${displayKind(kind)} ${number}`,
+        level: levelForNumber(number),
+        number,
+        position,
+      };
+    }
+
+    const numbered = text.match(/^(\d+(?:\.\d+)*)(?:\s*[:.-]\s*|\s+)(.+)$/);
+    if (numbered && looksLikeNumberedHeading(numbered[2])) {
+      const number = numbered[1].replace(/\.$/, "");
+      return {
+        confidence: "high",
+        heading: cleanHeading(numbered[2]),
+        headingText: preview(text),
+        kind: "numbered",
+        label: number,
+        level: levelForNumber(number),
+        number,
+        position,
+      };
+    }
+
+    const uppercasePrefix = text.match(/^([A-Z][A-Z0-9 &,/()'".-]{2,90}):\s*(.+)$/);
+    if (uppercasePrefix && looksLikeUppercaseHeading(uppercasePrefix[1])) {
+      const heading = cleanHeading(uppercasePrefix[1]);
+      return {
+        confidence: "medium",
+        heading,
+        headingText: preview(text),
+        kind: "heading",
+        label: heading,
+        level: 1,
+        number: null,
+        position,
+      };
+    }
+
+    return null;
+  }
+
+  function sectionFromParagraphs({
+    confidence,
+    heading,
+    headingText,
+    kind,
+    label,
+    level,
+    number,
+    paragraphs,
+    parentId,
+    sectionId,
+  }) {
+    const paragraphIds = paragraphs.map(paragraphId).filter(Boolean);
+    const first = paragraphs[0] || {};
+    const last = paragraphs[paragraphs.length - 1] || {};
+    const section = {
+      confidence,
+      end_index: paragraphIndex(last),
+      end_paragraph_id: paragraphId(last),
+      heading,
+      heading_text: headingText,
+      id: sectionId,
+      kind,
+      label,
+      level,
+      paragraph_ids: paragraphIds,
+      start_index: paragraphIndex(first),
+      start_paragraph_id: paragraphId(first),
+    };
+    if (number) section.number = number;
+    if (parentId) section.parent_id = parentId;
+    return section;
+  }
+
+  function parentForCandidate(sections, candidate) {
+    if (!candidate.number || !candidate.number.includes(".")) return null;
+    for (let index = sections.length - 1; index >= 0; index -= 1) {
+      const section = sections[index];
+      if (
+        section.number
+        && candidate.number.startsWith(`${section.number}.`)
+        && Number(section.level || 0) < candidate.level
+      ) {
+        return section.id;
+      }
+    }
+    return null;
+  }
+
+  function aliasesForSections(sections) {
+    const aliases = [];
+    const seen = new Set();
+    sections.forEach((section) => {
+      const keys = [];
+      if (section.number) {
+        keys.push(`number:${String(section.number).toLowerCase()}`);
+        if (["annex", "annexure", "appendix", "article", "clause", "schedule", "section"].includes(section.kind)) {
+          keys.push(`${section.kind}:${String(section.number).toLowerCase()}`);
+        }
+      }
+      const headingKey = normalizeHeadingKey(section.heading || "");
+      if (headingKey) keys.push(`heading:${headingKey}`);
+      keys.forEach((key) => {
+        if (seen.has(key)) return;
+        aliases.push({ key, label: section.label, section_id: section.id });
+        seen.add(key);
+      });
+    });
+    return aliases;
+  }
+
+  function paragraphId(paragraph) {
+    return paragraph?.id === undefined || paragraph?.id === null ? null : String(paragraph.id);
+  }
+
+  function paragraphIndex(paragraph) {
+    return Number.isInteger(paragraph?.index) ? paragraph.index : null;
+  }
+
+  function displayKind(kind) {
+    const labels = {
+      annex: "Annex",
+      annexure: "Annexure",
+      appendix: "Appendix",
+      article: "Article",
+      clause: "Clause",
+      schedule: "Schedule",
+      section: "Section",
+    };
+    return labels[kind] || "Section";
+  }
+
+  function levelForNumber(number) {
+    return String(number || "").split(".").filter(Boolean).length || 1;
+  }
+
+  function looksLikeNumberedHeading(heading) {
+    const cleaned = cleanHeading(heading);
+    return Boolean(cleaned) && (cleaned.length <= 120 || cleaned.slice(0, 90).includes(":"));
+  }
+
+  function looksLikeUppercaseHeading(text) {
+    const letters = cleanHeading(text).split("").filter((character) => /[A-Za-z]/.test(character));
+    if (letters.length < 3) return false;
+    return letters.filter((character) => character === character.toUpperCase()).length / letters.length >= 0.85;
+  }
+
+  function cleanHeading(text) {
+    return collapseWhitespace(text).replace(/^[ .:-]+|[ .:-]+$/g, "");
+  }
+
+  function collapseWhitespace(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function normalizeHeadingKey(text) {
+    return collapseWhitespace(String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " "));
+  }
+
+  function preview(text, limit = 220) {
+    const collapsed = collapseWhitespace(text);
+    return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 3).trim()}...`;
   }
 
   return {

@@ -474,6 +474,9 @@ async function testContractStructureAdminPanel(page) {
   ].join("\n\n");
 
   await runReview(page, structureNda);
+  await page.evaluate(() => {
+    delete state.latestReviewResult.contract_structure;
+  });
   await page.getByRole("tab", { name: "Admin" }).click();
   await page.locator('[data-admin-section="structure"]').click();
   await page.waitForSelector("#adminStructurePanel .structure-row");
