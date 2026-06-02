@@ -684,12 +684,29 @@ def _message_body_text_parts(part: dict[str, Any]) -> list[str]:
             return alternative_parts
 
     if child_parts:
-        text_parts: list[str] = []
-        for child in child_parts:
-            text_parts.extend(_message_body_text_parts(child))
-        return text_parts
+        return _message_multipart_text_parts(child_parts)
 
     return _message_leaf_text_part(part, mime_type)
+
+
+def _message_multipart_text_parts(parts: list[dict[str, Any]]) -> list[str]:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    nested_parts: list[str] = []
+    for part in parts:
+        if part.get("filename"):
+            continue
+        mime_type = _normalized_mime_type(part)
+        child_parts = [child for child in part.get("parts") or [] if isinstance(child, dict)]
+        if not child_parts and mime_type == "text/plain":
+            plain_parts.extend(_message_leaf_text_part(part, mime_type))
+        elif not child_parts and mime_type == "text/html":
+            html_parts.extend(_message_leaf_text_part(part, mime_type))
+        else:
+            nested_parts.extend(_message_body_text_parts(part))
+
+    direct_body_parts = plain_parts if plain_parts else html_parts
+    return [*direct_body_parts, *nested_parts]
 
 
 def _message_alternative_text_parts(parts: list[dict[str, Any]]) -> list[str]:

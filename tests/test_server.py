@@ -1880,6 +1880,37 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("HTML-only duplicate.", body)
         self.assertEqual(body.count("Please review the attached NDA."), 1)
 
+    def test_gmail_message_body_prefers_plain_text_for_direct_multipart_siblings(self):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "partId": "plain",
+                    "mimeType": "text/plain",
+                    "body": {"data": inline(b"Please review the attached NDA.\nPlain-only detail.")},
+                },
+                {
+                    "partId": "html",
+                    "mimeType": "text/html",
+                    "body": {"data": inline(b"<p>Please review the attached NDA.</p><p>HTML-only duplicate.</p>")},
+                },
+                {
+                    "filename": "nda.docx",
+                    "mimeType": DOCX_MIME,
+                    "body": {"attachmentId": "att_1"},
+                },
+            ],
+        }
+
+        body = gmail_integration._message_body_text(payload)
+
+        self.assertIn("Plain-only detail.", body)
+        self.assertNotIn("HTML-only duplicate.", body)
+        self.assertEqual(body.count("Please review the attached NDA."), 1)
+
     def test_gmail_message_body_uses_html_when_alternative_has_no_plain_text(self):
         def inline(value):
             return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
