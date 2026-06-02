@@ -417,6 +417,67 @@
                   </article>
                 </section>
 
+                <section class="engine-resolver-panel engine-checker-panel" aria-label="Checker decision visibility">
+                  <header>
+                    <div>
+                      <p class="eyebrow">checker visibility</p>
+                      <h2>How clause decisions become pass, review, or check</h2>
+                    </div>
+                    <span>Auditable outputs</span>
+                  </header>
+
+                  <div class="engine-checker-grid">
+                    <article>
+                      <h3>Mutuality</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/mutuality.py</dd></div>
+                        <div><dt>Review state</dt><dd>Weak mutuality labels or role definitions without operative reciprocal obligations.</dd></div>
+                        <div><dt>Audit object</dt><dd>mutuality_analysis</dd></div>
+                      </dl>
+                    </article>
+                    <article>
+                      <h3>Confidential Information</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/confidential_information.py</dd></div>
+                        <div><dt>Review state</dt><dd>Broad but implicit category coverage, or usage-right language that may weaken protection.</dd></div>
+                        <div><dt>Audit object</dt><dd>confidential_information_analysis</dd></div>
+                      </dl>
+                    </article>
+                    <article>
+                      <h3>Governing Law</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/governing_law.py</dd></div>
+                        <div><dt>Review state</dt><dd>Placeholder, conditional, heading-only, unresolved, or conflicting governing-law language.</dd></div>
+                        <div><dt>Audit object</dt><dd>governing_law_analysis</dd></div>
+                      </dl>
+                    </article>
+                    <article>
+                      <h3>Term and Survival</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/term_and_survival.py</dd></div>
+                        <div><dt>Review state</dt><dd>Cross-referenced survival scope is unresolved or not clearly ordinary confidentiality.</dd></div>
+                        <div><dt>Audit object</dt><dd>term_survival_analysis</dd></div>
+                      </dl>
+                    </article>
+                    <article>
+                      <h3>Non-Circumvention</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/non_circumvention.py</dd></div>
+                        <div><dt>Review state</dt><dd>Soft introduced-party, substitute-purpose, or exclusivity language without a clear operative restriction.</dd></div>
+                        <div><dt>Audit object</dt><dd>non_circumvention_analysis</dd></div>
+                      </dl>
+                    </article>
+                    <article>
+                      <h3>Signatures</h3>
+                      <dl>
+                        <div><dt>Module</dt><dd>nda_automation/checks/signatures.py</dd></div>
+                        <div><dt>Current state</dt><dd>Marker-based execution-block check remains separate from the legal-concept review-state upgrades.</dd></div>
+                        <div><dt>Next model</dt><dd>Party, signatory, title, date, and block-level execution parsing.</dd></div>
+                      </dl>
+                    </article>
+                  </div>
+                </section>
+
                 <section class="engine-resolver-panel" aria-label="Reference resolver logic">
                   <header>
                     <div>

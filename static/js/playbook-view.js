@@ -87,10 +87,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         ${textArea("Suggested Redline / Counter-language", "redline_template", clause.redline_template || clause.acceptable_language || "", 4)}
 
         ${specialControls(clause)}
+        ${checkerVisibilityPanel(clause)}
         ${sharedContextControls(clause)}
 
         <section class="admin-rules">
-          <h3>Engine Rules</h3>
+          <h3>Raw Engine Rules</h3>
           <pre>${escapeHtml(engineRulesForClause(clause))}</pre>
         </section>
 
@@ -309,14 +310,74 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return "";
   }
 
+  function checkerVisibilityPanel(clause) {
+    const visibility = checkerVisibilityForClause(clause);
+    const statusCards = [
+      ["Pass", visibility.pass],
+      ["Review", visibility.review],
+      ["Check", visibility.check],
+    ]
+      .map(([label, text]) => `
+        <article class="admin-decision-card ${escapeHtml(label.toLowerCase())}">
+          <strong>${escapeHtml(label)}</strong>
+          <p>${escapeHtml(text)}</p>
+        </article>
+      `)
+      .join("");
+    const signalBuckets = visibility.signal_buckets
+      .map((bucket) => `
+        <article>
+          <h4>${escapeHtml(bucket.label)}</h4>
+          <p>${escapeHtml(bucket.description)}</p>
+          <div class="admin-chip-row">
+            ${bucket.fields.map((field) => `<span class="admin-chip">${escapeHtml(field)}</span>`).join("")}
+          </div>
+        </article>
+      `)
+      .join("");
+    const analysisFields = visibility.analysis_fields
+      .map((field) => `<span class="admin-chip">${escapeHtml(field)}</span>`)
+      .join("");
+    const outputRows = [
+      ["Checker module", visibility.module],
+      ["Audit output", visibility.output_field],
+      ["Redline behavior", visibility.redline_behavior],
+      ["Review-state boundary", visibility.boundary],
+    ]
+      .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+      .join("");
+
+    return `
+      <section class="admin-special checker-visibility">
+        <h3>Decision Logic Visibility</h3>
+        <p class="admin-muted">This is the deterministic checker flow the backend applies before the UI receives pass, review, or check.</p>
+        <div class="admin-decision-grid">${statusCards}</div>
+        <section class="admin-signal-section">
+          <h4>Signal buckets</h4>
+          <div class="admin-signal-grid">${signalBuckets}</div>
+        </section>
+        <section class="admin-signal-section">
+          <h4>Analysis output fields</h4>
+          <div class="admin-chip-row">${analysisFields || '<span class="admin-muted">No checker-specific analysis object yet</span>'}</div>
+        </section>
+        <dl class="admin-logic-list">${outputRows}</dl>
+      </section>
+    `;
+  }
+
   function engineRulesForClause(clause) {
+    const visibility = checkerVisibilityForClause(clause);
     const rules = {
-      pass_check_model: {
-        pass: "Clause satisfies the preferred standard position.",
-        check: clause.type === "prohibited"
-          ? "Clause appears when the playbook says it must be absent."
-          : "Clause is missing, deficient, unclear, or off-standard.",
+      decision_model: {
+        pass: visibility.pass,
+        review: visibility.review,
+        check: visibility.check,
       },
+      backend_module: visibility.module,
+      analysis_output_field: visibility.output_field,
+      analysis_fields: visibility.analysis_fields,
+      signal_buckets: visibility.signal_buckets,
+      redline_behavior: visibility.redline_behavior,
       taxonomy_groups: clause.taxonomy_groups || [],
       search_terms: clause.search_terms || [],
       shared_review_context: {
@@ -357,6 +418,211 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       rules.check_terms = clause.indefinite_terms || [];
     }
     return JSON.stringify(rules, null, 2);
+  }
+
+  function checkerVisibilityForClause(clause) {
+    const shared = {
+      signatures: {
+        module: "nda_automation/checks/signatures.py",
+        pass: "Execution block appears to include both parties, titles or capacities, and dates.",
+        review: "Signatures will be handled as a separate execution-block model rather than expanded in this pass.",
+        check: "Execution block is missing or incomplete under the current marker-count checker.",
+        output_field: "structure_context",
+        analysis_fields: [],
+        redline_behavior: "Missing or incomplete execution blocks can insert or replace the signature template.",
+        boundary: "Current logic is structural marker detection; party/signatory parsing is intentionally separate.",
+        signal_buckets: [
+          {
+            label: "Execution markers",
+            description: "Current checker counts party, title, and date markers.",
+            fields: ["party marker", "title marker", "date marker"],
+          },
+        ],
+      },
+    };
+    const visibility = {
+      mutuality: {
+        module: "nda_automation/checks/mutuality.py",
+        pass: "Strong reciprocal obligation language binds both parties as disclosing and receiving parties.",
+        review: "Role definitions or title-only mutuality labels exist without a clear reciprocal obligation.",
+        check: "One-way or unilateral language fixes only one side as receiving party or otherwise fails mutuality.",
+        output_field: "mutuality_analysis",
+        analysis_fields: [
+          "strong_mutuality_paragraph_ids",
+          "weak_mutuality_paragraph_ids",
+          "role_definition_paragraph_ids",
+          "one_way_paragraph_ids",
+        ],
+        redline_behavior: "Check decisions use the mutuality redline template; review decisions do not auto-redline.",
+        boundary: "Definitions alone are not enough for pass; they are treated as human-review evidence.",
+        signal_buckets: [
+          {
+            label: "Strong evidence",
+            description: "Operative reciprocal obligation language.",
+            fields: ["each party", "both parties", "reciprocal confidentiality", "Disclosing Party and Receiving Party"],
+          },
+          {
+            label: "Review evidence",
+            description: "Signals that imply mutuality but do not prove operative obligations.",
+            fields: ["title-only mutual NDA", "role definitions", "weak reciprocal labels"],
+          },
+          {
+            label: "Check evidence",
+            description: "One-way or non-mutual terms.",
+            fields: clause.one_way_terms || [],
+          },
+        ],
+      },
+      confidential_information: {
+        module: "nda_automation/checks/confidential_information.py",
+        pass: "A broad Confidential Information definition covers enough required categories with no extra exclusions.",
+        review: "A broad general definition or separate usage-right language may be acceptable but needs human review.",
+        check: "The definition is missing, too narrow, or includes prohibited carve-outs.",
+        output_field: "confidential_information_analysis",
+        analysis_fields: [
+          "definition_paragraph_ids",
+          "coverage_hits",
+          "explicit_exclusion_paragraph_ids",
+          "usage_right_review_paragraph_ids",
+        ],
+        redline_behavior: "Missing/narrow definitions use broadening language; exclusion-based checks use exclusions cleanup language.",
+        boundary: "General broad wording can be reviewed instead of failed when categories are implicit.",
+        signal_buckets: [
+          {
+            label: "Definition breadth",
+            description: "Definition anchors and required category hits.",
+            fields: ["Confidential Information means", ...(clause.definition_categories || [])],
+          },
+          {
+            label: "Review evidence",
+            description: "Usage-right language outside the definition can weaken protection.",
+            fields: ["residual knowledge", "reverse engineering", "independent development", "broad general definition"],
+          },
+          {
+            label: "Check evidence",
+            description: "Explicit extra exclusions or narrow definitions.",
+            fields: clause.problematic_exclusion_terms || [],
+          },
+        ],
+      },
+      governing_law: {
+        module: "nda_automation/checks/governing_law.py",
+        pass: "The governing-law value resolves to an approved law.",
+        review: "The governing-law value is placeholder, heading-only, conditional, unresolved, or conflicts with another governing-law sentence.",
+        check: "A clear governing-law clause names a non-approved jurisdiction.",
+        output_field: "governing_law_analysis",
+        analysis_fields: [
+          "approved_paragraph_ids",
+          "unclear_paragraph_ids",
+          "unapproved_paragraph_ids",
+          "heading_only_paragraph_ids",
+          "candidate_records",
+        ],
+        redline_behavior: "Non-approved laws generate replacement options; review decisions wait for human confirmation.",
+        boundary: "Approved law references outside the governing-law value do not rescue a non-approved governing law.",
+        signal_buckets: [
+          {
+            label: "Approved values",
+            description: "Accepted governing-law jurisdictions and aliases.",
+            fields: clause.approved_laws || [],
+          },
+          {
+            label: "Review evidence",
+            description: "Unresolved or conflicting governing-law statements.",
+            fields: ["[jurisdiction]", "mutually agreed", "conditional approved law", "heading only"],
+          },
+          {
+            label: "Check evidence",
+            description: "Clear non-approved governing-law values.",
+            fields: ["California", "France", "New York", "other non-approved jurisdiction"],
+          },
+        ],
+      },
+      term_and_survival: {
+        module: "nda_automation/checks/term_and_survival.py",
+        pass: "Ordinary confidentiality term or survival period is fixed and within the configured cap.",
+        review: "Survival uses cross-references that are unresolved or do not clearly classify as ordinary confidentiality.",
+        check: "The term is missing, over-cap, or indefinite outside allowed carve-outs.",
+        output_field: "term_survival_analysis",
+        analysis_fields: [
+          "references",
+          "confidentiality_reference_count",
+          "unresolved_reference_count",
+          "ordinary_confidentiality_concepts",
+        ],
+        redline_behavior: "Missing or deficient terms generate a term/survival redline; review decisions do not auto-redline.",
+        boundary: "Cross-referenced survival is checked against actual resolved sections, not assumed article numbers.",
+        signal_buckets: [
+          {
+            label: "Duration evidence",
+            description: "Fixed periods parsed from words, digits, and mixed forms.",
+            fields: ["three (3) years", "3 (three) years", "36 months"],
+          },
+          {
+            label: "Reference evidence",
+            description: "Resolved article, section, and clause targets are classified by concept.",
+            fields: ["reference_resolver", "concept_classifier", "contract_structure"],
+          },
+          {
+            label: "Check evidence",
+            description: "Over-cap and indefinite terms outside allowed carve-outs.",
+            fields: clause.indefinite_terms || [],
+          },
+        ],
+      },
+      non_circumvention: {
+        module: "nda_automation/checks/non_circumvention.py",
+        pass: "No operative non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity restriction appears.",
+        review: "Soft introduced-party, substitute-purpose, or exclusivity language appears without a clear operative restriction.",
+        check: "Definite non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restriction appears.",
+        output_field: "non_circumvention_analysis",
+        analysis_fields: [
+          "prohibited_paragraph_ids",
+          "review_paragraph_ids",
+          "lawful_circumvention_paragraph_ids",
+          "negated_reference_paragraph_ids",
+          "signal_records",
+        ],
+        redline_behavior: "Definite restrictions generate delete redlines; review decisions do not auto-delete.",
+        boundary: "Lawful-circumvention references and negated references are not treated as violations.",
+        signal_buckets: [
+          {
+            label: "Hard restrictions",
+            description: "Operative commercial restraints beyond confidentiality.",
+            fields: clause.search_terms || [],
+          },
+          {
+            label: "Review evidence",
+            description: "Adjacent commercial language that may or may not restrict dealings.",
+            fields: ["introduced parties", "future exclusivity discussion", "substitute transaction reference"],
+          },
+          {
+            label: "Pass guards",
+            description: "References explicitly outside the prohibited-restriction scope.",
+            fields: ["circumvent applicable law", "does not include non-circumvention", "no non-solicitation obligation"],
+          },
+        ],
+      },
+    };
+    return visibility[clause.id] || shared[clause.id] || {
+      module: "nda_automation/checks/",
+      pass: "Clause satisfies the preferred standard position.",
+      review: "The checker marks ambiguous evidence for human review.",
+      check: clause.type === "prohibited"
+        ? "Clause appears when the playbook says it must be absent."
+        : "Clause is missing, deficient, unclear, or off-standard.",
+      output_field: "structure_context",
+      analysis_fields: [],
+      redline_behavior: "Redline behavior follows the clause registry.",
+      boundary: "No clause-specific visibility model configured.",
+      signal_buckets: [
+        {
+          label: "Configured terms",
+          description: "Playbook search terms and semantic signals.",
+          fields: [...(clause.search_terms || []), ...(clause.semantic_signals || [])],
+        },
+      ],
+    };
   }
 
   function sharedContextControls(clause) {

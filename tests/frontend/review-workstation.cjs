@@ -369,7 +369,11 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
   await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
+  await assertTextContains(page.locator("#clauseDetail"), "Decision Logic Visibility");
+  await assertTextContains(page.locator("#clauseDetail"), "SIGNAL BUCKETS");
   await assertTextContains(page.locator("#clauseDetail"), "structure_context");
+  await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "weak_mutuality_paragraph_ids");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality");
   assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
@@ -379,6 +383,8 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.getByText("Monitor", { exact: false }).count(), 0);
   await page.getByRole("button", { name: "Confidential Information" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "Standard Exclusions Language");
+  await assertTextContains(page.locator("#clauseDetail"), "confidential_information_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "usage_right_review_paragraph_ids");
   assert.equal(await page.getByText("Confidential-Info Exclusions Allowlist", { exact: false }).count(), 0);
   assert.equal(await page.getByPlaceholder("Add exclusion key").count(), 0);
   await page.locator('textarea[name="standard_exclusions_template"]').fill("Publicly known information is excluded.");
@@ -391,10 +397,18 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "REFERENCE RESOLVER");
   await assertTextContains(page.locator("#clauseDetail"), "CONCEPT CLASSIFIER");
   await assertTextContains(page.locator("#clauseDetail"), "term_or_survival");
+  await assertTextContains(page.locator("#clauseDetail"), "term_survival_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "unresolved_reference_count");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
   await assertTextContains(page.locator("#playbookDraftDiff"), "longer_survival_carve_out_terms");
+  await page.locator('[data-clause-id="governing_law"]').click();
+  await assertTextContains(page.locator("#clauseDetail"), "governing_law_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "heading_only_paragraph_ids");
+  await page.locator('[data-clause-id="non_circumvention"]').click();
+  await assertTextContains(page.locator("#clauseDetail"), "non_circumvention_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "negated_reference_paragraph_ids");
   await page.locator('[data-clause-id="mutuality"]').click();
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
@@ -564,6 +578,12 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(adminPanel, "Supported references");
   await assertTextContains(adminPanel, "NO FIXED NUMBERING ASSUMPTION");
   await assertTextContains(adminPanel, "Term and Survival");
+  await assertTextContains(adminPanel, "How clause decisions become pass, review, or check");
+  await assertTextContains(adminPanel, "mutuality_analysis");
+  await assertTextContains(adminPanel, "governing_law_analysis");
+  await assertTextContains(adminPanel, "non_circumvention_analysis");
+  await assertTextContains(adminPanel, "SIGNATURES");
+  await assertTextContains(adminPanel, "separate from the legal-concept review-state upgrades");
   await assertTextContains(adminPanel, "Evidence provenance validation");
 }
 
