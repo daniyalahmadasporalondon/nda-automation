@@ -11,8 +11,13 @@ function createContractStructureController({ state, root }) {
       return;
     }
 
+    if (!structure || typeof structure !== "object") {
+      root.innerHTML = '<div class="structure-empty">This review does not include a structure map yet. Reload the matter or run the review again to generate it.</div>';
+      return;
+    }
+
     if (!sections.length) {
-      root.innerHTML = '<div class="structure-empty">No contract sections were detected for this review.</div>';
+      root.innerHTML = '<div class="structure-empty">No section headings were detected in this review. The parser could not identify clauses, articles, numbered headings, or uppercase section labels.</div>';
       return;
     }
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, TypedDict
 
+from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient
+from .review_document import split_document_paragraphs
 
 
 class PublicMatter(TypedDict, total=False):
@@ -95,17 +98,32 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
 
 
 def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
+    extracted_text = str(matter.get("extracted_text") or "")
     review_payload = {
         "matter": public_matter(matter),
-        "extracted_text": str(matter.get("extracted_text") or ""),
+        "extracted_text": extracted_text,
     }
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
-        review_payload["review_result"] = review_result
+        review_payload["review_result"] = review_result_with_structure(review_result, extracted_text)
     redline_draft = matter.get("redline_draft")
     if isinstance(redline_draft, dict):
         review_payload["redline_draft"] = redline_draft
     return review_payload
+
+
+def review_result_with_structure(review_result: dict[str, Any], extracted_text: str = "") -> dict[str, Any]:
+    if isinstance(review_result.get("contract_structure"), dict):
+        return review_result
+
+    enriched = deepcopy(review_result)
+    paragraphs = enriched.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        paragraphs = split_document_paragraphs(extracted_text)
+        if paragraphs:
+            enriched["paragraphs"] = paragraphs
+    enriched["contract_structure"] = build_contract_structure(paragraphs if isinstance(paragraphs, list) else [])
+    return enriched
 
 
 def public_matters(matters: list[dict[str, Any]]) -> list[PublicMatter]:

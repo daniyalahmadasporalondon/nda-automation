@@ -2,6 +2,7 @@ import unittest
 
 from nda_automation.checker import review_nda
 from nda_automation.contract_structure import build_contract_structure
+from nda_automation.matter_view import review_result_with_structure
 from nda_automation.review_document import split_document_paragraphs
 
 
@@ -82,6 +83,32 @@ class ContractStructureTests(unittest.TestCase):
         self.assertIn("contract_structure", result)
         self.assertEqual(result["contract_structure"]["version"], 1)
         self.assertEqual(result["contract_structure"]["sections"][0]["label"], "1")
+
+    def test_legacy_matter_review_result_gets_structure_backfill(self):
+        legacy_result = {
+            "paragraphs": split_document_paragraphs("\n\n".join([
+                "MUTUAL NON-DISCLOSURE AGREEMENT",
+                "Clause 1: Definitions",
+                "Confidential Information means non-public information.",
+            ])),
+        }
+
+        enriched = review_result_with_structure(legacy_result)
+
+        self.assertNotIn("contract_structure", legacy_result)
+        self.assertEqual(enriched["contract_structure"]["sections"][1]["label"], "Clause 1")
+        self.assertEqual(enriched["contract_structure"]["sections"][1]["paragraph_ids"], ["p2", "p3"])
+
+    def test_legacy_matter_review_result_can_backfill_from_text(self):
+        legacy_result = {}
+
+        enriched = review_result_with_structure(
+            legacy_result,
+            "Clause 1: Definitions\n\nConfidential Information means non-public information.",
+        )
+
+        self.assertIn("paragraphs", enriched)
+        self.assertEqual(enriched["contract_structure"]["sections"][0]["label"], "Clause 1")
 
 
 if __name__ == "__main__":
