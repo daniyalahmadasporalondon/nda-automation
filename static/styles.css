@@ -2820,7 +2820,8 @@ body.modal-open {
 }
 
 .engine-card h2,
-.engine-module-grid h2 {
+.engine-module-grid h2,
+.engine-resolver-panel h2 {
   color: var(--ink);
   font-size: 13px;
   font-weight: 800;
@@ -2882,6 +2883,93 @@ body.modal-open {
   font-weight: 650;
   line-height: 1.35;
   margin: 0;
+}
+
+.engine-resolver-panel {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.engine-resolver-panel > header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.engine-resolver-panel > header span {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 850;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.resolver-logic-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.resolver-logic-grid article {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  min-height: 122px;
+  padding: 12px;
+}
+
+.resolver-logic-grid h3 {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 850;
+  margin: 0;
+}
+
+.resolver-logic-grid p,
+.resolver-audit-list dd {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.38;
+  margin: 0;
+}
+
+.resolver-audit-list {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  margin: 0;
+  overflow: hidden;
+}
+
+.resolver-audit-list div {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  padding: 11px 12px;
+}
+
+.resolver-audit-list div:first-child {
+  border-top: 0;
+}
+
+.resolver-audit-list dt {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
 }
 
 .structure-map-shell {
@@ -3712,7 +3800,9 @@ body.modal-open {
 
   .engine-flow,
   .engine-module-grid,
-  .engine-fact-list div {
+  .engine-fact-list div,
+  .resolver-logic-grid,
+  .resolver-audit-list div {
     grid-template-columns: 1fr;
   }
 

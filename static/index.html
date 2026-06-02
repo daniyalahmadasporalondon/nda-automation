@@ -407,6 +407,54 @@
                     </dl>
                   </article>
                 </section>
+
+                <section class="engine-resolver-panel" aria-label="Reference resolver logic">
+                  <header>
+                    <div>
+                      <p class="eyebrow">reference resolver</p>
+                      <h2>How explicit cross-references are resolved</h2>
+                    </div>
+                    <span>Backend first</span>
+                  </header>
+
+                  <div class="resolver-logic-grid">
+                    <article>
+                      <h3>Inputs</h3>
+                      <p>Reviewed paragraph records plus the Contract Structure Map's section IDs, paragraph ownership, aliases, and resolver-ready reference index.</p>
+                    </article>
+                    <article>
+                      <h3>Supported references</h3>
+                      <p>Clause, article, section, schedule, annex, annexure, appendix, and plural references such as "Clauses 1, 1A and 2".</p>
+                    </article>
+                    <article>
+                      <h3>Resolution method</h3>
+                      <p>Each detected reference is matched against the document-specific alias index, then marked resolved, partial, or unresolved.</p>
+                    </article>
+                    <article>
+                      <h3>Outputs</h3>
+                      <p>Reference text, source paragraph, source section, target section IDs, unresolved numbers, target labels, and summary counts.</p>
+                    </article>
+                  </div>
+
+                  <dl class="resolver-audit-list">
+                    <div>
+                      <dt>No fixed numbering assumption</dt>
+                      <dd>The resolver uses the detected structure of the current document, so Clause 4 or Article II means whatever this NDA actually mapped it to.</dd>
+                    </div>
+                    <div>
+                      <dt>False-positive guard</dt>
+                      <dd>Heading self-references are skipped and prose fragments like "this section introduces" are not treated as Section I references.</dd>
+                    </div>
+                    <div>
+                      <dt>Current limitation</dt>
+                      <dd>Only explicit references are resolved. Semantic phrases like "the confidentiality obligations above" still need a future concept classifier or AI evaluator.</dd>
+                    </div>
+                    <div>
+                      <dt>Checker handoff</dt>
+                      <dd>The next target is Term and Survival: use resolved references to inspect what actually survives instead of trusting the survival sentence alone.</dd>
+                    </div>
+                  </dl>
+                </section>
               </section>
             </section>
 

@@ -548,6 +548,10 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(adminPanel, "REFERENCE RESOLVER");
   await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
   await assertTextContains(adminPanel, "nda_automation/reference_resolver.py");
+  await assertTextContains(adminPanel, "How explicit cross-references are resolved");
+  await assertTextContains(adminPanel, "Supported references");
+  await assertTextContains(adminPanel, "NO FIXED NUMBERING ASSUMPTION");
+  await assertTextContains(adminPanel, "Term and Survival");
   await assertTextContains(adminPanel, "Evidence provenance validation");
 }
 
