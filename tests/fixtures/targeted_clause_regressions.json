@@ -71,6 +71,23 @@
     }
   },
   {
+    "name": "governing_law_state_of_delaware_passes",
+    "clause_id": "governing_law",
+    "text": "This Agreement shall be governed by the laws of the State of Delaware.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "approved_governing_law",
+      "redline_count": 0,
+      "analysis": {
+        "governing_law_analysis.approved_paragraph_ids": ["p1"],
+        "governing_law_analysis.candidate_records.0.value": "State of Delaware",
+        "governing_law_analysis.candidate_records.0.approved": true,
+        "governing_law_analysis.candidate_records.0.needs_review": false
+      }
+    }
+  },
+  {
     "name": "term_survival_ignores_unrelated_claims_survival_duration",
     "clause_id": "term_and_survival",
     "text": "This Agreement is effective on signature. Claims survive for three years.",
