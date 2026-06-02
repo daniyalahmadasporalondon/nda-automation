@@ -710,9 +710,61 @@
                   <p class="eyebrow">semantic review</p>
                   <h1>AI review layer</h1>
                 </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminAiRefreshButton" type="button">Refresh</button>
+                </div>
               </header>
 
               <section class="admin-engine-shell">
+                <article class="integration-card ai-settings-card" id="adminAiCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">gemini</p>
+                      <h2>AI Semantic Review</h2>
+                    </div>
+                    <span class="integration-status" id="adminAiOverall">Checking</span>
+                  </header>
+
+                  <div class="integration-toggle-grid">
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>AI review</strong>
+                        <span data-admin-ai="enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminAiEnabledToggle" type="button" role="switch" aria-checked="false" aria-label="Enable AI semantic review">
+                        <span></span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <dl class="integration-facts" id="adminAiFacts">
+                    <div>
+                      <dt>Provider</dt>
+                      <dd data-admin-ai="provider">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Model</dt>
+                      <dd data-admin-ai="model">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>API key</dt>
+                      <dd data-admin-ai="api-key">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Confidence threshold</dt>
+                      <dd data-admin-ai="confidence-threshold">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Target clauses</dt>
+                      <dd data-admin-ai="target-clauses">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Default source</dt>
+                      <dd data-admin-ai="source">Checking</dd>
+                    </div>
+                  </dl>
+                </article>
+
                 <section class="engine-resolver-panel" aria-label="AI semantic review logic">
                   <header>
                     <div>
@@ -968,6 +1020,7 @@
     <script src="/static/js/repository-actions.js"></script>
     <script src="/static/js/repository.js"></script>
     <script src="/static/js/manual-upload.js"></script>
+    <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-integrations.js"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-view.js"></script>

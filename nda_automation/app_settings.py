@@ -25,6 +25,9 @@ DEFAULT_GMAIL_SETTINGS = {
     "last_sync_skipped_count": 0,
     "sync_history": [],
 }
+DEFAULT_AI_SETTINGS = {
+    "enabled": None,
+}
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
@@ -44,6 +47,33 @@ def gmail_settings() -> dict[str, Any]:
     if not isinstance(gmail, dict):
         gmail = {}
     return gmail_settings_from_payload(gmail)
+
+
+def ai_settings() -> dict[str, Any]:
+    settings = _load_settings()
+    ai_review = settings.get("ai_review")
+    if not isinstance(ai_review, dict):
+        ai_review = {}
+    return ai_settings_from_payload(ai_review)
+
+
+def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {
+        key: value
+        for key, value in updates.items()
+        if _valid_ai_setting(key, value)
+    }
+    if not cleaned:
+        return ai_settings()
+
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        ai_review = settings.get("ai_review")
+        if not isinstance(ai_review, dict):
+            ai_review = {}
+        settings["ai_review"] = {**ai_settings_from_payload(ai_review), **cleaned}
+        _save_settings_unlocked(settings)
+        return ai_settings_from_payload(settings["ai_review"])
 
 
 def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -158,6 +188,19 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "sync_history": _sync_history_from_payload(payload.get("sync_history")),
     }
+
+
+def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    enabled = payload.get("enabled", DEFAULT_AI_SETTINGS["enabled"])
+    if not isinstance(enabled, bool):
+        enabled = None
+    return {"enabled": enabled}
+
+
+def _valid_ai_setting(key: str, value: Any) -> bool:
+    if key == "enabled":
+        return isinstance(value, bool)
+    return False
 
 
 def _valid_gmail_setting(key: str, value: Any) -> bool:

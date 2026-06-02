@@ -1565,6 +1565,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(legacy_cadence_status, 400)
         self.assertEqual(legacy_cadence_payload["error"], "Use sync_frequency for Gmail sync frequency.")
 
+    def test_ai_settings_endpoint_persists_toggle(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"GEMINI_API_KEY": "server-only-secret", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    initial_status, initial_payload = self.request("GET", "/api/ai/settings")
+                    on_status, on_payload = self.request("POST", "/api/ai/settings", {"enabled": True})
+                    off_status, off_payload = self.request("POST", "/api/ai/settings", {"enabled": False})
+                    invalid_status, invalid_payload = self.request("POST", "/api/ai/settings", {"enabled": "yes"})
+                    missing_status, missing_payload = self.request("POST", "/api/ai/settings", {})
+                    settings = app_settings.ai_settings()
+
+        self.assertEqual(initial_status, 200)
+        self.assertEqual(initial_payload["ai_review"]["enabled"], False)
+        self.assertEqual(initial_payload["ai_review"]["stored_enabled"], None)
+        self.assertEqual(initial_payload["ai_review"]["environment_enabled"], False)
+        self.assertEqual(initial_payload["ai_review"]["api_key_configured"], True)
+        self.assertNotIn("server-only-secret", json.dumps(initial_payload))
+        self.assertEqual(on_status, 200)
+        self.assertEqual(on_payload["ai_review"]["enabled"], True)
+        self.assertEqual(on_payload["ai_review"]["stored_enabled"], True)
+        self.assertEqual(off_status, 200)
+        self.assertEqual(off_payload["ai_review"]["enabled"], False)
+        self.assertEqual(off_payload["ai_review"]["stored_enabled"], False)
+        self.assertEqual(settings["enabled"], False)
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(invalid_payload["error"], "AI enabled setting must be true or false.")
+        self.assertEqual(missing_status, 400)
+        self.assertEqual(missing_payload["error"], "Provide an AI setting to update.")
+
     def test_gmail_sync_history_records_recent_counts_and_errors(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

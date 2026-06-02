@@ -8,6 +8,7 @@ import urllib.request
 from copy import deepcopy
 from typing import Callable, Dict, Iterable, List, Tuple
 
+from . import app_settings
 from .checks.common import ClauseResult, Paragraph
 from .review_state import (
     CLAUSE_DECISION_FAIL,
@@ -254,6 +255,22 @@ def build_ai_review_packet(
     }
 
 
+def ai_review_status() -> Dict[str, object]:
+    settings = _ai_review_settings()
+    stored = app_settings.ai_settings()
+    return {
+        "version": AI_REVIEW_VERSION,
+        "enabled": bool(settings["enabled"]),
+        "stored_enabled": stored.get("enabled"),
+        "environment_enabled": _env_enabled(AI_REVIEW_ENV_ENABLED),
+        "provider": str(settings["provider"]),
+        "model": str(settings["model"]),
+        "confidence_threshold": _confidence_threshold(settings),
+        "api_key_configured": bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip()),
+        "target_clause_ids": sorted(_targeted_clause_ids(settings)),
+    }
+
+
 def _evaluate_clause_with_ai(
     *,
     clause: ClauseResult,
@@ -452,8 +469,11 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
 
 
 def _ai_review_settings() -> Dict[str, object]:
+    stored = app_settings.ai_settings()
+    stored_enabled = stored.get("enabled")
+    env_enabled = _env_enabled(AI_REVIEW_ENV_ENABLED)
     return {
-        "enabled": _env_enabled(AI_REVIEW_ENV_ENABLED),
+        "enabled": stored_enabled if isinstance(stored_enabled, bool) else env_enabled,
         "provider": os.environ.get(AI_REVIEW_ENV_PROVIDER, "gemini").strip().lower() or "gemini",
         "model": os.environ.get(AI_REVIEW_ENV_MODEL, DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL,
         "timeout_seconds": _env_int(AI_REVIEW_ENV_TIMEOUT, DEFAULT_AI_TIMEOUT_SECONDS),

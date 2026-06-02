@@ -49,8 +49,11 @@ class AIReviewTests(unittest.TestCase):
             clear=False,
         )
         self.env_patch.start()
+        self.ai_settings_patch = patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": None})
+        self.ai_settings_patch.start()
 
     def tearDown(self):
+        self.ai_settings_patch.stop()
         self.env_patch.stop()
 
     def test_ai_review_is_disabled_by_default(self):
@@ -59,6 +62,23 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(result["ai_review"]["status"], "disabled")
         self.assertFalse(any("ai_review_analysis" in clause for clause in result["clauses"]))
         self.assertEqual(result["overall_status"], "meets_requirements")
+
+    def test_ai_review_status_uses_persisted_toggle_over_environment(self):
+        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": False}):
+            with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "true", "GEMINI_API_KEY": "configured"}, clear=False):
+                disabled_status = ai_review.ai_review_status()
+
+        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
+            with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": "configured"}, clear=False):
+                enabled_status = ai_review.ai_review_status()
+
+        self.assertEqual(disabled_status["enabled"], False)
+        self.assertEqual(disabled_status["stored_enabled"], False)
+        self.assertEqual(disabled_status["environment_enabled"], True)
+        self.assertEqual(disabled_status["api_key_configured"], True)
+        self.assertEqual(enabled_status["enabled"], True)
+        self.assertEqual(enabled_status["stored_enabled"], True)
+        self.assertEqual(enabled_status["environment_enabled"], False)
 
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)

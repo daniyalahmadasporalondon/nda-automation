@@ -43,6 +43,7 @@ const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
 const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE });
 let pendingReviewSendMatterId = null;
+let adminAiController;
 let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
@@ -69,6 +70,15 @@ createManualUploadController({
   fileToBase64,
   repositoryController,
   activateTab,
+  reviewErrorFromPayload,
+});
+adminAiController = createAdminAiController({
+  state,
+  aiCard: document.querySelector("#adminAiCard"),
+  aiEnabledToggle: document.querySelector("#adminAiEnabledToggle"),
+  aiFacts: document.querySelector("#adminAiFacts"),
+  aiOverall: document.querySelector("#adminAiOverall"),
+  aiRefreshButton: document.querySelector("#adminAiRefreshButton"),
   reviewErrorFromPayload,
 });
 adminIntegrationsController = createAdminIntegrationsController({
@@ -110,6 +120,7 @@ emptyState();
 playbookController.loadPlaybook();
 repositoryController.loadMatters();
 repositoryController.loadGmailStatus();
+adminAiController.load();
 adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
@@ -214,6 +225,9 @@ function activateTab(tabName) {
     repositoryController.loadGmailStatus();
   }
   if (tabName === "clauses") {
+    if (activeAdminSection() === "ai") {
+      adminAiController.load();
+    }
     if (activeAdminSection() === "email") {
       adminIntegrationsController.load();
     }
@@ -233,6 +247,9 @@ function activateAdminSection(sectionName) {
   });
   if (sectionName === "email") {
     adminIntegrationsController.load();
+  }
+  if (sectionName === "ai") {
+    adminAiController.load();
   }
 }
 

@@ -495,6 +495,32 @@ async function testPlaybookAdminEditor(page) {
 }
 
 async function testContractStructureReviewPanel(page) {
+  const aiSettingsPayloads = [];
+  let aiEnabled = false;
+  await page.route("**/api/ai/settings", async (route) => {
+    if (route.request().method() === "POST") {
+      const payload = route.request().postDataJSON();
+      aiSettingsPayloads.push(payload);
+      aiEnabled = payload.enabled === true;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ai_review: {
+          version: 1,
+          enabled: aiEnabled,
+          stored_enabled: aiSettingsPayloads.length ? aiEnabled : null,
+          environment_enabled: false,
+          provider: "gemini",
+          model: "gemini-3-flash-preview",
+          confidence_threshold: 0.75,
+          api_key_configured: false,
+          target_clause_ids: ["mutuality", "confidential_information", "governing_law", "term_and_survival", "non_circumvention"],
+        },
+      }),
+    });
+  });
   const structureNda = [
     "MUTUAL NON-DISCLOSURE AGREEMENT",
     "Clause 1: Definitions",
@@ -632,6 +658,17 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(aiPanel, "GEMINI_API_KEY");
   await assertTextContains(aiPanel, "ai_review_analysis");
   await assertTextContains(aiPanel, "AI disagreement");
+  await assertTextContains(aiPanel, "AI Semantic Review");
+  await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
+  assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing GEMINI_API_KEY");
+  await page.locator("#adminAiEnabledToggle").click();
+  await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "true");
+  assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], { enabled: true });
+  assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On - missing GEMINI_API_KEY");
+  assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
+  assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");
+  await page.unroute("**/api/ai/settings");
 }
 
 async function testStructuredEvidenceAndRationale(page) {
