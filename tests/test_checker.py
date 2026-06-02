@@ -754,6 +754,74 @@ class CheckerTests(unittest.TestCase):
                 self.assertTrue(governing_law["passes"])
                 self.assertEqual(governing_law["reason"], "Approved governing law found.")
 
+    def test_governing_law_needs_review_for_placeholder_jurisdiction(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            "This Agreement shall be governed by the laws of [jurisdiction].",
+        )
+        result = review_nda(text)
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(governing_law["status"], "match")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertTrue(governing_law["needs_review"])
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["candidate_records"][0]["value"], "[jurisdiction]")
+        self.assertIn("jurisdiction is unclear or unresolved", governing_law["decision_reason"])
+        self.assertFalse(self.redlines_for_clause(result, "governing_law"))
+
+    def test_governing_law_needs_review_for_conditional_approved_law(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "This Agreement shall be governed by the laws of England and Wales or any other "
+                "jurisdiction selected by the Disclosing Party."
+            ),
+        )
+        result = review_nda(text)
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p5"])
+        self.assertTrue(governing_law["governing_law_analysis"]["candidate_records"][0]["approved"])
+        self.assertTrue(governing_law["governing_law_analysis"]["candidate_records"][0]["needs_review"])
+
+    def test_governing_law_needs_review_for_heading_without_jurisdiction(self):
+        result = review_nda("Article 5 Governing Law")
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertTrue(governing_law["needs_review"])
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(governing_law["governing_law_analysis"]["heading_only_paragraph_ids"], ["p1"])
+        self.assertIn("heading was found", governing_law["decision_reason"])
+
+    def test_governing_law_needs_review_for_conflicting_governing_law_clauses(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "This Agreement shall be governed by the laws of England and Wales.\n\n"
+                "Service matters shall be governed by the laws of California."
+            ),
+        )
+        result = review_nda(text)
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5", "p6"])
+        self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], ["p6"])
+        self.assertIn("also contains unclear", governing_law["decision_reason"])
+
     def test_semantic_signals_participate_in_clause_detection(self):
         result = review_nda("Each of the parties may disclose Confidential Information to the other party.")
         mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
