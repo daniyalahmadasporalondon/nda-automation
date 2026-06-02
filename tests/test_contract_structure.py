@@ -117,6 +117,46 @@ class ContractStructureTests(unittest.TestCase):
             structure["aliases"],
         )
 
+    def test_detects_roman_numeral_identifiers(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Article II Confidentiality",
+            "The Receiving Party must protect Confidential Information.",
+            "Section II.A Permitted Disclosures",
+            "Disclosures are permitted only for representatives.",
+            "Clause IV - Term",
+            "The obligations survive for three years.",
+            "Article IX Governing Law",
+            "This Agreement is governed by English law.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        sections = structure["sections"]
+        sections_by_label = {section["label"]: section for section in sections}
+
+        self.assertEqual(
+            [section["label"] for section in sections],
+            ["Article II", "Section II.A", "Clause IV", "Article IX"],
+        )
+        self.assertEqual(sections_by_label["Section II.A"]["parent_id"], sections_by_label["Article II"]["id"])
+        self.assertEqual(sections_by_label["Article II"]["level"], 1)
+        self.assertEqual(sections_by_label["Section II.A"]["level"], 2)
+        self.assertIn(
+            {"key": "article:ii", "section_id": sections_by_label["Article II"]["id"], "label": "Article II"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "section:ii.a", "section_id": sections_by_label["Section II.A"]["id"], "label": "Section II.A"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "clause:iv", "section_id": sections_by_label["Clause IV"]["id"], "label": "Clause IV"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "article:ix", "section_id": sections_by_label["Article IX"]["id"], "label": "Article IX"},
+            structure["aliases"],
+        )
+
     def test_review_result_includes_contract_structure(self):
         result = review_nda("\n\n".join([
             "1. Confidentiality",

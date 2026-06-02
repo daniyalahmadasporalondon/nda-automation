@@ -477,6 +477,12 @@ async function testContractStructureReviewPanel(page) {
     "The Receiving Party must certify destruction.",
     "Section 10b Data Processing",
     "Data processing terms.",
+    "Article II Confidentiality Schedule",
+    "The parties must follow the confidentiality schedule.",
+    "Section II.A Permitted Disclosures",
+    "Permitted disclosures are limited to representatives.",
+    "Clause IV - Term",
+    "The obligations survive for three years.",
   ].join("\n\n");
 
   await runReview(page, structureNda);
@@ -493,8 +499,12 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "10.1");
   await assertTextContains(reviewPanel, "10.1A");
   await assertTextContains(reviewPanel, "Section 10b");
+  await assertTextContains(reviewPanel, "Article II");
+  await assertTextContains(reviewPanel, "Section II.A");
+  await assertTextContains(reviewPanel, "Clause IV");
   await assertTextContains(reviewPanel, "Parent section-2");
   await assertTextContains(reviewPanel, "Parent section-6");
+  await assertTextContains(reviewPanel, "Parent section-9");
   await assertTextContains(reviewPanel, "clause:1");
   await assertTextContains(reviewPanel, "clause:1a");
   await assertTextContains(reviewPanel, "section:10b");

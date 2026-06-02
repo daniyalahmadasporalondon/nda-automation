@@ -1,6 +1,8 @@
 function createContractStructureController({ state, root }) {
-  const explicitNumberPattern = "(?:[A-Za-z]|\\d+[A-Za-z]*)(?:\\.\\d+[A-Za-z]*)*";
-  const numberedNumberPattern = "\\d+[A-Za-z]*(?:\\.\\d+[A-Za-z]*)*";
+  const romanNumberPattern = "[IVXLCDM]{2,}";
+  const identifierPartPattern = `(?:${romanNumberPattern}|[A-Za-z]|\\d+[A-Za-z]*)`;
+  const explicitNumberPattern = `${identifierPartPattern}(?:\\.${identifierPartPattern})*`;
+  const numberedNumberPattern = `(?:\\d+[A-Za-z]*|${romanNumberPattern})(?:\\.${identifierPartPattern})*`;
   const explicitHeadingRegex = new RegExp(`^(clause|article|section|schedule|annex|annexure|appendix)\\s+(${explicitNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.*)$`, "i");
   const numberedHeadingRegex = new RegExp(`^(${numberedNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.+)$`);
 

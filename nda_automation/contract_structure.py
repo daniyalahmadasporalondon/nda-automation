@@ -7,8 +7,10 @@ from typing import Dict, Iterable, List
 from .review_document import Paragraph
 
 STRUCTURE_VERSION = 1
-EXPLICIT_NUMBER_PATTERN = r"(?:[A-Za-z]|\d+[A-Za-z]*)(?:\.\d+[A-Za-z]*)*"
-NUMBERED_NUMBER_PATTERN = r"\d+[A-Za-z]*(?:\.\d+[A-Za-z]*)*"
+ROMAN_NUMBER_PATTERN = r"[IVXLCDM]{2,}"
+IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
+EXPLICIT_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
+NUMBERED_NUMBER_PATTERN = rf"(?:\d+[A-Za-z]*|{ROMAN_NUMBER_PATTERN})(?:\.{IDENTIFIER_PART_PATTERN})*"
 NUMBER_PART_RE = re.compile(r"^(?P<digits>\d+)(?P<suffix>[A-Za-z]+)$")
 
 EXPLICIT_HEADING_RE = re.compile(
