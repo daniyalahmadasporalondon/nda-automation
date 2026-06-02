@@ -2031,6 +2031,11 @@ textarea::placeholder {
   border-left: 3px solid #2563eb;
 }
 
+.audit-trace-block {
+  background: #fbfaff;
+  border-left: 3px solid var(--violet);
+}
+
 .evidence-signal-list {
   display: grid;
   gap: 7px;
@@ -2082,6 +2087,67 @@ textarea::placeholder {
   font-size: 9px;
   font-weight: 750;
   padding: 2px 6px;
+}
+
+.audit-trace-list {
+  counter-reset: audit-step;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.audit-trace-list li {
+  border-top: 1px solid var(--border);
+  counter-increment: audit-step;
+  display: grid;
+  gap: 3px;
+  padding-top: 7px;
+}
+
+.audit-trace-list li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.audit-trace-list li::before {
+  color: var(--violet);
+  content: counter(audit-step, decimal-leading-zero);
+  font-size: 9px;
+  font-weight: 850;
+  grid-column: 1;
+  line-height: 1.2;
+}
+
+.audit-trace-list li strong,
+.audit-trace-list li span,
+.audit-trace-list li p {
+  grid-column: 2;
+}
+
+.audit-trace-list li {
+  grid-template-columns: 22px minmax(0, 1fr);
+}
+
+.audit-trace-list strong {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.audit-trace-list span {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.audit-trace-list p {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.35;
+  margin: 0;
 }
 
 .studio-detail-block.muted p {

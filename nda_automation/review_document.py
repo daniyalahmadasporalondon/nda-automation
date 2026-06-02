@@ -119,6 +119,7 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         evidence = clause.get("evidence", [])
         evidence_paragraphs = clause.get("evidence_paragraphs", [])
         structured_evidence = clause.get("structured_evidence", [])
+        audit_trace = clause.get("audit_trace", {})
         if not isinstance(matched_ids, list):
             errors.append(f"{clause_id}: matched_paragraph_ids must be a list")
             continue
@@ -131,6 +132,9 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         if not isinstance(structured_evidence, list):
             errors.append(f"{clause_id}: structured_evidence must be a list")
             structured_evidence = []
+        if not isinstance(audit_trace, dict):
+            errors.append(f"{clause_id}: audit_trace must be an object")
+            audit_trace = {}
 
         expected_paragraphs = []
         for paragraph_id in matched_ids:
@@ -202,6 +206,23 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         expected_structured_ids = [str(paragraph.get("id")) for paragraph in expected_paragraphs]
         if structured_ids != expected_structured_ids:
             errors.append(f"{clause_id}: structured_evidence ids do not match matched source paragraphs")
+
+        trace_decision = audit_trace.get("decision")
+        if trace_decision is not None and trace_decision != clause.get("decision"):
+            errors.append(f"{clause_id}: audit_trace decision does not match clause decision")
+        trace_reason = audit_trace.get("decision_reason")
+        if trace_reason is not None and trace_reason != clause.get("decision_reason"):
+            errors.append(f"{clause_id}: audit_trace decision_reason does not match clause decision_reason")
+        evidence_summary = audit_trace.get("evidence_summary", {})
+        if isinstance(evidence_summary, dict):
+            trace_paragraph_ids = evidence_summary.get("paragraph_ids", [])
+            if isinstance(trace_paragraph_ids, list) and [str(paragraph_id) for paragraph_id in trace_paragraph_ids] != expected_structured_ids:
+                errors.append(f"{clause_id}: audit_trace paragraph ids do not match matched source paragraphs")
+            trace_structured_count = evidence_summary.get("structured_evidence_count")
+            if isinstance(trace_structured_count, int) and trace_structured_count != len(structured_evidence):
+                errors.append(f"{clause_id}: audit_trace structured evidence count does not match structured_evidence")
+        elif audit_trace:
+            errors.append(f"{clause_id}: audit_trace evidence_summary must be an object")
 
     return errors
 

@@ -344,6 +344,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       ["Primary inputs", visibility.inputs],
       ["Audit output", visibility.output_field],
       ["Structured evidence", "Every checker emits structured_evidence records with paragraph provenance, matched terms, signal type, rule bucket, counted flag, and reason."],
+      ["Audit trace", "Every checker emits audit_trace with normalized decision steps, evidence summary, analysis outputs, and analysis signals."],
       ["Redline behavior", visibility.redline_behavior],
       ["Human-review boundary", visibility.boundary],
     ]
@@ -381,6 +382,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       primary_inputs: visibility.inputs,
       analysis_output_field: visibility.output_field,
       structured_evidence_field: "structured_evidence",
+      audit_trace_field: "audit_trace",
       analysis_fields: visibility.analysis_fields,
       signal_buckets: visibility.signal_buckets,
       redline_behavior: visibility.redline_behavior,

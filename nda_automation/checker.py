@@ -47,6 +47,7 @@ from .review_document import (
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
 REVIEW_ENGINE_VERSION = 4
+AUDIT_TRACE_VERSION = 1
 SEMANTIC_REVIEW_THRESHOLD = 0.75
 CLAUSE_DECISION_PASS = "pass"
 CLAUSE_DECISION_FAIL = "fail"
@@ -188,6 +189,7 @@ def _apply_clause_decision(clause: ClauseResult) -> None:
     if not str(clause.get("decision_reason") or "").strip():
         clause["decision_reason"] = _clause_decision_reason(clause, decision)
     _finalize_structured_evidence(clause, decision)
+    _attach_audit_trace(clause, decision)
 
 
 def _clause_decision(clause: ClauseResult) -> str:
@@ -248,6 +250,342 @@ def _finalize_structured_evidence(clause: ClauseResult, decision: str) -> None:
             record["signal_type"] = "check_evidence"
         elif decision == CLAUSE_DECISION_PASS and not record.get("signal_type"):
             record["signal_type"] = "pass_evidence"
+
+
+def _attach_audit_trace(clause: ClauseResult, decision: str) -> None:
+    structured_evidence = [
+        record
+        for record in clause.get("structured_evidence", [])
+        if isinstance(record, dict)
+    ]
+    analysis_outputs = _audit_analysis_outputs(clause)
+    analysis_signals = _audit_analysis_signals(clause)
+    evidence_summary = _audit_evidence_summary(clause, structured_evidence, analysis_signals)
+    clause["audit_trace"] = {
+        "version": AUDIT_TRACE_VERSION,
+        "clause_id": str(clause.get("id") or ""),
+        "decision": decision,
+        "status": str(clause.get("status") or ""),
+        "issue_type": str(clause.get("issue_type") or ""),
+        "decision_reason": str(clause.get("decision_reason") or clause.get("reason") or ""),
+        "evidence_summary": evidence_summary,
+        "analysis_outputs": analysis_outputs,
+        "analysis_signals": analysis_signals,
+        "steps": _audit_steps(clause, decision, evidence_summary, analysis_outputs),
+    }
+
+
+def _audit_evidence_summary(
+    clause: ClauseResult,
+    structured_evidence: List[Dict[str, object]],
+    analysis_signals: List[Dict[str, object]],
+) -> Dict[str, object]:
+    matched_terms: List[str] = []
+    signal_counts: Dict[str, int] = {}
+    for record in structured_evidence:
+        signal_type = str(record.get("signal_type") or "evidence")
+        signal_counts[signal_type] = signal_counts.get(signal_type, 0) + 1
+        raw_terms = record.get("matched_terms", [])
+        if isinstance(raw_terms, list):
+            for term in raw_terms:
+                term_text = str(term).strip()
+                if term_text and term_text not in matched_terms:
+                    matched_terms.append(term_text)
+    ignored_count = sum(1 for signal in analysis_signals if signal.get("counted") is False)
+    review_signal_count = sum(1 for signal in analysis_signals if str(signal.get("signal_type") or "") == "review_evidence")
+    return {
+        "matched_paragraph_count": len(clause.get("matched_paragraph_ids", []))
+        if isinstance(clause.get("matched_paragraph_ids"), list)
+        else 0,
+        "structured_evidence_count": len(structured_evidence),
+        "analysis_signal_count": len(analysis_signals),
+        "ignored_signal_count": ignored_count,
+        "review_signal_count": review_signal_count,
+        "matched_terms": matched_terms,
+        "signal_counts": signal_counts,
+        "paragraph_ids": [
+            str(paragraph_id)
+            for paragraph_id in clause.get("matched_paragraph_ids", [])
+            if str(paragraph_id)
+        ] if isinstance(clause.get("matched_paragraph_ids"), list) else [],
+    }
+
+
+def _audit_steps(
+    clause: ClauseResult,
+    decision: str,
+    evidence_summary: Dict[str, object],
+    analysis_outputs: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    structure_context = clause.get("structure_context")
+    concepts = []
+    reference_count = 0
+    if isinstance(structure_context, dict):
+        raw_concepts = structure_context.get("concepts", [])
+        if isinstance(raw_concepts, list):
+            concepts = [str(concept) for concept in raw_concepts if str(concept)]
+        if isinstance(structure_context.get("reference_count"), int):
+            reference_count = int(structure_context["reference_count"])
+    matched_count = int(evidence_summary.get("matched_paragraph_count") or 0)
+    analysis_keys = [str(output.get("key") or "") for output in analysis_outputs if output.get("key")]
+    decision_reason = str(clause.get("decision_reason") or clause.get("reason") or "")
+    return [
+        {
+            "name": "Input context",
+            "outcome": "available" if structure_context else "not_available",
+            "details": "Shared structure, reference, and concept context was attached to the checker result."
+            if structure_context else "No shared structure context was attached.",
+            "concepts": concepts,
+            "reference_count": reference_count,
+        },
+        {
+            "name": "Evidence collection",
+            "outcome": "matched" if matched_count else "no_match",
+            "details": f"{matched_count} reviewed paragraph(s) were linked to this checker result.",
+            "paragraph_ids": evidence_summary.get("paragraph_ids", []),
+            "structured_evidence_count": evidence_summary.get("structured_evidence_count", 0),
+        },
+        {
+            "name": "Signal classification",
+            "outcome": _audit_signal_outcome(evidence_summary),
+            "details": "Structured evidence was classified into pass, review, check, or ignored signal buckets.",
+            "signal_counts": evidence_summary.get("signal_counts", {}),
+            "matched_terms": evidence_summary.get("matched_terms", []),
+            "ignored_signal_count": evidence_summary.get("ignored_signal_count", 0),
+            "review_signal_count": evidence_summary.get("review_signal_count", 0),
+        },
+        {
+            "name": "Analysis outputs",
+            "outcome": "available" if analysis_outputs else "not_available",
+            "details": "Clause-specific analysis objects were attached for audit."
+            if analysis_outputs else "No clause-specific analysis object was attached.",
+            "analysis_keys": analysis_keys,
+        },
+        {
+            "name": "Decision",
+            "outcome": decision,
+            "details": decision_reason,
+        },
+    ]
+
+
+def _audit_signal_outcome(evidence_summary: Dict[str, object]) -> str:
+    signal_counts = evidence_summary.get("signal_counts", {})
+    if isinstance(signal_counts, dict):
+        if signal_counts.get("check_evidence"):
+            return "check_evidence"
+        if signal_counts.get("review_evidence"):
+            return "review_evidence"
+        if signal_counts.get("pass_evidence"):
+            return "pass_evidence"
+    if evidence_summary.get("ignored_signal_count"):
+        return "ignored_signals_only"
+    return "no_structured_signal"
+
+
+def _audit_analysis_outputs(clause: ClauseResult) -> List[Dict[str, object]]:
+    outputs: List[Dict[str, object]] = []
+    for key in sorted(clause.keys()):
+        if key != "structure_context" and not key.endswith("_analysis"):
+            continue
+        value = clause.get(key)
+        if not isinstance(value, dict):
+            continue
+        outputs.append({
+            "key": key,
+            "summary": _audit_analysis_summary(value),
+        })
+    return outputs
+
+
+def _audit_analysis_summary(value: Dict[str, object]) -> Dict[str, object]:
+    summary: Dict[str, object] = {}
+    for key, item in value.items():
+        if isinstance(item, list):
+            if all(isinstance(entry, (str, int, float, bool)) or entry is None for entry in item):
+                summary[key] = item[:20]
+            else:
+                summary[key] = {"count": len(item)}
+        elif isinstance(item, dict):
+            summary[key] = {"keys": sorted(str(nested_key) for nested_key in item.keys())}
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            summary[key] = item
+    return summary
+
+
+def _audit_analysis_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    signals: List[Dict[str, object]] = []
+    signals.extend(_mutuality_audit_signals(clause))
+    signals.extend(_confidential_information_audit_signals(clause))
+    signals.extend(_governing_law_audit_signals(clause))
+    signals.extend(_term_survival_audit_signals(clause))
+    signals.extend(_non_circumvention_audit_signals(clause))
+    return signals[:60]
+
+
+def _mutuality_audit_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    analysis = clause.get("mutuality_analysis")
+    if not isinstance(analysis, dict):
+        return []
+    mapping = [
+        ("strong_mutuality_paragraph_ids", "strong_mutuality", "pass_evidence", True),
+        ("weak_mutuality_paragraph_ids", "weak_mutuality", "review_evidence", True),
+        ("role_definition_paragraph_ids", "role_definition", "review_evidence", True),
+        ("one_way_paragraph_ids", "one_way_language", "check_evidence", True),
+    ]
+    return _paragraph_id_analysis_signals("mutuality_analysis", analysis, mapping)
+
+
+def _confidential_information_audit_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    analysis = clause.get("confidential_information_analysis")
+    if not isinstance(analysis, dict):
+        return []
+    mapping = [
+        ("definition_paragraph_ids", "definition_anchor", "pass_evidence", True),
+        ("explicit_problematic_exclusion_paragraph_ids", "problematic_exclusion", "check_evidence", True),
+        ("usage_right_review_paragraph_ids", "usage_right_language", "review_evidence", True),
+    ]
+    signals = _paragraph_id_analysis_signals("confidential_information_analysis", analysis, mapping)
+    coverage_hits = analysis.get("coverage_hits", [])
+    if isinstance(coverage_hits, list):
+        for hit in coverage_hits[:20]:
+            signals.append({
+                "source": "confidential_information_analysis",
+                "classification": "coverage_hit",
+                "signal_type": "pass_evidence",
+                "counted": True,
+                "matched_text": str(hit),
+                "reason": "Coverage term was found inside the Confidential Information definition.",
+            })
+    return signals
+
+
+def _governing_law_audit_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    analysis = clause.get("governing_law_analysis")
+    if not isinstance(analysis, dict):
+        return []
+    mapping = [
+        ("approved_paragraph_ids", "approved_governing_law", "pass_evidence", True),
+        ("unclear_paragraph_ids", "unclear_governing_law", "review_evidence", True),
+        ("unapproved_paragraph_ids", "unapproved_governing_law", "check_evidence", True),
+        ("heading_only_paragraph_ids", "heading_only", "review_evidence", True),
+    ]
+    signals = _paragraph_id_analysis_signals("governing_law_analysis", analysis, mapping)
+    candidate_records = analysis.get("candidate_records", [])
+    if isinstance(candidate_records, list):
+        for record in candidate_records[:30]:
+            if not isinstance(record, dict):
+                continue
+            needs_review = bool(record.get("needs_review"))
+            approved = bool(record.get("approved"))
+            signals.append({
+                "source": "governing_law_analysis",
+                "paragraph_id": str(record.get("paragraph_id") or ""),
+                "classification": "candidate_record",
+                "signal_type": "review_evidence" if needs_review else ("pass_evidence" if approved else "check_evidence"),
+                "counted": True,
+                "matched_text": str(record.get("value") or ""),
+                "reason": "Governing-law candidate was classified as approved, unclear, or unapproved.",
+                "metadata": {
+                    "approved": approved,
+                    "needs_review": needs_review,
+                },
+            })
+    return signals
+
+
+def _term_survival_audit_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    analysis = clause.get("term_survival_analysis")
+    if not isinstance(analysis, dict):
+        return []
+    signals: List[Dict[str, object]] = []
+    references = analysis.get("references", [])
+    if isinstance(references, list):
+        for reference in references[:30]:
+            if not isinstance(reference, dict):
+                continue
+            status = str(reference.get("status") or "")
+            ordinary_confidentiality = bool(reference.get("ordinary_confidentiality"))
+            unresolved = bool(reference.get("unresolved_numbers"))
+            review_signal = status in {"partial", "unresolved"} or unresolved or not ordinary_confidentiality
+            signals.append({
+                "source": "term_survival_analysis",
+                "paragraph_id": str(reference.get("paragraph_id") or ""),
+                "classification": "survival_reference",
+                "signal_type": "review_evidence" if review_signal else "pass_evidence",
+                "counted": True,
+                "matched_text": str(reference.get("reference_text") or ""),
+                "reason": "Survival cross-reference was resolved and checked against ordinary confidentiality concepts.",
+                "metadata": {
+                    "status": status,
+                    "ordinary_confidentiality": ordinary_confidentiality,
+                    "unresolved_numbers": reference.get("unresolved_numbers", []),
+                },
+            })
+    return signals
+
+
+def _non_circumvention_audit_signals(clause: ClauseResult) -> List[Dict[str, object]]:
+    analysis = clause.get("non_circumvention_analysis")
+    if not isinstance(analysis, dict):
+        return []
+    mapping = [
+        ("prohibited_paragraph_ids", "prohibited_restriction", "check_evidence", True),
+        ("review_paragraph_ids", "possible_restriction", "review_evidence", True),
+        ("lawful_circumvention_paragraph_ids", "lawful_circumvention_context", "ignored_evidence", False),
+        ("negated_reference_paragraph_ids", "negated_reference", "ignored_evidence", False),
+    ]
+    signals = _paragraph_id_analysis_signals("non_circumvention_analysis", analysis, mapping)
+    signal_records = analysis.get("signal_records", [])
+    if isinstance(signal_records, list):
+        for record in signal_records[:30]:
+            if not isinstance(record, dict):
+                continue
+            classification = str(record.get("classification") or "")
+            signals.append({
+                "source": "non_circumvention_analysis",
+                "paragraph_id": str(record.get("paragraph_id") or ""),
+                "classification": classification,
+                "signal_type": _non_circumvention_signal_type(classification),
+                "counted": classification != "negated_reference",
+                "reason": "Non-circumvention signal was classified as prohibited, review-only, or ignored.",
+                "metadata": {
+                    "matched_pattern_count": record.get("matched_pattern_count", 0),
+                },
+            })
+    return signals
+
+
+def _paragraph_id_analysis_signals(
+    source: str,
+    analysis: Dict[str, object],
+    mapping: List[tuple[str, str, str, bool]],
+) -> List[Dict[str, object]]:
+    signals: List[Dict[str, object]] = []
+    for field, classification, signal_type, counted in mapping:
+        paragraph_ids = analysis.get(field, [])
+        if not isinstance(paragraph_ids, list):
+            continue
+        for paragraph_id in paragraph_ids:
+            if not str(paragraph_id):
+                continue
+            signals.append({
+                "source": source,
+                "paragraph_id": str(paragraph_id),
+                "classification": classification,
+                "signal_type": signal_type,
+                "counted": counted,
+                "reason": f"{field} included this paragraph.",
+            })
+    return signals
+
+
+def _non_circumvention_signal_type(classification: str) -> str:
+    if classification == "prohibited":
+        return "check_evidence"
+    if classification == "review":
+        return "review_evidence"
+    return "ignored_evidence"
 
 
 def _validate_check_registry() -> None:

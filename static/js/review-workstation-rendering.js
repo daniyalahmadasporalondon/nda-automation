@@ -599,6 +599,7 @@ function renderStudioDetail() {
   const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = renderEvidenceBlock(clause);
   const evidenceSignalsBlock = renderEvidenceSignalsBlock(clause);
+  const auditTraceBlock = renderAuditTraceBlock(clause);
   const fixBlock = status.requiresAttention && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>${status.needsReview ? "What to verify" : "What to fix"}</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
@@ -645,6 +646,7 @@ function renderStudioDetail() {
       </div>
       ${excerpt}
       ${evidenceSignalsBlock}
+      ${auditTraceBlock}
       <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
         <small>Issue type</small>
         <p>${escapeHtml(status.issueLabel)}</p>
@@ -700,6 +702,26 @@ function renderEvidenceSignalsBlock(clause) {
           `;
         }).join("")}
       </div>
+    </div>
+  `;
+}
+
+function renderAuditTraceBlock(clause) {
+  const trace = clause?.audit_trace && typeof clause.audit_trace === "object" ? clause.audit_trace : null;
+  const steps = Array.isArray(trace?.steps) ? trace.steps.filter((step) => step && step.name) : [];
+  if (!trace || !steps.length) return "";
+  return `
+    <div class="studio-detail-block audit-trace-block">
+      <small>Audit trace</small>
+      <ol class="audit-trace-list">
+        ${steps.map((step) => `
+          <li>
+            <strong>${escapeHtml(step.name)}</strong>
+            <span>${escapeHtml(step.outcome || "")}</span>
+            ${step.details ? `<p>${escapeHtml(step.details)}</p>` : ""}
+          </li>
+        `).join("")}
+      </ol>
     </div>
   `;
 }

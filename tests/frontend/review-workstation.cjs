@@ -376,6 +376,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "SIGNAL BUCKETS");
   await assertTextContains(page.locator("#clauseDetail"), "structure_context");
   await assertTextContains(page.locator("#clauseDetail"), "structured_evidence");
+  await assertTextContains(page.locator("#clauseDetail"), "audit_trace");
   await assertTextContains(page.locator("#clauseDetail"), "analysis_purpose");
   await assertTextContains(page.locator("#clauseDetail"), "primary_inputs");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
@@ -592,6 +593,7 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "REDLINE BEHAVIOR");
   await assertTextContains(checkersPanel, "HUMAN-REVIEW BOUNDARY");
   await assertTextContains(checkersPanel, "STRUCTURED EVIDENCE");
+  await assertTextContains(checkersPanel, "AUDIT TRACE");
   await assertTextContains(checkersPanel, "mutuality_analysis");
   await assertTextContains(checkersPanel, "confidential_information_analysis");
   await assertTextContains(checkersPanel, "governing_law_analysis");
@@ -626,6 +628,11 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE SIGNALS");
   await assertTextContains(page.locator("#studioDetailPanel"), "CHECK_EVIDENCE");
   await assertTextContains(page.locator("#studioDetailPanel"), "laws of");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AUDIT TRACE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Evidence collection");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Signal classification");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Analysis outputs");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Decision");
   await assertTextContains(page.locator("#studioDetailPanel"), "WHY");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
   await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK RATIONALE");

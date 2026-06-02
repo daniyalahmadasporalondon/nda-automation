@@ -103,6 +103,25 @@ class CheckerTests(unittest.TestCase):
                 self.assertIn("concepts", clause["structure_context"])
                 self.assertIn("sections", clause["structure_context"])
                 self.assertIn("reference_count", clause["structure_context"])
+                self.assertIn("audit_trace", clause)
+                trace = clause["audit_trace"]
+                self.assertEqual(trace["version"], 1)
+                self.assertEqual(trace["clause_id"], clause["id"])
+                self.assertEqual(trace["decision"], clause["decision"])
+                self.assertEqual(trace["decision_reason"], clause["decision_reason"])
+                self.assertIn("evidence_summary", trace)
+                self.assertIn("analysis_outputs", trace)
+                self.assertIn("analysis_signals", trace)
+                self.assertEqual(
+                    [step["name"] for step in trace["steps"]],
+                    [
+                        "Input context",
+                        "Evidence collection",
+                        "Signal classification",
+                        "Analysis outputs",
+                        "Decision",
+                    ],
+                )
 
     def test_mutuality_terms_come_from_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
@@ -1032,6 +1051,17 @@ class CheckerTests(unittest.TestCase):
         governing_evidence = governing_law["structured_evidence"][0]
         self.assertEqual(governing_evidence["signal_type"], "check_evidence")
         self.assertIn("laws of", governing_evidence["matched_terms"])
+        governing_trace = governing_law["audit_trace"]
+        self.assertEqual(governing_trace["decision"], "fail")
+        self.assertEqual(governing_trace["steps"][-1]["outcome"], "fail")
+        self.assertEqual(governing_trace["evidence_summary"]["paragraph_ids"], governing_law["matched_paragraph_ids"])
+        self.assertIn(
+            "governing_law_analysis",
+            [output["key"] for output in governing_trace["analysis_outputs"]],
+        )
+        self.assertTrue(
+            any(signal["source"] == "governing_law_analysis" for signal in governing_trace["analysis_signals"])
+        )
 
         self.assertEqual(validate_clause_evidence_trust(result, text), [])
         self.assertEqual(result["evidence_trust"], {"status": "verified", "errors": []})
@@ -1063,6 +1093,7 @@ class CheckerTests(unittest.TestCase):
         governing_law = next(clause for clause in drifted_result["clauses"] if clause["id"] == "governing_law")
         governing_law["evidence_paragraphs"][0]["text"] = "Drifted evidence."
         governing_law["structured_evidence"][0]["text"] = "Drifted structured evidence."
+        governing_law["audit_trace"]["evidence_summary"]["paragraph_ids"] = ["p999"]
         governing_law["matched_text"] = "Drifted evidence."
 
         errors = validate_clause_evidence_trust(drifted_result, text)
@@ -1070,6 +1101,7 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(any("governing_law" in error and "matched_text" in error for error in errors))
         self.assertTrue(any("governing_law" in error and "has drifted text" in error for error in errors))
         self.assertTrue(any("governing_law" in error and "structured evidence" in error for error in errors))
+        self.assertTrue(any("governing_law" in error and "audit_trace paragraph ids" in error for error in errors))
 
     def test_clause_evidence_trust_detects_offset_drift(self):
         text = "This Agreement shall be governed by the laws of California."
