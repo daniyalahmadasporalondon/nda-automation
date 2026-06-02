@@ -312,6 +312,13 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function checkerVisibilityPanel(clause) {
     const visibility = checkerVisibilityForClause(clause);
+    const readingOrder = [
+      ["1", "Review state", "Start with review_state to see whether the checker produced pass, review, or check and whether it blocks send."],
+      ["2", "Reason codes", "Read reason_code and reason_codes to identify the machine-readable cause without parsing prose."],
+      ["3", "Structured evidence", "Inspect structured_evidence for paragraph IDs, matched terms, signal type, rule bucket, and counted flag."],
+      ["4", "Analysis object", `Open ${visibility.output_field} for checker-specific signals and intermediate classifications.`],
+      ["5", "Audit trace", "Use audit_trace to follow the normalized input, evidence, signal, analysis, and final-decision steps."],
+    ];
     const statusCards = [
       ["Pass", visibility.pass],
       ["Review", visibility.review],
@@ -352,6 +359,17 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     ]
       .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
       .join("");
+    const readingOrderItems = readingOrder
+      .map(([number, label, detail]) => `
+        <li>
+          <span>${escapeHtml(number)}</span>
+          <strong>${escapeHtml(label)}</strong>
+          <p>${escapeHtml(detail)}</p>
+        </li>
+      `)
+      .join("");
+    const reasonCodeGroups = renderReasonCodeGroups(visibility.reason_codes || {});
+    const hardeningGuards = renderHardeningGuards(visibility.hardening_guards || []);
 
     return `
       <section class="admin-special checker-visibility">
@@ -359,8 +377,20 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         <p class="admin-muted">Each checker is explained with the same analysis model: purpose, inputs, pass/review/check decision path, audit output, redline behavior, and human-review boundary.</p>
         <div class="admin-decision-grid">${statusCards}</div>
         <section class="admin-signal-section">
+          <h4>Audit reading order</h4>
+          <ol class="admin-reading-order">${readingOrderItems}</ol>
+        </section>
+        <section class="admin-signal-section">
+          <h4>Reason-code taxonomy</h4>
+          <div class="admin-code-groups">${reasonCodeGroups}</div>
+        </section>
+        <section class="admin-signal-section">
           <h4>Signal buckets</h4>
           <div class="admin-signal-grid">${signalBuckets}</div>
+        </section>
+        <section class="admin-signal-section">
+          <h4>Hardening guards</h4>
+          <div class="admin-hardening-list">${hardeningGuards}</div>
         </section>
         <section class="admin-signal-section">
           <h4>Analysis output fields</h4>
@@ -390,6 +420,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       audit_trace_field: "audit_trace",
       analysis_fields: visibility.analysis_fields,
       signal_buckets: visibility.signal_buckets,
+      reason_code_taxonomy: visibility.reason_codes || {},
+      hardening_guards: visibility.hardening_guards || [],
+      audit_reading_order: [
+        "review_state",
+        "reason_code",
+        "reason_codes",
+        "structured_evidence",
+        visibility.output_field,
+        "audit_trace",
+      ],
       redline_behavior: visibility.redline_behavior,
       human_review_boundary: visibility.boundary,
       taxonomy_groups: clause.taxonomy_groups || [],
@@ -434,6 +474,38 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return JSON.stringify(rules, null, 2);
   }
 
+  function renderReasonCodeGroups(groups) {
+    const entries = Object.entries(groups).filter(([, codes]) => Array.isArray(codes) && codes.length);
+    if (!entries.length) {
+      return '<p class="admin-muted">No clause-specific reason-code examples configured.</p>';
+    }
+    return entries
+      .map(([label, codes]) => `
+        <article class="admin-code-group ${escapeHtml(label)}">
+          <strong>${escapeHtml(label)}</strong>
+          <div class="admin-chip-row">
+            ${codes.map((code) => `<span class="admin-chip">${escapeHtml(code)}</span>`).join("")}
+          </div>
+        </article>
+      `)
+      .join("");
+  }
+
+  function renderHardeningGuards(guards) {
+    if (!guards.length) {
+      return '<p class="admin-muted">No clause-specific hardening guard examples configured.</p>';
+    }
+    return guards
+      .map((guard) => `
+        <article>
+          <strong>${escapeHtml(guard.label || "Guard")}</strong>
+          <p>${escapeHtml(guard.detail || "")}</p>
+          ${guard.example ? `<code>${escapeHtml(guard.example)}</code>` : ""}
+        </article>
+      `)
+      .join("");
+  }
+
   function checkerVisibilityForClause(clause) {
     const shared = {
       signatures: {
@@ -445,6 +517,18 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         check: "Execution block is missing or incomplete under the current marker-count checker.",
         output_field: "structure_context",
         analysis_fields: [],
+        reason_codes: {
+          pass: ["complete_execution_block"],
+          review: ["semantic_confidence_below_threshold"],
+          check: ["incomplete_execution_block", "missing_execution_block"],
+        },
+        hardening_guards: [
+          {
+            label: "Separate execution model",
+            detail: "Signature parsing is intentionally not mixed into the legal-concept checker upgrades.",
+            example: "Party/title/date marker counting remains a separate execution-block task.",
+          },
+        ],
         redline_behavior: "Missing or incomplete execution blocks can insert or replace the signature template.",
         boundary: "Current logic is structural marker detection; party/signatory parsing is intentionally separate.",
         signal_buckets: [
@@ -470,6 +554,23 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "weak_mutuality_paragraph_ids",
           "role_definition_paragraph_ids",
           "one_way_paragraph_ids",
+        ],
+        reason_codes: {
+          pass: ["mutuality_obligation_found"],
+          review: ["role_definitions_without_operational_mutuality", "weak_mutuality_signal"],
+          check: ["one_way_mutuality_language", "missing_mutuality_obligation"],
+        },
+        hardening_guards: [
+          {
+            label: "Title-only guard",
+            detail: "A mutual NDA title or mutuality label alone is review evidence, not pass evidence.",
+            example: "Mutual Non-Disclosure Agreement",
+          },
+          {
+            label: "One-way override",
+            detail: "Unilateral or recipient-only language forces check even when other mutuality words appear.",
+            example: "only the Receiving Party",
+          },
         ],
         redline_behavior: "Check decisions use the mutuality redline template; review decisions do not auto-redline.",
         boundary: "Definitions alone are not enough for pass; they are treated as human-review evidence.",
@@ -504,6 +605,32 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "coverage_hits",
           "explicit_exclusion_paragraph_ids",
           "usage_right_review_paragraph_ids",
+        ],
+        reason_codes: {
+          pass: ["broad_confidential_information_definition"],
+          review: ["broad_definition_needs_category_review", "usage_right_language_needs_review"],
+          check: [
+            "missing_confidential_information_definition",
+            "narrow_confidential_information_definition",
+            "problematic_confidential_information_exclusion",
+          ],
+        },
+        hardening_guards: [
+          {
+            label: "Qualified independent development",
+            detail: "Independent-development carve-outs can pass when the no-use/no-reference qualification is attached before or after the carve-out.",
+            example: "without use of or reference to Confidential Information, is independently developed",
+          },
+          {
+            label: "Detached qualification guard",
+            detail: "A separate no-use phrase elsewhere in the paragraph does not cure an unqualified independent-development exclusion.",
+            example: "without use of Confidential Information, or independently developed information",
+          },
+          {
+            label: "Usage-right review",
+            detail: "Usage-right language outside the definition is review, not automatic pass or delete.",
+            example: "may use residual knowledge",
+          },
         ],
         redline_behavior: "Missing/narrow definitions use broadening language; exclusion-based checks use exclusions cleanup language.",
         boundary: "General broad wording can be reviewed instead of failed when categories are implicit.",
@@ -540,6 +667,28 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "heading_only_paragraph_ids",
           "candidate_records",
         ],
+        reason_codes: {
+          pass: ["approved_governing_law"],
+          review: ["unclear_governing_law", "governing_law_heading_only"],
+          check: ["missing_governing_law", "unapproved_governing_law"],
+        },
+        hardening_guards: [
+          {
+            label: "Candidate-value extraction",
+            detail: "The checker reads the governing-law value, not only the presence of approved-law words somewhere nearby.",
+            example: "governed by the laws of California",
+          },
+          {
+            label: "Conflict review",
+            detail: "Approved and non-approved governing-law statements in the same document are escalated to review.",
+            example: "England and Wales plus California",
+          },
+          {
+            label: "Placeholder review",
+            detail: "Placeholders and party-selected laws are not treated as approved values.",
+            example: "laws of [jurisdiction]",
+          },
+        ],
         redline_behavior: "Non-approved laws generate replacement options; review decisions wait for human confirmation.",
         boundary: "Approved law references outside the governing-law value do not rescue a non-approved governing law.",
         signal_buckets: [
@@ -573,6 +722,28 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "confidentiality_reference_count",
           "unresolved_reference_count",
           "ordinary_confidentiality_concepts",
+        ],
+        reason_codes: {
+          pass: ["term_survival_within_cap", "resolved_survival_reference_within_cap"],
+          review: ["unresolved_survival_reference", "survival_reference_scope_unclear"],
+          check: ["missing_term_or_survival", "term_survival_over_cap", "indefinite_survival"],
+        },
+        hardening_guards: [
+          {
+            label: "Real structure references",
+            detail: "Survival references are resolved against the current document structure, not assumed article numbering.",
+            example: "Articles 2, 3, 4 and 5 survive",
+          },
+          {
+            label: "Duration scope guard",
+            detail: "Unrelated survival durations do not satisfy ordinary confidentiality survival.",
+            example: "Claims survive for three years",
+          },
+          {
+            label: "Allowed carve-out scope",
+            detail: "Above-cap or indefinite survival only passes when it is tied to configured carve-outs.",
+            example: "trade secrets survive for so long as they remain trade secrets",
+          },
         ],
         redline_behavior: "Missing or deficient terms generate a term/survival redline; review decisions do not auto-redline.",
         boundary: "Cross-referenced survival is checked against actual resolved sections, not assumed article numbers.",
@@ -609,6 +780,32 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "negated_reference_paragraph_ids",
           "signal_records",
         ],
+        reason_codes: {
+          pass: [
+            "no_non_circumvention_restriction",
+            "negated_non_circumvention_reference",
+            "lawful_circumvention_reference_ignored",
+          ],
+          review: ["possible_non_circumvention_restriction"],
+          check: ["prohibited_non_circumvention_restriction"],
+        },
+        hardening_guards: [
+          {
+            label: "Lawful-circumvention guard",
+            detail: "Language about not circumventing law is ignored instead of deleted.",
+            example: "Nothing requires a party to circumvent applicable law",
+          },
+          {
+            label: "Negated-reference guard",
+            detail: "Clauses saying the agreement does not create non-solicit or exclusivity obligations pass.",
+            example: "may not include non-solicitation obligations",
+          },
+          {
+            label: "Soft commercial signal review",
+            detail: "Introduced-party or future-exclusivity references without operative restriction require human review.",
+            example: "may discuss exclusivity later",
+          },
+        ],
         redline_behavior: "Definite restrictions generate delete redlines; review decisions do not auto-delete.",
         boundary: "Lawful-circumvention references and negated references are not treated as violations.",
         signal_buckets: [
@@ -641,6 +838,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         : "Clause is missing, deficient, unclear, or off-standard.",
       output_field: "structure_context",
       analysis_fields: [],
+      reason_codes: {
+        pass: ["pass_evidence_found"],
+        review: ["unclear_or_ambiguous"],
+        check: ["missing_required_clause", "present_but_wrong"],
+      },
+      hardening_guards: [],
       redline_behavior: "Redline behavior follows the clause registry.",
       boundary: "No clause-specific visibility model configured.",
       signal_buckets: [

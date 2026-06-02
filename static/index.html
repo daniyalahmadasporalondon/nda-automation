@@ -449,6 +449,37 @@
                     <span>Auditable outputs</span>
                   </header>
 
+                  <div class="admin-explainability-grid" aria-label="Admin checker explainability">
+                    <article class="admin-explainability-card">
+                      <h3>Decision reading order</h3>
+                      <ol class="admin-reading-order compact">
+                        <li><span>1</span><strong>review_state</strong><p>Start with pass, review, or check plus send/redline blocking.</p></li>
+                        <li><span>2</span><strong>reason_code</strong><p>Read the machine-readable cause before interpreting prose.</p></li>
+                        <li><span>3</span><strong>structured_evidence</strong><p>Inspect paragraph IDs, matched terms, signal type, rule bucket, and counted flag.</p></li>
+                        <li><span>4</span><strong>analysis object</strong><p>Open the checker-specific object, such as term_survival_analysis or governing_law_analysis.</p></li>
+                        <li><span>5</span><strong>audit_trace</strong><p>Follow input, evidence, signal classification, analysis outputs, and final decision.</p></li>
+                      </ol>
+                    </article>
+                    <article class="admin-explainability-card">
+                      <h3>Reason-code taxonomy</h3>
+                      <dl class="admin-logic-list compact">
+                        <div><dt>Pass</dt><dd>approved_governing_law, term_survival_within_cap, no_non_circumvention_restriction</dd></div>
+                        <div><dt>Review</dt><dd>weak_mutuality_signal, usage_right_language_needs_review, unresolved_survival_reference</dd></div>
+                        <div><dt>Check</dt><dd>missing_required_clause, unapproved_governing_law, prohibited_non_circumvention_restriction</dd></div>
+                        <div><dt>Semantic boundary</dt><dd>semantic_confidence_below_threshold marks a deterministic/semantic confidence issue for human review.</dd></div>
+                      </dl>
+                    </article>
+                    <article class="admin-explainability-card">
+                      <h3>Hardening guards</h3>
+                      <dl class="admin-logic-list compact">
+                        <div><dt>False clear guard</dt><dd>Term and Survival does not pass on unrelated language such as "Claims survive for three years."</dd></div>
+                        <div><dt>False check guard</dt><dd>Non-Circumvention ignores negated references like "may not include non-solicitation obligations."</dd></div>
+                        <div><dt>Attachment guard</dt><dd>Confidential Information checks whether independent-development qualifications actually attach to the carve-out.</dd></div>
+                        <div><dt>Payload fields</dt><dd>Admin should reconcile reason_code, structured_evidence, analysis object, and audit_trace before changing a rule.</dd></div>
+                      </dl>
+                    </article>
+                  </div>
+
                   <div class="engine-checker-grid standardized">
                     <article>
                       <h3>Mutuality</h3>

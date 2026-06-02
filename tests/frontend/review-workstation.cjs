@@ -370,6 +370,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
   await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
   await assertTextContains(page.locator("#clauseDetail"), "Decision Logic Visibility");
+  await assertTextContains(page.locator("#clauseDetail"), "AUDIT READING ORDER");
+  await assertTextContains(page.locator("#clauseDetail"), "REASON-CODE TAXONOMY");
+  await assertTextContains(page.locator("#clauseDetail"), "HARDENING GUARDS");
   await assertTextContains(page.locator("#clauseDetail"), "ANALYSIS PURPOSE");
   await assertTextContains(page.locator("#clauseDetail"), "PRIMARY INPUTS");
   await assertTextContains(page.locator("#clauseDetail"), "HUMAN-REVIEW BOUNDARY");
@@ -380,6 +383,8 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "audit_trace");
   await assertTextContains(page.locator("#clauseDetail"), "analysis_purpose");
   await assertTextContains(page.locator("#clauseDetail"), "primary_inputs");
+  await assertTextContains(page.locator("#clauseDetail"), "reason_code_taxonomy");
+  await assertTextContains(page.locator("#clauseDetail"), "hardening_guards");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "weak_mutuality_paragraph_ids");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality");
@@ -406,6 +411,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "CONCEPT CLASSIFIER");
   await assertTextContains(page.locator("#clauseDetail"), "term_or_survival");
   await assertTextContains(page.locator("#clauseDetail"), "term_survival_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "Claims survive for three years");
   await assertTextContains(page.locator("#clauseDetail"), "unresolved_reference_count");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
@@ -417,6 +423,7 @@ async function testPlaybookAdminEditor(page) {
   await page.locator('[data-clause-id="non_circumvention"]').click();
   await assertTextContains(page.locator("#clauseDetail"), "non_circumvention_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "negated_reference_paragraph_ids");
+  await assertTextContains(page.locator("#clauseDetail"), "may not include non-solicitation obligations");
   await page.locator('[data-clause-id="mutuality"]').click();
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
@@ -587,6 +594,12 @@ async function testContractStructureReviewPanel(page) {
   const checkersPanel = page.locator("#adminCheckersPanel");
   await assertTextContains(checkersPanel, "Clause decision logic");
   await assertTextContains(checkersPanel, "How clause decisions become pass, review, or check");
+  await assertTextContains(checkersPanel, "DECISION READING ORDER");
+  await assertTextContains(checkersPanel, "REASON-CODE TAXONOMY");
+  await assertTextContains(checkersPanel, "HARDENING GUARDS");
+  await assertTextContains(checkersPanel, "PAYLOAD FIELDS");
+  await assertTextContains(checkersPanel, "semantic_confidence_below_threshold");
+  await assertTextContains(checkersPanel, "Claims survive for three years");
   await assertTextContains(checkersPanel, "PURPOSE");
   await assertTextContains(checkersPanel, "INPUTS");
   await assertTextContains(checkersPanel, "PASS");
