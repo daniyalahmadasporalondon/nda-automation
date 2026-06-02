@@ -157,6 +157,49 @@ class ContractStructureTests(unittest.TestCase):
             structure["aliases"],
         )
 
+    def test_exposes_resolver_ready_reference_index(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Clause 1: Definitions",
+            "Confidential Information means non-public information.",
+            "Article II Confidentiality",
+            "Each party shall protect Confidential Information.",
+            "Section II.A Permitted Disclosures",
+            "Disclosures are limited to representatives.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        reference_index = structure["reference_index"]
+        section_by_label = {section["label"]: section for section in structure["sections"]}
+        preamble = section_by_label["Preamble"]
+        clause_1 = section_by_label["Clause 1"]
+        article_ii = section_by_label["Article II"]
+        section_ii_a = section_by_label["Section II.A"]
+
+        self.assertEqual(reference_index["version"], 1)
+        self.assertEqual(reference_index["section_ids"], [section["id"] for section in structure["sections"]])
+        self.assertEqual(reference_index["alias_to_section_id"]["clause:1"], clause_1["id"])
+        self.assertEqual(reference_index["alias_to_section_id"]["article:ii"], article_ii["id"])
+        self.assertEqual(reference_index["alias_to_section_id"]["section:ii.a"], section_ii_a["id"])
+        self.assertEqual(reference_index["paragraph_to_section_id"]["p3"], clause_1["id"])
+        self.assertEqual(reference_index["paragraph_to_section_id"]["p7"], section_ii_a["id"])
+        self.assertIsNone(preamble["number"])
+        self.assertIsNone(preamble["parent_id"])
+        self.assertIsNone(reference_index["sections_by_id"][preamble["id"]]["number"])
+        self.assertIsNone(reference_index["sections_by_id"][preamble["id"]]["parent_id"])
+        self.assertEqual(reference_index["sections_by_id"][section_ii_a["id"]], {
+            "id": section_ii_a["id"],
+            "kind": "section",
+            "number": "II.A",
+            "label": "Section II.A",
+            "heading": "Permitted Disclosures",
+            "level": 2,
+            "paragraph_ids": ["p6", "p7"],
+            "start_index": 6,
+            "end_index": 7,
+            "parent_id": article_ii["id"],
+        })
+
     def test_review_result_includes_contract_structure(self):
         result = review_nda("\n\n".join([
             "1. Confidentiality",

@@ -185,11 +185,13 @@ function createContractStructureController({ state, root }) {
     });
 
     const aliases = aliasesForSections(sections);
+    const referenceIndex = referenceIndexForSections(sections, aliases);
     const mappedParagraphIds = new Set();
     sections.forEach((section) => (section.paragraph_ids || []).forEach((id) => mappedParagraphIds.add(String(id))));
     const allParagraphIds = new Set(documentParagraphs.map(paragraphId).filter(Boolean));
     return {
       aliases,
+      reference_index: referenceIndex,
       sections,
       stats: {
         mapped_paragraph_count: mappedParagraphIds.size,
@@ -279,12 +281,12 @@ function createContractStructureController({ state, root }) {
       kind,
       label,
       level,
+      number: number || null,
       paragraph_ids: paragraphIds,
+      parent_id: parentId || null,
       start_index: paragraphIndex(first),
       start_paragraph_id: paragraphId(first),
     };
-    if (number) section.number = number;
-    if (parentId) section.parent_id = parentId;
     return section;
   }
 
@@ -361,6 +363,47 @@ function createContractStructureController({ state, root }) {
       });
     });
     return aliases;
+  }
+
+  function referenceIndexForSections(sections, aliases) {
+    const sectionIds = [];
+    const sectionsById = {};
+    const paragraphToSectionId = {};
+    sections.forEach((section) => {
+      const sectionId = String(section.id || "");
+      if (!sectionId) return;
+      sectionIds.push(sectionId);
+      sectionsById[sectionId] = resolverSectionRecord(section);
+      (section.paragraph_ids || []).forEach((paragraphId) => {
+        if (paragraphId) paragraphToSectionId[String(paragraphId)] = sectionId;
+      });
+    });
+    const aliasToSectionId = {};
+    aliases.forEach((alias) => {
+      if (alias?.key && alias?.section_id) aliasToSectionId[String(alias.key)] = String(alias.section_id);
+    });
+    return {
+      alias_to_section_id: aliasToSectionId,
+      paragraph_to_section_id: paragraphToSectionId,
+      section_ids: sectionIds,
+      sections_by_id: sectionsById,
+      version: 1,
+    };
+  }
+
+  function resolverSectionRecord(section) {
+    return {
+      end_index: Number.isInteger(section.end_index) ? section.end_index : null,
+      heading: String(section.heading || ""),
+      id: String(section.id || ""),
+      kind: String(section.kind || ""),
+      label: String(section.label || ""),
+      level: Number.isInteger(section.level) ? section.level : 0,
+      number: section.number || null,
+      paragraph_ids: (section.paragraph_ids || []).map((paragraphId) => String(paragraphId)),
+      parent_id: section.parent_id || null,
+      start_index: Number.isInteger(section.start_index) ? section.start_index : null,
+    };
   }
 
   function paragraphId(paragraph) {

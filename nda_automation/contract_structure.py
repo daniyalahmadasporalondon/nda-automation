@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List
 from .review_document import Paragraph
 
 STRUCTURE_VERSION = 1
+REFERENCE_INDEX_VERSION = 1
 ROMAN_NUMBER_PATTERN = r"[IVXLCDM]{2,}"
 IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
 EXPLICIT_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
@@ -108,6 +109,7 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
         ))
 
     aliases = _build_aliases(sections)
+    reference_index = _build_reference_index(sections, aliases)
     mapped_paragraph_ids = {
         paragraph_id
         for section in sections
@@ -124,6 +126,7 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
         "version": STRUCTURE_VERSION,
         "sections": sections,
         "aliases": aliases,
+        "reference_index": reference_index,
         "stats": {
             "section_count": len(sections),
             "mapped_paragraph_count": len(mapped_paragraph_ids),
@@ -240,19 +243,17 @@ def _section_dict(
         "kind": kind,
         "label": label,
         "heading": heading,
+        "number": number,
         "level": level,
         "paragraph_ids": paragraph_ids,
         "start_paragraph_id": _paragraph_id(first_paragraph),
         "end_paragraph_id": _paragraph_id(last_paragraph),
         "start_index": _paragraph_index(first_paragraph),
         "end_index": _paragraph_index(last_paragraph),
+        "parent_id": parent_id,
         "confidence": confidence,
         "heading_text": heading_text,
     }
-    if number is not None:
-        section["number"] = number
-    if parent_id is not None:
-        section["parent_id"] = parent_id
     return section
 
 
@@ -300,6 +301,56 @@ def _build_aliases(sections: Iterable[Dict[str, object]]) -> List[Dict[str, str]
             aliases.append({"key": key, "section_id": section_id, "label": label})
             seen_keys.add(key)
     return aliases
+
+
+def _build_reference_index(
+    sections: Iterable[Dict[str, object]],
+    aliases: Iterable[Dict[str, str]],
+) -> Dict[str, object]:
+    section_lookup: Dict[str, Dict[str, object]] = {}
+    paragraph_lookup: Dict[str, str] = {}
+    section_ids: List[str] = []
+
+    for section in sections:
+        section_id = str(section.get("id") or "")
+        if not section_id:
+            continue
+        section_ids.append(section_id)
+        section_lookup[section_id] = _resolver_section_record(section)
+        for paragraph_id in section.get("paragraph_ids", []):
+            if isinstance(paragraph_id, str) and paragraph_id:
+                paragraph_lookup[paragraph_id] = section_id
+
+    return {
+        "version": REFERENCE_INDEX_VERSION,
+        "section_ids": section_ids,
+        "sections_by_id": section_lookup,
+        "alias_to_section_id": {
+            alias["key"]: alias["section_id"]
+            for alias in aliases
+            if isinstance(alias.get("key"), str) and isinstance(alias.get("section_id"), str)
+        },
+        "paragraph_to_section_id": paragraph_lookup,
+    }
+
+
+def _resolver_section_record(section: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "id": str(section.get("id") or ""),
+        "kind": str(section.get("kind") or ""),
+        "number": section.get("number") if isinstance(section.get("number"), str) else None,
+        "label": str(section.get("label") or ""),
+        "heading": str(section.get("heading") or ""),
+        "level": int(section.get("level", 0)) if isinstance(section.get("level"), int) else 0,
+        "paragraph_ids": [
+            paragraph_id
+            for paragraph_id in section.get("paragraph_ids", [])
+            if isinstance(paragraph_id, str)
+        ],
+        "start_index": section.get("start_index") if isinstance(section.get("start_index"), int) else None,
+        "end_index": section.get("end_index") if isinstance(section.get("end_index"), int) else None,
+        "parent_id": section.get("parent_id") if isinstance(section.get("parent_id"), str) else None,
+    }
 
 
 def _looks_like_numbered_heading(heading: str) -> bool:

@@ -508,6 +508,18 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "clause:1");
   await assertTextContains(reviewPanel, "clause:1a");
   await assertTextContains(reviewPanel, "section:10b");
+  const referenceIndex = await page.evaluate(() => state.latestReviewResult.contract_structure.reference_index);
+  assert.equal(referenceIndex.version, 1);
+  assert.equal(referenceIndex.alias_to_section_id["clause:1a"], "section-3");
+  assert.equal(referenceIndex.alias_to_section_id["section:10b"], "section-8");
+  assert.equal(referenceIndex.alias_to_section_id["section:ii.a"], "section-10");
+  assert.equal(referenceIndex.paragraph_to_section_id.p14, "section-8");
+  assert.equal(referenceIndex.paragraph_to_section_id.p18, "section-10");
+  assert.equal(referenceIndex.sections_by_id["section-10"].parent_id, "section-9");
+  assert.deepEqual(
+    Object.keys(referenceIndex.sections_by_id["section-10"]).sort(),
+    ["end_index", "heading", "id", "kind", "label", "level", "number", "paragraph_ids", "parent_id", "start_index"]
+  );
 
   await page.locator('[data-review-inspector="clause"]').click();
   await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
