@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from nda_automation import checker as checker_module
 from nda_automation import semantic as semantic_module
+from nda_automation.checks.common import _match, _not_present
 from nda_automation.checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
@@ -1078,6 +1079,66 @@ class CheckerTests(unittest.TestCase):
         redline = self.redline_for_clause(result, "non_circumvention")
         self.assertEqual(redline["action"], "delete_paragraph")
         self.assertEqual(redline["paragraph_id"], "p1")
+
+    def test_semantic_crosscheck_flags_missed_non_circumvention_false_clear(self):
+        def missed_non_circumvention(_text, _normalized, clause, _paragraphs, _review_context=None):
+            return _not_present(clause, "Primary checker reported no non-circumvention language.", [])
+
+        patched_checks = [
+            (clause_id, missed_non_circumvention if clause_id == "non_circumvention" else check)
+            for clause_id, check in checker_module.CLAUSE_CHECKS
+        ]
+        with patch.object(checker_module, "CLAUSE_CHECKS", patched_checks):
+            result = review_nda("The Recipient shall not poach contacts surfaced by the Company.")
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "fail")
+        self.assertTrue(non_circumvention["semantic_crosscheck"])
+        self.assertEqual(non_circumvention["reason_code"], "prohibited_non_circumvention_restriction")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+            ["p1"],
+        )
+        self.assertEqual(result["semantic_crosscheck"]["record_count"], 1)
+        redline = self.redline_for_clause(result, "non_circumvention")
+        self.assertEqual(redline["action"], "delete_paragraph")
+        self.assertEqual(redline["paragraph_id"], "p1")
+
+    def test_semantic_crosscheck_reviews_missed_independent_development_usage_right(self):
+        def missed_confidential_information(_text, _normalized, clause, paragraphs, _review_context=None):
+            return _match(clause, "Primary checker reported broad Confidential Information language.", [paragraphs[0]])
+
+        patched_checks = [
+            (clause_id, missed_confidential_information if clause_id == "confidential_information" else check)
+            for clause_id, check in checker_module.CLAUSE_CHECKS
+        ]
+        with patch.object(checker_module, "CLAUSE_CHECKS", patched_checks):
+            result = review_nda(
+                """
+                Confidential Information means any and all non-public business, financial, technical,
+                customer, supplier, pricing, market, proprietary and trade secret information disclosed
+                by either party.
+
+                The Receiving Party may freely use anything it independently develops.
+                """
+            )
+
+        confidential_information = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(confidential_information["status"], "match")
+        self.assertEqual(confidential_information["decision"], "review")
+        self.assertTrue(confidential_information["needs_review"])
+        self.assertTrue(confidential_information["semantic_crosscheck"])
+        self.assertEqual(confidential_information["reason_code"], "usage_right_language_needs_review")
+        self.assertEqual(confidential_information["matched_paragraph_ids"], ["p2"])
+        self.assertEqual(
+            confidential_information["confidential_information_analysis"]["usage_right_review_paragraph_ids"],
+            ["p2"],
+        )
+        self.assertEqual(result["semantic_crosscheck"]["record_count"], 1)
+        self.assertFalse(self.redlines_for_clause(result, "confidential_information"))
 
     def test_semantic_fallback_can_lazy_load_configured_evaluator(self):
         module_name = "test_semantic_evaluator_module"

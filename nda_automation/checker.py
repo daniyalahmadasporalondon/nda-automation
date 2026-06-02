@@ -17,6 +17,7 @@ from .inline_diff import diff_text_operation_dicts
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .semantic import SemanticEvaluateFn, apply_semantic_fallback
+from .semantic_crosscheck import apply_semantic_crosscheck
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
@@ -152,6 +153,11 @@ def review_nda(
                 evaluator=semantic_evaluator,
             )
         )
+    clause_results, semantic_crosscheck = apply_semantic_crosscheck(
+        clause_results=clause_results,
+        clauses_by_id=clauses_by_id,
+        paragraphs=document_paragraphs,
+    )
     for clause in clause_results:
         _apply_clause_decision(clause)
     failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
@@ -177,6 +183,7 @@ def review_nda(
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
         "concept_classifier": concept_classifier,
+        "semantic_crosscheck": semantic_crosscheck,
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }
