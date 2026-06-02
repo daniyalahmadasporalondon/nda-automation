@@ -1093,6 +1093,12 @@ class CheckerTests(unittest.TestCase):
             "Confidential Information does not include independent development.",
             "Confidential Information does not include information independently created by the Receiving Party.",
             "Confidential Information does not include independent creation by the Receiving Party.",
+            "Confidential Information does not include information independently derived by the Receiving Party.",
+            "Confidential Information does not include independent derivation by the Receiving Party.",
+            "Confidential Information does not include information independently discovered by the Receiving Party.",
+            "Confidential Information does not include independent discovery by the Receiving Party.",
+            "Confidential Information does not include information independently sourced by the Receiving Party.",
+            "Confidential Information does not include independent sourcing by the Receiving Party.",
             "Confidential Information does not include information independently codeveloped by the Receiving Party.",
             "Confidential Information does not include information independently co-developed by the Receiving Party.",
         ]
