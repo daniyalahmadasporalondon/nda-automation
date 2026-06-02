@@ -175,6 +175,18 @@ button.secondary:hover:not(:disabled) {
   color: var(--brand);
 }
 
+.sr-only {
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 :focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
@@ -782,6 +794,14 @@ h3 {
   white-space: nowrap;
 }
 
+.studio-matter-right {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-width: 0;
+}
+
 .studio-matter-meta {
   display: grid;
   gap: 0;
@@ -807,6 +827,21 @@ h3 {
   font-size: 12px;
   font-weight: 600;
   margin: 2px 0 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-matter-actions {
+  align-items: center;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-left: 12px;
 }
 
 .studio-grid {
@@ -1063,6 +1098,48 @@ h3 {
   min-width: 0;
 }
 
+.studio-toolbar-center,
+.studio-toolbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.studio-toolbar-center {
+  justify-content: center;
+}
+
+.studio-toolbar-actions {
+  justify-content: flex-end;
+}
+
+.studio-toolbar-status {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.studio-toolbar-status strong,
+.studio-toolbar-status span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-toolbar-status strong {
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.studio-toolbar-status span {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
 .studio-undo-edit {
   align-items: center;
   background: #ffffff;
@@ -1255,6 +1332,86 @@ h3 {
   min-width: 20px;
 }
 
+.paragraph-comment-composer {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 34px -24px rgba(23, 10, 51, 0.35);
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  position: relative;
+  white-space: normal;
+  z-index: 4;
+}
+
+.paragraph-comment-composer label {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.paragraph-comment-selection {
+  background: var(--bg-soft);
+  border-left: 3px solid var(--brand);
+  border-radius: 7px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+  max-height: 70px;
+  overflow: auto;
+  padding: 7px 9px;
+}
+
+.paragraph-comment-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: var(--text-font);
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 72px;
+  outline: none;
+  padding: 8px 9px;
+  resize: vertical;
+  width: 100%;
+}
+
+.paragraph-comment-input:focus {
+  border-color: rgba(85, 35, 178, 0.4);
+  box-shadow: 0 0 0 3px rgba(85, 35, 178, 0.12);
+}
+
+.paragraph-comment-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.paragraph-comment-actions button {
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 800;
+  min-height: 26px;
+  padding: 5px 10px;
+}
+
+.paragraph-comment-save {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.paragraph-comment-cancel {
+  background: var(--bg-panel);
+  color: var(--ink-soft);
+}
+
 .paragraph-editable {
   border-radius: 6px;
   cursor: text;
@@ -1310,6 +1467,10 @@ h3 {
 .inline-ins {
   background: rgba(16, 185, 129, 0.16);
   color: #05603a;
+}
+
+.inline-del + .inline-ins {
+  margin-left: 0.25ch;
 }
 
 .studio-doc-paragraph.has-clause {
@@ -1427,6 +1588,20 @@ textarea {
 
 textarea::placeholder {
   color: #9b94ab;
+}
+
+.paragraph-comment-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: var(--text-font);
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 72px;
+  overflow: auto;
+  padding: 8px 9px;
+  resize: vertical;
 }
 
 #studioNdaText {
@@ -1927,32 +2102,7 @@ textarea::placeholder {
   line-height: 1.3;
 }
 
-/* ---------- Bottom action bar (flat white) ---------- */
-
-.studio-actionbar {
-  align-items: center;
-  background: rgba(255, 255, 255, 0.92);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -14px 34px -28px rgba(26, 19, 51, 0.3);
-  display: flex;
-  flex: 0 0 auto;
-  gap: 16px;
-  justify-content: space-between;
-  margin: 14px 0 0;
-  min-height: 46px;
-  padding: 0 24px;
-}
-
-.studio-file-summary {
-  display: grid;
-  gap: 2px;
-}
-
-.studio-file-summary strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-}
+/* ---------- Toolbar export status and actions ---------- */
 
 .export-success {
   color: var(--green-ink);
@@ -1972,12 +2122,6 @@ textarea::placeholder {
   text-decoration: none;
 }
 
-.studio-file-summary span {
-  color: var(--ink-muted);
-  font-size: 9.5px;
-  font-weight: 600;
-}
-
 .actions {
   display: flex;
   flex: 0 0 auto;
@@ -1992,12 +2136,216 @@ textarea::placeholder {
   min-width: 98px;
 }
 
+.actions button.icon-only {
+  min-width: 32px;
+  padding: 0;
+  width: 32px;
+}
+
+.actions button.icon-only svg {
+  fill: none;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 15px;
+}
+
 #studioReviewButton {
   background: var(--brand);
   color: #fff;
 }
 
 #studioReviewButton:hover:not(:disabled) {
+  background: var(--brand-bright);
+  box-shadow: 0 12px 26px -10px rgba(79, 27, 179, 0.48);
+}
+
+/* ---------- Review send email modal ---------- */
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.send-modal[hidden] {
+  display: none;
+}
+
+.send-modal {
+  align-items: center;
+  background: rgba(17, 17, 26, 0.32);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 22px;
+  position: fixed;
+  z-index: 1000;
+}
+
+.send-modal-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: 0 24px 80px -34px rgba(17, 17, 26, 0.55);
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  width: min(720px, calc(100vw - 32px));
+}
+
+.send-modal-form {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.send-modal-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.send-modal-eyebrow,
+.send-modal-route dt,
+.send-modal-field span,
+.send-modal-summary h3 {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.send-modal-head h2 {
+  font-size: 20px;
+  line-height: 1.1;
+  margin: 5px 0 0;
+}
+
+.send-modal-close {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0;
+  width: 32px;
+}
+
+.send-modal-close svg {
+  fill: none;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+  width: 15px;
+}
+
+.send-modal-route {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.send-modal-route div {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  min-width: 0;
+  padding: 10px;
+}
+
+.send-modal-route dd {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.send-modal-field {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.send-modal-field input,
+.send-modal-field textarea {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-sizing: border-box;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  min-width: 0;
+  padding: 10px 11px;
+  width: 100%;
+}
+
+.send-modal-field textarea {
+  min-height: 180px;
+  resize: vertical;
+}
+
+.send-modal-field input:focus,
+.send-modal-field textarea:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.1);
+  outline: none;
+}
+
+.send-modal-summary {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px;
+}
+
+.send-modal-summary ul {
+  color: var(--ink-soft);
+  display: grid;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 6px;
+  line-height: 1.35;
+  margin: 9px 0 0;
+  padding-left: 18px;
+}
+
+.send-modal-status {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 650;
+  min-height: 16px;
+  margin: -2px 0 0;
+}
+
+.send-modal-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.send-modal-actions button {
+  height: 34px;
+  min-width: 104px;
+}
+
+.send-modal-actions button[type="submit"] {
+  background: var(--brand);
+  color: #fff;
+}
+
+.send-modal-actions button[type="submit"]:hover:not(:disabled) {
   background: var(--brand-bright);
   box-shadow: 0 12px 26px -10px rgba(79, 27, 179, 0.48);
 }
@@ -2967,6 +3315,31 @@ textarea::placeholder {
     min-height: 0;
   }
 
+  .studio-matter-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .studio-matter-right {
+    align-items: stretch;
+    flex-direction: column;
+    margin-left: 0;
+  }
+
+  .studio-matter-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-matter-meta div,
+  .studio-matter-actions {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .studio-matter-actions {
+    justify-content: flex-start;
+  }
+
   .admin-console,
   .studio-grid,
   .upload-workspace,
@@ -3027,14 +3400,47 @@ textarea::placeholder {
     min-height: 70vh;
   }
 
-  .studio-actionbar {
-    flex-direction: column;
+  .studio-doc-toolbar,
+  .studio-toolbar-center,
+  .studio-toolbar-actions {
     align-items: stretch;
-    gap: 10px;
-    padding: 12px 16px;
+    flex-direction: column;
   }
 
-  .actions button {
+  .studio-toolbar-left {
+    align-items: flex-start;
+  }
+
+  .studio-toolbar-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .studio-toolbar-actions button {
     flex: 1;
+  }
+
+  .send-modal {
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .send-modal-dialog {
+    max-height: calc(100vh - 24px);
+    width: 100%;
+  }
+
+  .send-modal-route {
+    grid-template-columns: 1fr;
+  }
+
+  .send-modal-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .send-modal-actions button {
+    width: 100%;
   }
 }

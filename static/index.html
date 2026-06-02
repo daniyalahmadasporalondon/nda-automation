@@ -6,6 +6,7 @@
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="stylesheet" href="/static/css/repository.css">
+    <link rel="stylesheet" href="/static/css/redesign.css">
   </head>
   <body>
     <div class="app-shell">
@@ -13,29 +14,28 @@
         <header class="topbar">
           <div class="product-lockup">
             <img class="brand-logo" src="/static/assets/aspora-logo.png" alt="Aspora">
-            <span class="product-copy">
-              <strong>Legal Review Portal</strong>
-              <small>NDA Automation Suite</small>
-            </span>
           </div>
           <nav class="tabbar" aria-label="Workspace" role="tablist">
             <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
               <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M3 6.5h18M5 6.5v13h14v-13M8 10h8"/>
+                <rect x="2.5" y="4" width="19" height="4.5" rx="1.4"/>
+                <path d="M4.5 8.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8.5"/>
+                <path d="M10 12.5h4"/>
               </svg>
               <span>Repository</span>
             </button>
             <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
               <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M12 16V4"/>
-                <path d="m7 9 5-5 5 5"/>
-                <path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>
+                <path d="M12 15.5V4"/>
+                <path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
+                <path d="M4.5 15.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.5"/>
               </svg>
               <span>Upload</span>
             </button>
             <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
               <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M12 3.5 19 7v5.2c0 4.1-2.9 7.5-7 8.3-4.1-.8-7-4.2-7-8.3V7l7-3.5Z"/>
+                <path d="M12 3.25 18.5 6v5.4c0 3.8-2.7 6.95-6.5 7.85C8.2 18.35 5.5 15.2 5.5 11.4V6L12 3.25Z"/>
+                <path d="m9.2 11.7 2 2 3.6-3.9"/>
               </svg>
               <span>Review</span>
             </button>
@@ -60,29 +60,27 @@
                 <h1 id="studioDocTitle">Untitled NDA</h1>
               </div>
             </div>
-            <dl class="studio-matter-meta">
-              <div>
-                <dt>Counterparty</dt>
-                <dd>Pending upload</dd>
+            <div class="studio-matter-right">
+              <dl class="studio-matter-meta">
+                <div>
+                  <dt>Counterparty</dt>
+                  <dd id="studioCounterpartyMeta">-</dd>
+                </div>
+                <div>
+                  <dt>Received</dt>
+                  <dd>30/05/2026</dd>
+                </div>
+              </dl>
+              <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
+                <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
+                <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
+                <button id="studioClearButton" class="secondary" type="button">Clear</button>
               </div>
-              <div>
-                <dt>Received</dt>
-                <dd>30/05/2026</dd>
-              </div>
-            </dl>
+            </div>
           </header>
 
           <section class="studio-grid">
             <aside class="studio-clauses" aria-label="Studio clause map">
-              <div class="studio-clause-head">
-                <div>
-                  <p class="eyebrow">clauses</p>
-                  <strong id="studioMatchSummary">0/6</strong>
-                </div>
-                <span id="studioResultMark">-</span>
-              </div>
-              <p id="studioOverallTitle" class="studio-lane-title">Awaiting review</p>
-              <p id="studioResultMeta" class="studio-lane-meta" aria-live="polite">No hard-clause review has run yet.</p>
               <div class="studio-clause-list" id="studioClauseLane"></div>
             </aside>
 
@@ -90,18 +88,59 @@
               <div class="studio-doc-toolbar">
                 <div class="studio-toolbar-left">
                   <button id="studioUndoEditButton" class="studio-undo-edit" type="button" disabled aria-label="Undo last edit" title="Undo last edit">Undo</button>
+                  <div class="studio-toolbar-status">
+                    <strong id="studioFileMeta" aria-live="polite"></strong>
+                    <span id="studioDraftMeta" aria-live="polite"></span>
+                  </div>
+                </div>
+                <div class="studio-toolbar-center">
                   <div class="studio-view-switch" role="group" aria-label="Document view">
-                    <span class="vs-label">Views:</span>
                     <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
                     <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
                     <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
                   </div>
+                  <div class="studio-viewer-controls" role="group" aria-label="Document controls">
+                    <div class="vc-group">
+                      <button class="vc-btn" id="studioPagePrev" type="button" aria-label="Previous page" title="Previous page">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 15 6-6 6 6"/></svg>
+                      </button>
+                      <span class="vc-readout" id="studioPageIndicator" aria-live="polite">1 / 1</span>
+                      <button class="vc-btn" id="studioPageNext" type="button" aria-label="Next page" title="Next page">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>
+                      </button>
+                    </div>
+                    <div class="vc-group">
+                      <button class="vc-btn" id="studioZoomOut" type="button" aria-label="Zoom out" title="Zoom out">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
+                      </button>
+                      <span class="vc-readout" id="studioZoomLevel" aria-live="polite">100%</span>
+                      <button class="vc-btn" id="studioZoomIn" type="button" aria-label="Zoom in" title="Zoom in">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+                      </button>
+                    </div>
+                    <button class="vc-btn vc-solo" id="studioFullscreen" type="button" aria-label="Full screen" title="Full screen" aria-pressed="false">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                    </button>
+                    <button class="vc-btn vc-solo" id="studioExportButton" type="button" disabled aria-label="Export DOCX" title="Export DOCX">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                    </button>
+                  </div>
+                  <div class="studio-toolbar-send actions" role="group" aria-label="Send actions">
+                    <button id="studioSendButton" class="secondary icon-only" type="button" disabled aria-label="Send Redline" title="Send Redline">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.99 5.73a2 2 0 0 1-2.02 0L2 7"/>
+                      </svg>
+                      <span class="sr-only">Send Redline</span>
+                    </button>
+                  </div>
                 </div>
-                <div class="studio-zoom">100%</div>
+                <div class="studio-toolbar-actions actions" role="group" aria-label="Review actions">
+                  <button id="studioReviewButton" type="button">Review NDA</button>
+                </div>
               </div>
               <div class="studio-page-wrap">
                 <div class="studio-page">
-                  <p class="studio-document-subtitle">NON-DISCLOSURE AGREEMENT (NDA)</p>
                   <div id="studioDocumentRender" class="studio-document-render" hidden></div>
                   <textarea id="studioNdaText" spellcheck="false" aria-label="NDA source text" placeholder="Paste NDA text here"></textarea>
                 </div>
@@ -111,26 +150,10 @@
             <aside class="studio-playbook" aria-label="Selected clause details">
               <h2>Selected Clause</h2>
               <section class="studio-card" id="studioDetailPanel">
-                <p class="eyebrow">selected clause</p>
                 <p>No review yet.</p>
               </section>
             </aside>
           </section>
-
-          <footer class="studio-actionbar">
-            <div class="studio-file-summary">
-              <strong id="studioFileMeta" aria-live="polite">No file selected</strong>
-              <span id="studioDraftMeta" aria-live="polite">No custom draft</span>
-            </div>
-            <div class="actions">
-              <button id="studioReviewButton" type="button">Review NDA</button>
-              <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
-              <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
-              <button id="studioExportButton" class="secondary" type="button" disabled>Export DOCX</button>
-              <button id="studioSendButton" class="secondary" type="button" disabled>Send Redline</button>
-              <button id="studioClearButton" class="secondary" type="button">Clear</button>
-            </div>
-          </footer>
         </main>
 
         <main class="manual-upload-view view" id="uploadView" role="tabpanel" aria-labelledby="uploadTab" data-view="upload" hidden>
@@ -423,6 +446,61 @@
       </section>
     </div>
 
+    <div class="send-modal" id="studioSendModal" role="dialog" aria-modal="true" aria-labelledby="studioSendModalTitle" hidden>
+      <div class="send-modal-dialog">
+        <form class="send-modal-form" id="studioSendForm">
+          <header class="send-modal-head">
+            <div>
+              <p class="send-modal-eyebrow">Outbound redline</p>
+              <h2 id="studioSendModalTitle">Send email</h2>
+            </div>
+            <button class="send-modal-close" id="studioSendModalClose" type="button" aria-label="Close send email dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <dl class="send-modal-route" aria-label="Email route">
+            <div>
+              <dt>From</dt>
+              <dd id="studioSendFrom">-</dd>
+            </div>
+            <div>
+              <dt>To</dt>
+              <dd id="studioSendTo">-</dd>
+            </div>
+            <div>
+              <dt>Attachment</dt>
+              <dd id="studioSendAttachment">-</dd>
+            </div>
+          </dl>
+
+          <label class="send-modal-field" for="studioSendSubject">
+            <span>Subject</span>
+            <input id="studioSendSubject" type="text" autocomplete="off">
+          </label>
+
+          <label class="send-modal-field" for="studioSendBody">
+            <span>Message</span>
+            <textarea id="studioSendBody" rows="10"></textarea>
+          </label>
+
+          <section class="send-modal-summary" aria-label="Redline summary">
+            <h3>Redline summary</h3>
+            <ul id="studioSendSummary"></ul>
+          </section>
+
+          <p class="send-modal-status" id="studioSendStatus" aria-live="polite"></p>
+
+          <footer class="send-modal-actions">
+            <button class="secondary" id="studioSendCancelButton" type="button">Cancel</button>
+            <button id="studioSendConfirmButton" type="submit">Send email</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+
     <script src="/static/js/config.js"></script>
     <script src="/static/js/html-utils.js"></script>
     <script src="/static/js/clause-status.js"></script>
@@ -437,6 +515,9 @@
     <script src="/static/js/review-workstation-source.js"></script>
     <script src="/static/js/review-workstation-rendering.js"></script>
     <script src="/static/js/review-workstation-viewer.js"></script>
+    <script src="/static/js/vendor/jszip.min.js"></script>
+    <script src="/static/js/vendor/docx-preview.min.js"></script>
+    <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

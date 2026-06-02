@@ -1,4 +1,7 @@
+let reviewSendModalPreviousFocus = null;
+
 function clearReview() {
+  closeReviewSendComposer({ restoreFocus: false });
   pendingReviewSendMatterId = null;
   setSourceText("");
   showStudioSourceEditor();
@@ -6,7 +9,8 @@ function clearReview() {
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   state.selectedDocument = null;
   state.selectedMatter = null;
-  setFileMeta("No file selected");
+  setFileMeta("");
+  setCounterpartyMeta("");
   setDocumentTitle(DEFAULT_DOCUMENT_TITLE);
   resetReviewResults();
   emptyState();
@@ -52,8 +56,24 @@ function setupReviewWorkstationActions() {
     await exportReviewDocx();
   });
 
-  studioSendButton.addEventListener("click", async () => {
-    await sendReviewRedlineEmail();
+  studioSendButton.addEventListener("click", () => {
+    openReviewSendComposer();
+  });
+
+  studioSendModalClose?.addEventListener("click", () => closeReviewSendComposer());
+  studioSendCancelButton?.addEventListener("click", () => closeReviewSendComposer());
+  studioSendForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await sendReviewRedlineEmail({ fromComposer: true });
+  });
+  studioSendModal?.addEventListener("click", (event) => {
+    if (event.target === studioSendModal) closeReviewSendComposer();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !isReviewSendComposerOpen()) return;
+    if (studioSendConfirmButton?.disabled) return;
+    event.preventDefault();
+    closeReviewSendComposer();
   });
 }
 
@@ -115,7 +135,7 @@ async function exportReviewDocx() {
   const exportDraftDirty = Boolean(exportMatter?.id && state.redlineDraftDirty);
 
   studioExportButton.disabled = true;
-  studioExportButton.textContent = "Choosing file";
+  studioExportButton.title = "Choosing file…";
 
   try {
     const saveHandle = await chooseExportSaveHandle(suggestedExportFilenameForContext(exportMatter, exportDocument));
@@ -124,7 +144,7 @@ async function exportReviewDocx() {
       return;
     }
 
-    studioExportButton.textContent = "Exporting";
+    studioExportButton.title = "Exporting…";
     if (exportDraftDirty && state.selectedMatter?.id === exportMatter.id) {
       await saveReviewRedlineDraft({ quiet: true });
     }
@@ -172,17 +192,17 @@ async function exportReviewDocx() {
   } catch (error) {
     renderOperationError(error, "Export could not run.");
   } finally {
-    studioExportButton.textContent = "Export DOCX";
+    studioExportButton.title = "Export DOCX";
     updateExportButtonState();
   }
 }
 
-async function sendReviewRedlineEmail() {
+function openReviewSendComposer() {
   if (!state.selectedMatter?.id) return;
   const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
   if (sendBlockReason) {
     pendingReviewSendMatterId = null;
-    studioSendButton.textContent = MatterUtils.gmailSendButtonLabel(sendBlockReason);
+    setStudioSendButtonLabel(MatterUtils.gmailSendButtonLabel(sendBlockReason), sendBlockReason);
     setFileMeta(sendBlockReason);
     updateExportButtonState();
     return;
@@ -190,20 +210,77 @@ async function sendReviewRedlineEmail() {
   const recipient = MatterUtils.recipientEmail(state.selectedMatter);
   if (!recipient) {
     pendingReviewSendMatterId = null;
-    studioSendButton.textContent = "Send Redline";
+    setStudioSendButtonLabel("Send Redline", "Matter does not have a valid reply recipient email address");
     setFileMeta("Matter does not have a valid reply recipient email address");
     updateExportButtonState();
     return;
   }
-  if (pendingReviewSendMatterId !== state.selectedMatter.id) {
-    pendingReviewSendMatterId = state.selectedMatter.id;
-    studioSendButton.textContent = "Confirm Send";
-    setFileMeta(`Click Confirm Send to email the redline to ${recipient}`);
+  if (!studioSendModal || !studioSendForm) {
+    setFileMeta("Email composer is unavailable.");
     return;
   }
 
+  const draft = buildReviewSendDraft(recipient);
+  reviewSendModalPreviousFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : studioSendButton;
+  if (studioSendFrom) studioSendFrom.textContent = reviewOutboundAccountLabel();
+  if (studioSendTo) studioSendTo.textContent = recipient;
+  if (studioSendAttachment) studioSendAttachment.textContent = reviewSendAttachmentLabel();
+  if (studioSendSubject) studioSendSubject.value = draft.subject;
+  if (studioSendBody) studioSendBody.value = draft.body;
+  renderReviewSendSummary(draft.summary);
+  if (studioSendStatus) studioSendStatus.textContent = "";
+  setReviewSendComposerBusy(false);
+  studioSendModal.hidden = false;
+  document.body.classList.add("modal-open");
+  window.setTimeout(() => studioSendSubject?.focus(), 0);
+}
+
+function closeReviewSendComposer({ restoreFocus = true } = {}) {
+  if (!studioSendModal) return;
+  studioSendModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  if (studioSendStatus) studioSendStatus.textContent = "";
+  setReviewSendComposerBusy(false);
+  if (restoreFocus) {
+    const focusTarget = reviewSendModalPreviousFocus?.isConnected
+      ? reviewSendModalPreviousFocus
+      : studioSendButton;
+    focusTarget?.focus?.();
+  }
+  reviewSendModalPreviousFocus = null;
+}
+
+function isReviewSendComposerOpen() {
+  return Boolean(studioSendModal && !studioSendModal.hidden);
+}
+
+async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
+  if (!state.selectedMatter?.id) return;
+  if (!fromComposer || !isReviewSendComposerOpen()) {
+    openReviewSendComposer();
+    return;
+  }
+  const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
+  if (sendBlockReason) {
+    setReviewSendStatus(sendBlockReason);
+    updateExportButtonState();
+    return;
+  }
+  const recipient = MatterUtils.recipientEmail(state.selectedMatter);
+  if (!recipient) {
+    setReviewSendStatus("Matter does not have a valid reply recipient email address.");
+    updateExportButtonState();
+    return;
+  }
+  const subject = studioSendSubject?.value || "";
+  const body = studioSendBody?.value || "";
+
   studioSendButton.disabled = true;
-  studioSendButton.textContent = "Sending";
+  setStudioSendButtonLabel("Sending", `Sending redline to ${recipient}`);
+  setReviewSendComposerBusy(true);
+  setReviewSendStatus("Sending email...");
   try {
     if (state.redlineDraftDirty) {
       await saveReviewRedlineDraft({ quiet: true });
@@ -216,6 +293,8 @@ async function sendReviewRedlineEmail() {
       export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
       review_comments: currentReviewComments(),
+      subject: subject.trim(),
+      body: body.trim(),
     };
     const response = await fetch("/api/gmail/send-redline", {
       method: "POST",
@@ -229,14 +308,218 @@ async function sendReviewRedlineEmail() {
       await repositoryController.loadMatters();
     }
     pendingReviewSendMatterId = null;
+    closeReviewSendComposer({ restoreFocus: false });
     setFileMeta(`Sent redline to ${recipient}`);
+    studioSendButton?.focus?.();
   } catch (error) {
     pendingReviewSendMatterId = null;
+    setReviewSendStatus(error.message || "Redline email could not send.");
     renderOperationError(error, "Redline email could not send.");
   } finally {
-    studioSendButton.textContent = "Send Redline";
+    setReviewSendComposerBusy(false);
+    setStudioSendButtonLabel("Send Redline");
     updateExportButtonState();
   }
+}
+
+function buildReviewSendDraft(recipient) {
+  const summary = reviewSendChangeSummary();
+  return {
+    body: reviewSendDefaultBody(summary),
+    recipient,
+    subject: reviewSendDefaultSubject(summary),
+    summary,
+  };
+}
+
+function reviewSendChangeSummary() {
+  const clauseRedlines = effectiveReviewRedlines()
+    .filter((edit) => edit.clause_id && edit.clause_id !== "manual_viewer_edit");
+  const manualRedlines = manualExportRedlines();
+  const comments = currentReviewComments();
+  const clauseNames = uniqueStrings(clauseRedlines.map((edit) => clauseNameForId(edit.clause_id)));
+  const ignoredNames = uniqueStrings(state.reviewClauses
+    .filter((clause) => !clauseExportIncluded(clause.id))
+    .map((clause) => clause.name || humanizeClauseId(clause.id)));
+  const textSnippets = uniqueStrings([...clauseRedlines, ...manualRedlines]
+    .map(redlineTextSnippet)
+    .filter(Boolean));
+  const commentSnippets = uniqueStrings(comments
+    .map(reviewCommentSnippet)
+    .filter(Boolean));
+
+  return {
+    clauseNames,
+    clauseRedlineCount: clauseRedlines.length,
+    commentCount: comments.length,
+    commentSnippets,
+    ignoredNames,
+    manualCount: manualRedlines.length,
+    textSnippets,
+  };
+}
+
+function reviewSendDefaultSubject(summary) {
+  const fragments = [];
+  if (summary.clauseNames.length) {
+    fragments.push(`clauses: ${formatCompactList(summary.clauseNames, 2)}`);
+  }
+  const textChangeCount = summary.textSnippets.length || summary.manualCount;
+  if (textChangeCount) {
+    fragments.push(`${textChangeCount} text ${plural("change", textChangeCount)}`);
+  }
+  if (summary.commentCount) {
+    fragments.push(`${summary.commentCount} ${plural("comment", summary.commentCount)}`);
+  }
+  const suffix = fragments.length ? ` - ${fragments.join("; ")}` : "";
+  return truncateText(`Redline for ${reviewSendMatterTitle()}${suffix}`, 160);
+}
+
+function reviewSendDefaultBody(summary) {
+  const summaryLines = reviewSendSummaryLines(summary);
+  return [
+    "Hi,",
+    "",
+    `Please find attached the redline for ${reviewSendMatterTitle()}.`,
+    "",
+    "Summary of changes:",
+    ...summaryLines.map((line) => `- ${line}`),
+    "",
+    "Best,",
+    "Aspora",
+  ].join("\n");
+}
+
+function reviewSendSummaryLines(summary) {
+  const lines = [];
+  if (summary.clauseRedlineCount) {
+    lines.push(`${summary.clauseRedlineCount} included clause ${plural("redline", summary.clauseRedlineCount)}: ${formatCompactList(summary.clauseNames, 4)}.`);
+  }
+  if (summary.manualCount) {
+    lines.push(`${summary.manualCount} manual viewer ${plural("edit", summary.manualCount)}.`);
+  }
+  if (summary.textSnippets.length) {
+    lines.push(`Text added or replaced: ${formatSnippetList(summary.textSnippets, 3)}.`);
+  }
+  if (summary.commentCount) {
+    lines.push(`${summary.commentCount} Word ${plural("comment", summary.commentCount)}: ${formatCompactList(summary.commentSnippets, 3)}.`);
+  }
+  if (summary.ignoredNames.length) {
+    lines.push(`Left out of this redline: ${formatCompactList(summary.ignoredNames, 4)}.`);
+  }
+  if (!lines.length) {
+    lines.push("Redline generated from the current review state.");
+  }
+  return lines;
+}
+
+function renderReviewSendSummary(summary) {
+  if (!studioSendSummary) return;
+  studioSendSummary.innerHTML = "";
+  reviewSendSummaryLines(summary).forEach((line) => {
+    const item = document.createElement("li");
+    item.textContent = line;
+    studioSendSummary.append(item);
+  });
+}
+
+function reviewOutboundAccountLabel() {
+  const outbound = state.gmailStatus?.outbound || {};
+  if (outbound.ready && outbound.email) return outbound.email;
+  return outbound.email || outbound.error || "Outbound Gmail";
+}
+
+function reviewSendAttachmentLabel() {
+  return suggestedExportFilenameForContext(state.selectedMatter, state.selectedDocument) || "nda-redlined.docx";
+}
+
+function reviewSendMatterTitle() {
+  return String(
+    state.selectedMatter?.document_title
+      || state.selectedMatter?.subject
+      || state.selectedMatter?.source_filename
+      || studioDocTitle.textContent
+      || "this NDA"
+  ).trim();
+}
+
+function clauseNameForId(clauseId) {
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  return clause?.name || humanizeClauseId(clauseId);
+}
+
+function humanizeClauseId(clauseId) {
+  return String(clauseId || "Clause")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function redlineTextSnippet(edit) {
+  if (!edit || edit.action === "delete_paragraph") return "";
+  const text = edit.insert_text || edit.replacement_text || edit.text || "";
+  return truncateText(collapseWhitespace(text), 110);
+}
+
+function reviewCommentSnippet(comment) {
+  const label = comment.clause_name || (comment.clause_id ? clauseNameForId(comment.clause_id) : "");
+  const scope = label || (comment.selected_text ? "Selected text" : "Paragraph");
+  const text = truncateText(collapseWhitespace(comment.text), 80);
+  return text ? `${scope}: ${text}` : scope;
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  return values
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function formatCompactList(values, limit = 3) {
+  const cleanValues = uniqueStrings(values);
+  if (cleanValues.length <= limit) return cleanValues.join(", ");
+  return `${cleanValues.slice(0, limit).join(", ")} + ${cleanValues.length - limit} more`;
+}
+
+function formatSnippetList(values, limit = 3) {
+  return formatCompactList(values, limit);
+}
+
+function plural(word, count) {
+  return count === 1 ? word : `${word}s`;
+}
+
+function collapseWhitespace(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateText(text, maxLength) {
+  const cleanText = String(text || "").trim();
+  if (cleanText.length <= maxLength) return cleanText;
+  return `${cleanText.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
+}
+
+function setReviewSendComposerBusy(busy) {
+  [
+    studioSendSubject,
+    studioSendBody,
+    studioSendCancelButton,
+    studioSendModalClose,
+    studioSendConfirmButton,
+  ].filter(Boolean).forEach((control) => {
+    control.disabled = busy;
+  });
+  if (studioSendConfirmButton) {
+    studioSendConfirmButton.textContent = busy ? "Sending" : "Send email";
+  }
+}
+
+function setReviewSendStatus(message) {
+  if (studioSendStatus) studioSendStatus.textContent = message || "";
 }
 
 function renderOperationError(error, fallbackMeta) {
@@ -265,13 +548,13 @@ function updateRedlineDraftControls() {
   }
   if (!studioDraftMeta) return;
   if (!canDraft) {
-    studioDraftMeta.textContent = "No custom draft";
+    studioDraftMeta.textContent = "";
   } else if (state.redlineDraftDirty) {
     studioDraftMeta.textContent = "Unsaved redline draft changes";
   } else if (state.redlineDraft) {
     studioDraftMeta.textContent = "Draft redline saved";
   } else {
-    studioDraftMeta.textContent = "No custom draft";
+    studioDraftMeta.textContent = "";
   }
 }
 

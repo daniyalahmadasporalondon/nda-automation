@@ -155,6 +155,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/review"):
             matter_routes.handle_matter_review(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/source"):
+            matter_routes.handle_matter_source(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/"):
             matter_routes.handle_matter_detail(self, path, send_body=send_body)
             return

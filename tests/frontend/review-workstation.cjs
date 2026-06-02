@@ -43,6 +43,7 @@ const tests = [
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
+  ["sends review redline email from editable composer", testReviewOutboundSendModal],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
   ["shows Gmail setup required instead of stale sync errors", testGmailSetupRequiredStatus],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
@@ -589,18 +590,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await waitForRepositoryCount(page, "in_review", "0");
   await waitForRepositoryCount(page, "redline_ready", "1");
-
-  await page.getByRole("button", { name: "Review NDA" }).click();
-  await waitForText(page, "#studioFileMeta", "Repository text reviewed as a fresh draft");
-
-  const [exportRequest, download] = await Promise.all([
-    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
-    page.waitForEvent("download"),
-    page.getByRole("button", { name: "Export DOCX" }).click(),
-  ]);
-  const exportPayload = exportRequest.postDataJSON();
-  assert.match(download.suggestedFilename(), /^nda-review-report(?:-[0-9a-f]{12})?\.docx$/);
-  assert.equal(Object.prototype.hasOwnProperty.call(exportPayload, "matter_id"), false);
+  assert.equal(await page.getByRole("button", { name: "Review NDA" }).count(), 0);
 
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.getByRole("button", { name: "Close Matter", exact: true }).click();
@@ -721,6 +711,10 @@ async function testManualUploadTab(page) {
   await assertTextContains(page.locator('[data-repository-list="in_review"]'), stem);
   await assertTextContains(page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem }), "Manual Upload");
 
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await assertTextContains(page.locator("#studioCounterpartyMeta"), "counterparty@example.com");
+  await page.getByRole("tab", { name: "Repository" }).click();
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
   await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
@@ -873,6 +867,244 @@ async function testRepositoryOutboundSendComposer(page) {
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/matter_send");
+  await page.unroute("**/api/gmail/send-redline");
+}
+
+async function testReviewOutboundSendModal(page) {
+  let matter = {
+    id: "matter_review_send",
+    attachment_filename: "Counterparty NDA.docx",
+    board_column: "gmail_demo",
+    can_send_redline: true,
+    document_title: "Counterparty NDA",
+    gmail_account: "daniyal.ahmad@aspora.com",
+    has_redline_draft: true,
+    issue_count: 1,
+    message_snippet: "Please review the attached NDA.",
+    next_action: "Review redline",
+    received_at: "2026-05-31T12:00:00+00:00",
+    recipient_email: "legal@example.com",
+    requirements_failed: 1,
+    requirements_passed: 5,
+    review_result: {
+      clauses: [{
+        id: "confidential_information",
+        issue_label: "Present but wrong",
+        name: "Confidential Information",
+        passes: false,
+      }],
+    },
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Counterparty NDA.docx",
+    source_type: "gmail_inbound",
+    subject: "Please review NDA",
+    triage_status: "needs_redline",
+  };
+  const reviewResult = {
+    clauses: [{
+      evidence: [{ paragraph_id: "p1", text: "Confidential Information only includes marked information." }],
+      id: "confidential_information",
+      issue_label: "Present but wrong",
+      matched_paragraph_ids: ["p1"],
+      name: "Confidential Information",
+      passes: false,
+      requirement: "Confidential Information must be broad.",
+      why: "The definition is too narrow.",
+    }],
+    paragraphs: [
+      {
+        id: "p1",
+        index: 1,
+        source_index: 1,
+        text: "Confidential Information only includes marked information.",
+      },
+      {
+        id: "p2",
+        index: 2,
+        source_index: 2,
+        text: "Payment terms remain unchanged.",
+      },
+    ],
+    redline_edits: [{
+      action: "replace_paragraph",
+      action_label: "Replace paragraph",
+      clause_id: "confidential_information",
+      id: "redline-confidential-information",
+      original_text: "Confidential Information only includes marked information.",
+      paragraph_id: "p1",
+      paragraph_index: 1,
+      replacement_text: "Confidential Information means all non-public business, technical, financial, customer, pricing, product, and source code information.",
+      status: "proposed",
+    }],
+  };
+  const redlineDraft = {
+    manual_redline_edits: [{
+      action: "replace_paragraph",
+      action_label: "Replace paragraph",
+      clause_id: "manual_viewer_edit",
+      id: "manual-p2",
+      original_text: "Payment terms remain unchanged.",
+      paragraph_id: "p2",
+      paragraph_index: 2,
+      replacement_text: "Payment terms include a 30-day review period.",
+      status: "proposed",
+    }],
+    review_comments: [{
+      author: "Reviewer",
+      clause_id: "confidential_information",
+      clause_name: "Confidential Information",
+      id: "comment-confidential-information",
+      paragraph_id: "p1",
+      paragraph_index: 1,
+      scope: "clause",
+      text: "Please confirm the carve-outs are acceptable.",
+    }],
+  };
+  let capturedSendPayload = null;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: {
+            configured: true,
+            email: "daniyal.ahmad@aspora.com",
+            query: 'has:attachment (filename:docx OR filename:pdf) newer_than:30d (subject:NDA)',
+            ready: true,
+          },
+          outbound: {
+            configured: true,
+            email: "daniyal.ahmad@aspora.com",
+            ready: true,
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [matter] }),
+    });
+  });
+  await page.route("**/api/matters/matter_review_send**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname.endsWith("/stage")) {
+      matter = { ...matter, board_column: "in_review" };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matter }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: reviewResult.paragraphs.map((paragraph) => paragraph.text).join("\n\n"),
+          matter: {
+            ...matter,
+            redline_draft: redlineDraft,
+            review_result: reviewResult,
+          },
+          redline_draft: redlineDraft,
+          review_result: reviewResult,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter }),
+    });
+  });
+  await page.route("**/api/gmail/send-redline", async (route) => {
+    capturedSendPayload = route.request().postDataJSON();
+    matter = {
+      ...matter,
+      board_column: "redline_ready",
+      last_outbound_account: "daniyal.ahmad@aspora.com",
+      last_outbound_at: "2026-05-31T20:45:00+00:00",
+      last_outbound_filename: "Counterparty-NDA-redlined.docx",
+      last_outbound_message_id: "msg_outbound",
+      last_outbound_subject: capturedSendPayload.subject,
+      last_outbound_thread_id: "thread_outbound",
+      last_outbound_to: "legal@example.com",
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filename: "Counterparty-NDA-redlined.docx",
+        matter,
+        sent: {
+          message_id: "msg_outbound",
+          outbound_account: "daniyal.ahmad@aspora.com",
+          sent_at: "2026-05-31T20:45:00+00:00",
+          subject: capturedSendPayload.subject,
+          thread_id: "thread_outbound",
+          to: "legal@example.com",
+        },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await page.waitForSelector("#studioSendButton:not(:disabled)");
+
+  await page.locator("#studioSendButton").click();
+  await page.waitForSelector("#studioSendModal:not([hidden])");
+  assert.equal(await page.locator("#studioSendTo").innerText(), "legal@example.com");
+  assert.equal(await page.locator("#studioSendFrom").innerText(), "daniyal.ahmad@aspora.com");
+  assert.equal(await page.locator("#studioSendAttachment").innerText(), "Counterparty-NDA-redlined.docx");
+  assert.equal(
+    await page.locator("#studioSendSubject").inputValue(),
+    "Redline for Counterparty NDA - clauses: Confidential Information; 2 text changes; 1 comment",
+  );
+  const defaultBody = await page.locator("#studioSendBody").inputValue();
+  assert.ok(defaultBody.includes("Confidential Information"), defaultBody);
+  assert.ok(defaultBody.includes("Payment terms include a 30-day review period."), defaultBody);
+  assert.ok(defaultBody.includes("Please confirm the carve-outs are acceptable."), defaultBody);
+  await assertTextContains(page.locator("#studioSendSummary"), "1 included clause redline");
+  await assertTextContains(page.locator("#studioSendSummary"), "1 manual viewer edit");
+  await assertTextContains(page.locator("#studioSendSummary"), "1 Word comment");
+
+  await page.locator("#studioSendSubject").fill("Edited redline subject");
+  await page.locator("#studioSendBody").fill("Edited body before sending.");
+  const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
+  await page.locator("#studioSendConfirmButton").click();
+  await sendRequest;
+  await page.waitForSelector("#studioSendModal[hidden]");
+  await waitForText(page, "#studioFileMeta", "Sent redline to legal@example.com");
+
+  assert.equal(capturedSendPayload.matter_id, "matter_review_send");
+  assert.equal(capturedSendPayload.confirm_send, true);
+  assert.equal(capturedSendPayload.subject, "Edited redline subject");
+  assert.equal(capturedSendPayload.body, "Edited body before sending.");
+  assert.equal(capturedSendPayload.export_redline_edits.length, 1);
+  assert.equal(capturedSendPayload.manual_redline_edits.length, 1);
+  assert.equal(capturedSendPayload.review_comments.length, 1);
+  assert.equal(capturedSendPayload.review_comments[0].text, "Please confirm the carve-outs are acceptable.");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_review_send**");
   await page.unroute("**/api/gmail/send-redline");
 }
 
@@ -1074,7 +1306,7 @@ async function testMatterRedlineDraftPersistence(page) {
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  await assertTextContains(page.locator("#studioDraftMeta"), "No custom draft");
+  assert.equal((await page.locator("#studioDraftMeta").innerText()).trim(), "");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
 
   await page.getByRole("button", { name: /Governing Law/ }).click();
@@ -1103,7 +1335,7 @@ async function testMatterRedlineDraftPersistence(page) {
   assert.deepEqual(ignoredState, { active: true, pressed: "true" });
 
   await page.locator("#studioDiscardDraftButton").click();
-  await waitForText(page, "#studioDraftMeta", "No custom draft");
+  await page.waitForFunction(() => document.querySelector("#studioDraftMeta")?.textContent.trim() === "");
   await page.getByRole("tab", { name: "Repository" }).click();
   await assertTextContains(page.locator("#repositoryMatterPanel"), "No custom draft");
 
@@ -1457,7 +1689,7 @@ async function testClauseDecisionControls(page) {
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
   await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
-  await assertTextContains(signaturesCard.locator(".studio-export-state"), "INCLUDED IN EXPORT");
+  assert.equal(await signaturesCard.locator(".studio-export-state").count(), 0);
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
@@ -1467,7 +1699,7 @@ async function testClauseDecisionControls(page) {
   await assertTextContains(page.locator("#studioFileMeta"), "Undid clause suggestion change");
 
   await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
-  await assertTextContains(signaturesCard.locator(".studio-export-state"), "INCLUDED IN EXPORT");
+  assert.equal(await signaturesCard.locator(".studio-export-state").count(), 0);
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 

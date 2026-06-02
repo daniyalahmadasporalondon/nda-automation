@@ -30,6 +30,7 @@ function manualExportRedlines() {
 
 function setSourceText(text) {
   studioNdaText.value = text;
+  if (typeof updateReviewButtonState === "function") updateReviewButtonState();
 }
 
 function setSourcePlaceholder(placeholder) {
@@ -38,6 +39,13 @@ function setSourcePlaceholder(placeholder) {
 
 function setFileMeta(message) {
   studioFileMeta.textContent = message;
+}
+
+function setCounterpartyMeta(counterparty) {
+  if (!studioCounterpartyMeta) return;
+  const value = String(counterparty || "").trim();
+  studioCounterpartyMeta.textContent = value || "-";
+  studioCounterpartyMeta.title = value;
 }
 
 function setDocumentTitle(title) {
@@ -50,6 +58,7 @@ function setupSourceEditors() {
     if (studioNdaText.value.trim()) {
       markSourceEdited("Text edited");
     }
+    if (typeof updateReviewButtonState === "function") updateReviewButtonState();
   });
   resizeSourceEditor(studioNdaText);
 }
@@ -70,10 +79,12 @@ function showStudioSourceEditor() {
   studioDocumentRender.innerHTML = "";
   studioNdaText.hidden = false;
   resizeSourceEditor(studioNdaText);
+  if (typeof updateReviewButtonState === "function") updateReviewButtonState();
 }
 
 function showStudioDocumentRender() {
   if (!studioDocumentRender) return;
   studioNdaText.hidden = true;
   studioDocumentRender.hidden = false;
+  if (typeof updateReviewButtonState === "function") updateReviewButtonState();
 }

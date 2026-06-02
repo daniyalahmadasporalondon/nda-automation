@@ -55,7 +55,6 @@ function renderStudioEmpty() {
   studioResultMeta.textContent = "No hard-clause review has run yet.";
   resetReviewEditHistory();
   studioDetailPanel.innerHTML = `
-    <p class="eyebrow">selected clause</p>
     <p>No review yet.</p>
   `;
   updateExportButtonState();
@@ -67,21 +66,47 @@ function updateExportButtonState() {
   if (studioExportButton) {
     studioExportButton.disabled = !canExport;
   }
-  if (!studioSendButton) return;
+  updateReviewButtonState();
+  if (!studioSendButton) {
+    updateRedlineDraftControls();
+    return;
+  }
   const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
   const canSend = Boolean(canExport && state.selectedMatter?.id && !sendBlockReason);
   studioSendButton.disabled = !canSend;
   if (!canSend) {
     pendingReviewSendMatterId = null;
-    studioSendButton.textContent = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
-    studioSendButton.title = sendBlockReason;
+    const sendLabel = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
+    setStudioSendButtonLabel(sendLabel, sendBlockReason || sendLabel);
   } else {
-    studioSendButton.title = "";
-    if (pendingReviewSendMatterId !== state.selectedMatter.id) {
-      studioSendButton.textContent = "Send Redline";
-    }
+    pendingReviewSendMatterId = null;
+    setStudioSendButtonLabel("Send Redline");
   }
   updateRedlineDraftControls();
+}
+
+function setStudioSendButtonLabel(label = "Send Redline", title = label) {
+  if (!studioSendButton) return;
+  const effectiveLabel = label || "Send Redline";
+  studioSendButton.setAttribute("aria-label", effectiveLabel);
+  studioSendButton.title = title || effectiveLabel;
+  studioSendButton.classList.toggle("confirming", effectiveLabel === "Confirm Send");
+  studioSendButton.classList.toggle("sending", effectiveLabel === "Sending");
+  const textNode = studioSendButton.querySelector(".sr-only");
+  if (textNode) {
+    textNode.textContent = effectiveLabel;
+  }
+}
+
+function updateReviewButtonState() {
+  if (!studioReviewButton) return;
+  const hasReviewableSource = Boolean((studioNdaText.value || "").trim() || state.selectedDocument);
+  const hasReviewedDocument = Boolean(
+    state.latestReviewResult
+      || state.reviewClauses.length
+      || state.reviewParagraphs.length
+  );
+  studioReviewButton.hidden = !hasReviewableSource || hasReviewedDocument;
 }
 
 function renderStudioResult(result) {
@@ -117,8 +142,8 @@ function reviewWarningSummary() {
 }
 
 function renderClauseExportState(clause, canDecide, included) {
-  if (!canDecide) return "";
-  return `<span class="studio-export-state ${included ? "included" : "ignored"}">${included ? "Included in export" : "Ignored in export"}</span>`;
+  if (!canDecide || included) return "";
+  return '<span class="studio-export-state ignored">Ignored in export</span>';
 }
 
 function renderClauseExportControls(clause, canDecide, included) {
@@ -577,7 +602,6 @@ function renderStudioDetail() {
     : "";
   const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
-    <p class="eyebrow">selected clause</p>
     <div class="studio-detail-heading">
       <h3>${escapeHtml(clause.name)}</h3>
       <span class="status ${status.tone}">${escapeHtml(status.pillLabel)}</span>
@@ -708,9 +732,12 @@ function bindParagraphCommentControls(container) {
       const paragraphId = button.dataset.addParagraphCommentId;
       const existing = normalizeReviewComments(state.reviewComments)
         .find((comment) => comment.scope === "paragraph" && comment.paragraph_id === paragraphId);
-      const text = window.prompt("Paragraph comment", existing?.text || "");
-      if (text === null) return;
-      setParagraphReviewComment(paragraphId, text);
+      openParagraphCommentComposer({
+        existingText: existing?.text || "",
+        onSave: (text) => setParagraphReviewComment(paragraphId, text),
+        paragraphId,
+        title: "Paragraph comment",
+      });
     });
   });
   container.querySelectorAll("[data-add-selection-comment-id]").forEach((button) => {
@@ -722,10 +749,108 @@ function bindParagraphCommentControls(container) {
         setFileMeta("Select text in this paragraph before adding a selected-text comment");
         return;
       }
-      const text = window.prompt("Selected-text comment", "");
-      if (text === null) return;
-      setSelectedTextReviewComment(paragraphId, selectionInfo, text);
+      const existing = normalizeReviewComments(state.reviewComments)
+        .find((comment) => (
+          comment.scope === "selection"
+          && comment.paragraph_id === paragraphId
+          && Number(comment.selection_start) === Number(selectionInfo.startOffset)
+          && Number(comment.selection_end) === Number(selectionInfo.endOffset)
+        ));
+      openParagraphCommentComposer({
+        existingText: existing?.text || "",
+        onSave: (text) => setSelectedTextReviewComment(paragraphId, selectionInfo, text),
+        paragraphId,
+        selectedText: selectionInfo.selectedText,
+        title: "Selected text comment",
+      });
     });
+  });
+}
+
+function closeParagraphCommentComposers() {
+  studioDocumentRender?.querySelectorAll(".paragraph-comment-composer").forEach((composer) => {
+    composer.closest(".studio-doc-paragraph")?.classList.remove("has-comment-composer");
+    composer.remove();
+  });
+}
+
+function openParagraphCommentComposer({
+  existingText = "",
+  onSave,
+  paragraphId,
+  selectedText = "",
+  title,
+}) {
+  const paragraph = studioDocumentRender?.querySelector(
+    `[data-paragraph-id="${cssEscape(paragraphId)}"]`,
+  );
+  if (!paragraph || typeof onSave !== "function") return;
+
+  closeParagraphCommentComposers();
+  paragraph.classList.add("has-comment-composer");
+
+  const composer = document.createElement("div");
+  composer.className = "paragraph-comment-composer";
+  composer.setAttribute("contenteditable", "false");
+  composer.addEventListener("click", (event) => event.stopPropagation());
+
+  const label = document.createElement("label");
+  const inputId = `paragraph-comment-input-${Date.now()}`;
+  label.setAttribute("for", inputId);
+  label.textContent = title || "Comment";
+  composer.append(label);
+
+  if (selectedText) {
+    const excerpt = document.createElement("p");
+    excerpt.className = "paragraph-comment-selection";
+    excerpt.textContent = selectedText;
+    composer.append(excerpt);
+  }
+
+  const input = document.createElement("textarea");
+  input.id = inputId;
+  input.className = "paragraph-comment-input";
+  input.rows = 3;
+  input.placeholder = "Write a comment for Word export";
+  input.value = existingText;
+  composer.append(input);
+
+  const actions = document.createElement("div");
+  actions.className = "paragraph-comment-actions";
+
+  const saveButton = document.createElement("button");
+  saveButton.className = "paragraph-comment-save";
+  saveButton.type = "button";
+  saveButton.textContent = "Save";
+
+  const cancelButton = document.createElement("button");
+  cancelButton.className = "paragraph-comment-cancel";
+  cancelButton.type = "button";
+  cancelButton.textContent = "Cancel";
+
+  actions.append(saveButton, cancelButton);
+  composer.append(actions);
+  paragraph.append(composer);
+
+  cancelButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeParagraphCommentComposers();
+  });
+  saveButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const text = input.value.trim();
+    if (!text) {
+      setFileMeta("Write a comment before saving");
+      input.focus();
+      return;
+    }
+    onSave(text);
+    setFileMeta("Comment saved for Word export");
+  });
+
+  requestAnimationFrame(() => {
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
   });
 }
 
@@ -733,25 +858,97 @@ function selectedTextInParagraph(paragraphId) {
   const editable = studioDocumentRender?.querySelector(
     `[data-editable-paragraph-id="${cssEscape(paragraphId)}"]`,
   );
+  const paragraphFrame = studioDocumentRender?.querySelector(
+    `[data-paragraph-id="${cssEscape(paragraphId)}"]`,
+  );
   const selection = window.getSelection();
-  if (!editable || !selection || !selection.rangeCount) return null;
+  if (!paragraphFrame || !selection || !selection.rangeCount) return null;
   const range = selection.getRangeAt(0);
   if (
     selection.isCollapsed
-    || !editable.contains(range.startContainer)
-    || !editable.contains(range.endContainer)
+    || !paragraphFrame.contains(range.startContainer)
+    || !paragraphFrame.contains(range.endContainer)
   ) {
     return null;
   }
-  const startOffset = editableSelectionTextOffset(editable, range.startContainer, range.startOffset);
-  const endOffset = editableSelectionTextOffset(editable, range.endContainer, range.endOffset);
-  const selectedText = editableParagraphText(editable).slice(startOffset, endOffset).trim();
+
+  if (editable?.contains(range.startContainer) && editable.contains(range.endContainer)) {
+    const startOffset = editableSelectionTextOffset(editable, range.startContainer, range.startOffset);
+    const endOffset = editableSelectionTextOffset(editable, range.endContainer, range.endOffset);
+    const selectedText = editableParagraphText(editable).slice(startOffset, endOffset).trim();
+    if (!selectedText) return null;
+    return {
+      endOffset,
+      selectedText,
+      startOffset,
+    };
+  }
+
+  const selectedText = normalizeSelectedCommentText(selection.toString());
   if (!selectedText) return null;
+  const offsets = selectedTextOffsetsInParagraph(currentParagraphText(paragraphId), selectedText);
   return {
-    endOffset,
+    endOffset: offsets.endOffset,
     selectedText,
-    startOffset,
+    startOffset: offsets.startOffset,
   };
+}
+
+function normalizeSelectedCommentText(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function selectedTextOffsetsInParagraph(paragraphText, selectedText) {
+  const sourceText = String(paragraphText || "");
+  const exactStart = sourceText.indexOf(selectedText);
+  if (exactStart >= 0) {
+    return {
+      endOffset: exactStart + selectedText.length,
+      startOffset: exactStart,
+    };
+  }
+
+  const sourceIndex = createSelectionSearchIndex(sourceText);
+  const normalizedSelection = normalizeSelectedCommentText(selectedText);
+  const normalizedStart = sourceIndex.normalized.indexOf(normalizedSelection);
+  if (normalizedStart >= 0) {
+    const normalizedEnd = Math.min(
+      normalizedStart + normalizedSelection.length - 1,
+      sourceIndex.map.length - 1,
+    );
+    return {
+      endOffset: sourceIndex.map[normalizedEnd] + 1,
+      startOffset: sourceIndex.map[normalizedStart],
+    };
+  }
+
+  return {
+    endOffset: Math.min(sourceText.length, selectedText.length),
+    startOffset: 0,
+  };
+}
+
+function createSelectionSearchIndex(value) {
+  let normalized = "";
+  const map = [];
+  let previousWasSpace = false;
+  String(value || "").split("").forEach((char, index) => {
+    if (/\s/.test(char)) {
+      if (normalized && !previousWasSpace) {
+        normalized += " ";
+        map.push(index);
+      }
+      previousWasSpace = true;
+      return;
+    }
+    normalized += char;
+    map.push(index);
+    previousWasSpace = false;
+  });
+  return { map, normalized: normalized.trim() };
 }
 
 function renderStudioDocumentHighlights() {

@@ -58,6 +58,36 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
     handler._send_json({"matter": matter_view.public_matter(matter)}, send_body=send_body)
 
 
+def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
+    """Stream a matter's stored original .docx/.pdf for faithful rendering."""
+    matter_id = parse_matter_id(path, suffix="/source")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return
+    try:
+        matter = matter_store.get_matter(matter_id)
+    except matter_store.MatterStoreError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return
+    stored_filename = str(matter.get("stored_filename") or "")
+    uploads_dir = matter_store.UPLOADS_DIR.resolve()
+    source_path = (matter_store.UPLOADS_DIR / stored_filename).resolve() if stored_filename else None
+    if source_path is None or source_path.parent != uploads_dir or not source_path.is_file():
+        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
+        return
+    ext = source_path.suffix.lower()
+    if ext == ".docx":
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == ".pdf":
+        mime = "application/pdf"
+    else:
+        mime = "application/octet-stream"
+    handler._send_file(source_path, content_type=mime, send_body=send_body)
+
+
 def handle_matter_upload(handler, *, create_matter_from_document_func=create_matter_from_document) -> None:
     telemetry.increment("matter_upload_requests")
     payload = handler._read_json_payload()

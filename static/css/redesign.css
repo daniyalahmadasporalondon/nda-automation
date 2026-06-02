@@ -1,0 +1,940 @@
+/* ===========================================================================
+   Aspora × Apple — visual refresh (light)
+   Loaded AFTER styles.css + repository.css so it wins the cascade.
+   Strategy: re-theme the existing design tokens toward a neutral canvas with
+   Aspora purple as a single restrained accent, then layer Apple-style polish
+   (frosted bars, segmented controls, refined type/shadows/motion). Component
+   redesign is scoped to #reviewView; shell + tokens are global foundations.
+   Fully reversible: remove the <link> in index.html to restore the old look.
+   =========================================================================== */
+
+/* Geist — self-hosted variable font (cross-platform; used for the top bar). */
+@font-face {
+  font-display: swap;
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  src: url("/static/assets/fonts/GeistVariable.woff2") format("woff2");
+}
+
+/* ---------- 1. Tokens: neutral canvas, purple accent ---------- */
+:root {
+  /* Surfaces — Apple-style off-white + system grays */
+  --bg-main: #fbfbfd;
+  --bg-panel: #ffffff;
+  --bg-soft: #f5f5f7;
+  --bg-softer: #fafafc;
+  --bg-chip: #eeeef2;
+  --bg-doc: #ededf1;
+  --border: #e7e7ec;
+  --border-soft: #f0f0f4;
+  --border-strong: #d8d8df;
+
+  /* Ink — neutral near-black, no purple tint */
+  --ink: #1d1d1f;
+  --ink-soft: #56565b;
+  --ink-muted: #86868b;
+
+  /* Brand kept as the single accent */
+  --brand: #6028c8;
+  --brand-bright: #7b46e0;
+  --brand-strong: #4c1ba6;
+  --brand-glow: rgba(96, 40, 200, 0.12);
+
+  --accent: #6028c8;
+  --accent-weak: rgba(96, 40, 200, 0.08);
+  --accent-soft: rgba(96, 40, 200, 0.14);
+  --accent-ring: rgba(96, 40, 200, 0.34);
+
+  /* Radii — a touch tighter / more Apple */
+  --r-xl: 20px;
+  --r-lg: 16px;
+  --r-md: 13px;
+  --r-sm: 9px;
+
+  /* Shadows — soft, diffuse, neutral */
+  --shadow-xs: 0 1px 2px rgba(17, 17, 26, 0.04);
+  --shadow-sm: 0 1px 3px rgba(17, 17, 26, 0.05), 0 8px 24px -18px rgba(17, 17, 26, 0.22);
+  --shadow-md: 0 2px 10px rgba(17, 17, 26, 0.05), 0 22px 48px -28px rgba(17, 17, 26, 0.28);
+  --shadow-paper: 0 1px 3px rgba(17, 17, 26, 0.05), 0 28px 60px -32px rgba(17, 17, 26, 0.26);
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Top-bar typeface: Geist (self-hosted, identical on every platform). */
+  --topbar-font: "Geist", "SF Pro Text", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Geist across the whole tab — repoint the app's font tokens to the top-bar font. */
+  --text-font: var(--topbar-font);
+  --display-font: var(--topbar-font);
+  --doc-font: var(--topbar-font);
+}
+
+/* Dark-mode foundation — inert until <html data-theme="dark">. Structured now
+   so the rollout can flip it on without re-tokenising. Light ships first. */
+:root[data-theme="dark"] {
+  --bg-main: #0b0b0f;
+  --bg-panel: #16161c;
+  --bg-soft: #1d1d24;
+  --bg-softer: #141419;
+  --bg-chip: #24242c;
+  --bg-doc: #101015;
+  --border: #2a2a33;
+  --border-soft: #222229;
+  --border-strong: #3a3a45;
+  --ink: #f5f5f7;
+  --ink-soft: #b6b6bf;
+  --ink-muted: #86868b;
+  --accent: #9b6cff;
+  --brand: #9b6cff;
+  --brand-bright: #b08cff;
+  --accent-weak: rgba(155, 108, 255, 0.12);
+  --accent-soft: rgba(155, 108, 255, 0.2);
+}
+
+/* ---------- 2. Global polish ---------- */
+body {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(96, 40, 200, 0.05), transparent 60%),
+    var(--bg-main);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv05" 1, "ss01" 1;
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.018em;
+}
+
+button {
+  cursor: pointer;
+  font-family: var(--text-font);
+  transition: background 0.2s var(--ease), color 0.2s var(--ease),
+    box-shadow 0.2s var(--ease), border-color 0.2s var(--ease), transform 0.12s var(--ease);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[role="tab"]:focus-visible,
+[role="switch"]:focus-visible,
+[contenteditable]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Thin, unobtrusive scrollbars */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(17, 17, 26, 0.16);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 17, 26, 0.3);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- 3. Shell: flat top bar ----------
+   No backdrop-filter: on HiDPI a backdrop-filter layer rasterises its
+   contents at 1× and upscales, which made the tab text + SVG icons look
+   low-resolution. A solid bar keeps them crisp at device resolution. */
+.topbar {
+  background: var(--bg-panel);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid rgba(17, 17, 26, 0.07);
+  min-height: 50px;
+  font-family: var(--topbar-font);
+}
+
+.product-copy {
+  border-left-color: var(--border);
+}
+.product-copy strong {
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.product-copy small {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+/* ---------- 3b. Tabs → flat underline ---------- */
+.tabbar {
+  align-self: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  gap: 28px;
+  padding: 0;
+}
+
+.tab-button {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink-muted);
+  font-family: var(--topbar-font);
+  font-size: 13px;
+  font-weight: 600;
+  gap: 8px;
+  height: auto;
+  padding: 0;
+}
+.tab-button:hover {
+  color: var(--ink);
+}
+.tab-button.active {
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+}
+
+/* Active indicator: purple underline scoped to the text label, so it is
+   exactly text-width and sits directly beneath the label (not the icon). */
+.tab-button > span {
+  position: relative;
+}
+.tab-button.active > span::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.tab-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.5;
+  transition: stroke 0.2s var(--ease);
+}
+.tab-button.active .tab-icon {
+  stroke: var(--accent);
+}
+
+/* ===========================================================================
+   4. Review tab (scoped to #reviewView)
+   =========================================================================== */
+
+/* Matter card */
+#reviewView .studio-matter-card {
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 16px;
+}
+#reviewView .studio-tags span {
+  background: var(--bg-chip);
+  color: var(--ink-soft);
+  letter-spacing: 0.06em;
+}
+#reviewView .studio-matter-card h1 {
+  letter-spacing: -0.02em;
+}
+
+/* Panels */
+#reviewView .studio-clauses,
+#reviewView .studio-document,
+#reviewView .studio-playbook {
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Clause rail header */
+#reviewView #studioMatchSummary {
+  color: var(--accent);
+  font-size: 26px;
+  letter-spacing: -0.03em;
+}
+#reviewView .studio-lane-title {
+  letter-spacing: -0.01em;
+}
+
+/* Clause list — borderless rows (no divider lines), status via accents */
+#reviewView .studio-clause-list {
+  border-top: 0;
+}
+#reviewView .studio-clause-item {
+  padding: 12px 16px;
+  border-bottom: 0;
+  transition: background 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+#reviewView .studio-clause-item:hover {
+  background: var(--bg-soft);
+  box-shadow: none;
+}
+#reviewView .studio-clause-item.check {
+  background: transparent;
+  border-color: var(--border);
+  box-shadow: inset 3px 0 0 var(--red-border);
+}
+#reviewView .studio-clause-item.check:hover {
+  background: var(--bg-soft);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+#reviewView .studio-clause-item.selected,
+#reviewView .studio-clause-item.check.selected {
+  background: var(--accent-weak);
+  border-color: var(--border);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+#reviewView .studio-clause-dot {
+  border-width: 2px;
+}
+
+/* Pills — Apple soft chips */
+#reviewView .studio-issue-pill {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  padding: 4px 9px;
+}
+
+/* Document pane */
+#reviewView .studio-document {
+  background: var(--bg-doc);
+}
+/* Layout: wider document + wider right rail, tighter outer margins. */
+#reviewView .studio-grid {
+  grid-template-columns: minmax(280px, 348px) minmax(540px, 1fr) minmax(320px, 408px);
+  margin: 14px 16px 16px;
+  gap: 12px;
+  flex: 1 1 auto;
+  height: auto;
+}
+#reviewView .studio-doc-toolbar {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-soft);
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(110px, 1fr) auto minmax(110px, 1fr);
+  min-height: 46px;
+  padding: 5px 10px;
+}
+#reviewView .studio-toolbar-left,
+#reviewView .studio-toolbar-center,
+#reviewView .studio-toolbar-actions {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+}
+#reviewView .studio-toolbar-left {
+  gap: 8px;
+  overflow: hidden;
+}
+#reviewView .studio-toolbar-center {
+  gap: 10px;
+  justify-content: center;
+}
+#reviewView .studio-toolbar-actions {
+  gap: 6px;
+  justify-content: flex-end;
+}
+#reviewView .studio-toolbar-status {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+#reviewView .studio-toolbar-status strong,
+#reviewView .studio-toolbar-status span {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#reviewView .studio-toolbar-status strong {
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+#reviewView .studio-toolbar-status span {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+#reviewView .studio-viewer-controls {
+  flex-shrink: 0;
+}
+#reviewView .studio-view-switch {
+  flex-shrink: 0;
+}
+#reviewView .studio-view-switch .vs-btn,
+#reviewView .studio-view-switch .vs-label {
+  white-space: nowrap;
+}
+
+/* View switch → segmented control with white active thumb */
+#reviewView .studio-view-switch {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  padding: 3px;
+  gap: 2px;
+}
+#reviewView .studio-view-switch .vs-btn {
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  padding: 5px 12px;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+#reviewView .studio-view-switch .vs-btn:not(.active):hover {
+  color: var(--accent);
+}
+#reviewView .studio-view-switch .vs-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(17, 17, 26, 0.12), 0 6px 14px -8px var(--accent);
+}
+#reviewView .studio-zoom {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+#reviewView .studio-undo-edit {
+  background: var(--bg-panel);
+  border-color: var(--border);
+}
+#reviewView .studio-undo-edit:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Viewer controls: page nav · zoom · full screen (Geist) */
+#reviewView .studio-viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--topbar-font);
+}
+#reviewView .studio-viewer-controls .vc-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 2px;
+}
+#reviewView .studio-viewer-controls .vc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+#reviewView .studio-viewer-controls .vc-btn:hover:not(:disabled) {
+  background: var(--bg-panel);
+  color: var(--accent);
+}
+#reviewView .studio-viewer-controls .vc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#reviewView .studio-viewer-controls .vc-btn svg {
+  display: block;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform: translateY(0);
+}
+#reviewView .studio-viewer-controls .vc-solo {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+#reviewView .studio-viewer-controls .vc-readout {
+  min-width: 40px;
+  padding: 0 3px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+#reviewView .studio-document:fullscreen {
+  background: var(--bg-doc);
+  border-radius: 0;
+}
+
+/* Paper */
+#reviewView .studio-page-wrap {
+  padding: 14px 10px 22px;
+}
+#reviewView .studio-page {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  box-sizing: border-box;
+  box-shadow: none;
+  max-width: 100%;
+  padding: 30px 48px 46px;
+  width: min(680px, 100%);
+}
+
+/* ---------- Flat overall: drop panel shadows ---------- */
+#reviewView .studio-clauses,
+#reviewView .studio-document,
+#reviewView .studio-playbook,
+#reviewView .studio-matter-card {
+  box-shadow: none;
+}
+/* Compressed matter header bar, status pill removed */
+#reviewView .studio-matter-card {
+  padding: 8px 16px;
+}
+#reviewView .studio-matter-right {
+  gap: 0;
+}
+#reviewView .studio-matter-meta {
+  align-items: center;
+}
+#reviewView .studio-matter-meta dd {
+  max-width: 180px;
+}
+#reviewView .studio-matter-actions {
+  border-left: 1px solid var(--border);
+  gap: 6px;
+  padding-left: 12px;
+}
+#reviewView .studio-matter-actions button {
+  height: 28px;
+}
+#reviewView .studio-matter-card .studio-tags {
+  display: none;
+}
+#reviewView .studio-matter-card h1 {
+  font-size: 17px;
+}
+
+/* ---------- Flat, dense, document-like paragraphs (no status box fills) ---------- */
+#reviewView .studio-document-render {
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  width: 100%;
+}
+/* Keep paragraphs proportional to the page: grid items must be allowed to
+   shrink (min-width:0) and long unbreakable tokens (CIN/PAN) must wrap. */
+#reviewView .studio-doc-paragraph {
+  position: relative;
+  padding: 3px 14px;
+  border-radius: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#reviewView .paragraph-redline-preview,
+#reviewView .paragraph-source-editor,
+#reviewView .paragraph-redline-note,
+#reviewView .paragraph-insertion,
+#reviewView .redline-replacement,
+#reviewView .redline-removal,
+#reviewView .redline-insertion,
+#reviewView .clause-sxs,
+#reviewView .clause-sxs-col {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#reviewView .studio-doc-paragraph.has-clause,
+#reviewView .studio-doc-paragraph.match,
+#reviewView .studio-doc-paragraph.verify,
+#reviewView .studio-doc-paragraph.has-redline,
+#reviewView .studio-doc-paragraph.manual-redline {
+  background: transparent;
+  box-shadow: none;
+}
+#reviewView .studio-doc-paragraph.match { border-left-color: var(--green); }
+#reviewView .studio-doc-paragraph.verify,
+#reviewView .studio-doc-paragraph.has-redline { border-left-color: var(--red); }
+#reviewView .studio-doc-paragraph.manual-redline { border-left-color: var(--violet); }
+#reviewView .studio-doc-paragraph.has-clause { border-left-color: var(--accent-soft); }
+#reviewView .studio-doc-paragraph.selected,
+#reviewView .studio-doc-paragraph.selected.match,
+#reviewView .studio-doc-paragraph.selected.verify {
+  background: var(--accent-weak);
+  box-shadow: none;
+}
+#reviewView .studio-doc-paragraph.selected { border-left-color: var(--accent); }
+
+/* Comment affordance sits in the paper margin so it stays visible without
+   changing paragraph flow. */
+#reviewView .paragraph-comment-tools {
+  position: absolute;
+  top: 3px;
+  left: -42px;
+  right: auto;
+  margin: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-start;
+  width: 32px;
+}
+/* In the margin gutter the on-select Comment button is icon-only (fits the gray) */
+#reviewView .paragraph-comment-add span {
+  display: none;
+}
+#reviewView .paragraph-comment-add {
+  height: 28px;
+  padding: 0;
+  width: 28px;
+}
+/* "Comment" action button — only visible when text is highlighted here */
+#reviewView .paragraph-comment-add {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent-soft);
+  border-radius: 9999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+  justify-content: center;
+}
+#reviewView .studio-doc-paragraph.has-selection .paragraph-comment-add {
+  display: inline-flex;
+}
+
+#reviewView .paragraph-comment-composer {
+  border-color: var(--accent-soft);
+  border-radius: var(--r-sm);
+  box-shadow: 0 12px 28px -20px rgba(17, 17, 26, 0.32);
+}
+
+#reviewView .paragraph-comment-selection {
+  background: var(--accent-weak);
+  border-left-color: var(--accent);
+  color: var(--ink);
+}
+
+#reviewView .paragraph-comment-input {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--ink);
+  font-family: var(--topbar-font);
+}
+
+#reviewView .paragraph-comment-save {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+#reviewView .paragraph-comment-cancel {
+  background: var(--bg-soft);
+}
+
+/* Comment-count chip — Aspora-purple icon + count */
+#reviewView .paragraph-comment-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-weak);
+  border: 1px solid var(--accent-soft);
+  border-radius: 9999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 24px;
+  min-width: 28px;
+  padding: 2px 4px;
+}
+#reviewView .comment-ico {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#reviewView .studio-document-subtitle {
+  border-bottom-color: var(--border);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+/* Detail panel */
+#reviewView .studio-playbook h2 {
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+#reviewView #studioDetailPanel {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 14px 16px 18px;
+}
+
+#reviewView .studio-detail-heading {
+  margin-bottom: 10px;
+}
+
+#reviewView .studio-detail-stack {
+  gap: 0;
+}
+
+#reviewView .studio-detail-block {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--border-soft);
+  column-gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(76px, 94px) minmax(0, 1fr);
+  padding: 8px 0 9px;
+  position: relative;
+  row-gap: 5px;
+}
+
+#reviewView .studio-detail-block > :not(small) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+#reviewView .studio-detail-block > small {
+  grid-column: 1;
+  line-height: 1.2;
+  margin: 0;
+  padding-top: 2px;
+}
+
+#reviewView .studio-detail-block.requirement-block,
+#reviewView .studio-detail-block.finding-block,
+#reviewView .studio-detail-block.muted {
+  background: transparent;
+  border-color: var(--border-soft);
+}
+
+#reviewView .studio-detail-block.issue-block,
+#reviewView .studio-detail-block.fix-block,
+#reviewView .studio-detail-block.redline-block,
+#reviewView .studio-detail-block.comment-block {
+  border-left: 0;
+  padding-left: 0;
+}
+
+#reviewView .studio-detail-block.issue-block::before,
+#reviewView .studio-detail-block.fix-block::before,
+#reviewView .studio-detail-block.redline-block::before,
+#reviewView .studio-detail-block.comment-block::before {
+  background: var(--border-strong);
+  bottom: 0;
+  content: "";
+  left: -16px;
+  position: absolute;
+  top: 0;
+  width: 3px;
+}
+
+#reviewView .studio-detail-block.issue-block.pass {
+  background: transparent;
+}
+
+#reviewView .studio-detail-block.issue-block.pass::before {
+  background: color-mix(in srgb, var(--green) 72%, white);
+}
+
+#reviewView .studio-detail-block.issue-block.check,
+#reviewView .studio-detail-block.redline-block {
+  background: transparent;
+}
+
+#reviewView .studio-detail-block.issue-block.check::before,
+#reviewView .studio-detail-block.redline-block::before {
+  background: color-mix(in srgb, var(--red) 72%, white);
+}
+
+#reviewView .studio-detail-block.fix-block {
+  background: transparent;
+}
+
+#reviewView .studio-detail-block.fix-block::before {
+  background: color-mix(in srgb, var(--accent) 72%, white);
+}
+
+#reviewView .studio-detail-block.comment-block {
+  background: transparent;
+}
+
+#reviewView .studio-detail-block.comment-block::before {
+  background: color-mix(in srgb, #0e7490 72%, white);
+}
+
+#reviewView .eyebrow,
+#reviewView .studio-detail-block small {
+  color: var(--ink-muted);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+#reviewView .studio-detail-block.fix-block {
+  background: transparent;
+}
+#reviewView .studio-detail-block.rationale-block,
+#reviewView .studio-detail-block.evidence-guidance-block {
+  background: transparent;
+  border-color: var(--border-soft);
+}
+
+/* Evidence + redline preview rounding */
+#reviewView .evidence-item,
+#reviewView .redline-original,
+#reviewView .redline-replacement,
+#reviewView .redline-removal,
+#reviewView .redline-insertion,
+#reviewView .redline-anchor {
+  border-radius: var(--r-sm);
+}
+
+/* Jurisdiction / template option chips */
+#reviewView .redline-option {
+  border-radius: var(--r-sm);
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+#reviewView .redline-option:hover {
+  border-color: var(--accent);
+}
+#reviewView .redline-option.selected {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--ink);
+}
+
+/* Include / Ignore + export choices */
+#reviewView .export-choice.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------- 4b. Toolbar action buttons ---------- */
+#reviewView .actions button {
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--r-pill);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  height: 28px;
+  letter-spacing: 0;
+  min-width: 0;
+  padding: 0 10px;
+  box-shadow: 0 1px 2px rgba(17, 17, 26, 0.12), 0 8px 18px -12px var(--accent);
+  white-space: nowrap;
+}
+#reviewView .actions button:hover:not(:disabled) {
+  background: var(--brand-bright);
+  box-shadow: 0 1px 2px rgba(17, 17, 26, 0.14), 0 10px 22px -12px var(--accent);
+}
+#reviewView .actions button:active:not(:disabled) {
+  transform: translateY(0.5px) scale(0.99);
+}
+#reviewView .actions button.secondary {
+  background: var(--bg-soft);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--ink);
+}
+#reviewView .actions button.secondary:hover:not(:disabled) {
+  background: var(--bg-chip);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+#reviewView .actions button:disabled {
+  box-shadow: none;
+  opacity: 0.45;
+}
+#reviewView .actions button[hidden] {
+  display: none;
+}
+#reviewView .actions button.icon-only {
+  justify-content: center;
+  min-width: 28px;
+  padding: 0;
+  width: 28px;
+}
+#reviewView .actions button.icon-only svg {
+  fill: none;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 15px;
+}
+#reviewView .actions button.icon-only.confirming {
+  background: var(--accent);
+  box-shadow: 0 1px 2px rgba(17, 17, 26, 0.12), 0 8px 18px -12px var(--accent);
+  color: #fff;
+}
+
+@media (max-width: 1280px) {
+  #reviewView .studio-doc-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #reviewView .studio-toolbar-left,
+  #reviewView .studio-toolbar-center,
+  #reviewView .studio-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  #reviewView .studio-toolbar-center,
+  #reviewView .studio-toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  #reviewView .studio-toolbar-status strong,
+  #reviewView .studio-toolbar-status span {
+    max-width: none;
+  }
+}
+
+/* Source textarea */
+#reviewView #studioNdaText {
+  color: var(--ink);
+}
+#reviewView #studioNdaText::placeholder {
+  color: var(--ink-muted);
+}

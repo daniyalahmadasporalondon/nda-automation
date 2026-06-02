@@ -161,9 +161,8 @@ function renderParagraphCommentTools(paragraphId, commentCount) {
   const count = Number(commentCount || 0);
   return `
     <div class="paragraph-comment-tools" contenteditable="false">
-      <button type="button" data-add-paragraph-comment-id="${escapeHtml(paragraphId)}">Comment</button>
-      <button type="button" data-add-selection-comment-id="${escapeHtml(paragraphId)}">Selection</button>
-      ${count ? `<span>${count}</span>` : ""}
+      <button type="button" class="paragraph-comment-add" data-add-selection-comment-id="${escapeHtml(paragraphId)}" aria-label="Comment on selected text" title="Comment on selected text"><svg class="comment-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></svg><span>Comment</span></button>
+      ${count ? `<span class="paragraph-comment-count"><svg class="comment-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></svg>${count}</span>` : ""}
     </div>
   `;
 }

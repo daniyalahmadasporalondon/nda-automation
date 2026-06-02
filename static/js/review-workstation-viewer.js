@@ -639,6 +639,7 @@ function loadMatterIntoReview(matter) {
   setSourceText(matter.extracted_text || reviewResult.extracted_text || "");
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
+  setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
   applyMatterRedlineDraft(matter.redline_draft);
   setFileMeta(

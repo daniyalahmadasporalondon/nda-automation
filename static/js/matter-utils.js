@@ -1,6 +1,41 @@
 const MatterUtils = (() => {
+  const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+  function emailAddress(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const bracketed = text.match(/<([^<>]+)>/);
+    const candidate = bracketed?.[1] || text;
+    return candidate.match(EMAIL_PATTERN)?.[0] || "";
+  }
+
+  function sameEmailAddress(left, right) {
+    return Boolean(left && right && String(left).trim().toLowerCase() === String(right).trim().toLowerCase());
+  }
+
   function recipientEmail(matter) {
     return String(matter?.recipient_email || "");
+  }
+
+  function counterpartyEmail(matter, gmailStatus = {}) {
+    const ownEmails = [
+      matter?.gmail_account,
+      gmailStatus?.inbound?.email,
+      gmailStatus?.outbound?.email,
+    ].map(emailAddress).filter(Boolean);
+    const candidates = [
+      matter?.recipient_email,
+      matter?.reply_to,
+      matter?.sender,
+      matter?.last_outbound_to,
+    ];
+    for (const candidate of candidates) {
+      const email = emailAddress(candidate);
+      if (!email) continue;
+      if (ownEmails.some((ownEmail) => sameEmailAddress(ownEmail, email))) continue;
+      return email;
+    }
+    return "";
   }
 
   function canSendRedline(matter) {
@@ -39,5 +74,5 @@ const MatterUtils = (() => {
     return "Gmail Setup";
   }
 
-  return { canSendRedline, gmailSendBlock, gmailSendButtonLabel, recipientEmail };
+  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, recipientEmail };
 })();
