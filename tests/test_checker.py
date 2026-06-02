@@ -1615,6 +1615,62 @@ class CheckerTests(unittest.TestCase):
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
         self.assertEqual(non_circumvention["status"], "not_present")
         self.assertTrue(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["lawful_circumvention_paragraph_ids"],
+            ["p1"],
+        )
+
+    def test_non_circumvention_ignores_negated_reference(self):
+        result = review_nda("This Agreement does not include non-circumvention or non-solicitation obligations.")
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertTrue(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["negated_reference_paragraph_ids"],
+            ["p1"],
+        )
+
+    def test_non_circumvention_needs_review_for_introduced_party_reference_without_restriction(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "The parties may communicate with introduced parties solely to evaluate the Purpose.\n\n"
+                "This Agreement shall be governed by the laws of England and Wales."
+            ),
+        )
+        result = review_nda(text)
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["issue_type"], "unclear")
+        self.assertEqual(non_circumvention["decision"], "review")
+        self.assertTrue(non_circumvention["needs_review"])
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p5"])
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
+
+    def test_non_circumvention_needs_review_for_future_exclusivity_discussion(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "The parties may discuss exclusivity in a later definitive commercial agreement.\n\n"
+                "This Agreement shall be governed by the laws of England and Wales."
+            ),
+        )
+        result = review_nda(text)
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(non_circumvention["decision"], "review")
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p5"])
+        self.assertIn("not clearly an operative restriction", non_circumvention["decision_reason"])
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
 
     def test_non_circumvention_keeps_prohibited_language_near_lawful_circumvention(self):
         result = review_nda(
