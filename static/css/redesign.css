@@ -286,8 +286,18 @@ textarea:focus-visible,
   background: var(--bg-soft);
   box-shadow: inset 3px 0 0 var(--red);
 }
+#reviewView .studio-clause-item.review {
+  background: transparent;
+  border-color: var(--border);
+  box-shadow: inset 3px 0 0 var(--amber-border);
+}
+#reviewView .studio-clause-item.review:hover {
+  background: var(--bg-soft);
+  box-shadow: inset 3px 0 0 var(--amber);
+}
 #reviewView .studio-clause-item.selected,
-#reviewView .studio-clause-item.check.selected {
+#reviewView .studio-clause-item.check.selected,
+#reviewView .studio-clause-item.review.selected {
   background: var(--accent-weak);
   border-color: var(--border);
   box-shadow: inset 3px 0 0 var(--accent);
@@ -582,6 +592,7 @@ textarea:focus-visible,
 #reviewView .studio-doc-paragraph.match { border-left-color: var(--green); }
 #reviewView .studio-doc-paragraph.verify,
 #reviewView .studio-doc-paragraph.has-redline { border-left-color: var(--red); }
+#reviewView .studio-doc-paragraph.review { border-left-color: var(--amber); }
 #reviewView .studio-doc-paragraph.manual-redline { border-left-color: var(--violet); }
 #reviewView .studio-doc-paragraph.has-clause { border-left-color: var(--accent-soft); }
 #reviewView .studio-doc-paragraph.prohibited,
@@ -790,6 +801,7 @@ textarea:focus-visible,
 }
 
 #reviewView .studio-detail-block.issue-block.check,
+#reviewView .studio-detail-block.issue-block.review,
 #reviewView .studio-detail-block.redline-block {
   background: transparent;
 }
@@ -797,6 +809,10 @@ textarea:focus-visible,
 #reviewView .studio-detail-block.issue-block.check::before,
 #reviewView .studio-detail-block.redline-block::before {
   background: color-mix(in srgb, var(--red) 72%, white);
+}
+
+#reviewView .studio-detail-block.issue-block.review::before {
+  background: color-mix(in srgb, var(--amber) 72%, white);
 }
 
 #reviewView .studio-detail-block.fix-block {

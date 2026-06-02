@@ -32,6 +32,7 @@ class PublicMatter(TypedDict, total=False):
     recipient_email: str
     received_at: str
     requirements_failed: int
+    requirements_needs_review: int
     requirements_passed: int
     reply_to: str
     sender: str
@@ -63,6 +64,7 @@ PUBLIC_MATTER_FIELDS = {
     "next_action",
     "received_at",
     "requirements_failed",
+    "requirements_needs_review",
     "requirements_passed",
     "reply_to",
     "sender",
@@ -84,6 +86,8 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
             "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
+    elif matter_needs_human_review(matter):
+        send_block_reason = "Matter needs human review before a redline can be sent."
     public = {
         key: value
         for key, value in matter.items()
@@ -97,6 +101,22 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     if send_block_reason:
         public["send_block_reason"] = send_block_reason
     return public
+
+
+def matter_needs_human_review(matter: dict[str, Any]) -> bool:
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        if str(review_result.get("overall_status") or "") == "needs_review":
+            return True
+        try:
+            if int(review_result.get("requirements_needs_review") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    try:
+        return int(matter.get("requirements_needs_review") or 0) > 0
+    except (TypeError, ValueError):
+        return True
 
 
 def review_matter(matter: dict[str, Any]) -> dict[str, Any]:

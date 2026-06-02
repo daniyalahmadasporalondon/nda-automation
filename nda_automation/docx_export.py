@@ -93,6 +93,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
         _paragraph("Review Notes", style="Heading1"),
         _paragraph(f"Overall status: {_status_label(str(review_result.get('overall_status', '')))}"),
         _paragraph(f"Requirements passed: {review_result.get('requirements_passed', 0)}"),
+        _paragraph(f"Requirements needing review: {review_result.get('requirements_needs_review', 0)}"),
         _paragraph(f"Requirements failed: {review_result.get('requirements_failed', 0)}"),
         _paragraph(f"Checked at: {checked_at}"),
         _paragraph("Clause Findings", style="Heading1"),
@@ -236,7 +237,7 @@ def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
 
 
 def _clause_section(clause: ClauseResult, redlines: List[RedlineEdit]) -> List[str]:
-    status = "PASS" if clause.get("passes") else "CHECK"
+    status = _clause_decision_label(clause)
     output = [
         _paragraph(f"{clause.get('name', 'Clause')} - {status}", style="Heading2"),
         _label_value("Requirement", clause.get("requirement")),
@@ -1117,9 +1118,22 @@ def _revision_attrs(revision_id: int) -> str:
 def _status_label(status: str) -> str:
     if status == "meets_requirements":
         return "Meets requirements"
+    if status == "needs_review":
+        return "Needs review"
     if status == "does_not_meet_requirements":
         return "Does not meet requirements"
     return status or "Unknown"
+
+
+def _clause_decision_label(clause: ClauseResult) -> str:
+    decision = str(clause.get("decision") or "").strip().lower()
+    if decision == "review" or clause.get("needs_review"):
+        return "REVIEW"
+    if decision == "fail":
+        return "CHECK"
+    if decision == "pass":
+        return "PASS"
+    return "PASS" if clause.get("passes") else "CHECK"
 
 
 def _document_xml(body_xml: str) -> str:

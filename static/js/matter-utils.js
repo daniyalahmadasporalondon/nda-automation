@@ -39,11 +39,19 @@ const MatterUtils = (() => {
   }
 
   function canSendRedline(matter) {
-    return Boolean(matter?.can_send_redline && recipientEmail(matter));
+    return Boolean(matter?.can_send_redline && recipientEmail(matter) && !needsHumanReview(matter));
+  }
+
+  function needsHumanReview(matter) {
+    const reviewResult = matter?.review_result || {};
+    const overallStatus = String(reviewResult.overall_status || matter?.overall_status || "");
+    const reviewCount = Number(matter?.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
+    return overallStatus === "needs_review" || reviewCount > 0;
   }
 
   function gmailSendBlock(matter, gmailStatus = {}) {
     if (matter?.send_block_reason) return String(matter.send_block_reason);
+    if (needsHumanReview(matter)) return "Matter needs human review before a redline can be sent.";
     if (!canSendRedline(matter)) return "Matter does not have a valid reply recipient email address.";
     const outbound = gmailStatus?.outbound || {};
     if (outbound.enabled === false) return "Gmail outbound is disabled in Admin.";
@@ -69,10 +77,11 @@ const MatterUtils = (() => {
     if (!blockReason) return "";
     if (blockReason.includes("disabled")) return "Outbound Off";
     if (blockReason.includes("does not match")) return "Account Mismatch";
+    if (blockReason.includes("human review")) return "Needs Review";
     if (blockReason.includes("self-sent")) return "Self-Sent";
     if (blockReason.includes("sender") || blockReason.includes("reply recipient")) return "No Reply";
     return "Gmail Setup";
   }
 
-  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, recipientEmail };
+  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail };
 })();

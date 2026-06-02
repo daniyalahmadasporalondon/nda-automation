@@ -71,6 +71,9 @@ def handle_gmail_send_redline(handler) -> None:
     if not gmail_integration.matter_reply_recipient(matter):
         handler._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
         return
+    if matter_view.matter_needs_human_review(matter):
+        handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
+        return
     if not app_settings.gmail_role_enabled("outbound"):
         handler._send_json({"error": "Gmail outbound is disabled in Admin."}, status=409)
         return

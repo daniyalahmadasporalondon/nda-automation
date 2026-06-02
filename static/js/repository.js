@@ -222,8 +222,8 @@ const RepositoryView = (() => {
     function renderDetailPanel(matter) {
       if (!repositoryMatterPanel) return;
       const reviewResult = matter.review_result || {};
-      const failedClauses = Array.isArray(reviewResult.clauses)
-        ? reviewResult.clauses.filter((clause) => clause && clause.passes === false)
+      const attentionClauses = Array.isArray(reviewResult.clauses)
+        ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention)
         : [];
       const isClosed = matter.board_column === "signed_closed";
       const subject = matterSubject(matter);
@@ -268,7 +268,7 @@ const RepositoryView = (() => {
                 <div class="repository-check-grid">
                   <div class="repository-check-card">
                     <span>Pass checks</span>
-                    <strong>${Number(matter.requirements_passed || 0)} passed / ${Number(matter.requirements_failed || 0)} failed</strong>
+                    <strong>${reviewCountSummary(matter, reviewResult)}</strong>
                   </div>
                   <div class="repository-check-card">
                     <span>Playbook match</span>
@@ -287,7 +287,7 @@ const RepositoryView = (() => {
 
               <section class="repository-detail-issues">
                 <h3>Key Failed Clauses</h3>
-                ${renderFailedClauses(failedClauses)}
+                ${renderFailedClauses(attentionClauses)}
               </section>
 
               ${renderSendComposer(matter, recipient, confirmingSend)}
@@ -404,8 +404,12 @@ const RepositoryView = (() => {
         const filename = downloadFilename(response) || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx");
         const blob = await response.blob();
         downloadBlob(blob, filename);
-        const movedMatter = await moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
-        setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Redline Ready.` : `Downloading ${filename}. Stage could not update.`);
+        if (MatterUtils.needsHumanReview(matter)) {
+          setPanelMessage(`Downloading ${filename}. Matter still needs human review before send.`);
+        } else {
+          const movedMatter = await moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
+          setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Redline Ready.` : `Downloading ${filename}. Stage could not update.`);
+        }
       } catch (error) {
         setPanelMessage(error.message || "Export could not run");
       } finally {
@@ -494,6 +498,7 @@ const RepositoryView = (() => {
 
     async function markMatterRedlineReady(matter) {
       if (!matter?.id) return null;
+      if (MatterUtils.needsHumanReview(matter)) return null;
       return moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
     }
 
@@ -649,16 +654,19 @@ const RepositoryView = (() => {
 
   function renderFailedClauses(clauses) {
     if (!clauses.length) {
-      return '<p class="repository-detail-none">No failed clauses</p>';
+      return '<p class="repository-detail-none">No clauses need attention</p>';
     }
     return `
       <ul>
-        ${clauses.slice(0, 6).map((clause) => `
-          <li>
-            <strong>${escapeHtml(clause.name || clause.id || "Clause")}</strong>
-            <span>${escapeHtml(clause.issue_label || clause.reason || "Needs review")}</span>
-          </li>
-        `).join("")}
+        ${clauses.slice(0, 6).map((clause) => {
+          const status = clauseStatus(clause);
+          return `
+            <li>
+              <strong>${escapeHtml(clause.name || clause.id || "Clause")}</strong>
+              <span>${escapeHtml(status.needsReview ? "Needs review" : clause.issue_label || clause.reason || "Needs review")}</span>
+            </li>
+          `;
+        }).join("")}
       </ul>
     `;
   }
@@ -676,9 +684,20 @@ const RepositoryView = (() => {
   function playbookMatchLabel(matter, reviewResult) {
     const passed = Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0);
     const failed = Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0);
-    const total = passed + failed;
+    const review = Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
+    const total = passed + failed + review;
     if (!total) return "Not checked";
     return `${Math.round((passed / total) * 100)}%`;
+  }
+
+  function reviewCountSummary(matter, reviewResult = {}) {
+    const passed = Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0);
+    const review = Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
+    const failed = Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0);
+    const parts = [`${passed} passed`];
+    if (review) parts.push(`${review} review`);
+    parts.push(`${failed} failed`);
+    return parts.join(" / ");
   }
 
   function renderMatterTimeline(matter) {
@@ -692,7 +711,7 @@ const RepositoryView = (() => {
     ];
     if (reviewResult.checked_at) {
       events.push({
-        detail: `${Number(matter.requirements_passed || 0)} checks passed, ${Number(matter.requirements_failed || 0)} failed.`,
+        detail: `${reviewCountSummary(matter, reviewResult)}.`,
         meta: formatMatterDateTime(reviewResult.checked_at) || "-",
         title: "Playbook checks completed",
       });

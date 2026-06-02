@@ -149,11 +149,21 @@ class ServerTests(unittest.TestCase):
         )
 
     def assert_review_payload_contract(self, payload, *, expected_source_type=None):
-        for key in ["overall_status", "checked_at", "requirements_passed", "requirements_failed", "paragraphs", "clauses", "redline_edits"]:
+        for key in [
+            "overall_status",
+            "checked_at",
+            "requirements_passed",
+            "requirements_needs_review",
+            "requirements_failed",
+            "paragraphs",
+            "clauses",
+            "redline_edits",
+        ]:
             self.assertIn(key, payload)
         self.assertEqual(payload.get("evidence_trust"), {"status": "verified", "errors": []})
-        self.assertIn(payload["overall_status"], {"meets_requirements", "does_not_meet_requirements"})
+        self.assertIn(payload["overall_status"], {"meets_requirements", "needs_review", "does_not_meet_requirements"})
         self.assertIsInstance(payload["requirements_passed"], int)
+        self.assertIsInstance(payload["requirements_needs_review"], int)
         self.assertIsInstance(payload["requirements_failed"], int)
         self.assertIsInstance(payload["paragraphs"], list)
         self.assertIsInstance(payload["clauses"], list)
@@ -176,7 +186,10 @@ class ServerTests(unittest.TestCase):
                 "name",
                 "requirement",
                 "status",
+                "decision",
+                "decision_reason",
                 "passes",
+                "needs_review",
                 "issue_type",
                 "issue_label",
                 "what_to_fix",
@@ -189,7 +202,9 @@ class ServerTests(unittest.TestCase):
             ]:
                 self.assertIn(key, clause, f"{clause.get('id', 'unknown')} missing {key}")
             self.assertIn(clause["status"], {"match", "check", "not_present"})
+            self.assertIn(clause["decision"], {"pass", "review", "fail"})
             self.assertIsInstance(clause["passes"], bool)
+            self.assertIsInstance(clause["needs_review"], bool)
             self.assertEqual(clause["reason"], clause["finding"])
             matched_ids = clause["matched_paragraph_ids"]
             self.assertIsInstance(matched_ids, list)
@@ -857,6 +872,7 @@ class ServerTests(unittest.TestCase):
                         "next_action": "Review redline",
                         "issue_count": 1,
                         "requirements_passed": 0,
+                        "requirements_needs_review": 0,
                         "requirements_failed": 1,
                     },
                 )
@@ -872,9 +888,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(review_payload["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
-        self.assertIn("within the cap of five years", term_clause["finding"])
+        self.assertEqual(term_clause["decision"], "review")
+        self.assertTrue(term_clause["needs_review"])
+        self.assertIn("could not be fully resolved", term_clause["finding"])
         self.assertEqual(stored_matter["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
         self.assertEqual(stored_matter["requirements_failed"], review_payload["review_result"]["requirements_failed"])
+        self.assertEqual(stored_matter["requirements_needs_review"], review_payload["review_result"]["requirements_needs_review"])
 
     def test_matter_upload_supports_manual_upload_source(self):
         source_docx = make_docx([
@@ -1045,6 +1064,22 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(public["recipient_email"], "reply@example.com")
         self.assertEqual(public["can_send_redline"], True)
+
+    def test_public_matter_blocks_send_when_review_is_needed(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "sender": "Sender <sender@example.com>",
+            "subject": "NDA",
+            "requirements_needs_review": 1,
+            "review_result": {
+                "overall_status": "needs_review",
+                "requirements_needs_review": 1,
+            },
+        })
+
+        self.assertEqual(public["recipient_email"], "sender@example.com")
+        self.assertEqual(public["can_send_redline"], False)
+        self.assertIn("human review", public["send_block_reason"])
 
     def test_public_matter_blocks_connected_account_sender(self):
         public = matter_view.public_matter({
@@ -1321,6 +1356,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(triage["triage_status"], "needs_redline")
         self.assertEqual(triage["requirements_failed"], 1)
+        self.assertEqual(triage["requirements_needs_review"], 0)
         self.assertEqual(triage["issue_count"], 1)
 
     def test_gmail_status_requires_token_paths_or_local_tokens(self):

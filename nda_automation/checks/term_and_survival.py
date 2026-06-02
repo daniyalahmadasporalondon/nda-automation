@@ -31,6 +31,12 @@ ORDINARY_SURVIVAL_SUBJECT_PATTERN = (
     r"(?:confidentiality\s+)?(?:obligations?|undertakings?|provisions?|duties?)\b"
     r"|\bconfidentiality\s+(?:surviv(?:e|es)|continu(?:e|es)|remain(?:s)?)\b"
 )
+SURVIVAL_REFERENCE_SCOPE_PATTERN = (
+    r"\b(?:obligations?|undertakings?|provisions?|duties?|rights?\s+and\s+obligations?)\b"
+    r".{0,180}\b(?:clause|clauses|article|articles|section|sections)\b"
+    r"|\b(?:clause|clauses|article|articles|section|sections)\b"
+    r".{0,180}\b(?:obligations?|undertakings?|provisions?|duties?|rights?\s+and\s+obligations?)\b"
+)
 
 
 def _check_term_and_survival(
@@ -89,14 +95,26 @@ def _check_term_and_survival(
         return attach_structure_context(result, review_context, context_concepts)
     if has_term_within_cap:
         evidence_paragraphs = _term_evidence_paragraphs(term_paragraphs, paragraphs, reference_analysis)
-        if reference_analysis["confidentiality_reference_count"]:
+        reference_review_reason = _survival_reference_review_reason(reference_analysis, cap_label)
+        if reference_review_reason:
+            result = _match(clause, reference_review_reason, evidence_paragraphs)
+            result["decision"] = "review"
+            result["needs_review"] = True
+            result["review_reason"] = reference_review_reason
+            result["decision_reason"] = reference_review_reason
+            result["what_to_fix"] = (
+                "Confirm whether the referenced survival provisions include ordinary confidentiality "
+                f"obligations capped at {cap_label} or less."
+            )
+        elif reference_analysis["confidentiality_reference_count"]:
             reason = (
                 "Referenced confidentiality provisions survive within "
                 f"the cap of {cap_label}."
             )
+            result = _match(clause, reason, evidence_paragraphs)
         else:
             reason = f"Term or survival period is within the cap of {cap_label}."
-        result = _match(clause, reason, evidence_paragraphs)
+            result = _match(clause, reason, evidence_paragraphs)
         _attach_survival_analysis(result, reference_analysis)
         return attach_structure_context(result, review_context, context_concepts)
     result = _not_present(
@@ -148,6 +166,10 @@ def _survival_reference_analysis(
     for reference in references:
         if not isinstance(reference, dict) or str(reference.get("paragraph_id")) not in paragraph_ids:
             continue
+        paragraph_id = str(reference.get("paragraph_id") or "")
+        paragraph_text = str(paragraph_lookup.get(paragraph_id, {}).get("text") or "")
+        if not _is_survival_scope_reference(paragraph_text):
+            continue
         target_records = []
         target_has_confidentiality = False
         for target in reference.get("targets", []):
@@ -164,8 +186,8 @@ def _survival_reference_analysis(
             ]
             is_confidentiality = bool(ORDINARY_CONFIDENTIALITY_CONCEPTS.intersection(concepts))
             target_has_confidentiality = target_has_confidentiality or is_confidentiality
-            for paragraph_id in target.get("paragraph_ids", []):
-                paragraph_key = str(paragraph_id)
+            for target_paragraph_id in target.get("paragraph_ids", []):
+                paragraph_key = str(target_paragraph_id)
                 if paragraph_key in paragraph_lookup and paragraph_key not in target_paragraph_ids:
                     target_paragraph_ids.append(paragraph_key)
             target_records.append({
@@ -178,8 +200,13 @@ def _survival_reference_analysis(
             confidentiality_reference_count += 1
         records.append({
             "reference_text": str(reference.get("reference_text") or ""),
-            "paragraph_id": str(reference.get("paragraph_id") or ""),
+            "paragraph_id": paragraph_id,
             "status": str(reference.get("status") or ""),
+            "unresolved_numbers": [
+                str(number)
+                for number in reference.get("unresolved_numbers", [])
+                if str(number)
+            ],
             "targets": target_records,
             "ordinary_confidentiality": target_has_confidentiality,
         })
@@ -190,6 +217,59 @@ def _survival_reference_analysis(
         "confidentiality_reference_count": confidentiality_reference_count,
         "target_paragraph_ids": target_paragraph_ids,
     }
+
+
+def _is_survival_scope_reference(paragraph_text: str) -> bool:
+    normalized = _normalize(paragraph_text)
+    return bool(
+        re.search(CARVE_OUT_SURVIVAL_PATTERN, normalized)
+        and re.search(SURVIVAL_REFERENCE_SCOPE_PATTERN, normalized)
+    )
+
+
+def _survival_reference_review_reason(reference_analysis: Dict[str, object], cap_label: str) -> str:
+    references = [
+        reference
+        for reference in reference_analysis.get("references", [])
+        if isinstance(reference, dict)
+    ]
+    if not references:
+        return ""
+
+    unresolved_labels = _unresolved_reference_labels(references)
+    if unresolved_labels:
+        return (
+            "Survival language uses cross-references that could not be fully resolved "
+            f"({', '.join(unresolved_labels)}), so the ordinary confidentiality survival scope needs review."
+        )
+
+    if not reference_analysis.get("confidentiality_reference_count"):
+        return (
+            "Survival language is capped within "
+            f"{cap_label}, but the referenced sections do not clearly classify as ordinary confidentiality obligations."
+        )
+
+    return ""
+
+
+def _unresolved_reference_labels(references: List[Dict[str, object]]) -> List[str]:
+    labels: List[str] = []
+    for reference in references:
+        if str(reference.get("status") or "") not in {"partial", "unresolved"}:
+            continue
+        reference_text = str(reference.get("reference_text") or "").strip()
+        unresolved_numbers = [
+            str(number)
+            for number in reference.get("unresolved_numbers", [])
+            if str(number)
+        ]
+        if reference_text and unresolved_numbers:
+            labels.append(f"{reference_text}: {', '.join(unresolved_numbers)}")
+        elif reference_text:
+            labels.append(reference_text)
+        elif unresolved_numbers:
+            labels.extend(unresolved_numbers)
+    return labels
 
 
 def _term_evidence_paragraphs(

@@ -46,7 +46,11 @@ from .review_document import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
-REVIEW_ENGINE_VERSION = 3
+REVIEW_ENGINE_VERSION = 4
+SEMANTIC_REVIEW_THRESHOLD = 0.75
+CLAUSE_DECISION_PASS = "pass"
+CLAUSE_DECISION_FAIL = "fail"
+CLAUSE_DECISION_REVIEW = "review"
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
 MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
@@ -142,15 +146,27 @@ def review_nda(
                 evaluator=semantic_evaluator,
             )
         )
-    failed = [clause for clause in clause_results if not clause["passes"]]
+    for clause in clause_results:
+        _apply_clause_decision(clause)
+    failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
+    review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
+    passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
+
+    if failed:
+        overall_status = "does_not_meet_requirements"
+    elif review:
+        overall_status = "needs_review"
+    else:
+        overall_status = "meets_requirements"
 
     result = {
         "review_engine_version": REVIEW_ENGINE_VERSION,
-        "overall_status": "does_not_meet_requirements" if failed else "meets_requirements",
+        "overall_status": overall_status,
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "requirements_passed": len(clause_results) - len(failed),
+        "requirements_passed": len(passed),
         "requirements_failed": len(failed),
+        "requirements_needs_review": len(review),
         "paragraphs": document_paragraphs,
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
@@ -163,6 +179,54 @@ def review_nda(
         raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
     result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
+
+
+def _apply_clause_decision(clause: ClauseResult) -> None:
+    decision = _clause_decision(clause)
+    clause["decision"] = decision
+    clause["needs_review"] = decision == CLAUSE_DECISION_REVIEW
+    if not str(clause.get("decision_reason") or "").strip():
+        clause["decision_reason"] = _clause_decision_reason(clause, decision)
+
+
+def _clause_decision(clause: ClauseResult) -> str:
+    explicit_decision = str(clause.get("decision") or "").strip().lower()
+    if explicit_decision in {CLAUSE_DECISION_PASS, CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}:
+        return explicit_decision
+    if clause.get("needs_review"):
+        return CLAUSE_DECISION_REVIEW
+    confidence = _semantic_confidence(clause)
+    if confidence is not None and confidence < SEMANTIC_REVIEW_THRESHOLD:
+        return CLAUSE_DECISION_REVIEW
+    if not clause.get("passes"):
+        return CLAUSE_DECISION_FAIL
+    return CLAUSE_DECISION_PASS
+
+
+def _semantic_confidence(clause: ClauseResult) -> float | None:
+    confidence = clause.get("semantic_confidence")
+    if confidence is None:
+        confidence = clause.get("confidence")
+    if confidence is None:
+        return None
+    try:
+        return float(confidence)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clause_decision_reason(clause: ClauseResult, decision: str) -> str:
+    configured_reason = str(clause.get("review_reason") or "").strip()
+    if configured_reason:
+        return configured_reason
+    confidence = _semantic_confidence(clause)
+    if decision == CLAUSE_DECISION_REVIEW and confidence is not None and confidence < SEMANTIC_REVIEW_THRESHOLD:
+        return f"Semantic confidence {confidence:.2f} is below the review threshold of {SEMANTIC_REVIEW_THRESHOLD:.2f}."
+    if decision == CLAUSE_DECISION_REVIEW:
+        return str(clause.get("reason") or clause.get("finding") or "Human review is required.").strip()
+    if decision == CLAUSE_DECISION_FAIL:
+        return str(clause.get("reason") or clause.get("finding") or "Clause does not satisfy the playbook.").strip()
+    return str(clause.get("reason") or clause.get("finding") or "Clause satisfies the playbook.").strip()
 
 
 def _validate_check_registry() -> None:

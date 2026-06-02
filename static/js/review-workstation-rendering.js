@@ -15,7 +15,7 @@ function renderResult(result, reviewedText) {
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
-    state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
+    state.reviewClauses.find((clause) => clauseStatus(clause).requiresAttention)?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
   updateExportButtonState();
 }
@@ -126,15 +126,31 @@ function renderStudioResult(result) {
 
 function renderStudioSummary(clauses) {
   const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
-  const failedCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
+  const reviewCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
+  const failedCount = clauses.filter((clause) => clauseStatus(clause).fails).length;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
-  studioResultMark.textContent = failedCount ? "CHECK" : "PASS";
-  studioResultMark.className = failedCount ? "check" : "pass";
-  studioOverallTitle.textContent = failedCount ? "Does not meet requirements" : "Meets requirements";
+  studioResultMark.textContent = failedCount ? "CHECK" : reviewCount ? "REVIEW" : "PASS";
+  studioResultMark.className = failedCount ? "check" : reviewCount ? "review" : "pass";
+  studioOverallTitle.textContent = failedCount
+    ? "Does not meet requirements"
+    : reviewCount
+      ? "Needs review"
+      : "Meets requirements";
   const warning = reviewWarningSummary();
-  studioResultMeta.textContent = warning || (failedCount
-    ? `${failedCount} hard ${failedCount === 1 ? "clause needs" : "clauses need"} checking.`
-    : "All hard clauses are currently satisfied.");
+  studioResultMeta.textContent = warning || summaryStatusText(failedCount, reviewCount);
+}
+
+function summaryStatusText(failedCount, reviewCount) {
+  if (failedCount && reviewCount) {
+    return `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} fixing; ${reviewCount} ${reviewCount === 1 ? "needs" : "need"} human review.`;
+  }
+  if (failedCount) {
+    return `${failedCount} hard ${failedCount === 1 ? "clause needs" : "clauses need"} checking.`;
+  }
+  if (reviewCount) {
+    return `${reviewCount} ${reviewCount === 1 ? "clause needs" : "clauses need"} human review before send.`;
+  }
+  return "All hard clauses are currently satisfied.";
 }
 
 function reviewWarningSummary() {
@@ -582,8 +598,8 @@ function renderStudioDetail() {
   const status = clauseStatus(clause);
   const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = renderEvidenceBlock(clause);
-  const fixBlock = status.needsReview && clause.what_to_fix
-    ? `<div class="studio-detail-block fix-block"><small>What to fix</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
+  const fixBlock = status.requiresAttention && clause.what_to_fix
+    ? `<div class="studio-detail-block fix-block"><small>${status.needsReview ? "What to verify" : "What to fix"}</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
   const rationaleBlock = clause.rationale
     ? `<div class="studio-detail-block rationale-block"><small>Playbook rationale</small><p>${escapeHtml(clause.rationale)}</p></div>`

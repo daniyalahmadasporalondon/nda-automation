@@ -47,7 +47,7 @@ function paragraphViewModel(paragraph, context) {
   const primaryClause = (
     selectedClause
     || linkedClauses.find((clause) => clause.id === primaryRedline?.clause_id)
-    || linkedClauses.find((clause) => !clauseStatus(clause).passes)
+    || linkedClauses.find((clause) => clauseStatus(clause).requiresAttention)
     || linkedClauses[0]
   );
   const visibleRedlines = visibleParagraphRedlines(redlines, manualRedline, selectedRedline, primaryRedline);
@@ -122,14 +122,15 @@ function renderRedlineDocumentParagraph(model) {
       model.primaryRedline?.action === REDLINE_DELETE_PARAGRAPH ? "redline-delete" : "",
       model.primaryRedline?.action === REDLINE_INSERT_AFTER_PARAGRAPH ? "redline-insert" : "",
       model.linkedClauses.some(isFailedProhibitedClause) ? "prohibited" : "",
-      model.primaryClause && !clauseStatus(model.primaryClause).passes ? "verify" : "",
-      model.primaryClause && clauseStatus(model.primaryClause).passes ? "match" : "",
+      model.primaryClause && clauseStatus(model.primaryClause).needsReview ? "review" : "",
+      model.primaryClause && clauseStatus(model.primaryClause).fails ? "verify" : "",
+      model.primaryClause && !clauseStatus(model.primaryClause).requiresAttention ? "match" : "",
     ],
   });
 }
 
 function isFailedProhibitedClause(clause) {
-  return clause?.type === "prohibited" && !clauseStatus(clause).passes;
+  return clause?.type === "prohibited" && clauseStatus(clause).fails;
 }
 
 function renderParagraphFrame(model, { body, classes = [] }) {

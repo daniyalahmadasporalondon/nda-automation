@@ -71,7 +71,9 @@ class CheckerTests(unittest.TestCase):
 
         self.assertEqual(result["overall_status"], "meets_requirements")
         self.assertEqual(result["requirements_failed"], 0)
+        self.assertEqual(result["requirements_needs_review"], 0)
         self.assertTrue(all(clause["passes"] for clause in result["clauses"]))
+        self.assertTrue(all(clause["decision"] == "pass" for clause in result["clauses"]))
         self.assertIn("paragraphs", result)
 
     def test_fail_sample_does_not_meet_requirements(self):
@@ -79,7 +81,7 @@ class CheckerTests(unittest.TestCase):
 
         self.assertEqual(result["overall_status"], "does_not_meet_requirements")
         self.assertGreater(result["requirements_failed"], 0)
-        failed_clause_ids = {clause["id"] for clause in result["clauses"] if not clause["passes"]}
+        failed_clause_ids = {clause["id"] for clause in result["clauses"] if clause["decision"] == "fail"}
         self.assertIn("governing_law", failed_clause_ids)
         self.assertIn("non_circumvention", failed_clause_ids)
 
@@ -254,6 +256,133 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(target_labels, ["Article 2", "Article 3", "Article 4", "Article 5"])
         self.assertIn("concept_classifier", result)
         self.assertIn("confidentiality_obligation", result["concept_classifier"]["concepts_by_section_id"]["section-2"])
+
+    def test_term_and_survival_needs_review_for_unresolved_survival_references(self):
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Mutuality
+
+            Each party may disclose Confidential Information to the other party and each party acts
+            as both Disclosing Party and Receiving Party.
+
+            Article 2 Confidentiality
+
+            Confidential Information means any and all information, including financial, business,
+            technical, customer, supplier, pricing, market, proprietary and trade secret information.
+            The Receiving Party shall protect Confidential Information and not disclose it.
+            Confidential Information does not include information in the public domain, information
+            already known, or information received from a lawful third party source.
+
+            Article 3 Use
+
+            Confidential Information may be used solely for the Purpose.
+
+            Article 4 Term and Survival
+
+            The obligations set out in Articles 2, 3 and 99 survive expiry or termination for 3 (three) years.
+
+            Article 5 Governing Law
+
+            This Agreement shall be governed by the laws of England and Wales.
+
+            For Aspora Technology Services Private Limited
+            By: __________________
+            Title: Director
+            Date: 2026-05-30
+
+            For Counterparty Limited
+            By: __________________
+            Title: Chief Executive Officer
+            Date: 2026-05-30
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertEqual(term_clause["decision"], "review")
+        self.assertTrue(term_clause["needs_review"])
+        self.assertIn("could not be fully resolved", term_clause["decision_reason"])
+        self.assertEqual(term_clause["term_survival_analysis"]["references"][0]["status"], "partial")
+        self.assertEqual(term_clause["term_survival_analysis"]["references"][0]["unresolved_numbers"], ["99"])
+
+    def test_term_and_survival_needs_review_when_resolved_references_lack_confidentiality_concepts(self):
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Mutuality
+
+            Each party may disclose Confidential Information to the other party and each party acts
+            as both Disclosing Party and Receiving Party.
+
+            Article 2 Notices
+
+            Notices are effective when delivered to the recipient address.
+
+            Article 3 Assignment
+
+            Neither party may assign this Agreement without consent.
+
+            Article 4 Confidential Information
+
+            Confidential Information means any and all information, including financial, business,
+            technical, customer, supplier, pricing, market, proprietary and trade secret information.
+            The Receiving Party shall protect Confidential Information and not disclose it.
+            Confidential Information does not include information in the public domain, information
+            already known, or information received from a lawful third party source.
+
+            Article 5 Term and Survival
+
+            The obligations set out in Articles 2 and 3 survive expiry or termination for 3 (three) years.
+
+            Article 6 Governing Law
+
+            This Agreement shall be governed by the laws of England and Wales.
+
+            For Aspora Technology Services Private Limited
+            By: __________________
+            Title: Director
+            Date: 2026-05-30
+
+            For Counterparty Limited
+            By: __________________
+            Title: Chief Executive Officer
+            Date: 2026-05-30
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertEqual(term_clause["decision"], "review")
+        self.assertIn("do not clearly classify", term_clause["decision_reason"])
+        self.assertEqual(term_clause["term_survival_analysis"]["confidentiality_reference_count"], 0)
+        self.assertEqual(term_clause["term_survival_analysis"]["references"][0]["status"], "resolved")
+
+    def test_term_and_survival_does_not_review_non_survival_scope_references(self):
+        result = review_nda(
+            """
+            Article 1 Notices
+
+            Notices are effective when delivered.
+
+            Article 2 Term
+
+            This Agreement continues for three (3) years. Notices under Article 1 are effective on receipt.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertEqual(term_clause["decision"], "pass")
+        self.assertNotIn("term_survival_analysis", term_clause)
 
     def test_term_and_survival_picks_up_month_denominated_terms(self):
         result = review_nda("The confidentiality obligations survive for 36 months after termination.")
@@ -656,7 +785,60 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(mutuality["matched_paragraph_ids"], ["p1"])
         self.assertTrue(mutuality["semantic_fallback"])
         self.assertEqual(mutuality["semantic_confidence"], 0.86)
+        self.assertEqual(mutuality["decision"], "pass")
+        self.assertFalse(mutuality["needs_review"])
         self.assertEqual(mutuality["reason"], "Semantic fallback found reciprocal confidentiality obligations.")
+
+    def test_low_confidence_semantic_match_needs_review(self):
+        def evaluator(**kwargs):
+            clause = kwargs["clause"]
+            if clause["id"] != "mutuality":
+                return None
+            return {
+                "status": "match",
+                "reason": "Semantic fallback found possible reciprocal confidentiality obligations.",
+                "matched_paragraph_ids": ["p2"],
+                "confidence": 0.62,
+            }
+
+        text = """
+        Non-Disclosure Agreement
+
+        Each side may exchange sensitive materials with the other side under balanced duties.
+
+        Confidential Information means any and all information, including financial, business,
+        technical, customer, employee, supplier, pricing, market, proprietary and trade secret
+        information, whether marked confidential or not.
+
+        The exclusions are limited to information that is in the public domain, already in the
+        receiving party's prior possession, or received from a lawful third party source.
+
+        This Agreement shall be governed by the laws of England and Wales.
+
+        This Agreement continues for three (3) years from the Effective Date. Trade secrets survive
+        for so long as they remain trade secrets. Personal data survives for as long as applicable
+        law requires.
+
+        For Aspora Technology Services Private Limited
+        By: __________________
+        Title: Director
+        Date: 2026-05-30
+
+        For Counterparty Limited
+        By: __________________
+        Title: Chief Executive Officer
+        Date: 2026-05-30
+        """
+        result = review_nda(text, semantic_evaluator=evaluator)
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(mutuality["status"], "match")
+        self.assertTrue(mutuality["passes"])
+        self.assertEqual(mutuality["decision"], "review")
+        self.assertTrue(mutuality["needs_review"])
+        self.assertIn("below the review threshold", mutuality["decision_reason"])
 
     def test_semantic_fallback_can_flag_missed_prohibited_clause(self):
         def evaluator(**kwargs):

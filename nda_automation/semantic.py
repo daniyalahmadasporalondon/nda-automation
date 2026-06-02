@@ -51,8 +51,13 @@ def apply_semantic_fallback(
     if not semantic_result:
         return current_result
     semantic_result["semantic_fallback"] = True
-    if "confidence" in decision:
+    if "semantic_confidence" in decision:
+        semantic_result["semantic_confidence"] = decision["semantic_confidence"]
+    elif "confidence" in decision:
         semantic_result["semantic_confidence"] = decision["confidence"]
+    for field in ["decision", "needs_review", "review_reason", "decision_reason"]:
+        if field in decision:
+            semantic_result[field] = decision[field]
     return semantic_result
 
 

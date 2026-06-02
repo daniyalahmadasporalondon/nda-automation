@@ -52,6 +52,7 @@ SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
     "Proposed Redline",
     "Overall status:",
     "Requirements passed:",
+    "Requirements needing review:",
     "Requirements failed:",
     "Checked at:",
     "The Redlined NDA section contains native Word tracked changes.",
