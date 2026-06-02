@@ -750,18 +750,33 @@ def _part_charset(part: dict[str, Any]) -> str:
 
 
 class _HTMLTextExtractor(HTMLParser):
+    IGNORED_TEXT_TAGS = {"script", "style"}
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
+        self._ignored_depth = 0
 
     def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
         text = data.strip()
         if text:
             self._parts.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in {"br", "div", "li", "p", "tr"}:
+        tag_name = tag.lower()
+        if tag_name in self.IGNORED_TEXT_TAGS:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if tag_name in {"br", "div", "li", "p", "tr"}:
             self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self.IGNORED_TEXT_TAGS and self._ignored_depth:
+            self._ignored_depth -= 1
 
     def text(self) -> str:
         return unescape(" ".join(part for part in self._parts if part.strip()))

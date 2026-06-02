@@ -1841,6 +1841,43 @@ class ServerTests(unittest.TestCase):
 
         self.assertIn("Please review the confidentiality agreement.", body)
 
+    def test_gmail_html_body_ignores_script_and_style_text_for_detection(self):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        payload = {
+            "mimeType": "text/html",
+            "body": {
+                "data": inline(
+                    b"""
+                    <html>
+                      <head>
+                        <style>.nda-header { color: purple; } .non-disclosure-agreement { display: block; }</style>
+                        <script>const marker = "confidentiality agreement";</script>
+                      </head>
+                      <body><p>Please review the attached services schedule.</p></body>
+                    </html>
+                    """
+                ),
+            },
+        }
+        message = {
+            "snippet": "Please review.",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Services schedule"}],
+                **payload,
+            },
+        }
+
+        body = gmail_integration._message_body_text(payload)
+        detection = gmail_integration._message_nda_detection(message, [])
+
+        self.assertIn("Please review the attached services schedule.", body)
+        self.assertNotIn("nda-header", body)
+        self.assertNotIn("non-disclosure-agreement", body)
+        self.assertNotIn("confidentiality agreement", body)
+        self.assertFalse(detection["matched"])
+
     def test_gmail_sync_process_lock_blocks_parallel_processes(self):
         if server_module.fcntl is None:
             self.skipTest("fcntl is unavailable")
