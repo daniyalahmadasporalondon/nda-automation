@@ -449,53 +449,89 @@
                     <span>Auditable outputs</span>
                   </header>
 
-                  <div class="engine-checker-grid">
+                  <div class="engine-checker-grid standardized">
                     <article>
                       <h3>Mutuality</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/mutuality.py</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm the NDA creates reciprocal confidentiality obligations for both parties, not a one-way receiving-party model.</dd></div>
+                        <div><dt>Inputs</dt><dd>Reviewed paragraphs, role definitions, reciprocal-obligation terms, one-way terms, and shared structure context.</dd></div>
+                        <div><dt>Pass</dt><dd>Strong reciprocal obligation language binds both parties as disclosing and receiving parties.</dd></div>
                         <div><dt>Review state</dt><dd>Weak mutuality labels or role definitions without operative reciprocal obligations.</dd></div>
+                        <div><dt>Check</dt><dd>One-way or unilateral language fixes only one side as receiving party or otherwise fails mutuality.</dd></div>
                         <div><dt>Audit object</dt><dd>mutuality_analysis</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Check decisions use the mutuality redline template; review decisions do not auto-redline.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>Definitions alone are not enough for pass; they are treated as human-review evidence.</dd></div>
                       </dl>
                     </article>
                     <article>
                       <h3>Confidential Information</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/confidential_information.py</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm the Confidential Information definition is broad enough and does not add exclusions that weaken protection.</dd></div>
+                        <div><dt>Inputs</dt><dd>Definition paragraphs, required category terms, exclusion terms, usage-right signals, and shared structure context.</dd></div>
+                        <div><dt>Pass</dt><dd>A broad Confidential Information definition covers enough required categories with no extra exclusions.</dd></div>
                         <div><dt>Review state</dt><dd>Broad but implicit category coverage, or usage-right language that may weaken protection.</dd></div>
+                        <div><dt>Check</dt><dd>The definition is missing, too narrow, or includes prohibited carve-outs.</dd></div>
                         <div><dt>Audit object</dt><dd>confidential_information_analysis</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Missing/narrow definitions use broadening language; exclusion-based checks use exclusions cleanup language.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>General broad wording can be reviewed instead of failed when categories are implicit.</dd></div>
                       </dl>
                     </article>
                     <article>
                       <h3>Governing Law</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/governing_law.py</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm the contract has a clear governing-law value and that the value is in the approved operating set.</dd></div>
+                        <div><dt>Inputs</dt><dd>Governing-law candidates, approved jurisdiction aliases, placeholder signals, conflict signals, and shared structure context.</dd></div>
+                        <div><dt>Pass</dt><dd>The governing-law value resolves to an approved law.</dd></div>
                         <div><dt>Review state</dt><dd>Placeholder, conditional, heading-only, unresolved, or conflicting governing-law language.</dd></div>
+                        <div><dt>Check</dt><dd>A clear governing-law clause names a non-approved jurisdiction.</dd></div>
                         <div><dt>Audit object</dt><dd>governing_law_analysis</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Non-approved laws generate replacement options; review decisions wait for human confirmation.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>Approved law references outside the governing-law value do not rescue a non-approved governing law.</dd></div>
                       </dl>
                     </article>
                     <article>
                       <h3>Term and Survival</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/term_and_survival.py</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm ordinary confidentiality term or survival is time-limited while preserving approved longer carve-outs.</dd></div>
+                        <div><dt>Inputs</dt><dd>Duration expressions, indefinite-survival terms, longer-survival carve-outs, resolved references, concept tags, and shared structure context.</dd></div>
+                        <div><dt>Pass</dt><dd>Ordinary confidentiality term or survival period is fixed and within the configured cap.</dd></div>
                         <div><dt>Review state</dt><dd>Cross-referenced survival scope is unresolved or not clearly ordinary confidentiality.</dd></div>
+                        <div><dt>Check</dt><dd>The term is missing, over-cap, or indefinite outside allowed carve-outs.</dd></div>
                         <div><dt>Audit object</dt><dd>term_survival_analysis</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Missing or deficient terms generate a term/survival redline; review decisions do not auto-redline.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>Cross-referenced survival is checked against actual resolved sections, not assumed article numbers.</dd></div>
                       </dl>
                     </article>
                     <article>
                       <h3>Non-Circumvention</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/non_circumvention.py</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm the NDA does not contain prohibited non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restraints.</dd></div>
+                        <div><dt>Inputs</dt><dd>Prohibited restraint terms, review-only commercial signals, lawful-circumvention guards, negated references, and shared structure context.</dd></div>
+                        <div><dt>Pass</dt><dd>No operative non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity restriction appears.</dd></div>
                         <div><dt>Review state</dt><dd>Soft introduced-party, substitute-purpose, or exclusivity language without a clear operative restriction.</dd></div>
+                        <div><dt>Check</dt><dd>Definite non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restriction appears.</dd></div>
                         <div><dt>Audit object</dt><dd>non_circumvention_analysis</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Definite restrictions generate delete redlines; review decisions do not auto-delete.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>Lawful-circumvention references and negated references are not treated as violations.</dd></div>
                       </dl>
                     </article>
                     <article>
                       <h3>Signatures</h3>
                       <dl>
                         <div><dt>Module</dt><dd>nda_automation/checks/signatures.py</dd></div>
-                        <div><dt>Current state</dt><dd>Marker-based execution-block check remains separate from the legal-concept review-state upgrades.</dd></div>
-                        <div><dt>Next model</dt><dd>Party, signatory, title, date, and block-level execution parsing.</dd></div>
+                        <div><dt>Purpose</dt><dd>Confirm the NDA has an execution block that appears complete enough for both sides to sign.</dd></div>
+                        <div><dt>Inputs</dt><dd>Execution-block text, party markers, title/capacity markers, date markers, and the signature redline template.</dd></div>
+                        <div><dt>Pass</dt><dd>Execution block appears to include both parties, titles or capacities, and dates.</dd></div>
+                        <div><dt>Review state</dt><dd>Signatures remain separate from the legal-concept review-state upgrades.</dd></div>
+                        <div><dt>Check</dt><dd>Execution block is missing or incomplete under the current marker-count checker.</dd></div>
+                        <div><dt>Audit object</dt><dd>structure_context</dd></div>
+                        <div><dt>Redline behavior</dt><dd>Missing or incomplete execution blocks can insert or replace the signature template.</dd></div>
+                        <div><dt>Human-review boundary</dt><dd>Current logic is structural marker detection; party/signatory parsing is intentionally separate.</dd></div>
                       </dl>
                     </article>
                   </div>

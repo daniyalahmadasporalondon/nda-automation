@@ -340,9 +340,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       .join("");
     const outputRows = [
       ["Checker module", visibility.module],
+      ["Analysis purpose", visibility.purpose],
+      ["Primary inputs", visibility.inputs],
       ["Audit output", visibility.output_field],
       ["Redline behavior", visibility.redline_behavior],
-      ["Review-state boundary", visibility.boundary],
+      ["Human-review boundary", visibility.boundary],
     ]
       .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
       .join("");
@@ -350,7 +352,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special checker-visibility">
         <h3>Decision Logic Visibility</h3>
-        <p class="admin-muted">This is the deterministic checker flow the backend applies before the UI receives pass, review, or check.</p>
+        <p class="admin-muted">Each checker is explained with the same analysis model: purpose, inputs, pass/review/check decision path, audit output, redline behavior, and human-review boundary.</p>
         <div class="admin-decision-grid">${statusCards}</div>
         <section class="admin-signal-section">
           <h4>Signal buckets</h4>
@@ -374,10 +376,13 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         check: visibility.check,
       },
       backend_module: visibility.module,
+      analysis_purpose: visibility.purpose,
+      primary_inputs: visibility.inputs,
       analysis_output_field: visibility.output_field,
       analysis_fields: visibility.analysis_fields,
       signal_buckets: visibility.signal_buckets,
       redline_behavior: visibility.redline_behavior,
+      human_review_boundary: visibility.boundary,
       taxonomy_groups: clause.taxonomy_groups || [],
       search_terms: clause.search_terms || [],
       shared_review_context: {
@@ -424,6 +429,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const shared = {
       signatures: {
         module: "nda_automation/checks/signatures.py",
+        purpose: "Confirm the NDA has an execution block that appears complete enough for both sides to sign.",
+        inputs: "Execution-block text, party markers, title/capacity markers, date markers, and the signature redline template.",
         pass: "Execution block appears to include both parties, titles or capacities, and dates.",
         review: "Signatures will be handled as a separate execution-block model rather than expanded in this pass.",
         check: "Execution block is missing or incomplete under the current marker-count checker.",
@@ -443,6 +450,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const visibility = {
       mutuality: {
         module: "nda_automation/checks/mutuality.py",
+        purpose: "Confirm the NDA creates reciprocal confidentiality obligations for both parties, not a one-way receiving-party model.",
+        inputs: "Reviewed paragraphs, role definitions, reciprocal-obligation terms, one-way terms, and shared structure context.",
         pass: "Strong reciprocal obligation language binds both parties as disclosing and receiving parties.",
         review: "Role definitions or title-only mutuality labels exist without a clear reciprocal obligation.",
         check: "One-way or unilateral language fixes only one side as receiving party or otherwise fails mutuality.",
@@ -475,6 +484,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       },
       confidential_information: {
         module: "nda_automation/checks/confidential_information.py",
+        purpose: "Confirm the Confidential Information definition is broad enough and does not add exclusions that weaken protection.",
+        inputs: "Definition paragraphs, required category terms, exclusion terms, usage-right signals, and shared structure context.",
         pass: "A broad Confidential Information definition covers enough required categories with no extra exclusions.",
         review: "A broad general definition or separate usage-right language may be acceptable but needs human review.",
         check: "The definition is missing, too narrow, or includes prohibited carve-outs.",
@@ -507,6 +518,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       },
       governing_law: {
         module: "nda_automation/checks/governing_law.py",
+        purpose: "Confirm the contract has a clear governing-law value and that the value is in the approved operating set.",
+        inputs: "Governing-law candidates, approved jurisdiction aliases, placeholder signals, conflict signals, and shared structure context.",
         pass: "The governing-law value resolves to an approved law.",
         review: "The governing-law value is placeholder, heading-only, conditional, unresolved, or conflicts with another governing-law sentence.",
         check: "A clear governing-law clause names a non-approved jurisdiction.",
@@ -540,6 +553,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       },
       term_and_survival: {
         module: "nda_automation/checks/term_and_survival.py",
+        purpose: "Confirm ordinary confidentiality term or survival is time-limited while preserving approved longer carve-outs.",
+        inputs: "Duration expressions, indefinite-survival terms, longer-survival carve-outs, resolved references, concept tags, and shared structure context.",
         pass: "Ordinary confidentiality term or survival period is fixed and within the configured cap.",
         review: "Survival uses cross-references that are unresolved or do not clearly classify as ordinary confidentiality.",
         check: "The term is missing, over-cap, or indefinite outside allowed carve-outs.",
@@ -572,6 +587,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       },
       non_circumvention: {
         module: "nda_automation/checks/non_circumvention.py",
+        purpose: "Confirm the NDA does not contain prohibited non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restraints.",
+        inputs: "Prohibited restraint terms, review-only commercial signals, lawful-circumvention guards, negated references, and shared structure context.",
         pass: "No operative non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity restriction appears.",
         review: "Soft introduced-party, substitute-purpose, or exclusivity language appears without a clear operative restriction.",
         check: "Definite non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restriction appears.",
@@ -606,6 +623,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     };
     return visibility[clause.id] || shared[clause.id] || {
       module: "nda_automation/checks/",
+      purpose: "Apply the configured playbook rule to the reviewed document text.",
+      inputs: "Reviewed paragraphs, playbook search terms, semantic signals, and shared structure context.",
       pass: "Clause satisfies the preferred standard position.",
       review: "The checker marks ambiguous evidence for human review.",
       check: clause.type === "prohibited"
