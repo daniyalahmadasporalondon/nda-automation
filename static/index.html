@@ -719,7 +719,7 @@
                 <article class="integration-card ai-settings-card" id="adminAiCard" aria-live="polite">
                   <header class="integration-card-head">
                     <div>
-                      <p class="eyebrow">gemini</p>
+                      <p class="eyebrow">provider</p>
                       <h2>AI Semantic Review</h2>
                     </div>
                     <span class="integration-status" id="adminAiOverall">Checking</span>
@@ -738,9 +738,9 @@
                   </div>
 
                   <form class="ai-key-form" id="adminAiKeyForm">
-                    <label for="adminAiApiKeyInput">Gemini API key</label>
+                    <label for="adminAiApiKeyInput">AI API key</label>
                     <div class="ai-key-row">
-                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini API key">
+                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini or OpenRouter API key">
                       <button class="primary" id="adminAiSaveKeyButton" type="submit">Save key &amp; turn on</button>
                       <button class="secondary" id="adminAiClearKeyButton" type="button">Clear saved key</button>
                     </div>
@@ -787,7 +787,7 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Disabled by default. Admin can save a local Gemini API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, and GEMINI_API_KEY in the backend environment.</p>
+                      <p>Disabled by default. Admin can save a local Gemini or OpenRouter API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, GEMINI_API_KEY, or OPENROUTER_API_KEY in the backend environment.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>
@@ -806,7 +806,7 @@
                   <dl class="resolver-audit-list">
                     <div>
                       <dt>Provider</dt>
-                      <dd>Gemini API through nda_automation/ai_review.py using structured JSON output. The API key is read from GEMINI_API_KEY and is never exposed to browser JavaScript.</dd>
+                      <dd>Gemini or OpenRouter through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
                     </div>
                     <div>
                       <dt>Default model</dt>

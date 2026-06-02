@@ -27,6 +27,8 @@ DEFAULT_GMAIL_SETTINGS = {
 }
 DEFAULT_AI_SETTINGS = {
     "enabled": None,
+    "provider": "",
+    "model": "",
 }
 AI_API_KEY_FILENAME = "ai_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
@@ -220,12 +222,22 @@ def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     enabled = payload.get("enabled", DEFAULT_AI_SETTINGS["enabled"])
     if not isinstance(enabled, bool):
         enabled = None
-    return {"enabled": enabled}
+    provider = str(payload.get("provider") or DEFAULT_AI_SETTINGS["provider"]).strip().lower()
+    if provider not in {"", "gemini", "openrouter"}:
+        provider = ""
+    model = str(payload.get("model") or DEFAULT_AI_SETTINGS["model"]).strip()
+    if len(model) > 200:
+        model = ""
+    return {"enabled": enabled, "provider": provider, "model": model}
 
 
 def _valid_ai_setting(key: str, value: Any) -> bool:
     if key == "enabled":
         return isinstance(value, bool)
+    if key == "provider":
+        return isinstance(value, str) and value.strip().lower() in {"", "gemini", "openrouter"}
+    if key == "model":
+        return isinstance(value, str) and len(value.strip()) <= 200
     return False
 
 

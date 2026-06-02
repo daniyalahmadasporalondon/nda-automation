@@ -43,9 +43,14 @@ def handle_ai_api_key_update(handler) -> None:
         return
     api_key = payload.get("api_key")
     if not isinstance(api_key, str) or not api_key.strip():
-        handler._send_json({"error": "Provide a Gemini API key to save."}, status=400)
+        handler._send_json({"error": "Provide an AI API key to save."}, status=400)
         return
+    provider = ai_review.provider_for_api_key(api_key)
     app_settings.save_ai_api_key(api_key)
+    app_settings.update_ai_settings({
+        "provider": provider,
+        "model": ai_review.default_model_for_provider(provider),
+    })
     if payload.get("enabled", True) is not False:
         app_settings.update_ai_settings({"enabled": True})
     handler._send_json({"ai_review": ai_review.ai_review_status()})

@@ -500,14 +500,16 @@ async function testContractStructureReviewPanel(page) {
   let aiEnabled = false;
   let aiKeyConfigured = false;
   let aiKeySource = "";
+  let aiProvider = "gemini";
+  let aiModel = "gemini-3.5-flash";
   const aiSettingsResponse = () => ({
     ai_review: {
       version: 1,
       enabled: aiEnabled,
       stored_enabled: aiSettingsPayloads.length || aiKeyPayloads.length ? aiEnabled : null,
       environment_enabled: false,
-      provider: "gemini",
-      model: "gemini-3.5-flash",
+      provider: aiProvider,
+      model: aiModel,
       confidence_threshold: 0.75,
       api_key_configured: aiKeyConfigured,
       api_key_source: aiKeySource,
@@ -533,6 +535,10 @@ async function testContractStructureReviewPanel(page) {
       aiEnabled = payload.enabled !== false;
       aiKeyConfigured = true;
       aiKeySource = "local_settings";
+      if (String(payload.api_key || "").startsWith("sk-or-")) {
+        aiProvider = "openrouter";
+        aiModel = "openai/gpt-4o-mini";
+      }
     } else if (route.request().method() === "DELETE") {
       aiKeyConfigured = false;
       aiKeySource = "";
@@ -678,23 +684,26 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(aiPanel, "AI review layer");
   await assertTextContains(aiPanel, "How AI checks the deterministic result");
   await assertTextContains(aiPanel, "GEMINI_API_KEY");
+  await assertTextContains(aiPanel, "OPENROUTER_API_KEY");
   await assertTextContains(aiPanel, "ai_review_analysis");
   await assertTextContains(aiPanel, "AI disagreement");
   await assertTextContains(aiPanel, "AI Semantic Review");
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
-  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing Gemini API key");
-  await page.locator("#adminAiApiKeyInput").fill("browser-local-key");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing AI API key");
+  await page.locator("#adminAiApiKeyInput").fill("sk-or-v1-browser-local-key");
   await page.locator("#adminAiSaveKeyButton").click();
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "true");
-  assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "browser-local-key", enabled: true });
+  assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "sk-or-v1-browser-local-key", enabled: true });
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
-  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local key");
+  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
+  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "openai/gpt-4o-mini");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "ON");
   await page.locator("#adminAiClearKeyButton").click();
-  await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing Gemini API key");
+  await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing AI API key");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");
   await page.locator("#adminAiEnabledToggle").click();
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");

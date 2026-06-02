@@ -33,7 +33,7 @@ const AdminAiView = (() => {
       event.preventDefault();
       const apiKey = aiApiKeyInput?.value.trim() || "";
       if (!apiKey) {
-        setFact("key-message", "Paste a Gemini API key first.");
+        setFact("key-message", "Paste a Gemini or OpenRouter API key first.");
         aiApiKeyInput?.focus();
         return;
       }
@@ -50,7 +50,7 @@ const AdminAiView = (() => {
         if (!response.ok) throw reviewErrorFromPayload(payload, "AI key could not save");
         if (aiApiKeyInput) aiApiKeyInput.value = "";
         renderAi(payload.ai_review || {});
-        setFact("key-message", "Gemini key saved locally. AI is on.");
+        setFact("key-message", "AI key saved locally. AI is on.");
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         setFact("key-message", error.message || "AI key could not save");
@@ -169,8 +169,8 @@ const AdminAiView = (() => {
 
     function apiKeyLabel(status) {
       if (status.api_key_source === "environment") return "Configured in backend environment";
-      if (status.api_key_source === "local_settings") return "Configured from saved local key";
-      return "Missing Gemini API key";
+      if (status.api_key_source === "local_settings") return `Configured from saved local ${providerName(status.provider)} key`;
+      return "Missing AI API key";
     }
 
     function sourceLabel(status) {
@@ -180,9 +180,17 @@ const AdminAiView = (() => {
     }
 
     function keyMessage(status) {
-      if (status.api_key_source === "environment") return "Using GEMINI_API_KEY from the backend environment.";
-      if (status.api_key_source === "local_settings") return "Using a saved local key under ignored app data.";
-      return "Paste a Gemini key and click Save key & turn on.";
+      if (status.api_key_source === "environment") {
+        return status.provider === "openrouter"
+          ? "Using OPENROUTER_API_KEY from the backend environment."
+          : "Using GEMINI_API_KEY from the backend environment.";
+      }
+      if (status.api_key_source === "local_settings") return `Using a saved local ${providerName(status.provider)} key under ignored app data.`;
+      return "Paste a Gemini or OpenRouter key and click Save key & turn on.";
+    }
+
+    function providerName(provider) {
+      return provider === "openrouter" ? "OpenRouter" : "Gemini";
     }
 
     return { load };

@@ -69,18 +69,39 @@ class AIReviewTests(unittest.TestCase):
     def test_ai_review_status_uses_persisted_toggle_over_environment(self):
         with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": False}):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
-                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "true", "GEMINI_API_KEY": "configured"}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {"NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured", "OPENROUTER_API_KEY": ""},
+                    clear=False,
+                ):
                     disabled_status = ai_review.ai_review_status()
 
         with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
-                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": "configured"}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured", "OPENROUTER_API_KEY": ""},
+                    clear=False,
+                ):
                     enabled_status = ai_review.ai_review_status()
 
         with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="saved-local-key"):
-                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": ""}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": ""},
+                    clear=False,
+                ):
                     local_key_status = ai_review.ai_review_status()
+
+        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
+            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="sk-or-v1-test"):
+                with patch.dict(
+                    os.environ,
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": ""},
+                    clear=False,
+                ):
+                    openrouter_status = ai_review.ai_review_status()
 
         self.assertEqual(disabled_status["enabled"], False)
         self.assertEqual(disabled_status["stored_enabled"], False)
@@ -94,6 +115,10 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(local_key_status["enabled"], True)
         self.assertEqual(local_key_status["api_key_configured"], True)
         self.assertEqual(local_key_status["api_key_source"], "local_settings")
+        self.assertEqual(openrouter_status["provider"], "openrouter")
+        self.assertEqual(openrouter_status["model"], "openai/gpt-4o-mini")
+        self.assertEqual(openrouter_status["api_key_configured"], True)
+        self.assertEqual(openrouter_status["api_key_source"], "local_settings")
 
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)
@@ -187,6 +212,22 @@ class AIReviewTests(unittest.TestCase):
         )
         self.assertIn("responseSchema", body["generationConfig"])
         self.assertIn("semantic_clause_crosscheck", encoded)
+
+    def test_openrouter_request_body_uses_chat_completion_structured_output(self):
+        packet = {
+            "task": "semantic_clause_crosscheck",
+            "clause": {"id": "mutuality"},
+            "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
+        }
+
+        body = ai_review._openrouter_request_body(packet, "openai/gpt-4o-mini")
+
+        self.assertEqual(body["model"], "openai/gpt-4o-mini")
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["response_format"]["type"], "json_schema")
+        self.assertEqual(body["response_format"]["json_schema"]["strict"], True)
+        self.assertIn("schema", body["response_format"]["json_schema"])
+        self.assertIn("semantic_clause_crosscheck", json.dumps(body))
 
 
 if __name__ == "__main__":
