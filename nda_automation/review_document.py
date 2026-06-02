@@ -118,6 +118,7 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         matched_ids = clause.get("matched_paragraph_ids", [])
         evidence = clause.get("evidence", [])
         evidence_paragraphs = clause.get("evidence_paragraphs", [])
+        structured_evidence = clause.get("structured_evidence", [])
         if not isinstance(matched_ids, list):
             errors.append(f"{clause_id}: matched_paragraph_ids must be a list")
             continue
@@ -127,6 +128,9 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         if not isinstance(evidence_paragraphs, list):
             errors.append(f"{clause_id}: evidence_paragraphs must be a list")
             evidence_paragraphs = []
+        if not isinstance(structured_evidence, list):
+            errors.append(f"{clause_id}: structured_evidence must be a list")
+            structured_evidence = []
 
         expected_paragraphs = []
         for paragraph_id in matched_ids:
@@ -161,6 +165,43 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
                     errors.append(f"{clause_id}: evidence paragraph {source_paragraph.get('id')} has drifted {key}")
                 elif key not in source_paragraph and key in evidence_paragraph:
                     errors.append(f"{clause_id}: evidence paragraph {source_paragraph.get('id')} has unexpected {key}")
+
+        structured_ids = []
+        for record in structured_evidence:
+            if not isinstance(record, dict):
+                errors.append(f"{clause_id}: structured_evidence record is not an object")
+                continue
+            paragraph_id = str(record.get("paragraph_id") or "")
+            structured_ids.append(paragraph_id)
+            source_paragraph = paragraphs_by_id.get(paragraph_id)
+            if source_paragraph is None:
+                errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id or 'unknown'} is not in reviewed source")
+                continue
+            if record.get("text") != source_paragraph.get("text"):
+                errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} has drifted text")
+            for key in ["start", "end", "source_index", "source_part", "source_kind"]:
+                if key in source_paragraph and record.get(key) != source_paragraph.get(key):
+                    errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} has drifted {key}")
+                elif key not in source_paragraph and record.get(key) is not None:
+                    errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} has unexpected {key}")
+            match_spans = record.get("match_spans", [])
+            if not isinstance(match_spans, list):
+                errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} match_spans must be a list")
+                continue
+            for span in match_spans:
+                if not isinstance(span, dict):
+                    errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} match span is not an object")
+                    continue
+                start = span.get("start")
+                end = span.get("end")
+                span_text = str(span.get("text") or "")
+                if not isinstance(start, int) or not isinstance(end, int) or source_text is None:
+                    continue
+                if source_text[start:end] != span_text:
+                    errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} match span has drifted text")
+        expected_structured_ids = [str(paragraph.get("id")) for paragraph in expected_paragraphs]
+        if structured_ids != expected_structured_ids:
+            errors.append(f"{clause_id}: structured_evidence ids do not match matched source paragraphs")
 
     return errors
 

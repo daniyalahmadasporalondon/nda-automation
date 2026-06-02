@@ -995,6 +995,7 @@ class CheckerTests(unittest.TestCase):
 
         for clause in result["clauses"]:
             matched_ids = clause["matched_paragraph_ids"]
+            structured_evidence = clause["structured_evidence"]
             self.assertEqual(
                 clause["matched_text"],
                 "\n\n".join(paragraphs_by_id[paragraph_id]["text"] for paragraph_id in matched_ids),
@@ -1007,6 +1008,30 @@ class CheckerTests(unittest.TestCase):
                 clause["evidence_paragraphs"],
                 [paragraphs_by_id[paragraph_id] for paragraph_id in matched_ids],
             )
+            self.assertEqual(
+                [record["paragraph_id"] for record in structured_evidence],
+                matched_ids,
+            )
+            for record in structured_evidence:
+                source_paragraph = paragraphs_by_id[record["paragraph_id"]]
+                self.assertEqual(record["clause_id"], clause["id"])
+                self.assertEqual(record["text"], source_paragraph["text"])
+                self.assertEqual(record["start"], source_paragraph["start"])
+                self.assertEqual(record["end"], source_paragraph["end"])
+                self.assertTrue(record["counted"])
+                self.assertEqual(record["decision"], clause["decision"])
+                self.assertEqual(record["decision_reason"], clause["decision_reason"])
+                self.assertIn(record["signal_type"], {"pass_evidence", "check_evidence", "review_evidence"})
+                self.assertIn("rule_bucket", record)
+                self.assertIn("matched_terms", record)
+                self.assertIn("match_spans", record)
+                for span in record["match_spans"]:
+                    self.assertEqual(text[span["start"]:span["end"]], span["text"])
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        governing_evidence = governing_law["structured_evidence"][0]
+        self.assertEqual(governing_evidence["signal_type"], "check_evidence")
+        self.assertIn("laws of", governing_evidence["matched_terms"])
 
         self.assertEqual(validate_clause_evidence_trust(result, text), [])
         self.assertEqual(result["evidence_trust"], {"status": "verified", "errors": []})
@@ -1037,12 +1062,14 @@ class CheckerTests(unittest.TestCase):
         drifted_result = deepcopy(result)
         governing_law = next(clause for clause in drifted_result["clauses"] if clause["id"] == "governing_law")
         governing_law["evidence_paragraphs"][0]["text"] = "Drifted evidence."
+        governing_law["structured_evidence"][0]["text"] = "Drifted structured evidence."
         governing_law["matched_text"] = "Drifted evidence."
 
         errors = validate_clause_evidence_trust(drifted_result, text)
 
         self.assertTrue(any("governing_law" in error and "matched_text" in error for error in errors))
         self.assertTrue(any("governing_law" in error and "has drifted text" in error for error in errors))
+        self.assertTrue(any("governing_law" in error and "structured evidence" in error for error in errors))
 
     def test_clause_evidence_trust_detects_offset_drift(self):
         text = "This Agreement shall be governed by the laws of California."

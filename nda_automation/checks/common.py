@@ -33,6 +33,7 @@ YEAR_TERM_PATTERN = rf"\b(?:({YEAR_WORD_PATTERN})|(\d{{1,3}}))(?:\s*\(\s*(?:(\d{
 YEAR_TERM_EVIDENCE_PATTERN = rf"\b(?:{YEAR_WORD_PATTERN}|\d{{1,3}})(?:\s*\(\s*(?:\d{{1,3}}|{YEAR_WORD_PATTERN})\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
 INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW = 160
 MAX_EVIDENCE_PARAGRAPHS = 3
+MAX_STRUCTURED_MATCH_SPANS = 12
 ISSUE_TYPE_NONE = "none"
 ISSUE_TYPE_MISSING = "missing"
 ISSUE_TYPE_PRESENT_BUT_WRONG = "present_but_wrong"
@@ -227,6 +228,14 @@ def _result(
     matched_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraph_matches)
     evidence_paragraphs = [_evidence_paragraph(paragraph) for paragraph in evidence_matches]
     passes = _status_passes_clause_type(status, clause)
+    structured_evidence = _structured_evidence_records(
+        clause=clause,
+        status=status,
+        passes=passes,
+        issue_type=issue_type,
+        reason=reason,
+        paragraph_matches=paragraph_matches,
+    )
     result = {
         "id": clause["id"],
         "name": clause["name"],
@@ -242,6 +251,7 @@ def _result(
         "matched_text": matched_text,
         "evidence": [paragraph["text"] for paragraph in evidence_matches],
         "evidence_paragraphs": evidence_paragraphs,
+        "structured_evidence": structured_evidence,
     }
     for field in [
         "acceptable_language",
@@ -268,6 +278,119 @@ def _result(
         if field in clause:
             result[field] = clause[field]
     return result
+
+def _structured_evidence_records(
+    *,
+    clause: Dict[str, object],
+    status: str,
+    passes: bool,
+    issue_type: str,
+    reason: str,
+    paragraph_matches: List[Paragraph],
+) -> List[Dict[str, object]]:
+    records: List[Dict[str, object]] = []
+    clause_id = str(clause.get("id") or "clause")
+    for index, paragraph in enumerate(paragraph_matches, start=1):
+        paragraph_id = str(paragraph.get("id") or "")
+        match_spans = _matched_term_spans(clause, paragraph)
+        matched_terms = _dedupe_terms(span["term"] for span in match_spans)
+        records.append({
+            "id": f"{clause_id}:{paragraph_id or index}:primary",
+            "clause_id": clause_id,
+            "paragraph_id": paragraph_id,
+            "paragraph_index": paragraph.get("index"),
+            "source_index": paragraph.get("source_index"),
+            "source_part": paragraph.get("source_part"),
+            "source_kind": paragraph.get("source_kind"),
+            "start": paragraph.get("start"),
+            "end": paragraph.get("end"),
+            "text": str(paragraph.get("text") or ""),
+            "matched_text": _structured_matched_text(paragraph, match_spans),
+            "matched_terms": matched_terms,
+            "match_spans": match_spans,
+            "signal_type": _structured_signal_type(status=status, passes=passes, issue_type=issue_type),
+            "rule_bucket": issue_type,
+            "counted": True,
+            "reason": reason,
+        })
+    return records
+
+def _structured_signal_type(*, status: str, passes: bool, issue_type: str) -> str:
+    if issue_type == ISSUE_TYPE_UNCLEAR:
+        return "review_evidence"
+    if not passes:
+        return "check_evidence"
+    if status == "not_present":
+        return "absence_evidence"
+    return "pass_evidence"
+
+def _structured_matched_text(paragraph: Paragraph, match_spans: List[Dict[str, object]]) -> str:
+    if match_spans:
+        seen = set()
+        snippets: List[str] = []
+        for span in match_spans:
+            text = str(span.get("text") or "").strip()
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            snippets.append(text)
+        if snippets:
+            return "; ".join(snippets)
+    return str(paragraph.get("text") or "")
+
+def _matched_term_spans(clause: Dict[str, object], paragraph: Paragraph) -> List[Dict[str, object]]:
+    text = str(paragraph.get("text") or "")
+    paragraph_start = paragraph.get("start")
+    absolute_base = paragraph_start if isinstance(paragraph_start, int) else 0
+    spans: List[Dict[str, object]] = []
+    seen = set()
+    for term in _structured_evidence_terms(clause):
+        pattern = _literal_word_pattern(term)
+        try:
+            matches = re.finditer(pattern, text, flags=re.IGNORECASE)
+        except re.error:
+            continue
+        for match in matches:
+            key = (term, match.start(), match.end())
+            if key in seen:
+                continue
+            seen.add(key)
+            spans.append({
+                "term": term,
+                "text": match.group(0),
+                "start": absolute_base + match.start(),
+                "end": absolute_base + match.end(),
+            })
+            if len(spans) >= MAX_STRUCTURED_MATCH_SPANS:
+                return spans
+    return spans
+
+def _structured_evidence_terms(clause: Dict[str, object]) -> List[str]:
+    fields = [
+        "search_terms",
+        "semantic_signals",
+        "role_terms",
+        "role_reciprocity_terms",
+        "one_way_terms",
+        "definition_categories",
+        "problematic_exclusion_terms",
+        "independent_development_terms",
+        "independent_development_qualification_terms",
+        "exclusion_context_terms",
+        "indefinite_terms",
+        "approved_laws",
+        "longer_survival_carve_out_terms",
+    ]
+    terms: List[str] = []
+    for field in fields:
+        value = clause.get(field)
+        if isinstance(value, list):
+            terms.extend(str(item).strip() for item in value if str(item).strip())
+    law_phrases = clause.get("law_phrases")
+    if isinstance(law_phrases, dict):
+        terms.extend(str(value).strip() for value in law_phrases.values() if str(value).strip())
+    return _dedupe_terms(terms)
 
 def _evidence_paragraph(paragraph: Paragraph) -> Paragraph:
     evidence = {

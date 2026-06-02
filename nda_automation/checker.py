@@ -187,6 +187,7 @@ def _apply_clause_decision(clause: ClauseResult) -> None:
     clause["needs_review"] = decision == CLAUSE_DECISION_REVIEW
     if not str(clause.get("decision_reason") or "").strip():
         clause["decision_reason"] = _clause_decision_reason(clause, decision)
+    _finalize_structured_evidence(clause, decision)
 
 
 def _clause_decision(clause: ClauseResult) -> str:
@@ -227,6 +228,26 @@ def _clause_decision_reason(clause: ClauseResult, decision: str) -> str:
     if decision == CLAUSE_DECISION_FAIL:
         return str(clause.get("reason") or clause.get("finding") or "Clause does not satisfy the playbook.").strip()
     return str(clause.get("reason") or clause.get("finding") or "Clause satisfies the playbook.").strip()
+
+
+def _finalize_structured_evidence(clause: ClauseResult, decision: str) -> None:
+    structured_evidence = clause.get("structured_evidence")
+    if not isinstance(structured_evidence, list):
+        return
+    for record in structured_evidence:
+        if not isinstance(record, dict):
+            continue
+        record["decision"] = decision
+        record["result_status"] = str(clause.get("status") or "")
+        record["issue_type"] = str(clause.get("issue_type") or "")
+        record["issue_label"] = str(clause.get("issue_label") or "")
+        record["decision_reason"] = str(clause.get("decision_reason") or clause.get("reason") or "")
+        if decision == CLAUSE_DECISION_REVIEW:
+            record["signal_type"] = "review_evidence"
+        elif decision == CLAUSE_DECISION_FAIL:
+            record["signal_type"] = "check_evidence"
+        elif decision == CLAUSE_DECISION_PASS and not record.get("signal_type"):
+            record["signal_type"] = "pass_evidence"
 
 
 def _validate_check_registry() -> None:

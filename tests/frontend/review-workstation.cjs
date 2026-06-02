@@ -375,6 +375,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "HUMAN-REVIEW BOUNDARY");
   await assertTextContains(page.locator("#clauseDetail"), "SIGNAL BUCKETS");
   await assertTextContains(page.locator("#clauseDetail"), "structure_context");
+  await assertTextContains(page.locator("#clauseDetail"), "structured_evidence");
   await assertTextContains(page.locator("#clauseDetail"), "analysis_purpose");
   await assertTextContains(page.locator("#clauseDetail"), "primary_inputs");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
@@ -590,6 +591,7 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "CHECK");
   await assertTextContains(checkersPanel, "REDLINE BEHAVIOR");
   await assertTextContains(checkersPanel, "HUMAN-REVIEW BOUNDARY");
+  await assertTextContains(checkersPanel, "STRUCTURED EVIDENCE");
   await assertTextContains(checkersPanel, "mutuality_analysis");
   await assertTextContains(checkersPanel, "confidential_information_analysis");
   await assertTextContains(checkersPanel, "governing_law_analysis");
@@ -621,6 +623,9 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE SIGNALS");
+  await assertTextContains(page.locator("#studioDetailPanel"), "CHECK_EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "laws of");
   await assertTextContains(page.locator("#studioDetailPanel"), "WHY");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
   await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK RATIONALE");

@@ -598,6 +598,7 @@ function renderStudioDetail() {
   const status = clauseStatus(clause);
   const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = renderEvidenceBlock(clause);
+  const evidenceSignalsBlock = renderEvidenceSignalsBlock(clause);
   const fixBlock = status.requiresAttention && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>${status.needsReview ? "What to verify" : "What to fix"}</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
@@ -643,6 +644,7 @@ function renderStudioDetail() {
         <p>${escapeHtml(clause.requirement)}</p>
       </div>
       ${excerpt}
+      ${evidenceSignalsBlock}
       <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
         <small>Issue type</small>
         <p>${escapeHtml(status.issueLabel)}</p>
@@ -667,6 +669,39 @@ function renderStudioDetail() {
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
+}
+
+function renderEvidenceSignalsBlock(clause) {
+  const records = Array.isArray(clause?.structured_evidence)
+    ? clause.structured_evidence.filter((record) => record && record.paragraph_id)
+    : [];
+  if (!records.length) return "";
+  return `
+    <div class="studio-detail-block evidence-signals-block">
+      <small>Evidence signals</small>
+      <div class="evidence-signal-list">
+        ${records.slice(0, 5).map((record) => {
+          const terms = Array.isArray(record.matched_terms)
+            ? record.matched_terms.filter(Boolean).slice(0, 5)
+            : [];
+          const paragraphLabel = record.paragraph_index || record.source_index || record.paragraph_id;
+          const signal = record.signal_type || record.decision || "evidence";
+          const bucket = record.rule_bucket || record.issue_type || "none";
+          const matchedText = record.matched_text || record.text || "";
+          return `
+            <article class="evidence-signal-item">
+              <header>
+                <strong>${escapeHtml(signal)}</strong>
+                <span>Paragraph ${escapeHtml(paragraphLabel)} · ${escapeHtml(bucket)}</span>
+              </header>
+              <p>${escapeHtml(matchedText)}</p>
+              ${terms.length ? `<div class="evidence-signal-terms">${terms.map((term) => `<span>${escapeHtml(term)}</span>`).join("")}</div>` : ""}
+            </article>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
 }
 
 function renderEvidenceBlock(clause) {
