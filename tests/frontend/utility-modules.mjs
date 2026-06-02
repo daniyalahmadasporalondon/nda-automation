@@ -15,6 +15,7 @@ import {
   gmailSendButtonLabel,
   needsHumanReview,
 } from "../../static/js/modules/matter-utils.mjs";
+import { createRepositoryApi } from "../../static/js/modules/repository-api.mjs";
 
 assert.equal(escapeHtml(`<a data-x="1">Bob's & Co</a>`), "&lt;a data-x=&quot;1&quot;&gt;Bob&#039;s &amp; Co&lt;/a&gt;");
 assert.equal(joinClasses("one", "", ["two", null, "three"]), "one two three");
@@ -71,3 +72,30 @@ assert.equal(formatBytes(1536), "1.5 KB");
 assert.equal(formatBytes(2 * 1024 * 1024), "2.0 MB");
 assert.equal(formatMatterDate("not a date"), "");
 assert.equal(formatMatterDateTime("not a date"), "");
+
+const calls = [];
+const repositoryApi = createRepositoryApi({
+  fetchImpl: async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url === "/api/gmail/status") return jsonResponse({ gmail: { inbound: { ready: true } } });
+    if (url === "/api/matters") return jsonResponse({ matters: [{ id: "matter-1" }] });
+    if (url === "/api/matters/matter%20one/stage") return jsonResponse({ matter: { id: "matter one", board_column: "in_review" } });
+    if (url === "/api/gmail/send-redline") return jsonResponse({ sent: true });
+    return jsonResponse({ error: "not found" }, { ok: false });
+  },
+  reviewErrorFromPayload: (payload, fallback) => new Error(payload.error || fallback),
+});
+assert.deepEqual(await repositoryApi.loadGmailStatus(), { inbound: { ready: true } });
+assert.deepEqual(await repositoryApi.listMatters(), [{ id: "matter-1" }]);
+assert.deepEqual(await repositoryApi.moveMatterToColumn("matter one", "in_review"), { id: "matter one", board_column: "in_review" });
+assert.deepEqual(await repositoryApi.sendRedline({ matter_id: "matter-1", confirm_send: true }), { sent: true });
+assert.equal(calls[2].options.method, "POST");
+assert.deepEqual(JSON.parse(calls[2].options.body), { board_column: "in_review" });
+assert.deepEqual(JSON.parse(calls[3].options.body), { matter_id: "matter-1", confirm_send: true });
+
+function jsonResponse(payload, { ok = true } = {}) {
+  return {
+    ok,
+    json: async () => payload,
+  };
+}
