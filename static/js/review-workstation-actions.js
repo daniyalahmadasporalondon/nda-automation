@@ -7,8 +7,7 @@ function clearReview() {
   showStudioSourceEditor();
   resizeSourceEditors();
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
-  state.selectedDocument = null;
-  state.selectedMatter = null;
+  AppState.clearSourceSelection(state);
   setFileMeta("");
   setCounterpartyMeta("");
   setDocumentTitle(DEFAULT_DOCUMENT_TITLE);
@@ -19,20 +18,8 @@ function clearReview() {
 function resetReviewResults() {
   cancelViewerReviewRefresh();
   pendingReviewSendMatterId = null;
-  state.reviewClauses = [];
-  state.reviewExportOriginalParagraphs = [];
-  state.reviewOriginalParagraphs = [];
-  state.reviewParagraphs = [];
-  resetReviewEditHistory();
-  state.reviewRedlines = [];
-  state.reviewComments = [];
-  state.reviewSourceText = "";
-  state.selectedReviewClauseId = null;
-  state.clauseJumpIndexes = {};
-  state.exportClauseDecisions = {};
-  state.redlineTemplateSelections = {};
-  state.redlineDraft = null;
-  state.redlineDraftDirty = false;
+  AppState.resetReviewResults(state);
+  updateReviewUndoButtonState();
 }
 
 function setupReviewWorkstationActions() {

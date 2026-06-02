@@ -41,31 +41,7 @@ const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
 const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
-const state = {
-  playbookClauses: [],
-  selectedClauseId: null,
-  selectedDocument: null,
-  selectedMatter: null,
-  matters: [],
-  reviewClauses: [],
-  reviewExportOriginalParagraphs: [],
-  reviewOriginalParagraphs: [],
-  reviewParagraphs: [],
-  reviewEditHistory: [],
-  reviewRedlines: [],
-  reviewComments: [],
-  latestReviewResult: null,
-  reviewSourceText: "",
-  selectedReviewClauseId: null,
-  clauseJumpIndexes: {},
-  exportClauseDecisions: {},
-  redlineTemplateSelections: {},
-  redlineDraft: null,
-  redlineDraftDirty: false,
-  reviewInspectorView: "clause",
-  documentViewMode: VIEW_MODE_REDLINE,
-  gmailStatus: null,
-};
+const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE });
 let pendingReviewSendMatterId = null;
 let adminIntegrationsController;
 
