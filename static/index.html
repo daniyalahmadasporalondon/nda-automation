@@ -309,9 +309,21 @@
                 <strong>Playbook</strong>
                 <span>Clause rules and language</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="structure" aria-pressed="false">
-                <strong>Engine</strong>
-                <span>Logic, flow, backend</span>
+              <button class="admin-section-button" type="button" data-admin-section="pipeline" aria-pressed="false">
+                <strong>Pipeline</strong>
+                <span>Flow and backend modules</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="checkers" aria-pressed="false">
+                <strong>Checkers</strong>
+                <span>Pass, review, check logic</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="references" aria-pressed="false">
+                <strong>References</strong>
+                <span>Cross-reference resolver</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="concepts" aria-pressed="false">
+                <strong>Concepts</strong>
+                <span>Deterministic classifier</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
                 <strong>Integrations</strong>
@@ -333,11 +345,11 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminStructurePanel" data-admin-panel="structure" hidden>
+            <section class="admin-section-panel" id="adminPipelinePanel" data-admin-panel="pipeline" hidden>
               <header class="admin-section-head">
                 <div>
                   <p class="eyebrow">review engine</p>
-                  <h1>Pipeline and backend logic</h1>
+                  <h1>Pipeline and backend modules</h1>
                 </div>
               </header>
 
@@ -416,7 +428,18 @@
                     </dl>
                   </article>
                 </section>
+              </section>
+            </section>
 
+            <section class="admin-section-panel" id="adminCheckersPanel" data-admin-panel="checkers" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">checker visibility</p>
+                  <h1>Clause decision logic</h1>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
                 <section class="engine-resolver-panel engine-checker-panel" aria-label="Checker decision visibility">
                   <header>
                     <div>
@@ -477,7 +500,18 @@
                     </article>
                   </div>
                 </section>
+              </section>
+            </section>
 
+            <section class="admin-section-panel" id="adminReferencePanel" data-admin-panel="references" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">reference resolver</p>
+                  <h1>Cross-reference resolution</h1>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
                 <section class="engine-resolver-panel" aria-label="Reference resolver logic">
                   <header>
                     <div>
@@ -525,7 +559,18 @@
                     </div>
                   </dl>
                 </section>
+              </section>
+            </section>
 
+            <section class="admin-section-panel" id="adminConceptsPanel" data-admin-panel="concepts" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">concept classifier</p>
+                  <h1>Deterministic concept tagging</h1>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
                 <section class="engine-resolver-panel" aria-label="Concept classifier logic">
                   <header>
                     <div>

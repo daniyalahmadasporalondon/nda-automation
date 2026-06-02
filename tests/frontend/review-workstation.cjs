@@ -559,32 +559,46 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
 
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.locator('[data-admin-section="structure"]').click();
-  await page.waitForSelector("#adminStructurePanel .engine-card");
+  await page.locator('[data-admin-section="pipeline"]').click();
+  await page.waitForSelector("#adminPipelinePanel .engine-card");
 
-  const adminPanel = page.locator("#adminStructurePanel");
-  await assertTextContains(adminPanel, "Pipeline and backend logic");
-  await assertTextContains(adminPanel, "Ingest");
-  await assertTextContains(adminPanel, "STRUCTURE MAPPING");
-  await assertTextContains(adminPanel, "REFERENCE RESOLVER");
-  await assertTextContains(adminPanel, "CONCEPT CLASSIFIER");
-  await assertTextContains(adminPanel, "DOCX STRUCTURE EXTRACTION");
-  await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
-  await assertTextContains(adminPanel, "nda_automation/docx_text.py");
-  await assertTextContains(adminPanel, "nda_automation/reference_resolver.py");
-  await assertTextContains(adminPanel, "nda_automation/concept_classifier.py");
-  await assertTextContains(adminPanel, "How explicit cross-references are resolved");
-  await assertTextContains(adminPanel, "How deterministic concepts are tagged");
-  await assertTextContains(adminPanel, "Supported references");
-  await assertTextContains(adminPanel, "NO FIXED NUMBERING ASSUMPTION");
-  await assertTextContains(adminPanel, "Term and Survival");
-  await assertTextContains(adminPanel, "How clause decisions become pass, review, or check");
-  await assertTextContains(adminPanel, "mutuality_analysis");
-  await assertTextContains(adminPanel, "governing_law_analysis");
-  await assertTextContains(adminPanel, "non_circumvention_analysis");
-  await assertTextContains(adminPanel, "SIGNATURES");
-  await assertTextContains(adminPanel, "separate from the legal-concept review-state upgrades");
-  await assertTextContains(adminPanel, "Evidence provenance validation");
+  const pipelinePanel = page.locator("#adminPipelinePanel");
+  await assertTextContains(pipelinePanel, "Pipeline and backend modules");
+  await assertTextContains(pipelinePanel, "Ingest");
+  await assertTextContains(pipelinePanel, "STRUCTURE MAPPING");
+  await assertTextContains(pipelinePanel, "REFERENCE RESOLVER");
+  await assertTextContains(pipelinePanel, "CONCEPT CLASSIFIER");
+  await assertTextContains(pipelinePanel, "DOCX STRUCTURE EXTRACTION");
+  await assertTextContains(pipelinePanel, "nda_automation/contract_structure.py");
+  await assertTextContains(pipelinePanel, "nda_automation/docx_text.py");
+  await assertTextContains(pipelinePanel, "nda_automation/reference_resolver.py");
+  await assertTextContains(pipelinePanel, "nda_automation/concept_classifier.py");
+  await assertTextContains(pipelinePanel, "Evidence provenance validation");
+
+  await page.locator('[data-admin-section="checkers"]').click();
+  const checkersPanel = page.locator("#adminCheckersPanel");
+  await assertTextContains(checkersPanel, "Clause decision logic");
+  await assertTextContains(checkersPanel, "How clause decisions become pass, review, or check");
+  await assertTextContains(checkersPanel, "mutuality_analysis");
+  await assertTextContains(checkersPanel, "governing_law_analysis");
+  await assertTextContains(checkersPanel, "non_circumvention_analysis");
+  await assertTextContains(checkersPanel, "SIGNATURES");
+  await assertTextContains(checkersPanel, "separate from the legal-concept review-state upgrades");
+
+  await page.locator('[data-admin-section="references"]').click();
+  const referencesPanel = page.locator("#adminReferencePanel");
+  await assertTextContains(referencesPanel, "Cross-reference resolution");
+  await assertTextContains(referencesPanel, "How explicit cross-references are resolved");
+  await assertTextContains(referencesPanel, "Supported references");
+  await assertTextContains(referencesPanel, "NO FIXED NUMBERING ASSUMPTION");
+  await assertTextContains(referencesPanel, "Term and Survival");
+
+  await page.locator('[data-admin-section="concepts"]').click();
+  const conceptsPanel = page.locator("#adminConceptsPanel");
+  await assertTextContains(conceptsPanel, "Deterministic concept tagging");
+  await assertTextContains(conceptsPanel, "How deterministic concepts are tagged");
+  await assertTextContains(conceptsPanel, "Concepts");
+  await assertTextContains(conceptsPanel, "concept_classifier");
 }
 
 async function testStructuredEvidenceAndRationale(page) {
