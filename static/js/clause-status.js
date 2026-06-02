@@ -17,9 +17,9 @@ function clauseStatus(clause) {
   const resultLabels = {
     not_present: "Not present",
     match: "Match",
-    check: "Check",
+    check: "Fail",
     pass: "Match",
-    fail: "Check",
+    fail: "Fail",
     review: "Review",
   };
 
@@ -30,7 +30,7 @@ function clauseStatus(clause) {
     blocksSend: Boolean(reviewState.blocks_send),
     needsReview: review && !idle,
     passes,
-    pillLabel: idle ? "Pending" : review ? "REVIEW" : fail ? "CHECK" : reviewState.label || "PASS",
+    pillLabel: idle ? "Pending" : review ? "REVIEW" : fail ? "FAIL" : reviewState.label || "PASS",
     reviewState: rawReviewState || tone,
     requiresAttention: (review || fail) && !idle,
     requiresHumanReview: Boolean(reviewState.requires_human_review) || (review && !idle),

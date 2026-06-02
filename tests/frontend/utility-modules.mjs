@@ -39,6 +39,8 @@ assert.equal(reviewStatus.blocksSend, true);
 const failStatus = clauseStatus({ decision: "fail", status: "check" });
 assert.equal(failStatus.fails, true);
 assert.equal(failStatus.requiresRedline, true);
+assert.equal(failStatus.pillLabel, "FAIL");
+assert.equal(failStatus.resultLabel, "Fail");
 
 assert.equal(clausePasses({ decision: "pass", status: "match" }), true);
 

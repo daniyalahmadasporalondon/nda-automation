@@ -2049,7 +2049,7 @@ async function testManualViewerEditRedline(page) {
     return governingLaw?.classList.contains("check");
   });
   await assertTextContains(page.locator("#studioOverallTitle"), "Does not meet requirements");
-  await assertTextContains(page.locator("#studioResultMeta"), "1 hard clause needs checking.");
+  await assertTextContains(page.locator("#studioResultMeta"), "1 hard clause has failed.");
   await assertTextContains(page.locator('[data-paragraph-id="p5"]'), "California");
 
   const refreshedBaseline = await page.evaluate(() => {
@@ -2255,7 +2255,7 @@ async function testSourceRedlineExportRegression(page) {
 
   assert.equal(await page.locator("#studioDocTitle").innerText(), "Source Redline NDA");
   await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
-  assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "source-redline review should produce CHECK findings");
+  assert.ok(await page.locator(".studio-clause-item.check").count() > 0, "source-redline review should produce fail findings");
 
   await page.locator('[data-editable-paragraph-id="p1"]').fill("Do you see problem?");
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');

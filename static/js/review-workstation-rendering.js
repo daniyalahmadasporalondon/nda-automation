@@ -130,7 +130,7 @@ function renderStudioSummary(clauses) {
   const reviewCount = reviewStateCount(counts, "review", clauses.filter((clause) => clauseStatus(clause).needsReview).length);
   const failedCount = reviewStateCount(counts, "check", clauses.filter((clause) => clauseStatus(clause).fails).length);
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
-  studioResultMark.textContent = failedCount ? "CHECK" : reviewCount ? "REVIEW" : "PASS";
+  studioResultMark.textContent = failedCount ? "FAIL" : reviewCount ? "REVIEW" : "PASS";
   studioResultMark.className = failedCount ? "check" : reviewCount ? "review" : "pass";
   studioOverallTitle.textContent = failedCount
     ? "Does not meet requirements"
@@ -146,7 +146,7 @@ function summaryStatusText(failedCount, reviewCount) {
     return `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} fixing; ${reviewCount} ${reviewCount === 1 ? "needs" : "need"} human review.`;
   }
   if (failedCount) {
-    return `${failedCount} hard ${failedCount === 1 ? "clause needs" : "clauses need"} checking.`;
+    return `${failedCount} hard ${failedCount === 1 ? "clause has" : "clauses have"} failed.`;
   }
   if (reviewCount) {
     return `${reviewCount} ${reviewCount === 1 ? "clause needs" : "clauses need"} human review before send.`;
