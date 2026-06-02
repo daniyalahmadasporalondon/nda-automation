@@ -7,11 +7,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import export_service, gmail_integration, matter_store, matter_view, telemetry
-from ..checker import ParagraphAlignmentError
+from ..checker import (
+    EvidenceProvenanceError,
+    ParagraphAlignmentError,
+    PlaybookTemplateError,
+    REVIEW_ENGINE_VERSION,
+    review_nda,
+)
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
+from ..triage import triage_review_result
 from .common import parse_matter_id
 
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
@@ -39,6 +46,7 @@ def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
+    matter = refresh_stale_matter_review(matter)
     handler._send_json(matter_view.review_matter(matter), send_body=send_body)
 
 
@@ -56,6 +64,42 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
     handler._send_json({"matter": matter_view.public_matter(matter)}, send_body=send_body)
+
+
+def refresh_stale_matter_review(matter: dict) -> dict:
+    if not review_result_is_stale(matter.get("review_result")):
+        return matter
+    extracted_text = str(matter.get("extracted_text") or "")
+    if not extracted_text.strip():
+        return matter
+    try:
+        review_result = review_nda(extracted_text)
+    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
+        return matter
+    updated_matter = matter_store.update_matter_review(
+        str(matter.get("id") or ""),
+        review_result,
+        triage_review_result(review_result),
+    )
+    return updated_matter or {
+        **matter,
+        "review_result": review_result,
+        **triage_review_result(review_result),
+    }
+
+
+def review_result_is_stale(review_result: object) -> bool:
+    if not isinstance(review_result, dict):
+        return True
+    if review_result.get("review_engine_version") != REVIEW_ENGINE_VERSION:
+        return True
+    clauses = review_result.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        return True
+    return any(
+        not isinstance(clause, dict) or not isinstance(clause.get("structure_context"), dict)
+        for clause in clauses
+    )
 
 
 def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:

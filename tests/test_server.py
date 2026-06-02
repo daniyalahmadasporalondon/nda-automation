@@ -17,7 +17,13 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
-from nda_automation.checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, load_playbook
+from nda_automation.checker import (
+    EvidenceProvenanceError,
+    ParagraphAlignmentError,
+    PlaybookTemplateError,
+    REVIEW_ENGINE_VERSION,
+    load_playbook,
+)
 from nda_automation import app_settings
 from nda_automation import document_limits
 from nda_automation import docx_text
@@ -817,6 +823,58 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("redline_draft", review_payload["matter"])
         self.assertIn("extracted_text", review_payload)
         self.assertIn("review_result", review_payload)
+
+    def test_matter_review_refreshes_stale_clause_decisions(self):
+        text = (
+            "TERM AND TERMINATION: This Agreement is effective from the date hereof, "
+            "and shall terminate on the earlier of: (i) the date on which a definitive agreement "
+            "is executed with respect to the Purpose which includes detailed confidentiality provisions; "
+            "or (ii) the expiry of 18 (eighteen) months from the date of this Agreement. "
+            "The obligations set out at clauses 2, 3, 4 and 5 of this Agreement shall survive "
+            "the expiry or termination of this Agreement for a period of 3 (three) years."
+        )
+        stale_review = {
+            "clauses": [
+                {
+                    "id": "term_and_survival",
+                    "status": "not_present",
+                    "passes": False,
+                    "issue_type": "missing",
+                    "finding": "No fixed term or survival period of up to five years was found.",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Air India NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text=text,
+                    review_result=stale_review,
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        term_clause = next(
+            clause
+            for clause in review_payload["review_result"]["clauses"]
+            if clause["id"] == "term_and_survival"
+        )
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("within the cap of five years", term_clause["finding"])
+        self.assertEqual(stored_matter["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
+        self.assertEqual(stored_matter["requirements_failed"], review_payload["review_result"]["requirements_failed"])
 
     def test_matter_upload_supports_manual_upload_source(self):
         source_docx = make_docx([

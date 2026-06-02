@@ -177,6 +177,29 @@ def update_redline_draft(matter_id: str, redline_draft: dict[str, Any] | None) -
     return None
 
 
+def update_matter_review(
+    matter_id: str,
+    review_result: dict[str, Any],
+    triage: dict[str, Any],
+) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        matters = _load_matters()
+        for index, matter in enumerate(matters):
+            if matter.get("id") != matter_id:
+                continue
+            updated_matter = {
+                **matter,
+                "review_result": review_result,
+                **triage,
+                "updated_at": now,
+            }
+            matters[index] = updated_matter
+            _save_matters(matters)
+            return updated_matter
+    return None
+
+
 def reset_demo_repository() -> int:
     with _locked_store():
         matters = _load_matters()
