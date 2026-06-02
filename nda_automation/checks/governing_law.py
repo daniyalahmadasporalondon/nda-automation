@@ -48,6 +48,11 @@ APPROVED_GOVERNING_LAW_REVIEW_PATTERN = (
     r"\b(?:or|unless|as\s+otherwise|otherwise\s+agreed|chosen\s+by|selected\s+by|"
     r"determined\s+by|to\s+be\s+(?:agreed|determined|selected))\b"
 )
+SECONDARY_GOVERNING_LAW_FRAGMENT_PATTERN = (
+    r"\b(?:except(?:\s+that)?|provided(?:\s+that)?|save(?:\s+that)?|notwithstanding|however)\b"
+    r"(?=[^.;\n]{0,180}\b(?:governed|construed|subject\s+to|laws?\s+of|law\s+of)\b)"
+    r"[^.;\n]+"
+)
 
 
 def _check_governing_law(
@@ -225,15 +230,28 @@ def _uses_approved_governing_law(text: str, clause: Dict[str, object]) -> bool:
 def _governing_law_candidates(text: str) -> List[str]:
     candidates: List[str] = []
     seen = set()
-    for pattern in GOVERNING_LAW_VALUE_PATTERNS:
-        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            candidate = match.group("law").strip()
-            candidate_key = _trim_governing_law_candidate(candidate).lower()
-            if _is_noise_governing_law_candidate(candidate) or candidate_key in seen:
-                continue
-            candidates.append(candidate)
-            seen.add(candidate_key)
+    for fragment in _governing_law_candidate_fragments(text):
+        for pattern in GOVERNING_LAW_VALUE_PATTERNS:
+            for match in re.finditer(pattern, fragment, flags=re.IGNORECASE):
+                candidate = match.group("law").strip()
+                candidate_key = _trim_governing_law_candidate(candidate).lower()
+                if _is_noise_governing_law_candidate(candidate) or candidate_key in seen:
+                    continue
+                candidates.append(candidate)
+                seen.add(candidate_key)
     return candidates
+
+
+def _governing_law_candidate_fragments(text: str) -> List[str]:
+    fragments = [text]
+    seen = {text}
+    for match in re.finditer(SECONDARY_GOVERNING_LAW_FRAGMENT_PATTERN, text, flags=re.IGNORECASE):
+        fragment = match.group(0).strip(" ,")
+        if not fragment or fragment in seen:
+            continue
+        fragments.append(fragment)
+        seen.add(fragment)
+    return fragments
 
 
 def _starts_with_approved_law(text: str, clause: Dict[str, object]) -> bool:

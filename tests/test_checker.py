@@ -876,6 +876,49 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(governing_law["governing_law_analysis"]["candidate_records"][0]["approved"])
         self.assertTrue(governing_law["governing_law_analysis"]["candidate_records"][0]["needs_review"])
 
+    def test_governing_law_needs_review_for_unapproved_choice_of_law_carveout(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "This Agreement shall be governed by the laws of England and Wales except that "
+                "intellectual property disputes shall be governed by the laws of France."
+            ),
+        )
+        result = review_nda(text)
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p5"])
+        self.assertEqual(
+            [record["value"] for record in governing_law["governing_law_analysis"]["candidate_records"]],
+            [
+                "England and Wales except that intellectual property disputes shall be governed by the laws of France",
+                "France",
+            ],
+        )
+        self.assertEqual(
+            [record["approved"] for record in governing_law["governing_law_analysis"]["candidate_records"]],
+            [True, False],
+        )
+
+    def test_governing_law_allows_forum_carveout_without_choice_of_law(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
+            "This Agreement shall be governed by the laws of England and Wales.",
+            (
+                "This Agreement shall be governed by the laws of England and Wales except that "
+                "proceedings may be brought before the courts of France."
+            ),
+        )
+        result = review_nda(text)
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p5"])
+
     def test_governing_law_needs_review_for_heading_without_jurisdiction(self):
         result = review_nda("Article 5 Governing Law")
 
