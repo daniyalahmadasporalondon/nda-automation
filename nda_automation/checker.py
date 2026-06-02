@@ -32,6 +32,7 @@ from .checks.common import (
     _paragraph_matches,
     _year_count_label,
 )
+from .contract_structure import build_contract_structure
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
@@ -74,6 +75,7 @@ __all__ = [
     "_paragraph_matches",
     "load_playbook",
     "review_nda",
+    "build_contract_structure",
     "split_document_paragraphs",
     "validate_playbook",
     "validate_clause_evidence_trust",
@@ -137,6 +139,7 @@ def review_nda(
         "requirements_passed": len(clause_results) - len(failed),
         "requirements_failed": len(failed),
         "paragraphs": document_paragraphs,
+        "contract_structure": build_contract_structure(document_paragraphs),
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }

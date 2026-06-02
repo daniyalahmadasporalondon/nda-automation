@@ -250,6 +250,7 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
     : state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
   reconcileExportDecisions(previousExportDecisions);
   reconcileTemplateSelections(previousTemplateSelections);
+  contractStructureController.render();
   renderStudioResult({ clauses: state.reviewClauses });
   restoreViewerEditSelection(editSelection);
   updateExportButtonState();

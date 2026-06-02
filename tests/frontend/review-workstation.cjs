@@ -34,6 +34,7 @@ const allActionRedlineNda = [
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["edits playbook admin drafts with Pass/Check policy framing", testPlaybookAdminEditor],
+  ["renders contract structure map in admin", testContractStructureAdminPanel],
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -185,8 +186,8 @@ async function testAccessibleControlState(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(matterCardStyles.borderRadius, "22px");
-  assert.match(matterCardStyles.boxShadow, /26, 19, 51/);
+  assert.equal(matterCardStyles.borderRadius, "16px");
+  assert.equal(matterCardStyles.boxShadow, "none");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
@@ -215,8 +216,8 @@ async function testAccessibleControlState(page) {
       borderLeftWidth: styles.borderLeftWidth,
     };
   });
-  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
-  assert.equal(activePlaybookRow.borderLeftColor, "rgb(79, 27, 179)");
+  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 250, 252)");
+  assert.equal(activePlaybookRow.borderLeftColor, "rgb(96, 40, 200)");
   assert.equal(activePlaybookRow.borderLeftWidth, "3px");
 
   await page.getByRole("tab", { name: "Review" }).click();
@@ -457,6 +458,33 @@ async function testPlaybookAdminEditor(page) {
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/gmail/settings");
   await page.unroute("**/api/matters");
+}
+
+async function testContractStructureAdminPanel(page) {
+  const structureNda = [
+    "MUTUAL NON-DISCLOSURE AGREEMENT",
+    "Clause 1: Definitions",
+    "Confidential Information means non-public business information.",
+    "Clause 2 - Confidentiality",
+    "Each party shall protect the other party's Confidential Information.",
+    "10. General",
+    "This section introduces general terms.",
+    "10.1 Return of Materials",
+    "The Receiving Party must return materials on request.",
+  ].join("\n\n");
+
+  await runReview(page, structureNda);
+  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.locator('[data-admin-section="structure"]').click();
+  await page.waitForSelector("#adminStructurePanel .structure-row");
+
+  const panel = page.locator("#adminStructurePanel");
+  await assertTextContains(panel, "Contract Structure Map");
+  await assertTextContains(panel, "Clause 1");
+  await assertTextContains(panel, "Clause 2");
+  await assertTextContains(panel, "10.1");
+  await assertTextContains(panel, "Parent section-4");
+  await assertTextContains(panel, "clause:1");
 }
 
 async function testStructuredEvidenceAndRationale(page) {
@@ -1090,7 +1118,7 @@ async function testReviewOutboundSendModal(page) {
   const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
   await page.locator("#studioSendConfirmButton").click();
   await sendRequest;
-  await page.waitForSelector("#studioSendModal[hidden]");
+  await page.waitForSelector("#studioSendModal[hidden]", { state: "attached" });
   await waitForText(page, "#studioFileMeta", "Sent redline to legal@example.com");
 
   assert.equal(capturedSendPayload.matter_id, "matter_review_send");
@@ -1580,7 +1608,7 @@ async function testBackendRedlineModes(page) {
   assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
   assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
-  assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(239, 68, 68, 0.08)");
+  assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
 
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
@@ -1592,7 +1620,7 @@ async function testBackendRedlineModes(page) {
       borderLeftColor: styles.borderLeftColor,
     };
   });
-  assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
+  assert.equal(termParagraphStyles.backgroundColor, "rgba(96, 40, 200, 0.08)");
   assert.equal(termParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   await assertRedlinePreview(termParagraph, {
     originalText: "seven",

@@ -79,6 +79,13 @@
             </div>
           </header>
 
+          <section class="sr-only" aria-label="Review status">
+            <span id="studioMatchSummary">0/6</span>
+            <span id="studioResultMark">-</span>
+            <h2 id="studioOverallTitle">Awaiting review</h2>
+            <p id="studioResultMeta" aria-live="polite">No hard-clause review has run yet.</p>
+          </section>
+
           <section class="studio-grid">
             <aside class="studio-clauses" aria-label="Studio clause map">
               <div class="studio-clause-list" id="studioClauseLane"></div>
@@ -298,6 +305,10 @@
                 <strong>Playbook</strong>
                 <span>Clause rules and language</span>
               </button>
+              <button class="admin-section-button" type="button" data-admin-section="structure" aria-pressed="false">
+                <strong>Structure</strong>
+                <span>Detected document sections</span>
+              </button>
               <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
                 <strong>Integrations</strong>
                 <span>Gmail accounts and sync state</span>
@@ -315,6 +326,19 @@
                 </aside>
 
                 <section class="clause-detail" id="clauseDetail"></section>
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminStructurePanel" data-admin-panel="structure" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">document intelligence</p>
+                  <h1>Contract Structure Map</h1>
+                </div>
+              </header>
+
+              <section class="structure-map-shell" id="contractStructurePanel" aria-live="polite">
+                <div class="structure-empty">Load or review an NDA to generate its structure map.</div>
               </section>
             </section>
 
@@ -510,6 +534,7 @@
     <script src="/static/js/repository.js"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/admin-integrations.js"></script>
+    <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-view.js"></script>
     <script src="/static/js/review-workstation-actions.js"></script>
     <script src="/static/js/review-workstation-source.js"></script>

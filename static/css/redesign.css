@@ -581,6 +581,11 @@ textarea:focus-visible,
 #reviewView .studio-doc-paragraph.has-redline { border-left-color: var(--red); }
 #reviewView .studio-doc-paragraph.manual-redline { border-left-color: var(--violet); }
 #reviewView .studio-doc-paragraph.has-clause { border-left-color: var(--accent-soft); }
+#reviewView .studio-doc-paragraph.prohibited,
+#reviewView .studio-doc-paragraph.verify,
+#reviewView .studio-doc-paragraph.has-redline {
+  border-left-color: var(--red);
+}
 #reviewView .studio-doc-paragraph.selected,
 #reviewView .studio-doc-paragraph.selected.match,
 #reviewView .studio-doc-paragraph.selected.verify {
@@ -588,6 +593,11 @@ textarea:focus-visible,
   box-shadow: none;
 }
 #reviewView .studio-doc-paragraph.selected { border-left-color: var(--accent); }
+#reviewView .studio-doc-paragraph.selected.prohibited,
+#reviewView .studio-doc-paragraph.selected.verify,
+#reviewView .studio-doc-paragraph.selected.has-redline {
+  border-left-color: var(--red);
+}
 
 /* Comment affordance sits in the paper margin so it stays visible without
    changing paragraph flow. */

@@ -16,6 +16,7 @@ function renderResult(result, reviewedText) {
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
     state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
+  contractStructureController.render();
   renderStudioResult(result);
   updateExportButtonState();
 }
@@ -57,6 +58,7 @@ function renderStudioEmpty() {
   studioDetailPanel.innerHTML = `
     <p>No review yet.</p>
   `;
+  contractStructureController.render();
   updateExportButtonState();
   renderStudioClauseLane();
 }
@@ -71,8 +73,10 @@ function updateExportButtonState() {
     updateRedlineDraftControls();
     return;
   }
+  const hasSendableMatter = Boolean(state.selectedMatter?.id);
+  studioSendButton.hidden = !hasSendableMatter;
   const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
-  const canSend = Boolean(canExport && state.selectedMatter?.id && !sendBlockReason);
+  const canSend = Boolean(canExport && hasSendableMatter && !sendBlockReason);
   studioSendButton.disabled = !canSend;
   if (!canSend) {
     pendingReviewSendMatterId = null;

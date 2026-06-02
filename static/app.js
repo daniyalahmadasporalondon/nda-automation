@@ -112,6 +112,10 @@ const playbookController = createPlaybookController({
   clauseDetail,
   renderStudioEmpty,
 });
+const contractStructureController = createContractStructureController({
+  state,
+  root: document.querySelector("#contractStructurePanel"),
+});
 
 setupSourceEditors();
 setupReviewWorkstationActions();
@@ -226,8 +230,13 @@ function activateTab(tabName) {
     repositoryController.loadMatters();
     repositoryController.loadGmailStatus();
   }
-  if (tabName === "clauses" && activeAdminSection() === "integrations") {
-    adminIntegrationsController.load();
+  if (tabName === "clauses") {
+    if (activeAdminSection() === "integrations") {
+      adminIntegrationsController.load();
+    }
+    if (activeAdminSection() === "structure") {
+      contractStructureController.render();
+    }
   }
 }
 
@@ -244,6 +253,9 @@ function activateAdminSection(sectionName) {
   });
   if (sectionName === "integrations") {
     adminIntegrationsController.load();
+  }
+  if (sectionName === "structure") {
+    contractStructureController.render();
   }
 }
 
