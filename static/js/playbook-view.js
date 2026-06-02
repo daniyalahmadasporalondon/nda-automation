@@ -342,9 +342,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         </article>
       `)
       .join("");
-    const analysisFields = visibility.analysis_fields
-      .map((field) => `<span class="admin-chip">${escapeHtml(field)}</span>`)
-      .join("");
     const outputRows = [
       ["Checker module", visibility.module],
       ["Analysis purpose", visibility.purpose],
@@ -353,6 +350,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       ["Review state", "Every checker emits review_state to normalize pass, review, and check routing, send blocking, and redline requirements."],
       ["Reason codes", "Every checker emits reason_code and reason_codes so audit, admin views, and AI handoff can classify the decision without parsing prose."],
       ["Structured evidence", "Every checker emits structured_evidence records with paragraph provenance, matched terms, signal type, rule bucket, counted flag, and reason."],
+      ["AI semantic review", "When NDA_AI_REVIEW_ENABLED is set, ai_review_analysis records the provider decision, confidence, cited spans, validation status, and deterministic/AI disagreement."],
       ["Audit trace", "Every checker emits audit_trace with normalized decision steps, evidence summary, analysis outputs, and analysis signals."],
       ["Redline behavior", visibility.redline_behavior],
       ["Human-review boundary", visibility.boundary],
@@ -370,6 +368,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       .join("");
     const reasonCodeGroups = renderReasonCodeGroups(visibility.reason_codes || {});
     const hardeningGuards = renderHardeningGuards(visibility.hardening_guards || []);
+    const analysisFieldNames = [...visibility.analysis_fields, "ai_review_analysis"];
 
     return `
       <section class="admin-special checker-visibility">
@@ -394,7 +393,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         </section>
         <section class="admin-signal-section">
           <h4>Analysis output fields</h4>
-          <div class="admin-chip-row">${analysisFields || '<span class="admin-muted">No checker-specific analysis object yet</span>'}</div>
+          <div class="admin-chip-row">${analysisFieldNames.map((field) => `<span class="admin-chip">${escapeHtml(field)}</span>`).join("") || '<span class="admin-muted">No checker-specific analysis object yet</span>'}</div>
         </section>
         <dl class="admin-logic-list">${outputRows}</dl>
       </section>
@@ -419,6 +418,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       structured_evidence_field: "structured_evidence",
       audit_trace_field: "audit_trace",
       analysis_fields: visibility.analysis_fields,
+      optional_ai_review_field: "ai_review_analysis",
       signal_buckets: visibility.signal_buckets,
       reason_code_taxonomy: visibility.reason_codes || {},
       hardening_guards: visibility.hardening_guards || [],
@@ -428,6 +428,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         "reason_codes",
         "structured_evidence",
         visibility.output_field,
+        "ai_review_analysis",
         "audit_trace",
       ],
       redline_behavior: visibility.redline_behavior,

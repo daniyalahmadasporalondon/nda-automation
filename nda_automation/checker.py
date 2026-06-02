@@ -14,6 +14,7 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .inline_diff import diff_text_operation_dicts
+from .ai_review import AIReviewFn, apply_ai_review
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .semantic import SemanticEvaluateFn, apply_semantic_fallback
@@ -116,6 +117,7 @@ def review_nda(
     paragraphs: List[Paragraph] | None = None,
     *,
     semantic_evaluator: SemanticEvaluateFn | None = None,
+    ai_reviewer: AIReviewFn | None = None,
 ) -> Dict[str, object]:
     source_text = text or ""
     if paragraphs is None:
@@ -158,6 +160,13 @@ def review_nda(
         clauses_by_id=clauses_by_id,
         paragraphs=document_paragraphs,
     )
+    clause_results, ai_review = apply_ai_review(
+        clause_results=clause_results,
+        clauses_by_id=clauses_by_id,
+        paragraphs=document_paragraphs,
+        review_context=review_context,
+        reviewer=ai_reviewer,
+    )
     for clause in clause_results:
         _apply_clause_decision(clause)
     failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
@@ -184,6 +193,7 @@ def review_nda(
         "reference_resolver": reference_resolver,
         "concept_classifier": concept_classifier,
         "semantic_crosscheck": semantic_crosscheck,
+        "ai_review": ai_review,
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }
