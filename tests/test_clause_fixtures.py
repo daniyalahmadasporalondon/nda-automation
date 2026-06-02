@@ -1,7 +1,12 @@
+import json
 import unittest
+from pathlib import Path
 
 from nda_automation.checker import review_nda
 
+
+ROOT = Path(__file__).resolve().parent.parent
+TARGETED_REGRESSION_FIXTURES_PATH = ROOT / "tests" / "fixtures" / "targeted_clause_regressions.json"
 
 CLAUSE_FIXTURES = [
     (
@@ -119,6 +124,61 @@ class ClauseFixtureTests(unittest.TestCase):
                 clause = next(item for item in result["clauses"] if item["id"] == clause_id)
 
                 self.assertEqual(clause["status"], expected_status)
+
+    def test_targeted_clause_regression_fixtures_hold_expected_decisions(self):
+        for fixture in _load_targeted_regression_fixtures():
+            with self.subTest(name=fixture["name"]):
+                result = review_nda(fixture["text"])
+                clause = next(item for item in result["clauses"] if item["id"] == fixture["clause_id"])
+                expected = fixture["expected"]
+
+                self.assertEqual(clause["status"], expected["status"])
+                self.assertEqual(clause["decision"], expected["decision"])
+                self.assertEqual(clause["reason_code"], expected["reason_code"])
+                self.assertEqual(clause["review_state"]["reason_code"], expected["reason_code"])
+                self.assertEqual(clause["audit_trace"]["reason_code"], expected["reason_code"])
+                self.assertIn(expected["reason_code"], clause["reason_codes"])
+                self.assertIn(expected["reason_code"], clause["review_state"]["reason_codes"])
+                self.assertIn(expected["reason_code"], clause["audit_trace"]["reason_codes"])
+
+                for record in clause["structured_evidence"]:
+                    self.assertEqual(record["reason_code"], expected["reason_code"])
+                    self.assertIn(expected["reason_code"], record["reason_codes"])
+
+                if "redline_count" in expected:
+                    redlines = [edit for edit in result["redline_edits"] if edit["clause_id"] == fixture["clause_id"]]
+                    self.assertEqual(len(redlines), expected["redline_count"])
+
+                for path, expected_value in expected.get("analysis", {}).items():
+                    self.assertEqual(_path_value(clause, path), expected_value, path)
+
+                for path in expected.get("analysis_absent", []):
+                    self.assertIsNone(_path_value(clause, path), path)
+
+
+def _load_targeted_regression_fixtures():
+    with TARGETED_REGRESSION_FIXTURES_PATH.open(encoding="utf-8") as handle:
+        fixtures = json.load(handle)
+    if not isinstance(fixtures, list):
+        raise AssertionError("targeted clause regression fixtures must be a list")
+    return fixtures
+
+
+def _path_value(value, path):
+    current = value
+    for segment in path.split("."):
+        if isinstance(current, dict):
+            if segment not in current:
+                return None
+            current = current[segment]
+        elif isinstance(current, list):
+            try:
+                current = current[int(segment)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+    return current
 
 
 if __name__ == "__main__":

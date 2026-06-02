@@ -1,0 +1,124 @@
+[
+  {
+    "name": "mutuality_title_only_requires_review",
+    "clause_id": "mutuality",
+    "text": "Mutual Non-Disclosure Agreement",
+    "expected": {
+      "status": "match",
+      "decision": "review",
+      "reason_code": "weak_mutuality_signal",
+      "redline_count": 0,
+      "analysis": {
+        "mutuality_analysis.weak_mutuality_paragraph_ids": ["p1"]
+      }
+    }
+  },
+  {
+    "name": "confidential_information_preposed_independent_development_qualification_passes",
+    "clause_id": "confidential_information",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that, without use of or reference to Confidential Information, is independently developed by the Receiving Party.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "broad_confidential_information_definition",
+      "redline_count": 0,
+      "analysis": {
+        "confidential_information_analysis.explicit_problematic_exclusion_paragraph_ids": []
+      }
+    }
+  },
+  {
+    "name": "confidential_information_detached_independent_development_qualification_checks",
+    "clause_id": "confidential_information",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include materials evaluated without use of Confidential Information, or independently developed information.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "problematic_confidential_information_exclusion",
+      "redline_count": 1,
+      "analysis": {
+        "confidential_information_analysis.explicit_problematic_exclusion_paragraph_ids": ["p2"]
+      }
+    }
+  },
+  {
+    "name": "governing_law_placeholder_requires_review",
+    "clause_id": "governing_law",
+    "text": "This Agreement shall be governed by the laws of [jurisdiction].",
+    "expected": {
+      "status": "match",
+      "decision": "review",
+      "reason_code": "unclear_governing_law",
+      "redline_count": 0,
+      "analysis": {
+        "governing_law_analysis.unclear_paragraph_ids": ["p1"],
+        "governing_law_analysis.candidate_records.0.value": "[jurisdiction]"
+      }
+    }
+  },
+  {
+    "name": "term_survival_ignores_unrelated_claims_survival_duration",
+    "clause_id": "term_and_survival",
+    "text": "This Agreement is effective on signature. Claims survive for three years.",
+    "expected": {
+      "status": "not_present",
+      "decision": "fail",
+      "reason_code": "missing_term_or_survival",
+      "analysis_absent": ["term_survival_analysis"]
+    }
+  },
+  {
+    "name": "term_survival_bare_term_heading_duration_passes",
+    "clause_id": "term_and_survival",
+    "text": "Term: three years from the Effective Date.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap",
+      "redline_count": 0
+    }
+  },
+  {
+    "name": "term_survival_unresolved_article_reference_requires_review",
+    "clause_id": "term_and_survival",
+    "text": "Article 1 Confidentiality\n\nThe Receiving Party shall protect Confidential Information and not disclose it.\n\nArticle 2 Term and Survival\n\nThe obligations set out in Articles 1 and 99 survive expiry or termination for 3 (three) years.",
+    "expected": {
+      "status": "match",
+      "decision": "review",
+      "reason_code": "unresolved_survival_reference",
+      "redline_count": 0,
+      "analysis": {
+        "term_survival_analysis.references.0.status": "partial",
+        "term_survival_analysis.references.0.unresolved_numbers": ["99"]
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_modal_negated_reference_passes",
+    "clause_id": "non_circumvention",
+    "text": "This Agreement may not include non-solicitation obligations or exclusivity restrictions.",
+    "expected": {
+      "status": "not_present",
+      "decision": "pass",
+      "reason_code": "negated_non_circumvention_reference",
+      "redline_count": 0,
+      "analysis": {
+        "non_circumvention_analysis.negated_reference_paragraph_ids": ["p1"]
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_direct_dealing_restriction_checks",
+    "clause_id": "non_circumvention",
+    "text": "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
+      }
+    }
+  }
+]
