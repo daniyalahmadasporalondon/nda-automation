@@ -34,7 +34,7 @@ const allActionRedlineNda = [
 const tests = [
   ["exposes accessible tab, toggle, and live-region state", testAccessibleControlState],
   ["edits playbook admin drafts with Pass/Check policy framing", testPlaybookAdminEditor],
-  ["renders contract structure map in admin", testContractStructureAdminPanel],
+  ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -460,7 +460,7 @@ async function testPlaybookAdminEditor(page) {
   await page.unroute("**/api/matters");
 }
 
-async function testContractStructureAdminPanel(page) {
+async function testContractStructureReviewPanel(page) {
   const structureNda = [
     "MUTUAL NON-DISCLOSURE AGREEMENT",
     "Clause 1: Definitions",
@@ -477,17 +477,29 @@ async function testContractStructureAdminPanel(page) {
   await page.evaluate(() => {
     delete state.latestReviewResult.contract_structure;
   });
+  await page.locator('[data-review-inspector="structure"]').click();
+  await page.waitForSelector("#studioDetailPanel .structure-row");
+
+  const reviewPanel = page.locator("#studioDetailPanel");
+  await assertTextContains(reviewPanel, "Clause 1");
+  await assertTextContains(reviewPanel, "Clause 2");
+  await assertTextContains(reviewPanel, "10.1");
+  await assertTextContains(reviewPanel, "Parent section-4");
+  await assertTextContains(reviewPanel, "clause:1");
+
+  await page.locator('[data-review-inspector="clause"]').click();
+  await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
+
   await page.getByRole("tab", { name: "Admin" }).click();
   await page.locator('[data-admin-section="structure"]').click();
-  await page.waitForSelector("#adminStructurePanel .structure-row");
+  await page.waitForSelector("#adminStructurePanel .engine-card");
 
-  const panel = page.locator("#adminStructurePanel");
-  await assertTextContains(panel, "Contract Structure Map");
-  await assertTextContains(panel, "Clause 1");
-  await assertTextContains(panel, "Clause 2");
-  await assertTextContains(panel, "10.1");
-  await assertTextContains(panel, "Parent section-4");
-  await assertTextContains(panel, "clause:1");
+  const adminPanel = page.locator("#adminStructurePanel");
+  await assertTextContains(adminPanel, "Pipeline and backend logic");
+  await assertTextContains(adminPanel, "Ingest");
+  await assertTextContains(adminPanel, "STRUCTURE MAPPING");
+  await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
+  await assertTextContains(adminPanel, "Evidence provenance validation");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

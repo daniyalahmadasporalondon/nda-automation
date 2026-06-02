@@ -24,6 +24,8 @@ const studioClearButton = document.querySelector("#studioClearButton");
 const studioUndoEditButton = document.querySelector("#studioUndoEditButton");
 const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
+const studioInspectorTitle = document.querySelector("#studioInspectorTitle");
+const reviewInspectorButtons = document.querySelectorAll("[data-review-inspector]");
 // Clause-panel summary header was removed; tolerate the absent nodes so the
 // review flow's textContent/className writes become harmless no-ops.
 const studioMatchSummary = document.querySelector("#studioMatchSummary") || {};
@@ -60,6 +62,7 @@ const state = {
   redlineTemplateSelections: {},
   redlineDraft: null,
   redlineDraftDirty: false,
+  reviewInspectorView: "clause",
   documentViewMode: VIEW_MODE_REDLINE,
   gmailStatus: null,
 };
@@ -112,9 +115,9 @@ const playbookController = createPlaybookController({
   clauseDetail,
   renderStudioEmpty,
 });
-const contractStructureController = createContractStructureController({
+const reviewStructureController = createContractStructureController({
   state,
-  root: document.querySelector("#contractStructurePanel"),
+  root: studioDetailPanel,
 });
 
 setupSourceEditors();
@@ -154,6 +157,10 @@ tabButtons.forEach((button) => {
 
 adminSectionButtons.forEach((button) => {
   button.addEventListener("click", () => activateAdminSection(button.dataset.adminSection));
+});
+
+reviewInspectorButtons.forEach((button) => {
+  button.addEventListener("click", () => setReviewInspectorView(button.dataset.reviewInspector));
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {
@@ -234,9 +241,6 @@ function activateTab(tabName) {
     if (activeAdminSection() === "integrations") {
       adminIntegrationsController.load();
     }
-    if (activeAdminSection() === "structure") {
-      contractStructureController.render();
-    }
   }
 }
 
@@ -254,8 +258,24 @@ function activateAdminSection(sectionName) {
   if (sectionName === "integrations") {
     adminIntegrationsController.load();
   }
-  if (sectionName === "structure") {
-    contractStructureController.render();
+}
+
+function setReviewInspectorView(viewName) {
+  state.reviewInspectorView = viewName === "structure" ? "structure" : "clause";
+  updateReviewInspectorTabs();
+  renderStudioDetail();
+}
+
+function updateReviewInspectorTabs() {
+  const selectedView = state.reviewInspectorView === "structure" ? "structure" : "clause";
+  reviewInspectorButtons.forEach((button) => {
+    const active = button.dataset.reviewInspector === selectedView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  if (studioInspectorTitle) {
+    studioInspectorTitle.textContent = selectedView === "structure" ? "Contract Structure" : "Selected Clause";
   }
 }
 

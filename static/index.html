@@ -155,7 +155,11 @@
             </section>
 
             <aside class="studio-playbook" aria-label="Selected clause details">
-              <h2>Selected Clause</h2>
+              <h2 id="studioInspectorTitle">Selected Clause</h2>
+              <div class="studio-inspector-tabs" role="tablist" aria-label="Review inspector">
+                <button class="active" type="button" data-review-inspector="clause" role="tab" aria-selected="true">Clause</button>
+                <button type="button" data-review-inspector="structure" role="tab" aria-selected="false">Structure</button>
+              </div>
               <section class="studio-card" id="studioDetailPanel">
                 <p>No review yet.</p>
               </section>
@@ -306,8 +310,8 @@
                 <span>Clause rules and language</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="structure" aria-pressed="false">
-                <strong>Structure</strong>
-                <span>Detected document sections</span>
+                <strong>Engine</strong>
+                <span>Logic, flow, backend</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
                 <strong>Integrations</strong>
@@ -332,13 +336,71 @@
             <section class="admin-section-panel" id="adminStructurePanel" data-admin-panel="structure" hidden>
               <header class="admin-section-head">
                 <div>
-                  <p class="eyebrow">document intelligence</p>
-                  <h1>Contract Structure Map</h1>
+                  <p class="eyebrow">review engine</p>
+                  <h1>Pipeline and backend logic</h1>
                 </div>
               </header>
 
-              <section class="structure-map-shell" id="contractStructurePanel" aria-live="polite">
-                <div class="structure-empty">Load or review an NDA to generate its structure map.</div>
+              <section class="admin-engine-shell">
+                <section class="engine-flow" aria-label="Review pipeline">
+                  <article class="engine-card">
+                    <span>1</span>
+                    <h2>Ingest</h2>
+                    <p>Manual upload, repository matter, or Gmail intake provides the source document and metadata.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>2</span>
+                    <h2>Extract</h2>
+                    <p>DOCX/PDF extraction produces plain text and source paragraph records for review.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>3</span>
+                    <h2>Align</h2>
+                    <p>Paragraph IDs, indexes, offsets, and provenance are assigned before any clause decision runs.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>4</span>
+                    <h2>Map</h2>
+                    <p>The contract structure map detects document-specific headings, numbering, ranges, and aliases.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>5</span>
+                    <h2>Check</h2>
+                    <p>Python clause checks apply playbook rules to the actual reviewed paragraphs and evidence.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>6</span>
+                    <h2>Verify</h2>
+                    <p>Evidence provenance validation ensures matched text still resolves to the reviewed source.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>7</span>
+                    <h2>Redline</h2>
+                    <p>Redline edits, comments, export decisions, and selected templates are prepared for DOCX output.</p>
+                  </article>
+                </section>
+
+                <section class="engine-module-grid" aria-label="Backend modules">
+                  <article>
+                    <h2>Core Python modules</h2>
+                    <dl class="engine-fact-list">
+                      <div><dt>Review orchestration</dt><dd>nda_automation/checker.py</dd></div>
+                      <div><dt>Paragraph alignment</dt><dd>nda_automation/review_document.py</dd></div>
+                      <div><dt>Structure mapping</dt><dd>nda_automation/contract_structure.py</dd></div>
+                      <div><dt>Clause registry</dt><dd>nda_automation/checks/</dd></div>
+                      <div><dt>DOCX export</dt><dd>nda_automation/docx_export.py</dd></div>
+                    </dl>
+                  </article>
+                  <article>
+                    <h2>Auditor checkpoints</h2>
+                    <dl class="engine-fact-list">
+                      <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Admin.</dd></div>
+                      <div><dt>Evidence trust</dt><dd>Each clause result is checked against paragraph IDs and source offsets.</dd></div>
+                      <div><dt>No fixed article assumptions</dt><dd>Section references are resolved from each document's detected structure.</dd></div>
+                      <div><dt>Current AI boundary</dt><dd>Rules are deterministic Python first; semantic fallback is a separate evaluator hook.</dd></div>
+                    </dl>
+                  </article>
+                </section>
               </section>
             </section>
 

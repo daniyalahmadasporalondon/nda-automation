@@ -16,7 +16,6 @@ function renderResult(result, reviewedText) {
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId =
     state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
-  contractStructureController.render();
   renderStudioResult(result);
   updateExportButtonState();
 }
@@ -55,10 +54,14 @@ function renderStudioEmpty() {
   studioOverallTitle.textContent = "Awaiting review";
   studioResultMeta.textContent = "No hard-clause review has run yet.";
   resetReviewEditHistory();
-  studioDetailPanel.innerHTML = `
-    <p>No review yet.</p>
-  `;
-  contractStructureController.render();
+  if (state.reviewInspectorView === "structure") {
+    reviewStructureController.render();
+  } else {
+    studioDetailPanel.innerHTML = `
+      <p>No review yet.</p>
+    `;
+  }
+  updateReviewInspectorTabs();
   updateExportButtonState();
   renderStudioClauseLane();
 }
@@ -566,8 +569,16 @@ function renderStudioClauseLane() {
 }
 
 function renderStudioDetail() {
+  updateReviewInspectorTabs();
+  if (state.reviewInspectorView === "structure") {
+    reviewStructureController.render();
+    return;
+  }
   const clause = getSelectedReviewClause();
-  if (!clause) return;
+  if (!clause) {
+    studioDetailPanel.innerHTML = "<p>No review yet.</p>";
+    return;
+  }
   const status = clauseStatus(clause);
   const whyText = clause.reason || clause.finding || "Clause review available.";
   const excerpt = renderEvidenceBlock(clause);

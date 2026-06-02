@@ -250,7 +250,6 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
     : state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
   reconcileExportDecisions(previousExportDecisions);
   reconcileTemplateSelections(previousTemplateSelections);
-  contractStructureController.render();
   renderStudioResult({ clauses: state.reviewClauses });
   restoreViewerEditSelection(editSelection);
   updateExportButtonState();
@@ -439,6 +438,10 @@ function insertPlainTextAtSelection(text) {
 
 function selectReviewClause(clauseId, options = {}) {
   state.selectedReviewClauseId = clauseId;
+  if (state.reviewInspectorView !== "clause") {
+    state.reviewInspectorView = "clause";
+    updateReviewInspectorTabs();
+  }
   renderStudioResult({ clauses: state.reviewClauses });
 
   if (options.jump) {
