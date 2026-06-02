@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
 import { formatBytes, formatMatterDate, formatMatterDateTime } from "../../static/js/modules/formatting.mjs";
@@ -16,6 +19,9 @@ import {
   needsHumanReview,
 } from "../../static/js/modules/matter-utils.mjs";
 import { createRepositoryApi } from "../../static/js/modules/repository-api.mjs";
+
+const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
+const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
 
 assert.equal(escapeHtml(`<a data-x="1">Bob's & Co</a>`), "&lt;a data-x=&quot;1&quot;&gt;Bob&#039;s &amp; Co&lt;/a&gt;");
 assert.equal(joinClasses("one", "", ["two", null, "three"]), "one two three");
@@ -36,17 +42,12 @@ assert.equal(failStatus.requiresRedline, true);
 
 assert.equal(clausePasses({ decision: "pass", status: "match" }), true);
 
-assert.equal(needsInlineSpace("$", "100"), false);
-assert.equal(needsInlineSpace("Agreement", "applies"), true);
-assert.equal(needsInlineSpace("Agreement", "."), false);
-assert.equal(
-  renderDiffOperations([
-    { type: "same", token: "$" },
-    { type: "same", token: "100" },
-    { type: "insert", token: " cap" },
-  ]),
-  "$100<span class=\"inline-ins\"> cap</span>",
-);
+for (const pair of inlineDiffVectors.flatMap((vector) => vector.spacing_pairs || [])) {
+  assert.equal(needsInlineSpace(pair.previous_token, pair.token), pair.needs_space, `${pair.previous_token} + ${pair.token}`);
+}
+for (const vector of inlineDiffVectors.filter((item) => item.rendered_html)) {
+  assert.equal(renderDiffOperations(vector.operations), vector.rendered_html, vector.name);
+}
 assert.deepEqual(fullReplacementOperations("Old", "New"), [
   { type: "delete", token: "Old" },
   { type: "insert", token: "New" },

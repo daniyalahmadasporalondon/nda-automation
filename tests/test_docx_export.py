@@ -12,6 +12,7 @@ from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
     DocxExportError,
+    _needs_inline_space,
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
     build_review_report_docx,
@@ -355,6 +356,22 @@ def inline_diff_vectors():
         return json.load(fixture)
 
 
+def inline_diff_operation_vectors():
+    return [
+        vector
+        for vector in inline_diff_vectors()
+        if "original" in vector and "replacement" in vector and "operations" in vector
+    ]
+
+
+def inline_diff_spacing_pairs():
+    return [
+        pair
+        for vector in inline_diff_vectors()
+        for pair in vector.get("spacing_pairs", [])
+    ]
+
+
 def expand_inline_diff_vector(vector):
     original = vector["original"]
     replacement = vector["replacement"]
@@ -364,10 +381,32 @@ def expand_inline_diff_vector(vector):
 
 class DocxExportTests(unittest.TestCase):
     def test_inline_diff_operations_match_shared_vectors(self):
-        for vector in inline_diff_vectors():
+        for vector in inline_diff_operation_vectors():
             with self.subTest(vector["name"]):
                 original, replacement, expected_operations = expand_inline_diff_vector(vector)
                 self.assertEqual(diff_text_operations(original, replacement), expected_operations)
+
+    def test_inline_spacing_matches_shared_vectors(self):
+        for pair in inline_diff_spacing_pairs():
+            with self.subTest(f"{pair['previous_token']} + {pair['token']}"):
+                self.assertEqual(
+                    _needs_inline_space(pair["previous_token"], pair["token"]),
+                    pair["needs_space"],
+                )
+
+    def test_tracked_replace_paragraph_reconstructs_shared_vectors(self):
+        for vector in inline_diff_operation_vectors():
+            with self.subTest(vector["name"]):
+                paragraph_xml, _next_revision_id = _tracked_replace_paragraph(
+                    vector["original"],
+                    vector["replacement"],
+                    7,
+                )
+
+                root = ET.fromstring(f'<root xmlns:w="{W_NS["w"]}">{paragraph_xml}</root>')
+                paragraph = root.find(".//w:p", W_NS)
+                self.assertEqual(revision_text_for_state(paragraph, accepted=False), vector["original"])
+                self.assertEqual(revision_text_for_state(paragraph, accepted=True), vector["replacement"])
 
     def test_tracked_replace_paragraph_preserves_punctuation_spacing(self):
         original = "This Agreement (California) applies."

@@ -1,5 +1,7 @@
 `inline_diff_vectors.json` is a generated golden fixture shared by the Python
-DOCX export tests and the browser inline-diff tests.
+DOCX export tests and the browser inline-diff tests. It covers token operations,
+inline spacing pairs, Word tracked-change text reconstruction, and browser
+rendered HTML expectations.
 
 Edit `inline_diff_vectors.source.json`, then run:
 

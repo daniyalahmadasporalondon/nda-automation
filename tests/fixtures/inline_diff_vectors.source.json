@@ -1,5 +1,50 @@
 [
   {
+    "name": "inline spacing rules",
+    "spacing_pairs": [
+      {
+        "previous_token": "$",
+        "token": "100",
+        "needs_space": false
+      },
+      {
+        "previous_token": "£",
+        "token": "100",
+        "needs_space": false
+      },
+      {
+        "previous_token": "€",
+        "token": "100",
+        "needs_space": false
+      },
+      {
+        "previous_token": "Agreement",
+        "token": "applies",
+        "needs_space": true
+      },
+      {
+        "previous_token": "Agreement",
+        "token": ".",
+        "needs_space": false
+      },
+      {
+        "previous_token": "(",
+        "token": "England",
+        "needs_space": false
+      },
+      {
+        "previous_token": "1,000",
+        "token": "for",
+        "needs_space": true
+      },
+      {
+        "previous_token": "café",
+        "token": "records",
+        "needs_space": true
+      }
+    ]
+  },
+  {
     "name": "empty original",
     "original": "",
     "replacement": "Alpha, beta.",
@@ -346,6 +391,70 @@
       {
         "type": "insert",
         "token": " documents"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "currency symbol spacing",
+    "original": "Fee is $100.",
+    "replacement": "Fee is $250.",
+    "rendered_html": "Fee is $<span class=\"inline-del\">100</span><span class=\"inline-ins\">250</span>.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Fee"
+      },
+      {
+        "type": "same",
+        "token": " is"
+      },
+      {
+        "type": "same",
+        "token": " $"
+      },
+      {
+        "type": "delete",
+        "token": "100"
+      },
+      {
+        "type": "insert",
+        "token": "250"
+      },
+      {
+        "type": "same",
+        "token": "."
+      }
+    ]
+  },
+  {
+    "name": "html escaping",
+    "original": "A & B applies.",
+    "replacement": "A & C applies.",
+    "rendered_html": "A &amp;<span class=\"inline-del\"> B</span><span class=\"inline-ins\"> C</span> applies.",
+    "operations": [
+      {
+        "type": "same",
+        "token": "A"
+      },
+      {
+        "type": "same",
+        "token": " &"
+      },
+      {
+        "type": "delete",
+        "token": " B"
+      },
+      {
+        "type": "insert",
+        "token": " C"
+      },
+      {
+        "type": "same",
+        "token": " applies"
       },
       {
         "type": "same",
