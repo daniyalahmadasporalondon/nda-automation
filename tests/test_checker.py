@@ -1289,6 +1289,25 @@ class CheckerTests(unittest.TestCase):
         self.assertFalse(non_circumvention["passes"])
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
 
+    def test_non_circumvention_noun_form_non_solicit_terms_are_flagged(self):
+        examples = [
+            "The Recipient agrees to non-solicitation of any introduced contact.",
+            "The Recipient agrees to non solicitation of any introduced contact.",
+            "The Recipient is subject to a non-solicit covering introduced contacts.",
+            "The Recipient must avoid solicitation of introduced customers.",
+            "The Recipient must not use contacts for a substitute purpose.",
+            "The Recipient must not enter into exclusivity with introduced parties.",
+        ]
+
+        for example in examples:
+            with self.subTest(example=example):
+                result = review_nda(example)
+
+                non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+                self.assertEqual(non_circumvention["status"], "check")
+                self.assertFalse(non_circumvention["passes"])
+                self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+
     def test_non_circumvention_redlines_each_detected_paragraph(self):
         result = review_nda(
             """
