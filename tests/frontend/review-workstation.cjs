@@ -490,7 +490,7 @@ async function testContractStructureReviewPanel(page) {
     "Permitted disclosures are limited to representatives.",
     "Clause IV - Term",
     "The obligations survive for three years.",
-    "Clauses 1, 1A and 2 survive this Agreement. Section II.A also survives.",
+    "Clauses 1, 1A, 2 and IV survive this Agreement. Section II.A also survives.",
   ].join("\n\n");
 
   await runReview(page, structureNda);
@@ -518,8 +518,8 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "clause:1a");
   await assertTextContains(reviewPanel, "section:10b");
   await assertTextContains(reviewPanel, "RESOLVED REFERENCES");
-  await assertTextContains(reviewPanel, "Clauses 1, 1A and 2");
-  await assertTextContains(reviewPanel, "Clause 1, Clause 1A, Clause 2");
+  await assertTextContains(reviewPanel, "Clauses 1, 1A, 2 and IV");
+  await assertTextContains(reviewPanel, "Clause 1, Clause 1A, Clause 2, Clause IV");
   await assertTextContains(reviewPanel, "Section II.A");
   const referenceIndex = await page.evaluate(() => state.latestReviewResult.contract_structure.reference_index);
   assert.equal(referenceIndex.version, 2);
@@ -536,8 +536,8 @@ async function testContractStructureReviewPanel(page) {
   const referenceResolver = await page.evaluate(() => state.latestReviewResult.reference_resolver);
   assert.equal(referenceResolver.version, 1);
   assert.equal(referenceResolver.stats.reference_count, 2);
-  assert.equal(referenceResolver.references[0].reference_text, "Clauses 1, 1A and 2");
-  assert.deepEqual(referenceResolver.references[0].resolved_section_ids, ["section-2", "section-3", "section-4"]);
+  assert.equal(referenceResolver.references[0].reference_text, "Clauses 1, 1A, 2 and IV");
+  assert.deepEqual(referenceResolver.references[0].resolved_section_ids, ["section-2", "section-3", "section-4", "section-11"]);
   assert.equal(referenceResolver.references[1].reference_text, "Section II.A");
   assert.deepEqual(referenceResolver.references[1].resolved_section_ids, ["section-10"]);
 
