@@ -2,7 +2,8 @@
   "name": "nda-automation-frontend-tests",
   "private": true,
   "scripts": {
-    "test:frontend": "node tests/frontend/review-workstation.cjs"
+    "test:frontend": "node tests/frontend/review-workstation.cjs",
+    "test:frontend:utils": "node tests/frontend/utility-modules.mjs"
   },
   "devDependencies": {
     "playwright": "^1.52.0",

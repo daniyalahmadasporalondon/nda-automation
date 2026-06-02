@@ -1,0 +1,108 @@
+const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+export function emailAddress(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const bracketed = text.match(/<([^<>]+)>/);
+  const candidate = bracketed?.[1] || text;
+  return candidate.match(EMAIL_PATTERN)?.[0] || "";
+}
+
+export function sameEmailAddress(left, right) {
+  return Boolean(left && right && String(left).trim().toLowerCase() === String(right).trim().toLowerCase());
+}
+
+export function recipientEmail(matter) {
+  return String(matter?.recipient_email || "");
+}
+
+export function counterpartyEmail(matter, gmailStatus = {}) {
+  const ownEmails = [
+    matter?.gmail_account,
+    gmailStatus?.inbound?.email,
+    gmailStatus?.outbound?.email,
+  ].map(emailAddress).filter(Boolean);
+  const candidates = [
+    matter?.recipient_email,
+    matter?.reply_to,
+    matter?.sender,
+    matter?.last_outbound_to,
+  ];
+  for (const candidate of candidates) {
+    const email = emailAddress(candidate);
+    if (!email) continue;
+    if (ownEmails.some((ownEmail) => sameEmailAddress(ownEmail, email))) continue;
+    return email;
+  }
+  return "";
+}
+
+export function reviewState(matter) {
+  const directState = matter?.review_state;
+  if (directState && typeof directState === "object") return directState;
+  const resultState = matter?.review_result?.review_state;
+  if (resultState && typeof resultState === "object") return resultState;
+  return null;
+}
+
+export function needsHumanReview(matter) {
+  const state = reviewState(matter);
+  if (state) {
+    if (state.requires_human_review === true || state.blocks_send === true) return true;
+    if (String(state.state || "").toLowerCase() === "review") return true;
+    const counts = state.counts && typeof state.counts === "object" ? state.counts : null;
+    if (counts && Number(counts.review || 0) > 0) return true;
+  }
+  const reviewResult = matter?.review_result || {};
+  const overallStatus = String(reviewResult.overall_status || matter?.overall_status || "");
+  const reviewCount = Number(matter?.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
+  return overallStatus === "needs_review" || reviewCount > 0;
+}
+
+export function canSendRedline(matter) {
+  return Boolean(matter?.can_send_redline && recipientEmail(matter) && !needsHumanReview(matter));
+}
+
+export function gmailSendBlock(matter, gmailStatus = {}) {
+  if (matter?.send_block_reason) return String(matter.send_block_reason);
+  if (needsHumanReview(matter)) return "Matter needs human review before a redline can be sent.";
+  if (!canSendRedline(matter)) return "Matter does not have a valid reply recipient email address.";
+  const outbound = gmailStatus?.outbound || {};
+  if (outbound.enabled === false) return "Gmail outbound is disabled in Admin.";
+  if (outbound.ready === false) return outbound.error || "Outbound Gmail is not ready.";
+  const recipient = recipientEmail(matter).trim().toLowerCase();
+  const ownEmails = [
+    matter?.gmail_account,
+    gmailStatus?.inbound?.email,
+    outbound.email,
+  ].map((email) => String(email || "").trim().toLowerCase()).filter(Boolean);
+  if (recipient && ownEmails.includes(recipient)) {
+    return `Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline back to ${recipient}.`;
+  }
+  const matterInbound = String(matter?.gmail_account || "").trim().toLowerCase();
+  const outboundEmail = String(outbound.email || "").trim().toLowerCase();
+  if (matterInbound && outboundEmail && matterInbound !== outboundEmail) {
+    return `Outbound Gmail account ${outbound.email} does not match inbound Gmail account ${matter.gmail_account}.`;
+  }
+  return "";
+}
+
+export function gmailSendButtonLabel(blockReason) {
+  if (!blockReason) return "";
+  if (blockReason.includes("disabled")) return "Outbound Off";
+  if (blockReason.includes("does not match")) return "Account Mismatch";
+  if (blockReason.includes("human review")) return "Needs Review";
+  if (blockReason.includes("self-sent")) return "Self-Sent";
+  if (blockReason.includes("sender") || blockReason.includes("reply recipient")) return "No Reply";
+  return "Gmail Setup";
+}
+
+export const MatterUtils = {
+  canSendRedline,
+  counterpartyEmail,
+  gmailSendBlock,
+  gmailSendButtonLabel,
+  needsHumanReview,
+  recipientEmail,
+  reviewState,
+};
