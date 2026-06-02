@@ -668,26 +668,66 @@ def _detection_excerpt(text: object, term: str, *, radius: int = 90) -> str:
 
 
 def _message_body_text(payload: dict[str, Any]) -> str:
-    text_parts: list[str] = []
-    html_parts: list[str] = []
-    for part in _walk_payload_parts(payload):
-        if part.get("filename"):
-            continue
-        mime_type = str(part.get("mimeType") or "").split(";", 1)[0].strip().lower()
-        if mime_type not in {"text/plain", "text/html"}:
-            continue
-        data = str((part.get("body") or {}).get("data") or "")
-        if not data:
-            continue
-        decoded = _decode_message_text_part(data, part)
-        if not decoded:
-            continue
-        if mime_type == "text/html":
-            html_parts.append(_html_to_text(decoded))
-        else:
-            text_parts.append(decoded)
-    combined = "\n".join(part for part in [*text_parts, *html_parts] if part)
+    combined = "\n".join(part for part in _message_body_text_parts(payload) if part)
     return combined[:GMAIL_BODY_PREVIEW_LIMIT]
+
+
+def _message_body_text_parts(part: dict[str, Any]) -> list[str]:
+    if part.get("filename"):
+        return []
+
+    mime_type = _normalized_mime_type(part)
+    child_parts = [child for child in part.get("parts") or [] if isinstance(child, dict)]
+    if mime_type == "multipart/alternative" and child_parts:
+        alternative_parts = _message_alternative_text_parts(child_parts)
+        if alternative_parts:
+            return alternative_parts
+
+    if child_parts:
+        text_parts: list[str] = []
+        for child in child_parts:
+            text_parts.extend(_message_body_text_parts(child))
+        return text_parts
+
+    return _message_leaf_text_part(part, mime_type)
+
+
+def _message_alternative_text_parts(parts: list[dict[str, Any]]) -> list[str]:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    fallback_parts: list[str] = []
+    for part in parts:
+        mime_type = _normalized_mime_type(part)
+        if mime_type == "text/plain":
+            plain_parts.extend(_message_leaf_text_part(part, mime_type))
+        elif mime_type == "text/html":
+            html_parts.extend(_message_leaf_text_part(part, mime_type))
+        else:
+            fallback_parts.extend(_message_body_text_parts(part))
+    if plain_parts:
+        return plain_parts
+    if html_parts:
+        return html_parts
+    return fallback_parts
+
+
+def _message_leaf_text_part(part: dict[str, Any], mime_type: str | None = None) -> list[str]:
+    normalized_mime_type = mime_type or _normalized_mime_type(part)
+    if normalized_mime_type not in {"text/plain", "text/html"}:
+        return []
+    data = str((part.get("body") or {}).get("data") or "")
+    if not data:
+        return []
+    decoded = _decode_message_text_part(data, part)
+    if not decoded:
+        return []
+    if normalized_mime_type == "text/html":
+        return [_html_to_text(decoded)]
+    return [decoded]
+
+
+def _normalized_mime_type(part: dict[str, Any]) -> str:
+    return str(part.get("mimeType") or "").split(";", 1)[0].strip().lower()
 
 
 def _decode_message_text_part(data: str, part: dict[str, Any]) -> str:

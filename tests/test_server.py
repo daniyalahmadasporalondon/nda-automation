@@ -1796,6 +1796,51 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(imported_by_id["msg_html_body"]["gmail_detection_sources"], "body")
         self.assertIn("confidentiality agreement", imported_by_id["msg_html_body"]["gmail_detection_terms"])
 
+    def test_gmail_message_body_prefers_plain_text_in_multipart_alternative(self):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "partId": "plain",
+                    "mimeType": "text/plain",
+                    "body": {"data": inline(b"Please review the attached NDA.\nPlain-only detail.")},
+                },
+                {
+                    "partId": "html",
+                    "mimeType": "text/html",
+                    "body": {"data": inline(b"<p>Please review the attached NDA.</p><p>HTML-only duplicate.</p>")},
+                },
+            ],
+        }
+
+        body = gmail_integration._message_body_text(payload)
+
+        self.assertIn("Plain-only detail.", body)
+        self.assertNotIn("HTML-only duplicate.", body)
+        self.assertEqual(body.count("Please review the attached NDA."), 1)
+
+    def test_gmail_message_body_uses_html_when_alternative_has_no_plain_text(self):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "partId": "html",
+                    "mimeType": "text/html",
+                    "body": {"data": inline(b"<html><body><p>Please review the confidentiality agreement.</p></body></html>")},
+                },
+            ],
+        }
+
+        body = gmail_integration._message_body_text(payload)
+
+        self.assertIn("Please review the confidentiality agreement.", body)
+
     def test_gmail_sync_process_lock_blocks_parallel_processes(self):
         if server_module.fcntl is None:
             self.skipTest("fcntl is unavailable")
