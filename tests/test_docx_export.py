@@ -392,6 +392,18 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
         self.assertEqual(next_revision_id, 9)
 
+    def test_tracked_replace_paragraph_preserves_currency_amount_spacing(self):
+        original = "Payment cap is $100 for records."
+        replacement = "Payment cap is $100 for documents."
+
+        paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, 7)
+
+        root = ET.fromstring(f'<root xmlns:w="{W_NS["w"]}">{paragraph_xml}</root>')
+        paragraph = root.find(".//w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        self.assertEqual(next_revision_id, 9)
+
     def test_tracked_replace_paragraph_preserves_spaced_numeric_list_items(self):
         original = "Payment caps are 1, 2, 3, 400 for different classes."
         replacement = "Payment caps are 1, 2, 3, 400 for different categories."

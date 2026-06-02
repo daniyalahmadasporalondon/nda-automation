@@ -1104,6 +1104,8 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
         return False
     if re.match(r"^[(]$", previous_core):
         return False
+    if re.match(r"^[$£€#@]$", previous_core) and re.match(r"^\d", token_core):
+        return False
     return True
 
 

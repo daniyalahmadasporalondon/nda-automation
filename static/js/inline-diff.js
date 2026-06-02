@@ -47,5 +47,6 @@ function needsInlineSpace(previousToken, token) {
   const previousCore = String(previousToken).trimStart();
   if (/^[,.;:!?%)]$/.test(tokenCore)) return false;
   if (/^[(]$/.test(previousCore)) return false;
+  if (/^[$£€#@]$/.test(previousCore) && /^\d/.test(tokenCore)) return false;
   return true;
 }

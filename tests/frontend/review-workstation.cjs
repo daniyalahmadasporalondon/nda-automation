@@ -1529,6 +1529,28 @@ async function testInlineDiffOperationRendering(page) {
         { type: "insert", token: " documents" },
         { type: "same", token: "." },
       ])),
+      currencyAmount: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: "cap" },
+        { type: "same", token: "is" },
+        { type: "same", token: "$" },
+        { type: "same", token: "100" },
+        { type: "same", token: "for" },
+        { type: "delete", token: "records" },
+        { type: "insert", token: "documents" },
+        { type: "same", token: "." },
+      ])),
+      currencyAmountSourceSpacing: revisionState(renderDiffOperations([
+        { type: "same", token: "Payment" },
+        { type: "same", token: " cap" },
+        { type: "same", token: " is" },
+        { type: "same", token: " $" },
+        { type: "same", token: "100" },
+        { type: "same", token: " for" },
+        { type: "delete", token: " records" },
+        { type: "insert", token: " documents" },
+        { type: "same", token: "." },
+      ])),
       spacedNumberList: revisionState(renderDiffOperations([
         { type: "same", token: "Payment" },
         { type: "same", token: "caps" },
@@ -1592,6 +1614,14 @@ async function testInlineDiffOperationRendering(page) {
   assert.equal(cases.groupedNumberSourceSpacing.accepted, "Payment cap is 1,000 for café documents.");
   assert.deepEqual(cases.groupedNumberSourceSpacing.deleted, [" records"]);
   assert.deepEqual(cases.groupedNumberSourceSpacing.inserted, [" documents"]);
+  assert.equal(cases.currencyAmount.original, "Payment cap is $100 for records.");
+  assert.equal(cases.currencyAmount.accepted, "Payment cap is $100 for documents.");
+  assert.deepEqual(cases.currencyAmount.deleted, [" records"]);
+  assert.deepEqual(cases.currencyAmount.inserted, [" documents"]);
+  assert.equal(cases.currencyAmountSourceSpacing.original, "Payment cap is $100 for records.");
+  assert.equal(cases.currencyAmountSourceSpacing.accepted, "Payment cap is $100 for documents.");
+  assert.deepEqual(cases.currencyAmountSourceSpacing.deleted, [" records"]);
+  assert.deepEqual(cases.currencyAmountSourceSpacing.inserted, [" documents"]);
 
   assert.equal(cases.spacedNumberList.original, "Payment caps are 1, 2, 3, 400 for classes.");
   assert.equal(cases.spacedNumberList.accepted, "Payment caps are 1, 2, 3, 400 for categories.");
