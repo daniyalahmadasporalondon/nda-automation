@@ -1091,6 +1091,11 @@ class CheckerTests(unittest.TestCase):
     def test_independent_development_synonym_exclusions_need_qualification(self):
         examples = [
             "Confidential Information does not include independent development.",
+            "Confidential Information does not include anything the Receiving Party independently develops.",
+            "Confidential Information does not include anything the Receiving Party may independently develop.",
+            "Confidential Information does not include materials independently developing inside the Receiving Party.",
+            "Confidential Information does not include anything the Receiving Party develops independently.",
+            "Confidential Information does not include anything the Receiving Party developed independently.",
             "Confidential Information does not include information independently created by the Receiving Party.",
             "Confidential Information does not include independent creation by the Receiving Party.",
             "Confidential Information does not include information independently derived by the Receiving Party.",
