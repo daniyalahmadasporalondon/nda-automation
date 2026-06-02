@@ -120,5 +120,47 @@
         "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
       }
     }
+  },
+  {
+    "name": "non_circumvention_contact_transact_introduced_party_checks",
+    "clause_id": "non_circumvention",
+    "text": "The Recipient shall not contact or transact with any party introduced by the Company.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_bypass_company_checks",
+    "clause_id": "non_circumvention",
+    "text": "The Recipient shall not bypass the Company.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_deal_exclusively_checks",
+    "clause_id": "non_circumvention",
+    "text": "The Recipient agrees to deal exclusively with the Company.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
+      }
+    }
   }
 ]
