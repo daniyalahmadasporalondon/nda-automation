@@ -23,7 +23,13 @@ LAWFUL_CIRCUMVENTION_PATTERN = (
 )
 
 
-def _check_non_circumvention(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_non_circumvention(
+    _text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    _review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     prohibited_patterns = _clause_term_patterns(clause, "search_terms")
     prohibited_paragraphs = [
         paragraph

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+from ..concept_classifier import ORDINARY_CONFIDENTIALITY_CONCEPTS
 from .common import (
     ClauseResult,
     Paragraph,
@@ -31,13 +32,20 @@ ORDINARY_SURVIVAL_SUBJECT_PATTERN = (
 )
 
 
-def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_term_and_survival(
+    _text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     max_years = _max_term_years(clause)
     cap_label = _year_count_label(max_years)
     term_context_patterns = _term_context_patterns(clause)
     indefinite_patterns = _clause_term_patterns(clause, "indefinite_terms")
     term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
+    reference_analysis = _survival_reference_analysis(term_paragraphs, paragraphs, review_context or {})
     year_terms = _extract_year_terms_with_context(term_normalized)
     has_term_within_cap = any(0 < term["years"] <= max_years for term in year_terms)
     ordinary_over_cap_terms = [
@@ -54,7 +62,7 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
     ]
 
     if has_term_over_cap:
-        return _check(
+        result = _check(
             clause,
             f"A term or survival period exceeds the cap of {cap_label}.",
             _paragraph_matches(term_paragraphs, [YEAR_TERM_EVIDENCE_PATTERN]),
@@ -63,8 +71,10 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
                 f"to a fixed period of {cap_label} or less."
             ),
         )
+        _attach_survival_analysis(result, reference_analysis)
+        return result
     if ordinary_indefinite_matches:
-        return _check(
+        result = _check(
             clause,
             f"Survival language appears indefinite or perpetual rather than capped at {cap_label}.",
             _paragraph_matches(term_paragraphs, indefinite_patterns),
@@ -73,35 +83,135 @@ def _check_term_and_survival(_text: str, normalized: str, clause: Dict[str, obje
                 f"with a fixed period of {cap_label} or less."
             ),
         )
+        _attach_survival_analysis(result, reference_analysis)
+        return result
     if has_term_within_cap:
-        return _match(
-            clause,
-            f"Term or survival period is within the cap of {cap_label}.",
-            _paragraph_matches(term_paragraphs, [YEAR_TERM_EVIDENCE_PATTERN]),
-        )
-    return _not_present(
+        evidence_paragraphs = _term_evidence_paragraphs(term_paragraphs, paragraphs, reference_analysis)
+        if reference_analysis["confidentiality_reference_count"]:
+            reason = (
+                "Referenced confidentiality provisions survive within "
+                f"the cap of {cap_label}."
+            )
+        else:
+            reason = f"Term or survival period is within the cap of {cap_label}."
+        result = _match(clause, reason, evidence_paragraphs)
+        _attach_survival_analysis(result, reference_analysis)
+        return result
+    result = _not_present(
         clause,
         f"No fixed term or survival period of up to {cap_label} was found.",
         term_paragraphs,
         what_to_fix=f"Add a fixed term or ordinary confidentiality survival period of {cap_label} or less.",
     )
+    _attach_survival_analysis(result, reference_analysis)
+    return result
 
 
 def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:
     terms: List[Dict[str, int]] = []
     for match in re.finditer(YEAR_TERM_PATTERN, normalized):
-        word_value, digit_value, parenthetical_value, unit = match.groups()
-        if parenthetical_value:
-            value = int(parenthetical_value)
-        elif digit_value:
+        word_value, digit_value, parenthetical_digit, parenthetical_word, unit = match.groups()
+        if digit_value:
             value = int(digit_value)
+        elif parenthetical_digit:
+            value = int(parenthetical_digit)
         elif word_value:
             value = YEAR_WORDS[word_value]
+        elif parenthetical_word:
+            value = YEAR_WORDS[parenthetical_word]
         else:
             continue
         years = value / 12 if unit.startswith("month") else value
         terms.append({"years": years, "start": match.start(), "end": match.end()})
     return terms
+
+
+def _survival_reference_analysis(
+    term_paragraphs: List[Paragraph],
+    all_paragraphs: List[Paragraph],
+    review_context: Dict[str, object],
+) -> Dict[str, object]:
+    paragraph_ids = {str(paragraph.get("id")) for paragraph in term_paragraphs if paragraph.get("id")}
+    paragraph_lookup = {str(paragraph.get("id")): paragraph for paragraph in all_paragraphs if paragraph.get("id")}
+    classifier = review_context.get("concept_classifier")
+    concepts_by_section_id = {}
+    if isinstance(classifier, dict) and isinstance(classifier.get("concepts_by_section_id"), dict):
+        concepts_by_section_id = classifier["concepts_by_section_id"]
+    reference_resolver = review_context.get("reference_resolver")
+    references = reference_resolver.get("references", []) if isinstance(reference_resolver, dict) else []
+
+    records: List[Dict[str, object]] = []
+    confidentiality_reference_count = 0
+    target_paragraph_ids: List[str] = []
+    for reference in references:
+        if not isinstance(reference, dict) or str(reference.get("paragraph_id")) not in paragraph_ids:
+            continue
+        target_records = []
+        target_has_confidentiality = False
+        for target in reference.get("targets", []):
+            if not isinstance(target, dict):
+                continue
+            section_id = str(target.get("id") or "")
+            raw_concepts = concepts_by_section_id.get(section_id, [])
+            if not isinstance(raw_concepts, list):
+                raw_concepts = []
+            concepts = [
+                str(concept)
+                for concept in raw_concepts
+                if str(concept)
+            ]
+            is_confidentiality = bool(ORDINARY_CONFIDENTIALITY_CONCEPTS.intersection(concepts))
+            target_has_confidentiality = target_has_confidentiality or is_confidentiality
+            for paragraph_id in target.get("paragraph_ids", []):
+                paragraph_key = str(paragraph_id)
+                if paragraph_key in paragraph_lookup and paragraph_key not in target_paragraph_ids:
+                    target_paragraph_ids.append(paragraph_key)
+            target_records.append({
+                "section_id": section_id,
+                "label": str(target.get("label") or ""),
+                "concepts": concepts,
+                "ordinary_confidentiality": is_confidentiality,
+            })
+        if target_has_confidentiality:
+            confidentiality_reference_count += 1
+        records.append({
+            "reference_text": str(reference.get("reference_text") or ""),
+            "paragraph_id": str(reference.get("paragraph_id") or ""),
+            "status": str(reference.get("status") or ""),
+            "targets": target_records,
+            "ordinary_confidentiality": target_has_confidentiality,
+        })
+
+    return {
+        "references": records,
+        "reference_count": len(records),
+        "confidentiality_reference_count": confidentiality_reference_count,
+        "target_paragraph_ids": target_paragraph_ids,
+    }
+
+
+def _term_evidence_paragraphs(
+    term_paragraphs: List[Paragraph],
+    all_paragraphs: List[Paragraph],
+    reference_analysis: Dict[str, object],
+) -> List[Paragraph]:
+    evidence = _paragraph_matches(term_paragraphs, [YEAR_TERM_EVIDENCE_PATTERN])
+    paragraph_lookup = {str(paragraph.get("id")): paragraph for paragraph in all_paragraphs if paragraph.get("id")}
+    for paragraph_id in reference_analysis.get("target_paragraph_ids", []):
+        paragraph = paragraph_lookup.get(str(paragraph_id))
+        if paragraph:
+            evidence.append(paragraph)
+    return evidence
+
+
+def _attach_survival_analysis(result: ClauseResult, reference_analysis: Dict[str, object]) -> None:
+    if not reference_analysis.get("reference_count"):
+        return
+    result["term_survival_analysis"] = {
+        "reference_count": reference_analysis["reference_count"],
+        "confidentiality_reference_count": reference_analysis["confidentiality_reference_count"],
+        "references": reference_analysis["references"],
+    }
 
 
 def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:

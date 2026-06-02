@@ -202,6 +202,48 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertIn("within the cap of five years", term_clause["finding"])
 
+    def test_term_and_survival_uses_resolved_references_to_confidentiality_articles(self):
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 2 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+
+            Article 3 Use of Information
+
+            Confidential Information may be used solely for the Purpose.
+
+            Article 4 Permitted Disclosures
+
+            Confidential Information may be disclosed to representatives who need to know it.
+
+            Article 5 Return
+
+            The Receiving Party shall return or destroy Confidential Information on request.
+
+            Article 6 Term and Survival
+
+            The obligations set out in Articles 2, 3, 4 and 5 survive expiry or termination for 3 (three) years.
+
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("Referenced confidentiality provisions survive", term_clause["finding"])
+        self.assertEqual(term_clause["term_survival_analysis"]["confidentiality_reference_count"], 1)
+        target_labels = [
+            target["label"]
+            for target in term_clause["term_survival_analysis"]["references"][0]["targets"]
+        ]
+        self.assertEqual(target_labels, ["Article 2", "Article 3", "Article 4", "Article 5"])
+        self.assertIn("concept_classifier", result)
+        self.assertIn("confidentiality_obligation", result["concept_classifier"]["concepts_by_section_id"]["section-2"])
+
     def test_term_and_survival_picks_up_month_denominated_terms(self):
         result = review_nda("The confidentiality obligations survive for 36 months after termination.")
 

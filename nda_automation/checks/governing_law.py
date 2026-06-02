@@ -35,7 +35,13 @@ GOVERNING_LAW_INPUT_ALIASES = {
 }
 
 
-def _check_governing_law(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_governing_law(
+    _text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    _review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     governing_anchor_patterns = _governing_anchor_patterns(clause)
     governing_paragraphs = _paragraph_matches(paragraphs, governing_anchor_patterns)
     approved_governing_paragraphs = [

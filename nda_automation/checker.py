@@ -32,6 +32,7 @@ from .checks.common import (
     _paragraph_matches,
     _year_count_label,
 )
+from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .reference_resolver import resolve_document_references
 from .review_document import (
@@ -117,10 +118,19 @@ def review_nda(
     _validate_playbook_contract(playbook)
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
+    contract_structure = build_contract_structure(document_paragraphs)
+    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
+    concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
+    review_context: Dict[str, object] = {
+        "contract_structure": contract_structure,
+        "reference_resolver": reference_resolver,
+        "concept_classifier": concept_classifier,
+    }
+
     clause_results = []
     for clause_id, check in CLAUSE_CHECKS:
         clause = clauses_by_id[clause_id]
-        clause_result = check(source_text, normalized, clause, document_paragraphs)
+        clause_result = check(source_text, normalized, clause, document_paragraphs, review_context)
         clause_results.append(
             apply_semantic_fallback(
                 text=source_text,
@@ -133,8 +143,6 @@ def review_nda(
         )
     failed = [clause for clause in clause_results if not clause["passes"]]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
-    contract_structure = build_contract_structure(document_paragraphs)
-    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
 
     result = {
         "overall_status": "does_not_meet_requirements" if failed else "meets_requirements",
@@ -144,6 +152,7 @@ def review_nda(
         "paragraphs": document_paragraphs,
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
+        "concept_classifier": concept_classifier,
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }

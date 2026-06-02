@@ -384,6 +384,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Ordinary Confidentiality Cap (years)");
   await assertTextContains(page.locator("#clauseDetail"), "Permitted Perpetual / Longer Survival Carve-outs");
   await assertTextContains(page.locator("#clauseDetail"), "Perpetual / Indefinite Trigger Terms");
+  await assertTextContains(page.locator("#clauseDetail"), "Checker Logic Visibility");
+  await assertTextContains(page.locator("#clauseDetail"), "REFERENCE RESOLVER");
+  await assertTextContains(page.locator("#clauseDetail"), "CONCEPT CLASSIFIER");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
@@ -546,9 +549,12 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(adminPanel, "Ingest");
   await assertTextContains(adminPanel, "STRUCTURE MAPPING");
   await assertTextContains(adminPanel, "REFERENCE RESOLVER");
+  await assertTextContains(adminPanel, "CONCEPT CLASSIFIER");
   await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
   await assertTextContains(adminPanel, "nda_automation/reference_resolver.py");
+  await assertTextContains(adminPanel, "nda_automation/concept_classifier.py");
   await assertTextContains(adminPanel, "How explicit cross-references are resolved");
+  await assertTextContains(adminPanel, "How deterministic concepts are tagged");
   await assertTextContains(adminPanel, "Supported references");
   await assertTextContains(adminPanel, "NO FIXED NUMBERING ASSUMPTION");
   await assertTextContains(adminPanel, "Term and Survival");

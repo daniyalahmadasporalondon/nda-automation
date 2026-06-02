@@ -370,16 +370,21 @@
                   </article>
                   <article class="engine-card">
                     <span>6</span>
+                    <h2>Classify</h2>
+                    <p>Deterministic concept tags identify confidentiality, use, disclosure, return, survival, and carve-out concepts by paragraph and section.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>7</span>
                     <h2>Check</h2>
                     <p>Python clause checks apply playbook rules to the actual reviewed paragraphs and evidence.</p>
                   </article>
                   <article class="engine-card">
-                    <span>7</span>
+                    <span>8</span>
                     <h2>Verify</h2>
                     <p>Evidence provenance validation ensures matched text still resolves to the reviewed source.</p>
                   </article>
                   <article class="engine-card">
-                    <span>8</span>
+                    <span>9</span>
                     <h2>Redline</h2>
                     <p>Redline edits, comments, export decisions, and selected templates are prepared for DOCX output.</p>
                   </article>
@@ -393,6 +398,7 @@
                       <div><dt>Paragraph alignment</dt><dd>nda_automation/review_document.py</dd></div>
                       <div><dt>Structure mapping</dt><dd>nda_automation/contract_structure.py</dd></div>
                       <div><dt>Reference resolver</dt><dd>nda_automation/reference_resolver.py</dd></div>
+                      <div><dt>Concept classifier</dt><dd>nda_automation/concept_classifier.py</dd></div>
                       <div><dt>Clause registry</dt><dd>nda_automation/checks/</dd></div>
                       <div><dt>DOCX export</dt><dd>nda_automation/docx_export.py</dd></div>
                     </dl>
@@ -403,6 +409,7 @@
                       <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Admin.</dd></div>
                       <div><dt>Evidence trust</dt><dd>Each clause result is checked against paragraph IDs and source offsets.</dd></div>
                       <div><dt>Reference resolution</dt><dd>Explicit section references are resolved from each document's detected structure.</dd></div>
+                      <div><dt>Concept classification</dt><dd>Deterministic concept tags show why referenced sections count as confidentiality, carve-out, survival, or unrelated provisions.</dd></div>
                       <div><dt>Current AI boundary</dt><dd>Rules are deterministic Python first; semantic fallback is a separate evaluator hook.</dd></div>
                     </dl>
                   </article>
@@ -447,11 +454,55 @@
                     </div>
                     <div>
                       <dt>Current limitation</dt>
-                      <dd>Only explicit references are resolved. Semantic phrases like "the confidentiality obligations above" still need a future concept classifier or AI evaluator.</dd>
+                      <dd>Explicit references are resolved and deterministic concepts are classified. Semantic phrases like "the confidentiality obligations above" still need a future AI evaluator.</dd>
                     </div>
                     <div>
                       <dt>Checker handoff</dt>
-                      <dd>The next target is Term and Survival: use resolved references to inspect what actually survives instead of trusting the survival sentence alone.</dd>
+                      <dd>Term and Survival now uses resolved references and concepts to inspect what actually survives instead of trusting the survival sentence alone.</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section class="engine-resolver-panel" aria-label="Concept classifier logic">
+                  <header>
+                    <div>
+                      <p class="eyebrow">concept classifier</p>
+                      <h2>How deterministic concepts are tagged</h2>
+                    </div>
+                    <span>Rules first</span>
+                  </header>
+
+                  <div class="resolver-logic-grid">
+                    <article>
+                      <h3>Inputs</h3>
+                      <p>Reviewed paragraphs plus detected section headings and paragraph ownership from the Contract Structure Map.</p>
+                    </article>
+                    <article>
+                      <h3>Concepts</h3>
+                      <p>Confidentiality definition, confidentiality obligation, use restriction, permitted disclosure, return/destruction, survival, and carve-out concepts.</p>
+                    </article>
+                    <article>
+                      <h3>Section rollup</h3>
+                      <p>Paragraph concepts are rolled up to their owning section, so referenced clauses can be judged by substance.</p>
+                    </article>
+                    <article>
+                      <h3>Outputs</h3>
+                      <p>Concepts by paragraph ID, concepts by section ID, matched signals, and summary counts for audit.</p>
+                    </article>
+                  </div>
+
+                  <dl class="resolver-audit-list">
+                    <div>
+                      <dt>Term checker use</dt>
+                      <dd>If survival says "Articles 2, 3, 4 and 5 survive," the checker can inspect whether those articles are confidentiality provisions.</dd>
+                    </div>
+                    <div>
+                      <dt>Auditor visibility</dt>
+                      <dd>Classifier output is included in the review payload as concept_classifier and can be inspected alongside references.</dd>
+                    </div>
+                    <div>
+                      <dt>Boundary</dt>
+                      <dd>This is deterministic pattern classification, not AI interpretation. Ambiguous semantic references remain a later evaluator step.</dd>
                     </div>
                   </dl>
                 </section>

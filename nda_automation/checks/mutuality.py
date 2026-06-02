@@ -25,7 +25,13 @@ NEGATED_MUTUALITY_PATTERN = (
 )
 
 
-def _check_mutuality(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_mutuality(
+    _text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    _review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     search_patterns = _mutuality_search_patterns(clause)
     one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
     mutual_paragraphs = _mutuality_paragraphs(paragraphs, search_patterns)

@@ -24,7 +24,13 @@ SIGNATURE_FOR_LINE_PATTERN = (
 )
 
 
-def _check_signatures(text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_signatures(
+    text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    _review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     signature_patterns = _signature_evidence_patterns(clause)
     by_marker_patterns = _signature_marker_patterns(clause, "party")
     title_marker_patterns = _signature_marker_patterns(clause, "title")

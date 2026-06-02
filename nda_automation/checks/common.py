@@ -16,9 +16,21 @@ YEAR_WORDS = {
     "eight": 8,
     "nine": 9,
     "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
 }
-YEAR_TERM_PATTERN = r"\b(?:(one|two|three|four|five|six|seven|eight|nine|ten)|(\d{1,3}))(?:\s*\(\s*(\d{1,3})\s*\))?(?:\s*-\s*|\s+)(months?|years?)\b"
-YEAR_TERM_EVIDENCE_PATTERN = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,3})(?:\s*\(\s*\d{1,3}\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
+YEAR_WORD_PATTERN = "|".join(YEAR_WORDS)
+YEAR_TERM_PATTERN = rf"\b(?:({YEAR_WORD_PATTERN})|(\d{{1,3}}))(?:\s*\(\s*(?:(\d{{1,3}})|({YEAR_WORD_PATTERN}))\s*\))?(?:\s*-\s*|\s+)(months?|years?)\b"
+YEAR_TERM_EVIDENCE_PATTERN = rf"\b(?:{YEAR_WORD_PATTERN}|\d{{1,3}})(?:\s*\(\s*(?:\d{{1,3}}|{YEAR_WORD_PATTERN})\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
 INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW = 160
 MAX_EVIDENCE_PARAGRAPHS = 3
 ISSUE_TYPE_NONE = "none"

@@ -11,7 +11,7 @@ from .non_circumvention import _check_non_circumvention
 from .signatures import _check_signatures
 from .term_and_survival import _check_term_and_survival
 
-CheckFn = Callable[[str, str, Dict[str, object], List[Paragraph]], ClauseResult]
+CheckFn = Callable[[str, str, Dict[str, object], List[Paragraph], Dict[str, object]], ClauseResult]
 
 CLAUSE_CHECKS: List[tuple[str, CheckFn]] = [
     ("mutuality", _check_mutuality),

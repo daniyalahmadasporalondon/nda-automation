@@ -41,7 +41,13 @@ USAGE_RIGHT_AFTER_PATTERN = (
     r"(?:used|retained|disclosed|exploited|reverse\s+engineered)\b"
 )
 NEGATED_RIGHT_BEFORE_PATTERN = r"\b(?:must|shall|may|can|will)\s+not\b[^.;]{0,80}$|\b(?:not|never)\s+[^.;]{0,40}$"
-def _check_confidential_information(_text: str, normalized: str, clause: Dict[str, object], paragraphs: List[Paragraph]) -> ClauseResult:
+def _check_confidential_information(
+    _text: str,
+    normalized: str,
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    _review_context: Dict[str, object] | None = None,
+) -> ClauseResult:
     definition_name_terms, definition_coverage_terms = _confidential_definition_search_terms(clause)
     categories = _clause_terms(clause, "definition_categories")
     category_label = _confidential_categories_label(categories)

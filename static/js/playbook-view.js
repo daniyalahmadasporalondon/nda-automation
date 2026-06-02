@@ -283,6 +283,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <p class="admin-muted">When these terms appear outside the permitted carve-out context, the clause is checked.</p>
           <div class="admin-chip-row">${indefiniteTerms}</div>
         </section>
+        <section class="admin-special">
+          <h3>Checker Logic Visibility</h3>
+          <p class="admin-muted">The backend now evaluates survival language with document structure, explicit references, and deterministic concepts.</p>
+          <dl class="admin-logic-list">
+            <div><dt>Duration parser</dt><dd>Reads numeric and mixed word durations such as three (3) years and 3 (three) years.</dd></div>
+            <div><dt>Reference resolver</dt><dd>When survival points to clauses or articles, the checker resolves those targets before deciding pass or check.</dd></div>
+            <div><dt>Concept classifier</dt><dd>Referenced targets are tagged for confidentiality, use restriction, permitted disclosure, return/destruction, and carve-out concepts.</dd></div>
+            <div><dt>Checker output</dt><dd>When references are used, the review result includes term_survival_analysis for audit.</dd></div>
+          </dl>
+        </section>
       `;
     }
     if (clause.id === "governing_law") {
@@ -320,7 +330,22 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "term_and_survival") {
       rules.duration = {
         ordinary_confidentiality_cap_years: clause.max_term_years || 5,
+        parser_accepts: ["three (3) years", "3 (three) years", "36 months"],
         permitted_longer_survival_terms: clause.longer_survival_carve_out_terms || [],
+      };
+      rules.reference_resolution = {
+        uses_contract_structure_map: true,
+        resolves_clause_article_section_targets: true,
+        output_field: "term_survival_analysis",
+      };
+      rules.concept_classifier = {
+        ordinary_confidentiality_concepts: [
+          "confidential_information_definition",
+          "confidentiality_obligation",
+          "use_restriction",
+          "permitted_disclosure",
+          "return_or_destruction",
+        ],
       };
       rules.check_terms = clause.indefinite_terms || [];
     }

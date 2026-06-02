@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, TypedDict
 
+from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient
 from .reference_resolver import resolve_document_references
@@ -114,7 +115,11 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
 
 
 def review_result_with_structure(review_result: dict[str, Any], extracted_text: str = "") -> dict[str, Any]:
-    if isinstance(review_result.get("contract_structure"), dict) and isinstance(review_result.get("reference_resolver"), dict):
+    if (
+        isinstance(review_result.get("contract_structure"), dict)
+        and isinstance(review_result.get("reference_resolver"), dict)
+        and isinstance(review_result.get("concept_classifier"), dict)
+    ):
         return review_result
 
     enriched = deepcopy(review_result)
@@ -127,6 +132,11 @@ def review_result_with_structure(review_result: dict[str, Any], extracted_text: 
         enriched["contract_structure"] = build_contract_structure(paragraphs if isinstance(paragraphs, list) else [])
     if not isinstance(enriched.get("reference_resolver"), dict):
         enriched["reference_resolver"] = resolve_document_references(
+            paragraphs if isinstance(paragraphs, list) else [],
+            enriched["contract_structure"],
+        )
+    if not isinstance(enriched.get("concept_classifier"), dict):
+        enriched["concept_classifier"] = classify_document_concepts(
             paragraphs if isinstance(paragraphs, list) else [],
             enriched["contract_structure"],
         )

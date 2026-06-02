@@ -2733,6 +2733,42 @@ body.modal-open {
   grid-template-columns: minmax(180px, 260px) auto;
 }
 
+.admin-logic-list {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  margin: 0;
+  overflow: hidden;
+}
+
+.admin-logic-list div {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(130px, 190px) minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.admin-logic-list div:first-child {
+  border-top: 0;
+}
+
+.admin-logic-list dt {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.admin-logic-list dd {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.38;
+  margin: 0;
+}
+
 .admin-muted,
 .admin-save-status {
   color: var(--ink-muted);
@@ -2793,7 +2829,7 @@ body.modal-open {
 .engine-flow {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
 }
 
 .engine-card {
@@ -3802,7 +3838,8 @@ body.modal-open {
   .engine-module-grid,
   .engine-fact-list div,
   .resolver-logic-grid,
-  .resolver-audit-list div {
+  .resolver-audit-list div,
+  .admin-logic-list div {
     grid-template-columns: 1fr;
   }
 
