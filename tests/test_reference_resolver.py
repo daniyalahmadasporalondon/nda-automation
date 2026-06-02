@@ -61,6 +61,41 @@ class ReferenceResolverTests(unittest.TestCase):
         self.assertEqual(reference["resolved_section_ids"], ["section-2", "section-3"])
         self.assertEqual([item["matched_alias"] for item in reference["items"]], ["number:10.1", "number:10.1a"])
 
+    def test_resolves_parenthetical_and_outline_references(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "1. General",
+            "General terms.",
+            "1(a) Confidentiality",
+            "Confidentiality terms.",
+            "10. Boilerplate",
+            "Boilerplate terms.",
+            "Section 10(b) Data Processing",
+            "Data processing terms.",
+            "A. Definitions",
+            "Definition terms.",
+            "Section 10(b) and Section A apply. Clause 1(a) also applies.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        self.assertEqual(
+            [reference["reference_text"] for reference in resolver["references"]],
+            ["Section 10(b)", "Section A", "Clause 1(a)"],
+        )
+        self.assertEqual(
+            [reference["status"] for reference in resolver["references"]],
+            ["resolved", "resolved", "resolved"],
+        )
+        self.assertEqual(
+            [[target["label"] for target in reference["targets"]] for reference in resolver["references"]],
+            [["Section 10(b)"], ["A"], ["1(a)"]],
+        )
+        self.assertEqual(
+            [resolver["references"][index]["items"][0]["matched_alias"] for index in range(3)],
+            ["section:10(b)", "number:a", "number:1(a)"],
+        )
+
     def test_marks_partial_and_unresolved_references(self):
         paragraphs = split_document_paragraphs("\n\n".join([
             "Clause 1: Definitions",

@@ -1,10 +1,13 @@
 function createContractStructureController({ state, root }) {
-  const romanNumberPattern = "[IVXLCDM]{2,}";
-  const identifierPartPattern = `(?:${romanNumberPattern}|[A-Za-z]|\\d+[A-Za-z]*)`;
+  const romanNumberPattern = "[IVXLCDM]+";
+  const baseIdentifierPartPattern = `(?:${romanNumberPattern}|[A-Za-z]|\\d+[A-Za-z]*)`;
+  const parentheticalIdentifierPartPattern = "\\([A-Za-z0-9]+\\)";
+  const identifierPartPattern = `(?:${baseIdentifierPartPattern}(?:${parentheticalIdentifierPartPattern})*|${parentheticalIdentifierPartPattern})`;
   const explicitNumberPattern = `${identifierPartPattern}(?:\\.${identifierPartPattern})*`;
-  const numberedNumberPattern = `(?:\\d+[A-Za-z]*|${romanNumberPattern})(?:\\.${identifierPartPattern})*`;
-  const explicitHeadingRegex = new RegExp(`^(clause|article|section|schedule|annex|annexure|appendix)\\s+(${explicitNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.*)$`, "i");
+  const numberedNumberPattern = `${identifierPartPattern}(?:\\.${identifierPartPattern})*`;
+  const explicitHeadingRegex = new RegExp(`^(clause|article|section|schedule|annex|annexure|appendix)\\s+(${explicitNumberPattern})(\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.*)$`, "i");
   const numberedHeadingRegex = new RegExp(`^(${numberedNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.+)$`);
+  const operativeSentenceRegex = /\b(?:shall|must|will|may|can|agrees?|undertakes?|covenants?|represents?|warrants?|is|are|was|were|has|have|means|includes?|excludes?|not|appl(?:y|ies)|surviv(?:e|es|ed|ing)|remain(?:s|ed|ing)?)\b/i;
 
   function render() {
     if (!root) return;
@@ -429,7 +432,9 @@ function createContractStructureController({ state, root }) {
     if (explicit) {
       const kind = explicit[1].toLowerCase();
       const number = explicit[2].replace(/\.$/, "");
-      const heading = cleanHeading(explicit[3]) || displayKind(kind);
+      const separator = explicit[3];
+      const heading = cleanHeading(explicit[4]) || displayKind(kind);
+      if (!looksLikeExplicitHeading(number, heading, separator)) return null;
       return {
         confidence: "high",
         heading,
@@ -443,7 +448,7 @@ function createContractStructureController({ state, root }) {
     }
 
     const numbered = text.match(numberedHeadingRegex);
-    if (numbered && looksLikeNumberedHeading(numbered[2])) {
+    if (numbered && looksLikeNumberedHeading(numbered[1], numbered[2])) {
       const number = numbered[1].replace(/\.$/, "");
       return {
         confidence: "high",
@@ -580,13 +585,21 @@ function createContractStructureController({ state, root }) {
   }
 
   function immediateParentNumbers(number) {
-    const parts = numberParts(number);
     const parents = [];
-    if (!parts.length) return parents;
-    const strippedLastPart = stripLetterSuffix(parts[parts.length - 1]);
-    if (strippedLastPart) parents.push([...parts.slice(0, -1), strippedLastPart].join("."));
-    if (parts.length > 1) parents.push(parts.slice(0, -1).join("."));
-    return parents.filter((parent) => parent && parent !== number);
+    const normalizedNumber = String(number || "").trim();
+    if (!normalizedNumber) return parents;
+    const parentheticalMatch = normalizedNumber.match(/^(.*)\([A-Za-z0-9]+\)$/);
+    if (parentheticalMatch) {
+      parents.push(parentheticalMatch[1]);
+    } else {
+      const rawParts = normalizedNumber.split(".").filter(Boolean);
+      if (rawParts.length) {
+        const strippedLastPart = stripLetterSuffix(rawParts[rawParts.length - 1]);
+        if (strippedLastPart) parents.push([...rawParts.slice(0, -1), strippedLastPart].join("."));
+        if (rawParts.length > 1) parents.push(rawParts.slice(0, -1).join("."));
+      }
+    }
+    return parents.filter((parent) => parent && parent !== normalizedNumber);
   }
 
   function findSectionByNumber(sections, parentNumber, candidateLevel) {
@@ -686,7 +699,7 @@ function createContractStructureController({ state, root }) {
   }
 
   function cleanSourceNumber(value) {
-    const cleaned = String(value || "").replace(/^[^\w]+|[^\w]+$/g, "").trim();
+    const cleaned = String(value || "").replace(/^[^\w(]+|[^\w)]+$/g, "").trim();
     const numberRegex = new RegExp(`^${explicitNumberPattern}$`, "i");
     return numberRegex.test(cleaned) ? cleaned : "";
   }
@@ -732,7 +745,16 @@ function createContractStructureController({ state, root }) {
   }
 
   function numberParts(number) {
-    return String(number || "").split(".").filter(Boolean);
+    const parts = [];
+    String(number || "").split(".").forEach((rawPart) => {
+      const part = rawPart.trim();
+      if (!part) return;
+      const prefix = part.replace(/\([A-Za-z0-9]+\)$/g, "").trim();
+      if (prefix) parts.push(prefix);
+      const parentheticalMatches = [...part.matchAll(/\(([A-Za-z0-9]+)\)/g)];
+      parentheticalMatches.forEach((match) => parts.push(match[1]));
+    });
+    return parts;
   }
 
   function stripLetterSuffix(part) {
@@ -740,9 +762,36 @@ function createContractStructureController({ state, root }) {
     return match ? match[1] : null;
   }
 
-  function looksLikeNumberedHeading(heading) {
+  function looksLikeNumberedHeading(number, heading) {
     const cleaned = cleanHeading(heading);
-    return Boolean(cleaned) && (cleaned.length <= 120 || cleaned.slice(0, 90).includes(":"));
+    if (!cleaned) return false;
+    if (requiresStrictOutlineHeading(number)) return looksLikeShortHeading(cleaned);
+    return cleaned.length <= 120 || cleaned.slice(0, 90).includes(":");
+  }
+
+  function looksLikeExplicitHeading(number, heading, separator) {
+    const cleaned = cleanHeading(heading);
+    if (!cleaned) return true;
+    if (/^(?:and|or)\b/i.test(cleaned)) return false;
+    if (String(separator || "").trim()) return cleaned.length <= 160 || cleaned.slice(0, 90).includes(":");
+    if (requiresStrictOutlineHeading(number)) return looksLikeShortHeading(cleaned);
+    return looksLikeShortHeading(cleaned) || !operativeSentenceRegex.test(cleaned);
+  }
+
+  function requiresStrictOutlineHeading(number) {
+    const normalizedNumber = String(number || "").trim();
+    if (!normalizedNumber) return false;
+    if (normalizedNumber.includes("(") || normalizedNumber.includes(")")) return true;
+    return !normalizedNumber.includes(".") && new RegExp(`^(?:${romanNumberPattern}|[A-Za-z])$`, "i").test(normalizedNumber);
+  }
+
+  function looksLikeShortHeading(text) {
+    const cleaned = cleanHeading(text);
+    if (!cleaned || cleaned.length > 90 || operativeSentenceRegex.test(cleaned)) return false;
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    if (words.length > 8) return false;
+    const firstAlpha = cleaned.split("").find((character) => /[A-Za-z]/.test(character));
+    return Boolean(firstAlpha && firstAlpha === firstAlpha.toUpperCase());
   }
 
   function looksLikeUppercaseHeading(text) {

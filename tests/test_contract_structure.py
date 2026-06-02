@@ -158,6 +158,90 @@ class ContractStructureTests(unittest.TestCase):
             structure["aliases"],
         )
 
+    def test_detects_parenthetical_and_outline_heading_identifiers(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "1. General",
+            "General text.",
+            "1(a) Confidentiality",
+            "Confidential text.",
+            "1(a)(i) Permitted Recipients",
+            "Recipient text.",
+            "10. Boilerplate",
+            "Boilerplate text.",
+            "Section 10(b) Data Processing",
+            "Data terms.",
+            "A. Definitions",
+            "Definition text.",
+            "(B) Return of Materials",
+            "Return text.",
+            "IV. Term",
+            "Term text.",
+            "Section 10(b) and Section A apply. Clause 1(a) also applies.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        sections = structure["sections"]
+        sections_by_label = {section["label"]: section for section in sections}
+
+        self.assertEqual(
+            [section["label"] for section in sections],
+            ["Preamble", "1", "1(a)", "1(a)(i)", "10", "Section 10(b)", "A", "(B)", "IV"],
+        )
+        self.assertEqual(sections_by_label["1(a)"]["parent_id"], sections_by_label["1"]["id"])
+        self.assertEqual(sections_by_label["1(a)(i)"]["parent_id"], sections_by_label["1(a)"]["id"])
+        self.assertEqual(sections_by_label["Section 10(b)"]["parent_id"], sections_by_label["10"]["id"])
+        self.assertEqual(sections_by_label["1(a)"]["level"], 2)
+        self.assertEqual(sections_by_label["1(a)(i)"]["level"], 3)
+        self.assertEqual(sections_by_label["Section 10(b)"]["level"], 2)
+        self.assertEqual(sections_by_label["IV"]["paragraph_ids"], ["p16", "p17", "p18"])
+        self.assertIn(
+            {"key": "number:1(a)", "section_id": sections_by_label["1(a)"]["id"], "label": "1(a)"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "number:1(a)(i)", "section_id": sections_by_label["1(a)(i)"]["id"], "label": "1(a)(i)"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "section:10(b)", "section_id": sections_by_label["Section 10(b)"]["id"], "label": "Section 10(b)"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "number:a", "section_id": sections_by_label["A"]["id"], "label": "A"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "number:(b)", "section_id": sections_by_label["(B)"]["id"], "label": "(B)"},
+            structure["aliases"],
+        )
+
+    def test_does_not_treat_reference_sentences_as_explicit_headings(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1: Definitions",
+            "Definitions text.",
+            "Clause 2 - Confidentiality",
+            "Clause 1 survives this Agreement.",
+            "Section 10(b) and Section A apply to the parties.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+
+        self.assertEqual([section["label"] for section in structure["sections"]], ["Clause 1", "Clause 2"])
+        self.assertEqual(structure["sections"][1]["paragraph_ids"], ["p3", "p4", "p5"])
+
+    def test_does_not_treat_outline_marked_prose_as_headings(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "A party shall keep Confidential Information confidential.",
+            "(a) the Receiving Party shall protect Confidential Information.",
+            "I agree that this paragraph is not a heading.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+
+        self.assertEqual([section["label"] for section in structure["sections"]], ["Preamble"])
+        self.assertEqual(structure["sections"][0]["paragraph_ids"], ["p1", "p2", "p3"])
+
     def test_exposes_resolver_ready_reference_index(self):
         paragraphs = split_document_paragraphs("\n\n".join([
             "MUTUAL NON-DISCLOSURE AGREEMENT",

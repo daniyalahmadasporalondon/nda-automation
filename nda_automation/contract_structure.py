@@ -8,15 +8,28 @@ from .review_document import Paragraph
 
 STRUCTURE_VERSION = 2
 REFERENCE_INDEX_VERSION = 2
-ROMAN_NUMBER_PATTERN = r"[IVXLCDM]{2,}"
-IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
+ROMAN_NUMBER_PATTERN = r"[IVXLCDM]+"
+BASE_IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
+PARENTHETICAL_IDENTIFIER_PART_PATTERN = r"\([A-Za-z0-9]+\)"
+IDENTIFIER_PART_PATTERN = (
+    rf"(?:{BASE_IDENTIFIER_PART_PATTERN}(?:{PARENTHETICAL_IDENTIFIER_PART_PATTERN})*|"
+    rf"{PARENTHETICAL_IDENTIFIER_PART_PATTERN})"
+)
 EXPLICIT_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
-NUMBERED_NUMBER_PATTERN = rf"(?:\d+[A-Za-z]*|{ROMAN_NUMBER_PATTERN})(?:\.{IDENTIFIER_PART_PATTERN})*"
+NUMBERED_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
 NUMBER_PART_RE = re.compile(r"^(?P<digits>\d+)(?P<suffix>[A-Za-z]+)$")
+PARENTHETICAL_SUFFIX_RE = re.compile(r"^(?P<prefix>.*)\([A-Za-z0-9]+\)$")
+PARENTHETICAL_PART_RE = re.compile(r"\(([A-Za-z0-9]+)\)")
+OPERATIVE_SENTENCE_RE = re.compile(
+    r"\b(?:shall|must|will|may|can|agrees?|undertakes?|covenants?|represents?|warrants?|"
+    r"is|are|was|were|has|have|means|includes?|excludes?|not|appl(?:y|ies)|"
+    r"surviv(?:e|es|ed|ing)|remain(?:s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
 
 EXPLICIT_HEADING_RE = re.compile(
     r"^\s*(?P<kind>clause|article|section|schedule|annex|annexure|appendix)\s+"
-    rf"(?P<number>{EXPLICIT_NUMBER_PATTERN})(?:\s*[:.\-\u2013\u2014]\s*|\s+)"
+    rf"(?P<number>{EXPLICIT_NUMBER_PATTERN})(?P<separator>\s*[:.\-\u2013\u2014]\s*|\s+)"
     r"(?P<heading>.*)$",
     re.IGNORECASE,
 )
@@ -165,6 +178,8 @@ def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCan
         kind = explicit_match.group("kind").lower()
         number = TRAILING_NUMBER_DOT_RE.sub("", explicit_match.group("number").strip())
         heading = _clean_heading(explicit_match.group("heading")) or _display_kind(kind)
+        if not _looks_like_explicit_heading(number, heading, explicit_match.group("separator")):
+            return None
         label = f"{_display_kind(kind)} {number}"
         return _SectionCandidate(
             position=position,
@@ -178,7 +193,7 @@ def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCan
         )
 
     numbered_match = NUMBERED_HEADING_RE.match(text)
-    if numbered_match and _looks_like_numbered_heading(numbered_match.group("heading")):
+    if numbered_match and _looks_like_numbered_heading(numbered_match.group("number"), numbered_match.group("heading")):
         number = TRAILING_NUMBER_DOT_RE.sub("", numbered_match.group("number").strip())
         heading = _clean_heading(numbered_match.group("heading"))
         return _SectionCandidate(
@@ -423,13 +438,52 @@ def _source_stats(paragraphs: List[Paragraph], sections: List[Dict[str, object]]
     }
 
 
-def _looks_like_numbered_heading(heading: str) -> bool:
+def _looks_like_numbered_heading(number: str, heading: str) -> bool:
     cleaned = _clean_heading(heading)
     if not cleaned:
         return False
+    if _requires_strict_outline_heading(number):
+        return _looks_like_short_heading(cleaned)
     if len(cleaned) <= 120:
         return True
     return ":" in cleaned[:90]
+
+
+def _looks_like_explicit_heading(number: str, heading: str, separator: str) -> bool:
+    cleaned = _clean_heading(heading)
+    if not cleaned:
+        return True
+    if re.match(r"^(?:and|or)\b", cleaned, flags=re.IGNORECASE):
+        return False
+    if separator.strip():
+        return len(cleaned) <= 160 or ":" in cleaned[:90]
+    if _requires_strict_outline_heading(number):
+        return _looks_like_short_heading(cleaned)
+    return _looks_like_short_heading(cleaned) or not re.search(OPERATIVE_SENTENCE_RE, cleaned)
+
+
+def _requires_strict_outline_heading(number: str) -> bool:
+    normalized_number = str(number or "").strip()
+    if not normalized_number:
+        return False
+    if "(" in normalized_number or ")" in normalized_number:
+        return True
+    return "." not in normalized_number and bool(
+        re.fullmatch(rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z])", normalized_number, flags=re.IGNORECASE)
+    )
+
+
+def _looks_like_short_heading(text: str) -> bool:
+    cleaned = _clean_heading(text)
+    if not cleaned or len(cleaned) > 90:
+        return False
+    if re.search(OPERATIVE_SENTENCE_RE, cleaned):
+        return False
+    words = [word for word in re.split(r"\s+", cleaned) if word]
+    if len(words) > 8:
+        return False
+    first_alpha = next((character for character in cleaned if character.isalpha()), "")
+    return bool(first_alpha and first_alpha.isupper())
 
 
 def _looks_like_uppercase_heading(text: str) -> bool:
@@ -475,16 +529,22 @@ def _parent_number_candidates(number: str) -> List[str]:
 
 
 def _immediate_parent_numbers(number: str) -> List[str]:
-    parts = _number_parts(number)
     parents: List[str] = []
-    if not parts:
+    normalized_number = str(number or "").strip()
+    if not normalized_number:
         return parents
 
-    stripped_last_part = _strip_letter_suffix(parts[-1])
-    if stripped_last_part:
-        parents.append(".".join([*parts[:-1], stripped_last_part]))
-    if len(parts) > 1:
-        parents.append(".".join(parts[:-1]))
+    parenthetical_match = PARENTHETICAL_SUFFIX_RE.match(normalized_number)
+    if parenthetical_match:
+        parents.append(parenthetical_match.group("prefix"))
+    else:
+        raw_parts = [part for part in normalized_number.split(".") if part]
+        if raw_parts:
+            stripped_last_part = _strip_letter_suffix(raw_parts[-1])
+            if stripped_last_part:
+                parents.append(".".join([*raw_parts[:-1], stripped_last_part]))
+            if len(raw_parts) > 1:
+                parents.append(".".join(raw_parts[:-1]))
     return [parent for parent in parents if parent and parent != number]
 
 
@@ -534,7 +594,7 @@ def _source_structure_number(paragraph: Paragraph) -> str:
 
 
 def _clean_source_number(value: str) -> str:
-    cleaned = re.sub(r"^[^\w]+|[^\w]+$", "", value or "").strip()
+    cleaned = re.sub(r"^[^\w(]+|[^\w)]+$", "", value or "").strip()
     return cleaned if re.fullmatch(EXPLICIT_NUMBER_PATTERN, cleaned, flags=re.IGNORECASE) else ""
 
 
@@ -558,7 +618,16 @@ def _strip_leading_number(text: str, number: str) -> str:
 
 
 def _number_parts(number: str | None) -> List[str]:
-    return [part for part in str(number or "").split(".") if part]
+    parts: List[str] = []
+    for raw_part in str(number or "").split("."):
+        part = raw_part.strip()
+        if not part:
+            continue
+        prefix = PARENTHETICAL_SUFFIX_RE.sub(r"\g<prefix>", part).strip()
+        if prefix:
+            parts.append(prefix)
+        parts.extend(match.group(1) for match in PARENTHETICAL_PART_RE.finditer(part))
+    return parts
 
 
 def _strip_letter_suffix(part: str) -> str | None:
