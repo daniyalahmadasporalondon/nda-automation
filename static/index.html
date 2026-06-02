@@ -4,7 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=43">
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/css/repository.css">
+    <link rel="stylesheet" href="/static/css/redesign.css">
   </head>
   <body>
     <div class="app-shell">
@@ -12,21 +14,42 @@
         <header class="topbar">
           <div class="product-lockup">
             <img class="brand-logo" src="/static/assets/aspora-logo.png" alt="Aspora">
-            <span>Clause Studio</span>
           </div>
-          <nav class="tabbar" aria-label="Workspace">
-            <button class="tab-button active" type="button" data-tab="review">Review</button>
-            <button class="tab-button" type="button" data-tab="clauses">Clauses</button>
+          <nav class="tabbar" aria-label="Workspace" role="tablist">
+            <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
+              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <rect x="2.5" y="4" width="19" height="4.5" rx="1.4"/>
+                <path d="M4.5 8.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8.5"/>
+                <path d="M10 12.5h4"/>
+              </svg>
+              <span>Repository</span>
+            </button>
+            <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
+              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M12 15.5V4"/>
+                <path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
+                <path d="M4.5 15.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.5"/>
+              </svg>
+              <span>Upload</span>
+            </button>
+            <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
+              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M12 3.25 18.5 6v5.4c0 3.8-2.7 6.95-6.5 7.85C8.2 18.35 5.5 15.2 5.5 11.4V6L12 3.25Z"/>
+                <path d="m9.2 11.7 2 2 3.6-3.9"/>
+              </svg>
+              <span>Review</span>
+            </button>
+            <button class="tab-button" id="clausesTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="clauses">
+              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+                <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 0 1-4 0v-.06a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 0 1 0-4h.06A1.8 1.8 0 0 0 4.7 8.8a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2 2 0 0 1 7.13 3.95l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.25 2.7V2.6a2 2 0 0 1 4 0v.06a1.8 1.8 0 0 0 1.1 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.1h.06a2 2 0 0 1 0 4h-.06A1.8 1.8 0 0 0 19.4 15Z"/>
+              </svg>
+              <span>Admin</span>
+            </button>
           </nav>
-          <div class="topbar-actions">
-            <label class="file-button top-upload">
-              <input id="fileInput" type="file" accept=".docx,.txt,.md,.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-              Upload file
-            </label>
-          </div>
         </header>
 
-        <main class="studio-review view active" id="reviewView" data-view="review">
+        <main class="studio-review view active" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review">
           <header class="studio-matter-card">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
@@ -37,99 +60,464 @@
                 <h1 id="studioDocTitle">Untitled NDA</h1>
               </div>
             </div>
-            <dl class="studio-matter-meta">
-              <div>
-                <dt>Counterparty</dt>
-                <dd>Pending upload</dd>
+            <div class="studio-matter-right">
+              <dl class="studio-matter-meta">
+                <div>
+                  <dt>Counterparty</dt>
+                  <dd id="studioCounterpartyMeta">-</dd>
+                </div>
+                <div>
+                  <dt>Received</dt>
+                  <dd>30/05/2026</dd>
+                </div>
+              </dl>
+              <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
+                <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
+                <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
+                <button id="studioClearButton" class="secondary" type="button">Clear</button>
               </div>
-              <div>
-                <dt>Received</dt>
-                <dd>30/05/2026</dd>
-              </div>
-            </dl>
+            </div>
           </header>
 
           <section class="studio-grid">
             <aside class="studio-clauses" aria-label="Studio clause map">
-              <p class="eyebrow">clauses</p>
               <div class="studio-clause-list" id="studioClauseLane"></div>
             </aside>
 
             <section class="studio-document">
               <div class="studio-doc-toolbar">
-                <div class="studio-view-switch">
-                  <span class="vs-label">Views:</span>
-                  <button type="button" class="vs-btn active" data-view-mode="redline">Redline</button>
-                  <button type="button" class="vs-btn" data-view-mode="clean">Clean</button>
-                  <button type="button" class="vs-btn" data-view-mode="sidebyside">Side by Side</button>
+                <div class="studio-toolbar-left">
+                  <button id="studioUndoEditButton" class="studio-undo-edit" type="button" disabled aria-label="Undo last edit" title="Undo last edit">Undo</button>
+                  <div class="studio-toolbar-status">
+                    <strong id="studioFileMeta" aria-live="polite"></strong>
+                    <span id="studioDraftMeta" aria-live="polite"></span>
+                  </div>
                 </div>
-                <div class="studio-zoom">100%</div>
+                <div class="studio-toolbar-center">
+                  <div class="studio-view-switch" role="group" aria-label="Document view">
+                    <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
+                    <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
+                    <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
+                  </div>
+                  <div class="studio-viewer-controls" role="group" aria-label="Document controls">
+                    <div class="vc-group">
+                      <button class="vc-btn" id="studioPagePrev" type="button" aria-label="Previous page" title="Previous page">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 15 6-6 6 6"/></svg>
+                      </button>
+                      <span class="vc-readout" id="studioPageIndicator" aria-live="polite">1 / 1</span>
+                      <button class="vc-btn" id="studioPageNext" type="button" aria-label="Next page" title="Next page">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>
+                      </button>
+                    </div>
+                    <div class="vc-group">
+                      <button class="vc-btn" id="studioZoomOut" type="button" aria-label="Zoom out" title="Zoom out">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg>
+                      </button>
+                      <span class="vc-readout" id="studioZoomLevel" aria-live="polite">100%</span>
+                      <button class="vc-btn" id="studioZoomIn" type="button" aria-label="Zoom in" title="Zoom in">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+                      </button>
+                    </div>
+                    <button class="vc-btn vc-solo" id="studioFullscreen" type="button" aria-label="Full screen" title="Full screen" aria-pressed="false">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                    </button>
+                    <button class="vc-btn vc-solo" id="studioExportButton" type="button" disabled aria-label="Export DOCX" title="Export DOCX">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                    </button>
+                  </div>
+                  <div class="studio-toolbar-send actions" role="group" aria-label="Send actions">
+                    <button id="studioSendButton" class="secondary icon-only" type="button" disabled aria-label="Send Redline" title="Send Redline">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.99 5.73a2 2 0 0 1-2.02 0L2 7"/>
+                      </svg>
+                      <span class="sr-only">Send Redline</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="studio-toolbar-actions actions" role="group" aria-label="Review actions">
+                  <button id="studioReviewButton" type="button">Review NDA</button>
+                </div>
               </div>
               <div class="studio-page-wrap">
                 <div class="studio-page">
-                  <p class="studio-document-subtitle">NON-DISCLOSURE AGREEMENT (NDA)</p>
                   <div id="studioDocumentRender" class="studio-document-render" hidden></div>
-                  <textarea id="studioNdaText" spellcheck="false" placeholder="Paste NDA text here"></textarea>
+                  <textarea id="studioNdaText" spellcheck="false" aria-label="NDA source text" placeholder="Paste NDA text here"></textarea>
                 </div>
               </div>
             </section>
 
-            <aside class="studio-playbook" aria-label="Checklist and selected clauses">
-              <h2>Checklist</h2>
-              <section class="studio-card studio-check-card">
-                <p class="eyebrow">checklist</p>
-                <div class="studio-verdict-line">
-                  <strong id="studioResultMark">-</strong>
-                  <div>
-                    <h3 id="studioOverallTitle">Awaiting review</h3>
-                    <p id="studioResultMeta">No hard-clause review has run yet.</p>
-                  </div>
-                </div>
-                <div class="studio-match-line">
-                  <strong id="studioMatchSummary">0/6</strong>
-                  <span>clauses checked</span>
-                </div>
-              </section>
-              <section class="studio-card">
-                <p class="eyebrow">selected clauses</p>
-                <div class="studio-issue-list" id="studioIssueList"></div>
-              </section>
+            <aside class="studio-playbook" aria-label="Selected clause details">
+              <h2>Selected Clause</h2>
               <section class="studio-card" id="studioDetailPanel">
-                <p class="eyebrow">selected clause</p>
                 <p>No review yet.</p>
               </section>
             </aside>
           </section>
-
-          <footer class="studio-actionbar">
-            <div class="studio-file-summary">
-              <strong id="studioFileMeta">No file selected</strong>
-              <span>Editable review source</span>
-            </div>
-            <div class="actions">
-              <button id="studioReviewButton" type="button">Review NDA</button>
-              <button id="studioExportButton" class="secondary" type="button" disabled>Export DOCX</button>
-              <button id="studioClearButton" class="secondary" type="button">Clear</button>
-            </div>
-          </footer>
         </main>
 
-        <main class="playbook-view view" id="clausesView" data-view="clauses">
-          <section class="playbook-shell">
-            <aside class="clause-rail">
-              <div class="rail-heading">
-                <p class="eyebrow">hard clauses</p>
-                <h2>Aspora playbook</h2>
+        <main class="manual-upload-view view" id="uploadView" role="tabpanel" aria-labelledby="uploadTab" data-view="upload" hidden>
+          <section class="upload-shell">
+            <header class="upload-header">
+              <div class="repository-title">
+                <span class="upload-icon" aria-hidden="true"></span>
+                <h1>Manual Upload</h1>
               </div>
-              <div class="playbook-list" id="playbookList"></div>
+              <p class="upload-header-copy">Create a repository matter from a local NDA.</p>
+            </header>
+
+            <section class="upload-workspace">
+              <form class="upload-panel" id="manualUploadForm">
+                <label class="upload-dropzone" id="manualUploadDropzone" for="manualUploadFileInput">
+                  <input id="manualUploadFileInput" type="file" accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf">
+                  <span class="upload-dropzone-mark" aria-hidden="true"></span>
+                  <strong>Select NDA document</strong>
+                  <span>.docx or text-based .pdf</span>
+                </label>
+
+                <div class="upload-selected-file empty" id="manualUploadSelectedFile" aria-live="polite">
+                  No file selected
+                </div>
+
+                <div class="upload-field-grid">
+                  <label class="upload-field" for="manualUploadSubjectInput">
+                    <span>Subject</span>
+                    <input id="manualUploadSubjectInput" type="text" autocomplete="off" placeholder="Defaults to file name">
+                  </label>
+                  <label class="upload-field" for="manualUploadSenderInput">
+                    <span>Counterparty email</span>
+                    <input id="manualUploadSenderInput" type="email" autocomplete="email" placeholder="Optional">
+                  </label>
+                  <label class="upload-field upload-field-wide" for="manualUploadNoteInput">
+                    <span>Intake note</span>
+                    <textarea id="manualUploadNoteInput" rows="3" placeholder="Optional repository note"></textarea>
+                  </label>
+                </div>
+
+                <footer class="upload-actions">
+                  <p class="upload-status" id="manualUploadStatus" aria-live="polite"></p>
+                  <div>
+                    <button class="secondary" id="manualUploadClearButton" type="button">Clear</button>
+                    <button id="manualUploadSubmitButton" type="submit" disabled>Upload NDA</button>
+                  </div>
+                </footer>
+              </form>
+
+              <aside class="upload-side-panel" aria-label="Manual intake details">
+                <p class="eyebrow">intake route</p>
+                <h2>Review queue</h2>
+                <dl>
+                  <div>
+                    <dt>Source</dt>
+                    <dd>Manual Upload</dd>
+                  </div>
+                  <div>
+                    <dt>Repository stage</dt>
+                    <dd>In Review</dd>
+                  </div>
+                  <div>
+                    <dt>Pipeline</dt>
+                    <dd>Pass checks and redline draft</dd>
+                  </div>
+                </dl>
+              </aside>
+            </section>
+          </section>
+        </main>
+
+        <main class="repository-view view" id="repositoryView" role="tabpanel" aria-labelledby="repositoryTab" data-view="repository" hidden>
+          <section class="repository-shell">
+            <header class="repository-header">
+              <div class="repository-title">
+                <span class="repository-icon" aria-hidden="true"></span>
+                <h1>Contract Repository</h1>
+              </div>
+              <div class="repository-header-actions">
+                <span class="repository-sync-status" data-repository-sync-status>Sync status loading</span>
+              </div>
+            </header>
+
+            <section class="repository-workspace">
+              <section class="repository-board" aria-label="Contract repository board">
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>Gmail Demo</h2>
+                    <span data-repository-count="gmail_demo">0</span>
+                  </header>
+                  <div class="repository-card-list" id="gmailDemoMatterList" data-repository-list="gmail_demo">
+                    <div class="repository-dropzone">No documents</div>
+                  </div>
+                </article>
+
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>In Review</h2>
+                    <span data-repository-count="in_review">0</span>
+                  </header>
+                  <div class="repository-card-list" data-repository-list="in_review">
+                    <div class="repository-dropzone">No documents</div>
+                  </div>
+                </article>
+
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>Redline Ready</h2>
+                    <span data-repository-count="redline_ready">0</span>
+                  </header>
+                  <div class="repository-card-list" data-repository-list="redline_ready">
+                    <div class="repository-dropzone">No documents</div>
+                  </div>
+                </article>
+
+                <article class="repository-column">
+                  <header class="repository-column-head">
+                    <h2>Signed / Closed</h2>
+                    <span data-repository-count="signed_closed">0</span>
+                  </header>
+                  <div class="repository-card-list" data-repository-list="signed_closed">
+                    <div class="repository-dropzone">No documents</div>
+                  </div>
+                </article>
+              </section>
+
+              <aside class="repository-detail-panel" id="repositoryMatterPanel" role="dialog" aria-modal="true" aria-label="Matter inspector" hidden>
+                <div class="repository-detail-empty">Select a matter</div>
+              </aside>
+            </section>
+          </section>
+        </main>
+
+        <main class="admin-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>
+          <section class="admin-console">
+            <aside class="admin-nav" aria-label="Admin sections">
+              <div class="rail-heading">
+                <p class="eyebrow">admin</p>
+                <h2>Settings console</h2>
+              </div>
+              <button class="admin-section-button active" type="button" data-admin-section="playbook" aria-pressed="true">
+                <strong>Playbook</strong>
+                <span>Clause rules and language</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
+                <strong>Integrations</strong>
+                <span>Gmail accounts and sync state</span>
+              </button>
             </aside>
 
-            <section class="clause-detail" id="clauseDetail"></section>
+            <section class="admin-section-panel active" id="adminPlaybookPanel" data-admin-panel="playbook">
+              <section class="playbook-shell">
+                <aside class="clause-rail">
+                  <div class="rail-heading">
+                    <p class="eyebrow">hard clauses</p>
+                    <h2>Aspora playbook</h2>
+                  </div>
+                  <div class="playbook-list" id="playbookList"></div>
+                </aside>
+
+                <section class="clause-detail" id="clauseDetail"></section>
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminIntegrationsPanel" data-admin-panel="integrations" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">integrations</p>
+                  <h1>Connected services</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminGmailRefreshButton" type="button">Refresh</button>
+                </div>
+              </header>
+
+              <section class="integrations-grid">
+                <article class="integration-card" id="adminGmailCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">gmail</p>
+                      <h2>Gmail</h2>
+                    </div>
+                    <span class="integration-status" id="adminGmailOverall">Checking</span>
+                  </header>
+
+                  <div class="integration-toggle-grid" id="adminGmailToggles">
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>Inbound email</strong>
+                        <span data-admin-gmail="inbound-enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminGmailInboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable inbound Gmail">
+                        <span></span>
+                      </button>
+                    </div>
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>Outbound email</strong>
+                        <span data-admin-gmail="outbound-enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminGmailOutboundToggle" type="button" role="switch" aria-checked="false" aria-label="Enable outbound Gmail">
+                        <span></span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <section class="integration-subsection">
+                    <h3>Sync frequency</h3>
+                    <div class="integration-frequency-control" id="adminGmailFrequencyControl" role="group" aria-label="Gmail sync frequency">
+                      <button type="button" data-gmail-frequency="always_on" aria-pressed="false">Always on</button>
+                      <button type="button" data-gmail-frequency="10_minutes" aria-pressed="true">10 min</button>
+                      <button type="button" data-gmail-frequency="30_minutes" aria-pressed="false">30 min</button>
+                      <button type="button" data-gmail-frequency="1_hour" aria-pressed="false">1 hour</button>
+                      <button type="button" data-gmail-frequency="2_hours" aria-pressed="false">2 hours</button>
+                    </div>
+                    <p class="integration-frequency-copy" data-admin-gmail="sync-frequency-copy">Every 10 minutes.</p>
+                  </section>
+
+                  <section class="integration-subsection">
+                    <h3>Connection setup</h3>
+                    <div class="integration-connection-list" id="adminGmailSetupPanel">
+                      <div class="integration-connection-empty">Checking Gmail connection</div>
+                    </div>
+                  </section>
+
+                  <dl class="integration-facts" id="adminGmailFacts">
+                    <div>
+                      <dt>Inbound account</dt>
+                      <dd data-admin-gmail="inbound-email">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Outbound account</dt>
+                      <dd data-admin-gmail="outbound-email">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Inbound token configured</dt>
+                      <dd data-admin-gmail="inbound-configured">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Outbound token configured</dt>
+                      <dd data-admin-gmail="outbound-configured">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Inbound token source</dt>
+                      <dd data-admin-gmail="inbound-token-source">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Outbound token source</dt>
+                      <dd data-admin-gmail="outbound-token-source">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Default import query</dt>
+                      <dd data-admin-gmail="default-query">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Parsed inbound fields</dt>
+                      <dd data-admin-gmail="parsed-fields">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>NDA signal terms</dt>
+                      <dd data-admin-gmail="parsed-terms">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Last sync</dt>
+                      <dd data-admin-gmail="last-sync">Not run in this session</dd>
+                    </div>
+                  </dl>
+
+                  <section class="integration-subsection">
+                    <h3>Sync Audit</h3>
+                    <div class="integration-sync-history" id="adminGmailSyncHistory">
+                      <div class="integration-sync-history-empty">No sync runs recorded</div>
+                    </div>
+                  </section>
+
+                  <section class="integration-subsection">
+                    <h3>Recent Outbound</h3>
+                    <dl class="integration-facts compact" id="adminGmailRecentSend">
+                      <div>
+                        <dt>Status</dt>
+                        <dd>No outbound sends recorded</dd>
+                      </div>
+                    </dl>
+                  </section>
+                </article>
+              </section>
+            </section>
           </section>
         </main>
       </section>
     </div>
 
-    <script src="/static/app.js?v=43"></script>
+    <div class="send-modal" id="studioSendModal" role="dialog" aria-modal="true" aria-labelledby="studioSendModalTitle" hidden>
+      <div class="send-modal-dialog">
+        <form class="send-modal-form" id="studioSendForm">
+          <header class="send-modal-head">
+            <div>
+              <p class="send-modal-eyebrow">Outbound redline</p>
+              <h2 id="studioSendModalTitle">Send email</h2>
+            </div>
+            <button class="send-modal-close" id="studioSendModalClose" type="button" aria-label="Close send email dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <dl class="send-modal-route" aria-label="Email route">
+            <div>
+              <dt>From</dt>
+              <dd id="studioSendFrom">-</dd>
+            </div>
+            <div>
+              <dt>To</dt>
+              <dd id="studioSendTo">-</dd>
+            </div>
+            <div>
+              <dt>Attachment</dt>
+              <dd id="studioSendAttachment">-</dd>
+            </div>
+          </dl>
+
+          <label class="send-modal-field" for="studioSendSubject">
+            <span>Subject</span>
+            <input id="studioSendSubject" type="text" autocomplete="off">
+          </label>
+
+          <label class="send-modal-field" for="studioSendBody">
+            <span>Message</span>
+            <textarea id="studioSendBody" rows="10"></textarea>
+          </label>
+
+          <section class="send-modal-summary" aria-label="Redline summary">
+            <h3>Redline summary</h3>
+            <ul id="studioSendSummary"></ul>
+          </section>
+
+          <p class="send-modal-status" id="studioSendStatus" aria-live="polite"></p>
+
+          <footer class="send-modal-actions">
+            <button class="secondary" id="studioSendCancelButton" type="button">Cancel</button>
+            <button id="studioSendConfirmButton" type="submit">Send email</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+
+    <script src="/static/js/config.js"></script>
+    <script src="/static/js/html-utils.js"></script>
+    <script src="/static/js/clause-status.js"></script>
+    <script src="/static/js/inline-diff.js"></script>
+    <script src="/static/js/matter-utils.js"></script>
+    <script src="/static/js/redline-rendering.js"></script>
+    <script src="/static/js/repository.js"></script>
+    <script src="/static/js/manual-upload.js"></script>
+    <script src="/static/js/admin-integrations.js"></script>
+    <script src="/static/js/playbook-view.js"></script>
+    <script src="/static/js/review-workstation-actions.js"></script>
+    <script src="/static/js/review-workstation-source.js"></script>
+    <script src="/static/js/review-workstation-rendering.js"></script>
+    <script src="/static/js/review-workstation-viewer.js"></script>
+    <script src="/static/js/vendor/jszip.min.js"></script>
+    <script src="/static/js/vendor/docx-preview.min.js"></script>
+    <script src="/static/js/viewer-controls.js"></script>
+    <script src="/static/app.js"></script>
   </body>
 </html>

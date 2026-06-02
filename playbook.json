@@ -7,12 +7,46 @@
       "name": "Mutuality",
       "requirement": "The NDA must bind both parties symmetrically as disclosing and receiving parties.",
       "type": "required",
+      "preferred_position": "Mutual NDA: both parties act as Disclosing Party and Receiving Party, with symmetric confidentiality obligations.",
+      "check_trigger": "One-way or non-mutual language that binds only one side, fixes one party as the only Receiving Party, or otherwise fails to make both parties disclosure and receipt parties.",
+      "redline_template": "Each party may disclose Confidential Information under this Agreement, and each party acts as both a Disclosing Party and a Receiving Party with respect to Confidential Information it discloses or receives.",
       "search_terms": [
         "each party",
         "both parties",
         "mutual",
+        "reciprocal",
+        "disclosing party and receiving party",
+        "receiving party and disclosing party"
+      ],
+      "taxonomy_groups": [
+        "party_scope",
+        "reciprocal_obligation"
+      ],
+      "semantic_signals": [
+        "each of the parties",
+        "either party may disclose",
+        "the parties may disclose confidential information to each other",
+        "each party acts as both disclosing party and receiving party"
+      ],
+      "rationale": "A one-way NDA creates asymmetric risk; Aspora's baseline is reciprocal confidentiality unless the matter is deliberately unilateral.",
+      "evidence_guidance": "Look for language tying both parties to disclosing and receiving roles, not only isolated defined terms.",
+      "role_terms": [
         "disclosing party",
         "receiving party"
+      ],
+      "role_reciprocity_terms": [
+        "a party",
+        "any party",
+        "either party"
+      ],
+      "one_way_terms": [
+        "one-way",
+        "one way",
+        "unilateral",
+        "only the receiving party",
+        "recipient only",
+        "solely the recipient",
+        "receiving party only"
       ],
       "acceptable_language": "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party."
     },
@@ -21,6 +55,10 @@
       "name": "Confidential Information",
       "requirement": "Confidential Information must be broad and must not include extra exclusions beyond the standard carve-outs.",
       "type": "required",
+      "preferred_position": "Broad definition covering all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information, including the existence and terms of the Agreement, whether marked or unmarked.",
+      "check_trigger": "The definition is missing, too narrow, carves out core categories, or includes exclusions beyond the standard public-domain, prior-possession, lawful third-party source, and qualified independent-development carve-outs.",
+      "redline_template": "\"Confidential Information\" means any and all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information disclosed by either party, including the existence and terms of this Agreement, whether disclosed orally, visually, electronically or in writing and whether or not marked confidential. Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
+      "standard_exclusions_template": "Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
       "search_terms": [
         "confidential information",
         "any and all information",
@@ -28,6 +66,18 @@
         "financial",
         "technical"
       ],
+      "taxonomy_groups": [
+        "definition_scope",
+        "exclusions"
+      ],
+      "semantic_signals": [
+        "non-public information",
+        "proprietary information",
+        "information disclosed by either party",
+        "information whether oral written electronic or visual"
+      ],
+      "rationale": "The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.",
+      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph for category breadth and nearby exclusion language.",
       "definition_categories": [
         "financial",
         "business",
@@ -37,15 +87,46 @@
         "supplier",
         "pricing",
         "market",
+        "product",
         "trade secret",
         "proprietary",
         "source code"
+      ],
+      "allowed_exclusions": [
+        "public_domain",
+        "prior_possession",
+        "lawful_third_party_source",
+        "independent_development_without_use"
       ],
       "problematic_exclusion_terms": [
         "residual knowledge",
         "residuals",
         "reverse engineer",
         "reverse engineering"
+      ],
+      "independent_development_terms": [
+        "independently developed",
+        "independent development",
+        "independently created",
+        "independent creation",
+        "independently codeveloped",
+        "independently co-developed"
+      ],
+      "independent_development_qualification_terms": [
+        "without use",
+        "without using",
+        "without access",
+        "without reference"
+      ],
+      "exclusion_context_terms": [
+        "exclusion",
+        "exclusions",
+        "does not include",
+        "shall not include",
+        "not include",
+        "is not confidential information",
+        "excluded from confidential information",
+        "excludes"
       ],
       "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party."
     },
@@ -54,6 +135,8 @@
       "name": "Governing Law",
       "requirement": "Governing law must be India, Delaware, England and Wales, or DIFC.",
       "type": "required",
+      "preferred_position": "The governing law is one of the approved jurisdictions, preferably England and Wales unless the matter context supports another approved option.",
+      "check_trigger": "The governing law is missing, unclear, or names a jurisdiction outside India, Delaware, England and Wales, or DIFC.",
       "approved_laws": [
         "India",
         "Delaware",
@@ -76,6 +159,17 @@
         "Delaware",
         "India"
       ],
+      "taxonomy_groups": [
+        "dispute_framework",
+        "approved_jurisdiction"
+      ],
+      "semantic_signals": [
+        "this agreement is governed",
+        "agreement shall be construed in accordance with",
+        "laws applicable to this agreement"
+      ],
+      "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be changed or reviewed.",
+      "evidence_guidance": "Use the governing-law sentence as evidence, not the whole dispute-resolution section unless needed.",
       "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, or the DIFC."
     },
     {
@@ -83,14 +177,56 @@
       "name": "Term and Survival",
       "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years.",
       "type": "required",
+      "preferred_position": "Ordinary confidentiality obligations survive for a fixed period of up to five years. Narrow trade-secret, legal/regulatory, and data-protection obligations may survive for as long as the protected status or law requires.",
+      "check_trigger": "Ordinary confidentiality is perpetual, indefinite, relationship-based, tied to information remaining confidential, longer than five years, or missing a clear fixed term or survival period.",
       "max_term_years": 5,
-      "redline_template": "The confidentiality obligations survive for a fixed period of up to {max_term_years_label}, except for trade secrets or legal obligations that require a longer period.",
+      "redline_template": "The confidentiality obligations survive for a fixed period of up to {max_term_years_label}, except that trade secrets, legally required confidentiality, and personal data protected by data-protection law survive for as long as the protected status or law requires.",
       "search_terms": [
         "term",
         "survive",
         "survival",
+        "continue",
+        "continues",
+        "remain in effect",
+        "in effect",
         "period",
+        "duration",
+        "expiration",
+        "effective date",
         "years"
+      ],
+      "taxonomy_groups": [
+        "duration",
+        "survival"
+      ],
+      "semantic_signals": [
+        "confidentiality obligations continue",
+        "obligations remain binding",
+        "obligations remain in force",
+        "after termination"
+      ],
+      "rationale": "Ordinary confidentiality should be time-limited; indefinite language is only acceptable for narrow trade-secret or legal exceptions.",
+      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording.",
+      "indefinite_terms": [
+        "indefinitely",
+        "perpetuity",
+        "perpetual",
+        "perpetually",
+        "perpetual confidentiality",
+        "for so long as",
+        "for as long as",
+        "for so long as the information remains confidential"
+      ],
+      "longer_survival_carve_out_terms": [
+        "trade secret",
+        "trade secrets",
+        "legal obligation",
+        "legal obligations",
+        "required by law",
+        "applicable law",
+        "personal data",
+        "data protection",
+        "data-protection"
       ],
       "acceptable_language": "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period."
     },
@@ -99,13 +235,28 @@
       "name": "Non-Circumvention",
       "requirement": "The NDA must not include non-circumvention, introduced-party non-solicit, or substitute-purpose exclusivity obligations.",
       "type": "prohibited",
+      "preferred_position": "The NDA should not restrict direct dealings, introduced contacts, substitute transactions, exclusivity, or similar commercial conduct beyond confidentiality.",
+      "check_trigger": "Any non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction appears in the NDA.",
       "search_terms": [
         "non-circumvention",
         "non circumvention",
         "circumvent",
         "introduced parties",
+        "substitute purpose",
         "exclusive dealing"
       ],
+      "taxonomy_groups": [
+        "prohibited_restriction",
+        "business_restraint"
+      ],
+      "semantic_signals": [
+        "deal directly with introduced",
+        "avoid the company",
+        "bypass the disclosing party",
+        "not solicit introduced contacts"
+      ],
+      "rationale": "Non-circumvention and substitute-purpose restrictions turn the NDA into a broader commercial restraint.",
+      "evidence_guidance": "Flag paragraphs restricting introduced parties, direct dealings, bypassing, substitute transactions, or exclusivity.",
       "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."
     },
     {
@@ -113,6 +264,8 @@
       "name": "Signatures",
       "requirement": "The execution block must show both parties, signatory titles, and a date.",
       "type": "required",
+      "preferred_position": "Both parties have complete execution blocks showing legal entity name, authorised signatory, title or capacity, and date.",
+      "check_trigger": "The execution block is missing, one party block is absent, or signatory name, title/capacity, or date markers are incomplete.",
       "search_terms": [
         "signatures",
         "signature",
@@ -120,6 +273,18 @@
         "date:",
         "by:"
       ],
+      "taxonomy_groups": [
+        "execution",
+        "signing_authority"
+      ],
+      "semantic_signals": [
+        "executed by",
+        "signed for and on behalf of",
+        "authorised signatory",
+        "name title date"
+      ],
+      "rationale": "A complete execution block reduces signing ambiguity and supports clean downstream storage.",
+      "evidence_guidance": "Look for both parties' execution blocks with signatory, title or capacity, and date markers.",
       "redline_template": "For [Party 1 legal name]\nBy:\nName:\nTitle:\nDate:\n\nFor [Party 2 legal name]\nBy:\nName:\nTitle:\nDate:",
       "acceptable_language": "Each party should have an execution block showing the legal entity name, authorised signatory, title, and date."
     }

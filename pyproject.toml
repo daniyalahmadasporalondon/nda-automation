@@ -10,5 +10,17 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
 
-[tool.setuptools]
-packages = ["nda_automation"]
+[project.optional-dependencies]
+pdf = [
+  "pypdf>=6.0",
+]
+gmail = [
+  "google-api-python-client>=2.0",
+  "google-auth>=2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["nda_automation*"]
+
+[tool.ruff.lint]
+select = ["F"]

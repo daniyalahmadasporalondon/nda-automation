@@ -1,0 +1,11 @@
+{
+  "name": "nda-automation-frontend-tests",
+  "private": true,
+  "scripts": {
+    "test:frontend": "node tests/frontend/review-workstation.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.52.0",
+    "pngjs": "^7.0.0"
+  }
+}

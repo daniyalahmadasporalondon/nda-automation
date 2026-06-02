@@ -5,7 +5,11 @@ __pycache__/
 .coverage
 .venv/
 venv/
+node_modules/
+playwright-report/
+test-results/
 dist/
 build/
 *.egg-info/
 exports/
+data/

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: nda-automation
+    runtime: python
+    plan: starter
+    buildCommand: python -m pip install --upgrade pip && python -m pip install ".[pdf,gmail]"
+    startCommand: python -m nda_automation.server --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: NDA_REQUIRE_AUTH
+        value: "true"
+      - key: NDA_AUTH_USERNAME
+        value: nda-admin
+      - key: NDA_AUTH_PASSWORD
+        sync: false
+      - key: NDA_DATA_DIR
+        value: /var/data
+      - key: NDA_EXPORTS_DIR
+        value: /var/data/exports
+      - key: NDA_RATE_LIMIT_PER_MINUTE
+        value: "120"
+    disk:
+      name: nda-automation-data
+      mountPath: /var/data
+      sizeGB: 1

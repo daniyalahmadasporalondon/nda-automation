@@ -1,0 +1,66 @@
+version: 0.1.0
+name: Aspora NDA clause taxonomy
+description: Semantic groupings and review cues for the NDA hard-clause playbook.
+clauses:
+  - id: mutuality
+    groups:
+      - party_scope
+      - reciprocal_obligation
+    evidence:
+      - both parties have disclosure and receipt obligations
+      - reciprocal defined roles or equivalent drafting
+    escalation:
+      - unilateral recipient-only obligations
+      - ambiguous role definitions
+  - id: confidential_information
+    groups:
+      - definition_scope
+      - exclusions
+    evidence:
+      - broad non-public information definition
+      - business, financial, technical, customer, supplier, pricing, market, proprietary, or source-code coverage
+    escalation:
+      - residual knowledge exclusions
+      - reverse-engineering exclusions
+      - unqualified independent-development carve-outs
+  - id: governing_law
+    groups:
+      - dispute_framework
+      - approved_jurisdiction
+    evidence:
+      - governing law sentence
+      - approved jurisdiction reference
+    escalation:
+      - unapproved law
+      - missing governing law
+  - id: term_and_survival
+    groups:
+      - duration
+      - survival
+    evidence:
+      - fixed confidentiality term
+      - survival period no longer than the playbook cap
+    escalation:
+      - indefinite ordinary confidentiality
+      - survival period above the cap
+  - id: non_circumvention
+    groups:
+      - prohibited_restriction
+      - business_restraint
+    evidence:
+      - introduced-party restriction
+      - direct-dealing restriction
+      - substitute-purpose or exclusivity language
+    escalation:
+      - any non-circumvention obligation
+      - introduced-contact non-solicit drafted into the NDA
+  - id: signatures
+    groups:
+      - execution
+      - signing_authority
+    evidence:
+      - both parties have execution blocks
+      - signatory, title, and date markers
+    escalation:
+      - missing party block
+      - missing signatory title or date
