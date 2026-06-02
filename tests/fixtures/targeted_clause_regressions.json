@@ -296,5 +296,68 @@
         "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
       }
     }
+  },
+  {
+    "name": "non_circumvention_referenced_section_prohibited_checks",
+    "clause_id": "non_circumvention",
+    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with the non-circumvention provisions in Section 12.\n\nSection 12 Non-Circumvention\n\nThe Recipient shall not contact introduced parties.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p5"],
+        "non_circumvention_analysis.references.0.status": "prohibited",
+        "non_circumvention_analysis.references.0.targets.0.status": "prohibited"
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_unresolved_reference_reviews",
+    "clause_id": "non_circumvention",
+    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with the non-circumvention provisions in Section 99.",
+    "expected": {
+      "status": "check",
+      "decision": "review",
+      "reason_code": "unclear_non_circumvention_reference",
+      "redline_count": 0,
+      "analysis": {
+        "non_circumvention_analysis.review_paragraph_ids": ["p3"],
+        "non_circumvention_analysis.references.0.status": "unresolved",
+        "non_circumvention_analysis.references.0.unresolved_numbers": ["99"]
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_negated_referenced_section_passes",
+    "clause_id": "non_circumvention",
+    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nNo non-circumvention restrictions apply under Section 12.\n\nSection 12 No Non-Circumvention\n\nThis Agreement does not include non-circumvention or non-solicitation obligations.",
+    "expected": {
+      "status": "not_present",
+      "decision": "pass",
+      "reason_code": "negated_non_circumvention_reference",
+      "redline_count": 0,
+      "analysis": {
+        "non_circumvention_analysis.negated_reference_paragraph_ids": ["p3", "p5"],
+        "non_circumvention_analysis.references.0.status": "negated"
+      }
+    }
+  },
+  {
+    "name": "non_circumvention_generic_reference_uses_target_scope_checks",
+    "clause_id": "non_circumvention",
+    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with Section 12.\n\nSection 12 Introduced Contacts\n\nThe Recipient shall not contact introduced parties.",
+    "expected": {
+      "status": "check",
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction",
+      "redline_count": 1,
+      "analysis": {
+        "non_circumvention_analysis.prohibited_paragraph_ids": ["p5"],
+        "non_circumvention_analysis.references.0.status": "prohibited",
+        "non_circumvention_analysis.references.0.source_classification": "no_signal"
+      }
+    }
   }
 ]

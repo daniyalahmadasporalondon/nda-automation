@@ -2256,6 +2256,159 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p1"])
         self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
 
+    def test_non_circumvention_fails_for_prohibited_referenced_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            The Recipient shall comply with the non-circumvention provisions in Section 12.
+
+            Section 12 Non-Circumvention
+
+            The Recipient shall not contact introduced parties.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "fail")
+        self.assertEqual(non_circumvention["reason_code"], "prohibited_non_circumvention_restriction")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+            ["p5"],
+        )
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["references"][0]["status"], "prohibited")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["references"][0]["targets"][0]["status"],
+            "prohibited",
+        )
+
+    def test_non_circumvention_needs_review_for_unresolved_reference(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            The Recipient shall comply with the non-circumvention provisions in Section 99.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["decision"], "review")
+        self.assertEqual(non_circumvention["reason_code"], "unclear_non_circumvention_reference")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p3"])
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p3"])
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["references"][0]["status"], "unresolved")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["references"][0]["unresolved_numbers"],
+            ["99"],
+        )
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
+
+    def test_non_circumvention_needs_review_for_nonoperative_referenced_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            The Recipient shall comply with the non-circumvention provisions in Section 12.
+
+            Section 12 Notices
+
+            Notices are effective when delivered.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["decision"], "review")
+        self.assertEqual(non_circumvention["reason_code"], "unclear_non_circumvention_reference")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p3", "p4", "p5"])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["references"][0]["status"],
+            "no_non_circumvention_signal",
+        )
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
+
+    def test_non_circumvention_uses_referenced_target_scope_from_heading(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            The Recipient shall comply with Section 12.
+
+            Section 12 Introduced Contacts
+
+            The Recipient shall not contact introduced parties.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["decision"], "fail")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["references"][0]["status"], "prohibited")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["references"][0]["source_classification"],
+            "no_signal",
+        )
+
+    def test_non_circumvention_passes_for_negated_referenced_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            No non-circumvention restrictions apply under Section 12.
+
+            Section 12 No Non-Circumvention
+
+            This Agreement does not include non-circumvention or non-solicitation obligations.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertTrue(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(non_circumvention["reason_code"], "negated_non_circumvention_reference")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], [])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["negated_reference_paragraph_ids"],
+            ["p3", "p5"],
+        )
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["references"][0]["status"], "negated")
+
+    def test_non_circumvention_ignores_generic_reference_without_subject_signal(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Restrictions
+
+            The Recipient shall comply with Section 12.
+
+            Section 12 Other Covenant
+
+            The Recipient shall not contact any such persons.
+            """
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(non_circumvention["non_circumvention_analysis"]["reference_count"], 0)
+
     def test_non_circumvention_redlines_each_detected_paragraph(self):
         result = review_nda(
             """

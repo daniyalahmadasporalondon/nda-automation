@@ -576,6 +576,26 @@ def _non_circumvention_audit_signals(clause: ClauseResult) -> List[Dict[str, obj
                     "matched_pattern_count": record.get("matched_pattern_count", 0),
                 },
             })
+    references = analysis.get("references", [])
+    if isinstance(references, list):
+        for reference in references[:30]:
+            if not isinstance(reference, dict):
+                continue
+            status = str(reference.get("status") or "")
+            signals.append({
+                "source": "non_circumvention_analysis",
+                "paragraph_id": str(reference.get("paragraph_id") or ""),
+                "classification": "non_circumvention_reference",
+                "signal_type": _non_circumvention_reference_signal_type(status),
+                "counted": status != "negated",
+                "matched_text": str(reference.get("reference_text") or ""),
+                "reason": "Non-circumvention cross-reference was resolved and classified.",
+                "metadata": {
+                    "status": status,
+                    "resolver_status": reference.get("resolver_status", ""),
+                    "unresolved_numbers": reference.get("unresolved_numbers", []),
+                },
+            })
     return signals
 
 
@@ -607,6 +627,14 @@ def _non_circumvention_signal_type(classification: str) -> str:
     if classification == "prohibited":
         return "check_evidence"
     if classification == "review":
+        return "review_evidence"
+    return "ignored_evidence"
+
+
+def _non_circumvention_reference_signal_type(status: str) -> str:
+    if status == "prohibited":
+        return "check_evidence"
+    if status in {"partial", "unresolved", "review", "no_non_circumvention_signal"}:
         return "review_evidence"
     return "ignored_evidence"
 

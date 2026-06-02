@@ -407,6 +407,11 @@ def _non_circumvention_reason_codes(clause: Dict[str, Any], decision: str) -> Li
         return [semantic_code]
     if _has_ids(clause, "non_circumvention_analysis", "prohibited_paragraph_ids"):
         return ["prohibited_non_circumvention_restriction"]
+    if _has_non_circumvention_reference_status(
+        clause,
+        {"partial", "unresolved", "review", "no_non_circumvention_signal"},
+    ):
+        return ["unclear_non_circumvention_reference"]
     if _has_ids(clause, "non_circumvention_analysis", "review_paragraph_ids"):
         return ["possible_non_circumvention_restriction"]
     if _has_ids(clause, "non_circumvention_analysis", "negated_reference_paragraph_ids"):
@@ -416,6 +421,19 @@ def _non_circumvention_reason_codes(clause: Dict[str, Any], decision: str) -> Li
     if decision == CLAUSE_DECISION_PASS:
         return ["no_non_circumvention_restriction"]
     return [_generic_reason_code(clause, decision)]
+
+
+def _has_non_circumvention_reference_status(clause: Dict[str, Any], statuses: set[str]) -> bool:
+    analysis = clause.get("non_circumvention_analysis")
+    if not isinstance(analysis, dict):
+        return False
+    references = analysis.get("references", [])
+    if not isinstance(references, list):
+        return False
+    return any(
+        isinstance(reference, dict) and str(reference.get("status") or "") in statuses
+        for reference in references
+    )
 
 
 def _signature_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
