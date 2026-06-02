@@ -7,7 +7,6 @@ from ..concept_classifier import ORDINARY_CONFIDENTIALITY_CONCEPTS
 from .common import (
     ClauseResult,
     Paragraph,
-    YEAR_TERM_EVIDENCE_PATTERN,
     YEAR_TERM_PATTERN,
     YEAR_WORDS,
     _check,
@@ -52,6 +51,7 @@ AGREEMENT_TERM_DURATION_PATTERN = (
     r"|\bterm\b\s*[:.-]\s*(?:for\s+)?"
 )
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
+    "after termination",
     "continue",
     "continues",
     "duration",
@@ -103,7 +103,13 @@ def _check_term_and_survival(
         result = _check(
             clause,
             f"A term or survival period exceeds the cap of {cap_label}.",
-            _paragraph_matches(term_paragraphs, [YEAR_TERM_EVIDENCE_PATTERN]),
+            _paragraphs_with_scoped_year_terms(
+                term_paragraphs,
+                clause,
+                max_years=max_years,
+                over_cap=True,
+                exclude_allowed_carve_out=True,
+            ),
             what_to_fix=(
                 "Reduce the ordinary confidentiality term or survival period "
                 f"to a fixed period of {cap_label} or less."
@@ -124,7 +130,13 @@ def _check_term_and_survival(
         _attach_survival_analysis(result, reference_analysis)
         return attach_structure_context(result, review_context, context_concepts)
     if has_term_within_cap:
-        evidence_paragraphs = _term_evidence_paragraphs(term_paragraphs, paragraphs, reference_analysis)
+        evidence_paragraphs = _term_evidence_paragraphs(
+            term_paragraphs,
+            paragraphs,
+            reference_analysis,
+            clause,
+            max_years,
+        )
         reference_review_reason = _survival_reference_review_reason(reference_analysis, cap_label)
         if reference_review_reason:
             result = _match(clause, reference_review_reason, evidence_paragraphs)
@@ -343,14 +355,53 @@ def _term_evidence_paragraphs(
     term_paragraphs: List[Paragraph],
     all_paragraphs: List[Paragraph],
     reference_analysis: Dict[str, object],
+    clause: Dict[str, object],
+    max_years: int,
 ) -> List[Paragraph]:
-    evidence = _paragraph_matches(term_paragraphs, [YEAR_TERM_EVIDENCE_PATTERN])
+    evidence = _paragraphs_with_scoped_year_terms(
+        term_paragraphs,
+        clause,
+        max_years=max_years,
+        within_cap=True,
+    )
     paragraph_lookup = {str(paragraph.get("id")): paragraph for paragraph in all_paragraphs if paragraph.get("id")}
     for paragraph_id in reference_analysis.get("target_paragraph_ids", []):
         paragraph = paragraph_lookup.get(str(paragraph_id))
         if paragraph:
             evidence.append(paragraph)
     return evidence
+
+
+def _paragraphs_with_scoped_year_terms(
+    paragraphs: List[Paragraph],
+    clause: Dict[str, object],
+    *,
+    max_years: int,
+    within_cap: bool = False,
+    over_cap: bool = False,
+    exclude_allowed_carve_out: bool = False,
+) -> List[Paragraph]:
+    matches: List[Paragraph] = []
+    for paragraph in paragraphs:
+        normalized = _normalize(str(paragraph.get("text") or ""))
+        terms = [
+            term
+            for term in _extract_year_terms_with_context(normalized)
+            if _year_term_has_required_scope(normalized, term, clause)
+        ]
+        if exclude_allowed_carve_out:
+            terms = [
+                term
+                for term in terms
+                if not _is_allowed_carve_out_year(normalized, term, clause)
+            ]
+        if within_cap:
+            terms = [term for term in terms if 0 < term["years"] <= max_years]
+        if over_cap:
+            terms = [term for term in terms if term["years"] > max_years]
+        if terms:
+            matches.append(paragraph)
+    return matches
 
 
 def _attach_survival_analysis(result: ClauseResult, reference_analysis: Dict[str, object]) -> None:

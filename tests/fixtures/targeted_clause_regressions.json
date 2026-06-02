@@ -110,6 +110,21 @@
     }
   },
   {
+    "name": "term_survival_uses_resolved_reference_over_indemnity_decoy",
+    "clause_id": "term_and_survival",
+    "text": "Mutual Non-Disclosure Agreement\n\nArticle 1 Confidentiality\n\nThe Receiving Party shall protect Confidential Information and not disclose it. The confidentiality obligations survive as set out in Section 4.\n\nSection 4 Term\n\nThe confidentiality obligations survive for three (3) years after termination.\n\nSection 5 Indemnity\n\nLiability for indemnity claims may persist for ten (10) years after termination.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "resolved_survival_reference_within_cap",
+      "redline_count": 0,
+      "analysis": {
+        "term_survival_analysis.references.0.status": "resolved",
+        "term_survival_analysis.confidentiality_reference_count": 1
+      }
+    }
+  },
+  {
     "name": "term_survival_unresolved_article_reference_requires_review",
     "clause_id": "term_and_survival",
     "text": "Article 1 Confidentiality\n\nThe Receiving Party shall protect Confidential Information and not disclose it.\n\nArticle 2 Term and Survival\n\nThe obligations set out in Articles 1 and 99 survive expiry or termination for 3 (three) years.",

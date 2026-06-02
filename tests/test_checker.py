@@ -316,6 +316,34 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("concept_classifier", result)
         self.assertIn("confidentiality_obligation", result["concept_classifier"]["concepts_by_section_id"]["section-2"])
 
+    def test_term_and_survival_ignores_unreferenced_over_cap_indemnity_duration(self):
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+            The confidentiality obligations survive as set out in Section 4.
+
+            Section 4 Term
+
+            The confidentiality obligations survive for three (3) years after termination.
+
+            Section 5 Indemnity
+
+            Liability for indemnity claims may persist for ten (10) years after termination.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertEqual(term_clause["decision"], "pass")
+        self.assertEqual(term_clause["reason_code"], "resolved_survival_reference_within_cap")
+        self.assertNotIn("ten (10) years", term_clause["matched_text"])
+        self.assertEqual(term_clause["term_survival_analysis"]["confidentiality_reference_count"], 1)
+
     def test_term_and_survival_needs_review_for_unresolved_survival_references(self):
         result = review_nda(
             """
