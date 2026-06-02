@@ -42,6 +42,20 @@
     }
   },
   {
+    "name": "confidential_information_unqualified_independently_develops_usage_right_reviews",
+    "clause_id": "confidential_information",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nThe Receiving Party may freely use anything it independently develops.",
+    "expected": {
+      "status": "match",
+      "decision": "review",
+      "reason_code": "usage_right_language_needs_review",
+      "redline_count": 0,
+      "analysis": {
+        "confidential_information_analysis.usage_right_review_paragraph_ids": ["p2"]
+      }
+    }
+  },
+  {
     "name": "governing_law_placeholder_requires_review",
     "clause_id": "governing_law",
     "text": "This Agreement shall be governed by the laws of [jurisdiction].",

@@ -24,8 +24,12 @@ USAGE_RIGHT_ACTION_PATTERN = (
     r"(?:use|using|retain|retaining|disclose|disclosing|exploit|exploiting|"
     r"reverse\s+engineer(?:ing)?)"
 )
+USAGE_RIGHT_PERMISSION_MODIFIER_PATTERN = (
+    r"(?:(?:freely|directly|unrestrictedly|without\s+(?:restriction|limitation|limit)|"
+    r"for\s+any\s+purpose)\s+){0,3}"
+)
 USAGE_RIGHT_BEFORE_PATTERN = (
-    rf"(?:\b(?:may|can)\s+{USAGE_RIGHT_ACTION_PATTERN}"
+    rf"(?:\b(?:may|can)\s+{USAGE_RIGHT_PERMISSION_MODIFIER_PATTERN}{USAGE_RIGHT_ACTION_PATTERN}"
     rf"|\b(?:shall|will|is|are|be|remain(?:s)?)\s+(?:free|permitted|allowed|entitled)\s+to\s+"
     rf"{USAGE_RIGHT_ACTION_PATTERN}"
     rf"|\b(?:has|have)\s+(?:the\s+)?right\s+to\s+{USAGE_RIGHT_ACTION_PATTERN}"
