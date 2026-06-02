@@ -993,6 +993,148 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(governing_law["decision"], "pass")
         self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p5"])
 
+    def test_governing_law_uses_approved_referenced_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 12.
+
+            Section 12 Governing Law
+
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["reason_code"], "approved_governing_law")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], [])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "approved")
+        self.assertEqual(
+            governing_law["governing_law_analysis"]["candidate_records"][0]["source"],
+            "reference_resolver",
+        )
+
+    def test_governing_law_uses_approved_referenced_schedule_key_term(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            This Agreement shall be governed by the governing law stated in Schedule 1.
+
+            Schedule 1 Key Terms
+
+            Governing Law: England and Wales.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "approved")
+
+    def test_governing_law_needs_review_for_unresolved_reference(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 99.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["reason_code"], "unclear_governing_law")
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p3"])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unresolved")
+        self.assertEqual(
+            governing_law["governing_law_analysis"]["references"][0]["unresolved_numbers"],
+            ["99"],
+        )
+
+    def test_governing_law_needs_review_for_reference_to_non_governing_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 12.
+
+            Section 12 Notices
+
+            Notices are effective when delivered.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["reason_code"], "unclear_governing_law")
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p3"])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unclear")
+
+    def test_governing_law_fails_for_unapproved_referenced_section(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 12.
+
+            Section 12 Governing Law
+
+            This Agreement shall be governed by the laws of France.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "check")
+        self.assertFalse(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unapproved")
+
+    def test_governing_law_needs_review_for_referenced_conditional_choice_of_law(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 12.
+
+            Section 12 Governing Law
+
+            This Agreement shall be governed by the laws of England and Wales except that intellectual property disputes shall be governed by the laws of France.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["reason_code"], "unclear_governing_law")
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p3", "p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p3", "p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unclear")
+
     def test_governing_law_needs_review_for_heading_without_jurisdiction(self):
         result = review_nda("Article 5 Governing Law")
 

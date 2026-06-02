@@ -358,10 +358,10 @@ def _governing_law_reason_codes(clause: Dict[str, Any], decision: str) -> List[s
         return ["unapproved_governing_law"]
     if _has_ids(clause, "governing_law_analysis", "unclear_paragraph_ids"):
         return ["unclear_governing_law"]
-    if _has_ids(clause, "governing_law_analysis", "heading_only_paragraph_ids"):
-        return ["governing_law_heading_only"]
     if _has_ids(clause, "governing_law_analysis", "approved_paragraph_ids"):
         return ["approved_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "heading_only_paragraph_ids"):
+        return ["governing_law_heading_only"]
     if _issue_type(clause) == "missing":
         return ["missing_governing_law"]
     return [_generic_reason_code(clause, decision)]
