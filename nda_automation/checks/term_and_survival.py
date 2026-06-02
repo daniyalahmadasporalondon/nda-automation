@@ -12,6 +12,8 @@ from .common import (
     YEAR_WORDS,
     _check,
     _clause_term_patterns,
+    _clause_terms,
+    _literal_word_pattern,
     _match,
     _max_term_years,
     _normalize,
@@ -37,6 +39,29 @@ SURVIVAL_REFERENCE_SCOPE_PATTERN = (
     r"|\b(?:clause|clauses|article|articles|section|sections)\b"
     r".{0,180}\b(?:obligations?|undertakings?|provisions?|duties?|rights?\s+and\s+obligations?)\b"
 )
+SURVIVAL_DURATION_VERB_PATTERN = (
+    r"\bsurviv(?:e|es|ed|ing|al)\b"
+    r"|\b(?:remain(?:s|ed|ing)?|continu(?:e|es|ed|ing)|in\s+effect)\b"
+    r".{0,80}\b(?:after|following|expiry|expiration|termination)\b"
+)
+AGREEMENT_TERM_DURATION_PATTERN = (
+    r"\b(?:this\s+)?agreement\b.{0,120}\b"
+    r"(?:continues?|remain(?:s|ed|ing)?\s+in\s+effect|valid|effective|expires?|terminates?|term)\b"
+    r"|\b(?:continues?|remain(?:s|ed|ing)?\s+in\s+effect|valid|effective|expires?|terminates?|term)\b"
+    r".{0,120}\b(?:this\s+)?agreement\b"
+    r"|\bterm\b\s*[:.-]\s*(?:for\s+)?"
+)
+GENERIC_NON_SURVIVAL_DURATION_TERMS = {
+    "continue",
+    "continues",
+    "duration",
+    "effective date",
+    "expiration",
+    "in effect",
+    "period",
+    "term",
+    "years",
+}
 
 
 def _check_term_and_survival(
@@ -55,10 +80,15 @@ def _check_term_and_survival(
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     reference_analysis = _survival_reference_analysis(term_paragraphs, paragraphs, review_context or {})
     year_terms = _extract_year_terms_with_context(term_normalized)
-    has_term_within_cap = any(0 < term["years"] <= max_years for term in year_terms)
-    ordinary_over_cap_terms = [
+    scoped_year_terms = [
         term
         for term in year_terms
+        if _year_term_has_required_scope(term_normalized, term, clause)
+    ]
+    has_term_within_cap = any(0 < term["years"] <= max_years for term in scoped_year_terms)
+    ordinary_over_cap_terms = [
+        term
+        for term in scoped_year_terms
         if term["years"] > max_years and not _is_allowed_carve_out_year(term_normalized, term, clause)
     ]
     has_term_over_cap = bool(ordinary_over_cap_terms)
@@ -225,6 +255,43 @@ def _is_survival_scope_reference(paragraph_text: str) -> bool:
         re.search(CARVE_OUT_SURVIVAL_PATTERN, normalized)
         and re.search(SURVIVAL_REFERENCE_SCOPE_PATTERN, normalized)
     )
+
+
+def _year_term_has_required_scope(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:
+    fragment = _term_sentence_fragment(normalized, term["start"], term["end"])
+    if _is_survival_duration_fragment(fragment):
+        return bool(
+            re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, fragment)
+            or _is_survival_scope_reference(fragment)
+        )
+    return bool(
+        re.search(AGREEMENT_TERM_DURATION_PATTERN, fragment)
+        or _has_configured_non_survival_duration_scope(fragment, clause)
+    )
+
+
+def _is_survival_duration_fragment(fragment: str) -> bool:
+    return bool(re.search(SURVIVAL_DURATION_VERB_PATTERN, fragment))
+
+
+def _has_configured_non_survival_duration_scope(fragment: str, clause: Dict[str, object]) -> bool:
+    for term in _clause_terms(clause, "search_terms"):
+        if term in GENERIC_NON_SURVIVAL_DURATION_TERMS or term.startswith("surviv"):
+            continue
+        if re.search(_literal_word_pattern(term), fragment, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _term_sentence_fragment(normalized: str, start: int, end: int) -> str:
+    left = max(normalized.rfind(separator, 0, start) for separator in (".", ";"))
+    right_candidates = [
+        position
+        for position in (normalized.find(separator, end) for separator in (".", ";"))
+        if position != -1
+    ]
+    right = min(right_candidates) if right_candidates else len(normalized)
+    return normalized[left + 1:right].strip()
 
 
 def _survival_reference_review_reason(reference_analysis: Dict[str, object], cap_label: str) -> str:

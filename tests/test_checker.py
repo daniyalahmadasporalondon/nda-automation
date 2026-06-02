@@ -475,6 +475,22 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["issue_type"], "missing")
         self.assertIn("Add a fixed term", term_clause["what_to_fix"])
 
+    def test_term_and_survival_ignores_unrelated_survival_duration(self):
+        result = review_nda("This Agreement is effective on signature. Claims survive for three years.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "not_present")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "missing")
+        self.assertEqual(term_clause["reason_code"], "missing_term_or_survival")
+
+    def test_term_and_survival_accepts_bare_term_heading_duration(self):
+        result = review_nda("Term: three years from the Effective Date.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+
     def test_term_and_survival_rejects_more_than_five_years(self):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8")
         result = review_nda(text.replace("three (3) years", "seven (7) years"))
@@ -1640,6 +1656,22 @@ class CheckerTests(unittest.TestCase):
         self.assertFalse(result_clause["passes"])
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
 
+    def test_independent_development_preposed_qualification_can_pass(self):
+        result = review_nda(
+            """
+            Confidential Information means any and all non-public business, financial, technical,
+            customer, supplier, pricing, market, proprietary and trade secret information disclosed
+            by either party.
+
+            Confidential Information does not include information that, without use of or reference
+            to Confidential Information, is independently developed by the Receiving Party.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertTrue(result_clause["passes"])
+
     def test_broad_confidentiality_exclusion_still_needs_review(self):
         result = review_nda(
             """
@@ -1727,6 +1759,20 @@ class CheckerTests(unittest.TestCase):
 
     def test_non_circumvention_ignores_negated_reference(self):
         result = review_nda("This Agreement does not include non-circumvention or non-solicitation obligations.")
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertTrue(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["negated_reference_paragraph_ids"],
+            ["p1"],
+        )
+
+    def test_non_circumvention_ignores_modal_negated_reference(self):
+        result = review_nda(
+            "This Agreement may not include non-solicitation obligations or exclusivity restrictions."
+        )
 
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
         self.assertEqual(non_circumvention["status"], "not_present")

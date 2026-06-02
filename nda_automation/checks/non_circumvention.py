@@ -24,11 +24,20 @@ LAWFUL_CIRCUMVENTION_PATTERN = (
     rf"|\bcircumvention\s+of\s+{LEGAL_CIRCUMVENTION_OBJECT}\b"
 )
 NEGATED_NON_CIRCUMVENTION_REFERENCE_PATTERN = (
-    r"\b(?:does|do|shall|will)\s+not\s+(?:include|create|impose|establish|grant)\b"
+    r"\b(?:does|do|doesn't|don't|shall|will|may|can|must)\s+not\s+"
+    r"(?:include|create|impose|establish|grant|constitute|amount\s+to)\b"
     r".{0,140}\b(?:non[-\s]?circumvention|non[-\s]?solicitation|non[-\s]?solicit|"
     r"exclusivity|exclusive\s+dealing|direct\s+dealing|substitute\s+purpose)\b"
+    r"|\b(?:non[-\s]?circumvention|non[-\s]?solicitation|non[-\s]?solicit|"
+    r"exclusivity|exclusive\s+dealing|direct\s+dealing|substitute\s+purpose)\b"
+    r".{0,140}\b(?:does|do|doesn't|don't|shall|will|may|can|must)\s+not\s+"
+    r"(?:apply|arise|exist|be\s+(?:created|imposed|established|granted|required))\b"
     r"|\bno\s+(?:non[-\s]?circumvention|non[-\s]?solicitation|non[-\s]?solicit|"
-    r"exclusivity|exclusive\s+dealing)\s+(?:obligations?|restrictions?|rights?|is|are|will|shall)\b"
+    r"exclusivity|exclusive\s+dealing|direct\s+dealing|substitute\s+purpose)\s+"
+    r"(?:obligations?|restrictions?|rights?|is|are|will|shall|may|can|appl(?:y|ies)|exists?|created|imposed)\b"
+    r"|\bfor\s+the\s+avoidance\s+of\s+doubt\b.{0,80}\b(?:no|not)\b.{0,140}"
+    r"\b(?:non[-\s]?circumvention|non[-\s]?solicitation|non[-\s]?solicit|"
+    r"exclusivity|exclusive\s+dealing|direct\s+dealing|substitute\s+purpose)\b"
 )
 RESTRICTIVE_NON_CIRCUMVENTION_PATTERN = (
     r"\b(?:must|shall|will|may|can)\s+not\b"
