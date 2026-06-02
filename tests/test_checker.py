@@ -810,6 +810,26 @@ class CheckerTests(unittest.TestCase):
                 self.assertTrue(governing_law["passes"])
                 self.assertEqual(governing_law["reason"], "Approved governing law found.")
 
+    def test_governing_law_accepts_approved_jurisdiction_fillers(self):
+        examples = [
+            "This Agreement shall be governed by the laws of the State of Delaware.",
+            "This Agreement shall be governed by the laws of the Commonwealth of Delaware.",
+            "This Agreement shall be governed by the laws of the Republic of India.",
+            "This Agreement shall be governed by the laws of England and Wales.",
+            "This Agreement shall be governed by the laws of the DIFC.",
+        ]
+
+        for text in examples:
+            with self.subTest(text=text):
+                result = review_nda(text)
+                governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+                self.assertEqual(governing_law["status"], "match")
+                self.assertTrue(governing_law["passes"])
+                self.assertEqual(governing_law["decision"], "pass")
+                self.assertEqual(governing_law["reason"], "Approved governing law found.")
+                self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p1"])
+
     def test_governing_law_needs_review_for_placeholder_jurisdiction(self):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
             "This Agreement shall be governed by the laws of England and Wales.",

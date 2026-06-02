@@ -34,6 +34,10 @@ GOVERNING_LAW_INPUT_ALIASES = {
     "india": ("indian",),
     "difc": ("dubai international financial centre", "dubai international financial center"),
 }
+APPROVED_GOVERNING_LAW_ENTITY_PREFIXES = {
+    "delaware": ("state", "commonwealth"),
+    "india": ("republic",),
+}
 UNCLEAR_GOVERNING_LAW_CANDIDATE_PATTERN = (
     r"(?:\[[^\]]*\]|_{2,}|\btbd\b|\bto\s+be\s+(?:agreed|determined|selected|inserted)\b|"
     r"\b(?:mutually\s+)?agreed\b|\b(?:applicable|relevant)\s+law\b|\bjurisdiction\b|"
@@ -235,8 +239,14 @@ def _governing_law_candidates(text: str) -> List[str]:
 def _starts_with_approved_law(text: str, clause: Dict[str, object]) -> bool:
     candidate = _trim_governing_law_candidate(text)
     for law in _approved_laws(clause):
+        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(law)
         for term in _approved_law_input_terms(clause, law):
-            if re.search(rf"^\s*(?:the\s+)?{_literal_word_pattern(term)}", candidate, flags=re.IGNORECASE):
+            if re.search(
+                rf"^\s*(?:the\s+)?{entity_prefix_pattern}"
+                rf"{_literal_word_pattern(term)}",
+                candidate,
+                flags=re.IGNORECASE,
+            ):
                 return True
     return False
 
@@ -284,12 +294,26 @@ def _is_governing_law_heading_only(text: str) -> bool:
 
 def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) -> bool:
     for law in _approved_laws(clause):
+        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(law)
         for term in _approved_law_input_terms(clause, law):
-            if re.search(rf"\blaws?\s+of\s+{_literal_word_pattern(term)}", text, flags=re.IGNORECASE):
+            if re.search(
+                rf"\blaws?\s+of\s+(?:the\s+)?{entity_prefix_pattern}"
+                rf"{_literal_word_pattern(term)}",
+                text,
+                flags=re.IGNORECASE,
+            ):
                 return True
             if re.search(rf"{_literal_word_pattern(term)}\s+laws?\b", text, flags=re.IGNORECASE):
                 return True
     return False
+
+
+def _approved_governing_law_entity_prefix_pattern(law: str) -> str:
+    prefixes = APPROVED_GOVERNING_LAW_ENTITY_PREFIXES.get(law.lower().strip(), ())
+    if not prefixes:
+        return ""
+    escaped_prefixes = "|".join(re.escape(prefix) for prefix in prefixes)
+    return rf"(?:(?:{escaped_prefixes})\s+of\s+)?"
 
 
 def _approved_law_input_terms(clause: Dict[str, object], law: str) -> List[str]:
