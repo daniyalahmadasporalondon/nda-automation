@@ -602,12 +602,12 @@ textarea:focus-visible,
   border-left-color: var(--red);
 }
 
-/* Comment affordance sits in the paper margin so it stays visible without
-   changing paragraph flow. */
+/* Comment affordance sits in the gray viewer gutter so it stays outside the
+   paper while remaining aligned to the paragraph. */
 #reviewView .paragraph-comment-tools {
   position: absolute;
   top: 3px;
-  left: -42px;
+  left: -86px;
   right: auto;
   margin: 0;
   z-index: 2;
