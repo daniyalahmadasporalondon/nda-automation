@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Dict, Iterable, List
 
 from .contract_structure import IDENTIFIER_PART_PATTERN
 from .review_document import Paragraph

@@ -20,6 +20,13 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertGreaterEqual(len(node_versions), 2)
         self.assertEqual(set(node_versions), {"24"})
 
+    def test_ci_runs_pytest_gate(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertRegex(workflow, r"python -m pip install .*pytest")
+        self.assertIn("python -m pytest -q", workflow)
+        self.assertNotIn("python -m unittest discover", workflow)
+
     def test_render_blueprint_keeps_public_deploy_hardened(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
 
