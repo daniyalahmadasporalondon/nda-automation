@@ -507,7 +507,7 @@ async function testContractStructureReviewPanel(page) {
       stored_enabled: aiSettingsPayloads.length || aiKeyPayloads.length ? aiEnabled : null,
       environment_enabled: false,
       provider: "gemini",
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.5-flash",
       confidence_threshold: 0.75,
       api_key_configured: aiKeyConfigured,
       api_key_source: aiKeySource,

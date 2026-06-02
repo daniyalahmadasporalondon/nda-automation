@@ -17,7 +17,7 @@ from .review_state import (
 )
 
 AI_REVIEW_VERSION = 1
-DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_AI_REVIEW_THRESHOLD = 0.75
 DEFAULT_AI_TIMEOUT_SECONDS = 20
 MAX_AI_CONTEXT_PARAGRAPHS = 40
@@ -534,12 +534,8 @@ def _gemini_request_body(packet: Dict[str, object]) -> Dict[str, object]:
         }],
         "generationConfig": {
             "temperature": 0,
-            "responseFormat": {
-                "text": {
-                    "mimeType": "application/json",
-                    "schema": AI_REVIEW_SCHEMA,
-                }
-            },
+            "responseMimeType": "application/json",
+            "responseSchema": AI_REVIEW_SCHEMA,
         },
     }
 

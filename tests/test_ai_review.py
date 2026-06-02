@@ -44,7 +44,7 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_CLAUSES": "",
                 "NDA_AI_REVIEW_THRESHOLD": "",
                 "NDA_AI_PROVIDER": "gemini",
-                "NDA_AI_MODEL": "gemini-3-flash-preview",
+                "NDA_AI_MODEL": "gemini-3.5-flash",
             },
             clear=False,
         )
@@ -182,10 +182,10 @@ class AIReviewTests(unittest.TestCase):
 
         self.assertEqual(body["generationConfig"]["temperature"], 0)
         self.assertEqual(
-            body["generationConfig"]["responseFormat"]["text"]["mimeType"],
+            body["generationConfig"]["responseMimeType"],
             "application/json",
         )
-        self.assertIn("schema", body["generationConfig"]["responseFormat"]["text"])
+        self.assertIn("responseSchema", body["generationConfig"])
         self.assertIn("semantic_clause_crosscheck", encoded)
 
 
