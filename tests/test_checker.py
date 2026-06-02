@@ -116,7 +116,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(result_clause["status"], "match")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
 
-    def test_mutuality_accepts_separated_party_role_definitions(self):
+    def test_mutuality_needs_review_for_separated_party_role_definitions(self):
         result = review_nda(
             """
             The Disclosing Party means a party that discloses Confidential Information under this Agreement.
@@ -127,7 +127,22 @@ class CheckerTests(unittest.TestCase):
 
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
         self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
+        self.assertEqual(result_clause["mutuality_analysis"]["role_definition_paragraph_ids"], ["p1", "p2"])
+        self.assertIn("does not clearly create reciprocal", result_clause["decision_reason"])
+
+    def test_mutuality_needs_review_for_title_only_mutuality_label(self):
+        result = review_nda("Mutual Non-Disclosure Agreement")
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(result_clause["mutuality_analysis"]["weak_mutuality_paragraph_ids"], ["p1"])
+        self.assertIn("weak mutuality signal", result_clause["decision_reason"])
 
     def test_mutuality_accepts_reciprocally_binding_language(self):
         result = review_nda("The parties shall keep each other's Confidential Information confidential on a reciprocally binding basis.")
@@ -197,7 +212,10 @@ class CheckerTests(unittest.TestCase):
 
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
         self.assertEqual(result_clause["status"], "match")
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1", "p2"])
+        self.assertEqual(result_clause["mutuality_analysis"]["role_definition_paragraph_ids"], ["p1", "p2"])
 
     def test_search_terms_are_checker_config_not_review_payload(self):
         result = review_nda("This Agreement creates reciprocal confidentiality obligations.")
