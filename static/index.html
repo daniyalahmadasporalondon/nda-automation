@@ -737,6 +737,16 @@
                     </div>
                   </div>
 
+                  <form class="ai-key-form" id="adminAiKeyForm">
+                    <label for="adminAiApiKeyInput">Gemini API key</label>
+                    <div class="ai-key-row">
+                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini API key">
+                      <button class="primary" id="adminAiSaveKeyButton" type="submit">Save key &amp; turn on</button>
+                      <button class="secondary" id="adminAiClearKeyButton" type="button">Clear saved key</button>
+                    </div>
+                    <p data-admin-ai="key-message">Saved keys are stored locally under ignored app data and are never sent to the browser after saving.</p>
+                  </form>
+
                   <dl class="integration-facts" id="adminAiFacts">
                     <div>
                       <dt>Provider</dt>
@@ -777,7 +787,7 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Disabled by default. Set NDA_AI_REVIEW_ENABLED=true, NDA_AI_PROVIDER=gemini, NDA_AI_MODEL, and GEMINI_API_KEY in the backend environment.</p>
+                      <p>Disabled by default. Admin can save a local Gemini API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, and GEMINI_API_KEY in the backend environment.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>

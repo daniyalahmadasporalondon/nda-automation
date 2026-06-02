@@ -28,6 +28,8 @@ DEFAULT_GMAIL_SETTINGS = {
 DEFAULT_AI_SETTINGS = {
     "enabled": None,
 }
+AI_API_KEY_FILENAME = "ai_api_key.json"
+MAX_AI_API_KEY_LENGTH = 2000
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
@@ -74,6 +76,30 @@ def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
         settings["ai_review"] = {**ai_settings_from_payload(ai_review), **cleaned}
         _save_settings_unlocked(settings)
         return ai_settings_from_payload(settings["ai_review"])
+
+
+def stored_ai_api_key() -> str:
+    with _locked_settings():
+        return _stored_ai_api_key_unlocked()
+
+
+def save_ai_api_key(api_key: str) -> None:
+    cleaned_key = str(api_key or "").strip()
+    if not cleaned_key:
+        raise AppSettingsError("AI API key is required.")
+    if len(cleaned_key) > MAX_AI_API_KEY_LENGTH:
+        raise AppSettingsError("AI API key is too long.")
+
+    with _locked_settings():
+        _save_ai_api_key_unlocked(cleaned_key)
+
+
+def clear_ai_api_key() -> None:
+    with _locked_settings():
+        try:
+            _ai_api_key_path().unlink()
+        except FileNotFoundError:
+            pass
 
 
 def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +323,10 @@ def _settings_path():
     return matter_store.DATA_DIR / "app_settings.json"
 
 
+def _ai_api_key_path():
+    return matter_store.DATA_DIR / AI_API_KEY_FILENAME
+
+
 def _load_settings_unlocked() -> dict[str, Any]:
     settings_path = _settings_path()
     if not settings_path.is_file():
@@ -311,6 +341,47 @@ def _load_settings_unlocked() -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AppSettingsError("App settings must contain a JSON object.")
     return payload
+
+
+def _stored_ai_api_key_unlocked() -> str:
+    api_key_path = _ai_api_key_path()
+    if not api_key_path.is_file():
+        return ""
+    try:
+        with api_key_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except OSError as exc:
+        raise AppSettingsError("AI API key could not be read.") from exc
+    except json.JSONDecodeError as exc:
+        raise AppSettingsError("AI API key storage is not valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise AppSettingsError("AI API key storage must contain a JSON object.")
+    return str(payload.get("api_key") or "").strip()
+
+
+def _save_ai_api_key_unlocked(api_key: str) -> None:
+    api_key_path = _ai_api_key_path()
+    matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_path = api_key_path.with_name(f".{api_key_path.name}.tmp")
+    try:
+        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"api_key": api_key}, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, api_key_path)
+        try:
+            os.chmod(api_key_path, 0o600)
+        except OSError:
+            pass
+        _fsync_directory(api_key_path.parent)
+    except OSError as exc:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise AppSettingsError("AI API key could not be saved.") from exc
 
 
 def _save_settings_unlocked(settings: dict[str, Any]) -> None:

@@ -258,6 +258,7 @@ def build_ai_review_packet(
 def ai_review_status() -> Dict[str, object]:
     settings = _ai_review_settings()
     stored = app_settings.ai_settings()
+    api_key_source = _gemini_api_key_source()
     return {
         "version": AI_REVIEW_VERSION,
         "enabled": bool(settings["enabled"]),
@@ -266,7 +267,8 @@ def ai_review_status() -> Dict[str, object]:
         "provider": str(settings["provider"]),
         "model": str(settings["model"]),
         "confidence_threshold": _confidence_threshold(settings),
-        "api_key_configured": bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip()),
+        "api_key_configured": bool(_gemini_api_key()),
+        "api_key_source": api_key_source,
         "target_clause_ids": sorted(_targeted_clause_ids(settings)),
     }
 
@@ -462,10 +464,22 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
     if provider != "gemini":
         raise AIReviewError(f"Unsupported AI provider: {provider}")
     return GeminiAIReviewer(
-        api_key=os.environ.get(GEMINI_API_KEY_ENV, ""),
+        api_key=_gemini_api_key(),
         model=str(settings["model"]),
         timeout_seconds=int(settings["timeout_seconds"]),
     )
+
+
+def _gemini_api_key() -> str:
+    return os.environ.get(GEMINI_API_KEY_ENV, "").strip() or app_settings.stored_ai_api_key()
+
+
+def _gemini_api_key_source() -> str:
+    if os.environ.get(GEMINI_API_KEY_ENV, "").strip():
+        return "environment"
+    if app_settings.stored_ai_api_key():
+        return "local_settings"
+    return ""
 
 
 def _ai_review_settings() -> Dict[str, object]:

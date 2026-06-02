@@ -122,10 +122,15 @@ _POST_EXACT_ROUTES = {
     "/api/gmail/import": gmail_routes.handle_gmail_import,
     "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
     "/api/gmail/settings": gmail_routes.handle_gmail_settings_update,
+    "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
     "/api/playbook": _handle_playbook_save_post,
+}
+
+_DELETE_EXACT_ROUTES = {
+    "/api/ai/api-key": admin_routes.handle_ai_api_key_clear,
 }
 
 
@@ -215,6 +220,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if not self._authorize_request():
             return
         try:
+            handler = _DELETE_EXACT_ROUTES.get(path)
+            if handler is not None:
+                handler(self)
+                return
             if path.startswith("/api/matters/"):
                 matter_routes.handle_matter_delete(self, path)
                 return

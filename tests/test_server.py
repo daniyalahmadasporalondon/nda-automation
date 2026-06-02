@@ -1595,6 +1595,37 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_status, 400)
         self.assertEqual(missing_payload["error"], "Provide an AI setting to update.")
 
+    def test_ai_api_key_endpoint_saves_local_key_and_enables_ai(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"GEMINI_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    initial_status, initial_payload = self.request("GET", "/api/ai/settings")
+                    save_status, save_payload = self.request("POST", "/api/ai/api-key", {"api_key": "local-secret-key"})
+                    saved_key = app_settings.stored_ai_api_key()
+                    invalid_status, invalid_payload = self.request("POST", "/api/ai/api-key", {"api_key": ""})
+                    clear_status, clear_payload = self.request("DELETE", "/api/ai/api-key")
+                    cleared_key = app_settings.stored_ai_api_key()
+                    settings = app_settings.ai_settings()
+
+        self.assertEqual(initial_status, 200)
+        self.assertEqual(initial_payload["ai_review"]["api_key_configured"], False)
+        self.assertEqual(initial_payload["ai_review"]["api_key_source"], "")
+        self.assertEqual(save_status, 200)
+        self.assertEqual(save_payload["ai_review"]["enabled"], True)
+        self.assertEqual(save_payload["ai_review"]["stored_enabled"], True)
+        self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
+        self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
+        self.assertNotIn("local-secret-key", json.dumps(save_payload))
+        self.assertEqual(saved_key, "local-secret-key")
+        self.assertEqual(settings["enabled"], True)
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(invalid_payload["error"], "Provide a Gemini API key to save.")
+        self.assertEqual(clear_status, 200)
+        self.assertEqual(clear_payload["ai_review"]["api_key_configured"], False)
+        self.assertEqual(clear_payload["ai_review"]["api_key_source"], "")
+        self.assertEqual(cleared_key, "")
+
     def test_gmail_sync_history_records_recent_counts_and_errors(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

@@ -51,8 +51,11 @@ class AIReviewTests(unittest.TestCase):
         self.env_patch.start()
         self.ai_settings_patch = patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": None})
         self.ai_settings_patch.start()
+        self.ai_key_patch = patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="")
+        self.ai_key_patch.start()
 
     def tearDown(self):
+        self.ai_key_patch.stop()
         self.ai_settings_patch.stop()
         self.env_patch.stop()
 
@@ -65,20 +68,32 @@ class AIReviewTests(unittest.TestCase):
 
     def test_ai_review_status_uses_persisted_toggle_over_environment(self):
         with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": False}):
-            with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "true", "GEMINI_API_KEY": "configured"}, clear=False):
-                disabled_status = ai_review.ai_review_status()
+            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
+                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "true", "GEMINI_API_KEY": "configured"}, clear=False):
+                    disabled_status = ai_review.ai_review_status()
 
         with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
-            with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": "configured"}, clear=False):
-                enabled_status = ai_review.ai_review_status()
+            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
+                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": "configured"}, clear=False):
+                    enabled_status = ai_review.ai_review_status()
+
+        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
+            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="saved-local-key"):
+                with patch.dict(os.environ, {"NDA_AI_REVIEW_ENABLED": "", "GEMINI_API_KEY": ""}, clear=False):
+                    local_key_status = ai_review.ai_review_status()
 
         self.assertEqual(disabled_status["enabled"], False)
         self.assertEqual(disabled_status["stored_enabled"], False)
         self.assertEqual(disabled_status["environment_enabled"], True)
         self.assertEqual(disabled_status["api_key_configured"], True)
+        self.assertEqual(disabled_status["api_key_source"], "environment")
         self.assertEqual(enabled_status["enabled"], True)
         self.assertEqual(enabled_status["stored_enabled"], True)
         self.assertEqual(enabled_status["environment_enabled"], False)
+        self.assertEqual(enabled_status["api_key_source"], "environment")
+        self.assertEqual(local_key_status["enabled"], True)
+        self.assertEqual(local_key_status["api_key_configured"], True)
+        self.assertEqual(local_key_status["api_key_source"], "local_settings")
 
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)

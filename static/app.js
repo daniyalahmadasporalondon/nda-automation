@@ -75,6 +75,9 @@ createManualUploadController({
 adminAiController = createAdminAiController({
   state,
   aiCard: document.querySelector("#adminAiCard"),
+  aiKeyForm: document.querySelector("#adminAiKeyForm"),
+  aiApiKeyInput: document.querySelector("#adminAiApiKeyInput"),
+  aiClearKeyButton: document.querySelector("#adminAiClearKeyButton"),
   aiEnabledToggle: document.querySelector("#adminAiEnabledToggle"),
   aiFacts: document.querySelector("#adminAiFacts"),
   aiOverall: document.querySelector("#adminAiOverall"),

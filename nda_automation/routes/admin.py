@@ -37,6 +37,25 @@ def handle_ai_settings_update(handler) -> None:
     handler._send_json({"ai_review": ai_review.ai_review_status()})
 
 
+def handle_ai_api_key_update(handler) -> None:
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    api_key = payload.get("api_key")
+    if not isinstance(api_key, str) or not api_key.strip():
+        handler._send_json({"error": "Provide a Gemini API key to save."}, status=400)
+        return
+    app_settings.save_ai_api_key(api_key)
+    if payload.get("enabled", True) is not False:
+        app_settings.update_ai_settings({"enabled": True})
+    handler._send_json({"ai_review": ai_review.ai_review_status()})
+
+
+def handle_ai_api_key_clear(handler) -> None:
+    app_settings.clear_ai_api_key()
+    handler._send_json({"ai_review": ai_review.ai_review_status()})
+
+
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     telemetry.increment("matter_backup_requests")
     try:

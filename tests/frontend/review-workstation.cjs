@@ -496,7 +496,24 @@ async function testPlaybookAdminEditor(page) {
 
 async function testContractStructureReviewPanel(page) {
   const aiSettingsPayloads = [];
+  const aiKeyPayloads = [];
   let aiEnabled = false;
+  let aiKeyConfigured = false;
+  let aiKeySource = "";
+  const aiSettingsResponse = () => ({
+    ai_review: {
+      version: 1,
+      enabled: aiEnabled,
+      stored_enabled: aiSettingsPayloads.length || aiKeyPayloads.length ? aiEnabled : null,
+      environment_enabled: false,
+      provider: "gemini",
+      model: "gemini-3-flash-preview",
+      confidence_threshold: 0.75,
+      api_key_configured: aiKeyConfigured,
+      api_key_source: aiKeySource,
+      target_clause_ids: ["mutuality", "confidential_information", "governing_law", "term_and_survival", "non_circumvention"],
+    },
+  });
   await page.route("**/api/ai/settings", async (route) => {
     if (route.request().method() === "POST") {
       const payload = route.request().postDataJSON();
@@ -506,19 +523,24 @@ async function testContractStructureReviewPanel(page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ai_review: {
-          version: 1,
-          enabled: aiEnabled,
-          stored_enabled: aiSettingsPayloads.length ? aiEnabled : null,
-          environment_enabled: false,
-          provider: "gemini",
-          model: "gemini-3-flash-preview",
-          confidence_threshold: 0.75,
-          api_key_configured: false,
-          target_clause_ids: ["mutuality", "confidential_information", "governing_law", "term_and_survival", "non_circumvention"],
-        },
-      }),
+      body: JSON.stringify(aiSettingsResponse()),
+    });
+  });
+  await page.route("**/api/ai/api-key", async (route) => {
+    if (route.request().method() === "POST") {
+      const payload = route.request().postDataJSON();
+      aiKeyPayloads.push(payload);
+      aiEnabled = payload.enabled !== false;
+      aiKeyConfigured = true;
+      aiKeySource = "local_settings";
+    } else if (route.request().method() === "DELETE") {
+      aiKeyConfigured = false;
+      aiKeySource = "";
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(aiSettingsResponse()),
     });
   });
   const structureNda = [
@@ -661,14 +683,26 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(aiPanel, "AI Semantic Review");
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
-  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing GEMINI_API_KEY");
-  await page.locator("#adminAiEnabledToggle").click();
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing Gemini API key");
+  await page.locator("#adminAiApiKeyInput").fill("browser-local-key");
+  await page.locator("#adminAiSaveKeyButton").click();
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "true");
-  assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], { enabled: true });
-  assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On - missing GEMINI_API_KEY");
+  assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "browser-local-key", enabled: true });
+  assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
+  assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
+  assert.equal(await page.locator("#adminAiOverall").innerText(), "ON");
+  await page.locator("#adminAiClearKeyButton").click();
+  await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing Gemini API key");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");
+  await page.locator("#adminAiEnabledToggle").click();
+  await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
+  assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], { enabled: false });
+  assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
+  assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   await page.unroute("**/api/ai/settings");
+  await page.unroute("**/api/ai/api-key");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

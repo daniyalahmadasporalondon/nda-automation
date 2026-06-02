@@ -163,6 +163,15 @@ button:disabled {
   opacity: 0.5;
 }
 
+button.primary {
+  background: var(--brand);
+  color: #fff;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--brand-bright);
+}
+
 button.secondary {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -3726,6 +3735,59 @@ body.modal-open {
   opacity: 0.58;
 }
 
+.ai-key-form {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.ai-key-form label {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.ai-key-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+}
+
+.ai-key-row input {
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  height: 34px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.ai-key-row input:focus {
+  border-color: var(--lotus);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.16);
+  outline: none;
+}
+
+.ai-key-row button {
+  height: 34px;
+  white-space: nowrap;
+}
+
+.ai-key-form p {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .integration-frequency-control {
   display: grid;
   gap: 7px;
@@ -4243,6 +4305,7 @@ body.modal-open {
   }
 
   .integration-toggle-grid,
+  .ai-key-row,
   .integration-connection-row dl,
   .integration-frequency-control,
   .integration-facts,
