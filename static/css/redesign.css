@@ -494,7 +494,7 @@ textarea:focus-visible,
   box-sizing: border-box;
   box-shadow: none;
   max-width: 100%;
-  padding: 30px 48px 46px;
+  padding: 30px 32px 46px;
   width: min(680px, 100%);
 }
 
@@ -545,10 +545,13 @@ textarea:focus-visible,
    shrink (min-width:0) and long unbreakable tokens (CIN/PAN) must wrap. */
 #reviewView .studio-doc-paragraph {
   position: relative;
-  padding: 3px 14px;
+  margin-left: -32px;
+  margin-right: -20px;
+  padding: 3px 20px 3px 28px;
   border-radius: 0;
   min-width: 0;
-  max-width: 100%;
+  max-width: calc(100% + 52px);
+  width: calc(100% + 52px);
   overflow-wrap: break-word;
   overflow-wrap: anywhere;
   word-break: break-word;

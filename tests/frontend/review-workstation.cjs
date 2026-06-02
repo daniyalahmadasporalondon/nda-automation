@@ -1720,6 +1720,29 @@ async function testBackendRedlineModes(page) {
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
   assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
 
+  const viewerSpacing = await page.evaluate(() => {
+    const pageNode = document.querySelector("#reviewView .studio-page");
+    const paragraphNode = document.querySelector('#reviewView [data-paragraph-id="p2"]');
+    const contentNode = [...paragraphNode.querySelectorAll(
+      ".paragraph-redline-preview, .paragraph-editable, .paragraph-redline-note, .paragraph-insertion"
+    )].find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    });
+    const pageBox = pageNode.getBoundingClientRect();
+    const paragraphBox = paragraphNode.getBoundingClientRect();
+    const contentBox = contentNode.getBoundingClientRect();
+    return {
+      borderToPageLeft: Math.round(paragraphBox.left - pageBox.left),
+      textToPageLeft: Math.round(contentBox.left - pageBox.left),
+      textWidth: Math.round(contentBox.width),
+      pageWidth: Math.round(pageBox.width),
+    };
+  });
+  assert.ok(viewerSpacing.borderToPageLeft <= 2, `paragraph marker should attach to page edge: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.textToPageLeft <= 40, `paragraph text should start closer to page edge: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 95, `paragraph text should use the page width: ${JSON.stringify(viewerSpacing)}`);
+
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
   const termParagraph = page.locator('[data-paragraph-id="p1"]');
