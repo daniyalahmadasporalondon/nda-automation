@@ -11,6 +11,9 @@ function createContractStructureController({ state, root }) {
     const structure = effectiveStructure();
     const sections = Array.isArray(structure?.sections) ? structure.sections : [];
     const aliases = Array.isArray(structure?.aliases) ? structure.aliases : [];
+    const resolver = effectiveReferenceResolver(structure);
+    const references = Array.isArray(resolver?.references) ? resolver.references : [];
+    const resolverStats = resolver?.stats || {};
     const stats = structure?.stats || {};
 
     if (!state.latestReviewResult && !loadedParagraphs().length) {
@@ -32,6 +35,8 @@ function createContractStructureController({ state, root }) {
       <div class="structure-summary" aria-label="Structure map summary">
         ${summaryTile("Sections", stats.section_count ?? sections.length)}
         ${summaryTile("Mapped paragraphs", stats.mapped_paragraph_count ?? mappedParagraphCount(sections))}
+        ${summaryTile("References", resolverStats.reference_count ?? references.length)}
+        ${summaryTile("Resolved", resolverStats.resolved_reference_count ?? resolvedReferenceCount(references))}
         ${summaryTile("Unmapped paragraphs", stats.unmapped_paragraph_count ?? 0)}
       </div>
 
@@ -39,6 +44,7 @@ function createContractStructureController({ state, root }) {
         ${sections.map(renderSection).join("")}
       </section>
 
+      ${renderReferences(references)}
       ${renderAliases(aliases)}
     `;
   }
@@ -53,6 +59,20 @@ function createContractStructureController({ state, root }) {
     const fallback = buildStructureFromParagraphs(paragraphs);
     if (state.latestReviewResult && !state.latestReviewResult.contract_structure) {
       state.latestReviewResult.contract_structure = fallback;
+    }
+    return fallback;
+  }
+
+  function effectiveReferenceResolver(structure) {
+    const existing = state.latestReviewResult?.reference_resolver;
+    if (existing && typeof existing === "object") return existing;
+
+    const paragraphs = loadedParagraphs();
+    if (!structure || !paragraphs.length) return existing;
+
+    const fallback = resolveReferencesFromParagraphs(paragraphs, structure);
+    if (state.latestReviewResult && !state.latestReviewResult.reference_resolver) {
+      state.latestReviewResult.reference_resolver = fallback;
     }
     return fallback;
   }
@@ -101,6 +121,35 @@ function createContractStructureController({ state, root }) {
     `;
   }
 
+  function renderReferences(references) {
+    if (!references.length) return "";
+    return `
+      <section class="structure-references" aria-label="Resolved references">
+        <h2>Resolved references</h2>
+        ${references.slice(0, 12).map((reference) => {
+          const targets = (reference.targets || []).map((target) => target.label).filter(Boolean).join(", ");
+          const unresolved = (reference.unresolved_numbers || []).length
+            ? `Unresolved ${reference.unresolved_numbers.join(", ")}`
+            : "";
+          return `
+            <article class="structure-reference-row">
+              <strong>${escapeHtml(reference.reference_text || "Reference")}</strong>
+              <span>${escapeHtml(targets || unresolved || "No target")}</span>
+              <small>
+                <span>${escapeHtml(paragraphRangeLabel({
+                  start_index: reference.paragraph_index,
+                  end_index: reference.paragraph_index,
+                  start_paragraph_id: reference.paragraph_id,
+                }))}</span>
+                <span>${escapeHtml(reference.status || "unknown")}</span>
+              </small>
+            </article>
+          `;
+        }).join("")}
+      </section>
+    `;
+  }
+
   function summaryTile(label, value) {
     return `
       <div class="structure-summary-tile">
@@ -116,6 +165,10 @@ function createContractStructureController({ state, root }) {
       (section.paragraph_ids || []).forEach((paragraphId) => ids.add(String(paragraphId)));
     });
     return ids.size;
+  }
+
+  function resolvedReferenceCount(references) {
+    return references.filter((reference) => reference.status === "resolved").length;
   }
 
   function paragraphRangeLabel(section) {
@@ -200,6 +253,142 @@ function createContractStructureController({ state, root }) {
       },
       version: 1,
     };
+  }
+
+  function resolveReferencesFromParagraphs(paragraphs, structure) {
+    const referenceIndex = structure?.reference_index || {};
+    const aliasLookup = referenceIndex.alias_to_section_id || {};
+    const sectionsById = referenceIndex.sections_by_id || {};
+    const paragraphLookup = referenceIndex.paragraph_to_section_id || {};
+    const references = [];
+    paragraphs.forEach((paragraph) => {
+      const paragraphText = String(paragraph?.text || "");
+      const paragraphId = paragraphIdForReference(paragraph);
+      const sourceSectionId = paragraphLookup[paragraphId] || null;
+      const referenceRegex = new RegExp(`\\b(${referenceKindPattern()})\\s+(${explicitNumberPattern}(?:${referenceSeparatorPattern()}${explicitNumberPattern})*)(?=$|[^A-Za-z0-9])`, "gi");
+      let match = referenceRegex.exec(paragraphText);
+      while (match) {
+        const kind = canonicalReferenceKind(match[1]);
+        const numbers = referenceNumbers(match[2]);
+        if (!kind || !numbers.length) {
+          match = referenceRegex.exec(paragraphText);
+          continue;
+        }
+        const items = numbers.map((number) => resolveReferenceItem(kind, number, aliasLookup, sectionsById));
+        const resolvedSectionIds = dedupeStrings(items.map((item) => item.section_id).filter(Boolean));
+        if (!isSelfHeadingReference(match.index, sourceSectionId, resolvedSectionIds)) {
+          const unresolvedNumbers = items.filter((item) => !item.section_id).map((item) => item.number);
+          references.push({
+            id: `reference-${references.length + 1}`,
+            items,
+            kind,
+            numbers,
+            paragraph_id: paragraphId,
+            paragraph_index: paragraphIndex(paragraph),
+            reference_text: match[0],
+            resolved_section_ids: resolvedSectionIds,
+            source_section_id: sourceSectionId,
+            status: referenceStatus(items),
+            targets: resolvedSectionIds.map((sectionId) => sectionsById[sectionId]).filter(Boolean),
+            unresolved_numbers: unresolvedNumbers,
+          });
+        }
+        match = referenceRegex.exec(paragraphText);
+      }
+    });
+    const targetSectionIds = new Set();
+    references.forEach((reference) => reference.resolved_section_ids.forEach((sectionId) => targetSectionIds.add(sectionId)));
+    return {
+      references,
+      stats: {
+        partial_reference_count: references.filter((reference) => reference.status === "partial").length,
+        reference_count: references.length,
+        resolved_reference_count: references.filter((reference) => reference.status === "resolved").length,
+        target_section_count: targetSectionIds.size,
+        unresolved_reference_count: references.filter((reference) => reference.status === "unresolved").length,
+      },
+      version: 1,
+    };
+  }
+
+  function resolveReferenceItem(kind, number, aliasLookup, sectionsById) {
+    const aliasKeys = [`${kind}:${String(number).toLowerCase()}`, `number:${String(number).toLowerCase()}`];
+    const matchedAlias = aliasKeys.find((aliasKey) => aliasLookup[aliasKey]);
+    const sectionId = matchedAlias ? aliasLookup[matchedAlias] : null;
+    return {
+      alias_keys: aliasKeys,
+      label: sectionId && sectionsById[sectionId] ? sectionsById[sectionId].label || "" : "",
+      matched_alias: matchedAlias || null,
+      number,
+      section_id: sectionId || null,
+      status: sectionId ? "resolved" : "unresolved",
+    };
+  }
+
+  function referenceKindPattern() {
+    return "clause|clauses|article|articles|section|sections|schedule|schedules|annex|annexes|annexure|annexures|appendix|appendices";
+  }
+
+  function referenceSeparatorPattern() {
+    return "(?:\\s*(?:,|;)\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or|&)\\s+)";
+  }
+
+  function referenceNumbers(value) {
+    const numberRegex = new RegExp(`^${explicitNumberPattern}$`, "i");
+    return String(value || "")
+      .split(new RegExp(referenceSeparatorPattern(), "i"))
+      .map((part) => part.trim())
+      .filter((part) => numberRegex.test(part));
+  }
+
+  function canonicalReferenceKind(kind) {
+    const key = String(kind || "").trim().toLowerCase();
+    const aliases = {
+      annex: "annex",
+      annexes: "annex",
+      annexure: "annexure",
+      annexures: "annexure",
+      appendices: "appendix",
+      appendix: "appendix",
+      article: "article",
+      articles: "article",
+      clause: "clause",
+      clauses: "clause",
+      schedule: "schedule",
+      schedules: "schedule",
+      section: "section",
+      sections: "section",
+    };
+    return aliases[key] || "";
+  }
+
+  function referenceStatus(items) {
+    const resolvedCount = items.filter((item) => item.section_id).length;
+    if (resolvedCount && resolvedCount === items.length) return "resolved";
+    if (resolvedCount) return "partial";
+    return "unresolved";
+  }
+
+  function isSelfHeadingReference(matchIndex, sourceSectionId, resolvedSectionIds) {
+    return matchIndex === 0
+      && sourceSectionId
+      && resolvedSectionIds.length
+      && resolvedSectionIds.every((sectionId) => sectionId === sourceSectionId);
+  }
+
+  function dedupeStrings(values) {
+    const seen = new Set();
+    const results = [];
+    values.forEach((value) => {
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      results.push(value);
+    });
+    return results;
+  }
+
+  function paragraphIdForReference(paragraph) {
+    return paragraphId(paragraph) || "";
   }
 
   function candidateForParagraph(paragraph, position) {

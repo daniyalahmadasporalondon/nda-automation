@@ -365,16 +365,21 @@
                   </article>
                   <article class="engine-card">
                     <span>5</span>
+                    <h2>Resolve</h2>
+                    <p>Explicit clause, article, section, schedule, annex, and appendix references are linked to detected document sections.</p>
+                  </article>
+                  <article class="engine-card">
+                    <span>6</span>
                     <h2>Check</h2>
                     <p>Python clause checks apply playbook rules to the actual reviewed paragraphs and evidence.</p>
                   </article>
                   <article class="engine-card">
-                    <span>6</span>
+                    <span>7</span>
                     <h2>Verify</h2>
                     <p>Evidence provenance validation ensures matched text still resolves to the reviewed source.</p>
                   </article>
                   <article class="engine-card">
-                    <span>7</span>
+                    <span>8</span>
                     <h2>Redline</h2>
                     <p>Redline edits, comments, export decisions, and selected templates are prepared for DOCX output.</p>
                   </article>
@@ -387,6 +392,7 @@
                       <div><dt>Review orchestration</dt><dd>nda_automation/checker.py</dd></div>
                       <div><dt>Paragraph alignment</dt><dd>nda_automation/review_document.py</dd></div>
                       <div><dt>Structure mapping</dt><dd>nda_automation/contract_structure.py</dd></div>
+                      <div><dt>Reference resolver</dt><dd>nda_automation/reference_resolver.py</dd></div>
                       <div><dt>Clause registry</dt><dd>nda_automation/checks/</dd></div>
                       <div><dt>DOCX export</dt><dd>nda_automation/docx_export.py</dd></div>
                     </dl>
@@ -396,7 +402,7 @@
                     <dl class="engine-fact-list">
                       <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Admin.</dd></div>
                       <div><dt>Evidence trust</dt><dd>Each clause result is checked against paragraph IDs and source offsets.</dd></div>
-                      <div><dt>No fixed article assumptions</dt><dd>Section references are resolved from each document's detected structure.</dd></div>
+                      <div><dt>Reference resolution</dt><dd>Explicit section references are resolved from each document's detected structure.</dd></div>
                       <div><dt>Current AI boundary</dt><dd>Rules are deterministic Python first; semantic fallback is a separate evaluator hook.</dd></div>
                     </dl>
                   </article>

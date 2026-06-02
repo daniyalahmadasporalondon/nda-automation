@@ -1,0 +1,130 @@
+import unittest
+
+from nda_automation.checker import review_nda
+from nda_automation.contract_structure import build_contract_structure
+from nda_automation.matter_view import review_result_with_structure
+from nda_automation.reference_resolver import resolve_document_references
+from nda_automation.review_document import split_document_paragraphs
+
+
+class ReferenceResolverTests(unittest.TestCase):
+    def test_resolves_explicit_clause_article_and_section_references(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Clause 1: Definitions",
+            "Confidential Information means non-public information.",
+            "Clause 2 - Confidentiality",
+            "Each party shall protect Confidential Information.",
+            "Article II Term",
+            "The obligations in clauses 1 and 2 survive. Section II.A also applies.",
+            "Section II.A Permitted Disclosures",
+            "Disclosures are limited to representatives.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        self.assertEqual(resolver["version"], 1)
+        self.assertEqual(resolver["stats"], {
+            "reference_count": 2,
+            "resolved_reference_count": 2,
+            "partial_reference_count": 0,
+            "unresolved_reference_count": 0,
+            "target_section_count": 3,
+        })
+        clause_reference, section_reference = resolver["references"]
+        self.assertEqual(clause_reference["reference_text"], "clauses 1 and 2")
+        self.assertEqual(clause_reference["kind"], "clause")
+        self.assertEqual(clause_reference["numbers"], ["1", "2"])
+        self.assertEqual(clause_reference["resolved_section_ids"], ["section-2", "section-3"])
+        self.assertEqual(clause_reference["source_section_id"], "section-4")
+        self.assertEqual([target["label"] for target in clause_reference["targets"]], ["Clause 1", "Clause 2"])
+        self.assertEqual(section_reference["reference_text"], "Section II.A")
+        self.assertEqual(section_reference["resolved_section_ids"], ["section-5"])
+        self.assertEqual(section_reference["items"][0]["matched_alias"], "section:ii.a")
+
+    def test_resolves_numbered_sections_when_kind_alias_is_absent(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "10. General",
+            "General terms.",
+            "10.1 Return of Materials",
+            "Return terms.",
+            "10.1A Certificate of Destruction",
+            "The obligations in sections 10.1 and 10.1A survive.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        reference = resolver["references"][0]
+        self.assertEqual(reference["numbers"], ["10.1", "10.1A"])
+        self.assertEqual(reference["resolved_section_ids"], ["section-2", "section-3"])
+        self.assertEqual([item["matched_alias"] for item in reference["items"]], ["number:10.1", "number:10.1a"])
+
+    def test_marks_partial_and_unresolved_references(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1: Definitions",
+            "Definitions text.",
+            "Clause 2 - Confidentiality",
+            "Clauses 1, 2 and 99 survive. Article IX also survives.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        self.assertEqual([reference["status"] for reference in resolver["references"]], ["partial", "unresolved"])
+        self.assertEqual(resolver["references"][0]["resolved_section_ids"], ["section-1", "section-2"])
+        self.assertEqual(resolver["references"][0]["unresolved_numbers"], ["99"])
+        self.assertEqual(resolver["references"][1]["unresolved_numbers"], ["IX"])
+        self.assertEqual(resolver["stats"]["partial_reference_count"], 1)
+        self.assertEqual(resolver["stats"]["unresolved_reference_count"], 1)
+
+    def test_does_not_read_common_prose_as_single_letter_reference(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "10. General",
+            "This section introduces general terms.",
+            "Clause 1: Definitions",
+            "Definitions in Section 10 remain subject to Clause 1.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        self.assertEqual([reference["reference_text"] for reference in resolver["references"]], ["Section 10", "Clause 1"])
+
+    def test_skips_section_heading_self_references(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1: Definitions",
+            "Definitions text.",
+            "Clause 2 - Confidentiality",
+            "Clause 1 survives this Agreement.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        self.assertEqual(len(resolver["references"]), 1)
+        self.assertEqual(resolver["references"][0]["paragraph_id"], "p4")
+        self.assertEqual(resolver["references"][0]["reference_text"], "Clause 1")
+
+    def test_review_result_and_legacy_enrichment_include_reference_resolver(self):
+        text = "\n\n".join([
+            "Clause 1: Definitions",
+            "Definitions text.",
+            "Clause 2 - Confidentiality",
+            "Clause 1 survives this Agreement.",
+        ])
+
+        result = review_nda(text)
+        enriched = review_result_with_structure({
+            "paragraphs": split_document_paragraphs(text),
+        })
+
+        self.assertIn("reference_resolver", result)
+        self.assertEqual(result["reference_resolver"]["references"][0]["resolved_section_ids"], ["section-1"])
+        self.assertIn("reference_resolver", enriched)
+        self.assertEqual(enriched["reference_resolver"]["references"][0]["resolved_section_ids"], ["section-1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -5,6 +5,7 @@ from typing import Any, TypedDict
 
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient
+from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 
 
@@ -113,7 +114,7 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
 
 
 def review_result_with_structure(review_result: dict[str, Any], extracted_text: str = "") -> dict[str, Any]:
-    if isinstance(review_result.get("contract_structure"), dict):
+    if isinstance(review_result.get("contract_structure"), dict) and isinstance(review_result.get("reference_resolver"), dict):
         return review_result
 
     enriched = deepcopy(review_result)
@@ -122,7 +123,13 @@ def review_result_with_structure(review_result: dict[str, Any], extracted_text: 
         paragraphs = split_document_paragraphs(extracted_text)
         if paragraphs:
             enriched["paragraphs"] = paragraphs
-    enriched["contract_structure"] = build_contract_structure(paragraphs if isinstance(paragraphs, list) else [])
+    if not isinstance(enriched.get("contract_structure"), dict):
+        enriched["contract_structure"] = build_contract_structure(paragraphs if isinstance(paragraphs, list) else [])
+    if not isinstance(enriched.get("reference_resolver"), dict):
+        enriched["reference_resolver"] = resolve_document_references(
+            paragraphs if isinstance(paragraphs, list) else [],
+            enriched["contract_structure"],
+        )
     return enriched
 
 

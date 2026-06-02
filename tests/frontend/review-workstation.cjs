@@ -483,11 +483,13 @@ async function testContractStructureReviewPanel(page) {
     "Permitted disclosures are limited to representatives.",
     "Clause IV - Term",
     "The obligations survive for three years.",
+    "Clauses 1, 1A and 2 survive this Agreement. Section II.A also survives.",
   ].join("\n\n");
 
   await runReview(page, structureNda);
   await page.evaluate(() => {
     delete state.latestReviewResult.contract_structure;
+    delete state.latestReviewResult.reference_resolver;
   });
   await page.locator('[data-review-inspector="structure"]').click();
   await page.waitForSelector("#studioDetailPanel .structure-row");
@@ -508,6 +510,10 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "clause:1");
   await assertTextContains(reviewPanel, "clause:1a");
   await assertTextContains(reviewPanel, "section:10b");
+  await assertTextContains(reviewPanel, "RESOLVED REFERENCES");
+  await assertTextContains(reviewPanel, "Clauses 1, 1A and 2");
+  await assertTextContains(reviewPanel, "Clause 1, Clause 1A, Clause 2");
+  await assertTextContains(reviewPanel, "Section II.A");
   const referenceIndex = await page.evaluate(() => state.latestReviewResult.contract_structure.reference_index);
   assert.equal(referenceIndex.version, 1);
   assert.equal(referenceIndex.alias_to_section_id["clause:1a"], "section-3");
@@ -520,6 +526,13 @@ async function testContractStructureReviewPanel(page) {
     Object.keys(referenceIndex.sections_by_id["section-10"]).sort(),
     ["end_index", "heading", "id", "kind", "label", "level", "number", "paragraph_ids", "parent_id", "start_index"]
   );
+  const referenceResolver = await page.evaluate(() => state.latestReviewResult.reference_resolver);
+  assert.equal(referenceResolver.version, 1);
+  assert.equal(referenceResolver.stats.reference_count, 2);
+  assert.equal(referenceResolver.references[0].reference_text, "Clauses 1, 1A and 2");
+  assert.deepEqual(referenceResolver.references[0].resolved_section_ids, ["section-2", "section-3", "section-4"]);
+  assert.equal(referenceResolver.references[1].reference_text, "Section II.A");
+  assert.deepEqual(referenceResolver.references[1].resolved_section_ids, ["section-10"]);
 
   await page.locator('[data-review-inspector="clause"]').click();
   await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
@@ -532,7 +545,9 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(adminPanel, "Pipeline and backend logic");
   await assertTextContains(adminPanel, "Ingest");
   await assertTextContains(adminPanel, "STRUCTURE MAPPING");
+  await assertTextContains(adminPanel, "REFERENCE RESOLVER");
   await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
+  await assertTextContains(adminPanel, "nda_automation/reference_resolver.py");
   await assertTextContains(adminPanel, "Evidence provenance validation");
 }
 

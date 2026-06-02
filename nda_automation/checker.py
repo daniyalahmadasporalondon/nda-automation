@@ -33,6 +33,7 @@ from .checks.common import (
     _year_count_label,
 )
 from .contract_structure import build_contract_structure
+from .reference_resolver import resolve_document_references
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
@@ -132,6 +133,8 @@ def review_nda(
         )
     failed = [clause for clause in clause_results if not clause["passes"]]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
+    contract_structure = build_contract_structure(document_paragraphs)
+    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
 
     result = {
         "overall_status": "does_not_meet_requirements" if failed else "meets_requirements",
@@ -139,7 +142,8 @@ def review_nda(
         "requirements_passed": len(clause_results) - len(failed),
         "requirements_failed": len(failed),
         "paragraphs": document_paragraphs,
-        "contract_structure": build_contract_structure(document_paragraphs),
+        "contract_structure": contract_structure,
+        "reference_resolver": reference_resolver,
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }
