@@ -125,6 +125,8 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         structured_evidence = clause.get("structured_evidence", [])
         audit_trace = clause.get("audit_trace", {})
         clause_review_state = clause.get("review_state", {})
+        reason_code = clause.get("reason_code")
+        reason_codes = clause.get("reason_codes")
         if not isinstance(matched_ids, list):
             errors.append(f"{clause_id}: matched_paragraph_ids must be a list")
             continue
@@ -143,9 +145,22 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         if not isinstance(clause_review_state, dict):
             errors.append(f"{clause_id}: review_state must be an object")
             clause_review_state = {}
+        if reason_code is not None and not isinstance(reason_code, str):
+            errors.append(f"{clause_id}: reason_code must be a string")
+        if not isinstance(reason_codes, list):
+            errors.append(f"{clause_id}: reason_codes must be a list")
+            reason_codes = []
+        elif reason_code is not None and reason_codes and reason_codes[0] != reason_code:
+            errors.append(f"{clause_id}: reason_code does not match first reason_codes entry")
         review_state_decision = clause_review_state.get("decision")
         if review_state_decision is not None and review_state_decision != clause.get("decision"):
             errors.append(f"{clause_id}: review_state decision does not match clause decision")
+        review_state_reason_code = clause_review_state.get("reason_code")
+        if review_state_reason_code is not None and review_state_reason_code != reason_code:
+            errors.append(f"{clause_id}: review_state reason_code does not match clause reason_code")
+        review_state_reason_codes = clause_review_state.get("reason_codes")
+        if review_state_reason_codes is not None and review_state_reason_codes != reason_codes:
+            errors.append(f"{clause_id}: review_state reason_codes do not match clause reason_codes")
         review_state_value = clause_review_state.get("state")
         if review_state_value == "review" and clause.get("needs_review") is not True:
             errors.append(f"{clause_id}: review_state review does not match needs_review")
@@ -201,6 +216,11 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
                 continue
             if record.get("text") != source_paragraph.get("text"):
                 errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} has drifted text")
+            if record.get("reason_code") is not None and record.get("reason_code") != reason_code:
+                errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} reason_code does not match clause")
+            record_reason_codes = record.get("reason_codes")
+            if record_reason_codes is not None and record_reason_codes != reason_codes:
+                errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} reason_codes do not match clause")
             for key in ["start", "end", "source_index", "source_part", "source_kind"]:
                 if key in source_paragraph and record.get(key) != source_paragraph.get(key):
                     errors.append(f"{clause_id}: structured evidence paragraph {paragraph_id} has drifted {key}")
@@ -231,6 +251,12 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         trace_reason = audit_trace.get("decision_reason")
         if trace_reason is not None and trace_reason != clause.get("decision_reason"):
             errors.append(f"{clause_id}: audit_trace decision_reason does not match clause decision_reason")
+        trace_reason_code = audit_trace.get("reason_code")
+        if trace_reason_code is not None and trace_reason_code != reason_code:
+            errors.append(f"{clause_id}: audit_trace reason_code does not match clause reason_code")
+        trace_reason_codes = audit_trace.get("reason_codes")
+        if trace_reason_codes is not None and trace_reason_codes != reason_codes:
+            errors.append(f"{clause_id}: audit_trace reason_codes do not match clause reason_codes")
         evidence_summary = audit_trace.get("evidence_summary", {})
         if isinstance(evidence_summary, dict):
             trace_paragraph_ids = evidence_summary.get("paragraph_ids", [])

@@ -171,6 +171,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["review_state"]["counts"]["pass"], payload["requirements_passed"])
         self.assertEqual(payload["review_state"]["counts"]["review"], payload["requirements_needs_review"])
         self.assertEqual(payload["review_state"]["counts"]["check"], payload["requirements_failed"])
+        self.assertIsInstance(payload["review_state"].get("reason_codes"), list)
+        self.assertIsInstance(payload["review_state"].get("reason_codes_by_state"), dict)
         self.assertIsInstance(payload["paragraphs"], list)
         self.assertIsInstance(payload["clauses"], list)
         self.assertIsInstance(payload["redline_edits"], list)
@@ -194,6 +196,8 @@ class ServerTests(unittest.TestCase):
                 "status",
                 "decision",
                 "decision_reason",
+                "reason_code",
+                "reason_codes",
                 "passes",
                 "needs_review",
                 "review_state",
@@ -212,8 +216,14 @@ class ServerTests(unittest.TestCase):
             self.assertIn(clause["decision"], {"pass", "review", "fail"})
             self.assertIsInstance(clause["passes"], bool)
             self.assertIsInstance(clause["needs_review"], bool)
+            self.assertIsInstance(clause["reason_code"], str)
+            self.assertIsInstance(clause["reason_codes"], list)
+            self.assertTrue(clause["reason_codes"])
+            self.assertEqual(clause["reason_codes"][0], clause["reason_code"])
             self.assertIsInstance(clause["review_state"], dict)
             self.assertEqual(clause["review_state"]["decision"], clause["decision"])
+            self.assertEqual(clause["review_state"]["reason_code"], clause["reason_code"])
+            self.assertEqual(clause["review_state"]["reason_codes"], clause["reason_codes"])
             if clause["decision"] == "review":
                 self.assertEqual(clause["review_state"]["state"], "review")
                 self.assertTrue(clause["review_state"]["blocks_send"])

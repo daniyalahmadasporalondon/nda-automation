@@ -49,6 +49,7 @@ from .review_state import (
     CLAUSE_DECISION_REVIEW,
     aggregate_review_state,
     clause_review_state,
+    reason_codes_for_clause,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +193,9 @@ def _apply_clause_decision(clause: ClauseResult) -> None:
     clause["needs_review"] = decision == CLAUSE_DECISION_REVIEW
     if not str(clause.get("decision_reason") or "").strip():
         clause["decision_reason"] = _clause_decision_reason(clause, decision)
+    reason_codes = reason_codes_for_clause(clause, decision)
+    clause["reason_code"] = reason_codes[0]
+    clause["reason_codes"] = reason_codes
     clause["review_state"] = clause_review_state(clause, decision)
     _finalize_structured_evidence(clause, decision)
     _attach_audit_trace(clause, decision)
@@ -249,6 +253,8 @@ def _finalize_structured_evidence(clause: ClauseResult, decision: str) -> None:
         record["issue_type"] = str(clause.get("issue_type") or "")
         record["issue_label"] = str(clause.get("issue_label") or "")
         record["decision_reason"] = str(clause.get("decision_reason") or clause.get("reason") or "")
+        record["reason_code"] = str(clause.get("reason_code") or "")
+        record["reason_codes"] = list(clause.get("reason_codes") or [])
         if decision == CLAUSE_DECISION_REVIEW:
             record["signal_type"] = "review_evidence"
         elif decision == CLAUSE_DECISION_FAIL:
@@ -273,6 +279,8 @@ def _attach_audit_trace(clause: ClauseResult, decision: str) -> None:
         "status": str(clause.get("status") or ""),
         "issue_type": str(clause.get("issue_type") or ""),
         "decision_reason": str(clause.get("decision_reason") or clause.get("reason") or ""),
+        "reason_code": str(clause.get("reason_code") or ""),
+        "reason_codes": list(clause.get("reason_codes") or []),
         "evidence_summary": evidence_summary,
         "analysis_outputs": analysis_outputs,
         "analysis_signals": analysis_signals,
@@ -334,6 +342,7 @@ def _audit_steps(
     matched_count = int(evidence_summary.get("matched_paragraph_count") or 0)
     analysis_keys = [str(output.get("key") or "") for output in analysis_outputs if output.get("key")]
     decision_reason = str(clause.get("decision_reason") or clause.get("reason") or "")
+    reason_codes = list(clause.get("reason_codes") or [])
     return [
         {
             "name": "Input context",
@@ -370,6 +379,8 @@ def _audit_steps(
             "name": "Decision",
             "outcome": decision,
             "details": decision_reason,
+            "reason_code": str(clause.get("reason_code") or ""),
+            "reason_codes": reason_codes,
         },
     ]
 

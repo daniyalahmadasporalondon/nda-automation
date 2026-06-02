@@ -594,6 +594,7 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "REDLINE BEHAVIOR");
   await assertTextContains(checkersPanel, "HUMAN-REVIEW BOUNDARY");
   await assertTextContains(checkersPanel, "REVIEW STATE");
+  await assertTextContains(checkersPanel, "REASON CODES");
   await assertTextContains(checkersPanel, "STRUCTURED EVIDENCE");
   await assertTextContains(checkersPanel, "AUDIT TRACE");
   await assertTextContains(checkersPanel, "mutuality_analysis");
@@ -629,6 +630,8 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE SIGNALS");
   await assertTextContains(page.locator("#studioDetailPanel"), "CHECK_EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "REASON CODES");
+  await assertTextContains(page.locator("#studioDetailPanel"), "unapproved_governing_law");
   await assertTextContains(page.locator("#studioDetailPanel"), "laws of");
   await assertTextContains(page.locator("#studioDetailPanel"), "AUDIT TRACE");
   await assertTextContains(page.locator("#studioDetailPanel"), "Evidence collection");

@@ -2031,6 +2031,22 @@ textarea::placeholder {
   border-left: 3px solid #2563eb;
 }
 
+.reason-code-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.reason-code-list span {
+  background: #f4f0ff;
+  border: 1px solid #ded3ff;
+  border-radius: var(--r-pill);
+  color: var(--violet-dark);
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 7px;
+}
+
 .audit-trace-block {
   background: #fbfaff;
   border-left: 3px solid var(--violet);

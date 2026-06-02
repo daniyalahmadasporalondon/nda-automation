@@ -16,6 +16,7 @@ def clause_review_state(clause: Dict[str, Any], decision: str | None = None) -> 
     normalized_decision = _normalize_clause_decision(clause, decision)
     state = _state_for_clause_decision(normalized_decision)
     reason = str(clause.get("decision_reason") or clause.get("reason") or clause.get("finding") or "").strip()
+    reason_codes = reason_codes_for_clause(clause, normalized_decision)
     return {
         "version": REVIEW_STATE_VERSION,
         "state": state,
@@ -28,6 +29,8 @@ def clause_review_state(clause: Dict[str, Any], decision: str | None = None) -> 
         "blocks_send": state == REVIEW_STATE_REVIEW,
         "blocks_auto_send": state in {REVIEW_STATE_REVIEW, REVIEW_STATE_CHECK},
         "reason": reason,
+        "reason_code": reason_codes[0],
+        "reason_codes": reason_codes,
     }
 
 
@@ -42,6 +45,7 @@ def aggregate_review_state(
     pass_ids = [str(clause.get("id") or "") for clause in clause_list if clause_passes(clause)]
     review_ids = [str(clause.get("id") or "") for clause in clause_list if clause_needs_review(clause)]
     check_ids = [str(clause.get("id") or "") for clause in clause_list if clause_fails(clause)]
+    reason_codes_by_state = _reason_codes_by_state(clause_list)
     passed = len(pass_ids) if pass_count is None else int(pass_count)
     review = len(review_ids) if review_count is None else int(review_count)
     checked = len(check_ids) if check_count is None else int(check_count)
@@ -77,7 +81,34 @@ def aggregate_review_state(
             "review": _clean_ids(review_ids),
             "check": _clean_ids(check_ids),
         },
+        "reason_codes": _unique_codes(
+            reason_codes_by_state["check"]
+            + reason_codes_by_state["review"]
+            + reason_codes_by_state["pass"]
+        ),
+        "reason_codes_by_state": reason_codes_by_state,
     }
+
+
+def reason_codes_for_clause(clause: Dict[str, Any], decision: str | None = None) -> List[str]:
+    existing_codes = _existing_reason_codes(clause)
+    if existing_codes:
+        return existing_codes
+    normalized_decision = _normalize_clause_decision(clause, decision)
+    clause_id = str(clause.get("id") or "").strip()
+    if clause_id == "mutuality":
+        return _mutuality_reason_codes(clause, normalized_decision)
+    if clause_id == "confidential_information":
+        return _confidential_information_reason_codes(clause, normalized_decision)
+    if clause_id == "governing_law":
+        return _governing_law_reason_codes(clause, normalized_decision)
+    if clause_id == "term_and_survival":
+        return _term_survival_reason_codes(clause, normalized_decision)
+    if clause_id == "non_circumvention":
+        return _non_circumvention_reason_codes(clause, normalized_decision)
+    if clause_id == "signatures":
+        return _signature_reason_codes(clause, normalized_decision)
+    return [_generic_reason_code(clause, normalized_decision)]
 
 
 def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -206,3 +237,211 @@ def _optional_int(value: Any) -> int | None:
 
 def _clean_ids(values: List[str]) -> List[str]:
     return [value for value in values if value]
+
+
+def _reason_codes_by_state(clauses: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    buckets: Dict[str, List[str]] = {
+        REVIEW_STATE_PASS: [],
+        REVIEW_STATE_REVIEW: [],
+        REVIEW_STATE_CHECK: [],
+    }
+    for clause in clauses:
+        state = _state_for_clause_decision(_normalize_clause_decision(clause))
+        if state not in buckets:
+            continue
+        buckets[state].extend(reason_codes_for_clause(clause))
+    return {state: _unique_codes(codes) for state, codes in buckets.items()}
+
+
+def _existing_reason_codes(clause: Dict[str, Any]) -> List[str]:
+    raw_codes = clause.get("reason_codes")
+    if isinstance(raw_codes, list):
+        return _unique_codes(str(code) for code in raw_codes)
+    raw_code = clause.get("reason_code")
+    if raw_code:
+        return _unique_codes([str(raw_code)])
+    review_state = clause.get("review_state")
+    if isinstance(review_state, dict):
+        state_codes = review_state.get("reason_codes")
+        if isinstance(state_codes, list):
+            return _unique_codes(str(code) for code in state_codes)
+        state_code = review_state.get("reason_code")
+        if state_code:
+            return _unique_codes([str(state_code)])
+    return []
+
+
+def _unique_codes(values: Iterable[str]) -> List[str]:
+    codes: List[str] = []
+    seen = set()
+    for value in values:
+        code = _normalize_reason_code(value)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+def _normalize_reason_code(value: str) -> str:
+    code = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return "".join(character for character in code if character.isalnum() or character == "_")
+
+
+def _has_ids(clause: Dict[str, Any], analysis_key: str, field: str) -> bool:
+    analysis = clause.get(analysis_key)
+    if not isinstance(analysis, dict):
+        return False
+    raw_values = analysis.get(field, [])
+    return isinstance(raw_values, list) and any(str(value).strip() for value in raw_values)
+
+
+def _issue_type(clause: Dict[str, Any]) -> str:
+    return str(clause.get("issue_type") or "").strip().lower()
+
+
+def _semantic_review_code(clause: Dict[str, Any], decision: str) -> str | None:
+    confidence = clause.get("semantic_confidence")
+    if confidence is None:
+        confidence = clause.get("confidence")
+    if decision == CLAUSE_DECISION_REVIEW and confidence is not None:
+        return "semantic_confidence_below_threshold"
+    if clause.get("semantic_fallback"):
+        return "semantic_fallback_decision"
+    return None
+
+
+def _mutuality_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "mutuality_analysis", "one_way_paragraph_ids"):
+        return ["one_way_mutuality_language"]
+    if _has_ids(clause, "mutuality_analysis", "role_definition_paragraph_ids"):
+        return ["role_definitions_without_operational_mutuality"]
+    if _has_ids(clause, "mutuality_analysis", "weak_mutuality_paragraph_ids"):
+        return ["weak_mutuality_signal"]
+    if _has_ids(clause, "mutuality_analysis", "strong_mutuality_paragraph_ids"):
+        return ["mutuality_obligation_found"]
+    if decision == CLAUSE_DECISION_FAIL:
+        return ["missing_mutuality_obligation"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["unclear_mutuality_obligation"]
+    return ["mutuality_obligation_found"]
+
+
+def _confidential_information_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "confidential_information_analysis", "explicit_problematic_exclusion_paragraph_ids"):
+        return ["problematic_confidential_information_exclusion"]
+    if _has_ids(clause, "confidential_information_analysis", "usage_right_review_paragraph_ids"):
+        return ["usage_right_language_needs_review"]
+    issue = _issue_type(clause)
+    if issue == "missing":
+        return ["missing_confidential_information_definition"]
+    if issue == "present_but_wrong":
+        return ["narrow_confidential_information_definition"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["broad_definition_needs_category_review"]
+    if _has_ids(clause, "confidential_information_analysis", "definition_paragraph_ids"):
+        return ["broad_confidential_information_definition"]
+    return [_generic_reason_code(clause, decision)]
+
+
+def _governing_law_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "governing_law_analysis", "unapproved_paragraph_ids"):
+        return ["unapproved_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "unclear_paragraph_ids"):
+        return ["unclear_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "heading_only_paragraph_ids"):
+        return ["governing_law_heading_only"]
+    if _has_ids(clause, "governing_law_analysis", "approved_paragraph_ids"):
+        return ["approved_governing_law"]
+    if _issue_type(clause) == "missing":
+        return ["missing_governing_law"]
+    return [_generic_reason_code(clause, decision)]
+
+
+def _term_survival_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    analysis = clause.get("term_survival_analysis")
+    if isinstance(analysis, dict):
+        references = analysis.get("references", [])
+        if isinstance(references, list) and references:
+            for reference in references:
+                if not isinstance(reference, dict):
+                    continue
+                if reference.get("unresolved_numbers"):
+                    return ["unresolved_survival_reference"]
+                if str(reference.get("status") or "") in {"partial", "unresolved"}:
+                    return ["unresolved_survival_reference"]
+                if reference.get("ordinary_confidentiality") is False:
+                    return ["survival_reference_scope_unclear"]
+            if decision == CLAUSE_DECISION_PASS:
+                return ["resolved_survival_reference_within_cap"]
+    reason = str(clause.get("reason") or clause.get("finding") or "").lower()
+    issue = _issue_type(clause)
+    if "indefinite" in reason:
+        return ["indefinite_survival"]
+    if "exceeds" in reason or "over" in reason or "longer than" in reason:
+        return ["term_survival_over_cap"]
+    if issue == "missing":
+        return ["missing_term_or_survival"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["unclear_term_or_survival"]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["term_survival_within_cap"]
+    return [_generic_reason_code(clause, decision)]
+
+
+def _non_circumvention_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "non_circumvention_analysis", "prohibited_paragraph_ids"):
+        return ["prohibited_non_circumvention_restriction"]
+    if _has_ids(clause, "non_circumvention_analysis", "review_paragraph_ids"):
+        return ["possible_non_circumvention_restriction"]
+    if _has_ids(clause, "non_circumvention_analysis", "negated_reference_paragraph_ids"):
+        return ["negated_non_circumvention_reference"]
+    if _has_ids(clause, "non_circumvention_analysis", "lawful_circumvention_paragraph_ids"):
+        return ["lawful_circumvention_reference_ignored"]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["no_non_circumvention_restriction"]
+    return [_generic_reason_code(clause, decision)]
+
+
+def _signature_reason_codes(clause: Dict[str, Any], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["complete_execution_block"]
+    if clause.get("matched_paragraph_ids"):
+        return ["incomplete_execution_block"]
+    return ["missing_execution_block"]
+
+
+def _generic_reason_code(clause: Dict[str, Any], decision: str) -> str:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return semantic_code
+    issue = _issue_type(clause)
+    if issue == "missing":
+        return "missing_required_clause"
+    if issue == "present_but_wrong":
+        return "present_but_wrong"
+    if issue == "unclear" or decision == CLAUSE_DECISION_REVIEW:
+        return "unclear_or_ambiguous"
+    if decision == CLAUSE_DECISION_FAIL:
+        return "clause_failed_playbook"
+    if decision == CLAUSE_DECISION_PASS:
+        return "pass_evidence_found"
+    return "unclassified_review_reason"
