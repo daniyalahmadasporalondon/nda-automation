@@ -44,7 +44,7 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_CLAUSES": "",
                 "NDA_AI_REVIEW_THRESHOLD": "",
                 "NDA_AI_PROVIDER": "gemini",
-                "NDA_AI_MODEL": "gemini-2.5-flash",
+                "NDA_AI_MODEL": "gemini-3-flash-preview",
             },
             clear=False,
         )
