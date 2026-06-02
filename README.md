@@ -1,11 +1,5 @@
 # nda-automation
 
-A small, separate NDA hard-clause checker.
-
-This project deliberately stays away from triage workflows, ranking layers, Gmail/Drive integrations, corpus history, and automatic document mutation. It answers one question: does the NDA meet the required hard clauses?
-
-You can paste NDA text directly, upload a plain text file, or upload a `.docx` Word document for review.
-
 ## Run locally
 
 Requires Python 3.9 or newer.
