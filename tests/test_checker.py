@@ -91,6 +91,17 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertTrue(term_clause["passes"])
 
+    def test_all_clause_results_include_shared_structure_context(self):
+        text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8")
+        result = review_nda(text)
+
+        for clause in result["clauses"]:
+            with self.subTest(clause=clause["id"]):
+                self.assertIn("structure_context", clause)
+                self.assertIn("concepts", clause["structure_context"])
+                self.assertIn("sections", clause["structure_context"])
+                self.assertIn("reference_count", clause["structure_context"])
+
     def test_mutuality_terms_come_from_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
         mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")

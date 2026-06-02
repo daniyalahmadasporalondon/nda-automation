@@ -29,6 +29,19 @@ class ConceptClassifierTests(unittest.TestCase):
         self.assertIn("term_or_survival", sections_by_label["Article 4"]["concepts"])
         self.assertGreaterEqual(classifier["stats"]["classified_section_count"], 3)
 
+    def test_classifies_mutuality_roles_and_confidentiality_exclusions(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Each party acts as both a Disclosing Party and a Receiving Party.",
+            "The Disclosing Party means a party that discloses Confidential Information.",
+            "Confidential Information does not include information in the public domain.",
+        ]))
+
+        classifier = classify_document_concepts(paragraphs, build_contract_structure(paragraphs))
+
+        self.assertIn("mutuality", classifier["concepts_by_paragraph_id"]["p1"])
+        self.assertIn("party_role_definition", classifier["concepts_by_paragraph_id"]["p2"])
+        self.assertIn("confidential_information_exclusion", classifier["concepts_by_paragraph_id"]["p3"])
+
 
 if __name__ == "__main__":
     unittest.main()

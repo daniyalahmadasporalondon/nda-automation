@@ -18,6 +18,7 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
 
 USAGE_RIGHT_ACTION_PATTERN = (
     r"(?:use|using|retain|retaining|disclose|disclosing|exploit|exploiting|"
@@ -46,13 +47,17 @@ def _check_confidential_information(
     normalized: str,
     clause: Dict[str, object],
     paragraphs: List[Paragraph],
-    _review_context: Dict[str, object] | None = None,
+    review_context: Dict[str, object] | None = None,
 ) -> ClauseResult:
+    context_concepts = ["confidential_information_definition", "confidential_information_exclusion"]
     definition_name_terms, definition_coverage_terms = _confidential_definition_search_terms(clause)
     categories = _clause_terms(clause, "definition_categories")
     category_label = _confidential_categories_label(categories)
     definition_name_patterns = [_literal_word_pattern(term) for term in definition_name_terms]
-    definition_paragraphs = _paragraph_matches(paragraphs, definition_name_patterns)
+    definition_paragraphs = merge_paragraphs(
+        _paragraph_matches(paragraphs, definition_name_patterns),
+        paragraphs_with_concepts(paragraphs, review_context, ["confidential_information_definition"]),
+    )
     definition_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in definition_paragraphs))
     coverage_terms = _dedupe_terms(definition_coverage_terms + categories)
     coverage_hits = [term for term in coverage_terms if term in definition_normalized]
@@ -66,15 +71,15 @@ def _check_confidential_information(
     )
 
     if broad_definition and not problematic_exclusion_paragraphs:
-        return _match(
+        return attach_structure_context(_match(
             clause,
             "Broad confidential information definition found with no extra exclusions detected.",
             definition_paragraphs,
-        )
+        ), review_context, context_concepts)
 
     if not broad_definition:
         if not definition_paragraphs:
-            return _not_present(
+            return attach_structure_context(_not_present(
                 clause,
                 "No Confidential Information definition was found.",
                 [],
@@ -82,8 +87,8 @@ def _check_confidential_information(
                     "Add a broad Confidential Information definition "
                     f"covering non-public {category_label or 'required'} information."
                 ),
-            )
-        return _check(
+            ), review_context, context_concepts)
+        return attach_structure_context(_check(
             clause,
             "The definition of Confidential Information is missing or too narrow.",
             definition_paragraphs,
@@ -91,9 +96,9 @@ def _check_confidential_information(
                 "Broaden the Confidential Information definition "
                 f"to cover the required {category_label or 'playbook'} categories."
             ),
-        )
+        ), review_context, context_concepts)
     else:
-        return _check(
+        return attach_structure_context(_check(
             clause,
             "The exclusions appear broader than the allowed standard carve-outs.",
             problematic_exclusion_paragraphs,
@@ -101,7 +106,7 @@ def _check_confidential_information(
                 "Remove residual knowledge, reverse-engineering, or unqualified independent-development exclusions "
                 "from Confidential Information."
             ),
-        )
+        ), review_context, context_concepts)
 
 def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[List[str], List[str]]:
     """Split confidential-information search terms by their playbook contract.

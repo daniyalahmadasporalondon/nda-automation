@@ -8,11 +8,37 @@ from .review_document import Paragraph
 CONCEPT_CLASSIFIER_VERSION = 1
 
 CONCEPT_DEFINITIONS: Dict[str, Dict[str, object]] = {
+    "mutuality": {
+        "label": "Mutuality",
+        "patterns": [
+            r"\bmutual(?:ity|ly)?\b",
+            r"\breciprocal(?:ly)?\b",
+            r"\beach\s+party\b.{0,140}\b(?:disclos(?:e|es|ing)|receiv(?:e|es|ing)|confidential)\b",
+            r"\bboth\s+parties\b.{0,140}\b(?:disclos(?:e|es|ing)|receiv(?:e|es|ing)|confidential)\b",
+            r"\beach\s+party\b.{0,140}\b(?:disclosing\s+party|receiving\s+party)\b",
+        ],
+    },
+    "party_role_definition": {
+        "label": "Party role definition",
+        "patterns": [
+            r"\bdisclosing\s+party\b.{0,80}\b(?:means|is|shall\s+mean)\b",
+            r"\breceiving\s+party\b.{0,80}\b(?:means|is|shall\s+mean)\b",
+            r"\b(?:disclosing|receiving)\s+party\b.{0,120}\b(?:disclos(?:e|es|ing)|receiv(?:e|es|ing))\b",
+        ],
+    },
     "confidential_information_definition": {
         "label": "Confidential Information definition",
         "patterns": [
             r"\bconfidential\s+information\b.{0,80}\b(?:means|includes?|shall\s+mean|is\s+defined)\b",
             r"\bdefinition\s+of\s+confidential\s+information\b",
+        ],
+    },
+    "confidential_information_exclusion": {
+        "label": "Confidential Information exclusion",
+        "patterns": [
+            r"\bconfidential\s+information\b.{0,120}\b(?:does\s+not\s+include|shall\s+not\s+include|excludes?|excluded)\b",
+            r"\b(?:does\s+not\s+include|shall\s+not\s+include|excludes?|excluded)\b.{0,120}\bconfidential\s+information\b",
+            r"\b(?:public\s+domain|prior\s+possession|independent(?:ly)?\s+(?:developed|develops|develop|development)|lawful\s+third\s+party)\b",
         ],
     },
     "confidentiality_obligation": {
@@ -79,7 +105,7 @@ CONCEPT_DEFINITIONS: Dict[str, Dict[str, object]] = {
     "execution": {
         "label": "Execution",
         "patterns": [
-            r"\b(?:signature|signatures|executed|authori[sz]ed\s+signatory)\b",
+            r"\b(?:executed|authori[sz]ed\s+signatory)\b",
             r"\b(?:by|title|date)\s*:",
         ],
     },

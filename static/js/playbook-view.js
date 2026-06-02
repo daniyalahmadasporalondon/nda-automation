@@ -87,6 +87,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         ${textArea("Suggested Redline / Counter-language", "redline_template", clause.redline_template || clause.acceptable_language || "", 4)}
 
         ${specialControls(clause)}
+        ${sharedContextControls(clause)}
 
         <section class="admin-rules">
           <h3>Engine Rules</h3>
@@ -318,6 +319,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       },
       taxonomy_groups: clause.taxonomy_groups || [],
       search_terms: clause.search_terms || [],
+      shared_review_context: {
+        contract_structure_map: true,
+        reference_resolver: true,
+        concept_classifier: conceptUsageForClause(clause).concepts,
+        output_field: "structure_context",
+      },
       semantic_signals: clause.semantic_signals || [],
     };
     if (clause.id === "mutuality") {
@@ -350,6 +357,73 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       rules.check_terms = clause.indefinite_terms || [];
     }
     return JSON.stringify(rules, null, 2);
+  }
+
+  function sharedContextControls(clause) {
+    const usage = conceptUsageForClause(clause);
+    const chips = usage.concepts
+      .map((concept) => `<span class="admin-chip">${escapeHtml(concept)}</span>`)
+      .join("");
+    return `
+      <section class="admin-special">
+        <h3>Shared Structure Layer</h3>
+        <p class="admin-muted">This checker receives the same Contract Structure Map, Reference Resolver, and Concept Classifier context as the rest of the review engine.</p>
+        <dl class="admin-logic-list">
+          <div><dt>Structure use</dt><dd>${escapeHtml(usage.structure)}</dd></div>
+          <div><dt>Reference use</dt><dd>${escapeHtml(usage.references)}</dd></div>
+          <div><dt>Concept use</dt><dd>${escapeHtml(usage.summary)}</dd></div>
+          <div><dt>Audit output</dt><dd>Every result includes structure_context with concepts, matching sections, and reference count.</dd></div>
+        </dl>
+        <div class="admin-chip-row">${chips || '<span class="admin-muted">No clause-specific concepts configured</span>'}</div>
+      </section>
+    `;
+  }
+
+  function conceptUsageForClause(clause) {
+    const usage = {
+      confidential_information: {
+        concepts: ["confidential_information_definition", "confidential_information_exclusion"],
+        references: "Reference count is surfaced for audit; definition and exclusion checks use concept-classified paragraphs.",
+        structure: "Uses detected sections to show where definitions and exclusions live.",
+        summary: "Finds definition and exclusion concepts before applying category breadth and carve-out rules.",
+      },
+      governing_law: {
+        concepts: ["governing_law"],
+        references: "Reference count is surfaced for audit; governing law does not usually depend on cross-references.",
+        structure: "Uses detected sections to isolate governing-law headings and paragraphs.",
+        summary: "Finds governing-law concept paragraphs before applying approved-law checks.",
+      },
+      mutuality: {
+        concepts: ["mutuality", "party_role_definition", "confidentiality_obligation"],
+        references: "Reference count is surfaced for audit; mutuality primarily depends on party-role language.",
+        structure: "Uses detected sections to show where mutuality and role definitions appear.",
+        summary: "Classifies mutuality, party-role definitions, and confidentiality obligations for audit.",
+      },
+      non_circumvention: {
+        concepts: ["non_circumvention"],
+        references: "Reference count is surfaced for audit; prohibited business-restraint language is checked directly.",
+        structure: "Uses detected sections to show where non-circumvention concepts appear.",
+        summary: "Finds non-circumvention concept paragraphs before applying lawful-circumvention guards.",
+      },
+      signatures: {
+        concepts: ["execution"],
+        references: "Reference count is surfaced for audit; signature checks do not depend on cross-references.",
+        structure: "Uses detected sections to show where execution material appears.",
+        summary: "Finds execution concepts before counting party, title, and date markers.",
+      },
+      term_and_survival: {
+        concepts: ["term_or_survival", "trade_secret_or_legal_carveout"],
+        references: "Uses resolved references to inspect what referenced clauses or articles actually are.",
+        structure: "Uses detected sections to inspect survival targets and carve-out context.",
+        summary: "Classifies survival and permitted longer-survival carve-outs, then adds term_survival_analysis when references are used.",
+      },
+    };
+    return usage[clause.id] || {
+      concepts: [],
+      references: "Reference count is surfaced for audit.",
+      structure: "Uses detected sections for checker context.",
+      summary: "No clause-specific concept usage configured.",
+    };
   }
 
   function textInput(label, name, value) {

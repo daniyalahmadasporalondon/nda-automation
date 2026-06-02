@@ -14,6 +14,7 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+from .context import attach_structure_context
 
 MUTUALITY_VARIANT_PATTERNS = {
     "mutual": r"\bmutual(?:ity|ly)?\b",
@@ -30,8 +31,9 @@ def _check_mutuality(
     normalized: str,
     clause: Dict[str, object],
     paragraphs: List[Paragraph],
-    _review_context: Dict[str, object] | None = None,
+    review_context: Dict[str, object] | None = None,
 ) -> ClauseResult:
+    context_concepts = ["mutuality", "party_role_definition", "confidentiality_obligation"]
     search_patterns = _mutuality_search_patterns(clause)
     one_way_patterns = _clause_term_patterns(clause, "one_way_terms")
     mutual_paragraphs = _mutuality_paragraphs(paragraphs, search_patterns)
@@ -39,24 +41,24 @@ def _check_mutuality(
     one_way_paragraphs = _paragraph_matches(paragraphs, one_way_patterns)
 
     if (mutual_paragraphs or separated_role_paragraphs) and not one_way_paragraphs:
-        return _match(
+        return attach_structure_context(_match(
             clause,
             "Mutual obligation language found.",
             mutual_paragraphs + separated_role_paragraphs,
-        )
+        ), review_context, context_concepts)
     if one_way_paragraphs:
-        return _check(
+        return attach_structure_context(_check(
             clause,
             "One-way or unilateral confidentiality language needs review.",
             one_way_paragraphs,
             what_to_fix="Revise the NDA so both parties are bound as both Disclosing Party and Receiving Party.",
-        )
-    return _not_present(
+        ), review_context, context_concepts)
+    return attach_structure_context(_not_present(
         clause,
         "The text does not clearly create mutual confidentiality obligations.",
         [],
         what_to_fix="Add mutual confidentiality language that binds both parties symmetrically.",
-    )
+    ), review_context, context_concepts)
 
 def _mutual_role_paragraphs(
     normalized: str,

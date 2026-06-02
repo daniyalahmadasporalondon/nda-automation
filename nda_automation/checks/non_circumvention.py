@@ -11,6 +11,7 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
 
 LEGAL_CIRCUMVENTION_OBJECT = (
     r"(?:(?:any|all|applicable|relevant|mandatory|its|their|the)\s+)*"
@@ -28,12 +29,16 @@ def _check_non_circumvention(
     normalized: str,
     clause: Dict[str, object],
     paragraphs: List[Paragraph],
-    _review_context: Dict[str, object] | None = None,
+    review_context: Dict[str, object] | None = None,
 ) -> ClauseResult:
+    context_concepts = ["non_circumvention"]
     prohibited_patterns = _clause_term_patterns(clause, "search_terms")
     prohibited_paragraphs = [
         paragraph
-        for paragraph in _paragraph_matches(paragraphs, prohibited_patterns)
+        for paragraph in merge_paragraphs(
+            _paragraph_matches(paragraphs, prohibited_patterns),
+            paragraphs_with_concepts(paragraphs, review_context, context_concepts),
+        )
         if _has_prohibited_non_circumvention(str(paragraph["text"]), prohibited_patterns)
     ]
     prohibited_language = [
@@ -46,13 +51,17 @@ def _check_non_circumvention(
     ]
 
     if not prohibited_language:
-        return _not_present(clause, "No prohibited non-circumvention language detected.", [])
-    return _check(
+        return attach_structure_context(
+            _not_present(clause, "No prohibited non-circumvention language detected.", []),
+            review_context,
+            context_concepts,
+        )
+    return attach_structure_context(_check(
         clause,
         "Prohibited non-circumvention or substitute-purpose language found.",
         prohibited_paragraphs,
         what_to_fix="Remove non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity language.",
-    )
+    ), review_context, context_concepts)
 
 
 def _has_prohibited_non_circumvention(text: str, prohibited_patterns: List[str]) -> bool:

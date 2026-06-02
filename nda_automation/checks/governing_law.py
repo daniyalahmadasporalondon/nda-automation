@@ -17,6 +17,7 @@ from .common import (
     _not_present,
     _paragraph_matches,
 )
+from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
 
 GOVERNING_LAW_VALUE_PATTERNS = (
     r"\bgoverned\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
@@ -40,10 +41,14 @@ def _check_governing_law(
     normalized: str,
     clause: Dict[str, object],
     paragraphs: List[Paragraph],
-    _review_context: Dict[str, object] | None = None,
+    review_context: Dict[str, object] | None = None,
 ) -> ClauseResult:
+    context_concepts = ["governing_law"]
     governing_anchor_patterns = _governing_anchor_patterns(clause)
-    governing_paragraphs = _paragraph_matches(paragraphs, governing_anchor_patterns)
+    governing_paragraphs = merge_paragraphs(
+        _paragraph_matches(paragraphs, governing_anchor_patterns),
+        paragraphs_with_concepts(paragraphs, review_context, context_concepts),
+    )
     approved_governing_paragraphs = [
         paragraph
         for paragraph in governing_paragraphs
@@ -51,20 +56,24 @@ def _check_governing_law(
     ]
 
     if approved_governing_paragraphs:
-        return _match(clause, "Approved governing law found.", approved_governing_paragraphs)
+        return attach_structure_context(
+            _match(clause, "Approved governing law found.", approved_governing_paragraphs),
+            review_context,
+            context_concepts,
+        )
     if governing_paragraphs:
-        return _check(
+        return attach_structure_context(_check(
             clause,
             "A governing law clause was found, but it does not use an approved law.",
             governing_paragraphs,
             what_to_fix=_governing_law_change_fix(clause),
-        )
-    return _not_present(
+        ), review_context, context_concepts)
+    return attach_structure_context(_not_present(
         clause,
         "No governing law clause was found.",
         [],
         what_to_fix=_governing_law_missing_fix(clause),
-    )
+    ), review_context, context_concepts)
 
 
 def _uses_approved_governing_law(text: str, clause: Dict[str, object]) -> bool:

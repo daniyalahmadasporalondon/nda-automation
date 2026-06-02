@@ -20,6 +20,7 @@ from .common import (
     _term_context_patterns,
     _year_count_label,
 )
+from .context import attach_structure_context
 
 CARVE_OUT_SURVIVAL_PATTERN = (
     r"\b(?:surviv(?:e|es|ed|ing|al)|remain(?:s|ed|ing)?|continu(?:e|es|ed|ing)|"
@@ -39,6 +40,7 @@ def _check_term_and_survival(
     paragraphs: List[Paragraph],
     review_context: Dict[str, object] | None = None,
 ) -> ClauseResult:
+    context_concepts = ["term_or_survival", "trade_secret_or_legal_carveout"]
     max_years = _max_term_years(clause)
     cap_label = _year_count_label(max_years)
     term_context_patterns = _term_context_patterns(clause)
@@ -72,7 +74,7 @@ def _check_term_and_survival(
             ),
         )
         _attach_survival_analysis(result, reference_analysis)
-        return result
+        return attach_structure_context(result, review_context, context_concepts)
     if ordinary_indefinite_matches:
         result = _check(
             clause,
@@ -84,7 +86,7 @@ def _check_term_and_survival(
             ),
         )
         _attach_survival_analysis(result, reference_analysis)
-        return result
+        return attach_structure_context(result, review_context, context_concepts)
     if has_term_within_cap:
         evidence_paragraphs = _term_evidence_paragraphs(term_paragraphs, paragraphs, reference_analysis)
         if reference_analysis["confidentiality_reference_count"]:
@@ -96,7 +98,7 @@ def _check_term_and_survival(
             reason = f"Term or survival period is within the cap of {cap_label}."
         result = _match(clause, reason, evidence_paragraphs)
         _attach_survival_analysis(result, reference_analysis)
-        return result
+        return attach_structure_context(result, review_context, context_concepts)
     result = _not_present(
         clause,
         f"No fixed term or survival period of up to {cap_label} was found.",
@@ -104,7 +106,7 @@ def _check_term_and_survival(
         what_to_fix=f"Add a fixed term or ordinary confidentiality survival period of {cap_label} or less.",
     )
     _attach_survival_analysis(result, reference_analysis)
-    return result
+    return attach_structure_context(result, review_context, context_concepts)
 
 
 def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:

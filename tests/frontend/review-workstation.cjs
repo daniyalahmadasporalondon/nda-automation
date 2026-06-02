@@ -368,6 +368,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
+  await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
+  await assertTextContains(page.locator("#clauseDetail"), "structure_context");
+  await assertTextContains(page.locator("#clauseDetail"), "mutuality");
   assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Escalate", { exact: false }).count(), 0);
@@ -387,6 +390,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Checker Logic Visibility");
   await assertTextContains(page.locator("#clauseDetail"), "REFERENCE RESOLVER");
   await assertTextContains(page.locator("#clauseDetail"), "CONCEPT CLASSIFIER");
+  await assertTextContains(page.locator("#clauseDetail"), "term_or_survival");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
