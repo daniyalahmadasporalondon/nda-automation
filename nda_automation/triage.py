@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .review_state import clause_fails, clause_needs_review, review_state_from_result
+
 LEGAL_REVIEW_CLAUSE_IDS = {"non_circumvention"}
 
 
@@ -17,15 +19,17 @@ def triage_review_result(review_result: dict) -> dict:
     review_clauses = [
         clause
         for clause in clauses
-        if isinstance(clause, dict) and _clause_needs_review(clause)
+        if isinstance(clause, dict) and clause_needs_review(clause)
     ]
     failed_clauses = [
         clause
         for clause in clauses
-        if isinstance(clause, dict) and _clause_fails(clause)
+        if isinstance(clause, dict) and clause_fails(clause)
     ]
-    review_count = int(review_result.get("requirements_needs_review") or len(review_clauses))
-    failed_count = len(failed_clauses)
+    state = review_state_from_result(review_result)
+    counts = state.get("counts", {})
+    review_count = _count_from_state(counts, "review", int(review_result.get("requirements_needs_review") or len(review_clauses)))
+    failed_count = _count_from_state(counts, "check", len(failed_clauses))
 
     if failed_count == 0 and review_count == 0:
         return {
@@ -54,14 +58,12 @@ def triage_review_result(review_result: dict) -> dict:
     }
 
 
-def _clause_needs_review(clause: dict) -> bool:
-    return str(clause.get("decision") or "").strip().lower() == "review" or bool(clause.get("needs_review"))
-
-
-def _clause_fails(clause: dict) -> bool:
-    decision = str(clause.get("decision") or "").strip().lower()
-    if decision == "fail":
-        return True
-    if decision == "review":
-        return False
-    return clause.get("passes") is False and not _clause_needs_review(clause)
+def _count_from_state(counts: object, key: str, fallback: int) -> int:
+    if isinstance(counts, dict):
+        if key not in counts:
+            return fallback
+        try:
+            return int(counts.get(key) or 0)
+        except (TypeError, ValueError):
+            return fallback
+    return fallback

@@ -96,8 +96,12 @@ def review_result_is_stale(review_result: object) -> bool:
     clauses = review_result.get("clauses")
     if not isinstance(clauses, list) or not clauses:
         return True
+    if not isinstance(review_result.get("review_state"), dict):
+        return True
     return any(
-        not isinstance(clause, dict) or not isinstance(clause.get("structure_context"), dict)
+        not isinstance(clause, dict)
+        or not isinstance(clause.get("structure_context"), dict)
+        or not isinstance(clause.get("review_state"), dict)
         for clause in clauses
     )
 

@@ -8,6 +8,7 @@ from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
+from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
 
 
 class PublicMatter(TypedDict, total=False):
@@ -35,6 +36,7 @@ class PublicMatter(TypedDict, total=False):
     requirements_needs_review: int
     requirements_passed: int
     reply_to: str
+    review_state: dict[str, Any]
     sender: str
     send_block_reason: str
     source_filename: str
@@ -67,6 +69,7 @@ PUBLIC_MATTER_FIELDS = {
     "requirements_needs_review",
     "requirements_passed",
     "reply_to",
+    "review_state",
     "sender",
     "send_block_reason",
     "source_filename",
@@ -98,6 +101,9 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
         "can_send_redline": bool(recipient and not send_block_reason),
         "has_redline_draft": isinstance(matter.get("redline_draft"), dict),
     })
+    review_state = matter_review_state(matter)
+    if review_state:
+        public["review_state"] = review_state
     if send_block_reason:
         public["send_block_reason"] = send_block_reason
     return public
@@ -106,17 +112,34 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
 def matter_needs_human_review(matter: dict[str, Any]) -> bool:
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
-        if str(review_result.get("overall_status") or "") == "needs_review":
+        return result_requires_human_review(review_result)
+    review_state = matter.get("review_state")
+    if isinstance(review_state, dict):
+        if bool(review_state.get("requires_human_review")) or bool(review_state.get("blocks_send")):
             return True
-        try:
-            if int(review_result.get("requirements_needs_review") or 0) > 0:
-                return True
-        except (TypeError, ValueError):
+        if str(review_state.get("state") or "") == "review":
             return True
     try:
         return int(matter.get("requirements_needs_review") or 0) > 0
     except (TypeError, ValueError):
         return True
+
+
+def matter_review_state(matter: dict[str, Any]) -> dict[str, Any]:
+    existing = matter.get("review_state")
+    if isinstance(existing, dict) and existing.get("state"):
+        return existing
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        return review_state_from_result(review_result)
+    if any(key in matter for key in ["requirements_passed", "requirements_needs_review", "requirements_failed"]):
+        return aggregate_review_state(
+            [],
+            pass_count=_safe_count(matter.get("requirements_passed")),
+            review_count=_safe_count(matter.get("requirements_needs_review")),
+            check_count=_safe_count(matter.get("requirements_failed")),
+        )
+    return {}
 
 
 def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +155,13 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
     if isinstance(redline_draft, dict):
         review_payload["redline_draft"] = redline_draft
     return review_payload
+
+
+def _safe_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def review_result_with_structure(review_result: dict[str, Any], extracted_text: str = "") -> dict[str, Any]:

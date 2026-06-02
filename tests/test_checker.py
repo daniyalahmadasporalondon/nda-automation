@@ -97,12 +97,22 @@ class CheckerTests(unittest.TestCase):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8")
         result = review_nda(text)
 
+        self.assertEqual(result["review_state"]["state"], "pass")
+        self.assertEqual(result["review_state"]["overall_status"], result["overall_status"])
+        self.assertEqual(result["review_state"]["counts"]["pass"], result["requirements_passed"])
+        self.assertEqual(result["review_state"]["counts"]["review"], result["requirements_needs_review"])
+        self.assertEqual(result["review_state"]["counts"]["check"], result["requirements_failed"])
+        self.assertFalse(result["review_state"]["blocks_send"])
         for clause in result["clauses"]:
             with self.subTest(clause=clause["id"]):
                 self.assertIn("structure_context", clause)
                 self.assertIn("concepts", clause["structure_context"])
                 self.assertIn("sections", clause["structure_context"])
                 self.assertIn("reference_count", clause["structure_context"])
+                self.assertIn("review_state", clause)
+                self.assertEqual(clause["review_state"]["decision"], clause["decision"])
+                self.assertEqual(clause["review_state"]["state"], "pass")
+                self.assertFalse(clause["review_state"]["blocks_send"])
                 self.assertIn("audit_trace", clause)
                 trace = clause["audit_trace"]
                 self.assertEqual(trace["version"], 1)
@@ -783,10 +793,15 @@ class CheckerTests(unittest.TestCase):
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
         self.assertEqual(result["overall_status"], "needs_review")
         self.assertEqual(result["requirements_needs_review"], 1)
+        self.assertEqual(result["review_state"]["state"], "review")
+        self.assertTrue(result["review_state"]["requires_human_review"])
+        self.assertTrue(result["review_state"]["blocks_send"])
         self.assertEqual(governing_law["status"], "match")
         self.assertTrue(governing_law["passes"])
         self.assertEqual(governing_law["decision"], "review")
         self.assertTrue(governing_law["needs_review"])
+        self.assertEqual(governing_law["review_state"]["state"], "review")
+        self.assertTrue(governing_law["review_state"]["requires_human_review"])
         self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
         self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], ["p5"])
         self.assertEqual(governing_law["governing_law_analysis"]["candidate_records"][0]["value"], "[jurisdiction]")
@@ -1094,6 +1109,8 @@ class CheckerTests(unittest.TestCase):
         governing_law["evidence_paragraphs"][0]["text"] = "Drifted evidence."
         governing_law["structured_evidence"][0]["text"] = "Drifted structured evidence."
         governing_law["audit_trace"]["evidence_summary"]["paragraph_ids"] = ["p999"]
+        governing_law["review_state"]["decision"] = "pass"
+        drifted_result["review_state"]["counts"]["check"] = 0
         governing_law["matched_text"] = "Drifted evidence."
 
         errors = validate_clause_evidence_trust(drifted_result, text)
@@ -1102,6 +1119,8 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(any("governing_law" in error and "has drifted text" in error for error in errors))
         self.assertTrue(any("governing_law" in error and "structured evidence" in error for error in errors))
         self.assertTrue(any("governing_law" in error and "audit_trace paragraph ids" in error for error in errors))
+        self.assertTrue(any("governing_law" in error and "review_state decision" in error for error in errors))
+        self.assertTrue(any("review_state check count" in error for error in errors))
 
     def test_clause_evidence_trust_detects_offset_drift(self):
         text = "This Agreement shall be governed by the laws of California."

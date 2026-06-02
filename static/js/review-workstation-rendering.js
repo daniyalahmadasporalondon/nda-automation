@@ -125,9 +125,10 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
-  const passedCount = clauses.filter((clause) => clauseStatus(clause).passes).length;
-  const reviewCount = clauses.filter((clause) => clauseStatus(clause).needsReview).length;
-  const failedCount = clauses.filter((clause) => clauseStatus(clause).fails).length;
+  const counts = state.latestReviewResult?.review_state?.counts;
+  const passedCount = reviewStateCount(counts, "pass", clauses.filter((clause) => clauseStatus(clause).passes).length);
+  const reviewCount = reviewStateCount(counts, "review", clauses.filter((clause) => clauseStatus(clause).needsReview).length);
+  const failedCount = reviewStateCount(counts, "check", clauses.filter((clause) => clauseStatus(clause).fails).length);
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
   studioResultMark.textContent = failedCount ? "CHECK" : reviewCount ? "REVIEW" : "PASS";
   studioResultMark.className = failedCount ? "check" : reviewCount ? "review" : "pass";
@@ -151,6 +152,12 @@ function summaryStatusText(failedCount, reviewCount) {
     return `${reviewCount} ${reviewCount === 1 ? "clause needs" : "clauses need"} human review before send.`;
   }
   return "All hard clauses are currently satisfied.";
+}
+
+function reviewStateCount(counts, key, fallback) {
+  if (!counts || typeof counts !== "object") return fallback;
+  const value = Number(counts[key]);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function reviewWarningSummary() {

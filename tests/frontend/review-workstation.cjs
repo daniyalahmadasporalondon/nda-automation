@@ -375,6 +375,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "HUMAN-REVIEW BOUNDARY");
   await assertTextContains(page.locator("#clauseDetail"), "SIGNAL BUCKETS");
   await assertTextContains(page.locator("#clauseDetail"), "structure_context");
+  await assertTextContains(page.locator("#clauseDetail"), "review_state");
   await assertTextContains(page.locator("#clauseDetail"), "structured_evidence");
   await assertTextContains(page.locator("#clauseDetail"), "audit_trace");
   await assertTextContains(page.locator("#clauseDetail"), "analysis_purpose");
@@ -592,6 +593,7 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "CHECK");
   await assertTextContains(checkersPanel, "REDLINE BEHAVIOR");
   await assertTextContains(checkersPanel, "HUMAN-REVIEW BOUNDARY");
+  await assertTextContains(checkersPanel, "REVIEW STATE");
   await assertTextContains(checkersPanel, "STRUCTURED EVIDENCE");
   await assertTextContains(checkersPanel, "AUDIT TRACE");
   await assertTextContains(checkersPanel, "mutuality_analysis");

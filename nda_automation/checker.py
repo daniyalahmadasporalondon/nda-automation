@@ -43,15 +43,19 @@ from .review_document import (
     split_document_paragraphs,
     validate_clause_evidence_trust,
 )
+from .review_state import (
+    CLAUSE_DECISION_FAIL,
+    CLAUSE_DECISION_PASS,
+    CLAUSE_DECISION_REVIEW,
+    aggregate_review_state,
+    clause_review_state,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
-REVIEW_ENGINE_VERSION = 4
+REVIEW_ENGINE_VERSION = 5
 AUDIT_TRACE_VERSION = 1
 SEMANTIC_REVIEW_THRESHOLD = 0.75
-CLAUSE_DECISION_PASS = "pass"
-CLAUSE_DECISION_FAIL = "fail"
-CLAUSE_DECISION_REVIEW = "review"
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
 MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
@@ -153,17 +157,17 @@ def review_nda(
     review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
     passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
-
-    if failed:
-        overall_status = "does_not_meet_requirements"
-    elif review:
-        overall_status = "needs_review"
-    else:
-        overall_status = "meets_requirements"
+    review_state = aggregate_review_state(
+        clause_results,
+        pass_count=len(passed),
+        review_count=len(review),
+        check_count=len(failed),
+    )
 
     result = {
         "review_engine_version": REVIEW_ENGINE_VERSION,
-        "overall_status": overall_status,
+        "overall_status": review_state["overall_status"],
+        "review_state": review_state,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "requirements_passed": len(passed),
         "requirements_failed": len(failed),
@@ -188,6 +192,7 @@ def _apply_clause_decision(clause: ClauseResult) -> None:
     clause["needs_review"] = decision == CLAUSE_DECISION_REVIEW
     if not str(clause.get("decision_reason") or "").strip():
         clause["decision_reason"] = _clause_decision_reason(clause, decision)
+    clause["review_state"] = clause_review_state(clause, decision)
     _finalize_structured_evidence(clause, decision)
     _attach_audit_trace(clause, decision)
 

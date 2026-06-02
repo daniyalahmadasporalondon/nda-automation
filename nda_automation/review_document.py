@@ -84,10 +84,14 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
     errors: List[str] = []
     paragraphs = review_result.get("paragraphs", [])
     clauses = review_result.get("clauses", [])
+    review_state = review_result.get("review_state", {})
     if not isinstance(paragraphs, list):
         return ["review result paragraphs must be a list"]
     if not isinstance(clauses, list):
         return ["review result clauses must be a list"]
+    if not isinstance(review_state, dict):
+        errors.append("review_state must be an object")
+        review_state = {}
 
     paragraphs_by_id = {
         str(paragraph.get("id")): paragraph
@@ -120,6 +124,7 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         evidence_paragraphs = clause.get("evidence_paragraphs", [])
         structured_evidence = clause.get("structured_evidence", [])
         audit_trace = clause.get("audit_trace", {})
+        clause_review_state = clause.get("review_state", {})
         if not isinstance(matched_ids, list):
             errors.append(f"{clause_id}: matched_paragraph_ids must be a list")
             continue
@@ -135,6 +140,19 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
         if not isinstance(audit_trace, dict):
             errors.append(f"{clause_id}: audit_trace must be an object")
             audit_trace = {}
+        if not isinstance(clause_review_state, dict):
+            errors.append(f"{clause_id}: review_state must be an object")
+            clause_review_state = {}
+        review_state_decision = clause_review_state.get("decision")
+        if review_state_decision is not None and review_state_decision != clause.get("decision"):
+            errors.append(f"{clause_id}: review_state decision does not match clause decision")
+        review_state_value = clause_review_state.get("state")
+        if review_state_value == "review" and clause.get("needs_review") is not True:
+            errors.append(f"{clause_id}: review_state review does not match needs_review")
+        if review_state_value == "check" and clause.get("decision") != "fail":
+            errors.append(f"{clause_id}: review_state check does not match clause decision")
+        if review_state_value == "pass" and clause.get("decision") != "pass":
+            errors.append(f"{clause_id}: review_state pass does not match clause decision")
 
         expected_paragraphs = []
         for paragraph_id in matched_ids:
@@ -223,6 +241,25 @@ def validate_clause_evidence_trust(review_result: Dict[str, object], source_text
                 errors.append(f"{clause_id}: audit_trace structured evidence count does not match structured_evidence")
         elif audit_trace:
             errors.append(f"{clause_id}: audit_trace evidence_summary must be an object")
+
+    if review_state:
+        counts = review_state.get("counts", {})
+        if isinstance(counts, dict):
+            expected_counts = {
+                "pass": review_result.get("requirements_passed", 0),
+                "review": review_result.get("requirements_needs_review", 0),
+                "check": review_result.get("requirements_failed", 0),
+            }
+            for key, expected in expected_counts.items():
+                try:
+                    if int(counts.get(key) or 0) != int(expected or 0):
+                        errors.append(f"review_state {key} count does not match requirements count")
+                except (TypeError, ValueError):
+                    errors.append(f"review_state {key} count is not an integer")
+        else:
+            errors.append("review_state counts must be an object")
+        if review_state.get("overall_status") and review_state.get("overall_status") != review_result.get("overall_status"):
+            errors.append("review_state overall_status does not match review result")
 
     return errors
 

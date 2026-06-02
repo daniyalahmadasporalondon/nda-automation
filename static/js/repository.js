@@ -682,22 +682,30 @@ const RepositoryView = (() => {
   }
 
   function playbookMatchLabel(matter, reviewResult) {
-    const passed = Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0);
-    const failed = Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0);
-    const review = Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
+    const counts = MatterUtils.reviewState({ ...matter, review_result: reviewResult })?.counts || {};
+    const passed = reviewStateCount(counts, "pass", Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0));
+    const failed = reviewStateCount(counts, "check", Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0));
+    const review = reviewStateCount(counts, "review", Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0));
     const total = passed + failed + review;
     if (!total) return "Not checked";
     return `${Math.round((passed / total) * 100)}%`;
   }
 
   function reviewCountSummary(matter, reviewResult = {}) {
-    const passed = Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0);
-    const review = Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
-    const failed = Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0);
+    const counts = MatterUtils.reviewState({ ...matter, review_result: reviewResult })?.counts || {};
+    const passed = reviewStateCount(counts, "pass", Number(matter.requirements_passed ?? reviewResult.requirements_passed ?? 0));
+    const review = reviewStateCount(counts, "review", Number(matter.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0));
+    const failed = reviewStateCount(counts, "check", Number(matter.requirements_failed ?? reviewResult.requirements_failed ?? 0));
     const parts = [`${passed} passed`];
     if (review) parts.push(`${review} review`);
     parts.push(`${failed} failed`);
     return parts.join(" / ");
+  }
+
+  function reviewStateCount(counts, key, fallback) {
+    if (!counts || typeof counts !== "object") return fallback;
+    const value = Number(counts[key]);
+    return Number.isFinite(value) ? value : fallback;
   }
 
   function renderMatterTimeline(matter) {

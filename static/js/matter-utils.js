@@ -42,7 +42,22 @@ const MatterUtils = (() => {
     return Boolean(matter?.can_send_redline && recipientEmail(matter) && !needsHumanReview(matter));
   }
 
+  function reviewState(matter) {
+    const directState = matter?.review_state;
+    if (directState && typeof directState === "object") return directState;
+    const resultState = matter?.review_result?.review_state;
+    if (resultState && typeof resultState === "object") return resultState;
+    return null;
+  }
+
   function needsHumanReview(matter) {
+    const state = reviewState(matter);
+    if (state) {
+      if (state.requires_human_review === true || state.blocks_send === true) return true;
+      if (String(state.state || "").toLowerCase() === "review") return true;
+      const counts = state.counts && typeof state.counts === "object" ? state.counts : null;
+      if (counts && Number(counts.review || 0) > 0) return true;
+    }
     const reviewResult = matter?.review_result || {};
     const overallStatus = String(reviewResult.overall_status || matter?.overall_status || "");
     const reviewCount = Number(matter?.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
@@ -83,5 +98,5 @@ const MatterUtils = (() => {
     return "Gmail Setup";
   }
 
-  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail };
+  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail, reviewState };
 })();
