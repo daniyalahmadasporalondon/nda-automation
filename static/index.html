@@ -309,24 +309,20 @@
                 <strong>Playbook</strong>
                 <span>Clause rules and language</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="pipeline" aria-pressed="false">
-                <strong>Pipeline</strong>
-                <span>Flow and backend modules</span>
+              <button class="admin-section-button" type="button" data-admin-section="document" aria-pressed="false">
+                <strong>Document</strong>
+                <span>Structure, references, concepts</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="checkers" aria-pressed="false">
                 <strong>Checkers</strong>
                 <span>Pass, review, check logic</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="references" aria-pressed="false">
-                <strong>References</strong>
-                <span>Cross-reference resolver</span>
+              <button class="admin-section-button" type="button" data-admin-section="ai" aria-pressed="false">
+                <strong>AI</strong>
+                <span>Semantic review layer</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="concepts" aria-pressed="false">
-                <strong>Concepts</strong>
-                <span>Deterministic classifier</span>
-              </button>
-              <button class="admin-section-button" type="button" data-admin-section="integrations" aria-pressed="false">
-                <strong>Integrations</strong>
+              <button class="admin-section-button" type="button" data-admin-section="email" aria-pressed="false">
+                <strong>Email</strong>
                 <span>Gmail accounts and sync state</span>
               </button>
             </aside>
@@ -345,16 +341,16 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminPipelinePanel" data-admin-panel="pipeline" hidden>
+            <section class="admin-section-panel" id="adminDocumentPanel" data-admin-panel="document" hidden>
               <header class="admin-section-head">
                 <div>
-                  <p class="eyebrow">review engine</p>
-                  <h1>Pipeline and backend modules</h1>
+                  <p class="eyebrow">document intelligence</p>
+                  <h1>Structure, references, and concepts</h1>
                 </div>
               </header>
 
               <section class="admin-engine-shell">
-                <section class="engine-flow" aria-label="Review pipeline">
+                <section class="engine-flow" aria-label="Document intelligence flow">
                   <article class="engine-card">
                     <span>1</span>
                     <h2>Ingest</h2>
@@ -424,7 +420,7 @@
                       <div><dt>Reference resolution</dt><dd>Explicit section references are resolved from each document's detected structure.</dd></div>
                       <div><dt>Source structure preservation</dt><dd>DOCX numbering, heading styles, and table locations are preserved before clause checks run.</dd></div>
                       <div><dt>Concept classification</dt><dd>Deterministic concept tags show why referenced sections count as confidentiality, carve-out, survival, or unrelated provisions.</dd></div>
-                      <div><dt>Current AI boundary</dt><dd>Rules are deterministic Python first; semantic fallback is a separate evaluator hook.</dd></div>
+                      <div><dt>AI boundary</dt><dd>Document structure, references, and concepts are deterministic inputs; AI semantic review runs later as a separate Admin layer.</dd></div>
                     </dl>
                   </article>
                 </section>
@@ -594,7 +590,7 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminReferencePanel" data-admin-panel="references" hidden>
+            <section class="admin-section-panel" id="adminReferencePanel" data-admin-panel="document" hidden>
               <header class="admin-section-head">
                 <div>
                   <p class="eyebrow">reference resolver</p>
@@ -653,7 +649,7 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminConceptsPanel" data-admin-panel="concepts" hidden>
+            <section class="admin-section-panel" id="adminConceptsPanel" data-admin-panel="document" hidden>
               <header class="admin-section-head">
                 <div>
                   <p class="eyebrow">concept classifier</p>
@@ -708,11 +704,74 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminIntegrationsPanel" data-admin-panel="integrations" hidden>
+            <section class="admin-section-panel" id="adminAiPanel" data-admin-panel="ai" hidden>
               <header class="admin-section-head">
                 <div>
-                  <p class="eyebrow">integrations</p>
-                  <h1>Connected services</h1>
+                  <p class="eyebrow">semantic review</p>
+                  <h1>AI review layer</h1>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
+                <section class="engine-resolver-panel" aria-label="AI semantic review logic">
+                  <header>
+                    <div>
+                      <p class="eyebrow">ai semantic review</p>
+                      <h2>How AI checks the deterministic result</h2>
+                    </div>
+                    <span>Optional layer</span>
+                  </header>
+
+                  <div class="resolver-logic-grid">
+                    <article>
+                      <h3>Activation</h3>
+                      <p>Disabled by default. Set NDA_AI_REVIEW_ENABLED=true, NDA_AI_PROVIDER=gemini, NDA_AI_MODEL, and GEMINI_API_KEY in the backend environment.</p>
+                    </article>
+                    <article>
+                      <h3>Scope</h3>
+                      <p>Runs after deterministic checkers for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Signatures remain separate.</p>
+                    </article>
+                    <article>
+                      <h3>Inputs</h3>
+                      <p>Clause requirement, deterministic decision, reason codes, structure context, checker analysis objects, and selected source paragraphs.</p>
+                    </article>
+                    <article>
+                      <h3>Outputs</h3>
+                      <p>ai_review records the run summary. ai_review_analysis records each provider decision, confidence, cited spans, validation status, and disagreement state.</p>
+                    </article>
+                  </div>
+
+                  <dl class="resolver-audit-list">
+                    <div>
+                      <dt>Provider</dt>
+                      <dd>Gemini API through nda_automation/ai_review.py using structured JSON output. The API key is read from GEMINI_API_KEY and is never exposed to browser JavaScript.</dd>
+                    </div>
+                    <div>
+                      <dt>Confidence gate</dt>
+                      <dd>Default threshold is 0.75. Lower-confidence AI output becomes review rather than pass.</dd>
+                    </div>
+                    <div>
+                      <dt>Citation validation</dt>
+                      <dd>Pass and fail decisions must cite paragraph IDs that exist and quote text that appears in the reviewed source paragraph.</dd>
+                    </div>
+                    <div>
+                      <dt>Merge policy</dt>
+                      <dd>AI disagreement, low confidence, invalid citation, provider errors, or configuration errors escalate to review and block auto-send.</dd>
+                    </div>
+                    <div>
+                      <dt>Audit fields</dt>
+                      <dd>Review payloads expose ai_review, ai_review_analysis, ai_decision, ai_confidence, cited_spans, validation_errors, and disagreement.</dd>
+                    </div>
+                  </dl>
+                </section>
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminIntegrationsPanel" data-admin-panel="email" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">email</p>
+                  <h1>Email accounts and sync</h1>
                 </div>
                 <div class="admin-section-actions">
                   <button class="secondary" id="adminGmailRefreshButton" type="button">Refresh</button>

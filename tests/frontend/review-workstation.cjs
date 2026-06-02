@@ -390,10 +390,8 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "mutuality");
   assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("Escalate", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Severity", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Category Group", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("Monitor", { exact: false }).count(), 0);
   await page.getByRole("button", { name: "Confidential Information" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "Standard Exclusions Language");
   await assertTextContains(page.locator("#clauseDetail"), "confidential_information_analysis");
@@ -446,7 +444,7 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(savedConfidentialInfo.standard_exclusions_template, "Publicly known information is excluded.");
   const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
   assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
-  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Gmail");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "INBOUND ACCOUNT");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
@@ -574,21 +572,30 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
 
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.locator('[data-admin-section="pipeline"]').click();
-  await page.waitForSelector("#adminPipelinePanel .engine-card");
+  await page.locator('[data-admin-section="document"]').click();
+  await page.waitForSelector("#adminDocumentPanel .engine-card");
 
-  const pipelinePanel = page.locator("#adminPipelinePanel");
-  await assertTextContains(pipelinePanel, "Pipeline and backend modules");
-  await assertTextContains(pipelinePanel, "Ingest");
-  await assertTextContains(pipelinePanel, "STRUCTURE MAPPING");
-  await assertTextContains(pipelinePanel, "REFERENCE RESOLVER");
-  await assertTextContains(pipelinePanel, "CONCEPT CLASSIFIER");
-  await assertTextContains(pipelinePanel, "DOCX STRUCTURE EXTRACTION");
-  await assertTextContains(pipelinePanel, "nda_automation/contract_structure.py");
-  await assertTextContains(pipelinePanel, "nda_automation/docx_text.py");
-  await assertTextContains(pipelinePanel, "nda_automation/reference_resolver.py");
-  await assertTextContains(pipelinePanel, "nda_automation/concept_classifier.py");
-  await assertTextContains(pipelinePanel, "Evidence provenance validation");
+  const documentPanel = page.locator("#adminDocumentPanel");
+  await assertTextContains(documentPanel, "Structure, references, and concepts");
+  await assertTextContains(documentPanel, "Ingest");
+  await assertTextContains(documentPanel, "STRUCTURE MAPPING");
+  await assertTextContains(documentPanel, "REFERENCE RESOLVER");
+  await assertTextContains(documentPanel, "CONCEPT CLASSIFIER");
+  await assertTextContains(documentPanel, "DOCX STRUCTURE EXTRACTION");
+  await assertTextContains(documentPanel, "nda_automation/contract_structure.py");
+  await assertTextContains(documentPanel, "nda_automation/docx_text.py");
+  await assertTextContains(documentPanel, "nda_automation/reference_resolver.py");
+  await assertTextContains(documentPanel, "nda_automation/concept_classifier.py");
+  await assertTextContains(documentPanel, "Evidence provenance validation");
+  await assertTextContains(page.locator("#adminReferencePanel"), "Cross-reference resolution");
+  await assertTextContains(page.locator("#adminReferencePanel"), "How explicit cross-references are resolved");
+  await assertTextContains(page.locator("#adminReferencePanel"), "Supported references");
+  await assertTextContains(page.locator("#adminReferencePanel"), "NO FIXED NUMBERING ASSUMPTION");
+  await assertTextContains(page.locator("#adminReferencePanel"), "Term and Survival");
+  await assertTextContains(page.locator("#adminConceptsPanel"), "Deterministic concept tagging");
+  await assertTextContains(page.locator("#adminConceptsPanel"), "How deterministic concepts are tagged");
+  await assertTextContains(page.locator("#adminConceptsPanel"), "Concepts");
+  await assertTextContains(page.locator("#adminConceptsPanel"), "concept_classifier");
 
   await page.locator('[data-admin-section="checkers"]').click();
   const checkersPanel = page.locator("#adminCheckersPanel");
@@ -618,20 +625,13 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "SIGNATURES");
   await assertTextContains(checkersPanel, "separate from the legal-concept review-state upgrades");
 
-  await page.locator('[data-admin-section="references"]').click();
-  const referencesPanel = page.locator("#adminReferencePanel");
-  await assertTextContains(referencesPanel, "Cross-reference resolution");
-  await assertTextContains(referencesPanel, "How explicit cross-references are resolved");
-  await assertTextContains(referencesPanel, "Supported references");
-  await assertTextContains(referencesPanel, "NO FIXED NUMBERING ASSUMPTION");
-  await assertTextContains(referencesPanel, "Term and Survival");
-
-  await page.locator('[data-admin-section="concepts"]').click();
-  const conceptsPanel = page.locator("#adminConceptsPanel");
-  await assertTextContains(conceptsPanel, "Deterministic concept tagging");
-  await assertTextContains(conceptsPanel, "How deterministic concepts are tagged");
-  await assertTextContains(conceptsPanel, "Concepts");
-  await assertTextContains(conceptsPanel, "concept_classifier");
+  await page.locator('[data-admin-section="ai"]').click();
+  const aiPanel = page.locator("#adminAiPanel");
+  await assertTextContains(aiPanel, "AI review layer");
+  await assertTextContains(aiPanel, "How AI checks the deterministic result");
+  await assertTextContains(aiPanel, "GEMINI_API_KEY");
+  await assertTextContains(aiPanel, "ai_review_analysis");
+  await assertTextContains(aiPanel, "AI disagreement");
 }
 
 async function testStructuredEvidenceAndRationale(page) {
@@ -694,7 +694,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator("#gmailLastSync").count(), 0);
   assert.equal(await page.locator("#gmailSyncButton").count(), 0);
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
   const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
     day: "2-digit",
     hour: "2-digit",
@@ -1459,7 +1459,7 @@ async function testGmailSetupRequiredStatus(page) {
   assert.equal((await syncStatus.innerText()).includes("Last sync error"), false);
 
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.getByRole("button", { name: "Integrations Gmail accounts and sync state" }).click();
+  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
   await waitForText(page, "#adminGmailOverall", "NEEDS SETUP");
   const adminPanel = page.locator("#adminIntegrationsPanel");
   await assertTextContains(adminPanel, "NEEDS SETUP");

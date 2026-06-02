@@ -2578,6 +2578,8 @@ body.modal-open {
   align-self: start;
   display: grid;
   gap: 8px;
+  grid-column: 1;
+  grid-row: 1 / -1;
   overflow: hidden;
   padding-bottom: 8px;
 }
@@ -2615,6 +2617,7 @@ body.modal-open {
 }
 
 .admin-section-panel {
+  grid-column: 2;
   min-width: 0;
 }
 

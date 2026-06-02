@@ -214,7 +214,7 @@ function activateTab(tabName) {
     repositoryController.loadGmailStatus();
   }
   if (tabName === "clauses") {
-    if (activeAdminSection() === "integrations") {
+    if (activeAdminSection() === "email") {
       adminIntegrationsController.load();
     }
   }
@@ -231,7 +231,7 @@ function activateAdminSection(sectionName) {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   });
-  if (sectionName === "integrations") {
+  if (sectionName === "email") {
     adminIntegrationsController.load();
   }
 }
