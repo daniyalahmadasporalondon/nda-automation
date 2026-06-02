@@ -1936,6 +1936,25 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("confidentiality agreement", body)
         self.assertFalse(detection["matched"])
 
+    def test_gmail_html_body_fallback_ignores_script_and_style_text(self):
+        html = """
+        <html>
+          <head>
+            <style>.nda-header { content: "non-disclosure agreement"; }</style>
+            <script>const marker = "confidentiality agreement";</script>
+          </head>
+          <body><p>Please review the attached services schedule.</p></body>
+        </html>
+        """
+
+        with patch.object(gmail_integration._HTMLTextExtractor, "feed", side_effect=RuntimeError("parser failed")):
+            body = gmail_integration._html_to_text(html)
+
+        self.assertIn("Please review the attached services schedule.", body)
+        self.assertNotIn("nda-header", body)
+        self.assertNotIn("non-disclosure agreement", body)
+        self.assertNotIn("confidentiality agreement", body)
+
     def test_gmail_sync_process_lock_blocks_parallel_processes(self):
         if server_module.fcntl is None:
             self.skipTest("fcntl is unavailable")

@@ -783,13 +783,18 @@ class _HTMLTextExtractor(HTMLParser):
 
 
 def _html_to_text(value: str) -> str:
+    sanitized = _strip_ignored_html_text_blocks(value)
     parser = _HTMLTextExtractor()
     try:
-        parser.feed(value)
+        parser.feed(sanitized)
         parser.close()
     except Exception:
-        return re.sub(r"<[^>]+>", " ", value)
+        return re.sub(r"<[^>]+>", " ", sanitized)
     return parser.text()
+
+
+def _strip_ignored_html_text_blocks(value: str) -> str:
+    return re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", " ", value, flags=re.IGNORECASE | re.DOTALL)
 
 
 def _reviewable_attachments(payload: dict[str, Any]) -> list[dict[str, str]]:
