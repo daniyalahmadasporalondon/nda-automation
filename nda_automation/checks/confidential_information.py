@@ -42,6 +42,14 @@ USAGE_RIGHT_AFTER_PATTERN = (
     r"(?:used|retained|disclosed|exploited|reverse\s+engineered)\b"
 )
 NEGATED_RIGHT_BEFORE_PATTERN = r"\b(?:must|shall|may|can|will)\s+not\b[^.;]{0,80}$|\b(?:not|never)\s+[^.;]{0,40}$"
+GENERAL_BROAD_DEFINITION_PATTERN = (
+    r"\b(?:any\s+and\s+all|all)\s+(?:non[-\s]?public\s+)?(?:information|materials?|data)\b"
+    r"|\bnon[-\s]?public\s+(?:information|materials?|data)\b"
+    r"|\b(?:information|materials?|data)\b.{0,120}\b(?:oral|written|electronic|visual)\b"
+    r"|\b(?:oral|written|electronic|visual)\b.{0,120}\b(?:information|materials?|data)\b"
+)
+
+
 def _check_confidential_information(
     _text: str,
     normalized: str,
@@ -62,7 +70,12 @@ def _check_confidential_information(
     coverage_terms = _dedupe_terms(definition_coverage_terms + categories)
     coverage_hits = [term for term in coverage_terms if term in definition_normalized]
     broad_definition = bool(definition_paragraphs) and len(coverage_hits) >= 4
-    problematic_exclusion_paragraphs = _problematic_confidential_exclusion_paragraphs(
+    broad_definition_needs_review = (
+        bool(definition_paragraphs)
+        and not broad_definition
+        and _has_general_broad_definition_language(definition_normalized)
+    )
+    exclusion_analysis = _confidential_exclusion_analysis(
         paragraphs,
         _clause_term_patterns(clause, "exclusion_context_terms"),
         _clause_terms(clause, "problematic_exclusion_terms"),
@@ -70,16 +83,42 @@ def _check_confidential_information(
         _clause_terms(clause, "independent_development_qualification_terms"),
     )
 
-    if broad_definition and not problematic_exclusion_paragraphs:
-        return attach_structure_context(_match(
+    analysis = _confidential_information_analysis(
+        definition_paragraphs=definition_paragraphs,
+        coverage_hits=coverage_hits,
+        exclusion_analysis=exclusion_analysis,
+    )
+    explicit_exclusion_paragraphs = exclusion_analysis["explicit_exclusion_paragraphs"]
+    usage_right_review_paragraphs = exclusion_analysis["usage_right_review_paragraphs"]
+
+    if broad_definition and not explicit_exclusion_paragraphs and not usage_right_review_paragraphs:
+        result = _match(
             clause,
             "Broad confidential information definition found with no extra exclusions detected.",
             definition_paragraphs,
-        ), review_context, context_concepts)
+        )
+        _attach_confidential_information_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
+
+    if broad_definition and usage_right_review_paragraphs and not explicit_exclusion_paragraphs:
+        result = _review(
+            clause,
+            (
+                "Broad confidential information definition found, but separate usage-right language "
+                "may weaken confidentiality protections and needs human review."
+            ),
+            usage_right_review_paragraphs,
+            what_to_verify=(
+                "Confirm whether the usage-right language creates an extra residual-knowledge, "
+                "reverse-engineering, or unqualified independent-development carve-out."
+            ),
+        )
+        _attach_confidential_information_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
 
     if not broad_definition:
         if not definition_paragraphs:
-            return attach_structure_context(_not_present(
+            result = _not_present(
                 clause,
                 "No Confidential Information definition was found.",
                 [],
@@ -87,8 +126,37 @@ def _check_confidential_information(
                     "Add a broad Confidential Information definition "
                     f"covering non-public {category_label or 'required'} information."
                 ),
-            ), review_context, context_concepts)
-        return attach_structure_context(_check(
+            )
+            _attach_confidential_information_analysis(result, analysis)
+            return attach_structure_context(result, review_context, context_concepts)
+        if explicit_exclusion_paragraphs:
+            result = _check(
+                clause,
+                "The Confidential Information language includes exclusions beyond the allowed standard carve-outs.",
+                explicit_exclusion_paragraphs,
+                what_to_fix=(
+                    "Remove residual knowledge, reverse-engineering, or unqualified independent-development exclusions "
+                    "from Confidential Information."
+                ),
+            )
+            _attach_confidential_information_analysis(result, analysis)
+            return attach_structure_context(result, review_context, context_concepts)
+        if broad_definition_needs_review:
+            result = _review(
+                clause,
+                (
+                    "A broad Confidential Information definition was found, but it does not clearly "
+                    "cover enough required playbook categories."
+                ),
+                definition_paragraphs,
+                what_to_verify=(
+                    "Confirm whether the definition covers the required "
+                    f"{category_label or 'playbook'} categories despite not listing them expressly."
+                ),
+            )
+            _attach_confidential_information_analysis(result, analysis)
+            return attach_structure_context(result, review_context, context_concepts)
+        result = _check(
             clause,
             "The definition of Confidential Information is missing or too narrow.",
             definition_paragraphs,
@@ -96,17 +164,21 @@ def _check_confidential_information(
                 "Broaden the Confidential Information definition "
                 f"to cover the required {category_label or 'playbook'} categories."
             ),
-        ), review_context, context_concepts)
-    else:
-        return attach_structure_context(_check(
-            clause,
-            "The exclusions appear broader than the allowed standard carve-outs.",
-            problematic_exclusion_paragraphs,
-            what_to_fix=(
-                "Remove residual knowledge, reverse-engineering, or unqualified independent-development exclusions "
-                "from Confidential Information."
-            ),
-        ), review_context, context_concepts)
+        )
+        _attach_confidential_information_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
+
+    result = _check(
+        clause,
+        "The exclusions appear broader than the allowed standard carve-outs.",
+        explicit_exclusion_paragraphs,
+        what_to_fix=(
+            "Remove residual knowledge, reverse-engineering, or unqualified independent-development exclusions "
+            "from Confidential Information."
+        ),
+    )
+    _attach_confidential_information_analysis(result, analysis)
+    return attach_structure_context(result, review_context, context_concepts)
 
 def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[List[str], List[str]]:
     """Split confidential-information search terms by their playbook contract.
@@ -120,18 +192,39 @@ def _confidential_definition_search_terms(clause: Dict[str, object]) -> tuple[Li
     definition_terms = _dedupe_terms(search_terms[:1] + definition_aliases)
     return definition_terms, search_terms[1:]
 
-def _problematic_confidential_exclusion_paragraphs(
+def _review(
+    clause: Dict[str, object],
+    reason: str,
+    matched_paragraphs: Iterable[Paragraph],
+    *,
+    what_to_verify: str,
+) -> ClauseResult:
+    result = _match(clause, reason, matched_paragraphs)
+    result["decision"] = "review"
+    result["needs_review"] = True
+    result["review_reason"] = reason
+    result["decision_reason"] = reason
+    result["what_to_fix"] = what_to_verify
+    return result
+
+
+def _has_general_broad_definition_language(definition_normalized: str) -> bool:
+    return bool(re.search(GENERAL_BROAD_DEFINITION_PATTERN, definition_normalized))
+
+
+def _confidential_exclusion_analysis(
     paragraphs: Iterable[Paragraph],
     exclusion_context_patterns: Iterable[str],
     problematic_terms: Iterable[str],
     independent_development_terms: Iterable[str],
     independent_development_qualification_terms: Iterable[str],
-) -> List[Paragraph]:
+) -> Dict[str, List[Paragraph]]:
     exclusion_context_patterns = list(exclusion_context_patterns)
     problematic_patterns = [_literal_word_pattern(term) for term in problematic_terms]
     independent_development_patterns = [_literal_word_pattern(term) for term in independent_development_terms]
     qualification_patterns = [_literal_word_pattern(term) for term in independent_development_qualification_terms]
-    matches: List[Paragraph] = []
+    explicit_exclusion_paragraphs: List[Paragraph] = []
+    usage_right_review_paragraphs: List[Paragraph] = []
 
     for paragraph in paragraphs:
         paragraph_text = str(paragraph["text"])
@@ -154,9 +247,46 @@ def _problematic_confidential_exclusion_paragraphs(
         if not has_problematic_term and not has_unqualified_independent_development:
             continue
 
-        matches.append(paragraph)
+        if has_exclusion_context:
+            explicit_exclusion_paragraphs.append(paragraph)
+        elif has_usage_right_context:
+            usage_right_review_paragraphs.append(paragraph)
 
-    return matches
+    return {
+        "explicit_exclusion_paragraphs": explicit_exclusion_paragraphs,
+        "usage_right_review_paragraphs": usage_right_review_paragraphs,
+    }
+
+
+def _confidential_information_analysis(
+    *,
+    definition_paragraphs: List[Paragraph],
+    coverage_hits: List[str],
+    exclusion_analysis: Dict[str, List[Paragraph]],
+) -> Dict[str, object]:
+    return {
+        "coverage_hits": coverage_hits,
+        "coverage_hit_count": len(coverage_hits),
+        "definition_paragraph_ids": _paragraph_ids(definition_paragraphs),
+        "explicit_problematic_exclusion_paragraph_ids": _paragraph_ids(
+            exclusion_analysis["explicit_exclusion_paragraphs"]
+        ),
+        "usage_right_review_paragraph_ids": _paragraph_ids(
+            exclusion_analysis["usage_right_review_paragraphs"]
+        ),
+    }
+
+
+def _attach_confidential_information_analysis(result: ClauseResult, analysis: Dict[str, object]) -> None:
+    result["confidential_information_analysis"] = analysis
+
+
+def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
+    return [
+        str(paragraph.get("id"))
+        for paragraph in paragraphs
+        if paragraph.get("id")
+    ]
 
 def _has_problematic_usage_right(normalized_text: str, problematic_patterns: Iterable[str]) -> bool:
     for pattern in problematic_patterns:

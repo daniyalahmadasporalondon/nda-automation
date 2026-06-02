@@ -1179,9 +1179,34 @@ class CheckerTests(unittest.TestCase):
                 confidential_information = next(
                     clause for clause in result["clauses"] if clause["id"] == "confidential_information"
                 )
-                self.assertEqual(confidential_information["status"], "check")
-                self.assertFalse(confidential_information["passes"])
+                self.assertEqual(confidential_information["status"], "match")
+                self.assertTrue(confidential_information["passes"])
+                self.assertEqual(confidential_information["decision"], "review")
+                self.assertTrue(confidential_information["needs_review"])
                 self.assertEqual(confidential_information["matched_paragraph_ids"], ["p2"])
+                self.assertIn("usage-right language", confidential_information["decision_reason"])
+                self.assertEqual(
+                    confidential_information["confidential_information_analysis"]["usage_right_review_paragraph_ids"],
+                    ["p2"],
+                )
+
+    def test_general_broad_confidential_definition_needs_review_when_categories_are_implicit(self):
+        result = review_nda(
+            """
+            Confidential Information means all non-public information disclosed by either party,
+            whether disclosed orally, visually, electronically or in writing.
+            """
+        )
+
+        confidential_information = next(
+            clause for clause in result["clauses"] if clause["id"] == "confidential_information"
+        )
+        self.assertEqual(confidential_information["status"], "match")
+        self.assertTrue(confidential_information["passes"])
+        self.assertEqual(confidential_information["decision"], "review")
+        self.assertTrue(confidential_information["needs_review"])
+        self.assertIn("does not clearly cover enough required playbook categories", confidential_information["decision_reason"])
+        self.assertLess(confidential_information["confidential_information_analysis"]["coverage_hit_count"], 4)
 
     def test_proprietary_information_definition_satisfies_confidential_definition(self):
         result = review_nda(
