@@ -467,6 +467,18 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(checks["data_dir"]["ok"])
         self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local matter data storage.")
 
+    def test_local_deployment_status_message_matches_ok_auth_check(self):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+        }):
+            deployment = server_module._deployment_status_for_host("127.0.0.1")
+
+        checks = {check["id"]: check for check in deployment["checks"]}
+        self.assertTrue(checks["auth"]["ok"])
+        self.assertEqual(checks["auth"]["message"], "HTTP Basic auth is not required for this host.")
+
     def test_public_bind_requires_configured_durable_data_dir(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
             with self.assertRaisesRegex(RuntimeError, server_module.DURABLE_DATA_DIR_REQUIRED_MESSAGE):

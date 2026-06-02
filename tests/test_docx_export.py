@@ -1112,7 +1112,11 @@ class DocxExportTests(unittest.TestCase):
         paragraph_properties = ET.fromstring(
             '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
             '<w:rPr><w:b/><w:ins w:id="97" w:author="source" w:date="2026-06-01T00:00:00Z" />'
-            '<w:del w:id="98" w:author="source" w:date="2026-06-01T00:00:00Z" /></w:rPr>'
+            '<w:del w:id="98" w:author="source" w:date="2026-06-01T00:00:00Z" />'
+            '<w:rPrChange w:id="99" w:author="source" w:date="2026-06-01T00:00:00Z">'
+            '<w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr>'
+            '<w:pPrChange w:id="100" w:author="source" w:date="2026-06-01T00:00:00Z">'
+            '<w:pPr><w:spacing w:after="120"/></w:pPr></w:pPrChange>'
             "</w:pPr>"
         )
 
@@ -1120,6 +1124,8 @@ class DocxExportTests(unittest.TestCase):
 
         self.assertEqual(paragraph_properties.findall(".//w:ins", W_NS), [])
         self.assertEqual(paragraph_properties.findall(".//w:del", W_NS), [])
+        self.assertEqual(paragraph_properties.findall(".//w:pPrChange", W_NS), [])
+        self.assertEqual(paragraph_properties.findall(".//w:rPrChange", W_NS), [])
         self.assertIsNotNone(paragraph_properties.find(".//w:b", W_NS))
 
     def test_source_docx_export_matches_redline_actions_at_paragraph_level(self):

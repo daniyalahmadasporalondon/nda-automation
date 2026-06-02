@@ -580,10 +580,13 @@ def _strip_paragraph_property_revisions(root: ET.Element) -> None:
         paragraph_properties.append(root)
     paragraph_properties.extend(root.findall(f".//{_w_tag('pPr')}"))
     for properties in paragraph_properties:
+        for revision_tag in (_w_tag("pPrChange"),):
+            for revision in list(properties.findall(revision_tag)):
+                properties.remove(revision)
         run_properties = properties.find(_w_tag("rPr"))
         if run_properties is None:
             continue
-        for revision_tag in (_w_tag("ins"), _w_tag("del")):
+        for revision_tag in (_w_tag("ins"), _w_tag("del"), _w_tag("rPrChange")):
             for revision in list(run_properties.findall(revision_tag)):
                 run_properties.remove(revision)
 

@@ -44,7 +44,7 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         {
             "id": "auth",
             "ok": (not auth_required) or auth_configured,
-            "message": "HTTP Basic auth is configured." if auth_configured else "HTTP Basic auth credentials are not configured.",
+            "message": _deployment_auth_message(auth_required, auth_configured),
         },
         {
             "id": "data_dir",
@@ -76,6 +76,14 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "status": "ok" if all(bool(check["ok"]) for check in checks) else "needs_attention",
         "checks": checks,
     }
+
+
+def _deployment_auth_message(auth_required: bool, auth_configured: bool) -> str:
+    if auth_configured:
+        return "HTTP Basic auth is configured."
+    if auth_required:
+        return "HTTP Basic auth credentials are not configured."
+    return "HTTP Basic auth is not required for this host."
 
 
 def _deployment_data_dir_check(host: str, data_dir_configured: bool, data_dir_ephemeral: bool) -> dict[str, object]:
