@@ -7,15 +7,18 @@ from typing import Dict, Iterable, List
 from .review_document import Paragraph
 
 STRUCTURE_VERSION = 1
+EXPLICIT_NUMBER_PATTERN = r"(?:[A-Za-z]|\d+[A-Za-z]*)(?:\.\d+[A-Za-z]*)*"
+NUMBERED_NUMBER_PATTERN = r"\d+[A-Za-z]*(?:\.\d+[A-Za-z]*)*"
+NUMBER_PART_RE = re.compile(r"^(?P<digits>\d+)(?P<suffix>[A-Za-z]+)$")
 
 EXPLICIT_HEADING_RE = re.compile(
     r"^\s*(?P<kind>clause|article|section|schedule|annex|annexure|appendix)\s+"
-    r"(?P<number>[A-Za-z]|\d+(?:\.\d+)*)(?:\s*[:.\-\u2013\u2014]\s*|\s+)"
+    rf"(?P<number>{EXPLICIT_NUMBER_PATTERN})(?:\s*[:.\-\u2013\u2014]\s*|\s+)"
     r"(?P<heading>.*)$",
     re.IGNORECASE,
 )
 NUMBERED_HEADING_RE = re.compile(
-    r"^\s*(?P<number>\d+(?:\.\d+)*)(?:\s*[:.\-\u2013\u2014]\s*|\s+)(?P<heading>.+)$"
+    rf"^\s*(?P<number>{NUMBERED_NUMBER_PATTERN})(?:\s*[:.\-\u2013\u2014]\s*|\s+)(?P<heading>.+)$"
 )
 UPPERCASE_PREFIX_RE = re.compile(
     r"^\s*(?P<heading>[A-Z][A-Z0-9 &,/()'\".\-]{2,90}):\s*(?P<body>.+)$"
@@ -252,8 +255,13 @@ def _section_dict(
 
 
 def _find_parent_id(sections: List[Dict[str, object]], candidate: _SectionCandidate) -> str | None:
-    if candidate.number is None or "." not in candidate.number:
+    if candidate.number is None:
         return None
+
+    for parent_number in _parent_number_candidates(candidate.number):
+        parent_id = _find_section_id_by_number(sections, parent_number, candidate.level)
+        if parent_id is not None:
+            return parent_id
 
     for section in reversed(sections):
         parent_number = section.get("number")
@@ -321,9 +329,63 @@ def _looks_like_document_title(text: str) -> bool:
 def _level_for_number(number: str | None) -> int:
     if not number:
         return 1
-    if "." not in number:
+    parts = _number_parts(number)
+    if not parts:
         return 1
-    return len([part for part in number.split(".") if part])
+    return len(parts) + sum(1 for part in parts if _strip_letter_suffix(part) is not None)
+
+
+def _parent_number_candidates(number: str) -> List[str]:
+    candidates: List[str] = []
+    queue = [number]
+    seen = {number}
+
+    while queue:
+        current = queue.pop(0)
+        for parent_number in _immediate_parent_numbers(current):
+            if parent_number in seen:
+                continue
+            candidates.append(parent_number)
+            queue.append(parent_number)
+            seen.add(parent_number)
+    return candidates
+
+
+def _immediate_parent_numbers(number: str) -> List[str]:
+    parts = _number_parts(number)
+    parents: List[str] = []
+    if not parts:
+        return parents
+
+    stripped_last_part = _strip_letter_suffix(parts[-1])
+    if stripped_last_part:
+        parents.append(".".join([*parts[:-1], stripped_last_part]))
+    if len(parts) > 1:
+        parents.append(".".join(parts[:-1]))
+    return [parent for parent in parents if parent and parent != number]
+
+
+def _find_section_id_by_number(
+    sections: List[Dict[str, object]],
+    parent_number: str,
+    candidate_level: int,
+) -> str | None:
+    for section in reversed(sections):
+        section_number = section.get("number")
+        if section_number != parent_number or int(section.get("level", 0)) >= candidate_level:
+            continue
+        section_id = section.get("id")
+        return str(section_id) if section_id is not None else None
+    return None
+
+
+def _number_parts(number: str | None) -> List[str]:
+    return [part for part in str(number or "").split(".") if part]
+
+
+def _strip_letter_suffix(part: str) -> str | None:
+    match = NUMBER_PART_RE.match(part)
+    return match.group("digits") if match else None
 
 
 def _display_kind(kind: str) -> str:

@@ -465,12 +465,18 @@ async function testContractStructureReviewPanel(page) {
     "MUTUAL NON-DISCLOSURE AGREEMENT",
     "Clause 1: Definitions",
     "Confidential Information means non-public business information.",
+    "Clause 1A Supplemental Definitions",
+    "Supplemental definition text.",
     "Clause 2 - Confidentiality",
     "Each party shall protect the other party's Confidential Information.",
     "10. General",
     "This section introduces general terms.",
     "10.1 Return of Materials",
     "The Receiving Party must return materials on request.",
+    "10.1A Certificate of Destruction",
+    "The Receiving Party must certify destruction.",
+    "Section 10b Data Processing",
+    "Data processing terms.",
   ].join("\n\n");
 
   await runReview(page, structureNda);
@@ -482,10 +488,16 @@ async function testContractStructureReviewPanel(page) {
 
   const reviewPanel = page.locator("#studioDetailPanel");
   await assertTextContains(reviewPanel, "Clause 1");
+  await assertTextContains(reviewPanel, "Clause 1A");
   await assertTextContains(reviewPanel, "Clause 2");
   await assertTextContains(reviewPanel, "10.1");
-  await assertTextContains(reviewPanel, "Parent section-4");
+  await assertTextContains(reviewPanel, "10.1A");
+  await assertTextContains(reviewPanel, "Section 10b");
+  await assertTextContains(reviewPanel, "Parent section-2");
+  await assertTextContains(reviewPanel, "Parent section-6");
   await assertTextContains(reviewPanel, "clause:1");
+  await assertTextContains(reviewPanel, "clause:1a");
+  await assertTextContains(reviewPanel, "section:10b");
 
   await page.locator('[data-review-inspector="clause"]').click();
   await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");

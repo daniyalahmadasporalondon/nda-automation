@@ -1,4 +1,9 @@
 function createContractStructureController({ state, root }) {
+  const explicitNumberPattern = "(?:[A-Za-z]|\\d+[A-Za-z]*)(?:\\.\\d+[A-Za-z]*)*";
+  const numberedNumberPattern = "\\d+[A-Za-z]*(?:\\.\\d+[A-Za-z]*)*";
+  const explicitHeadingRegex = new RegExp(`^(clause|article|section|schedule|annex|annexure|appendix)\\s+(${explicitNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.*)$`, "i");
+  const numberedHeadingRegex = new RegExp(`^(${numberedNumberPattern})(?:\\s*[:.\\-\\u2013\\u2014]\\s*|\\s+)(.+)$`);
+
   function render() {
     if (!root) return;
     const structure = effectiveStructure();
@@ -197,7 +202,7 @@ function createContractStructureController({ state, root }) {
     const text = collapseWhitespace(paragraph.text || "");
     if (!text) return null;
 
-    const explicit = text.match(/^(clause|article|section|schedule|annex|annexure|appendix)\s+([A-Za-z]|\d+(?:\.\d+)*)(?:\s*[:.-]\s*|\s+)(.*)$/i);
+    const explicit = text.match(explicitHeadingRegex);
     if (explicit) {
       const kind = explicit[1].toLowerCase();
       const number = explicit[2].replace(/\.$/, "");
@@ -214,7 +219,7 @@ function createContractStructureController({ state, root }) {
       };
     }
 
-    const numbered = text.match(/^(\d+(?:\.\d+)*)(?:\s*[:.-]\s*|\s+)(.+)$/);
+    const numbered = text.match(numberedHeadingRegex);
     if (numbered && looksLikeNumberedHeading(numbered[2])) {
       const number = numbered[1].replace(/\.$/, "");
       return {
@@ -282,7 +287,11 @@ function createContractStructureController({ state, root }) {
   }
 
   function parentForCandidate(sections, candidate) {
-    if (!candidate.number || !candidate.number.includes(".")) return null;
+    if (!candidate.number) return null;
+    for (const parentNumber of parentNumberCandidates(candidate.number)) {
+      const parent = findSectionByNumber(sections, parentNumber, candidate.level);
+      if (parent) return parent.id;
+    }
     for (let index = sections.length - 1; index >= 0; index -= 1) {
       const section = sections[index];
       if (
@@ -292,6 +301,40 @@ function createContractStructureController({ state, root }) {
       ) {
         return section.id;
       }
+    }
+    return null;
+  }
+
+  function parentNumberCandidates(number) {
+    const candidates = [];
+    const queue = [String(number || "")];
+    const seen = new Set(queue);
+    while (queue.length) {
+      const current = queue.shift();
+      immediateParentNumbers(current).forEach((parentNumber) => {
+        if (!parentNumber || seen.has(parentNumber)) return;
+        candidates.push(parentNumber);
+        queue.push(parentNumber);
+        seen.add(parentNumber);
+      });
+    }
+    return candidates;
+  }
+
+  function immediateParentNumbers(number) {
+    const parts = numberParts(number);
+    const parents = [];
+    if (!parts.length) return parents;
+    const strippedLastPart = stripLetterSuffix(parts[parts.length - 1]);
+    if (strippedLastPart) parents.push([...parts.slice(0, -1), strippedLastPart].join("."));
+    if (parts.length > 1) parents.push(parts.slice(0, -1).join("."));
+    return parents.filter((parent) => parent && parent !== number);
+  }
+
+  function findSectionByNumber(sections, parentNumber, candidateLevel) {
+    for (let index = sections.length - 1; index >= 0; index -= 1) {
+      const section = sections[index];
+      if (section.number === parentNumber && Number(section.level || 0) < candidateLevel) return section;
     }
     return null;
   }
@@ -340,7 +383,18 @@ function createContractStructureController({ state, root }) {
   }
 
   function levelForNumber(number) {
-    return String(number || "").split(".").filter(Boolean).length || 1;
+    const parts = numberParts(number);
+    if (!parts.length) return 1;
+    return parts.length + parts.filter((part) => stripLetterSuffix(part)).length;
+  }
+
+  function numberParts(number) {
+    return String(number || "").split(".").filter(Boolean);
+  }
+
+  function stripLetterSuffix(part) {
+    const match = String(part || "").match(/^(\d+)[A-Za-z]+$/);
+    return match ? match[1] : null;
   }
 
   function looksLikeNumberedHeading(heading) {

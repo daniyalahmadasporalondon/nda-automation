@@ -74,6 +74,49 @@ class ContractStructureTests(unittest.TestCase):
         self.assertEqual(sections[1]["level"], 2)
         self.assertEqual(sections[1]["paragraph_ids"], ["p3", "p4"])
 
+    def test_detects_hybrid_letter_suffix_identifiers(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1: General",
+            "General obligations.",
+            "Clause 1A Supplemental Confidentiality",
+            "Supplemental confidentiality obligations.",
+            "10. Materials",
+            "This section introduces materials handling.",
+            "10.1 Return of Materials",
+            "The Receiving Party must return materials on request.",
+            "10.1A Certificate of Destruction",
+            "The Receiving Party must certify destruction.",
+            "Section 10b Data Processing",
+            "Data processing terms.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        sections = structure["sections"]
+        sections_by_label = {section["label"]: section for section in sections}
+
+        self.assertEqual(
+            [section["label"] for section in sections],
+            ["Clause 1", "Clause 1A", "10", "10.1", "10.1A", "Section 10b"],
+        )
+        self.assertEqual(sections_by_label["Clause 1A"]["parent_id"], sections_by_label["Clause 1"]["id"])
+        self.assertEqual(sections_by_label["10.1"]["parent_id"], sections_by_label["10"]["id"])
+        self.assertEqual(sections_by_label["10.1A"]["parent_id"], sections_by_label["10.1"]["id"])
+        self.assertEqual(sections_by_label["Section 10b"]["parent_id"], sections_by_label["10"]["id"])
+        self.assertEqual(sections_by_label["Clause 1A"]["level"], 2)
+        self.assertEqual(sections_by_label["10.1A"]["level"], 3)
+        self.assertIn(
+            {"key": "clause:1a", "section_id": sections_by_label["Clause 1A"]["id"], "label": "Clause 1A"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "number:10.1a", "section_id": sections_by_label["10.1A"]["id"], "label": "10.1A"},
+            structure["aliases"],
+        )
+        self.assertIn(
+            {"key": "section:10b", "section_id": sections_by_label["Section 10b"]["id"], "label": "Section 10b"},
+            structure["aliases"],
+        )
+
     def test_review_result_includes_contract_structure(self):
         result = review_nda("\n\n".join([
             "1. Confidentiality",
