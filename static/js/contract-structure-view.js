@@ -38,6 +38,9 @@ function createContractStructureController({ state, root }) {
         ${summaryTile("References", resolverStats.reference_count ?? references.length)}
         ${summaryTile("Resolved", resolverStats.resolved_reference_count ?? resolvedReferenceCount(references))}
         ${summaryTile("Unmapped paragraphs", stats.unmapped_paragraph_count ?? 0)}
+        ${summaryTile("Source-backed", stats.source_backed_section_count ?? sourceBackedSectionCount(sections))}
+        ${summaryTile("Word numbers", stats.docx_numbered_paragraph_count ?? 0)}
+        ${summaryTile("Tables", stats.table_paragraph_count ?? 0)}
       </div>
 
       <section class="structure-section-list" aria-label="Detected contract sections">
@@ -88,6 +91,7 @@ function createContractStructureController({ state, root }) {
     const indent = 14 + (level * 16);
     const paragraphs = paragraphRangeLabel(section);
     const parent = section.parent_id ? `<span>Parent ${escapeHtml(section.parent_id)}</span>` : "";
+    const source = sourceSummary(section.source);
     return `
       <article class="structure-row" style="--structure-indent: ${indent}px">
         <span class="structure-level-marker" aria-hidden="true"></span>
@@ -100,6 +104,7 @@ function createContractStructureController({ state, root }) {
           <small>
             <span>${escapeHtml(paragraphs)}</span>
             <span>${escapeHtml(confidenceLabel(section.confidence))}</span>
+            ${source ? `<span>${escapeHtml(source)}</span>` : ""}
             ${parent}
           </small>
         </div>
@@ -169,6 +174,22 @@ function createContractStructureController({ state, root }) {
 
   function resolvedReferenceCount(references) {
     return references.filter((reference) => reference.status === "resolved").length;
+  }
+
+  function sourceBackedSectionCount(sections) {
+    return sections.filter((section) => section.source && typeof section.source === "object").length;
+  }
+
+  function sourceSummary(source) {
+    if (!source || typeof source !== "object") return "";
+    if (source.numbering?.label) return `Word number ${source.numbering.label}`;
+    if (source.style_name) return `Style ${source.style_name}`;
+    if (source.table) {
+      const table = source.table;
+      return `Table ${table.table_index || "?"}, row ${table.row_index || "?"}, cell ${table.cell_index || "?"}`;
+    }
+    if (source.source_part) return `Source ${source.source_part}`;
+    return source.source_kind ? `Source ${source.source_kind}` : "";
   }
 
   function paragraphRangeLabel(section) {
@@ -250,8 +271,14 @@ function createContractStructureController({ state, root }) {
         mapped_paragraph_count: mappedParagraphIds.size,
         section_count: sections.length,
         unmapped_paragraph_count: [...allParagraphIds].filter((id) => !mappedParagraphIds.has(id)).length,
+        docx_heading_paragraph_count: documentParagraphs.filter((paragraph) => Number.isInteger(paragraph?.heading_level)).length,
+        docx_numbered_paragraph_count: documentParagraphs.filter((paragraph) => paragraph?.numbering && typeof paragraph.numbering === "object").length,
+        source_backed_section_count: sections.filter((section) => section.source && typeof section.source === "object").length,
+        source_kinds: [...new Set(documentParagraphs.map((paragraph) => paragraph?.source_kind).filter(Boolean))].sort(),
+        source_parts: [...new Set(documentParagraphs.map((paragraph) => paragraph?.source_part).filter(Boolean))].sort(),
+        table_paragraph_count: documentParagraphs.filter((paragraph) => paragraph?.table && typeof paragraph.table === "object").length,
       },
-      version: 1,
+      version: 2,
     };
   }
 
@@ -395,6 +422,9 @@ function createContractStructureController({ state, root }) {
     const text = collapseWhitespace(paragraph.text || "");
     if (!text) return null;
 
+    const metadataCandidate = candidateFromSourceMetadata(paragraph, position, text);
+    if (metadataCandidate) return metadataCandidate;
+
     const explicit = text.match(explicitHeadingRegex);
     if (explicit) {
       const kind = explicit[1].toLowerCase();
@@ -445,6 +475,39 @@ function createContractStructureController({ state, root }) {
     return null;
   }
 
+  function candidateFromSourceMetadata(paragraph, position, text) {
+    const number = sourceStructureNumber(paragraph);
+    const source = sourceMetadata(paragraph);
+    if (number) {
+      return {
+        confidence: "high",
+        heading: cleanHeading(stripLeadingNumber(text, number)) || cleanHeading(text),
+        headingText: preview(source?.structure_label ? `${source.structure_label} ${text}` : text),
+        kind: "numbered",
+        label: number,
+        level: sourceNumberLevel(paragraph, number),
+        number,
+        position,
+        source,
+      };
+    }
+    if (Number.isInteger(paragraph?.heading_level) && paragraph.heading_level > 0) {
+      const heading = cleanHeading(text);
+      return {
+        confidence: "high",
+        heading,
+        headingText: preview(text),
+        kind: "heading",
+        label: heading,
+        level: paragraph.heading_level,
+        number: null,
+        position,
+        source,
+      };
+    }
+    return null;
+  }
+
   function sectionFromParagraphs({
     confidence,
     heading,
@@ -456,6 +519,7 @@ function createContractStructureController({ state, root }) {
     paragraphs,
     parentId,
     sectionId,
+    source,
   }) {
     const paragraphIds = paragraphs.map(paragraphId).filter(Boolean);
     const first = paragraphs[0] || {};
@@ -476,6 +540,7 @@ function createContractStructureController({ state, root }) {
       start_index: paragraphIndex(first),
       start_paragraph_id: paragraphId(first),
     };
+    if (source && typeof source === "object") section.source = source;
     return section;
   }
 
@@ -576,12 +641,12 @@ function createContractStructureController({ state, root }) {
       paragraph_to_section_id: paragraphToSectionId,
       section_ids: sectionIds,
       sections_by_id: sectionsById,
-      version: 1,
+      version: 2,
     };
   }
 
   function resolverSectionRecord(section) {
-    return {
+    const record = {
       end_index: Number.isInteger(section.end_index) ? section.end_index : null,
       heading: String(section.heading || ""),
       id: String(section.id || ""),
@@ -593,6 +658,50 @@ function createContractStructureController({ state, root }) {
       parent_id: section.parent_id || null,
       start_index: Number.isInteger(section.start_index) ? section.start_index : null,
     };
+    if (section.source && typeof section.source === "object") record.source = section.source;
+    return record;
+  }
+
+  function sourceMetadata(paragraph) {
+    const source = {};
+    ["source_kind", "style_id", "style_name", "heading_level", "outline_level", "structure_label"].forEach((key) => {
+      if (paragraph?.[key] !== undefined && paragraph?.[key] !== null && String(paragraph[key]) !== "") {
+        source[key] = paragraph[key];
+      }
+    });
+    ["numbering", "table"].forEach((key) => {
+      if (paragraph?.[key] && typeof paragraph[key] === "object") source[key] = paragraph[key];
+    });
+    if (Number.isInteger(paragraph?.source_index)) source.source_index = paragraph.source_index;
+    if (paragraph?.source_part) source.source_part = paragraph.source_part;
+    return Object.keys(source).length ? source : null;
+  }
+
+  function sourceStructureNumber(paragraph) {
+    if (paragraph?.structure_number) return cleanSourceNumber(paragraph.structure_number);
+    const numbering = paragraph?.numbering;
+    if (!numbering || typeof numbering !== "object") return "";
+    if (["bullet", "none"].includes(String(numbering.format || ""))) return "";
+    return cleanSourceNumber(numbering.label || "");
+  }
+
+  function cleanSourceNumber(value) {
+    const cleaned = String(value || "").replace(/^[^\w]+|[^\w]+$/g, "").trim();
+    const numberRegex = new RegExp(`^${explicitNumberPattern}$`, "i");
+    return numberRegex.test(cleaned) ? cleaned : "";
+  }
+
+  function sourceNumberLevel(paragraph, number) {
+    if (Number.isInteger(paragraph?.numbering?.level)) return paragraph.numbering.level + 1;
+    return levelForNumber(number);
+  }
+
+  function stripLeadingNumber(text, number) {
+    return String(text || "").replace(new RegExp(`^\\s*${escapeRegExp(number)}(?:\\s*[:.)\\-\\u2013\\u2014]\\s*|\\s+)`), "");
+  }
+
+  function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function paragraphId(paragraph) {

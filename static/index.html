@@ -351,7 +351,7 @@
                   <article class="engine-card">
                     <span>2</span>
                     <h2>Extract</h2>
-                    <p>DOCX/PDF extraction produces plain text and source paragraph records for review.</p>
+                    <p>DOCX/PDF extraction produces plain text plus source paragraph records with Word numbering, heading style, table, and supplemental-part metadata.</p>
                   </article>
                   <article class="engine-card">
                     <span>3</span>
@@ -395,6 +395,7 @@
                     <h2>Core Python modules</h2>
                     <dl class="engine-fact-list">
                       <div><dt>Review orchestration</dt><dd>nda_automation/checker.py</dd></div>
+                      <div><dt>DOCX structure extraction</dt><dd>nda_automation/docx_text.py</dd></div>
                       <div><dt>Paragraph alignment</dt><dd>nda_automation/review_document.py</dd></div>
                       <div><dt>Structure mapping</dt><dd>nda_automation/contract_structure.py</dd></div>
                       <div><dt>Reference resolver</dt><dd>nda_automation/reference_resolver.py</dd></div>
@@ -409,6 +410,7 @@
                       <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Admin.</dd></div>
                       <div><dt>Evidence trust</dt><dd>Each clause result is checked against paragraph IDs and source offsets.</dd></div>
                       <div><dt>Reference resolution</dt><dd>Explicit section references are resolved from each document's detected structure.</dd></div>
+                      <div><dt>Source structure preservation</dt><dd>DOCX numbering, heading styles, and table locations are preserved before clause checks run.</dd></div>
                       <div><dt>Concept classification</dt><dd>Deterministic concept tags show why referenced sections count as confidentiality, carve-out, survival, or unrelated provisions.</dd></div>
                       <div><dt>Current AI boundary</dt><dd>Rules are deterministic Python first; semantic fallback is a separate evaluator hook.</dd></div>
                     </dl>
@@ -446,7 +448,7 @@
                   <dl class="resolver-audit-list">
                     <div>
                       <dt>No fixed numbering assumption</dt>
-                      <dd>The resolver uses the detected structure of the current document, so Clause 4 or Article II means whatever this NDA actually mapped it to.</dd>
+                      <dd>The resolver uses the detected structure of the current document, including DOCX list numbering when present, so Clause 4 or Article II means whatever this NDA actually mapped it to.</dd>
                     </div>
                     <div>
                       <dt>False-positive guard</dt>

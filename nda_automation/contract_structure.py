@@ -6,8 +6,8 @@ from typing import Dict, Iterable, List
 
 from .review_document import Paragraph
 
-STRUCTURE_VERSION = 1
-REFERENCE_INDEX_VERSION = 1
+STRUCTURE_VERSION = 2
+REFERENCE_INDEX_VERSION = 2
 ROMAN_NUMBER_PATTERN = r"[IVXLCDM]{2,}"
 IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
 EXPLICIT_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
@@ -58,6 +58,7 @@ class _SectionCandidate:
     level: int
     confidence: str
     heading_text: str
+    source: Dict[str, object] | None = None
 
 
 def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
@@ -81,6 +82,7 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
                 parent_id=None,
                 confidence="high",
                 heading_text="Preamble",
+                source=None,
             ))
 
     for candidate_index, candidate in enumerate(candidates):
@@ -106,6 +108,7 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
             parent_id=parent_id,
             confidence=candidate.confidence,
             heading_text=candidate.heading_text,
+            source=candidate.source,
         ))
 
     aliases = _build_aliases(sections)
@@ -131,6 +134,7 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
             "section_count": len(sections),
             "mapped_paragraph_count": len(mapped_paragraph_ids),
             "unmapped_paragraph_count": len(all_paragraph_ids - mapped_paragraph_ids),
+            **_source_stats(document_paragraphs, sections),
         },
     }
 
@@ -151,6 +155,10 @@ def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCan
     text = _collapse_whitespace(str(paragraph.get("text", "")))
     if not text:
         return None
+
+    metadata_candidate = _candidate_from_source_metadata(position, paragraph, text)
+    if metadata_candidate is not None:
+        return metadata_candidate
 
     explicit_match = EXPLICIT_HEADING_RE.match(text)
     if explicit_match:
@@ -217,6 +225,41 @@ def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCan
     return None
 
 
+def _candidate_from_source_metadata(position: int, paragraph: Paragraph, text: str) -> _SectionCandidate | None:
+    source = _source_metadata(paragraph)
+    structure_number = _source_structure_number(paragraph)
+    if structure_number:
+        heading = _clean_heading(_strip_leading_number(text, structure_number)) or _clean_heading(text)
+        return _SectionCandidate(
+            position=position,
+            kind="numbered",
+            label=structure_number,
+            number=structure_number,
+            heading=heading,
+            level=_source_number_level(paragraph, structure_number),
+            confidence="high",
+            heading_text=_preview(_source_heading_text(paragraph, text)),
+            source=source,
+        )
+
+    heading_level = paragraph.get("heading_level")
+    if isinstance(heading_level, int) and heading_level > 0:
+        heading = _clean_heading(text)
+        return _SectionCandidate(
+            position=position,
+            kind="heading",
+            label=heading,
+            number=None,
+            heading=heading,
+            level=heading_level,
+            confidence="high",
+            heading_text=_preview(text),
+            source=source,
+        )
+
+    return None
+
+
 def _section_dict(
     *,
     section_id: str,
@@ -229,6 +272,7 @@ def _section_dict(
     parent_id: str | None,
     confidence: str,
     heading_text: str,
+    source: Dict[str, object] | None = None,
 ) -> Dict[str, object]:
     paragraph_ids = [
         paragraph_id
@@ -254,6 +298,8 @@ def _section_dict(
         "confidence": confidence,
         "heading_text": heading_text,
     }
+    if source:
+        section["source"] = source
     return section
 
 
@@ -335,7 +381,7 @@ def _build_reference_index(
 
 
 def _resolver_section_record(section: Dict[str, object]) -> Dict[str, object]:
-    return {
+    record: Dict[str, object] = {
         "id": str(section.get("id") or ""),
         "kind": str(section.get("kind") or ""),
         "number": section.get("number") if isinstance(section.get("number"), str) else None,
@@ -350,6 +396,30 @@ def _resolver_section_record(section: Dict[str, object]) -> Dict[str, object]:
         "start_index": section.get("start_index") if isinstance(section.get("start_index"), int) else None,
         "end_index": section.get("end_index") if isinstance(section.get("end_index"), int) else None,
         "parent_id": section.get("parent_id") if isinstance(section.get("parent_id"), str) else None,
+    }
+    if isinstance(section.get("source"), dict):
+        record["source"] = section["source"]
+    return record
+
+
+def _source_stats(paragraphs: List[Paragraph], sections: List[Dict[str, object]]) -> Dict[str, object]:
+    source_kinds = {
+        str(paragraph.get("source_kind") or "")
+        for paragraph in paragraphs
+        if paragraph.get("source_kind")
+    }
+    source_parts = {
+        str(paragraph.get("source_part") or "")
+        for paragraph in paragraphs
+        if paragraph.get("source_part")
+    }
+    return {
+        "docx_numbered_paragraph_count": sum(1 for paragraph in paragraphs if isinstance(paragraph.get("numbering"), dict)),
+        "docx_heading_paragraph_count": sum(1 for paragraph in paragraphs if isinstance(paragraph.get("heading_level"), int)),
+        "table_paragraph_count": sum(1 for paragraph in paragraphs if isinstance(paragraph.get("table"), dict)),
+        "source_backed_section_count": sum(1 for section in sections if isinstance(section.get("source"), dict)),
+        "source_kinds": sorted(source_kinds),
+        "source_parts": sorted(source_parts),
     }
 
 
@@ -430,6 +500,61 @@ def _find_section_id_by_number(
         section_id = section.get("id")
         return str(section_id) if section_id is not None else None
     return None
+
+
+def _source_metadata(paragraph: Paragraph) -> Dict[str, object] | None:
+    source: Dict[str, object] = {}
+    for key in ("source_kind", "style_id", "style_name", "heading_level", "outline_level", "structure_label"):
+        value = paragraph.get(key)
+        if isinstance(value, (str, int)) and str(value) != "":
+            source[key] = value
+    for key in ("numbering", "table"):
+        value = paragraph.get(key)
+        if isinstance(value, dict):
+            source[key] = value
+    if "source_index" in paragraph and isinstance(paragraph.get("source_index"), int):
+        source["source_index"] = paragraph["source_index"]
+    if "source_part" in paragraph and isinstance(paragraph.get("source_part"), str):
+        source["source_part"] = paragraph["source_part"]
+    return source or None
+
+
+def _source_structure_number(paragraph: Paragraph) -> str:
+    direct_number = paragraph.get("structure_number")
+    if isinstance(direct_number, str) and direct_number.strip():
+        return _clean_source_number(direct_number)
+    numbering = paragraph.get("numbering")
+    if not isinstance(numbering, dict):
+        return ""
+    number_format = str(numbering.get("format") or "")
+    if number_format in {"bullet", "none"}:
+        return ""
+    label = str(numbering.get("label") or "").strip()
+    return _clean_source_number(label)
+
+
+def _clean_source_number(value: str) -> str:
+    cleaned = re.sub(r"^[^\w]+|[^\w]+$", "", value or "").strip()
+    return cleaned if re.fullmatch(EXPLICIT_NUMBER_PATTERN, cleaned, flags=re.IGNORECASE) else ""
+
+
+def _source_number_level(paragraph: Paragraph, number: str) -> int:
+    numbering = paragraph.get("numbering")
+    if isinstance(numbering, dict) and isinstance(numbering.get("level"), int):
+        return int(numbering["level"]) + 1
+    return _level_for_number(number)
+
+
+def _source_heading_text(paragraph: Paragraph, text: str) -> str:
+    structure_label = paragraph.get("structure_label")
+    if isinstance(structure_label, str) and structure_label.strip():
+        return f"{structure_label.strip()} {text}"
+    return text
+
+
+def _strip_leading_number(text: str, number: str) -> str:
+    pattern = rf"^\s*{re.escape(number)}(?:\s*[:.)\-\u2013\u2014]\s*|\s+)"
+    return re.sub(pattern, "", text, count=1)
 
 
 def _number_parts(number: str | None) -> List[str]:

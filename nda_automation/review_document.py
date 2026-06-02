@@ -4,6 +4,19 @@ import re
 from typing import Dict, List
 
 Paragraph = Dict[str, object]
+STRUCTURAL_METADATA_KEYS = (
+    "heading_level",
+    "numbering",
+    "outline_level",
+    "source_kind",
+    "source_part",
+    "source_index",
+    "structure_label",
+    "structure_number",
+    "style_id",
+    "style_name",
+    "table",
+)
 
 
 class ParagraphAlignmentError(ValueError):
@@ -60,10 +73,9 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
             "start": start,
             "end": end,
         }
-        if "source_index" in paragraph:
-            aligned_paragraph["source_index"] = paragraph["source_index"]
-        if "source_part" in paragraph:
-            aligned_paragraph["source_part"] = paragraph["source_part"]
+        for key in STRUCTURAL_METADATA_KEYS:
+            if key in paragraph:
+                aligned_paragraph[key] = paragraph[key]
         aligned.append(aligned_paragraph)
     return aligned
 

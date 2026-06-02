@@ -31,8 +31,8 @@ class DocxTextTests(unittest.TestCase):
         self.assertEqual(
             paragraphs,
             [
-                {"source_index": 2, "text": "First real paragraph."},
-                {"source_index": 3, "text": "Second real paragraph."},
+                {"source_index": 2, "source_kind": "paragraph", "text": "First real paragraph."},
+                {"source_index": 3, "source_kind": "paragraph", "text": "Second real paragraph."},
             ],
         )
 
@@ -54,15 +54,36 @@ class DocxTextTests(unittest.TestCase):
         self.assertEqual(
             paragraphs,
             [
-                {"source_index": 1, "text": "Body paragraph."},
-                {"source_index": 2, "text": "Signature table text."},
-                {"source_part": "comments", "text": "Comment says check non-circumvention."},
-                {"source_part": "endnotes", "text": "Endnote residual clause."},
-                {"source_part": "footer1", "text": "Footer governing law note."},
-                {"source_part": "footnotes", "text": "Footnote survival language."},
-                {"source_part": "header1", "text": "Header confidentiality term."},
+                {"source_index": 1, "source_kind": "paragraph", "text": "Body paragraph."},
+                {
+                    "source_index": 2,
+                    "source_kind": "table_cell",
+                    "table": {"table_index": 1, "row_index": 1, "cell_index": 1},
+                    "text": "Signature table text.",
+                },
+                {"source_kind": "supplemental", "source_part": "comments", "text": "Comment says check non-circumvention."},
+                {"source_kind": "supplemental", "source_part": "endnotes", "text": "Endnote residual clause."},
+                {"source_kind": "supplemental", "source_part": "footer1", "text": "Footer governing law note."},
+                {"source_kind": "supplemental", "source_part": "footnotes", "text": "Footnote survival language."},
+                {"source_kind": "supplemental", "source_part": "header1", "text": "Header confidentiality term."},
             ],
         )
+
+    def test_extracts_word_numbering_styles_and_table_context(self):
+        data = make_structured_docx()
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["heading_level"], 1)
+        self.assertEqual(paragraphs[0]["style_id"], "Heading1")
+        self.assertEqual(paragraphs[0]["style_name"], "heading 1")
+        self.assertEqual(paragraphs[1]["numbering"]["label"], "1.")
+        self.assertEqual(paragraphs[1]["structure_number"], "1")
+        self.assertEqual(paragraphs[2]["numbering"]["label"], "1.1")
+        self.assertEqual(paragraphs[2]["structure_number"], "1.1")
+        self.assertEqual(paragraphs[3]["source_kind"], "table_cell")
+        self.assertEqual(paragraphs[3]["heading_level"], 2)
+        self.assertEqual(paragraphs[3]["table"], {"table_index": 1, "row_index": 1, "cell_index": 1})
 
     def test_rejects_non_docx_bytes(self):
         with self.assertRaises(DocxExtractionError):
@@ -112,6 +133,43 @@ def make_docx(paragraphs, *, body_xml="", extra_parts=None):
             archive.writestr("word/document.xml", document_xml)
             for name, content in (extra_parts or {}).items():
                 archive.writestr(name, content)
+        return output.getvalue()
+
+
+def make_structured_docx():
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Definitions</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="42"/></w:numPr></w:pPr><w:r><w:t>Confidentiality Obligations</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="42"/></w:numPr></w:pPr><w:r><w:t>Permitted Disclosures</w:t></w:r></w:p>
+    <w:tbl><w:tr><w:tc><w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Signature Block</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+  </w:body>
+</w:document>"""
+    styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:pPr><w:outlineLvl w:val="1"/></w:pPr>
+  </w:style>
+</w:styles>"""
+    numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="7">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+    <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="42"><w:abstractNumId w:val="7"/></w:num>
+</w:numbering>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", document_xml)
+            archive.writestr("word/styles.xml", styles_xml)
+            archive.writestr("word/numbering.xml", numbering_xml)
         return output.getvalue()
 
 

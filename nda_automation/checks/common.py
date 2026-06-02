@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List
 
-from ..review_document import Paragraph
+from ..review_document import Paragraph, STRUCTURAL_METADATA_KEYS
 
 YEAR_WORDS = {
     "one": 1,
@@ -277,10 +277,9 @@ def _evidence_paragraph(paragraph: Paragraph) -> Paragraph:
         "start": paragraph["start"],
         "end": paragraph["end"],
     }
-    if "source_index" in paragraph:
-        evidence["source_index"] = paragraph["source_index"]
-    if "source_part" in paragraph:
-        evidence["source_part"] = paragraph["source_part"]
+    for key in STRUCTURAL_METADATA_KEYS:
+        if key in paragraph:
+            evidence[key] = paragraph[key]
     return evidence
 
 def _dedupe_matched_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List[Paragraph]:

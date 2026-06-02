@@ -522,7 +522,7 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "Clause 1, Clause 1A, Clause 2");
   await assertTextContains(reviewPanel, "Section II.A");
   const referenceIndex = await page.evaluate(() => state.latestReviewResult.contract_structure.reference_index);
-  assert.equal(referenceIndex.version, 1);
+  assert.equal(referenceIndex.version, 2);
   assert.equal(referenceIndex.alias_to_section_id["clause:1a"], "section-3");
   assert.equal(referenceIndex.alias_to_section_id["section:10b"], "section-8");
   assert.equal(referenceIndex.alias_to_section_id["section:ii.a"], "section-10");
@@ -554,7 +554,9 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(adminPanel, "STRUCTURE MAPPING");
   await assertTextContains(adminPanel, "REFERENCE RESOLVER");
   await assertTextContains(adminPanel, "CONCEPT CLASSIFIER");
+  await assertTextContains(adminPanel, "DOCX STRUCTURE EXTRACTION");
   await assertTextContains(adminPanel, "nda_automation/contract_structure.py");
+  await assertTextContains(adminPanel, "nda_automation/docx_text.py");
   await assertTextContains(adminPanel, "nda_automation/reference_resolver.py");
   await assertTextContains(adminPanel, "nda_automation/concept_classifier.py");
   await assertTextContains(adminPanel, "How explicit cross-references are resolved");

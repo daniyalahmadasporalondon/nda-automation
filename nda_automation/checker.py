@@ -46,7 +46,7 @@ from .review_document import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
-REVIEW_ENGINE_VERSION = 2
+REVIEW_ENGINE_VERSION = 3
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
 MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {

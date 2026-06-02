@@ -3,6 +3,7 @@ import unittest
 from nda_automation.checker import review_nda
 from nda_automation.contract_structure import build_contract_structure
 from nda_automation.matter_view import review_result_with_structure
+from nda_automation.reference_resolver import resolve_document_references
 from nda_automation.review_document import split_document_paragraphs
 
 
@@ -21,7 +22,7 @@ class ContractStructureTests(unittest.TestCase):
         structure = build_contract_structure(paragraphs)
         labels = [section["label"] for section in structure["sections"]]
 
-        self.assertEqual(structure["version"], 1)
+        self.assertEqual(structure["version"], 2)
         self.assertEqual(labels, ["Preamble", "Clause 1", "Clause 2", "Article 3"])
         self.assertEqual(structure["sections"][1]["paragraph_ids"], ["p2", "p3"])
         self.assertEqual(structure["sections"][2]["paragraph_ids"], ["p4", "p5"])
@@ -176,7 +177,7 @@ class ContractStructureTests(unittest.TestCase):
         article_ii = section_by_label["Article II"]
         section_ii_a = section_by_label["Section II.A"]
 
-        self.assertEqual(reference_index["version"], 1)
+        self.assertEqual(reference_index["version"], 2)
         self.assertEqual(reference_index["section_ids"], [section["id"] for section in structure["sections"]])
         self.assertEqual(reference_index["alias_to_section_id"]["clause:1"], clause_1["id"])
         self.assertEqual(reference_index["alias_to_section_id"]["article:ii"], article_ii["id"])
@@ -200,6 +201,80 @@ class ContractStructureTests(unittest.TestCase):
             "parent_id": article_ii["id"],
         })
 
+    def test_uses_docx_numbering_and_heading_metadata_as_structure(self):
+        paragraphs = [
+            {
+                "id": "p1",
+                "index": 1,
+                "text": "Definitions",
+                "start": 0,
+                "end": 11,
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "style_id": "Heading1",
+                "style_name": "heading 1",
+                "heading_level": 1,
+            },
+            {
+                "id": "p2",
+                "index": 2,
+                "text": "Confidentiality Obligations",
+                "start": 13,
+                "end": 40,
+                "source_index": 2,
+                "source_kind": "paragraph",
+                "numbering": {"num_id": "42", "level": 0, "format": "decimal", "label": "1.", "value": 1},
+                "structure_label": "1.",
+                "structure_number": "1",
+            },
+            {
+                "id": "p3",
+                "index": 3,
+                "text": "Permitted Disclosures",
+                "start": 42,
+                "end": 63,
+                "source_index": 3,
+                "source_kind": "paragraph",
+                "numbering": {"num_id": "42", "level": 1, "format": "decimal", "label": "1.1", "value": 1},
+                "structure_label": "1.1",
+                "structure_number": "1.1",
+            },
+            {
+                "id": "p4",
+                "index": 4,
+                "text": "Signature Block",
+                "start": 65,
+                "end": 80,
+                "source_index": 4,
+                "source_kind": "table_cell",
+                "heading_level": 2,
+                "table": {"table_index": 1, "row_index": 1, "cell_index": 1},
+            },
+            {
+                "id": "p5",
+                "index": 5,
+                "text": "Clauses 1 and 1.1 survive for three years.",
+                "start": 82,
+                "end": 124,
+                "source_index": 5,
+                "source_kind": "paragraph",
+            },
+        ]
+
+        structure = build_contract_structure(paragraphs)
+        references = resolve_document_references(paragraphs, structure)
+        sections_by_label = {section["label"]: section for section in structure["sections"]}
+
+        self.assertEqual([section["label"] for section in structure["sections"]], ["Definitions", "1", "1.1", "Signature Block"])
+        self.assertEqual(sections_by_label["Definitions"]["source"]["style_id"], "Heading1")
+        self.assertEqual(sections_by_label["1"]["source"]["numbering"]["label"], "1.")
+        self.assertEqual(sections_by_label["1.1"]["parent_id"], sections_by_label["1"]["id"])
+        self.assertEqual(sections_by_label["Signature Block"]["source"]["table"], {"table_index": 1, "row_index": 1, "cell_index": 1})
+        self.assertEqual(structure["stats"]["docx_numbered_paragraph_count"], 2)
+        self.assertEqual(structure["stats"]["docx_heading_paragraph_count"], 2)
+        self.assertEqual(structure["stats"]["table_paragraph_count"], 1)
+        self.assertEqual(references["references"][0]["resolved_section_ids"], [sections_by_label["1"]["id"], sections_by_label["1.1"]["id"]])
+
     def test_review_result_includes_contract_structure(self):
         result = review_nda("\n\n".join([
             "1. Confidentiality",
@@ -207,7 +282,7 @@ class ContractStructureTests(unittest.TestCase):
         ]))
 
         self.assertIn("contract_structure", result)
-        self.assertEqual(result["contract_structure"]["version"], 1)
+        self.assertEqual(result["contract_structure"]["version"], 2)
         self.assertEqual(result["contract_structure"]["sections"][0]["label"], "1")
 
     def test_legacy_matter_review_result_gets_structure_backfill(self):
