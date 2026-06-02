@@ -125,6 +125,29 @@
     }
   },
   {
+    "name": "term_survival_term_heading_audit_duration_not_counted",
+    "clause_id": "term_and_survival",
+    "text": "Term: Audit records may be retained for seven (7) years after termination.",
+    "expected": {
+      "status": "not_present",
+      "decision": "fail",
+      "reason_code": "missing_term_or_survival",
+      "analysis_absent": ["term_survival_analysis"]
+    }
+  },
+  {
+    "name": "term_survival_valid_confidentiality_term_ignores_tax_and_warranty_decoys",
+    "clause_id": "term_and_survival",
+    "text": "Mutual NDA\n\nArticle 1 Confidentiality\n\nThe Receiving Party shall protect Confidential Information and not disclose it. Confidentiality obligations survive for three (3) years after termination.\n\nArticle 2 Records\n\nTax records and audit materials may be retained for seven (7) years after termination.\n\nArticle 3 Warranty\n\nWarranty claims remain in effect for ten (10) years after termination.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap",
+      "redline_count": 0,
+      "analysis_absent": ["term_survival_analysis"]
+    }
+  },
+  {
     "name": "term_survival_unresolved_article_reference_requires_review",
     "clause_id": "term_and_survival",
     "text": "Article 1 Confidentiality\n\nThe Receiving Party shall protect Confidential Information and not disclose it.\n\nArticle 2 Term and Survival\n\nThe obligations set out in Articles 1 and 99 survive expiry or termination for 3 (three) years.",

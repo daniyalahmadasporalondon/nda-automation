@@ -513,6 +513,51 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["issue_type"], "missing")
         self.assertEqual(term_clause["reason_code"], "missing_term_or_survival")
 
+    def test_term_and_survival_ignores_non_confidential_duration_subjects(self):
+        cases = [
+            "Term: Audit records may be retained for seven (7) years after termination.",
+            "Tax records and accounting books may be retained for seven (7) years after termination.",
+            "Payment obligations survive termination for seven (7) years.",
+            "Warranty claims remain in effect for ten (10) years after termination.",
+            "Liability for indemnity claims may persist for ten (10) years after termination.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                result = review_nda(text)
+                term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+                self.assertEqual(term_clause["status"], "not_present")
+                self.assertFalse(term_clause["passes"])
+                self.assertEqual(term_clause["reason_code"], "missing_term_or_survival")
+
+    def test_term_and_survival_decoys_do_not_override_valid_confidentiality_term(self):
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+            Confidentiality obligations survive for three (3) years after termination.
+
+            Article 2 Records
+
+            Tax records and audit materials may be retained for seven (7) years after termination.
+
+            Article 3 Warranty
+
+            Warranty claims remain in effect for ten (10) years after termination.
+            """
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "match")
+        self.assertTrue(term_clause["passes"])
+        self.assertEqual(term_clause["decision"], "pass")
+        self.assertEqual(term_clause["reason_code"], "term_survival_within_cap")
+        self.assertNotIn("seven (7) years", term_clause["matched_text"])
+        self.assertNotIn("ten (10) years", term_clause["matched_text"])
+
     def test_term_and_survival_accepts_bare_term_heading_duration(self):
         result = review_nda("Term: three years from the Effective Date.")
 

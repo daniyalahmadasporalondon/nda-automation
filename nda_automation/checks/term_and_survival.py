@@ -50,6 +50,11 @@ AGREEMENT_TERM_DURATION_PATTERN = (
     r".{0,120}\b(?:this\s+)?agreement\b"
     r"|\bterm\b\s*[:.-]\s*(?:for\s+)?"
 )
+NON_CONFIDENTIAL_DURATION_SUBJECT_PATTERN = (
+    r"\b(?:audit|accounting|tax|payment|invoice|fee|warrant(?:y|ies)|indemnit(?:y|ies)|"
+    r"liabilit(?:y|ies)|claim|claims|insurance|employment|records?|books?|tax\s+records?|"
+    r"audit\s+records?)\b"
+)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -271,6 +276,8 @@ def _is_survival_scope_reference(paragraph_text: str) -> bool:
 
 def _year_term_has_required_scope(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:
     fragment = _term_sentence_fragment(normalized, term["start"], term["end"])
+    if _is_non_confidential_duration_fragment(fragment):
+        return False
     if _is_survival_duration_fragment(fragment):
         return bool(
             re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, fragment)
@@ -284,6 +291,16 @@ def _year_term_has_required_scope(normalized: str, term: Dict[str, int], clause:
 
 def _is_survival_duration_fragment(fragment: str) -> bool:
     return bool(re.search(SURVIVAL_DURATION_VERB_PATTERN, fragment))
+
+
+def _is_non_confidential_duration_fragment(fragment: str) -> bool:
+    if not re.search(NON_CONFIDENTIAL_DURATION_SUBJECT_PATTERN, fragment):
+        return False
+    return not bool(
+        re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, fragment)
+        or re.search(r"\b(?:this\s+)?agreement\b", fragment)
+        or _is_survival_scope_reference(fragment)
+    )
 
 
 def _has_configured_non_survival_duration_scope(fragment: str, clause: Dict[str, object]) -> bool:
