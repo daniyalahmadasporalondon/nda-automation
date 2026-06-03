@@ -1,27 +1,42 @@
 # nda-automation
 
-A focused NDA review and redline workstation for hard-clause review, matter intake, and Gmail-based NDA workflows.
+A focused NDA review and redline workstation for hard-clause review, matter intake, AI-assisted semantic review, and Gmail-based NDA workflows.
 
-The app reviews pasted text, `.docx` files, and text-based PDFs against a configurable playbook. It returns clause findings with evidence paragraphs, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
+The app reviews pasted text, `.docx` files, and text-based PDFs against a configurable playbook. It returns pass / review / fail clause findings with structured evidence, reason codes, audit traces, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
 
 ## Features
 
 - Review pasted NDA text, plain text files, `.docx` Word documents, and text-based PDFs.
-- Detect required and prohibited hard clauses with paragraph-level evidence.
+- Detect required and prohibited hard clauses with paragraph-level evidence, reason codes, and review-state decisions.
+- Preserve contract structure, resolve clause/section references, and classify legal concepts before checker evaluation.
+- Run optional AI semantic second opinions and AI draft-fix validation from the Review panel.
 - Generate Word review reports and source `.docx` redlines with tracked changes.
 - Import uploaded matters into a Repository board with review state, source documents, redline drafts, and stage tracking.
 - Sync inbound Gmail NDA attachments into the Repository when Gmail is configured.
 - Send outbound Gmail redlines only after an explicit confirmation action.
-- Edit the review playbook from the Admin interface.
+- Edit the review playbook and inspect checker/AI logic from the Admin interface.
 - Inspect deployment status and non-sensitive telemetry from auth-gated admin endpoints.
 - Download a sensitive matter backup from an auth-gated backup endpoint.
 
 ## Product Areas
 
-- **Review Workstation**: one-off text/document review, clause checklist, evidence navigation, viewer edits, and DOCX export.
+- **Review Workstation**: one-off text/document review, clause checklist, structure view, AI evidence, evidence navigation, viewer edits, and DOCX export.
 - **Repository**: imported matters, board lanes, stored source documents, redline drafts, and matter review views.
-- **Admin**: playbook editor, Gmail connection state/settings, deployment status, telemetry, and matter backup.
+- **Admin**: playbook editor, deterministic engine explainability, AI controls, Email/Gmail connection state/settings, deployment status, telemetry, and matter backup.
 - **Gmail workflows**: inbound attachment import and outbound redline reply/send.
+
+## Review Architecture
+
+The review system is layered:
+
+1. **Deterministic Python rules engine** applies the playbook and produces pass / review / fail decisions.
+2. **Contract structure map** identifies headings, sections, articles, clauses, and paragraph ranges.
+3. **Reference resolver** maps references such as "clauses 2, 3, 4 and 5" or hybrid identifiers such as `10b`.
+4. **Concept classifier** tags paragraphs and sections with legal concepts so checks can reason beyond raw keywords.
+5. **AI semantic review** can provide clause-specific second opinions and draft-fix validation with confidence, citations, and suggested fixes.
+6. **Review-state arbiter** escalates disagreement, low confidence, invalid citations, or checker uncertainty to human review.
+
+The deterministic layer remains the primary foundation. AI is optional and must cite source text before its result is used. The next intended hardening step is to make semantic AI review fully blind to Python's deterministic verdict, then compare the two results after the AI response returns.
 
 ## Run Locally
 
@@ -86,11 +101,11 @@ Optional AI semantic review:
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.7-plus
+export NDA_AI_MODEL=qwen3.7-plus-2026-05-26
 export ALIBABA_API_KEY=sk-...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and defaults to `qwen3.7-plus`. Admins can also save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and currently defaults to `qwen3.7-plus-2026-05-26`. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 
@@ -174,7 +189,7 @@ Gmail remains disabled until token files are configured and readable by the serv
 
 ## Review Output
 
-The backend splits each uploaded document into numbered paragraphs such as `p1`, `p2`, and `p3`. Clause results include backend-identified paragraph evidence, issue labels, fix text, and proposed redlines. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+The backend splits each uploaded document into numbered paragraphs such as `p1`, `p2`, and `p3`. Clause results include backend-identified paragraph evidence, structured evidence records, reason codes, audit traces, issue labels, fix text, and proposed redlines. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
 
 DOCX uploads preserve the source Word paragraph index. PDF uploads preserve extracted page metadata. PDF extraction reports basic quality metadata, including page counts, pages without extractable text, extracted character/paragraph counts, repeated header/footer removal, and sparse-extraction warnings.
 
@@ -191,14 +206,15 @@ python3 -m pip install -e ".[pdf]"
 Run backend tests:
 
 ```bash
-python3 -m unittest discover -s tests
+PYTHONPATH=. pytest -q
 ```
 
 Run frontend behavior tests:
 
 ```bash
-npm install
-npm run test:frontend
+NODE_PATH=/Users/daniyalahmad/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules \
+PYTHON=/opt/anaconda3/bin/python \
+/Users/daniyalahmad/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node tests/frontend/review-workstation.cjs
 ```
 
 Frontend tests run the real app in Chromium and cover review view modes, viewer editing, redline rendering, Gmail/admin surfaces, and DOCX export behavior.
