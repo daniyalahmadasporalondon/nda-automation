@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping
 
 from ..review_document import Paragraph
 from .common import ClauseResult
@@ -28,7 +28,7 @@ CLAUSE_CHECKS: List[tuple[str, CheckFn]] = [
     ("signatures", _check_signatures),
 ]
 
-ReasonCodeFn = Callable[[Dict[str, object], str], List[str]]
+ReasonCodeFn = Callable[[Mapping[str, Any], str], str]
 
 REASON_CODE_FUNCTIONS: Dict[str, ReasonCodeFn] = {
     "mutuality": _mutuality_reason_code,

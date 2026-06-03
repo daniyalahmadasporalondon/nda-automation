@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .common import (
     ClauseResult,
@@ -96,12 +96,12 @@ def _signature_for_lines(text: str) -> List[str]:
     return re.findall(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE)
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     if decision == CLAUSE_DECISION_PASS:
-        return ["complete_execution_block"]
+        return "complete_execution_block"
     if clause.get("matched_paragraph_ids"):
-        return ["incomplete_execution_block"]
-    return ["missing_execution_block"]
+        return "incomplete_execution_block"
+    return "missing_execution_block"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from typing import Any, Dict, List, Mapping
 
 from ..concept_classifier import ORDINARY_CONFIDENTIALITY_CONCEPTS
 from .common import (
@@ -519,10 +519,10 @@ def _term_fragment_bounds(normalized: str, start: int, end: int) -> tuple[str, i
     return normalized[left:right], start - left, end - left
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     analysis = clause.get("term_survival_analysis")
     if isinstance(analysis, dict):
         references = analysis.get("references", [])
@@ -531,23 +531,23 @@ def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
                 if not isinstance(reference, dict):
                     continue
                 if reference.get("unresolved_numbers"):
-                    return ["unresolved_survival_reference"]
+                    return "unresolved_survival_reference"
                 if str(reference.get("status") or "") in {"partial", "unresolved"}:
-                    return ["unresolved_survival_reference"]
+                    return "unresolved_survival_reference"
                 if reference.get("ordinary_confidentiality") is False:
-                    return ["survival_reference_scope_unclear"]
+                    return "survival_reference_scope_unclear"
             if decision == CLAUSE_DECISION_PASS:
-                return ["resolved_survival_reference_within_cap"]
+                return "resolved_survival_reference_within_cap"
     reason = str(clause.get("reason") or clause.get("finding") or "").lower()
     issue = _issue_type(clause)
     if "indefinite" in reason:
-        return ["indefinite_survival"]
+        return "indefinite_survival"
     if "exceeds" in reason or "over" in reason or "longer than" in reason:
-        return ["term_survival_over_cap"]
+        return "term_survival_over_cap"
     if issue == "missing":
-        return ["missing_term_or_survival"]
+        return "missing_term_or_survival"
     if decision == CLAUSE_DECISION_REVIEW:
-        return ["unclear_term_or_survival"]
+        return "unclear_term_or_survival"
     if decision == CLAUSE_DECISION_PASS:
-        return ["term_survival_within_cap"]
-    return [_generic_reason_code(clause, decision)]
+        return "term_survival_within_cap"
+    return _generic_reason_code(clause, decision)

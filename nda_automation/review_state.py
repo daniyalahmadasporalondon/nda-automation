@@ -102,7 +102,7 @@ def reason_codes_for_clause(clause: Dict[str, Any], decision: str | None = None)
 
     reason_code_fn = REASON_CODE_FUNCTIONS.get(str(clause.get("id") or "").strip())
     if reason_code_fn is not None:
-        return reason_code_fn(clause, normalized_decision)
+        return [reason_code_fn(clause, normalized_decision)]
     return [_generic_reason_code(clause, normalized_decision)]
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 from .common import (
     ClauseResult,
@@ -257,20 +257,20 @@ def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     if _has_ids(clause, "mutuality_analysis", "one_way_paragraph_ids"):
-        return ["one_way_mutuality_language"]
+        return "one_way_mutuality_language"
     if _has_ids(clause, "mutuality_analysis", "role_definition_paragraph_ids"):
-        return ["role_definitions_without_operational_mutuality"]
+        return "role_definitions_without_operational_mutuality"
     if _has_ids(clause, "mutuality_analysis", "weak_mutuality_paragraph_ids"):
-        return ["weak_mutuality_signal"]
+        return "weak_mutuality_signal"
     if _has_ids(clause, "mutuality_analysis", "strong_mutuality_paragraph_ids"):
-        return ["mutuality_obligation_found"]
+        return "mutuality_obligation_found"
     if decision == CLAUSE_DECISION_FAIL:
-        return ["missing_mutuality_obligation"]
+        return "missing_mutuality_obligation"
     if decision == CLAUSE_DECISION_REVIEW:
-        return ["unclear_mutuality_obligation"]
-    return ["mutuality_obligation_found"]
+        return "unclear_mutuality_obligation"
+    return "mutuality_obligation_found"

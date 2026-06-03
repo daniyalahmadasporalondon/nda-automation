@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 from .common import (
     ClauseResult,
@@ -638,18 +638,18 @@ def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     if _has_ids(clause, "governing_law_analysis", "unapproved_paragraph_ids"):
-        return ["unapproved_governing_law"]
+        return "unapproved_governing_law"
     if _has_ids(clause, "governing_law_analysis", "unclear_paragraph_ids"):
-        return ["unclear_governing_law"]
+        return "unclear_governing_law"
     if _has_ids(clause, "governing_law_analysis", "approved_paragraph_ids"):
-        return ["approved_governing_law"]
+        return "approved_governing_law"
     if _has_ids(clause, "governing_law_analysis", "heading_only_paragraph_ids"):
-        return ["governing_law_heading_only"]
+        return "governing_law_heading_only"
     if _issue_type(clause) == "missing":
-        return ["missing_governing_law"]
-    return [_generic_reason_code(clause, decision)]
+        return "missing_governing_law"
+    return _generic_reason_code(clause, decision)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 from .common import (
     ClauseResult,
@@ -523,26 +523,26 @@ def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     if _has_ids(clause, "non_circumvention_analysis", "prohibited_paragraph_ids"):
-        return ["prohibited_non_circumvention_restriction"]
+        return "prohibited_non_circumvention_restriction"
     if _has_non_circumvention_reference_status(
         clause,
         {"partial", "unresolved", "review", "no_non_circumvention_signal"},
     ):
-        return ["unclear_non_circumvention_reference"]
+        return "unclear_non_circumvention_reference"
     if _has_ids(clause, "non_circumvention_analysis", "review_paragraph_ids"):
-        return ["possible_non_circumvention_restriction"]
+        return "possible_non_circumvention_restriction"
     if _has_ids(clause, "non_circumvention_analysis", "negated_reference_paragraph_ids"):
-        return ["negated_non_circumvention_reference"]
+        return "negated_non_circumvention_reference"
     if _has_ids(clause, "non_circumvention_analysis", "lawful_circumvention_paragraph_ids"):
-        return ["lawful_circumvention_reference_ignored"]
+        return "lawful_circumvention_reference_ignored"
     if decision == CLAUSE_DECISION_PASS:
-        return ["no_non_circumvention_restriction"]
-    return [_generic_reason_code(clause, decision)]
+        return "no_non_circumvention_restriction"
+    return _generic_reason_code(clause, decision)
 
 
 def _has_non_circumvention_reference_status(clause: Dict[str, object], statuses: set[str]) -> bool:

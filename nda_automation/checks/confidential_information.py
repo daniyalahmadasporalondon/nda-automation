@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 from .common import (
     ClauseResult,
@@ -386,21 +386,21 @@ def _independent_development_qualification_context_before(normalized_text: str, 
     return context
 
 
-def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
-        return [semantic_code]
+        return semantic_code
     if _has_ids(clause, "confidential_information_analysis", "explicit_problematic_exclusion_paragraph_ids"):
-        return ["problematic_confidential_information_exclusion"]
+        return "problematic_confidential_information_exclusion"
     if _has_ids(clause, "confidential_information_analysis", "usage_right_review_paragraph_ids"):
-        return ["usage_right_language_needs_review"]
+        return "usage_right_language_needs_review"
     issue = _issue_type(clause)
     if issue == "missing":
-        return ["missing_confidential_information_definition"]
+        return "missing_confidential_information_definition"
     if issue == "present_but_wrong":
-        return ["narrow_confidential_information_definition"]
+        return "narrow_confidential_information_definition"
     if decision == CLAUSE_DECISION_REVIEW:
-        return ["broad_definition_needs_category_review"]
+        return "broad_definition_needs_category_review"
     if _has_ids(clause, "confidential_information_analysis", "definition_paragraph_ids"):
-        return ["broad_confidential_information_definition"]
-    return [_generic_reason_code(clause, decision)]
+        return "broad_confidential_information_definition"
+    return _generic_reason_code(clause, decision)
