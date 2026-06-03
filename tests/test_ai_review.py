@@ -149,7 +149,7 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(openrouter_status["api_key_configured"], True)
         self.assertEqual(openrouter_status["api_key_source"], "local_settings")
         self.assertEqual(alibaba_status["provider"], "alibaba")
-        self.assertEqual(alibaba_status["model"], "qwen3.7-plus")
+        self.assertEqual(alibaba_status["model"], "qwen3.7-plus-2026-05-26")
         self.assertEqual(alibaba_status["api_key_configured"], True)
         self.assertEqual(alibaba_status["api_key_source"], "local_settings")
 
@@ -358,9 +358,9 @@ class AIReviewTests(unittest.TestCase):
             "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
         }
 
-        body = ai_review._alibaba_request_body(packet, "qwen3.7-plus")
+        body = ai_review._alibaba_request_body(packet, "qwen3.7-plus-2026-05-26")
 
-        self.assertEqual(body["model"], "qwen3.7-plus")
+        self.assertEqual(body["model"], "qwen3.7-plus-2026-05-26")
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["enable_thinking"], False)
         self.assertEqual(body["response_format"]["type"], "json_object")
