@@ -16,6 +16,7 @@ from .common import (
     _signature_marker_patterns,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
+from ..review_state import _semantic_review_code, CLAUSE_DECISION_PASS
 
 SIGNATURE_FOR_LINE_PATTERN = (
     r"^\s*for\s+"
@@ -93,3 +94,14 @@ def _signature_evidence_paragraphs(paragraphs: List[Paragraph], signature_patter
 
 def _signature_for_lines(text: str) -> List[str]:
     return re.findall(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE)
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["complete_execution_block"]
+    if clause.get("matched_paragraph_ids"):
+        return ["incomplete_execution_block"]
+    return ["missing_execution_block"]

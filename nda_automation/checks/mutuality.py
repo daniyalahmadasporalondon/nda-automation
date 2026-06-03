@@ -15,6 +15,7 @@ from .common import (
     _paragraph_matches,
 )
 from .context import attach_structure_context
+from ..review_state import _semantic_review_code, _has_ids, CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW
 
 MUTUALITY_VARIANT_PATTERNS = {
     "mutual": r"\bmutual(?:ity|ly)?\b",
@@ -254,3 +255,22 @@ def _attach_mutuality_analysis(result: ClauseResult, analysis: Dict[str, object]
 
 def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "mutuality_analysis", "one_way_paragraph_ids"):
+        return ["one_way_mutuality_language"]
+    if _has_ids(clause, "mutuality_analysis", "role_definition_paragraph_ids"):
+        return ["role_definitions_without_operational_mutuality"]
+    if _has_ids(clause, "mutuality_analysis", "weak_mutuality_paragraph_ids"):
+        return ["weak_mutuality_signal"]
+    if _has_ids(clause, "mutuality_analysis", "strong_mutuality_paragraph_ids"):
+        return ["mutuality_obligation_found"]
+    if decision == CLAUSE_DECISION_FAIL:
+        return ["missing_mutuality_obligation"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["unclear_mutuality_obligation"]
+    return ["mutuality_obligation_found"]

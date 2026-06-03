@@ -22,6 +22,7 @@ from .common import (
     _year_count_label,
 )
 from .context import attach_structure_context
+from ..review_state import _semantic_review_code, _issue_type, _generic_reason_code, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
 
 CARVE_OUT_SURVIVAL_PATTERN = (
     r"\b(?:surviv(?:e|es|ed|ing|al)|remain(?:s|ed|ing)?|continu(?:e|es|ed|ing)|"
@@ -516,3 +517,37 @@ def _term_fragment_bounds(normalized: str, start: int, end: int) -> tuple[str, i
     while right > left and normalized[right - 1].isspace():
         right -= 1
     return normalized[left:right], start - left, end - left
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    analysis = clause.get("term_survival_analysis")
+    if isinstance(analysis, dict):
+        references = analysis.get("references", [])
+        if isinstance(references, list) and references:
+            for reference in references:
+                if not isinstance(reference, dict):
+                    continue
+                if reference.get("unresolved_numbers"):
+                    return ["unresolved_survival_reference"]
+                if str(reference.get("status") or "") in {"partial", "unresolved"}:
+                    return ["unresolved_survival_reference"]
+                if reference.get("ordinary_confidentiality") is False:
+                    return ["survival_reference_scope_unclear"]
+            if decision == CLAUSE_DECISION_PASS:
+                return ["resolved_survival_reference_within_cap"]
+    reason = str(clause.get("reason") or clause.get("finding") or "").lower()
+    issue = _issue_type(clause)
+    if "indefinite" in reason:
+        return ["indefinite_survival"]
+    if "exceeds" in reason or "over" in reason or "longer than" in reason:
+        return ["term_survival_over_cap"]
+    if issue == "missing":
+        return ["missing_term_or_survival"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["unclear_term_or_survival"]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["term_survival_within_cap"]
+    return [_generic_reason_code(clause, decision)]

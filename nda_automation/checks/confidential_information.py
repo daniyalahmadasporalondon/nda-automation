@@ -19,6 +19,7 @@ from .common import (
     _paragraph_matches,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
+from ..review_state import _semantic_review_code, _has_ids, _issue_type, _generic_reason_code, CLAUSE_DECISION_REVIEW
 
 USAGE_RIGHT_ACTION_PATTERN = (
     r"(?:use|using|retain|retaining|disclose|disclosing|exploit|exploiting|"
@@ -383,3 +384,23 @@ def _independent_development_qualification_context_before(normalized_text: str, 
     if boundary_positions:
         return context[boundary_positions[-1]:]
     return context
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "confidential_information_analysis", "explicit_problematic_exclusion_paragraph_ids"):
+        return ["problematic_confidential_information_exclusion"]
+    if _has_ids(clause, "confidential_information_analysis", "usage_right_review_paragraph_ids"):
+        return ["usage_right_language_needs_review"]
+    issue = _issue_type(clause)
+    if issue == "missing":
+        return ["missing_confidential_information_definition"]
+    if issue == "present_but_wrong":
+        return ["narrow_confidential_information_definition"]
+    if decision == CLAUSE_DECISION_REVIEW:
+        return ["broad_definition_needs_category_review"]
+    if _has_ids(clause, "confidential_information_analysis", "definition_paragraph_ids"):
+        return ["broad_confidential_information_definition"]
+    return [_generic_reason_code(clause, decision)]

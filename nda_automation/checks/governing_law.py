@@ -18,6 +18,7 @@ from .common import (
     _paragraph_matches,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
+from ..review_state import _semantic_review_code, _has_ids, _issue_type, _generic_reason_code
 
 GOVERNING_LAW_VALUE_PATTERNS = (
     r"\bgoverned\b.{0,120}?\blaws?\s+of\s+(?P<law>[^.;,\n]+)",
@@ -635,3 +636,20 @@ def _attach_governing_law_analysis(result: ClauseResult, analysis: Dict[str, obj
 
 def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "governing_law_analysis", "unapproved_paragraph_ids"):
+        return ["unapproved_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "unclear_paragraph_ids"):
+        return ["unclear_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "approved_paragraph_ids"):
+        return ["approved_governing_law"]
+    if _has_ids(clause, "governing_law_analysis", "heading_only_paragraph_ids"):
+        return ["governing_law_heading_only"]
+    if _issue_type(clause) == "missing":
+        return ["missing_governing_law"]
+    return [_generic_reason_code(clause, decision)]

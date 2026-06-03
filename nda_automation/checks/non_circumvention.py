@@ -13,6 +13,7 @@ from .common import (
     _paragraph_matches,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
+from ..review_state import _semantic_review_code, _has_ids, _generic_reason_code, CLAUSE_DECISION_PASS
 
 LEGAL_CIRCUMVENTION_OBJECT = (
     r"(?:(?:any|all|applicable|relevant|mandatory|its|their|the)\s+)*"
@@ -520,3 +521,38 @@ def _attach_non_circumvention_analysis(result: ClauseResult, analysis: Dict[str,
 
 def _paragraph_ids(paragraphs: Iterable[Paragraph]) -> List[str]:
     return [str(paragraph.get("id") or "") for paragraph in paragraphs if paragraph.get("id")]
+
+
+def reason_code(clause: Dict[str, object], decision: str) -> List[str]:
+    semantic_code = _semantic_review_code(clause, decision)
+    if semantic_code:
+        return [semantic_code]
+    if _has_ids(clause, "non_circumvention_analysis", "prohibited_paragraph_ids"):
+        return ["prohibited_non_circumvention_restriction"]
+    if _has_non_circumvention_reference_status(
+        clause,
+        {"partial", "unresolved", "review", "no_non_circumvention_signal"},
+    ):
+        return ["unclear_non_circumvention_reference"]
+    if _has_ids(clause, "non_circumvention_analysis", "review_paragraph_ids"):
+        return ["possible_non_circumvention_restriction"]
+    if _has_ids(clause, "non_circumvention_analysis", "negated_reference_paragraph_ids"):
+        return ["negated_non_circumvention_reference"]
+    if _has_ids(clause, "non_circumvention_analysis", "lawful_circumvention_paragraph_ids"):
+        return ["lawful_circumvention_reference_ignored"]
+    if decision == CLAUSE_DECISION_PASS:
+        return ["no_non_circumvention_restriction"]
+    return [_generic_reason_code(clause, decision)]
+
+
+def _has_non_circumvention_reference_status(clause: Dict[str, object], statuses: set[str]) -> bool:
+    analysis = clause.get("non_circumvention_analysis")
+    if not isinstance(analysis, dict):
+        return False
+    references = analysis.get("references", [])
+    if not isinstance(references, list):
+        return False
+    return any(
+        isinstance(reference, dict) and str(reference.get("status") or "") in statuses
+        for reference in references
+    )
