@@ -54,12 +54,16 @@ from .review_state import (
     clause_review_state,
     reason_codes_for_clause,
 )
+from .decision_arbiter import (
+    SEMANTIC_REVIEW_THRESHOLD,
+    arbitrate,
+    deterministic_decision,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
 REVIEW_ENGINE_VERSION = 5
 AUDIT_TRACE_VERSION = 1
-SEMANTIC_REVIEW_THRESHOLD = 0.75
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
 MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
@@ -177,6 +181,11 @@ def review_nda(
         clauses_by_id=clauses_by_id,
         paragraphs=document_paragraphs,
     )
+    # Snapshot the deterministic verdict (checkers + crosscheck + fallback) before
+    # the AI overlay runs, so the arbiter compares against a verdict the AI never
+    # touched. AI is append-only from here; the arbiter owns final precedence.
+    for clause in clause_results:
+        clause["deterministic_decision"] = deterministic_decision(clause)
     clause_results, ai_review = apply_ai_review(
         clause_results=clause_results,
         clauses_by_id=clauses_by_id,
@@ -428,31 +437,29 @@ def _aggregate_clause_results(clauses: List[ClauseResult]) -> Dict[str, object]:
 
 
 def _apply_clause_decision(clause: ClauseResult) -> None:
-    decision = _clause_decision(clause)
+    # The DecisionArbiter is the single owner of verdict precedence (deterministic
+    # vs AI, with the fail-floor). Everything else here just records its result.
+    verdict = arbitrate(clause)
+    decision = verdict["decision"]
     clause["decision"] = decision
     clause["needs_review"] = decision == CLAUSE_DECISION_REVIEW
-    if not str(clause.get("decision_reason") or "").strip():
-        clause["decision_reason"] = _clause_decision_reason(clause, decision)
-    reason_codes = reason_codes_for_clause(clause, decision)
-    clause["reason_code"] = reason_codes[0]
-    clause["reason_codes"] = reason_codes
+    clause["decision_source"] = verdict["source"]
+    if verdict["source"] == "ai":
+        review_reason = str(verdict.get("reason") or "").strip() or "AI semantic review requires human review."
+        clause["review_reason"] = review_reason
+        clause["decision_reason"] = review_reason
+        reason_code = str(verdict.get("reason_code") or "ai_semantic_review")
+        clause["reason_code"] = reason_code
+        clause["reason_codes"] = [reason_code]
+    else:
+        if not str(clause.get("decision_reason") or "").strip():
+            clause["decision_reason"] = _clause_decision_reason(clause, decision)
+        reason_codes = reason_codes_for_clause(clause, decision)
+        clause["reason_code"] = reason_codes[0]
+        clause["reason_codes"] = reason_codes
     clause["review_state"] = clause_review_state(clause, decision)
     _finalize_structured_evidence(clause, decision)
     _attach_audit_trace(clause, decision)
-
-
-def _clause_decision(clause: ClauseResult) -> str:
-    explicit_decision = str(clause.get("decision") or "").strip().lower()
-    if explicit_decision in {CLAUSE_DECISION_PASS, CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}:
-        return explicit_decision
-    if clause.get("needs_review"):
-        return CLAUSE_DECISION_REVIEW
-    confidence = _semantic_confidence(clause)
-    if confidence is not None and confidence < SEMANTIC_REVIEW_THRESHOLD:
-        return CLAUSE_DECISION_REVIEW
-    if not clause.get("passes"):
-        return CLAUSE_DECISION_FAIL
-    return CLAUSE_DECISION_PASS
 
 
 def _semantic_confidence(clause: ClauseResult) -> float | None:

@@ -226,6 +226,31 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["reason_code"], baseline_gl["reason_code"])
         self.assertEqual(governing_law["ai_review_analysis"]["status"], "error")
 
+    def test_ai_disagreement_does_not_soften_a_deterministic_fail(self):
+        # Fail-floor: AI may escalate a pass to review, but it must never move a
+        # deterministic FAIL off fail. The dissent is recorded, not acted on.
+        def reviewer(packet):
+            return {
+                "decision": "pass",
+                "confidence": 0.95,
+                "reason": "AI thinks the failing clause is acceptable.",
+                "cited_spans": [_first_citation(packet)],
+                "issues": [],
+                "suggested_fix": "",
+            }
+
+        result = review_nda("This Agreement shall be governed by the laws of California.", ai_reviewer=reviewer)
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["decision_source"], "deterministic")
+        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
+        self.assertEqual(governing_law["audit_trace"]["reason_code"], "unapproved_governing_law")
+        # The AI disagreement is preserved for the reviewer, but did not soften the fail.
+        self.assertEqual(governing_law["ai_review_analysis"]["status"], "disagreement")
+        self.assertEqual(governing_law["ai_review_analysis"]["ai_decision"], "pass")
+        self.assertTrue(governing_law["ai_review_analysis"]["disagreement"])
+
     def test_ai_disagreement_escalates_to_review_without_auto_redline(self):
         def reviewer(packet):
             if packet["clause"]["id"] == "mutuality":

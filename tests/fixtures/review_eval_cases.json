@@ -216,5 +216,15 @@
     "text": "This Agreement shall be governed by the laws of the DIFC.",
     "ai": {"decision": "pass", "confidence": 0.4, "reason": "Scripted low-confidence pass."},
     "expected": {"decision": "review", "reason_code": "ai_confidence_below_threshold"}
+  },
+  {
+    "name": "ai_cannot_soften_deterministic_fail_floor",
+    "clause_id": "governing_law",
+    "kind": "ai_fail_floor",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "This Agreement shall be governed by the laws of California.",
+    "ai": {"decision": "pass", "confidence": 0.95, "reason": "Scripted AI calls the failing clause acceptable."},
+    "expected": {"decision": "fail", "reason_code": "unapproved_governing_law"}
   }
 ]

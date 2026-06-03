@@ -632,16 +632,14 @@ def _evaluate_draft_fix_with_ai(
 
 
 def _attach_ai_analysis(clause: ClauseResult, analysis: Dict[str, object], reason_code: str) -> None:
+    # AI is an escalate-only overlay. Record the verdict (with its reason code)
+    # for the DecisionArbiter and the audit trace, but never mutate the clause's
+    # deterministic decision here -- the arbiter owns precedence and applies the
+    # fail-floor (AI may escalate a pass to review, never soften a fail/review).
+    # In particular do NOT write clause["semantic_confidence"]: that field feeds
+    # the deterministic confidence rule and must not carry the AI's confidence.
+    analysis["reason_code"] = reason_code
     clause["ai_review_analysis"] = analysis
-    clause["decision"] = CLAUSE_DECISION_REVIEW
-    clause["needs_review"] = True
-    clause["review_reason"] = str(analysis.get("reason") or "AI semantic review requires human review.")
-    clause["decision_reason"] = str(clause["review_reason"])
-    clause["reason_code"] = reason_code
-    clause["reason_codes"] = [reason_code]
-    confidence = analysis.get("ai_confidence")
-    if confidence is not None:
-        clause["semantic_confidence"] = confidence
 
 
 def _validate_ai_response(response: object, paragraphs: List[Paragraph]) -> Dict[str, object]:
