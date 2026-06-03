@@ -14,15 +14,33 @@ The repository does not include API keys or Gmail OAuth tokens. To run the full 
 python3 -m pip install -e ".[pdf,gmail]"
 ```
 
-### 2. Connect AI review
+### 2. Create local environment config
 
-Set the AI provider/model and API key before starting the server:
+Copy the template and fill in local credentials:
 
 ```bash
-export NDA_AI_REVIEW_ENABLED=true
-export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.7-plus-2026-05-26
-export ALIBABA_API_KEY="your-alibaba-api-key"
+cp .env.example .env
+```
+
+Load the file before starting the app:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+The real `.env` file is ignored by Git.
+
+### 3. Connect AI review
+
+In `.env`, set the AI provider/model and API key:
+
+```bash
+NDA_AI_REVIEW_ENABLED=true
+NDA_AI_PROVIDER=alibaba
+NDA_AI_MODEL=qwen3.7-plus-2026-05-26
+ALIBABA_API_KEY="your-alibaba-api-key"
 ```
 
 Then start the app:
@@ -33,13 +51,13 @@ python3 -m nda_automation.server --port 8787
 
 You can also paste/save the AI key from **Admin -> AI** after the app is running. Saved local keys are stored in ignored app data and are not committed to Git.
 
-### 3. Connect Gmail inbound/outbound
+### 4. Connect Gmail inbound/outbound
 
-Place OAuth token JSON files outside Git, then point the app at them:
+Place OAuth token JSON files outside Git, then point the app at them in `.env`:
 
 ```bash
-export NDA_GMAIL_INBOUND_TOKEN_PATH="/absolute/path/to/inbound-token.json"
-export NDA_GMAIL_OUTBOUND_TOKEN_PATH="/absolute/path/to/outbound-token.json"
+NDA_GMAIL_INBOUND_TOKEN_PATH="/absolute/path/to/inbound-token.json"
+NDA_GMAIL_OUTBOUND_TOKEN_PATH="/absolute/path/to/outbound-token.json"
 ```
 
 For local development only, the app also checks these ignored paths:
@@ -51,7 +69,7 @@ data/gmail/outbound-token.json
 
 Use **Admin -> Email** to confirm whether inbound sync and outbound send are ready. Gmail remains disabled until token files are configured and readable by the service.
 
-### 4. Open the app
+### 5. Open the app
 
 ```text
 http://127.0.0.1:8787/
