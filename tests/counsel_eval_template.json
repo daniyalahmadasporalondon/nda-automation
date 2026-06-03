@@ -1,0 +1,24 @@
+[
+  {
+    "document_id": "nda_0001",
+    "clause_id": "governing_law",
+    "expected_decision": "review",
+    "cited_paragraph_ids": ["p12", "p13"],
+    "cited_text": "",
+    "legal_reason": "Approved forum but 'unless otherwise agreed' escape — confirm before clearing.",
+    "label_source": "counsel",
+    "confidence": "high",
+    "notes": "tricky: conditional governing law"
+  },
+  {
+    "document_id": "nda_0001",
+    "clause_id": "confidential_information",
+    "expected_decision": "fail",
+    "cited_paragraph_ids": ["p4"],
+    "cited_text": "",
+    "legal_reason": "Definition excludes orally disclosed information — too narrow.",
+    "label_source": "counsel",
+    "confidence": "high",
+    "notes": "tricky: narrow CI definition"
+  }
+]

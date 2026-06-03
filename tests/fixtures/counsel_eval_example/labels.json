@@ -1,0 +1,42 @@
+[
+  {
+    "document_id": "nda_alpha",
+    "clause_id": "governing_law",
+    "expected_decision": "fail",
+    "cited_paragraph_ids": ["p3"],
+    "legal_reason": "California is not an approved governing law for these NDAs.",
+    "label_source": "counsel",
+    "confidence": "high",
+    "notes": ""
+  },
+  {
+    "document_id": "nda_alpha",
+    "clause_id": "mutuality",
+    "expected_decision": "pass",
+    "cited_paragraph_ids": ["p2"],
+    "legal_reason": "Reciprocal disclosure and protection obligations on both parties.",
+    "label_source": "counsel",
+    "confidence": "high",
+    "notes": ""
+  },
+  {
+    "document_id": "nda_beta",
+    "clause_id": "governing_law",
+    "expected_decision": "pass",
+    "cited_paragraph_ids": ["p2"],
+    "legal_reason": "DIFC is an approved forum.",
+    "label_source": "counsel",
+    "confidence": "high",
+    "notes": ""
+  },
+  {
+    "document_id": "nda_beta",
+    "clause_id": "confidential_information",
+    "expected_decision": "review",
+    "cited_paragraph_ids": ["p3"],
+    "legal_reason": "Definition is extremely broad ('any and all information'); confirm scope and carve-outs.",
+    "label_source": "counsel",
+    "confidence": "medium",
+    "notes": "tricky: broad vs narrow CI definition"
+  }
+]

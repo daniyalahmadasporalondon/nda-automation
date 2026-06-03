@@ -1,0 +1,3 @@
+document_id,clause_id,expected_decision,cited_paragraph_ids,cited_text,legal_reason,label_source,confidence,notes
+nda_0001,governing_law,review,p12;p13,,"Approved forum but 'unless otherwise agreed' escape — confirm before clearing.",counsel,high,tricky: conditional governing law
+nda_0001,confidential_information,fail,p4,,"Definition excludes orally disclosed information — too narrow.",counsel,high,tricky: narrow CI definition
