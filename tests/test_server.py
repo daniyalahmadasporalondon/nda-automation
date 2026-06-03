@@ -2152,6 +2152,89 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(imported_by_id["msg_html_body"]["gmail_detection_sources"], "body")
         self.assertIn("confidentiality agreement", imported_by_id["msg_html_body"]["gmail_detection_terms"])
 
+    def test_gmail_import_detects_nda_signal_inside_attachment_content(self):
+        # Regression: an e-signature forward (Juro/DocuSign) whose subject, body,
+        # snippet, and filename carry no NDA wording -- the signal lives only
+        # inside the attached .docx. Gmail's query surfaces it via attachment
+        # text, so local detection must read the document content instead of
+        # dropping it as no_nda_signal.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def attachments(self):
+                return self
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "daniyal.ahmad@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "The parties shall keep all Confidential Information confidential.",
+        ])
+        esign_body = inline(b"Elliott has shared a document with you. View the document to review and sign.")
+        messages = {
+            "msg_esign": {
+                "id": "msg_esign",
+                "threadId": "thr_esign",
+                "labelIds": ["INBOX"],
+                "snippet": "Invitation to review the Aspora document",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Neha Chawla <neha.chawla@aspora.com>"},
+                        {"name": "Subject", "value": "Fwd: Invitation to review the 'Aspora' document | Juro"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": esign_body}},
+                        {"partId": "doc", "filename": "Aspora + Monavate Ltd document.docx", "body": {"data": inline(docx_bytes)}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                        result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_esign")
+        self.assertEqual(result["imported"][0]["gmail_detection_sources"], "attachment_content")
+        self.assertIn("non-disclosure agreement", result["imported"][0]["gmail_detection_terms"])
+
     def test_gmail_message_body_prefers_plain_text_in_multipart_alternative(self):
         def inline(value):
             return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")

@@ -23,7 +23,11 @@ from . import app_settings, matter_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
-from .ingestion_service import create_matter_from_document, is_supported_document_filename
+from .ingestion_service import (
+    create_matter_from_document,
+    extract_document_paragraphs,
+    is_supported_document_filename,
+)
 from .pdf_text import PdfExtractionError
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -106,9 +110,10 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             "HTML email body",
             "Gmail snippet",
             "attachment filenames",
+            "attachment text content (docx/pdf)",
         ],
         "terms": [term for term, _pattern in NDA_DETECTION_TERMS],
-        "mode": "Gmail query prefilters inbox attachments; local parsing verifies each full message before import.",
+        "mode": "Gmail query prefilters inbox attachments; local parsing verifies each message (including attachment text) before import.",
     }
 
 
@@ -195,6 +200,12 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             continue
 
         detection = _message_nda_detection(message, attachments)
+        if not detection["matched"]:
+            # The header/body/filename scan cannot see inside a .docx/.pdf, but
+            # Gmail's query matches attachment text -- so e-signature forwards
+            # (Juro/DocuSign) whose NDA wording lives only in the attachment land
+            # here. Read the document content before giving up.
+            detection = _attachment_nda_detection(service, message_id, attachments)
         if not detection["matched"]:
             skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
             continue
@@ -640,6 +651,41 @@ def _message_nda_detection(message: dict[str, Any], attachments: list[dict[str, 
         "terms": terms,
         "excerpt": excerpt,
     }
+
+
+def _attachment_nda_detection(
+    service: Any,
+    message_id: str,
+    attachments: list[dict[str, str]],
+) -> dict[str, object]:
+    """NDA detection fallback that reads the *content* of each attachment.
+
+    Gmail's inbox query matches NDA terms inside attachment text, but
+    ``_message_nda_detection`` only sees the subject/body/snippet/filename. An
+    e-signature forward (Juro, DocuSign, ...) carries a generic "review this
+    document" body with the NDA wording only inside the attached .docx/.pdf, so
+    it would be dropped as ``no_nda_signal`` even though it is a real NDA. This
+    closes that false negative by extracting and scanning the document text.
+    """
+    for attachment in attachments:
+        try:
+            document_bytes = _attachment_bytes(service, message_id, attachment)
+            ensure_document_size(document_bytes)
+            _document_type, paragraphs = extract_document_paragraphs(
+                str(attachment.get("filename") or ""), document_bytes
+            )
+        except (GmailIntegrationError, DocumentSizeError, DocxExtractionError, PdfExtractionError):
+            continue
+        text = "\n".join(str(paragraph.get("text") or "") for paragraph in paragraphs)
+        terms = _nda_terms_in_text(text)
+        if terms:
+            return {
+                "matched": True,
+                "sources": ["attachment_content"],
+                "terms": terms,
+                "excerpt": _detection_excerpt(text, terms[0]),
+            }
+    return {"matched": False, "sources": [], "terms": [], "excerpt": ""}
 
 
 def _nda_terms_in_text(text: object) -> list[str]:
