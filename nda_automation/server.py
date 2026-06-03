@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry
 from .checker import (
     PLAYBOOK_PATH,
+    ai_validate_draft_fix,
     EvidenceProvenanceError,
     PlaybookTemplateError,
     ai_second_opinion_for_clause,
@@ -102,6 +103,13 @@ def _handle_ai_second_opinion_post(handler) -> None:
     )
 
 
+def _handle_ai_draft_validation_post(handler) -> None:
+    review_routes.handle_ai_draft_validation(
+        handler,
+        validation_func=ai_validate_draft_fix,
+    )
+
+
 def _handle_matter_upload_post(handler) -> None:
     matter_routes.handle_matter_upload(
         handler,
@@ -130,6 +138,7 @@ _GET_EXACT_ROUTES = {
 
 _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
+    "/api/review/ai-draft-validation": _handle_ai_draft_validation_post,
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,

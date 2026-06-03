@@ -13,6 +13,9 @@ function renderResult(result, reviewedText) {
   state.redlineDraftDirty = false;
   state.pendingAiSecondOpinionClauseId = null;
   state.aiSecondOpinionErrors = {};
+  state.aiDraftValidations = {};
+  state.aiDraftValidationErrors = {};
+  state.pendingAiDraftValidationKey = null;
   resetReviewEditHistory();
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
@@ -685,6 +688,7 @@ function renderStudioDetail() {
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
   bindAiSecondOpinionControls(studioDetailPanel);
+  bindAiDraftValidationControls(studioDetailPanel);
 }
 
 function renderAiEvidenceSummaryBlock(clause) {
@@ -817,6 +821,11 @@ function renderAiCitation(span) {
 }
 
 function paragraphDisplayLabel(paragraphId) {
+  const normalizedId = String(paragraphId || "");
+  if (normalizedId.startsWith("draft-proposed-")) return "Proposed draft";
+  if (normalizedId.startsWith("draft-original-")) return "Original text";
+  if (normalizedId.startsWith("draft-anchor-")) return "Anchor text";
+  if (normalizedId.startsWith("draft-action-")) return "Draft action";
   const paragraph = state.reviewParagraphs.find((item) => String(item.id || "") === String(paragraphId || ""));
   const index = paragraph?.index || paragraph?.source_index;
   return index ? `Paragraph ${index}` : paragraphId;
@@ -837,6 +846,30 @@ function aiReviewStatusTone(status, disagreement) {
   if (normalized === "confirmed") return "confirmed";
   if (normalized === "error" || normalized === "invalid" || normalized === "low_confidence" || disagreement) return "attention";
   return "neutral";
+}
+
+function aiDraftValidationStatusLabel(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "validated") return "AI draft validated";
+  if (normalized === "needs_revision") return "Needs revision";
+  if (normalized === "low_confidence") return "Low confidence";
+  if (normalized === "invalid") return "Citation issue";
+  if (normalized === "error") return "AI unavailable";
+  return normalized ? normalized.replaceAll("_", " ") : "AI draft not validated";
+}
+
+function aiDraftValidationTone(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "validated") return "validated";
+  if (normalized === "needs_revision" || normalized === "low_confidence" || normalized === "invalid" || normalized === "error") {
+    return "attention";
+  }
+  return "neutral";
+}
+
+function aiDraftValidationKey(edit) {
+  const selectedOptionId = state.redlineTemplateSelections?.[edit.id] || "";
+  return `${edit.id || "draft"}:${selectedOptionId}`;
 }
 
 function renderReasonCodeBlock(clause) {
@@ -948,6 +981,58 @@ function renderDetailRedlineEdit(edit) {
       ${original}
       ${replacement}
       ${renderRedlineTemplateOptions(edit)}
+      ${renderAiDraftValidationBlock(edit)}
+    </div>
+  `;
+}
+
+function renderAiDraftValidationBlock(edit) {
+  const key = aiDraftValidationKey(edit);
+  const validation = state.aiDraftValidations?.[key] || null;
+  const pending = state.pendingAiDraftValidationKey === key;
+  const error = state.aiDraftValidationErrors?.[key] || "";
+  const actionLabel = validation ? "Revalidate draft fix" : "Validate draft fix";
+  const confidence = Number(validation?.ai_confidence);
+  const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
+  const decision = String(validation?.ai_decision || "").trim().toLowerCase();
+  const statusLabel = aiDraftValidationStatusLabel(validation?.status);
+  const tone = aiDraftValidationTone(validation?.status);
+  const citedSpans = Array.isArray(validation?.cited_spans)
+    ? validation.cited_spans.filter(Boolean).slice(0, 3)
+    : [];
+  const issues = Array.isArray(validation?.issues)
+    ? validation.issues.filter(Boolean).slice(0, 6)
+    : [];
+  const suggestedFix = String(validation?.suggested_fix || "").trim();
+  const providerText = [validation?.provider, validation?.model].filter(Boolean).join(" / ");
+  return `
+    <div class="ai-draft-validation ${escapeHtml(tone)}">
+      <div class="ai-draft-validation-head">
+        <strong>${escapeHtml(statusLabel)}</strong>
+        ${validation ? `<span>${escapeHtml(decision ? decision.toUpperCase() : "No AI decision")} · ${escapeHtml(confidenceLabel)}</span>` : ""}
+      </div>
+      ${providerText ? `<p class="ai-summary-provider">${escapeHtml(providerText)}</p>` : ""}
+      ${validation ? `<p>${escapeHtml(validation.ai_reason || validation.reason || "No AI explanation was recorded.")}</p>` : ""}
+      ${citedSpans.length ? `
+        <div class="ai-citation-list">
+          ${citedSpans.map(renderAiCitation).join("")}
+        </div>
+      ` : ""}
+      ${issues.length ? `
+        <div class="ai-summary-chips">
+          ${issues.map((issue) => `<span>${escapeHtml(issue)}</span>`).join("")}
+        </div>
+      ` : ""}
+      ${suggestedFix ? `<p class="ai-suggested-fix"><strong>Suggested fix:</strong> ${escapeHtml(suggestedFix)}</p>` : ""}
+      <div class="ai-summary-actions">
+        <button
+          class="ai-draft-validation-button"
+          type="button"
+          data-ai-draft-validation-redline-id="${escapeHtml(edit.id)}"
+          ${pending ? "disabled" : ""}
+        >${escapeHtml(pending ? "Validating" : actionLabel)}</button>
+      </div>
+      ${error ? `<p class="ai-second-opinion-error">${escapeHtml(error)}</p>` : ""}
     </div>
   `;
 }
@@ -1000,6 +1085,14 @@ function bindAiSecondOpinionControls(container) {
   container.querySelectorAll("[data-ai-second-opinion-clause-id]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAiSecondOpinionForClause(button.dataset.aiSecondOpinionClauseId);
+    });
+  });
+}
+
+function bindAiDraftValidationControls(container) {
+  container.querySelectorAll("[data-ai-draft-validation-redline-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAiDraftValidationForRedline(button.dataset.aiDraftValidationRedlineId);
     });
   });
 }
@@ -1061,6 +1154,63 @@ function applyAiSecondOpinionResult(payload) {
       ? Number(payload.requirements_needs_review)
       : state.latestReviewResult.requirements_needs_review,
   };
+}
+
+async function runAiDraftValidationForRedline(redlineId) {
+  const targetRedlineId = String(redlineId || "").trim();
+  const clause = getSelectedReviewClause();
+  const redline = getSelectedRedlineEdits().find((edit) => String(edit.id || "") === targetRedlineId);
+  if (!targetRedlineId || !clause?.id || !redline || !state.latestReviewResult) return;
+  const key = aiDraftValidationKey(redline);
+  state.pendingAiDraftValidationKey = key;
+  state.aiDraftValidationErrors = { ...(state.aiDraftValidationErrors || {}) };
+  delete state.aiDraftValidationErrors[key];
+  renderStudioDetail();
+
+  try {
+    const response = await fetch("/api/review/ai-draft-validation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clause_id: clause.id,
+        redline_edit: redline,
+        review_result: state.latestReviewResult,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "AI draft validation could not run");
+    applyAiDraftValidationResult(key, payload);
+    setFileMeta("AI draft fix validation completed");
+  } catch (error) {
+    state.aiDraftValidationErrors = {
+      ...(state.aiDraftValidationErrors || {}),
+      [key]: error.message || "AI draft validation could not run.",
+    };
+    setFileMeta(error.message || "AI draft validation could not run.");
+  } finally {
+    state.pendingAiDraftValidationKey = null;
+    renderStudioResult({ clauses: state.reviewClauses });
+    updateExportButtonState();
+  }
+}
+
+function applyAiDraftValidationResult(key, payload) {
+  const validation = payload?.validation && typeof payload.validation === "object" ? payload.validation : null;
+  if (!validation) return;
+  state.aiDraftValidations = {
+    ...(state.aiDraftValidations || {}),
+    [key]: {
+      ...validation,
+      provider: payload.ai_review?.provider || validation.provider,
+      model: payload.ai_review?.model || validation.model,
+    },
+  };
+  if (state.latestReviewResult) {
+    state.latestReviewResult = {
+      ...state.latestReviewResult,
+      ai_draft_validation: payload.ai_review || state.latestReviewResult.ai_draft_validation,
+    };
+  }
 }
 
 function bindParagraphCommentControls(container) {

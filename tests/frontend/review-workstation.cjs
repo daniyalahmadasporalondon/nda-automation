@@ -20,6 +20,14 @@ const redlineNda = [
   "The confidentiality obligations survive for seven years.",
   "The Recipient must not circumvent the Company or deal directly with introduced parties.",
 ].join("\n\n");
+const termOnlyRedlineNda = [
+  "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party.",
+  "Confidential Information means all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, trade secret, proprietary, and source code information.",
+  "This Agreement shall be governed by the laws of Delaware.",
+  "The confidentiality obligations survive for seven years.",
+  "Neither party is restricted from ordinary third-party dealings outside this Agreement.",
+  "For Aspora Ltd\nBy: A. Signatory\nTitle: Director\nDate: 2026-05-30\n\nFor Counterparty Ltd\nBy: B. Signatory\nTitle: CEO\nDate: 2026-05-30",
+].join("\n\n");
 const multiAnchorNda = [
   "The Recipient must not circumvent the Company.",
   "The Recipient shall not deal directly with introduced parties.",
@@ -38,6 +46,7 @@ const tests = [
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["runs AI second opinion for the selected clause", testAiSecondOpinionButton],
+  ["validates proposed draft fixes with AI", testAiDraftFixValidationButton],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
@@ -870,6 +879,68 @@ async function testAiSecondOpinionButton(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "Confirm that both parties are bound symmetrically.");
   assert.equal(await page.locator('[data-ai-second-opinion-clause-id="mutuality"]').innerText(), "Rerun second opinion");
   await page.unroute("**/api/review/ai-second-opinion");
+}
+
+async function testAiDraftFixValidationButton(page) {
+  await runReview(page, termOnlyRedlineNda);
+
+  let requestPayload;
+  await page.route("**/api/review/ai-draft-validation", async (route) => {
+    requestPayload = route.request().postDataJSON();
+    const redline = requestPayload.redline_edit;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        clause_id: requestPayload.clause_id,
+        redline_id: redline.id,
+        validation: {
+          ai_confidence: 0.92,
+          ai_decision: "pass",
+          ai_reason: "The proposed draft caps ordinary confidentiality survival within the playbook limit.",
+          cited_spans: [{
+            paragraph_id: `draft-proposed-${redline.id}`,
+            quote: redline.replacement_text || redline.insert_text,
+            relevance: "Proposed compliant survival language.",
+          }],
+          deterministic_decision: "pass",
+          disagreement: false,
+          issues: [],
+          reason: "AI draft validation confirmed the proposed fix.",
+          status: "validated",
+          suggested_fix: "",
+          validation_errors: [],
+          version: 1,
+        },
+        ai_review: {
+          confidence_threshold: 0.75,
+          mode: "draft_fix_validation",
+          model: "qwen3.7-plus",
+          provider: "alibaba",
+          record_count: 1,
+          records: [],
+          status: "completed",
+          target_clause_id: requestPayload.clause_id,
+          redline_id: redline.id,
+          version: 1,
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Validate draft fix" }).click();
+  await page.waitForFunction(() => Object.keys(state.aiDraftValidations || {}).length === 1);
+
+  assert.equal(requestPayload.clause_id, "term_and_survival");
+  assert.equal(requestPayload.redline_edit.clause_id, "term_and_survival");
+  assert.ok(requestPayload.redline_edit.replacement_text || requestPayload.redline_edit.insert_text);
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI DRAFT VALIDATED");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PASS · 92%");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus");
+  await assertTextContains(page.locator("#studioDetailPanel"), "caps ordinary confidentiality survival");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PROPOSED DRAFT");
+  assert.equal(await page.getByRole("button", { name: "Revalidate draft fix" }).count(), 1);
+  await page.unroute("**/api/review/ai-draft-validation");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {

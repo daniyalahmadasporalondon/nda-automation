@@ -771,6 +771,67 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_review_status, 400)
         self.assertEqual(missing_review_payload["error"], "Provide the current review result for AI second opinion.")
 
+    def test_ai_draft_validation_route_validates_redline_draft(self):
+        expected = {
+            "clause_id": "governing_law",
+            "redline_id": "r1",
+            "validation": {
+                "status": "validated",
+                "ai_decision": "pass",
+                "ai_confidence": 0.92,
+            },
+            "ai_review": {
+                "status": "completed",
+                "mode": "draft_fix_validation",
+                "record_count": 1,
+                "target_clause_id": "governing_law",
+                "redline_id": "r1",
+            },
+        }
+        current_review = {"clauses": [{"id": "governing_law"}], "paragraphs": [{"id": "p1", "index": 1, "text": "California."}]}
+        redline = {
+            "id": "r1",
+            "clause_id": "governing_law",
+            "action": "replace_paragraph",
+            "original_text": "California.",
+            "replacement_text": "This Agreement is governed by the laws of Delaware.",
+        }
+        with patch.object(server_module, "ai_validate_draft_fix", return_value=expected) as validate_draft:
+            status, payload = self.request(
+                "POST",
+                "/api/review/ai-draft-validation",
+                {"clause_id": "governing_law", "review_result": current_review, "redline_edit": redline},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        validate_draft.assert_called_once_with(current_review, "governing_law", redline)
+        self.assertEqual(telemetry.snapshot()["counters"]["ai_draft_validation_requests"], 1)
+
+    def test_ai_draft_validation_route_rejects_missing_inputs(self):
+        missing_clause_status, missing_clause_payload = self.request(
+            "POST",
+            "/api/review/ai-draft-validation",
+            {"review_result": {"clauses": []}, "redline_edit": {"id": "r1"}},
+        )
+        missing_review_status, missing_review_payload = self.request(
+            "POST",
+            "/api/review/ai-draft-validation",
+            {"clause_id": "governing_law", "redline_edit": {"id": "r1"}},
+        )
+        missing_redline_status, missing_redline_payload = self.request(
+            "POST",
+            "/api/review/ai-draft-validation",
+            {"clause_id": "governing_law", "review_result": {"clauses": []}},
+        )
+
+        self.assertEqual(missing_clause_status, 400)
+        self.assertEqual(missing_clause_payload["error"], "Provide a clause id for AI draft validation.")
+        self.assertEqual(missing_review_status, 400)
+        self.assertEqual(missing_review_payload["error"], "Provide the current review result for AI draft validation.")
+        self.assertEqual(missing_redline_status, 400)
+        self.assertEqual(missing_redline_payload["error"], "Provide a redline draft to validate.")
+
     def test_review_payload_contract_covers_pass_check_and_missing_flows(self):
         scenarios = [
             ("pass", "Each party may disclose Confidential Information and this Agreement is governed by the laws of the DIFC for two years.\n\nFor Aspora Ltd\nBy: A. Signatory\nTitle: Director\nDate: 2026-05-30\n\nFor Counterparty Ltd\nBy: B. Signatory\nTitle: CEO\nDate: 2026-05-30"),

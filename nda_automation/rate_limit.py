@@ -39,6 +39,8 @@ def _rate_limit_bucket_name(method: str, path: str) -> str:
         return ""
     buckets = {
         "/api/review": "review",
+        "/api/review/ai-draft-validation": "ai-draft-validation",
+        "/api/review/ai-second-opinion": "ai-second-opinion",
         "/api/review-document": "document-review",
         "/api/matters": "matter-upload",
         "/api/export-review-docx": "docx-export",

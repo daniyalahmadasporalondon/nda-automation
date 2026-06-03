@@ -5,7 +5,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import ai_review
-from nda_automation.checker import ai_second_opinion_for_clause, review_nda
+from nda_automation.checker import (
+    AIDraftValidationError,
+    ai_second_opinion_for_clause,
+    ai_validate_draft_fix,
+    review_nda,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,6 +26,19 @@ def _first_citation(packet):
         "paragraph_id": paragraph["id"],
         "quote": quote,
         "relevance": "Supports the clause decision.",
+    }
+
+
+def _first_draft_citation(packet):
+    paragraph = next(
+        (item for item in packet["paragraphs"] if str(item["id"]).startswith(("draft-proposed-", "draft-action-"))),
+        packet["paragraphs"][0],
+    )
+    quote = str(paragraph["text"])[:80]
+    return {
+        "paragraph_id": paragraph["id"],
+        "quote": quote,
+        "relevance": "Supports the draft-fix validation.",
     }
 
 
@@ -237,6 +255,51 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(result["clause"]["reason_code"], "ai_semantic_disagreement")
         self.assertEqual(result["overall_status"], "needs_review")
         self.assertEqual(result["review_state"]["counts"]["review"], 1)
+
+    def test_ai_draft_fix_validation_checks_selected_redline(self):
+        calls = []
+
+        def reviewer(packet):
+            calls.append({
+                "task": packet["task"],
+                "clause_id": packet["clause"]["id"],
+                "redline_id": packet["proposed_draft"]["redline_id"],
+            })
+            return {
+                "decision": "pass",
+                "confidence": 0.94,
+                "reason": "The proposed replacement uses an approved governing law.",
+                "cited_spans": [_first_draft_citation(packet)],
+                "issues": [],
+                "suggested_fix": "",
+            }
+
+        review_result = review_nda("This Agreement shall be governed by the laws of California.")
+        redline = next(edit for edit in review_result["redline_edits"] if edit["clause_id"] == "governing_law")
+        result = ai_validate_draft_fix(review_result, "governing_law", redline, ai_reviewer=reviewer)
+
+        self.assertEqual(calls, [{
+            "task": "draft_fix_validation",
+            "clause_id": "governing_law",
+            "redline_id": redline["id"],
+        }])
+        self.assertEqual(result["clause_id"], "governing_law")
+        self.assertEqual(result["redline_id"], redline["id"])
+        self.assertEqual(result["ai_review"]["mode"], "draft_fix_validation")
+        self.assertEqual(result["ai_review"]["record_count"], 1)
+        self.assertEqual(result["validation"]["status"], "validated")
+        self.assertEqual(result["validation"]["ai_decision"], "pass")
+        self.assertEqual(result["validation"]["ai_confidence"], 0.94)
+
+    def test_ai_draft_fix_validation_reports_disabled_ai(self):
+        review_result = review_nda("This Agreement shall be governed by the laws of California.")
+        redline = next(edit for edit in review_result["redline_edits"] if edit["clause_id"] == "governing_law")
+
+        with self.assertRaises(AIDraftValidationError) as error:
+            ai_validate_draft_fix(review_result, "governing_law", redline)
+
+        self.assertEqual(error.exception.status, 409)
+        self.assertIn("disabled", str(error.exception))
 
     def test_gemini_request_body_uses_structured_json_response_format(self):
         packet = {

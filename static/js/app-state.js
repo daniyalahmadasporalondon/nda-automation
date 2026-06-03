@@ -30,6 +30,9 @@ const AppState = (() => {
       redlineDraftDirty: false,
       pendingAiSecondOpinionClauseId: null,
       aiSecondOpinionErrors: {},
+      aiDraftValidations: {},
+      aiDraftValidationErrors: {},
+      pendingAiDraftValidationKey: null,
       reviewInspectorView: "clause",
       documentViewMode,
     };

@@ -15,7 +15,7 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .inline_diff import diff_text_operation_dicts
-from .ai_review import AIReviewFn, apply_ai_review
+from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .semantic import SemanticEvaluateFn, apply_semantic_fallback
@@ -85,10 +85,12 @@ FOLLOWING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
     ),
 }
 __all__ = [
+    "AIDraftValidationError",
     "AISecondOpinionError",
     "EvidenceProvenanceError",
     "ParagraphAlignmentError",
     "PlaybookTemplateError",
+    "ai_validate_draft_fix",
     "ai_second_opinion_for_clause",
     "_paragraph_matches",
     "load_playbook",
@@ -101,6 +103,12 @@ __all__ = [
 
 
 class AISecondOpinionError(RuntimeError):
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class AIDraftValidationError(RuntimeError):
     def __init__(self, message: str, *, status: int = 400) -> None:
         super().__init__(message)
         self.status = status
@@ -277,6 +285,107 @@ def ai_second_opinion_for_clause(
         "ai_review": ai_review,
         **review_state,
     }
+
+
+def ai_validate_draft_fix(
+    review_result: Dict[str, object],
+    clause_id: str,
+    redline_edit: Dict[str, object],
+    *,
+    ai_reviewer: AIReviewFn | None = None,
+) -> Dict[str, object]:
+    target_clause_id = str(clause_id or "").strip()
+    if not target_clause_id:
+        raise AIDraftValidationError("Provide a clause id for AI draft validation.")
+    if not isinstance(redline_edit, dict):
+        raise AIDraftValidationError("Provide a redline draft to validate.")
+
+    raw_clauses = review_result.get("clauses", [])
+    if not isinstance(raw_clauses, list):
+        raise AIDraftValidationError("Review result does not include clause results.")
+    clauses = [deepcopy(clause) for clause in raw_clauses if isinstance(clause, dict)]
+    selected_clause = next((clause for clause in clauses if str(clause.get("id") or "") == target_clause_id), None)
+    if selected_clause is None:
+        raise AIDraftValidationError("Selected clause was not found in the review result.", status=404)
+
+    cleaned_redline = _clean_draft_validation_redline(redline_edit, target_clause_id)
+    raw_paragraphs = review_result.get("paragraphs", [])
+    if not isinstance(raw_paragraphs, list):
+        raise AIDraftValidationError("Review result does not include document paragraphs.")
+    paragraphs = [deepcopy(paragraph) for paragraph in raw_paragraphs if isinstance(paragraph, dict)]
+    if not paragraphs:
+        raise AIDraftValidationError("AI draft validation needs reviewed document paragraphs.")
+
+    playbook = load_playbook()
+    _validate_playbook_contract(playbook)
+    clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
+    playbook_clause = clauses_by_id.get(target_clause_id)
+    if not isinstance(playbook_clause, dict):
+        raise AIDraftValidationError("Selected clause is not in the playbook.", status=404)
+
+    review_context = _review_context_from_result(review_result, paragraphs)
+    ai_review = validate_ai_draft_fix(
+        clause=selected_clause,
+        playbook_clause=playbook_clause,
+        redline_edit=cleaned_redline,
+        paragraphs=paragraphs,
+        review_context=review_context,
+        reviewer=ai_reviewer,
+    )
+    if str(ai_review.get("status") or "") != "completed":
+        error = str(ai_review.get("error") or "").strip()
+        status = str(ai_review.get("status") or "unavailable").replace("_", " ")
+        raise AIDraftValidationError(
+            f"AI draft validation is {status}.{f' {error}' if error else ''}",
+            status=409,
+        )
+    validation = ai_review.get("validation")
+    if not isinstance(validation, dict):
+        raise AIDraftValidationError("AI draft validation did not return a validation result.", status=500)
+    return {
+        "clause_id": target_clause_id,
+        "redline_id": str(cleaned_redline.get("id") or ""),
+        "validation": validation,
+        "ai_review": ai_review,
+    }
+
+
+def _clean_draft_validation_redline(redline_edit: Dict[str, object], clause_id: str) -> Dict[str, object]:
+    redline_clause_id = str(redline_edit.get("clause_id") or "").strip()
+    if redline_clause_id and redline_clause_id != clause_id:
+        raise AIDraftValidationError("Redline draft does not belong to the selected clause.")
+    redline_id = str(redline_edit.get("id") or "").strip()
+    if not redline_id:
+        raise AIDraftValidationError("Redline draft is missing an id.")
+    action = str(redline_edit.get("action") or "").strip()
+    if action not in {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH, REDLINE_DELETE_PARAGRAPH}:
+        raise AIDraftValidationError("Redline draft has an unsupported action.")
+
+    original_text = str(redline_edit.get("original_text") or "").strip()
+    anchor_text = str(redline_edit.get("anchor_text") or "").strip()
+    replacement_text = str(redline_edit.get("replacement_text") or "").strip()
+    insert_text = str(redline_edit.get("insert_text") or "").strip()
+    if action == REDLINE_REPLACE_PARAGRAPH and not replacement_text:
+        raise AIDraftValidationError("Replacement draft must include replacement text.")
+    if action == REDLINE_INSERT_AFTER_PARAGRAPH and not (insert_text or replacement_text):
+        raise AIDraftValidationError("Insertion draft must include inserted text.")
+    if action == REDLINE_DELETE_PARAGRAPH and not (original_text or anchor_text):
+        raise AIDraftValidationError("Deletion draft must include source text.")
+
+    cleaned = {
+        "id": redline_id,
+        "clause_id": clause_id,
+        "action": action,
+        "action_label": str(redline_edit.get("action_label") or REDLINE_ACTION_LABELS.get(action) or ""),
+        "original_text": original_text,
+        "replacement_text": replacement_text,
+        "insert_text": insert_text,
+        "anchor_text": anchor_text,
+    }
+    for key in ["paragraph_id", "paragraph_index", "source_index", "source_part"]:
+        if redline_edit.get(key) is not None:
+            cleaned[key] = redline_edit[key]
+    return cleaned
 
 
 def _review_context_from_result(review_result: Dict[str, object], paragraphs: List[Paragraph]) -> Dict[str, object]:

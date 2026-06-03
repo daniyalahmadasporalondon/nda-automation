@@ -5,7 +5,14 @@ import binascii
 from urllib.parse import quote
 
 from .. import redline_export_service, telemetry
-from ..checker import AISecondOpinionError, ParagraphAlignmentError, ai_second_opinion_for_clause, review_nda
+from ..checker import (
+    AIDraftValidationError,
+    AISecondOpinionError,
+    ParagraphAlignmentError,
+    ai_second_opinion_for_clause,
+    ai_validate_draft_fix,
+    review_nda,
+)
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
@@ -99,6 +106,34 @@ def handle_ai_second_opinion(handler, *, second_opinion_func=ai_second_opinion_f
     try:
         result = second_opinion_func(review_result, clause_id.strip())
     except AISecondOpinionError as error:
+        handler._send_json({"error": str(error)}, status=error.status)
+        return
+
+    handler._send_json(result)
+
+
+def handle_ai_draft_validation(handler, *, validation_func=ai_validate_draft_fix) -> None:
+    telemetry.increment("ai_draft_validation_requests")
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    clause_id = payload.get("clause_id", "")
+    if not isinstance(clause_id, str) or not clause_id.strip():
+        handler._send_json({"error": "Provide a clause id for AI draft validation."}, status=400)
+        return
+    review_result = payload.get("review_result")
+    if not isinstance(review_result, dict):
+        handler._send_json({"error": "Provide the current review result for AI draft validation."}, status=400)
+        return
+    redline_edit = payload.get("redline_edit")
+    if not isinstance(redline_edit, dict):
+        handler._send_json({"error": "Provide a redline draft to validate."}, status=400)
+        return
+
+    try:
+        result = validation_func(review_result, clause_id.strip(), redline_edit)
+    except AIDraftValidationError as error:
         handler._send_json({"error": str(error)}, status=error.status)
         return
 

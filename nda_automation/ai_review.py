@@ -11,6 +11,11 @@ from typing import Callable, Dict, Iterable, List, Tuple
 
 from . import app_settings
 from .checks.common import ClauseResult, Paragraph
+from .redline_actions import (
+    REDLINE_DELETE_PARAGRAPH,
+    REDLINE_INSERT_AFTER_PARAGRAPH,
+    REDLINE_REPLACE_PARAGRAPH,
+)
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
@@ -302,6 +307,73 @@ def apply_ai_review(
     }
 
 
+def validate_ai_draft_fix(
+    *,
+    clause: ClauseResult,
+    playbook_clause: Dict[str, object],
+    redline_edit: Dict[str, object],
+    paragraphs: List[Paragraph],
+    review_context: Dict[str, object],
+    reviewer: AIReviewFn | None = None,
+) -> Dict[str, object]:
+    settings = _ai_review_settings()
+    if reviewer is None and not settings["enabled"]:
+        return _summary(status="disabled", provider=settings["provider"], model=settings["model"])
+
+    configured_reviewer = reviewer
+    if configured_reviewer is None:
+        try:
+            configured_reviewer = _configured_reviewer(settings)
+        except AIReviewError as error:
+            return _summary(
+                status="configuration_error",
+                provider=settings["provider"],
+                model=settings["model"],
+                error=str(error),
+            )
+
+    threshold = _confidence_threshold(settings)
+    validation_paragraphs = _draft_validation_paragraphs(redline_edit)
+    validation_paragraphs.extend(_context_paragraphs(clause, paragraphs, review_context))
+    validation_paragraphs = _fit_context_budget(_dedupe_paragraphs(validation_paragraphs))
+    packet = build_ai_draft_fix_packet(
+        clause=clause,
+        playbook_clause=playbook_clause,
+        redline_edit=redline_edit,
+        validation_paragraphs=validation_paragraphs,
+        provider=str(settings["provider"]),
+        model=str(settings["model"]),
+    )
+    analysis = _evaluate_draft_fix_with_ai(
+        packet=packet,
+        validation_paragraphs=validation_paragraphs,
+        reviewer=configured_reviewer,
+        threshold=threshold,
+    )
+    record = {
+        "clause_id": str(clause.get("id") or ""),
+        "redline_id": str(redline_edit.get("id") or ""),
+        "status": str(analysis.get("status") or ""),
+        "ai_decision": str(analysis.get("ai_decision") or ""),
+        "ai_confidence": analysis.get("ai_confidence"),
+        "ai_reason": str(analysis.get("ai_reason") or ""),
+        "reason": str(analysis.get("reason") or ""),
+    }
+    return {
+        "version": AI_REVIEW_VERSION,
+        "status": "completed",
+        "mode": "draft_fix_validation",
+        "provider": str(settings["provider"]),
+        "model": str(settings["model"]),
+        "confidence_threshold": threshold,
+        "record_count": 1,
+        "target_clause_id": str(clause.get("id") or ""),
+        "redline_id": str(redline_edit.get("id") or ""),
+        "validation": analysis,
+        "records": [record],
+    }
+
+
 def build_ai_review_packet(
     *,
     clause: ClauseResult,
@@ -358,6 +430,67 @@ def build_ai_review_packet(
             "Return fail when cited paragraphs show a prohibited or deficient clause.",
             "Return review when evidence is ambiguous, incomplete, conflicting, or depends on unavailable text.",
             "Every pass or fail decision must cite exact source quote text from the supplied paragraph ids.",
+        ],
+    }
+
+
+def build_ai_draft_fix_packet(
+    *,
+    clause: ClauseResult,
+    playbook_clause: Dict[str, object],
+    redline_edit: Dict[str, object],
+    validation_paragraphs: List[Paragraph],
+    provider: str,
+    model: str,
+) -> Dict[str, object]:
+    action = str(redline_edit.get("action") or "")
+    proposed_text = _draft_proposed_text(redline_edit)
+    return {
+        "version": AI_REVIEW_VERSION,
+        "provider": provider,
+        "model": model,
+        "task": "draft_fix_validation",
+        "clause": {
+            "id": str(clause.get("id") or ""),
+            "name": str(clause.get("name") or playbook_clause.get("name") or ""),
+            "type": str(playbook_clause.get("type") or ""),
+            "requirement": str(clause.get("requirement") or playbook_clause.get("requirement") or ""),
+            "preferred_standard": str(playbook_clause.get("preferred_standard") or ""),
+            "check_trigger": str(playbook_clause.get("check_trigger") or ""),
+            "rationale": str(playbook_clause.get("rationale") or ""),
+            "evidence_guidance": str(playbook_clause.get("evidence_guidance") or ""),
+        },
+        "current_issue": {
+            "decision": _deterministic_decision(clause),
+            "status": str(clause.get("status") or ""),
+            "reason": str(clause.get("reason") or clause.get("finding") or ""),
+            "issue_type": str(clause.get("issue_type") or ""),
+            "what_to_fix": str(clause.get("what_to_fix") or ""),
+        },
+        "proposed_draft": {
+            "redline_id": str(redline_edit.get("id") or ""),
+            "action": action,
+            "action_label": str(redline_edit.get("action_label") or ""),
+            "original_text": str(redline_edit.get("original_text") or ""),
+            "anchor_text": str(redline_edit.get("anchor_text") or ""),
+            "replacement_text": str(redline_edit.get("replacement_text") or ""),
+            "insert_text": str(redline_edit.get("insert_text") or ""),
+            "proposed_text": proposed_text,
+        },
+        "paragraphs": [
+            {
+                "id": str(paragraph.get("id") or ""),
+                "index": paragraph.get("index"),
+                "text": str(paragraph.get("text") or ""),
+            }
+            for paragraph in validation_paragraphs
+        ],
+        "instructions": [
+            "Decide whether the proposed draft fix would satisfy the playbook requirement if applied.",
+            "Return pass only when the proposed draft text, or deletion action, resolves the current issue.",
+            "Return fail when the proposed draft remains deficient, unclear, or introduces prohibited language.",
+            "Return review when the fix cannot be validated from the supplied draft and source context.",
+            "Cite exact quote text from supplied paragraph ids; for deletion fixes, cite the deleted source text that the draft removes.",
         ],
     }
 
@@ -454,6 +587,65 @@ def _evaluate_clause_with_ai(
     return _record_from_analysis(clause, analysis)
 
 
+def _evaluate_draft_fix_with_ai(
+    *,
+    packet: Dict[str, object],
+    validation_paragraphs: List[Paragraph],
+    reviewer: AIReviewFn,
+    threshold: float,
+) -> Dict[str, object]:
+    expected_decision = CLAUSE_DECISION_PASS
+    try:
+        raw_response = reviewer(packet)
+    except Exception as error:
+        return _ai_analysis(
+            status="error",
+            deterministic_decision=expected_decision,
+            reason=str(error),
+            threshold=threshold,
+        )
+
+    validation = _validate_ai_response(raw_response, validation_paragraphs)
+    if not validation["valid"]:
+        return _ai_analysis(
+            status="invalid",
+            deterministic_decision=expected_decision,
+            ai_response=validation["response"],
+            reason="AI draft validation response could not be validated: " + "; ".join(validation["errors"]),
+            validation_errors=validation["errors"],
+            threshold=threshold,
+        )
+
+    ai_response = validation["response"]
+    ai_decision = str(ai_response["decision"])
+    confidence = float(ai_response["confidence"])
+    if confidence < threshold:
+        return _ai_analysis(
+            status="low_confidence",
+            deterministic_decision=expected_decision,
+            ai_response=ai_response,
+            reason=f"AI confidence {confidence:.2f} is below the draft-validation threshold of {threshold:.2f}.",
+            threshold=threshold,
+        )
+
+    if ai_decision != CLAUSE_DECISION_PASS:
+        return _ai_analysis(
+            status="needs_revision",
+            deterministic_decision=expected_decision,
+            ai_response=ai_response,
+            reason="AI draft validation did not clear the proposed fix; revise or human-review the draft language.",
+            threshold=threshold,
+        )
+
+    return _ai_analysis(
+        status="validated",
+        deterministic_decision=expected_decision,
+        ai_response=ai_response,
+        reason=str(ai_response.get("reason") or "AI draft validation confirmed the proposed fix."),
+        threshold=threshold,
+    )
+
+
 def _attach_ai_analysis(clause: ClauseResult, analysis: Dict[str, object], reason_code: str) -> None:
     clause["ai_review_analysis"] = analysis
     clause["decision"] = CLAUSE_DECISION_REVIEW
@@ -525,6 +717,53 @@ def _validate_ai_response(response: object, paragraphs: List[Paragraph]) -> Dict
     cleaned["issues"] = [str(issue).strip() for issue in issues if str(issue).strip()] if isinstance(issues, list) else []
     cleaned["suggested_fix"] = str(response.get("suggested_fix") or "").strip()
     return {"valid": not errors, "errors": errors, "response": cleaned}
+
+
+def _draft_validation_paragraphs(redline_edit: Dict[str, object]) -> List[Paragraph]:
+    redline_id = str(redline_edit.get("id") or "draft").strip() or "draft"
+    action = str(redline_edit.get("action") or "")
+    original_text = str(redline_edit.get("original_text") or "").strip()
+    anchor_text = str(redline_edit.get("anchor_text") or "").strip()
+    proposed_text = _draft_proposed_text(redline_edit)
+    paragraphs: List[Paragraph] = []
+    if action == REDLINE_DELETE_PARAGRAPH:
+        text = original_text or anchor_text
+        if text:
+            paragraphs.append({
+                "id": f"draft-action-{redline_id}",
+                "index": 0,
+                "text": f"Draft action deletes this source paragraph: {text}",
+            })
+        return paragraphs
+
+    if proposed_text:
+        paragraphs.append({
+            "id": f"draft-proposed-{redline_id}",
+            "index": 0,
+            "text": proposed_text,
+        })
+    if original_text:
+        paragraphs.append({
+            "id": f"draft-original-{redline_id}",
+            "index": 0,
+            "text": original_text,
+        })
+    elif anchor_text:
+        paragraphs.append({
+            "id": f"draft-anchor-{redline_id}",
+            "index": 0,
+            "text": anchor_text,
+        })
+    return paragraphs
+
+
+def _draft_proposed_text(redline_edit: Dict[str, object]) -> str:
+    action = str(redline_edit.get("action") or "")
+    if action == REDLINE_INSERT_AFTER_PARAGRAPH:
+        return str(redline_edit.get("insert_text") or redline_edit.get("replacement_text") or "").strip()
+    if action == REDLINE_REPLACE_PARAGRAPH:
+        return str(redline_edit.get("replacement_text") or "").strip()
+    return str(redline_edit.get("replacement_text") or redline_edit.get("insert_text") or "").strip()
 
 
 def _ai_analysis(
