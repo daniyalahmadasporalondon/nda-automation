@@ -29,7 +29,6 @@ FLEXIBLE_NON_CIRCUMVENTION_CANDIDATE_PATTERNS = [
     r"\bcircumvent\w*\b",
     r"\bbypass\w*\b",
     r"\bdeal(?:s|ing)?\s+(?:directly|exclusiv\w+)\b",
-    r"\bexclusiv\w+\b",
     r"\bsolicit\w*\b",
     r"\bintroduced\b.{0,60}\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b",
     r"\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b.{0,60}\bintroduced\b",
