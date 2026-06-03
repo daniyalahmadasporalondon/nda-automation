@@ -89,11 +89,21 @@ def run_case_real(case: dict, reviewer) -> dict:
     if reviewer is None:
         return row
 
+    # Scope the AI to the focus clause only: the metric reads just this clause, and the
+    # AI reviews each clause independently, so this is identical to a full review for the
+    # focus clause -- at ~1 call/case instead of ~6.
+    previous_clause_filter = os.environ.get("NDA_AI_REVIEW_CLAUSES")
+    os.environ["NDA_AI_REVIEW_CLAUSES"] = clause_id
     try:
         ai_clause = _focus_clause(review_nda(text, ai_reviewer=reviewer), clause_id)
     except Exception as exc:  # network/provider error: arbiter would treat AI as absent
         row["ai_error"] = type(exc).__name__
         return row
+    finally:
+        if previous_clause_filter is None:
+            os.environ.pop("NDA_AI_REVIEW_CLAUSES", None)
+        else:
+            os.environ["NDA_AI_REVIEW_CLAUSES"] = previous_clause_filter
 
     final_decision, final_reason = _decision_and_reason(ai_clause)
     analysis = ai_clause.get("ai_review_analysis") if isinstance(ai_clause, dict) else None
@@ -225,7 +235,10 @@ def main() -> int:
             f"(Loaded {len(cases)} fixtures; Python-only baseline below.)\n"
         )
 
-    rows = [run_case_real(case, reviewer) for case in cases]
+    rows = []
+    for index, case in enumerate(cases, 1):
+        print(f"[{index}/{len(cases)}] {case['name']} ({case['clause_id']})", flush=True)
+        rows.append(run_case_real(case, reviewer))
     stats = compare(rows)
     print(format_report(provider, model, key_source, rows, stats))
     return 0
