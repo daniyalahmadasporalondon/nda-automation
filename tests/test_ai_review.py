@@ -166,6 +166,7 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(mutuality["reason_code"], "ai_semantic_disagreement")
         self.assertTrue(mutuality["review_state"]["blocks_send"])
         self.assertEqual(mutuality["ai_review_analysis"]["ai_decision"], "fail")
+        self.assertEqual(mutuality["ai_review_analysis"]["ai_reason"], "The clause appears one-way.")
         self.assertTrue(mutuality["ai_review_analysis"]["disagreement"])
         self.assertFalse([edit for edit in result["redline_edits"] if edit["clause_id"] == "mutuality"])
 

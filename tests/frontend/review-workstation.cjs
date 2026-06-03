@@ -736,6 +736,43 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK RATIONALE");
   await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE GUIDANCE");
+
+  await page.evaluate(() => {
+    state.latestReviewResult.ai_review = {
+      model: "qwen3.7-plus",
+      provider: "alibaba",
+      status: "completed",
+    };
+    const governingLaw = state.reviewClauses.find((clause) => clause.id === "governing_law");
+    governingLaw.ai_review_analysis = {
+      ai_confidence: 0.95,
+      ai_decision: "fail",
+      ai_reason: "California is outside the approved governing-law set.",
+      cited_spans: [{
+        paragraph_id: "p1",
+        quote: "This Agreement shall be governed by the laws of California.",
+        relevance: "Unapproved governing law.",
+      }],
+      disagreement: true,
+      deterministic_decision: "fail",
+      issues: ["unapproved_governing_law"],
+      reason: "AI semantic review confirmed the deterministic decision.",
+      status: "confirmed",
+      suggested_fix: "Use Delaware, India, England and Wales, or DIFC.",
+      validation_errors: [],
+    };
+    renderStudioResult({ clauses: state.reviewClauses });
+  });
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI CONFIRMED");
+  await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs FAIL");
+  await assertTextContains(page.locator("#studioDetailPanel"), "95%");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus");
+  await assertTextContains(page.locator("#studioDetailPanel"), "California is outside the approved governing-law set.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Paragraph 1");
+  await assertTextContains(page.locator("#studioDetailPanel"), "UNAPPROVED GOVERNING LAW.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "unapproved_governing_law");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Use Delaware, India, England and Wales, or DIFC.");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {

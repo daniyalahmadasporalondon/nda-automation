@@ -537,6 +537,7 @@ def _ai_analysis(
         "deterministic_decision": deterministic_decision,
         "ai_decision": ai_decision,
         "ai_confidence": confidence,
+        "ai_reason": str(response.get("reason") or "") if response else "",
         "confidence_threshold": threshold,
         "disagreement": bool(ai_decision and ai_decision != deterministic_decision),
         "reason": reason,
@@ -554,6 +555,7 @@ def _record_from_analysis(clause: ClauseResult, analysis: Dict[str, object]) -> 
         "deterministic_decision": str(analysis.get("deterministic_decision") or ""),
         "ai_decision": str(analysis.get("ai_decision") or ""),
         "ai_confidence": analysis.get("ai_confidence"),
+        "ai_reason": str(analysis.get("ai_reason") or ""),
         "disagreement": bool(analysis.get("disagreement")),
         "reason": str(analysis.get("reason") or ""),
     }

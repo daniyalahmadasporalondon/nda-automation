@@ -774,7 +774,8 @@ textarea:focus-visible,
 #reviewView .studio-detail-block.issue-block,
 #reviewView .studio-detail-block.fix-block,
 #reviewView .studio-detail-block.redline-block,
-#reviewView .studio-detail-block.comment-block {
+#reviewView .studio-detail-block.comment-block,
+#reviewView .studio-detail-block.ai-summary-block {
   border-left: 0;
   padding-left: 0;
 }
@@ -782,7 +783,8 @@ textarea:focus-visible,
 #reviewView .studio-detail-block.issue-block::before,
 #reviewView .studio-detail-block.fix-block::before,
 #reviewView .studio-detail-block.redline-block::before,
-#reviewView .studio-detail-block.comment-block::before {
+#reviewView .studio-detail-block.comment-block::before,
+#reviewView .studio-detail-block.ai-summary-block::before {
   background: var(--border-strong);
   bottom: 0;
   content: "";
@@ -821,6 +823,22 @@ textarea:focus-visible,
 
 #reviewView .studio-detail-block.fix-block::before {
   background: color-mix(in srgb, var(--accent) 72%, white);
+}
+
+#reviewView .studio-detail-block.ai-summary-block {
+  background: transparent;
+}
+
+#reviewView .studio-detail-block.ai-summary-block::before {
+  background: color-mix(in srgb, #2563eb 72%, white);
+}
+
+#reviewView .studio-detail-block.ai-summary-block.confirmed::before {
+  background: color-mix(in srgb, var(--green) 72%, white);
+}
+
+#reviewView .studio-detail-block.ai-summary-block.attention::before {
+  background: color-mix(in srgb, var(--amber) 72%, white);
 }
 
 #reviewView .studio-detail-block.comment-block {

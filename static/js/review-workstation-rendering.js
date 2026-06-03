@@ -608,6 +608,7 @@ function renderStudioDetail() {
   const evidenceSignalsBlock = renderEvidenceSignalsBlock(clause);
   const auditTraceBlock = renderAuditTraceBlock(clause);
   const reasonCodeBlock = renderReasonCodeBlock(clause);
+  const aiEvidenceSummaryBlock = renderAiEvidenceSummaryBlock(clause);
   const fixBlock = status.requiresAttention && clause.what_to_fix
     ? `<div class="studio-detail-block fix-block"><small>${status.needsReview ? "What to verify" : "What to fix"}</small><p>${escapeHtml(clause.what_to_fix)}</p></div>`
     : "";
@@ -654,6 +655,7 @@ function renderStudioDetail() {
       </div>
       ${excerpt}
       ${reasonCodeBlock}
+      ${aiEvidenceSummaryBlock}
       ${evidenceSignalsBlock}
       ${auditTraceBlock}
       <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
@@ -680,6 +682,108 @@ function renderStudioDetail() {
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
+}
+
+function renderAiEvidenceSummaryBlock(clause) {
+  const analysis = clause?.ai_review_analysis && typeof clause.ai_review_analysis === "object"
+    ? clause.ai_review_analysis
+    : null;
+  if (!analysis) return "";
+
+  const aiReview = state.latestReviewResult?.ai_review || {};
+  const confidence = Number(analysis.ai_confidence);
+  const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
+  const statusLabel = aiReviewStatusLabel(analysis.status);
+  const decision = String(analysis.ai_decision || "").trim().toLowerCase();
+  const deterministicDecision = String(analysis.deterministic_decision || "").trim().toLowerCase();
+  const decisionText = decision
+    ? `${decision.toUpperCase()}${deterministicDecision ? ` vs ${deterministicDecision.toUpperCase()}` : ""}`
+    : "No AI decision";
+  const providerText = [aiReview.provider, aiReview.model].filter(Boolean).join(" / ");
+  const aiReason = analysis.ai_reason || analysis.reason || "No AI explanation was recorded.";
+  const citedSpans = Array.isArray(analysis.cited_spans)
+    ? analysis.cited_spans.filter(Boolean).slice(0, 3)
+    : [];
+  const issues = Array.isArray(analysis.issues)
+    ? analysis.issues.filter(Boolean).slice(0, 6)
+    : [];
+  const validationErrors = Array.isArray(analysis.validation_errors)
+    ? analysis.validation_errors.filter(Boolean).slice(0, 4)
+    : [];
+  const suggestedFix = String(analysis.suggested_fix || "").trim();
+
+  return `
+    <div class="studio-detail-block ai-summary-block ${escapeHtml(aiReviewStatusTone(analysis.status, analysis.disagreement))}">
+      <small>AI evidence</small>
+      <div class="ai-summary-content">
+        <div class="ai-summary-head">
+          <strong>${escapeHtml(statusLabel)}</strong>
+          <span>${escapeHtml(decisionText)} · ${escapeHtml(confidenceLabel)}</span>
+        </div>
+        ${providerText ? `<p class="ai-summary-provider">${escapeHtml(providerText)}</p>` : ""}
+        <p>${escapeHtml(aiReason)}</p>
+        ${citedSpans.length ? `
+          <div class="ai-citation-list">
+            ${citedSpans.map(renderAiCitation).join("")}
+          </div>
+        ` : ""}
+        ${issues.length ? `
+          <div class="ai-summary-chips">
+            ${issues.map((issue) => `<span>${escapeHtml(issue)}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${validationErrors.length ? `
+          <div class="ai-validation-list">
+            ${validationErrors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${suggestedFix ? `<p class="ai-suggested-fix"><strong>Suggested fix:</strong> ${escapeHtml(suggestedFix)}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderAiCitation(span) {
+  if (typeof span === "string") {
+    return `
+      <figure class="ai-citation-item">
+        <blockquote>${escapeHtml(span)}</blockquote>
+      </figure>
+    `;
+  }
+  const paragraphId = span && typeof span === "object" ? String(span.paragraph_id || "").trim() : "";
+  const quote = span && typeof span === "object" ? String(span.quote || "").trim() : "";
+  const relevance = span && typeof span === "object" ? String(span.relevance || "").trim() : "";
+  const paragraphLabel = paragraphId ? paragraphDisplayLabel(paragraphId) : "";
+  return `
+    <figure class="ai-citation-item">
+      ${paragraphLabel || relevance ? `<figcaption>${escapeHtml([paragraphLabel, relevance].filter(Boolean).join(" · "))}</figcaption>` : ""}
+      <blockquote>${escapeHtml(quote || "Citation recorded without quote text.")}</blockquote>
+    </figure>
+  `;
+}
+
+function paragraphDisplayLabel(paragraphId) {
+  const paragraph = state.reviewParagraphs.find((item) => String(item.id || "") === String(paragraphId || ""));
+  const index = paragraph?.index || paragraph?.source_index;
+  return index ? `Paragraph ${index}` : paragraphId;
+}
+
+function aiReviewStatusLabel(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "confirmed") return "AI confirmed";
+  if (normalized === "disagreement") return "AI disagreement";
+  if (normalized === "low_confidence") return "Low confidence";
+  if (normalized === "invalid") return "Citation issue";
+  if (normalized === "error") return "AI unavailable";
+  return normalized ? normalized.replaceAll("_", " ") : "AI reviewed";
+}
+
+function aiReviewStatusTone(status, disagreement) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "confirmed") return "confirmed";
+  if (normalized === "error" || normalized === "invalid" || normalized === "low_confidence" || disagreement) return "attention";
+  return "neutral";
 }
 
 function renderReasonCodeBlock(clause) {
