@@ -277,30 +277,68 @@ textarea:focus-visible,
   background: var(--bg-soft);
   box-shadow: none;
 }
-#reviewView .studio-clause-item.check {
-  background: transparent;
-  border-color: var(--border);
-  box-shadow: inset 3px 0 0 var(--red-border);
+/* Whole card is the click target (not just the title row). */
+#reviewView .studio-clause-item[data-studio-lane-id] {
+  cursor: pointer;
 }
-#reviewView .studio-clause-item.check:hover {
-  background: var(--bg-soft);
-  box-shadow: inset 3px 0 0 var(--red);
+/* Whole-card colour coding by status: pass = green, review = yellow, fail = red.
+   (--amber is orange, so review uses an explicit yellow.) */
+#reviewView .studio-clause-item.pass {
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--green);
 }
 #reviewView .studio-clause-item.review {
-  background: transparent;
-  border-color: var(--border);
-  box-shadow: inset 3px 0 0 var(--amber-border);
+  background: color-mix(in srgb, #eab308 18%, transparent);
+  box-shadow: inset 3px 0 0 #eab308;
+}
+#reviewView .studio-clause-item.check {
+  background: color-mix(in srgb, var(--red) 11%, transparent);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+#reviewView .studio-clause-item.pass:hover {
+  background: color-mix(in srgb, var(--green) 15%, transparent);
 }
 #reviewView .studio-clause-item.review:hover {
-  background: var(--bg-soft);
-  box-shadow: inset 3px 0 0 var(--amber);
+  background: color-mix(in srgb, #eab308 25%, transparent);
 }
-#reviewView .studio-clause-item.selected,
-#reviewView .studio-clause-item.check.selected,
+#reviewView .studio-clause-item.check:hover {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+}
+/* Selected keeps its status colour, just deeper (higher specificity beats the
+   leftover accent-weak .selected rules later in this file); no outline bar. */
+#reviewView .studio-clause-item.pass.selected {
+  background: color-mix(in srgb, var(--green) 17%, transparent);
+}
 #reviewView .studio-clause-item.review.selected {
-  background: var(--accent-weak);
-  border-color: var(--border);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, #eab308 30%, transparent);
+}
+#reviewView .studio-clause-item.check.selected {
+  background: color-mix(in srgb, var(--red) 19%, transparent);
+}
+/* What a clause's "Include" inserts/removes — plain text like the finding.
+   Coloured to match its own card (red fail / yellow review / green pass),
+   not a fixed green/red, so the text reads as part of the box. */
+#reviewView .studio-clause-insert {
+  margin: 4px 16px 4px 30px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+#reviewView .studio-clause-item.pass .studio-clause-insert {
+  color: color-mix(in srgb, var(--green) 80%, black);
+}
+#reviewView .studio-clause-item.review .studio-clause-insert {
+  color: color-mix(in srgb, #eab308 72%, black);
+}
+#reviewView .studio-clause-item.check .studio-clause-insert {
+  color: color-mix(in srgb, var(--red) 80%, black);
+}
+/* One Include/Ignore per redline (per-insertion decision). */
+#reviewView .studio-redline-option {
+  margin: 8px 16px 10px 16px;
+}
+#reviewView .studio-redline-option .studio-clause-insert {
+  margin: 5px 0 0 2px;
 }
 #reviewView .studio-clause-dot {
   border-width: 2px;
@@ -743,7 +781,6 @@ textarea:focus-visible,
   background: transparent;
   border: 0;
   border-radius: 0;
-  border-top: 1px solid var(--border-soft);
   column-gap: 10px;
   display: grid;
   grid-template-columns: minmax(76px, 94px) minmax(0, 1fr);
@@ -965,6 +1002,17 @@ textarea:focus-visible,
 #reviewView .actions button.icon-only.blocked:hover {
   opacity: 0.85;
 }
+/* Clause inspector: the two position blocks (problem / fine) on a disagreement,
+   distinguished by their headings so it reads as two cases, not a scoreboard. */
+#reviewView .side-block .evidence-list {
+  margin-top: 8px;
+}
+#reviewView .ai-agrees {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
 
 @media (max-width: 1280px) {
   #reviewView .studio-doc-toolbar {
@@ -1069,10 +1117,9 @@ textarea:focus-visible,
 #reviewView .studio-detail-heading h3 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
 #reviewView .studio-detail-stack { gap: 0; }
 #reviewView .studio-detail-block {
-  display: block; grid-template-columns: none; border: 0; border-top: 1px solid var(--border-soft);
+  display: block; grid-template-columns: none; border: 0;
   border-radius: 0; padding: 14px 0 15px; margin: 0;
 }
-#reviewView .studio-detail-block.requirement-block { border-top: 0; }
 #reviewView .studio-detail-block > small { display: block; grid-column: auto; margin: 0 0 6px; padding: 0; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-muted); }
 #reviewView .studio-detail-block > p { grid-column: auto; font-size: 13px; line-height: 1.55; color: var(--ink-soft); margin: 0; }
 #reviewView .studio-detail-block.finding-block > p { color: var(--ink); }

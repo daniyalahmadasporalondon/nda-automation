@@ -294,6 +294,7 @@ def clean_redline_draft(draft: dict) -> dict:
     ]
     cleaned = {
         "clause_decisions": clean_bool_map(draft.get("clause_decisions")),
+        "redline_decisions": clean_bool_map(draft.get("redline_decisions")),
         "template_selections": clean_text_map(draft.get("template_selections")),
         "export_redline_edits": clean_dict_list(draft.get("export_redline_edits")),
         "manual_redline_edits": manual_redlines,

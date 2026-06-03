@@ -212,7 +212,7 @@ async function markMatterReviewed() {
   } catch (error) {
     renderOperationError(error, "Could not mark this matter reviewed.");
   } finally {
-    studioReviewedButton.textContent = "Mark reviewed";
+    studioReviewedButton.textContent = "Reviewed";
     studioReviewedButton.disabled = false;
     updateExportButtonState();
   }
@@ -583,6 +583,7 @@ function updateRedlineDraftControls() {
 function currentRedlineDraftPayload() {
   return {
     clause_decisions: { ...state.exportClauseDecisions },
+    redline_decisions: { ...state.exportRedlineDecisions },
     template_selections: { ...state.redlineTemplateSelections },
     export_redline_edits: effectiveReviewRedlines(),
     manual_redline_edits: manualExportRedlines(),

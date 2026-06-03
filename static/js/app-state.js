@@ -25,6 +25,7 @@ const AppState = (() => {
       selectedReviewClauseId: null,
       clauseJumpIndexes: {},
       exportClauseDecisions: {},
+      exportRedlineDecisions: {},
       redlineTemplateSelections: {},
       redlineDraft: null,
       redlineDraftDirty: false,
