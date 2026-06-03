@@ -1076,3 +1076,165 @@ textarea:focus-visible,
   background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px;
   padding: 13px 15px; margin-top: 12px;
 }
+
+/* ===========================================================================
+   OVERHAUL (2026-06-03) — unify the modern flat system across every tab.
+   redesign.css already modernised the shell + #reviewView; this section brings
+   Repository, Upload and Admin onto the same neutral-canvas / single-accent
+   language and strips the leftover purple-tinted surfaces bleeding through from
+   the original styles.css layer. Flat, hairline borders, Aspora violet as the
+   only accent, semantic green/amber/red reserved for real status.
+   Reversible: delete from this banner to end-of-file to restore the prior look.
+   =========================================================================== */
+
+:root {
+  /* One documented radius scale: chip 6 · control/card 9–13 · panel 16–20 · pill.
+     (xs added so small chips stop free-styling their own values.) */
+  --r-xs: 6px;
+  /* 8px spacing grid, named so component padding stops drifting. */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+}
+
+/* ---- Shared page header (Repository / Upload) — neutral, tight ---- */
+#repositoryView .repository-title h1,
+#uploadView .repository-title h1 {
+  color: var(--ink);
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.022em;
+}
+#repositoryView .repository-icon,
+#uploadView .upload-icon {
+  border-color: var(--ink-soft);
+}
+
+/* ===========================================================================
+   Repository — neutral kanban
+   =========================================================================== */
+#repositoryView .repository-shell { padding: 32px 40px 48px; }
+#repositoryView .repository-header { margin-bottom: var(--sp-6); align-items: center; }
+
+#repositoryView .repository-sync-status {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 7px 13px;
+}
+
+#repositoryView .repository-board { gap: var(--sp-3); }
+
+#repositoryView .repository-column {
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  padding: 12px 12px 14px;
+}
+#repositoryView .repository-column-head {
+  align-items: center;
+  border-bottom: 0;
+  padding: 4px 4px 12px;
+}
+#repositoryView .repository-column-head h2 {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.004em;
+}
+#repositoryView .repository-column-head span {
+  background: var(--bg-chip);
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  min-width: 20px;
+  padding: 2px 7px;
+  text-align: center;
+}
+
+#repositoryView .repository-dropzone {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+/* Cards — white, hairline, lift on hover */
+#repositoryView .repository-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-xs);
+  gap: var(--sp-2);
+  padding: 12px 13px;
+  transition: transform 0.16s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+#repositoryView .repository-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+#repositoryView .repository-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+}
+#repositoryView .repository-card strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  line-height: 1.35;
+}
+#repositoryView .repository-card-source { color: var(--ink-soft); font-size: 11.5px; font-weight: 550; }
+#repositoryView .repository-card-snippet { color: var(--ink-muted); font-size: 11px; font-weight: 450; line-height: 1.5; }
+#repositoryView .repository-card-rule { border-top: 1px solid var(--border-soft); }
+#repositoryView .repository-card-foot { color: var(--ink-muted); font-size: 11px; font-weight: 550; }
+#repositoryView .repository-card-foot .repository-card-issues { color: var(--ink-soft); font-weight: 650; }
+
+/* Badges — calm. "Legal" is neutral (it repeats on every card); source keeps a
+   quiet semantic tint so inbound vs manual stays glanceable. */
+#repositoryView .repository-priority {
+  background: var(--bg-chip);
+  border-radius: var(--r-xs);
+  color: var(--ink-soft);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+#repositoryView .repository-source-badge {
+  background: var(--bg-chip);
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 3px 7px;
+}
+#repositoryView .repository-source-badge.inbound { background: var(--green-bg); color: var(--green-ink); }
+#repositoryView .repository-source-badge.manual { background: var(--amber-bg); color: var(--amber-ink); }
+
+/* Delete affordance — hidden until card hover, quiet until its own hover */
+#repositoryView .repository-card-delete {
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  height: 22px;
+  opacity: 0;
+  width: 22px;
+  transition: opacity 0.15s var(--ease), background 0.15s var(--ease), color 0.15s var(--ease);
+}
+#repositoryView .repository-card:hover .repository-card-delete,
+#repositoryView .repository-card-delete:focus-visible { opacity: 1; }
+#repositoryView .repository-card-delete:hover {
+  background: var(--red-bg);
+  color: var(--red-ink);
+}
