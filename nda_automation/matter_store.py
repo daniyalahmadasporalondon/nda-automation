@@ -82,15 +82,26 @@ def get_matter(matter_id: str) -> dict[str, Any] | None:
     return None
 
 
-def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
+def source_document_path(matter: dict[str, Any]) -> Path | None:
+    """Resolve a matter's stored source document to a safe path under UPLOADS_DIR.
+
+    Encapsulates the on-disk layout (UPLOADS_DIR + the path-traversal guard) so
+    callers never build the path themselves. Returns None when there is no stored
+    document, the resolved path escapes UPLOADS_DIR, or the file is missing.
+    """
     stored_filename = str(matter.get("stored_filename") or "")
     if not stored_filename:
         return None
+    source_path = (UPLOADS_DIR / stored_filename).resolve()
+    if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
+        return None
+    return source_path
+
+
+def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
     with _locked_store():
-        source_path = (UPLOADS_DIR / stored_filename).resolve()
-        if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
-            return None
-        return source_path.read_bytes()
+        source_path = source_document_path(matter)
+        return source_path.read_bytes() if source_path is not None else None
 
 
 def find_gmail_attachment(

@@ -120,10 +120,8 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
-    stored_filename = str(matter.get("stored_filename") or "")
-    uploads_dir = matter_store.UPLOADS_DIR.resolve()
-    source_path = (matter_store.UPLOADS_DIR / stored_filename).resolve() if stored_filename else None
-    if source_path is None or source_path.parent != uploads_dir or not source_path.is_file():
+    source_path = matter_store.source_document_path(matter)
+    if source_path is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return
     ext = source_path.suffix.lower()
