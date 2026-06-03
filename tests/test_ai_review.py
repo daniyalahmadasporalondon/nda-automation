@@ -43,10 +43,13 @@ def _first_draft_citation(packet):
 
 
 def _confirming_reviewer(packet):
+    # The semantic packet is blind to Python, so the reviewer cannot read a
+    # deterministic decision. These tests run on the all-pass sample, so an
+    # independent reviewer that finds the clauses compliant returns "pass".
     return {
-        "decision": packet["deterministic_result"]["decision"],
+        "decision": "pass",
         "confidence": 0.93,
-        "reason": "The supplied evidence supports the deterministic decision.",
+        "reason": "The supplied paragraphs satisfy the playbook requirement.",
         "cited_spans": [_first_citation(packet)],
         "issues": [],
         "suggested_fix": "",
@@ -162,6 +165,31 @@ class AIReviewTests(unittest.TestCase):
         reviewed = [clause for clause in result["clauses"] if clause.get("ai_review_analysis")]
         self.assertEqual(len(reviewed), 5)
         self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
+
+    def test_semantic_packet_is_blind_to_python_decision(self):
+        captured_packets = []
+
+        def capturing_reviewer(packet):
+            captured_packets.append(packet)
+            return _confirming_reviewer(packet)
+
+        review_nda(_pass_sample_text(), ai_reviewer=capturing_reviewer)
+
+        self.assertEqual(len(captured_packets), 5)
+        for packet in captured_packets:
+            self.assertEqual(packet["task"], "semantic_clause_crosscheck")
+            # Python's conclusion must never reach the semantic reviewer.
+            self.assertNotIn("deterministic_result", packet)
+            self.assertNotIn("analysis_objects", packet)
+            self.assertFalse([key for key in packet if "deterministic" in key.lower()])
+            encoded = json.dumps(packet)
+            for leaked_field in ("issue_type", "what_to_fix", "matched_paragraph_ids", "needs_review"):
+                self.assertNotIn(leaked_field, encoded)
+            # Allowed context is still supplied so AI can decide independently.
+            self.assertIn("clause", packet)
+            self.assertIn("structure_context", packet)
+            self.assertIn("instructions", packet)
+            self.assertTrue(packet["paragraphs"])
 
     def test_ai_provider_error_does_not_override_deterministic_pass(self):
         def reviewer(_packet):

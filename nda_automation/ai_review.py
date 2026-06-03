@@ -384,7 +384,6 @@ def build_ai_review_packet(
     model: str,
 ) -> Dict[str, object]:
     context_paragraphs = _context_paragraphs(clause, paragraphs, review_context)
-    deterministic_decision = _deterministic_decision(clause)
     return {
         "version": AI_REVIEW_VERSION,
         "provider": provider,
@@ -400,22 +399,7 @@ def build_ai_review_packet(
             "rationale": str(playbook_clause.get("rationale") or ""),
             "evidence_guidance": str(playbook_clause.get("evidence_guidance") or ""),
         },
-        "deterministic_result": {
-            "decision": deterministic_decision,
-            "status": str(clause.get("status") or ""),
-            "passes": bool(clause.get("passes")),
-            "needs_review": bool(clause.get("needs_review")),
-            "reason": str(clause.get("reason") or clause.get("finding") or ""),
-            "issue_type": str(clause.get("issue_type") or ""),
-            "what_to_fix": str(clause.get("what_to_fix") or ""),
-            "matched_paragraph_ids": [
-                str(paragraph_id)
-                for paragraph_id in clause.get("matched_paragraph_ids", [])
-                if str(paragraph_id)
-            ] if isinstance(clause.get("matched_paragraph_ids"), list) else [],
-        },
         "structure_context": clause.get("structure_context") if isinstance(clause.get("structure_context"), dict) else {},
-        "analysis_objects": _clause_analysis_objects(clause),
         "paragraphs": [
             {
                 "id": str(paragraph.get("id") or ""),
@@ -425,6 +409,7 @@ def build_ai_review_packet(
             for paragraph in context_paragraphs
         ],
         "instructions": [
+            "You are an independent semantic reviewer. No prior automated or deterministic decision is supplied; judge the clause solely from the playbook requirement, structure context, and paragraphs below.",
             "Decide whether the clause satisfies the playbook requirement using only the supplied paragraphs.",
             "Return pass only when cited paragraphs affirmatively satisfy the requirement.",
             "Return fail when cited paragraphs show a prohibited or deficient clause.",
@@ -1160,14 +1145,6 @@ def _dedupe_paragraphs(paragraphs: Iterable[Paragraph]) -> List[Paragraph]:
         seen.add(key)
         deduped.append(paragraph)
     return deduped
-
-
-def _clause_analysis_objects(clause: ClauseResult) -> Dict[str, object]:
-    return {
-        str(key): value
-        for key, value in clause.items()
-        if key.endswith("_analysis") and isinstance(value, dict)
-    }
 
 
 def _deterministic_decision(clause: ClauseResult) -> str:

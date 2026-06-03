@@ -350,7 +350,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       ["Review state", "Every checker emits review_state to normalize pass, review, and check routing, send blocking, and redline requirements."],
       ["Reason codes", "Every checker emits reason_code and reason_codes so audit, admin views, and AI handoff can classify the decision without parsing prose."],
       ["Structured evidence", "Every checker emits structured_evidence records with paragraph provenance, matched terms, signal type, rule bucket, counted flag, and reason."],
-      ["AI semantic review", "When NDA_AI_REVIEW_ENABLED is set, ai_review_analysis records the provider decision, confidence, cited spans, validation status, and deterministic/AI disagreement."],
+      ["AI semantic review", "When NDA_AI_REVIEW_ENABLED is set, AI runs as a blind second opinion: it never receives the Python decision, reason, or checker analysis and independently returns pass/review/fail from the playbook requirement and document paragraphs. The backend then compares the two, and ai_review_analysis records the AI decision, confidence, cited spans, validation status, and any deterministic/AI disagreement."],
       ["Audit trace", "Every checker emits audit_trace with normalized decision steps, evidence summary, analysis outputs, and analysis signals."],
       ["Redline behavior", visibility.redline_behavior],
       ["Human-review boundary", visibility.boundary],
