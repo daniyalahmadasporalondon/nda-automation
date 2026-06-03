@@ -40,6 +40,19 @@ class PdfTextTests(unittest.TestCase):
         self.assertIn("California", extract_pdf_text(data))
 
     @requires_pypdf
+    def test_encrypted_pdf_is_reported_as_encrypted(self):
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.encrypt(user_password="a-real-password")
+        buffer = BytesIO()
+        writer.write(buffer)
+
+        with self.assertRaises(PdfExtractionError) as error:
+            extract_pdf_document(buffer.getvalue())
+
+        self.assertEqual(str(error.exception), pdf_text.ENCRYPTED_PDF_MESSAGE)
+
+    @requires_pypdf
     def test_reconstructs_wrapped_clause_paragraphs(self):
         data = make_pdf_lines([
             "1. Definitions",

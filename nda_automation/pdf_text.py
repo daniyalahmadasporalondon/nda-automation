@@ -12,6 +12,7 @@ class PdfExtractionError(ValueError):
 
 
 INVALID_PDF_MESSAGE = "The uploaded file is not a valid PDF document."
+ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the password before reviewing."
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
@@ -46,6 +47,16 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
         reader = PdfReader(BytesIO(data))
     except Exception as exc:
         raise PdfExtractionError(INVALID_PDF_MESSAGE) from exc
+
+    if reader.is_encrypted:
+        # Empty-password-encrypted PDFs decrypt and remain reviewable; truly
+        # locked PDFs must be reported as encrypted rather than "scanned/invalid".
+        try:
+            decrypted = reader.decrypt("")
+        except Exception as exc:
+            raise PdfExtractionError(ENCRYPTED_PDF_MESSAGE) from exc
+        if not decrypted:
+            raise PdfExtractionError(ENCRYPTED_PDF_MESSAGE)
 
     page_lines: list[list[str]] = []
     page_count = len(reader.pages)

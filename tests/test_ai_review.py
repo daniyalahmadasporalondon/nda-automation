@@ -207,6 +207,25 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["ai_review_analysis"]["status"], "error")
         self.assertIn("AI quota exhausted", governing_law["ai_review_analysis"]["reason"])
 
+    def test_ai_provider_error_does_not_override_deterministic_fail(self):
+        def reviewer(_packet):
+            raise RuntimeError("AI provider unavailable")
+
+        text = "This Agreement shall be governed by the laws of Wakanda."
+        baseline = review_nda(text)
+        baseline_gl = next(clause for clause in baseline["clauses"] if clause["id"] == "governing_law")
+        # Guard the test: the deterministic decision here must not be a pass.
+        self.assertNotEqual(baseline_gl["decision"], "pass")
+
+        result = review_nda(text, ai_reviewer=reviewer)
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+        # An unavailable AI must fall back to the deterministic decision, never
+        # downgrade a FAIL to review (or clear it).
+        self.assertEqual(governing_law["decision"], baseline_gl["decision"])
+        self.assertEqual(governing_law["reason_code"], baseline_gl["reason_code"])
+        self.assertEqual(governing_law["ai_review_analysis"]["status"], "error")
+
     def test_ai_disagreement_escalates_to_review_without_auto_redline(self):
         def reviewer(packet):
             if packet["clause"]["id"] == "mutuality":
@@ -393,6 +412,14 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(body["enable_thinking"], False)
         self.assertEqual(body["response_format"]["type"], "json_object")
         self.assertIn("semantic_clause_crosscheck", json.dumps(body))
+
+    def test_sanitize_model_name_strips_unsafe_characters(self):
+        self.assertEqual(ai_review._sanitize_model_name("models/gemini-3.5-flash"), "gemini-3.5-flash")
+        sanitized = ai_review._sanitize_model_name("../../etc/passwd?inject=1")
+        self.assertNotIn("/", sanitized)
+        self.assertNotIn("?", sanitized)
+        self.assertRegex(sanitized, r"^[A-Za-z0-9._-]*$")
+        self.assertEqual(ai_review._sanitize_model_name("   "), ai_review.DEFAULT_GEMINI_MODEL)
 
 
 if __name__ == "__main__":

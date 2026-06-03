@@ -44,3 +44,39 @@ def _is_loopback_host(host: str) -> bool:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+AUTH_ALLOWED_HOSTS_ENV = "NDA_ALLOWED_HOSTS"
+HOST_NOT_ALLOWED_MESSAGE = "Request host is not allowed."
+
+
+def host_header_allowed(host_header: str, bind_host: str) -> bool:
+    configured = _configured_allowed_hosts()
+    # A public bind (0.0.0.0/::) without an explicit allowlist relies on basic
+    # auth, so do not reject by Host there. A loopback bind always enforces the
+    # allowlist, which is what defeats DNS-rebinding against the local server.
+    if bind_host in {"0.0.0.0", "::", ""} and not configured:
+        return True
+    host = _host_only(host_header)
+    if not host:
+        # HTTP/1.0 clients may omit Host; a loopback server is not reachable
+        # cross-origin, so an absent Host is not a rebinding vector.
+        return True
+    allowed = {"localhost", "127.0.0.1", "::1"}
+    if bind_host:
+        allowed.add(bind_host)
+    allowed |= configured
+    return host in allowed
+
+
+def _host_only(host_header: str) -> str:
+    value = str(host_header or "").strip()
+    if value.startswith("["):  # IPv6 literal, e.g. [::1]:8787
+        end = value.find("]")
+        return value[1:end] if end != -1 else value
+    return value.split(":", 1)[0]
+
+
+def _configured_allowed_hosts() -> set[str]:
+    raw = os.environ.get(AUTH_ALLOWED_HOSTS_ENV, "")
+    return {value.strip() for value in raw.split(",") if value.strip()}

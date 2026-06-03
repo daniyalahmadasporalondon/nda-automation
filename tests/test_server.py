@@ -586,6 +586,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 413)
         self.assertEqual(payload["error"], server_module.REQUEST_BODY_TOO_LARGE_MESSAGE)
 
+    def test_disallowed_host_header_is_rejected(self):
+        status, payload = self.raw_http_request(
+            "GET / HTTP/1.1\r\n"
+            "Host: evil.example\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.HOST_NOT_ALLOWED_MESSAGE)
+
+    def test_text_review_rejects_oversize_text(self):
+        from nda_automation.document_limits import MAX_REVIEW_TEXT_CHARS, REVIEW_TEXT_TOO_LARGE_MESSAGE
+
+        oversize_text = "a " * (MAX_REVIEW_TEXT_CHARS // 2 + 1)
+        status, payload = self.request("POST", "/api/review", {"text": oversize_text})
+
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"], REVIEW_TEXT_TOO_LARGE_MESSAGE)
+
     def test_expensive_endpoints_are_rate_limited_per_client(self):
         rate_env = {
             "NDA_RATE_LIMIT_PER_MINUTE": "2",
@@ -655,7 +675,7 @@ class ServerTests(unittest.TestCase):
                 saved_path = export_service.persist_export(b"data", "export.docx")
 
         self.assertIsNone(saved_path)
-        mocked_print.assert_called_once_with("Could not save export copy: FileExistsError")
+        mocked_print.assert_called_once_with("Could not save export copy atomically: FileExistsError")
         self.assertEqual(telemetry.snapshot()["counters"]["export_copy_failures"], 1)
 
     def test_matter_store_save_flushes_to_disk(self):

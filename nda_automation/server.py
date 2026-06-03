@@ -36,10 +36,12 @@ from .http_auth import (
     AUTH_NOT_CONFIGURED_MESSAGE,
     AUTH_REALM,
     AUTH_REQUIRED_MESSAGE,
+    HOST_NOT_ALLOWED_MESSAGE,
     _auth_required_for_host,
     _basic_auth_matches,
     _env_flag_enabled as _env_flag_enabled,
     _is_loopback_host as _is_loopback_host,
+    host_header_allowed,
 )
 from .rate_limit import (
     DEFAULT_RATE_LIMIT_PER_MINUTE as DEFAULT_RATE_LIMIT_PER_MINUTE,
@@ -174,6 +176,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path == "/healthz":
             self._send_json({"status": "ok"}, send_body=send_body)
             return
+        if not self._authorize_host(send_body=send_body):
+            return
         if not self._authorize_request(send_body=send_body):
             return
         if not self._rate_limit_request("GET", path, send_body=send_body):
@@ -213,6 +217,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_host():
+            return
         if not self._authorize_request():
             return
         if not self._rate_limit_request("POST", path):
@@ -240,6 +246,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_host():
+            return
         if not self._authorize_request():
             return
         try:
@@ -401,6 +409,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             headers={"WWW-Authenticate": f'Basic realm="{AUTH_REALM}", charset="UTF-8"'},
             send_body=send_body,
         )
+        return False
+
+    def _authorize_host(self, *, send_body: bool = True) -> bool:
+        if host_header_allowed(self.headers.get("Host", ""), str(self.server.server_address[0])):
+            return True
+        telemetry.increment("host_header_rejections")
+        self._send_json({"error": HOST_NOT_ALLOWED_MESSAGE}, status=403, send_body=send_body)
         return False
 
     def _rate_limit_request(self, method: str, path: str, *, send_body: bool = True) -> bool:

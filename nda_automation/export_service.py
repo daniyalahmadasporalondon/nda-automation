@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -226,16 +227,32 @@ def persist_export(data: bytes, filename: str) -> Path | None:
     if EXPORTS_DIR is None:
         return None
     safe_name = os.path.basename(filename) or "nda-review-report.docx"
+    tmp_path: Path | None = None
     try:
         EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         export_path = _collision_safe_export_path(safe_name)
-        export_path.write_bytes(data)
+        # Write to a temp file and atomically rename so a crash or full disk
+        # never leaves a truncated, valid-looking .docx in the exports dir.
+        descriptor, tmp_name = tempfile.mkstemp(dir=str(export_path.parent), prefix=".tmp-export-", suffix=".docx")
+        tmp_path = Path(tmp_name)
+        with os.fdopen(descriptor, "wb") as tmp_file:
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, export_path)
+        tmp_path = None
         prune_saved_exports(export_path)
         return export_path
     except OSError as error:
         telemetry.increment("export_copy_failures")
-        print(f"Could not save export copy: {error.__class__.__name__}")
+        print(f"Could not save export copy atomically: {error.__class__.__name__}")
         return None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _collision_safe_export_path(safe_name: str) -> Path:

@@ -1216,5 +1216,9 @@ def _env_float(name: str, fallback: float) -> float:
 
 
 def _sanitize_model_name(model: str) -> str:
-    cleaned = str(model or DEFAULT_GEMINI_MODEL).strip()
-    return cleaned.removeprefix("models/")
+    cleaned = str(model or DEFAULT_GEMINI_MODEL).strip().removeprefix("models/")
+    # The model name is interpolated into the Gemini endpoint URL path, so
+    # restrict it to a safe allowlist to prevent path/query injection if a
+    # set-model route is ever added.
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "", cleaned)
+    return cleaned or DEFAULT_GEMINI_MODEL

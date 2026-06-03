@@ -13,7 +13,13 @@ from ..checker import (
     ai_validate_draft_fix,
     review_nda,
 )
-from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
+from ..document_limits import (
+    DocumentSizeError,
+    DOCUMENT_TOO_LARGE_MESSAGE,
+    ReviewTextTooLargeError,
+    ensure_document_size,
+    ensure_review_text_size,
+)
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..ingestion_service import extract_document, is_supported_document_filename
@@ -29,6 +35,11 @@ def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
     text = payload.get("text", "")
     if not isinstance(text, str) or not text.strip():
         handler._send_json({"error": "Provide NDA text to review."}, status=400)
+        return
+    try:
+        ensure_review_text_size(text)
+    except ReviewTextTooLargeError as error:
+        handler._send_json({"error": str(error)}, status=413)
         return
 
     handler._send_json(review_nda_func(text))
