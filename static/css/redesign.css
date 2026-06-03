@@ -1,9 +1,9 @@
 /* ===========================================================================
-   Aspora × Apple — visual refresh (light)
+   Aspora — visual refresh (light)
    Loaded AFTER styles.css + repository.css so it wins the cascade.
    Strategy: re-theme the existing design tokens toward a neutral canvas with
-   Aspora purple as a single restrained accent, then layer Apple-style polish
-   (frosted bars, segmented controls, refined type/shadows/motion). Component
+   Aspora purple as the single restrained accent, with flat surfaces,
+   segmented controls, and refined type, shadows, and motion. Component
    redesign is scoped to #reviewView; shell + tokens are global foundations.
    Fully reversible: remove the <link> in index.html to restore the old look.
    =========================================================================== */
@@ -19,7 +19,7 @@
 
 /* ---------- 1. Tokens: neutral canvas, purple accent ---------- */
 :root {
-  /* Surfaces — Apple-style off-white + system grays */
+  /* Surfaces — off-white + neutral grays */
   --bg-main: #fbfbfd;
   --bg-panel: #ffffff;
   --bg-soft: #f5f5f7;
@@ -46,7 +46,7 @@
   --accent-soft: rgba(96, 40, 200, 0.14);
   --accent-ring: rgba(96, 40, 200, 0.34);
 
-  /* Radii — a touch tighter / more Apple */
+  /* Radii — a touch tighter */
   --r-xl: 20px;
   --r-lg: 16px;
   --r-md: 13px;
@@ -306,7 +306,7 @@ textarea:focus-visible,
   border-width: 2px;
 }
 
-/* Pills — Apple soft chips */
+/* Pills — soft chips */
 #reviewView .studio-issue-pill {
   font-size: 9px;
   letter-spacing: 0.03em;
@@ -984,4 +984,573 @@ textarea:focus-visible,
 }
 #reviewView #studioNdaText::placeholder {
   color: var(--ink-muted);
+}
+
+/* ===========================================================================
+   Review revamp — ported from static/prototype.html. Scoped to #reviewView.
+   Aspora purple stays the single accent; verdict colours stay green/amber/red;
+   flat. Reversible: delete from this banner to end-of-file to restore prior look.
+   =========================================================================== */
+
+/* Panels: flat, hairline, consistent radius */
+#reviewView .studio-grid { gap: 14px; }
+#reviewView .studio-clauses,
+#reviewView .studio-document,
+#reviewView .studio-playbook {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+/* Matter header */
+#reviewView .studio-matter-card { padding: 15px 22px; border-radius: 16px; gap: 18px; align-items: center; }
+#reviewView .studio-matter-card .studio-tags {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 23px; padding: 0 10px; margin-bottom: 7px;
+  border-radius: 999px; background: var(--accent-weak);
+}
+#reviewView .studio-matter-card .studio-tags span {
+  padding: 0; background: none; border: 0;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0; color: var(--brand);
+}
+#reviewView .studio-matter-card .studio-tags span::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px;
+  border-radius: 50%; background: var(--brand); vertical-align: middle;
+}
+#reviewView .studio-matter-card h1 { font-size: 20px; font-weight: 650; letter-spacing: -.015em; }
+#reviewView .studio-matter-meta { display: flex; gap: 24px; align-items: center; }
+#reviewView .studio-matter-meta dt { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
+#reviewView .studio-matter-meta dd { font-size: 13px; font-weight: 550; color: var(--ink-soft); }
+
+/* Clause lane: clean rows + verdict pills */
+#reviewView .studio-clause-item {
+  border-left: 3px solid transparent; border-bottom: 1px solid var(--border-soft);
+  border-radius: 0; background: transparent; box-shadow: none; margin: 0; padding: 0;
+}
+#reviewView .studio-clause-item:hover { background: var(--bg-soft); }
+#reviewView .studio-clause-item.selected { background: var(--accent-weak); border-left-color: var(--accent); }
+#reviewView .studio-clause-select {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  width: 100%; text-align: left; padding: 13px 18px 14px;
+  background: transparent; border: 0; cursor: pointer;
+}
+#reviewView .studio-clause-dot { display: none; }
+#reviewView .studio-clause-number { flex: 0 0 auto; width: 14px; font-size: 11px; font-weight: 600; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+#reviewView .studio-clause-title { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); letter-spacing: -.005em; }
+#reviewView .studio-clause-item.selected .studio-clause-title { color: var(--brand); }
+#reviewView .studio-clause-finding { flex: 0 0 100%; padding-left: 22px; margin-top: 1px; font-size: 12.5px; line-height: 1.45; color: var(--ink-soft); font-weight: 400; }
+
+/* Verdict pills (clause lane + inspector heading) */
+#reviewView .studio-issue-pill,
+#reviewView .studio-detail-heading .status {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  height: 21px; padding: 0 9px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .03em; border: 1px solid transparent;
+}
+#reviewView .studio-issue-pill.pass, #reviewView .studio-detail-heading .status.pass { background: var(--green-bg); color: var(--green-ink); border-color: var(--green-border); }
+#reviewView .studio-issue-pill.review, #reviewView .studio-detail-heading .status.review { background: var(--amber-bg); color: var(--amber-ink); border-color: var(--amber-border); }
+#reviewView .studio-issue-pill.check, #reviewView .studio-detail-heading .status.check { background: var(--red-bg); color: var(--red-ink); border-color: var(--red-border); }
+#reviewView .studio-issue-pill.pending, #reviewView .studio-detail-heading .status.pending { background: var(--bg-chip); color: var(--ink-muted); }
+
+/* Inspector: labeled sections */
+#reviewView .studio-playbook > h2 { font-size: 15px; font-weight: 600; }
+#reviewView .studio-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+#reviewView .studio-detail-heading h3 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+#reviewView .studio-detail-stack { gap: 0; }
+#reviewView .studio-detail-block {
+  display: block; grid-template-columns: none; border: 0; border-top: 1px solid var(--border-soft);
+  border-radius: 0; padding: 14px 0 15px; margin: 0;
+}
+#reviewView .studio-detail-block.requirement-block { border-top: 0; }
+#reviewView .studio-detail-block > small { display: block; grid-column: auto; margin: 0 0 6px; padding: 0; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-muted); }
+#reviewView .studio-detail-block > p { grid-column: auto; font-size: 13px; line-height: 1.55; color: var(--ink-soft); margin: 0; }
+#reviewView .studio-detail-block.finding-block > p { color: var(--ink); }
+#reviewView .studio-detail-block.issue-block::before,
+#reviewView .studio-detail-block.fix-block::before,
+#reviewView .studio-detail-block.redline-block::before,
+#reviewView .studio-detail-block.comment-block::before,
+#reviewView .studio-detail-block.ai-summary-block::before { display: none; }
+#reviewView .studio-detail-block.ai-summary-block,
+#reviewView .studio-detail-block.reason-code-block {
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px;
+  padding: 13px 15px; margin-top: 12px;
+}
+
+/* ===========================================================================
+   OVERHAUL (2026-06-03) — unify the modern flat system across every tab.
+   redesign.css already modernised the shell + #reviewView; this section brings
+   Repository, Upload and Admin onto the same neutral-canvas / single-accent
+   language and strips the leftover purple-tinted surfaces bleeding through from
+   the original styles.css layer. Flat, hairline borders, Aspora violet as the
+   only accent, semantic green/amber/red reserved for real status.
+   Reversible: delete from this banner to end-of-file to restore the prior look.
+   =========================================================================== */
+
+:root {
+  /* One documented radius scale: chip 6 · control/card 9–13 · panel 16–20 · pill.
+     (xs added so small chips stop free-styling their own values.) */
+  --r-xs: 6px;
+  /* 8px spacing grid, named so component padding stops drifting. */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+}
+
+/* ---- Shared page header (Repository / Upload) — neutral, tight ---- */
+#repositoryView .repository-title h1,
+#uploadView .repository-title h1 {
+  color: var(--ink);
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.022em;
+}
+#repositoryView .repository-icon,
+#uploadView .upload-icon {
+  border-color: var(--ink-soft);
+}
+
+/* ===========================================================================
+   Repository — neutral kanban
+   =========================================================================== */
+#repositoryView .repository-shell { padding: 32px 40px 48px; }
+#repositoryView .repository-header { margin-bottom: var(--sp-6); align-items: center; }
+
+#repositoryView .repository-sync-status {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 7px 13px;
+}
+
+#repositoryView .repository-board { gap: var(--sp-3); }
+
+#repositoryView .repository-column {
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  padding: 12px 12px 14px;
+}
+#repositoryView .repository-column-head {
+  align-items: center;
+  border-bottom: 0;
+  padding: 4px 4px 12px;
+}
+#repositoryView .repository-column-head h2 {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.004em;
+}
+#repositoryView .repository-column-head span {
+  background: var(--bg-chip);
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  min-width: 20px;
+  padding: 2px 7px;
+  text-align: center;
+}
+
+#repositoryView .repository-dropzone {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+/* Cards — white, hairline, lift on hover */
+#repositoryView .repository-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-xs);
+  gap: var(--sp-2);
+  padding: 12px 13px;
+  transition: transform 0.16s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+#repositoryView .repository-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+#repositoryView .repository-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+}
+#repositoryView .repository-card strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  line-height: 1.35;
+}
+#repositoryView .repository-card-source { color: var(--ink-soft); font-size: 11.5px; font-weight: 550; }
+#repositoryView .repository-card-snippet { color: var(--ink-muted); font-size: 11px; font-weight: 450; line-height: 1.5; }
+#repositoryView .repository-card-rule { border-top: 1px solid var(--border-soft); }
+#repositoryView .repository-card-foot { color: var(--ink-muted); font-size: 11px; font-weight: 550; }
+#repositoryView .repository-card-foot .repository-card-issues { color: var(--ink-soft); font-weight: 650; }
+
+/* Badges — calm. "Legal" is neutral (it repeats on every card); source keeps a
+   quiet semantic tint so inbound vs manual stays glanceable. */
+#repositoryView .repository-priority {
+  background: var(--bg-chip);
+  border-radius: var(--r-xs);
+  color: var(--ink-soft);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+#repositoryView .repository-source-badge {
+  background: var(--bg-chip);
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 3px 7px;
+}
+#repositoryView .repository-source-badge.inbound { background: var(--green-bg); color: var(--green-ink); }
+#repositoryView .repository-source-badge.manual { background: var(--amber-bg); color: var(--amber-ink); }
+
+/* Delete affordance — hidden until card hover, quiet until its own hover */
+#repositoryView .repository-card-delete {
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  height: 22px;
+  opacity: 0;
+  width: 22px;
+  transition: opacity 0.15s var(--ease), background 0.15s var(--ease), color 0.15s var(--ease);
+}
+#repositoryView .repository-card:hover .repository-card-delete,
+#repositoryView .repository-card-delete:focus-visible { opacity: 1; }
+#repositoryView .repository-card-delete:hover {
+  background: var(--red-bg);
+  color: var(--red-ink);
+}
+
+/* ===========================================================================
+   REVIEW STUDIO — premium pass (2026-06-03)
+   Brief: light, modern SaaS-dashboard polish. The document pane should read
+   like a real MS Word canvas (desk + page + margins + shadow + proper
+   toolbar), nothing should feel cramped, and Aspora violet is the hero accent
+   (gradient CTAs, glowing active states). Top-nav stays. Scoped to #reviewView
+   so the rest of the app is untouched. Reversible: delete to the banner above.
+   =========================================================================== */
+
+:root {
+  /* The "desk" the document page floats on — cool, slightly deeper than canvas. */
+  --desk: #e8e7ef;
+  --desk-edge: #dcdae6;
+  /* Flat document page: hairline edge + a single restrained ambient shadow. */
+  --shadow-page: 0 0 0 1px rgba(23, 10, 51, 0.04), 0 8px 24px -14px rgba(23, 10, 51, 0.16);
+}
+
+/* ---- Decompress the whole studio ---- */
+#reviewView .studio-grid {
+  grid-template-columns: minmax(296px, 340px) minmax(540px, 1fr) minmax(340px, 392px);
+  gap: 18px;
+  margin: 18px 28px 22px;
+}
+#reviewView .studio-clauses,
+#reviewView .studio-document,
+#reviewView .studio-playbook {
+  border-radius: var(--r-xl);
+  border-color: var(--border);
+}
+
+/* ---- Matter header — substantial, branded ---- */
+#reviewView .studio-matter-card {
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  gap: 18px;
+  margin: 20px 28px 0;
+  padding: 14px 22px;
+}
+#reviewView .back-dot {
+  background: var(--accent-weak);
+  border: 1px solid var(--accent-soft);
+  color: var(--accent);
+  height: 34px;
+  width: 34px;
+  transition: background 0.18s var(--ease), transform 0.18s var(--ease);
+}
+#reviewView .back-dot:hover { background: var(--accent-soft); transform: translateX(-2px); }
+#reviewView .studio-matter-card .studio-tags {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 11px; margin-bottom: 8px;
+  border-radius: 9999px; background: var(--accent-weak);
+}
+#reviewView .studio-matter-card .studio-tags span {
+  padding: 0; background: none; border: 0; box-shadow: none;
+  font-size: 11px; font-weight: 650; letter-spacing: 0.02em; text-transform: none; color: var(--accent);
+}
+#reviewView .studio-matter-card .studio-tags span::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px;
+  border-radius: 50%; background: var(--accent); vertical-align: middle;
+}
+#reviewView .studio-matter-card h1 {
+  font-family: var(--topbar-font);
+  font-size: 21px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05;
+  color: var(--ink); max-width: 38vw;
+}
+#reviewView .studio-matter-meta { display: flex; gap: 0; align-items: center; }
+#reviewView .studio-matter-meta div { border-left: 1px solid var(--border); padding: 2px 16px; }
+#reviewView .studio-matter-meta dt {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-muted);
+}
+#reviewView .studio-matter-meta dd { font-size: 13px; font-weight: 600; color: var(--ink); margin-top: 3px; }
+#reviewView .studio-matter-actions { border-left: 1px solid var(--border); gap: 7px; padding-left: 16px; }
+
+/* ---- Clause rail — roomy rows, strong selected state ---- */
+#reviewView .studio-clauses { padding: 8px; }
+#reviewView .studio-clause-item {
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid transparent;
+  border-radius: var(--r-md);
+  margin: 1px 0;
+  transition: background 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease);
+}
+#reviewView .studio-clause-item:last-child { border-bottom: 0; }
+#reviewView .studio-clause-item:hover { background: var(--bg-soft); }
+#reviewView .studio-clause-item.selected {
+  background: var(--accent-weak);
+  border-left-color: var(--accent);
+}
+#reviewView .studio-clause-select { padding: 14px 16px 15px; gap: 9px; }
+#reviewView .studio-clause-number {
+  width: 22px; height: 22px; flex: 0 0 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-xs); background: var(--bg-chip);
+  font-size: 11px; font-weight: 650; color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}
+#reviewView .studio-clause-item.selected .studio-clause-number { background: var(--accent); color: #fff; }
+#reviewView .studio-clause-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+#reviewView .studio-clause-item.selected .studio-clause-title { color: var(--accent); }
+#reviewView .studio-clause-finding { padding-left: 31px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+
+/* ---- Verdict pills — crisper ---- */
+#reviewView .studio-issue-pill,
+#reviewView .studio-detail-heading .status {
+  height: 22px; padding: 0 10px; border-radius: 9999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+}
+
+/* ===========================================================================
+   Document pane — the MS Word canvas
+   =========================================================================== */
+#reviewView .studio-document {
+  background: var(--desk);
+  border: 1px solid var(--border);
+}
+
+/* Toolbar → real document ribbon: solid white, taller, grouped */
+#reviewView .studio-doc-toolbar {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(23, 10, 51, 0.03);
+  grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr);
+  min-height: 52px;
+  padding: 8px 14px;
+}
+#reviewView .studio-toolbar-status strong { font-size: 11px; }
+#reviewView .studio-toolbar-status span { font-size: 9.5px; }
+
+/* View switch → premium segmented control, gradient active thumb */
+#reviewView .studio-view-switch {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 3px;
+  gap: 2px;
+  box-shadow: inset 0 1px 2px rgba(23, 10, 51, 0.04);
+}
+#reviewView .studio-view-switch .vs-btn {
+  border-radius: 9999px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease), box-shadow 0.18s var(--ease), transform 0.12s var(--ease);
+}
+#reviewView .studio-view-switch .vs-btn:not(.active):hover { color: var(--accent); background: var(--bg-panel); }
+#reviewView .studio-view-switch .vs-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+
+/* Viewer controls → grouped icon pills with real hover pop */
+#reviewView .studio-viewer-controls .vc-group {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 2px;
+}
+#reviewView .studio-viewer-controls .vc-btn {
+  width: 28px; height: 28px; flex: 0 0 28px; border-radius: 9999px;
+  color: var(--ink-soft);
+}
+#reviewView .studio-viewer-controls .vc-btn:hover:not(:disabled) {
+  background: var(--bg-panel);
+  color: var(--accent);
+  box-shadow: var(--shadow-xs);
+}
+#reviewView .studio-viewer-controls .vc-solo {
+  width: 32px; height: 32px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+#reviewView .studio-viewer-controls .vc-solo:hover:not(:disabled) {
+  background: var(--bg-panel); border-color: var(--accent-soft); color: var(--accent);
+}
+#reviewView .studio-undo-edit { height: 30px; border-radius: 9999px; }
+
+/* Desk + page — generous, Word-like */
+#reviewView .studio-page-wrap { padding: 26px 32px 34px; }
+#reviewView .studio-page {
+  background: #fff;
+  border: 0;
+  border-radius: 3px;
+  box-shadow: var(--shadow-page);
+  max-width: 748px;
+  padding: 60px 68px 72px;
+  width: 100%;
+}
+#reviewView .studio-document-render {
+  color: #20202a;
+  font-size: 14.5px;
+  line-height: 1.7;
+  gap: 14px;
+}
+
+/* ---- Primary actions → gradient violet, with glow ---- */
+#reviewView .studio-toolbar-actions button,
+#reviewView .actions button:not(.secondary):not(.icon-only) {
+  background: var(--accent);
+  border: 0;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  height: 32px;
+  letter-spacing: 0;
+  padding: 0 16px;
+  box-shadow: none;
+  transition: background 0.18s var(--ease);
+}
+#reviewView .studio-toolbar-actions button:hover:not(:disabled),
+#reviewView .actions button:not(.secondary):not(.icon-only):hover:not(:disabled) {
+  background: var(--brand-strong);
+}
+#reviewView .actions button.secondary {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+  color: var(--ink);
+  border-radius: 9999px;
+  font-weight: 600;
+}
+#reviewView .actions button.secondary:hover:not(:disabled) {
+  border-color: var(--accent-soft); color: var(--accent); background: var(--bg-panel);
+}
+
+/* ===========================================================================
+   Inspector — professional, carded, less shouty
+   =========================================================================== */
+#reviewView .studio-playbook { display: flex; flex-direction: column; }
+#reviewView #studioDetailPanel { padding: 16px 18px 20px; }
+#reviewView .studio-playbook > h2 {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-muted); padding: 16px 18px 0;
+}
+#reviewView .studio-inspector-tabs {
+  margin: 12px 18px 0; padding: 3px; gap: 2px;
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: 9999px;
+}
+#reviewView .studio-inspector-tabs button {
+  flex: 1; border-radius: 9999px; background: transparent; border: 0;
+  color: var(--ink-soft); font-size: 12px; font-weight: 600; padding: 6px 0;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+#reviewView .studio-inspector-tabs button:hover { color: var(--accent); }
+#reviewView .studio-inspector-tabs button.active {
+  background: var(--bg-panel); color: var(--accent); box-shadow: var(--shadow-xs);
+}
+#reviewView .studio-detail-heading h3 {
+  font-family: var(--topbar-font);
+  font-size: 18px; font-weight: 650; letter-spacing: -0.015em;
+}
+#reviewView .studio-detail-block { padding: 15px 0 16px; }
+/* §4.7 eyebrow restraint — these were all-caps on EVERY field, the #1 AI tell.
+   The renderer emits sentence case; let it through as a quiet caption. */
+#reviewView .studio-detail-block > small {
+  font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink-muted);
+}
+#reviewView .studio-detail-block > p { font-size: 13px; line-height: 1.6; color: var(--ink-soft); }
+#reviewView .studio-detail-block.ai-summary-block,
+#reviewView .studio-detail-block.reason-code-block {
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 14px 16px; margin-top: 14px;
+}
+
+/* ===========================================================================
+   Top-nav tabs — flat: keep the clean underline (from §3b above), just make the
+   hover/active colour confident. No pills, no fills.
+   =========================================================================== */
+.tab-button:hover { color: var(--ink); }
+.tab-button.active { color: var(--accent); background: transparent; }
+.tab-button.active .tab-icon { stroke: var(--accent); }
+
+/* ===========================================================================
+   IMPECCABLE pass (2026-06-03) — product register ("earned familiarity").
+   Absolute ban: no border-left/right > 1px as a colored accent. Selection and
+   document status now read via background tint + the leading number chip,
+   which is also more Word-like (a highlighted passage). Restrained: violet is
+   used only for selection + primary action, never decoration.
+   =========================================================================== */
+
+/* Clause rail — selection is the tint + the accent number chip, not a bar */
+#reviewView .studio-clause-item { border-left: 0; }
+#reviewView .studio-clause-item.selected { background: var(--accent-weak); }
+
+/* Document paragraphs — status reads as a soft highlight, not a side stripe.
+   Tints stay very low so a flagged clause reads as gently marked, not loud. */
+#reviewView .studio-doc-paragraph,
+#reviewView .studio-doc-paragraph.match,
+#reviewView .studio-doc-paragraph.review,
+#reviewView .studio-doc-paragraph.verify,
+#reviewView .studio-doc-paragraph.check,
+#reviewView .studio-doc-paragraph.has-redline,
+#reviewView .studio-doc-paragraph.has-clause,
+#reviewView .studio-doc-paragraph.manual-redline,
+#reviewView .studio-doc-paragraph.prohibited {
+  border-left: 0;
+  border-radius: var(--r-xs);
+}
+#reviewView .studio-doc-paragraph.match    { background: color-mix(in srgb, var(--green) 7%, transparent); }
+#reviewView .studio-doc-paragraph.review   { background: color-mix(in srgb, var(--amber) 10%, transparent); }
+#reviewView .studio-doc-paragraph.verify,
+#reviewView .studio-doc-paragraph.check,
+#reviewView .studio-doc-paragraph.has-redline,
+#reviewView .studio-doc-paragraph.prohibited { background: color-mix(in srgb, var(--red) 7%, transparent); }
+#reviewView .studio-doc-paragraph.manual-redline { background: var(--accent-weak); }
+#reviewView .studio-doc-paragraph.selected,
+#reviewView .studio-doc-paragraph.selected.match,
+#reviewView .studio-doc-paragraph.selected.review,
+#reviewView .studio-doc-paragraph.selected.verify,
+#reviewView .studio-doc-paragraph.selected.prohibited {
+  background: var(--accent-weak);
 }

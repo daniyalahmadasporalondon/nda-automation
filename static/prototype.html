@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aspora Review · design revamp (prototype)</title>
+<style>
+  @font-face{
+    font-family:"Geist"; font-style:normal; font-weight:100 900; font-display:swap;
+    src:url("/static/assets/fonts/GeistVariable.woff2") format("woff2");
+  }
+  :root{
+    --bg:#eef0f4;
+    --panel:#ffffff;
+    --panel-soft:#fafbfc;
+    --line:#e7e9ef;
+    --line-soft:#eef0f4;
+    --ink:#16161d;
+    --ink-2:#5a5c68;
+    --ink-3:#8b8d99;
+    --brand:#6028c8;
+    --brand-ink:#4c1ba6;
+    --brand-tint:#f3eefc;
+    --brand-tint-2:#e7ddfa;
+    --pass:#14854a; --pass-bg:#e7f5ed; --pass-line:#bfe6cf;
+    --review:#a96407; --review-bg:#faf0dd; --review-line:#f0d8a8;
+    --fail:#cb2b2b; --fail-bg:#fbe9e8; --fail-line:#f3c5c2;
+    --r-xl:18px; --r-lg:14px; --r-md:10px; --r-sm:7px;
+    --font:"Geist","SF Pro Text",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:var(--font); background:var(--bg); color:var(--ink);
+    -webkit-font-smoothing:antialiased; font-size:14px; line-height:1.5;
+  }
+  .app{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  /* ---------- Top bar ---------- */
+  .topbar{
+    height:56px;flex:0 0 auto;display:flex;align-items:center;gap:28px;
+    padding:0 26px;background:var(--panel);border-bottom:1px solid var(--line);
+  }
+  .brand{font-weight:800;font-size:21px;letter-spacing:-.02em;color:var(--brand)}
+  .tabs{margin-left:auto;display:flex;gap:6px;align-items:center}
+  .tabs a{
+    font-size:13.5px;font-weight:500;color:var(--ink-2);text-decoration:none;
+    padding:8px 13px;border-radius:var(--r-md);display:flex;align-items:center;gap:7px;
+  }
+  .tabs a:hover{background:var(--panel-soft);color:var(--ink)}
+  .tabs a.active{color:var(--brand);font-weight:600}
+  .tabs a.active .ti{background:var(--brand)}
+  .ti{width:7px;height:7px;border-radius:2px;background:var(--ink-3)}
+
+  /* ---------- Matter bar ---------- */
+  .matterbar{
+    flex:0 0 auto;display:flex;align-items:center;gap:18px;
+    padding:16px 26px;background:var(--panel);border-bottom:1px solid var(--line);
+  }
+  .back{
+    width:34px;height:34px;flex:0 0 auto;border:1px solid var(--line);background:var(--panel);
+    border-radius:50%;color:var(--ink-2);font-size:17px;cursor:pointer;line-height:1;
+  }
+  .back:hover{background:var(--panel-soft);color:var(--ink)}
+  .matter-id{min-width:0}
+  .matter-title{font-size:20px;font-weight:650;letter-spacing:-.015em;line-height:1.2}
+  .matter-sub{margin-top:3px;font-size:12.5px;color:var(--ink-3)}
+  .matter-sub b{color:var(--ink-2);font-weight:550}
+  .status-chip{
+    display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;
+    font-size:11.5px;font-weight:600;background:var(--brand-tint);color:var(--brand-ink);margin-bottom:7px;
+  }
+  .status-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--brand)}
+  .matter-actions{margin-left:auto;display:flex;gap:8px}
+  .btn{
+    height:34px;padding:0 14px;border-radius:var(--r-md);font-size:13px;font-weight:550;
+    border:1px solid var(--line);background:var(--panel);color:var(--ink-2);cursor:pointer;
+  }
+  .btn:hover{background:var(--panel-soft);color:var(--ink)}
+  .btn[disabled]{opacity:.45;cursor:default}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn.primary:hover{background:var(--brand-ink)}
+
+  /* ---------- Grid ---------- */
+  .grid{
+    flex:1;min-height:0;display:grid;grid-template-columns:320px minmax(0,1fr) 372px;
+    gap:14px;padding:14px 26px 22px;
+  }
+  .col{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-xl);min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  .col-head{
+    flex:0 0 auto;padding:16px 18px 13px;border-bottom:1px solid var(--line-soft);
+    display:flex;align-items:baseline;justify-content:space-between;
+  }
+  .col-head h2{font-size:15px;font-weight:600;letter-spacing:-.01em}
+  .col-count{font-size:12px;color:var(--ink-3);font-weight:500}
+  .col-body{flex:1;min-height:0;overflow:auto}
+
+  /* ---------- Clause list ---------- */
+  .clause{
+    display:block;width:100%;text-align:left;border:0;background:transparent;cursor:pointer;
+    padding:13px 18px 14px;border-left:3px solid transparent;border-bottom:1px solid var(--line-soft);
+    font-family:inherit;
+  }
+  .clause:hover{background:var(--panel-soft)}
+  .clause.sel{background:var(--brand-tint);border-left-color:var(--brand)}
+  .clause-top{display:flex;align-items:center;gap:9px}
+  .clause-num{font-size:11px;font-weight:600;color:var(--ink-3);font-variant-numeric:tabular-nums;width:14px}
+  .clause-name{font-size:13.5px;font-weight:600;color:var(--ink);flex:1;letter-spacing:-.005em}
+  .clause.sel .clause-name{color:var(--brand-ink)}
+  .pill{
+    flex:0 0 auto;height:21px;padding:0 9px;border-radius:999px;font-size:10.5px;font-weight:700;
+    letter-spacing:.03em;display:inline-flex;align-items:center;border:1px solid transparent;
+  }
+  .pill.pass{background:var(--pass-bg);color:var(--pass);border-color:var(--pass-line)}
+  .pill.review{background:var(--review-bg);color:var(--review);border-color:var(--review-line)}
+  .pill.fail{background:var(--fail-bg);color:var(--fail);border-color:var(--fail-line)}
+  .clause-find{margin-top:7px;padding-left:23px;font-size:12.5px;line-height:1.45;color:var(--ink-2)}
+  .clause-redline{margin-top:10px;padding-left:23px;display:flex;gap:8px}
+  .mini{height:28px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent}
+  .mini.solid{background:var(--brand);color:#fff}
+  .mini.ghost{background:var(--panel);border-color:var(--line);color:var(--ink-2)}
+
+  /* ---------- Document ---------- */
+  .doc-toolbar{
+    flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line-soft);
+  }
+  .seg{display:flex;background:var(--bg);border-radius:var(--r-md);padding:3px;gap:2px}
+  .seg button{
+    height:28px;padding:0 13px;border:0;background:transparent;border-radius:7px;font-family:inherit;
+    font-size:12.5px;font-weight:550;color:var(--ink-2);cursor:pointer;
+  }
+  .seg button.on{background:var(--panel);color:var(--brand);font-weight:600;box-shadow:0 1px 2px rgba(20,20,40,.06)}
+  .vc{display:flex;align-items:center;gap:2px;margin-left:auto}
+  .vc .icon{width:30px;height:30px;border:0;background:transparent;border-radius:8px;color:var(--ink-2);cursor:pointer;display:grid;place-items:center}
+  .vc .icon:hover{background:var(--panel-soft);color:var(--ink)}
+  .vc .read{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums;padding:0 4px;min-width:42px;text-align:center}
+  .vc svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .doc-scroll{flex:1;min-height:0;overflow:auto;background:var(--bg);padding:26px;display:flex;justify-content:center}
+  .paper{
+    width:min(700px,100%);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+    padding:44px 52px 56px;box-shadow:0 1px 2px rgba(20,20,40,.04),0 24px 50px -34px rgba(20,20,40,.25);
+  }
+  .paper h3{font-size:15px;font-weight:650;text-align:center;margin-bottom:22px;letter-spacing:.01em}
+  .para{position:relative;font-size:13.5px;line-height:1.7;color:#2b2b34;margin:0 -16px 15px;padding:4px 16px;border-left:2px solid transparent;border-radius:3px}
+  .para.c-pass{border-left-color:var(--pass);background:linear-gradient(90deg,var(--pass-bg),transparent 65%)}
+  .para.c-review{border-left-color:var(--review);background:linear-gradient(90deg,var(--review-bg),transparent 65%)}
+  .para.c-fail{border-left-color:var(--fail);background:linear-gradient(90deg,var(--fail-bg),transparent 65%)}
+  .para.c-sel{border-left-color:var(--brand);background:linear-gradient(90deg,var(--brand-tint),transparent 70%)}
+  .ins{color:var(--pass);background:rgba(20,133,74,.12);border-radius:3px;padding:0 2px}
+  .del{color:var(--fail);text-decoration:line-through;text-decoration-color:rgba(203,43,43,.6)}
+
+  /* ---------- Inspector ---------- */
+  .insp{padding:18px 20px 26px}
+  .insp-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:4px}
+  .insp-head h3{font-size:17px;font-weight:650;letter-spacing:-.01em}
+  .insp-why{font-size:13.5px;line-height:1.55;color:var(--ink);margin:12px 0 4px}
+  .field{padding:15px 0 16px;border-top:1px solid var(--line-soft)}
+  .field:first-of-type{border-top:0}
+  .field .lbl{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
+  .field .val{font-size:13px;line-height:1.55;color:var(--ink-2)}
+  .analysis{margin-top:8px;background:var(--panel-soft);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+  .analysis .ah{padding:11px 15px;font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px}
+  .src-tag{height:18px;padding:0 7px;border-radius:999px;font-size:9.5px;font-weight:700;letter-spacing:.02em;background:var(--brand-tint);color:var(--brand-ink);text-transform:none}
+  .arow{display:flex;justify-content:space-between;gap:14px;padding:9px 15px;font-size:12.5px;border-bottom:1px solid var(--line-soft)}
+  .arow:last-child{border-bottom:0}
+  .arow .ak{color:var(--ink-3)}
+  .arow .av{color:var(--ink);font-weight:550;text-align:right}
+  .av .ok{color:var(--pass)}
+  .callout{margin:0 15px 13px;padding:10px 12px;border-radius:var(--r-sm);background:var(--review-bg);border:1px solid var(--review-line);font-size:12px;line-height:1.5;color:#7a4a06}
+  .comment{margin-top:18px}
+  .comment textarea{
+    width:100%;min-height:74px;resize:vertical;border:1px solid var(--line);border-radius:var(--r-md);
+    padding:11px 12px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--panel-soft);
+  }
+  .comment textarea::placeholder{color:var(--ink-3)}
+  .comment textarea:focus{outline:none;border-color:var(--brand);background:var(--panel);box-shadow:0 0 0 3px var(--brand-tint)}
+  .prototype-flag{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);font-size:10.5px;color:var(--ink-3);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+</style>
+</head>
+<body>
+  <div class="app">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand">aspora</div>
+      <nav class="tabs">
+        <a href="#"><span class="ti"></span>Repository</a>
+        <a href="#"><span class="ti"></span>Upload</a>
+        <a href="#" class="active"><span class="ti"></span>Review</a>
+        <a href="#"><span class="ti"></span>Admin</a>
+      </nav>
+    </header>
+
+    <!-- Matter bar -->
+    <header class="matterbar">
+      <button class="back" aria-label="Back">&lsaquo;</button>
+      <div class="matter-id">
+        <span class="status-chip"><span class="dot"></span>In Review</span>
+        <div class="matter-title">Air India Mutual NDA</div>
+        <div class="matter-sub">Counterparty <b>Air India Limited</b> &nbsp;·&nbsp; Received <b>2 Jun 2026</b> &nbsp;·&nbsp; Legal route</div>
+      </div>
+      <div class="matter-actions">
+        <button class="btn" disabled>Save draft</button>
+        <button class="btn" disabled>Reset</button>
+        <button class="btn">Clear</button>
+      </div>
+    </header>
+
+    <!-- Three columns -->
+    <main class="grid">
+
+      <!-- Clause map -->
+      <aside class="col">
+        <div class="col-head">
+          <h2>Clauses</h2>
+          <span class="col-count">2 pass · 3 review · 1 fail</span>
+        </div>
+        <div class="col-body">
+          <div class="clause">
+            <div class="clause-top"><span class="clause-num">1</span><span class="clause-name">Mutuality</span><span class="pill pass">PASS</span></div>
+            <div class="clause-find">Mutual obligation language found.</div>
+          </div>
+          <div class="clause sel">
+            <div class="clause-top"><span class="clause-num">2</span><span class="clause-name">Confidential Information</span><span class="pill review">REVIEW</span></div>
+            <div class="clause-find">Broad confidential information definition found with no extra exclusions detected.</div>
+          </div>
+          <div class="clause">
+            <div class="clause-top"><span class="clause-num">3</span><span class="clause-name">Governing Law</span><span class="pill review">REVIEW</span></div>
+            <div class="clause-find">An approved governing law was found, but the document also contains unclear or non-approved governing-law language.</div>
+          </div>
+          <div class="clause">
+            <div class="clause-top"><span class="clause-num">4</span><span class="clause-name">Term and Survival</span><span class="pill review">REVIEW</span></div>
+            <div class="clause-find">Survival language uses cross-references that could not be fully resolved, so the confidentiality survival scope needs review.</div>
+          </div>
+          <div class="clause">
+            <div class="clause-top"><span class="clause-num">5</span><span class="clause-name">Non-Circumvention</span><span class="pill fail">FAIL</span></div>
+            <div class="clause-find">Prohibited non-circumvention or substitute-purpose language found.</div>
+            <div class="clause-redline">
+              <button class="mini solid">Include redline</button>
+              <button class="mini ghost">Ignore</button>
+            </div>
+          </div>
+          <div class="clause">
+            <div class="clause-top"><span class="clause-num">6</span><span class="clause-name">Signatures</span><span class="pill pass">PASS</span></div>
+            <div class="clause-find">Execution block appears to include both parties, titles, and a date.</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Document -->
+      <section class="col">
+        <div class="doc-toolbar">
+          <div class="seg">
+            <button class="on">Redline</button>
+            <button>Clean</button>
+            <button>Side by side</button>
+          </div>
+          <div class="vc">
+            <button class="icon" aria-label="Previous page"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button>
+            <span class="read">1 / 32</span>
+            <button class="icon" aria-label="Next page"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+            <button class="icon" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+            <span class="read">100%</span>
+            <button class="icon" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button class="icon" aria-label="Full screen"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></button>
+            <button class="icon" aria-label="Export"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+          </div>
+        </div>
+        <div class="doc-scroll">
+          <article class="paper">
+            <h3>Non-Disclosure Agreement</h3>
+            <p class="para">This non-disclosure agreement ("Agreement") is entered into on 29th September 2025 by and between:</p>
+            <p class="para c-pass">Air India Limited, a company incorporated under the Companies Act, 1956, having its registered office at Block 4, Vatika One on One, Sector 16, Gurugram 122007, Haryana, India ("Air India"), which expression shall include its successors and permitted assigns; AND</p>
+            <p class="para">Vance Inc., a company incorporated under the laws of the United States of America, having its registered office at 1271 Register08, 1000 N. West Street, Wilmington, Delaware 19801 ("Aspora"), which expression shall include its successors and permitted assigns.</p>
+            <p class="para c-sel">Each party may disclose to the other certain non-public, confidential or proprietary information, whether <span class="ins">in writing, orally or by inspection of tangible objects</span>, that is designated as confidential or that reasonably should be understood to be confidential given the nature of the information.</p>
+            <p class="para c-fail">Neither party shall, for a period of twenty-four (24) months, <span class="del">directly or indirectly solicit, divert or circumvent</span> the other party in respect of any business opportunity introduced under this Agreement.</p>
+            <p class="para">The recipient shall protect the disclosing party's confidential information using the same degree of care it uses for its own confidential information, but in no event less than a reasonable degree of care.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Inspector / clause dossier -->
+      <aside class="col">
+        <div class="col-head">
+          <h2>Clause detail</h2>
+          <span class="col-count">Clause 2 of 6</span>
+        </div>
+        <div class="col-body">
+          <div class="insp">
+            <div class="insp-head">
+              <h3>Confidential Information</h3>
+              <span class="pill review">REVIEW</span>
+            </div>
+            <p class="insp-why">Broad confidential information definition found with no extra exclusions detected.</p>
+
+            <div class="field">
+              <div class="lbl">Playbook rationale</div>
+              <div class="val">The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.</div>
+            </div>
+            <div class="field">
+              <div class="lbl">Evidence guidance</div>
+              <div class="val">Anchor on the defined term, then inspect the same paragraph for category breadth and nearby exclusion language.</div>
+            </div>
+            <div class="field">
+              <div class="lbl">What to verify</div>
+              <div class="val">No change needed.</div>
+            </div>
+
+            <div class="analysis">
+              <div class="ah">Analysis trail <span class="src-tag">AI second opinion</span></div>
+              <div class="arow"><span class="ak">Evidence collected</span><span class="av">23 paragraphs linked</span></div>
+              <div class="arow"><span class="ak">Signal classification</span><span class="av">Review evidence</span></div>
+              <div class="arow"><span class="ak">Analysis outputs</span><span class="av"><span class="ok">Available</span></span></div>
+              <div class="arow"><span class="ak">AI decision</span><span class="av">Review</span></div>
+              <div class="callout">AI response could not be validated: the cited quote did not appear in paragraph p15. The Python verdict stands; the AI is a blind second opinion and never sees it.</div>
+            </div>
+
+            <div class="comment">
+              <div class="lbl" style="font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px">Word comment</div>
+              <textarea placeholder="Leave a comment for the Word export"></textarea>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+    </main>
+  </div>
+  <div class="prototype-flag">Prototype · revamp direction · real Air India review data</div>
+</body>
+</html>
