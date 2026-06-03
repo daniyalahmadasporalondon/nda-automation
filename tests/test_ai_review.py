@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from nda_automation import ai_review
 from nda_automation.checker import (
@@ -165,6 +165,63 @@ class AIReviewTests(unittest.TestCase):
         reviewed = [clause for clause in result["clauses"] if clause.get("ai_review_analysis")]
         self.assertEqual(len(reviewed), 5)
         self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
+
+    def test_in_memory_reviewer_crosses_the_seam(self):
+        # Injecting a real AIReviewer adapter (not mocking app_settings) exercises
+        # the actual packet build (request shaping) and the verdict->arbiter path.
+        def confirming(packet):
+            paragraph = packet["paragraphs"][0]
+            return {
+                "decision": "pass",
+                "confidence": 0.93,
+                "reason": "Scripted in-memory confirmation.",
+                "cited_spans": [{
+                    "paragraph_id": paragraph["id"],
+                    "quote": str(paragraph["text"])[:60],
+                    "relevance": "Supports the decision.",
+                }],
+                "issues": [],
+                "suggested_fix": "",
+            }
+
+        reviewer = ai_review.InMemoryReviewer(default=confirming)
+        result = review_nda(_pass_sample_text(), ai_reviewer=reviewer)
+
+        # The reviewer received real, blind packets through the seam.
+        self.assertEqual(len(reviewer.packets), 5)
+        for packet in reviewer.packets:
+            self.assertEqual(packet["task"], "semantic_clause_crosscheck")
+            self.assertNotIn("deterministic_result", packet)
+            self.assertTrue(packet["paragraphs"])
+        # The verdicts flowed through the arbiter to confirmed decisions.
+        reviewed = [clause for clause in result["clauses"] if clause.get("ai_review_analysis")]
+        self.assertEqual(len(reviewed), 5)
+        self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
+
+    def test_in_memory_reviewer_scripts_per_clause_disagreement(self):
+        def cite(packet):
+            paragraph = packet["paragraphs"][0]
+            return [{"paragraph_id": paragraph["id"], "quote": str(paragraph["text"])[:60], "relevance": "x"}]
+
+        reviewer = ai_review.InMemoryReviewer(
+            responses={
+                "mutuality": lambda packet: {
+                    "decision": "fail", "confidence": 0.9, "reason": "Looks one-way.",
+                    "cited_spans": cite(packet), "issues": [], "suggested_fix": "",
+                },
+            },
+            default=lambda packet: {
+                "decision": "pass", "confidence": 0.92, "reason": "Fine.",
+                "cited_spans": cite(packet), "issues": [], "suggested_fix": "",
+            },
+        )
+        result = review_nda(_pass_sample_text(), ai_reviewer=reviewer)
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(mutuality["decision"], "review")
+        self.assertEqual(mutuality["reason_code"], "ai_semantic_disagreement")
+        self.assertEqual(governing_law["decision"], "pass")
 
     def test_semantic_packet_is_blind_to_python_decision(self):
         captured_packets = []
@@ -445,6 +502,81 @@ class AIReviewTests(unittest.TestCase):
         self.assertNotIn("?", sanitized)
         self.assertRegex(sanitized, r"^[A-Za-z0-9._-]*$")
         self.assertEqual(ai_review._sanitize_model_name("   "), ai_review.DEFAULT_GEMINI_MODEL)
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        context_manager = MagicMock()
+        context_manager.__enter__.return_value.read.return_value = response_bytes
+        context_manager.__exit__.return_value = False
+        return context_manager
+
+    return urlopen
+
+
+class AIProviderAdapterTests(unittest.TestCase):
+    """Cross the real provider seam: each adapter builds its request and parses
+    its response, with only the HTTP transport mocked. Previously nothing
+    exercised the adapters' __call__ round-trip end to end."""
+
+    PACKET = {
+        "task": "semantic_clause_crosscheck",
+        "clause": {"id": "mutuality"},
+        "paragraphs": [{"id": "p1", "index": 1, "text": "Each party is bound."}],
+    }
+    VERDICT = {
+        "decision": "pass",
+        "confidence": 0.9,
+        "reason": "Reciprocal obligations are present.",
+        "cited_spans": [],
+        "issues": [],
+        "suggested_fix": "",
+    }
+
+    def test_gemini_adapter_round_trip(self):
+        captured = []
+        response = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": json.dumps(self.VERDICT)}]}}]}
+        ).encode("utf-8")
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            reviewer = ai_review.GeminiAIReviewer(api_key="k", model="gemini-3.5-flash")
+            verdict = reviewer(self.PACKET)
+
+        self.assertEqual(verdict, self.VERDICT)
+        self.assertEqual(len(captured), 1)
+        body = json.loads(captured[0].data.decode("utf-8"))
+        self.assertEqual(body["generationConfig"]["temperature"], 0)
+        self.assertIn("semantic_clause_crosscheck", json.dumps(body))
+
+    def test_alibaba_adapter_round_trip(self):
+        captured = []
+        response = json.dumps({"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}).encode("utf-8")
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            reviewer = ai_review.AlibabaAIReviewer(api_key="sk-ws-x", model="qwen3.7-plus-2026-05-26")
+            verdict = reviewer(self.PACKET)
+
+        self.assertEqual(verdict, self.VERDICT)
+        body = json.loads(captured[0].data.decode("utf-8"))
+        self.assertEqual(body["model"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(body["response_format"]["type"], "json_object")
+
+    def test_openrouter_adapter_round_trip(self):
+        captured = []
+        response = json.dumps({"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}).encode("utf-8")
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            reviewer = ai_review.OpenRouterAIReviewer(api_key="sk-or-x", model="openai/gpt-4o-mini")
+            verdict = reviewer(self.PACKET)
+
+        self.assertEqual(verdict, self.VERDICT)
+        body = json.loads(captured[0].data.decode("utf-8"))
+        self.assertEqual(body["response_format"]["type"], "json_schema")
+
+    def test_adapters_and_in_memory_reviewer_satisfy_the_public_interface(self):
+        self.assertIsInstance(ai_review.InMemoryReviewer(), ai_review.AIReviewer)
+        boom = ai_review.InMemoryReviewer(error=RuntimeError("quota exhausted"))
+        with self.assertRaises(RuntimeError):
+            boom({"clause": {"id": "mutuality"}, "paragraphs": []})
 
 
 if __name__ == "__main__":

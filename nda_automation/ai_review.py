@@ -7,7 +7,7 @@ import ssl
 import urllib.error
 import urllib.request
 from copy import deepcopy
-from typing import Callable, Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
 from .checks.common import ClauseResult, Paragraph
@@ -50,7 +50,25 @@ AI_REVIEW_CLAUSE_IDS = {
     "term_and_survival",
     "non_circumvention",
 }
-AIReviewFn = Callable[[Dict[str, object]], Dict[str, object] | None]
+@runtime_checkable
+class AIReviewer(Protocol):
+    """Public seam for AI semantic reviewers.
+
+    A reviewer maps a review packet (from build_ai_review_packet) to a verdict
+    dict matching AI_REVIEW_SCHEMA, or None when it has nothing usable to say.
+    The provider adapters (Gemini / OpenRouter / Alibaba), the prod resolver
+    (_configured_reviewer), and InMemoryReviewer all implement this interface;
+    tests inject a reviewer through the reviewer=/ai_reviewer= parameter to cross
+    the real seam instead of mocking app_settings. Plain functions with the same
+    signature also satisfy it.
+    """
+
+    def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
+        ...
+
+
+# Back-compat alias for the historical callable type name.
+AIReviewFn = AIReviewer
 
 AI_REVIEW_SCHEMA: Dict[str, object] = {
     "type": "object",
@@ -234,6 +252,45 @@ class AlibabaAIReviewer:
         except json.JSONDecodeError as error:
             raise AIReviewError("Alibaba API returned non-JSON text.") from error
         return parsed if isinstance(parsed, dict) else None
+
+
+class InMemoryReviewer:
+    """In-memory ``AIReviewer`` adapter for tests.
+
+    Crosses the real reviewer seam -- a built packet goes in, a verdict comes out
+    -- so the request shaping (the packet) and the verdict-to-decision path (the
+    arbiter) are exercised by the real pipeline, without a network call or
+    mocking app_settings. Inject it through ``review_nda(..., ai_reviewer=...)``
+    or ``apply_ai_review(..., reviewer=...)``.
+
+    - ``responses``: clause id -> verdict dict, or a callable ``packet -> dict``.
+    - ``default``: verdict (dict or callable) for clauses without a specific entry.
+    - ``error``: when set, raised on every call to exercise the AI-error path.
+    - ``packets``: every packet received, recorded for request-shape assertions.
+    """
+
+    def __init__(
+        self,
+        *,
+        responses: Dict[str, object] | None = None,
+        default: object | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.responses = dict(responses or {})
+        self.default = default
+        self.error = error
+        self.packets: List[Dict[str, object]] = []
+
+    def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
+        self.packets.append(deepcopy(packet))
+        if self.error is not None:
+            raise self.error
+        clause = packet.get("clause") if isinstance(packet.get("clause"), dict) else {}
+        clause_id = str(clause.get("id") or "")
+        response = self.responses.get(clause_id, self.default)
+        if callable(response):
+            return response(packet)
+        return deepcopy(response) if isinstance(response, dict) else response
 
 
 def apply_ai_review(
