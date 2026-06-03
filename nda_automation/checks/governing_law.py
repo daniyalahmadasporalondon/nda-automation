@@ -61,6 +61,18 @@ GOVERNING_LAW_REFERENCE_SCOPE_PATTERN = (
     r"annex|annexes|annexure|annexures|appendix|appendices)\b"
     r".{0,180}\bgoverning\s+law\b"
 )
+# An approved law that can be moved/overridden later by agreement is not the
+# same risk as an unapproved law, but it weakens certainty enough to surface.
+# Matched against the full paragraph (the candidate value is comma-truncated and
+# never sees the escape clause that usually follows).
+GOVERNING_LAW_CONDITIONAL_OVERRIDE_PATTERN = (
+    r"\bunless\s+otherwise\s+agreed\b"
+    r"|\bas\s+(?:may\s+be\s+)?otherwise\s+agreed\b"
+    r"|\botherwise\s+agreed\s+(?:in\s+writing\s+)?(?:by|between)\b"
+    r"|\bsubject\s+to\s+(?:any\s+)?(?:contrary\s+|other\s+|separate\s+)?(?:written\s+)?agreement\b"
+    r"|\bas\s+the\s+parties\s+may\s+(?:otherwise\s+)?agree\b"
+    r"|\b(?:governing\s+law|it|this)\s+may\s+be\s+(?:changed|varied|amended|modified|superseded|overridden)\b"
+)
 
 
 def _check_governing_law(
@@ -82,10 +94,34 @@ def _check_governing_law(
     unclear_governing_paragraphs = paragraph_analysis["unclear_paragraphs"]
     unapproved_governing_paragraphs = paragraph_analysis["unapproved_paragraphs"]
     heading_only_paragraphs = paragraph_analysis["heading_only_paragraphs"]
+    conditional_override_paragraphs = paragraph_analysis["conditional_override_paragraphs"]
     analysis = _governing_law_analysis(paragraph_analysis)
 
-    if approved_governing_paragraphs and not unclear_governing_paragraphs and not unapproved_governing_paragraphs:
+    if (
+        approved_governing_paragraphs
+        and not unclear_governing_paragraphs
+        and not unapproved_governing_paragraphs
+        and not conditional_override_paragraphs
+    ):
         result = _match(clause, "Approved governing law found.", approved_governing_paragraphs)
+        _attach_governing_law_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
+
+    if conditional_override_paragraphs and not unapproved_governing_paragraphs:
+        result = _review(
+            clause,
+            (
+                "An approved governing law is present, but the clause allows the governing law to be "
+                "varied or overridden by later agreement."
+            ),
+            conditional_override_paragraphs + approved_governing_paragraphs + unclear_governing_paragraphs,
+            what_to_verify=(
+                "Confirm whether the governing-law override is acceptable, or remove the conditional "
+                "escape language so the approved governing law is fixed."
+            ),
+        )
+        result["reason_code"] = "governing_law_conditional_override"
+        result["reason_codes"] = ["governing_law_conditional_override"]
         _attach_governing_law_analysis(result, analysis)
         return attach_structure_context(result, review_context, context_concepts)
 
@@ -175,6 +211,7 @@ def _governing_law_paragraph_analysis(
     unclear_paragraphs: List[Paragraph] = []
     unapproved_paragraphs: List[Paragraph] = []
     heading_only_paragraphs: List[Paragraph] = []
+    conditional_override_paragraphs: List[Paragraph] = []
     candidate_records: List[Dict[str, object]] = []
     references_by_paragraph_id = {
         str(reference.get("paragraph_id") or ""): reference
@@ -219,12 +256,17 @@ def _governing_law_paragraph_analysis(
         unapproved_records = [record for record in records if not record["approved"] and not record["needs_review"]]
 
         if approved_records and not unclear_records and not unapproved_records:
-            approved_paragraphs.append(paragraph)
+            if _has_conditional_governing_override(text):
+                conditional_override_paragraphs.append(paragraph)
+            else:
+                approved_paragraphs.append(paragraph)
         elif approved_records or unclear_records:
             unclear_paragraphs.append(paragraph)
         elif not records and _contains_approved_governing_phrase(text, clause):
             if _has_unclear_governing_law_text(text):
                 unclear_paragraphs.append(paragraph)
+            elif _has_conditional_governing_override(text):
+                conditional_override_paragraphs.append(paragraph)
             else:
                 approved_paragraphs.append(paragraph)
         elif not records and _is_governing_law_heading_only(text):
@@ -237,6 +279,7 @@ def _governing_law_paragraph_analysis(
         "unclear_paragraphs": unclear_paragraphs,
         "unapproved_paragraphs": unapproved_paragraphs,
         "heading_only_paragraphs": heading_only_paragraphs,
+        "conditional_override_paragraphs": conditional_override_paragraphs,
         "candidate_records": candidate_records,
         "references": reference_analysis.get("references", []),
     }
@@ -517,6 +560,10 @@ def _has_unclear_governing_law_text(text: str) -> bool:
     return bool(re.search(UNCLEAR_GOVERNING_LAW_CANDIDATE_PATTERN, text, flags=re.IGNORECASE))
 
 
+def _has_conditional_governing_override(text: str) -> bool:
+    return bool(re.search(GOVERNING_LAW_CONDITIONAL_OVERRIDE_PATTERN, text, flags=re.IGNORECASE))
+
+
 def _is_governing_law_heading_only(text: str) -> bool:
     return bool(
         re.match(
@@ -563,6 +610,7 @@ def _governing_law_analysis(paragraph_analysis: Dict[str, object]) -> Dict[str, 
     unclear_paragraphs = paragraph_analysis.get("unclear_paragraphs", [])
     unapproved_paragraphs = paragraph_analysis.get("unapproved_paragraphs", [])
     heading_only_paragraphs = paragraph_analysis.get("heading_only_paragraphs", [])
+    conditional_override_paragraphs = paragraph_analysis.get("conditional_override_paragraphs", [])
     candidate_records = paragraph_analysis.get("candidate_records", [])
     references = paragraph_analysis.get("references", [])
     return {
@@ -571,6 +619,9 @@ def _governing_law_analysis(paragraph_analysis: Dict[str, object]) -> Dict[str, 
         "unapproved_paragraph_ids": _paragraph_ids(unapproved_paragraphs if isinstance(unapproved_paragraphs, list) else []),
         "heading_only_paragraph_ids": _paragraph_ids(
             heading_only_paragraphs if isinstance(heading_only_paragraphs, list) else []
+        ),
+        "conditional_override_paragraph_ids": _paragraph_ids(
+            conditional_override_paragraphs if isinstance(conditional_override_paragraphs, list) else []
         ),
         "candidate_records": candidate_records if isinstance(candidate_records, list) else [],
         "reference_count": len(references) if isinstance(references, list) else 0,

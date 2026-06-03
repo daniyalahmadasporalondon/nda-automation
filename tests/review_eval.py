@@ -158,6 +158,7 @@ def run_case(case: dict) -> dict:
         "kind": kind,
         "high_risk": bool(case.get("high_risk")),
         "gated": bool(case.get("gated", True)),
+        "label_source": str(case.get("label_source") or "engineering"),
         "label_note": str(case.get("label_note") or ""),
         "expected": case["expected"],
         "actual_decision": str(clause.get("decision")),
@@ -285,6 +286,11 @@ def format_report(summary: dict) -> str:
         f"AI dissent escalated {ai['disagreement_escalated']}/{ai['disagreement_total']}  "
         f"invalid-AI escalated {ai['invalid_escalated']}/{ai['invalid_total']}"
     )
+    by_label: dict = {}
+    for outcome in summary["gated"]:
+        by_label[outcome["label_source"]] = by_label.get(outcome["label_source"], 0) + 1
+    if by_label:
+        lines.append("gated by label authority: " + ", ".join(f"{src}={count}" for src, count in sorted(by_label.items())))
     lines.append("-" * 72)
     for clause_id in sorted(summary["per_clause"]):
         bucket = summary["per_clause"][clause_id]

@@ -666,11 +666,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           "unclear_paragraph_ids",
           "unapproved_paragraph_ids",
           "heading_only_paragraph_ids",
+          "conditional_override_paragraph_ids",
           "candidate_records",
         ],
         reason_codes: {
           pass: ["approved_governing_law"],
-          review: ["unclear_governing_law", "governing_law_heading_only"],
+          review: ["unclear_governing_law", "governing_law_heading_only", "governing_law_conditional_override"],
           check: ["missing_governing_law", "unapproved_governing_law"],
         },
         hardening_guards: [
