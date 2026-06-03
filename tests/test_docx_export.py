@@ -19,6 +19,7 @@ from nda_automation.docx_export import (
     build_source_redline_docx,
     validate_docx_open_health,
 )
+from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
 from nda_automation.docx_text import extract_docx_paragraphs
@@ -601,6 +602,84 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_redline_preserves_run_formatting_on_replaced_paragraph(self):
+        # A bold + colored source paragraph must keep that run formatting after a
+        # replace redline; otherwise the redline silently strips bold/italic/color.
+        bold_paragraph = (
+            '<w:p><w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr>'
+            "<w:t>This Agreement shall be governed by the laws of California.</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{bold_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(run):
+            return "".join(node.text or "" for node in run.findall("w:t", W_NS) + run.findall("w:delText", W_NS))
+
+        # Only the runs derived from the replaced bold paragraph must keep the
+        # source formatting; brand-new inserted clauses have no source run to
+        # inherit from and are correctly left unformatted.
+        replaced_runs = [
+            run
+            for run in document_root.findall(".//w:ins/w:r", W_NS)
+            if "England and Wales" in run_text(run)
+        ] + [
+            run
+            for run in document_root.findall(".//w:del/w:r", W_NS)
+            if "California" in run_text(run)
+        ]
+        self.assertEqual(len(replaced_runs), 2, "expected the inserted and deleted runs of the replaced paragraph")
+        for run in replaced_runs:
+            self.assertIsNotNone(run.find("w:rPr/w:b", W_NS), "replaced paragraph lost source bold formatting")
+            self.assertIsNotNone(run.find("w:rPr/w:color", W_NS), "replaced paragraph lost source color formatting")
+
+    def test_export_content_coverage_passes_for_full_source_redline(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The confidentiality obligations survive for three years.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        result = review_nda(source_text, paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        # A real redline only adds tracked text, so it always covers the source.
+        self.assertEqual(verify_export_content_coverage(redlined_docx, source_text), [])
+
+    def test_export_content_coverage_flags_empty_body(self):
+        empty_docx = make_source_docx([])
+        errors = verify_export_content_coverage(
+            empty_docx,
+            "This Agreement shall be governed by the laws of California.",
+        )
+        self.assertTrue(errors)
+
+    def test_export_content_coverage_flags_truncated_export(self):
+        tiny_docx = make_source_docx(["x"])
+        big_source = "This Agreement shall be governed by the laws of California. " * 20
+        errors = verify_export_content_coverage(tiny_docx, big_source)
+        self.assertTrue(errors)
+
+    def test_export_content_coverage_ignores_missing_source_text(self):
+        docx = make_source_docx(["Some body text."])
+        self.assertEqual(verify_export_content_coverage(docx, ""), [])
 
     def test_source_docx_export_writes_native_word_comments(self):
         source_docx = make_source_docx([

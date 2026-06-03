@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import posixpath
+import re
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from typing import Dict, List, Tuple
 from zipfile import BadZipFile, ZipFile
 
 from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
+
+# Tracked redlines only add text (insertions as w:t, deletions retained as
+# w:delText), so the exported visible text is always >= the source text. An
+# export that covers far less than the source has dropped/empty content.
+EXPORT_CONTENT_COVERAGE_RATIO = 0.5
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -116,6 +122,43 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
     except BadZipFile:
         errors.append("Export is not a readable DOCX zip package.")
     return errors
+
+
+def exported_document_text(docx_bytes: bytes) -> str:
+    """Visible + tracked-deleted text of the export (w:t and w:delText nodes)."""
+    try:
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
+    except (BadZipFile, KeyError, ET.ParseError, UnsafeDocxXmlError):
+        return ""
+    parts = [
+        node.text or ""
+        for node in document_root.iter()
+        if node.tag in (_w_tag("t"), _w_tag("delText"))
+    ]
+    return " ".join(parts)
+
+
+def verify_export_content_coverage(docx_bytes: bytes, source_text: str) -> List[str]:
+    """Content gate the structural health check misses: an empty body or a
+    truncated redline that drops source content. Returns error strings (counts
+    only, never source text, to avoid leaking NDA content)."""
+    source_normalized = _normalize_export_text(source_text)
+    if not source_normalized:
+        return []
+    export_normalized = _normalize_export_text(exported_document_text(docx_bytes))
+    if not export_normalized:
+        return ["Exported document body contains no text."]
+    if len(export_normalized) < len(source_normalized) * EXPORT_CONTENT_COVERAGE_RATIO:
+        return [
+            f"Exported text covers only {len(export_normalized)} of {len(source_normalized)} "
+            "source characters; the redline may have dropped source content."
+        ]
+    return []
+
+
+def _normalize_export_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _docx_content_types(archive: ZipFile) -> Tuple[Dict[str, str], Dict[str, str]]:

@@ -14,8 +14,8 @@ from .docx_export import (
     DocxExportError,
     build_review_report_docx,
     build_source_redline_docx,
-    validate_docx_open_health,
 )
+from .docx_health import validate_docx_open_health, verify_export_content_coverage
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
@@ -62,12 +62,14 @@ def _build_redline_export(payload: dict, fallback_text: str, *, title: str, pers
         report_bytes = build_source_redline_docx(source_document_bytes, review_result)
         download_filename = export_service.redline_download_filename(source_filename)
         require_styles = False
+        expected_source_text = str(review_result.get("extracted_text") or "")
     else:
         report_bytes = build_review_report_docx(review_result, title=title.strip() or "NDA Review")
         download_filename = export_service.redline_download_filename(source_filename) if source_filename else "nda-review-report.docx"
         require_styles = True
+        expected_source_text = ""
 
-    _validate_export(report_bytes, require_styles=require_styles)
+    _validate_export(report_bytes, require_styles=require_styles, expected_source_text=expected_source_text)
     return RedlineExport(
         data=report_bytes,
         filename=download_filename,
@@ -159,9 +161,14 @@ def _normalize_document_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _validate_export(report_bytes: bytes, *, require_styles: bool) -> None:
+def _validate_export(report_bytes: bytes, *, require_styles: bool, expected_source_text: str = "") -> None:
     health_errors = validate_docx_open_health(report_bytes, require_styles=require_styles)
     if health_errors:
         telemetry.increment("docx_export_health_failures")
         print(f"DOCX export health check failed: {len(health_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its open-health check.", health_errors)
+    content_errors = verify_export_content_coverage(report_bytes, expected_source_text)
+    if content_errors:
+        telemetry.increment("docx_export_content_failures")
+        print(f"DOCX export content check failed: {len(content_errors)} issue(s)")
+        raise DocxOpenHealthError("The exported Word document failed its content-coverage check.", content_errors)

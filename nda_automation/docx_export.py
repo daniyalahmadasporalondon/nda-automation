@@ -571,7 +571,27 @@ def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_par
     for child in list(tracked_paragraph):
         if child.tag != _w_tag("pPr"):
             merged.append(_clone_element(child))
+    # Carry the source paragraph's run formatting (bold/italic/underline/color/
+    # fonts) onto the tracked runs so a replace/delete redline does not silently
+    # strip the character formatting of the text it touches.
+    _apply_source_run_properties(merged, _dominant_run_properties(source_paragraph))
     return merged
+
+
+def _dominant_run_properties(source_paragraph: ET.Element) -> ET.Element | None:
+    for run in source_paragraph.iter(_w_tag("r")):
+        run_properties = run.find(_w_tag("rPr"))
+        if run_properties is not None:
+            return run_properties
+    return None
+
+
+def _apply_source_run_properties(paragraph: ET.Element, run_properties: ET.Element | None) -> None:
+    if run_properties is None:
+        return
+    for run in paragraph.iter(_w_tag("r")):
+        if run.find(_w_tag("rPr")) is None:
+            run.insert(0, _clone_element(run_properties))
 
 
 def _strip_paragraph_property_revisions(root: ET.Element) -> None:
