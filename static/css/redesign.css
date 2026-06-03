@@ -985,3 +985,94 @@ textarea:focus-visible,
 #reviewView #studioNdaText::placeholder {
   color: var(--ink-muted);
 }
+
+/* ===========================================================================
+   Review revamp — ported from static/prototype.html. Scoped to #reviewView.
+   Aspora purple stays the single accent; verdict colours stay green/amber/red;
+   flat. Reversible: delete from this banner to end-of-file to restore prior look.
+   =========================================================================== */
+
+/* Panels: flat, hairline, consistent radius */
+#reviewView .studio-grid { gap: 14px; }
+#reviewView .studio-clauses,
+#reviewView .studio-document,
+#reviewView .studio-playbook {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+/* Matter header */
+#reviewView .studio-matter-card { padding: 15px 22px; border-radius: 16px; gap: 18px; align-items: center; }
+#reviewView .studio-matter-card .studio-tags {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 23px; padding: 0 10px; margin-bottom: 7px;
+  border-radius: 999px; background: var(--accent-weak);
+}
+#reviewView .studio-matter-card .studio-tags span {
+  padding: 0; background: none; border: 0;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0; color: var(--brand);
+}
+#reviewView .studio-matter-card .studio-tags span::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px;
+  border-radius: 50%; background: var(--brand); vertical-align: middle;
+}
+#reviewView .studio-matter-card h1 { font-size: 20px; font-weight: 650; letter-spacing: -.015em; }
+#reviewView .studio-matter-meta { display: flex; gap: 24px; align-items: center; }
+#reviewView .studio-matter-meta dt { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
+#reviewView .studio-matter-meta dd { font-size: 13px; font-weight: 550; color: var(--ink-soft); }
+
+/* Clause lane: clean rows + verdict pills */
+#reviewView .studio-clause-item {
+  border-left: 3px solid transparent; border-bottom: 1px solid var(--border-soft);
+  border-radius: 0; background: transparent; box-shadow: none; margin: 0; padding: 0;
+}
+#reviewView .studio-clause-item:hover { background: var(--bg-soft); }
+#reviewView .studio-clause-item.selected { background: var(--accent-weak); border-left-color: var(--accent); }
+#reviewView .studio-clause-select {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  width: 100%; text-align: left; padding: 13px 18px 14px;
+  background: transparent; border: 0; cursor: pointer;
+}
+#reviewView .studio-clause-dot { display: none; }
+#reviewView .studio-clause-number { flex: 0 0 auto; width: 14px; font-size: 11px; font-weight: 600; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+#reviewView .studio-clause-title { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); letter-spacing: -.005em; }
+#reviewView .studio-clause-item.selected .studio-clause-title { color: var(--brand); }
+#reviewView .studio-clause-finding { flex: 0 0 100%; padding-left: 22px; margin-top: 1px; font-size: 12.5px; line-height: 1.45; color: var(--ink-soft); font-weight: 400; }
+
+/* Verdict pills (clause lane + inspector heading) */
+#reviewView .studio-issue-pill,
+#reviewView .studio-detail-heading .status {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  height: 21px; padding: 0 9px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .03em; border: 1px solid transparent;
+}
+#reviewView .studio-issue-pill.pass, #reviewView .studio-detail-heading .status.pass { background: var(--green-bg); color: var(--green-ink); border-color: var(--green-border); }
+#reviewView .studio-issue-pill.review, #reviewView .studio-detail-heading .status.review { background: var(--amber-bg); color: var(--amber-ink); border-color: var(--amber-border); }
+#reviewView .studio-issue-pill.check, #reviewView .studio-detail-heading .status.check { background: var(--red-bg); color: var(--red-ink); border-color: var(--red-border); }
+#reviewView .studio-issue-pill.pending, #reviewView .studio-detail-heading .status.pending { background: var(--bg-chip); color: var(--ink-muted); }
+
+/* Inspector: labeled sections */
+#reviewView .studio-playbook > h2 { font-size: 15px; font-weight: 600; }
+#reviewView .studio-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+#reviewView .studio-detail-heading h3 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+#reviewView .studio-detail-stack { gap: 0; }
+#reviewView .studio-detail-block {
+  display: block; grid-template-columns: none; border: 0; border-top: 1px solid var(--border-soft);
+  border-radius: 0; padding: 14px 0 15px; margin: 0;
+}
+#reviewView .studio-detail-block.requirement-block { border-top: 0; }
+#reviewView .studio-detail-block > small { display: block; grid-column: auto; margin: 0 0 6px; padding: 0; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-muted); }
+#reviewView .studio-detail-block > p { grid-column: auto; font-size: 13px; line-height: 1.55; color: var(--ink-soft); margin: 0; }
+#reviewView .studio-detail-block.finding-block > p { color: var(--ink); }
+#reviewView .studio-detail-block.issue-block::before,
+#reviewView .studio-detail-block.fix-block::before,
+#reviewView .studio-detail-block.redline-block::before,
+#reviewView .studio-detail-block.comment-block::before,
+#reviewView .studio-detail-block.ai-summary-block::before { display: none; }
+#reviewView .studio-detail-block.ai-summary-block,
+#reviewView .studio-detail-block.reason-code-block {
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px;
+  padding: 13px 15px; margin-top: 12px;
+}
