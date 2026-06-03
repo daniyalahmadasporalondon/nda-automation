@@ -4,6 +4,61 @@ A focused NDA review and redline workstation for hard-clause review, matter inta
 
 The app reviews pasted text, `.docx` files, and text-based PDFs against a configurable playbook. It returns pass / review / fail clause findings with structured evidence, reason codes, audit traces, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
 
+## Connect APIs First
+
+The repository does not include API keys or Gmail OAuth tokens. To run the full product locally, each user should connect their own AI and Gmail credentials after cloning the repo.
+
+### 1. Install full local dependencies
+
+```bash
+python3 -m pip install -e ".[pdf,gmail]"
+```
+
+### 2. Connect AI review
+
+Set the AI provider/model and API key before starting the server:
+
+```bash
+export NDA_AI_REVIEW_ENABLED=true
+export NDA_AI_PROVIDER=alibaba
+export NDA_AI_MODEL=qwen3.7-plus-2026-05-26
+export ALIBABA_API_KEY="your-alibaba-api-key"
+```
+
+Then start the app:
+
+```bash
+python3 -m nda_automation.server --port 8787
+```
+
+You can also paste/save the AI key from **Admin -> AI** after the app is running. Saved local keys are stored in ignored app data and are not committed to Git.
+
+### 3. Connect Gmail inbound/outbound
+
+Place OAuth token JSON files outside Git, then point the app at them:
+
+```bash
+export NDA_GMAIL_INBOUND_TOKEN_PATH="/absolute/path/to/inbound-token.json"
+export NDA_GMAIL_OUTBOUND_TOKEN_PATH="/absolute/path/to/outbound-token.json"
+```
+
+For local development only, the app also checks these ignored paths:
+
+```text
+data/gmail/inbound-token.json
+data/gmail/outbound-token.json
+```
+
+Use **Admin -> Email** to confirm whether inbound sync and outbound send are ready. Gmail remains disabled until token files are configured and readable by the service.
+
+### 4. Open the app
+
+```text
+http://127.0.0.1:8787/
+```
+
+Do not commit real API keys, `.env` files, or Gmail token JSON files. Share those credentials separately through a secure internal channel.
+
 ## Features
 
 - Review pasted NDA text, plain text files, `.docx` Word documents, and text-based PDFs.
