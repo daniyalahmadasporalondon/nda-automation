@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import telemetry
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
@@ -22,6 +24,7 @@ MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
 DEFAULT_MAX_STORED_MATTERS = 250
+PRUNED_ARCHIVE_DIRNAME = "pruned-matters"
 MAX_SOURCE_FILENAME_LENGTH = 180
 GMAIL_METADATA_FIELDS = (
     "gmail_account",
@@ -324,6 +327,7 @@ def create_matter(
         except Exception:
             stored_path.unlink(missing_ok=True)
             raise
+        _archive_pruned_matters(pruned_matters)
         for pruned_matter in pruned_matters:
             _delete_stored_document(pruned_matter)
     return matter
@@ -419,6 +423,48 @@ def _stored_matter_limit() -> int:
 def _matter_retention_sort_key(matter: dict[str, Any]) -> tuple[int, str]:
     is_closed = 0 if matter.get("status") == "closed" or matter.get("board_column") == "signed_closed" else 1
     return (is_closed, str(matter.get("updated_at") or matter.get("created_at") or ""))
+
+
+def _matter_is_active(matter: dict[str, Any]) -> bool:
+    return matter.get("status") != "closed" and matter.get("board_column") != "signed_closed"
+
+
+def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> None:
+    # Retention pruning is destructive (it deletes the oldest matters, which can
+    # include active NDAs once the limit is hit). Archive each full matter record
+    # before its document is deleted, and warn when active NDAs are pruned, so the
+    # data is recoverable and the deletion is never silent.
+    if not pruned_matters:
+        return
+    archive_dir = DATA_DIR / PRUNED_ARCHIVE_DIRNAME
+    archived = 0
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for matter in pruned_matters:
+            matter_id = str(matter.get("id") or "")
+            if not matter_id:
+                continue
+            archive_path = archive_dir / f"{matter_id}.json"
+            temporary_path = archive_path.with_suffix(".json.tmp")
+            with temporary_path.open("w", encoding="utf-8") as handle:
+                json.dump(matter, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary_path.replace(archive_path)
+            archived += 1
+    except OSError as error:
+        telemetry.increment("matter_prune_archive_failures")
+        print(f"Could not archive pruned matters before deletion: {error.__class__.__name__}")
+    telemetry.increment("matters_pruned", len(pruned_matters))
+    active_count = sum(1 for matter in pruned_matters if _matter_is_active(matter))
+    if active_count:
+        telemetry.increment("active_matters_pruned", active_count)
+        # Log counts only, never matter titles, to avoid leaking NDA content.
+        print(
+            f"Retention limit reached: pruned {len(pruned_matters)} matter(s) including "
+            f"{active_count} active NDA(s); archived {archived} record(s) to {archive_dir.name}/."
+        )
 
 
 def _gmail_attachment_keys_for_metadata(metadata: dict[str, Any]) -> tuple[tuple[str, str], ...]:

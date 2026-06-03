@@ -117,8 +117,14 @@ def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
         return existing
     clauses = review_result.get("clauses", [])
     if isinstance(clauses, list):
+        clause_dicts = [clause for clause in clauses if isinstance(clause, dict)]
+        if clause_dicts:
+            # Single source of truth: derive the review state (and therefore the
+            # send gate) from the actual clause decisions, not the
+            # requirements_* integer summaries, which can drift from them.
+            return aggregate_review_state(clause_dicts)
         return aggregate_review_state(
-            [clause for clause in clauses if isinstance(clause, dict)],
+            [],
             pass_count=_optional_int(review_result.get("requirements_passed")),
             review_count=_optional_int(review_result.get("requirements_needs_review")),
             check_count=_optional_int(review_result.get("requirements_failed")),
