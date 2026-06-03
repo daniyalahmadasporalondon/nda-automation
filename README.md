@@ -79,7 +79,18 @@ The callable is lazy-loaded only when configured and receives keyword arguments 
 {"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}
 ```
 
-No semantic provider, LLM client, or external AI dependency is bundled.
+The deterministic core remains stdlib-first. External AI review is optional and only runs when configured.
+
+Optional AI semantic review:
+
+```bash
+export NDA_AI_REVIEW_ENABLED=true
+export NDA_AI_PROVIDER=alibaba
+export NDA_AI_MODEL=qwen3.7-plus
+export ALIBABA_API_KEY=sk-...
+```
+
+Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and defaults to `qwen3.7-plus`. Admins can also save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 

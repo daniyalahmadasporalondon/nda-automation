@@ -33,7 +33,7 @@ const AdminAiView = (() => {
       event.preventDefault();
       const apiKey = aiApiKeyInput?.value.trim() || "";
       if (!apiKey) {
-        setFact("key-message", "Paste a Gemini or OpenRouter API key first.");
+        setFact("key-message", "Paste a Gemini, OpenRouter, or Alibaba API key first.");
         aiApiKeyInput?.focus();
         return;
       }
@@ -106,7 +106,7 @@ const AdminAiView = (() => {
       const keyConfigured = status.api_key_configured === true;
       setOverall(enabled ? (keyConfigured ? "On" : "Needs key") : "Off", enabled ? (keyConfigured ? "ready" : "blocked") : "pending");
       renderToggle(enabled);
-      setFact("enabled-copy", enabled ? (keyConfigured ? "On" : "On - missing GEMINI_API_KEY") : "Off");
+      setFact("enabled-copy", enabled ? (keyConfigured ? "On" : "On - missing API key") : "Off");
       setFact("provider", status.provider || "gemini");
       setFact("model", status.model || "-");
       setFact("api-key", apiKeyLabel(status));
@@ -181,16 +181,18 @@ const AdminAiView = (() => {
 
     function keyMessage(status) {
       if (status.api_key_source === "environment") {
-        return status.provider === "openrouter"
-          ? "Using OPENROUTER_API_KEY from the backend environment."
-          : "Using GEMINI_API_KEY from the backend environment.";
+        if (status.provider === "openrouter") return "Using OPENROUTER_API_KEY from the backend environment.";
+        if (status.provider === "alibaba") return "Using ALIBABA_API_KEY or DASHSCOPE_API_KEY from the backend environment.";
+        return "Using GEMINI_API_KEY from the backend environment.";
       }
       if (status.api_key_source === "local_settings") return `Using a saved local ${providerName(status.provider)} key under ignored app data.`;
-      return "Paste a Gemini or OpenRouter key and click Save key & turn on.";
+      return "Paste a Gemini, OpenRouter, or Alibaba key and click Save key & turn on.";
     }
 
     function providerName(provider) {
-      return provider === "openrouter" ? "OpenRouter" : "Gemini";
+      if (provider === "openrouter") return "OpenRouter";
+      if (provider === "alibaba") return "Alibaba/Qwen";
+      return "Gemini";
     }
 
     return { load };

@@ -45,6 +45,8 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_THRESHOLD": "",
                 "NDA_AI_PROVIDER": "gemini",
                 "NDA_AI_MODEL": "gemini-3.5-flash",
+                "ALIBABA_API_KEY": "",
+                "DASHSCOPE_API_KEY": "",
             },
             clear=False,
         )
@@ -103,6 +105,15 @@ class AIReviewTests(unittest.TestCase):
                 ):
                     openrouter_status = ai_review.ai_review_status()
 
+        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
+            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="sk-ws-local-secret"):
+                with patch.dict(
+                    os.environ,
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": "", "ALIBABA_API_KEY": ""},
+                    clear=False,
+                ):
+                    alibaba_status = ai_review.ai_review_status()
+
         self.assertEqual(disabled_status["enabled"], False)
         self.assertEqual(disabled_status["stored_enabled"], False)
         self.assertEqual(disabled_status["environment_enabled"], True)
@@ -119,6 +130,10 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(openrouter_status["model"], "openai/gpt-4o-mini")
         self.assertEqual(openrouter_status["api_key_configured"], True)
         self.assertEqual(openrouter_status["api_key_source"], "local_settings")
+        self.assertEqual(alibaba_status["provider"], "alibaba")
+        self.assertEqual(alibaba_status["model"], "qwen3.7-plus")
+        self.assertEqual(alibaba_status["api_key_configured"], True)
+        self.assertEqual(alibaba_status["api_key_source"], "local_settings")
 
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)
@@ -227,6 +242,21 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(body["response_format"]["type"], "json_schema")
         self.assertEqual(body["response_format"]["json_schema"]["strict"], True)
         self.assertIn("schema", body["response_format"]["json_schema"])
+        self.assertIn("semantic_clause_crosscheck", json.dumps(body))
+
+    def test_alibaba_request_body_uses_singapore_json_chat_completion(self):
+        packet = {
+            "task": "semantic_clause_crosscheck",
+            "clause": {"id": "mutuality"},
+            "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
+        }
+
+        body = ai_review._alibaba_request_body(packet, "qwen3.7-plus")
+
+        self.assertEqual(body["model"], "qwen3.7-plus")
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["enable_thinking"], False)
+        self.assertEqual(body["response_format"]["type"], "json_object")
         self.assertIn("semantic_clause_crosscheck", json.dumps(body))
 
 

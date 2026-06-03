@@ -740,7 +740,7 @@
                   <form class="ai-key-form" id="adminAiKeyForm">
                     <label for="adminAiApiKeyInput">AI API key</label>
                     <div class="ai-key-row">
-                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini or OpenRouter API key">
+                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini, OpenRouter, or Alibaba API key">
                       <button class="primary" id="adminAiSaveKeyButton" type="submit">Save key &amp; turn on</button>
                       <button class="secondary" id="adminAiClearKeyButton" type="button">Clear saved key</button>
                     </div>
@@ -787,7 +787,7 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Disabled by default. Admin can save a local Gemini or OpenRouter API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, GEMINI_API_KEY, or OPENROUTER_API_KEY in the backend environment.</p>
+                      <p>Disabled by default. Admin can save a local Gemini, OpenRouter, or Alibaba API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, GEMINI_API_KEY, OPENROUTER_API_KEY, ALIBABA_API_KEY, or DASHSCOPE_API_KEY in the backend environment.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>
@@ -806,11 +806,11 @@
                   <dl class="resolver-audit-list">
                     <div>
                       <dt>Provider</dt>
-                      <dd>Gemini or OpenRouter through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
+                      <dd>Gemini, OpenRouter, or Alibaba/Qwen through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
                     </div>
                     <div>
                       <dt>Default model</dt>
-                      <dd>gemini-3.5-flash, overridable with NDA_AI_MODEL in the backend environment.</dd>
+                      <dd>gemini-3.5-flash, openai/gpt-4o-mini, or qwen3.7-plus depending on provider; overridable with NDA_AI_MODEL in the backend environment.</dd>
                     </div>
                     <div>
                       <dt>Confidence gate</dt>

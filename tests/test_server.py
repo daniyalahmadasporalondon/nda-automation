@@ -1644,6 +1644,24 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(settings["provider"], "openrouter")
         self.assertEqual(settings["model"], "openai/gpt-4o-mini")
 
+    def test_ai_api_key_endpoint_detects_alibaba_key_provider(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"GEMINI_API_KEY": "", "OPENROUTER_API_KEY": "", "ALIBABA_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    save_status, save_payload = self.request("POST", "/api/ai/api-key", {"api_key": "sk-ws-local-secret"})
+                    settings = app_settings.ai_settings()
+
+        self.assertEqual(save_status, 200)
+        self.assertEqual(save_payload["ai_review"]["enabled"], True)
+        self.assertEqual(save_payload["ai_review"]["provider"], "alibaba")
+        self.assertEqual(save_payload["ai_review"]["model"], "qwen3.7-plus")
+        self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
+        self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
+        self.assertNotIn("sk-ws-local-secret", json.dumps(save_payload))
+        self.assertEqual(settings["provider"], "alibaba")
+        self.assertEqual(settings["model"], "qwen3.7-plus")
+
     def test_gmail_sync_history_records_recent_counts_and_errors(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
