@@ -127,7 +127,17 @@
         "without use",
         "without using",
         "without access",
-        "without reference"
+        "without reference",
+        "without reliance",
+        "without knowledge",
+        "no access",
+        "not derived from",
+        "not derived",
+        "did not use",
+        "did not access",
+        "did not reference",
+        "did not receive",
+        "independent of"
       ],
       "exclusion_context_terms": [
         "exclusion",

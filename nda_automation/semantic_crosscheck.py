@@ -10,6 +10,7 @@ from .checks.common import (
     Paragraph,
     _check,
     _match,
+    is_circumvention_freedom_preserving,
 )
 
 SEMANTIC_CROSSCHECK_VERSION = 1
@@ -91,7 +92,12 @@ INDEPENDENT_DEVELOPMENT_SEMANTIC_PATTERN = (
     r"(?:develop\w+|creat\w+|deriv\w+|discover\w+|sourc\w+)\s+independently)\b"
 )
 INDEPENDENT_DEVELOPMENT_QUALIFICATION_PATTERN = (
-    r"\bwithout\s+(?:use|using|access|reference)\b"
+    r"\bwithout\s+(?:use|using|access|reference|reliance|recourse|regard|knowledge|the\s+(?:use|aid|benefit))\b"
+    r"|\b(?:no|without)\s+access\s+to\b"
+    r"|\bhad\s+no\s+(?:access|knowledge|reference|recourse)\b"
+    r"|\bdid\s+not\s+(?:use|access|reference|rely|receive)\b"
+    r"|\bnot\s+(?:derived|based)\s+(?:from|on|upon)\b"
+    r"|\bindependent(?:ly)?\s+of\b"
 )
 QUALIFICATION_WINDOW = 160
 
@@ -242,6 +248,8 @@ def _apply_non_circumvention_crosscheck(
 
 
 def _non_circumvention_semantic_classification(text: str) -> str:
+    if is_circumvention_freedom_preserving(text):
+        return ""
     for classification, pattern in NON_CIRCUMVENTION_SEMANTIC_PATTERNS:
         if re.search(pattern, text, flags=re.IGNORECASE):
             return classification

@@ -11,6 +11,7 @@ from .common import (
     _clause_term_patterns,
     _not_present,
     _paragraph_matches,
+    is_circumvention_freedom_preserving,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
 from ..review_state import _semantic_review_code, _has_ids, _generic_reason_code, CLAUSE_DECISION_PASS
@@ -223,6 +224,16 @@ def _non_circumvention_paragraph_record(
             "paragraph_id": str(paragraph.get("id") or ""),
             "paragraph_index": paragraph.get("index") if isinstance(paragraph.get("index"), int) else None,
             "matched_pattern_count": 0,
+            "classification": "no_signal",
+            "lawful_circumvention": searchable_text != paragraph_text,
+        }
+    if is_circumvention_freedom_preserving(searchable_text):
+        # Freedom-preserving carve-out ("shall not be restricted from dealing with
+        # introduced contacts") -- the literal opposite of a restriction, not a signal.
+        return {
+            "paragraph_id": str(paragraph.get("id") or ""),
+            "paragraph_index": paragraph.get("index") if isinstance(paragraph.get("index"), int) else None,
+            "matched_pattern_count": len(matched_patterns),
             "classification": "no_signal",
             "lawful_circumvention": searchable_text != paragraph_text,
         }

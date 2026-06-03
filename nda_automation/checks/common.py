@@ -5,6 +5,43 @@ from typing import Dict, Iterable, List
 
 from ..review_document import Paragraph, STRUCTURAL_METADATA_KEYS
 
+# --- Freedom-preserving polarity guard for circumvention language ----------
+# "shall not be restricted from dealing", "nothing prevents X from contacting",
+# "free to deal with introduced parties" GUARANTEE freedom to deal -- the literal
+# opposite of a non-circumvention restriction. The matchers key on restriction-
+# shaped tokens ("shall not" + action/object) and would otherwise FAIL these
+# freedom-preserving carve-outs (common in well-drafted mutual NDAs).
+FREEDOM_PRESERVING_CIRCUMVENTION_PATTERN = (
+    r"\b(?:(?:shall|will|may|must|does|do|did)\s+not\s+be|(?:is|are|was|were|be|been|being)\s+not)\s+"
+    r"(?:restricted|prevented|prohibited|barred|precluded|restrained|limited|obligated|required)\s+from\b"
+    r"|\bnothing\b[^.;\n]{0,100}\b(?:restrict\w*|prevent\w*|prohibit\w*|bar\w*|preclud\w*|restrain\w*|limit\w*)\b"
+    r"[^.;\n]{0,60}\bfrom\b"
+    r"|\b(?:free|entitled|permitted|allowed|at\s+liberty)\s+to\s+(?:\w+\s+){0,4}"
+    r"(?:deal|contact|solicit|approach|pursu\w+|engage|transact|communicat\w+|work\s+with|do\s+business|enter\s+into)\b"
+    r"|\bmay\s+freely\s+(?:\w+\s+){0,2}"
+    r"(?:deal|contact|solicit|approach|pursu\w+|engage|transact|communicat\w+)\b"
+)
+# A genuine prohibition co-located with freedom language ("shall not solicit
+# introduced customers; the parties are not restricted from public dealing"). When
+# present we do NOT treat the paragraph as freedom-preserving, so real restrictions
+# are still caught. Matches "[modal] not [action]" but NOT the inversion
+# "[modal] not be restricted from [action]" (where "be" follows "not").
+_BARE_CIRCUMVENTION_PROHIBITION_PATTERN = (
+    r"\b(?:shall|will|must|may|agrees?|undertakes?|covenants?)\s+not\s+(?:to\s+)?"
+    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
+    r"(?:solicit|contact|deal|approach|poach|circumvent|bypass|pursu|engage|transact|divert|"
+    r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
+)
+
+
+def is_circumvention_freedom_preserving(text: str) -> bool:
+    """True if ``text`` guarantees freedom to deal/contact (a carve-out) rather than
+    restricting it, and no separate bare prohibition co-exists in the same text."""
+    if not re.search(FREEDOM_PRESERVING_CIRCUMVENTION_PATTERN, text, flags=re.IGNORECASE):
+        return False
+    return not re.search(_BARE_CIRCUMVENTION_PROHIBITION_PATTERN, text, flags=re.IGNORECASE)
+
+
 YEAR_WORDS = {
     "one": 1,
     "two": 2,

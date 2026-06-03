@@ -200,6 +200,33 @@
     "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
   },
   {
+    "name": "non_circumvention_freedom_to_deal_carveout_pass",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
+  },
+  {
+    "name": "non_circumvention_nothing_restricts_carveout_pass",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "Nothing in this Agreement restricts either party from contacting parties introduced by the other party.",
+    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
+  },
+  {
+    "name": "confidential_information_independent_dev_no_access_qualified_pass",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "Confidential Information means all non-public business, technical, and financial information disclosed by either party, whether orally or in writing. Confidential Information does not include information that was independently developed by personnel who had no access to the Confidential Information.",
+    "expected": {"decision": "pass", "reason_code": "broad_confidential_information_definition"}
+  },
+  {
     "name": "ai_agreement_confirms_pass_no_escalation",
     "clause_id": "governing_law",
     "kind": "ai_agreement",
