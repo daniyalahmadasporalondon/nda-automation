@@ -27,14 +27,14 @@ from __future__ import annotations
 import os
 from collections import Counter
 
-from nda_automation import ai_review, app_settings
+from nda_automation import ai_review
 from nda_automation.checker import review_nda
 from tests.review_eval import classify, load_cases
 
 
 def build_real_reviewer():
     """Return (reviewer | None, provider, key_source, model). Never returns the key."""
-    settings = app_settings.ai_settings()
+    settings = ai_review._ai_review_settings()  # same assembly production uses
     provider = str(settings.get("provider") or "").strip().lower()
     model = str(settings.get("model") or "")
     if not provider:
@@ -133,7 +133,10 @@ def compare(rows: list[dict]) -> dict:
         "high_risk": sum(1 for r in rows if r["high_risk"]),
         "ai_ran": len(ai_rows),
         "ai_errors": [r for r in rows if r["ai_error"]],
+        "invalid": [r for r in ai_rows if r["ai_status"] == "invalid"],
+        "ai_status_breakdown": Counter(r["ai_status"] for r in ai_rows if r["ai_status"]),
         "python_only": Counter(r["py_class"] for r in rows),
+        "python_only_on_ai_rows": Counter(r["py_class"] for r in ai_rows),
         "python_plus_ai": Counter(r["final_class"] for r in ai_rows),
         "disagreements": disagreements,
         "escalated": escalated,
@@ -167,6 +170,13 @@ def format_report(provider: str, model: str, key_source: str, rows: list[dict], 
             f"{'Python + AI':14}{ai.get('correct', 0):>9}{ai.get('false_clear', 0):>13}"
             f"{ai.get('false_flag', 0):>12}{ai.get('wrong_reason_code', 0):>14}{_acc(ai, stats['ai_ran']):>7}"
         )
+        po = stats["python_only_on_ai_rows"]
+        py_acc = 100 * po.get("correct", 0) / stats["ai_ran"]
+        ai_acc = 100 * ai.get("correct", 0) / stats["ai_ran"]
+        lines.append(
+            f"  Δ per-clause accuracy on the {stats['ai_ran']} AI-run cases: "
+            f"{py_acc:.0f}% -> {ai_acc:.0f}% ({ai_acc - py_acc:+.0f} pts)"
+        )
     lines.append("")
     gaps = [r for r in rows if r["py_class"] == "false_clear"]
     lines.append(f"Python-only false clears (the gaps AI exists to catch): {len(gaps)}")
@@ -176,8 +186,12 @@ def format_report(provider: str, model: str, key_source: str, rows: list[dict], 
     lines.append(
         f"AI disagreements: {len(stats['disagreements'])}/{stats['ai_ran']}  "
         f"(arbiter escalated: {len(stats['escalated'])}, "
-        f"recorded-only/blocked: {len(stats['disagreements']) - len(stats['escalated'])})"
+        f"recorded-only/blocked by fail-floor: {len(stats['disagreements']) - len(stats['escalated'])})"
     )
+    if stats["ai_status_breakdown"]:
+        breakdown = ", ".join(f"{status}×{count}" for status, count in stats["ai_status_breakdown"].most_common())
+        lines.append(f"  AI status breakdown: {breakdown}")
+    lines.append(f"Invalid AI outputs (status=invalid): {len(stats['invalid'])}")
 
     lines.append(f"False clears CAUGHT by AI (pass->review, expected not-pass): {len(stats['caught'])}")
     for row in stats["caught"]:
@@ -200,6 +214,9 @@ def main() -> int:
 
     reviewer, provider, key_source, model = build_real_reviewer()
     cases = load_cases()
+    limit = os.environ.get("NDA_EVAL_LIMIT", "").strip()
+    if limit.isdigit():
+        cases = cases[: int(limit)]
     if reviewer is None:
         print(
             f"No usable AI provider configured (provider={provider or '?'}, key={key_source or 'NONE'}).\n"
