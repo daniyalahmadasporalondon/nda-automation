@@ -1,9 +1,9 @@
 /* ===========================================================================
-   Aspora × Apple — visual refresh (light)
+   Aspora — visual refresh (light)
    Loaded AFTER styles.css + repository.css so it wins the cascade.
    Strategy: re-theme the existing design tokens toward a neutral canvas with
-   Aspora purple as a single restrained accent, then layer Apple-style polish
-   (frosted bars, segmented controls, refined type/shadows/motion). Component
+   Aspora purple as the single restrained accent, with flat surfaces,
+   segmented controls, and refined type, shadows, and motion. Component
    redesign is scoped to #reviewView; shell + tokens are global foundations.
    Fully reversible: remove the <link> in index.html to restore the old look.
    =========================================================================== */
@@ -19,7 +19,7 @@
 
 /* ---------- 1. Tokens: neutral canvas, purple accent ---------- */
 :root {
-  /* Surfaces — Apple-style off-white + system grays */
+  /* Surfaces — off-white + neutral grays */
   --bg-main: #fbfbfd;
   --bg-panel: #ffffff;
   --bg-soft: #f5f5f7;
@@ -46,7 +46,7 @@
   --accent-soft: rgba(96, 40, 200, 0.14);
   --accent-ring: rgba(96, 40, 200, 0.34);
 
-  /* Radii — a touch tighter / more Apple */
+  /* Radii — a touch tighter */
   --r-xl: 20px;
   --r-lg: 16px;
   --r-md: 13px;
@@ -306,7 +306,7 @@ textarea:focus-visible,
   border-width: 2px;
 }
 
-/* Pills — Apple soft chips */
+/* Pills — soft chips */
 #reviewView .studio-issue-pill {
   font-size: 9px;
   letter-spacing: 0.03em;
