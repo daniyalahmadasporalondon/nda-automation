@@ -16,13 +16,24 @@ from .redline_actions import (
 from .inline_diff import diff_text_operations
 from .docx_health import validate_docx_open_health as validate_docx_open_health
 from .docx_text import DocxExtractionError, validate_docx_archive
-from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
+from .docx_xml import (
+    UnsafeDocxXmlError,
+    W_NS,
+    _clone_element,
+    _content_type_tag,
+    _escape_attr,
+    _escape_xml,
+    _normalize_paragraph_text,
+    _paragraph_text,
+    _parse_docx_xml_with_namespaces,
+    _rel_tag,
+    _w_tag,
+    _word_paragraph_from_xml,
+    _xml_bytes,
+    parse_docx_xml,
+)
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 COMMENTS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
 OFFICE_DOCUMENT_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
@@ -32,38 +43,12 @@ RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationshi
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 A4_PAGE_WIDTH_TWIPS = "11906"
 A4_PAGE_HEIGHT_TWIPS = "16838"
-ET.register_namespace("w", W_NS)
-ET.register_namespace("r", R_NS)
 
 ClauseResult = Dict[str, object]
 Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
-INVALID_XML_CHAR_PATTERN = re.compile(
-    "[\x00-\x08\x0B\x0C\x0E-\x1F"
-    "\uD800-\uDFFF"
-    "\uFDD0-\uFDEF"
-    "\uFFFE\uFFFF"
-    "\U0001FFFE\U0001FFFF"
-    "\U0002FFFE\U0002FFFF"
-    "\U0003FFFE\U0003FFFF"
-    "\U0004FFFE\U0004FFFF"
-    "\U0005FFFE\U0005FFFF"
-    "\U0006FFFE\U0006FFFF"
-    "\U0007FFFE\U0007FFFF"
-    "\U0008FFFE\U0008FFFF"
-    "\U0009FFFE\U0009FFFF"
-    "\U000AFFFE\U000AFFFF"
-    "\U000BFFFE\U000BFFFF"
-    "\U000CFFFE\U000CFFFF"
-    "\U000DFFFE\U000DFFFF"
-    "\U000EFFFE\U000EFFFF"
-    "\U000FFFFE\U000FFFFF"
-    "\U0010FFFE\U0010FFFF]"
-)
-RESERVED_NAMESPACE_PREFIX_PATTERN = re.compile(r"ns\d+$")
-XML_NAMESPACE_PREFIX_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
 
 class SourceParagraph(NamedTuple):
@@ -427,10 +412,6 @@ def _redline_anchor_texts(redline: RedlineEdit, review_paragraphs_by_id: Dict[st
     return texts
 
 
-def _normalize_paragraph_text(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
 def _apply_redline_edits_to_source_document(
     document_root: ET.Element,
     redlines: object,
@@ -609,23 +590,6 @@ def _strip_paragraph_property_revisions(root: ET.Element) -> None:
         for revision_tag in (_w_tag("ins"), _w_tag("del"), _w_tag("rPrChange")):
             for revision in list(run_properties.findall(revision_tag)):
                 run_properties.remove(revision)
-
-
-def _word_paragraph_from_xml(paragraph_xml: str) -> ET.Element:
-    wrapper = parse_docx_xml(f'<root xmlns:w="{W_NS}">{paragraph_xml}</root>', part_name="redline paragraph")
-    return wrapper[0]
-
-
-def _paragraph_text(paragraph: ET.Element) -> str:
-    parts = []
-    for node in paragraph.iter():
-        if node.tag == _w_tag("t") and node.text:
-            parts.append(node.text)
-        elif node.tag == _w_tag("tab"):
-            parts.append("\t")
-        elif node.tag in {_w_tag("br"), _w_tag("cr")}:
-            parts.append("\n")
-    return "".join(parts).strip()
 
 
 def _targeted_report_comments(review_result: ReviewResult) -> List[dict]:
@@ -1460,130 +1424,6 @@ def _app_properties_xml() -> str:
   xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>nda-automation</Application>
 </Properties>"""
-
-
-def _escape_xml(value: str) -> str:
-    return (
-        _strip_invalid_xml_chars(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-def _escape_attr(value: str) -> str:
-    return _escape_xml(value)
-
-
-def _strip_invalid_xml_chars(value: object) -> str:
-    return INVALID_XML_CHAR_PATTERN.sub("", str(value))
-
-
-def _w_tag(tag: str) -> str:
-    return f"{{{W_NS}}}{tag}"
-
-
-def _rel_tag(tag: str) -> str:
-    return f"{{{REL_NS}}}{tag}"
-
-
-def _content_type_tag(tag: str) -> str:
-    return f"{{{CONTENT_TYPES_NS}}}{tag}"
-
-
-def _parse_docx_xml_with_namespaces(xml: bytes, *, part_name: str) -> tuple[ET.Element, Dict[str, str]]:
-    root = parse_docx_xml(xml, part_name=part_name)
-    namespaces = _xml_namespace_declarations(xml)
-    _register_xml_namespaces(namespaces)
-    return root, namespaces
-
-
-def _xml_namespace_declarations(xml: bytes) -> Dict[str, str]:
-    namespaces: Dict[str, str] = {}
-    for _event, namespace in ET.iterparse(BytesIO(xml), events=("start-ns",)):
-        prefix, uri = namespace
-        if prefix and uri and prefix not in namespaces:
-            namespaces[prefix] = uri
-    return namespaces
-
-
-def _register_xml_namespaces(namespaces: Dict[str, str]) -> None:
-    for prefix, uri in namespaces.items():
-        if not _can_preserve_namespace_prefix(prefix):
-            continue
-        try:
-            ET.register_namespace(prefix, uri)
-        except ValueError:
-            continue
-
-
-def _can_preserve_namespace_prefix(prefix: str) -> bool:
-    if not prefix or prefix in {"xml", "xmlns"}:
-        return False
-    if RESERVED_NAMESPACE_PREFIX_PATTERN.fullmatch(prefix):
-        return False
-    return bool(XML_NAMESPACE_PREFIX_PATTERN.fullmatch(prefix))
-
-
-def _xml_bytes(root: ET.Element, *, namespace_declarations: Dict[str, str] | None = None) -> bytes:
-    _strip_invalid_xml_chars_from_tree(root)
-    xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    if namespace_declarations:
-        xml = _ensure_root_namespace_declarations(xml, namespace_declarations)
-    return xml
-
-
-def _strip_invalid_xml_chars_from_tree(root: ET.Element) -> None:
-    for element in root.iter():
-        if element.text:
-            element.text = _strip_invalid_xml_chars(element.text)
-        if element.tail:
-            element.tail = _strip_invalid_xml_chars(element.tail)
-        for key, value in list(element.attrib.items()):
-            element.attrib[key] = _strip_invalid_xml_chars(value)
-
-
-def _ensure_root_namespace_declarations(xml: bytes, namespace_declarations: Dict[str, str]) -> bytes:
-    root_start, root_end = _root_start_tag_bounds(xml)
-    if root_start is None or root_end is None:
-        return xml
-
-    root_tag = xml[root_start:root_end]
-    missing_declarations = []
-    for prefix, uri in namespace_declarations.items():
-        if not _can_preserve_namespace_prefix(prefix):
-            continue
-        declaration_name = f"xmlns:{prefix}=".encode("utf-8")
-        if declaration_name in root_tag:
-            continue
-        escaped_uri = _escape_attr(uri).encode("utf-8")
-        missing_declarations.append(b' xmlns:' + prefix.encode("utf-8") + b'="' + escaped_uri + b'"')
-
-    if not missing_declarations:
-        return xml
-    insertion_point = root_end - 1 if xml[root_end - 1:root_end] == b"/" else root_end
-    return xml[:insertion_point] + b"".join(missing_declarations) + xml[insertion_point:]
-
-
-def _root_start_tag_bounds(xml: bytes) -> tuple[int | None, int | None]:
-    offset = 0
-    if xml.startswith(b"<?xml"):
-        declaration_end = xml.find(b"?>")
-        if declaration_end != -1:
-            offset = declaration_end + 2
-
-    root_start = xml.find(b"<", offset)
-    if root_start == -1:
-        return None, None
-    root_end = xml.find(b">", root_start)
-    if root_end == -1:
-        return None, None
-    return root_start, root_end
-
-
-def _clone_element(element: ET.Element) -> ET.Element:
-    return parse_docx_xml(ET.tostring(element, encoding="utf-8"), part_name="cloned XML")
 
 
 def _next_revision_id(root: ET.Element) -> int:
