@@ -182,6 +182,24 @@
     "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
   },
   {
+    "name": "non_circumvention_enter_into_persons_trap",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "The Receiving Party shall not enter into any arrangement with persons introduced by the Discloser.",
+    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
+  },
+  {
+    "name": "non_circumvention_steer_clear_opportunity_trap",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "Each party agrees to steer clear of any opportunity surfaced by the other party.",
+    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
+  },
+  {
     "name": "ai_agreement_confirms_pass_no_escalation",
     "clause_id": "governing_law",
     "kind": "ai_agreement",

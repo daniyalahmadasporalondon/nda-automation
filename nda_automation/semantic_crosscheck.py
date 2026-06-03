@@ -22,13 +22,23 @@ RESTRICTION_PREFIX_PATTERN = (
 )
 INTRODUCED_OBJECT_PATTERN = (
     r"(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies)|prospects?|"
-    r"opportunit(?:y|ies)|business\s+relationships?)"
+    r"opportunit(?:y|ies)|business\s+relationships?|persons?|people|individuals?|"
+    r"clients?|suppliers?|vendors?|investors?)"
+)
+# Deal-specific objects strong enough to signal non-circumvention even without a
+# listed action verb. The action axis is the most paraphrasable, so we don't require
+# it when the object itself is unambiguous commercial-relationship language (unlike
+# "party", these don't appear in ordinary confidentiality boilerplate).
+STRONG_INTRODUCED_OBJECT_PATTERN = (
+    r"(?:opportunit(?:y|ies)|business\s+relationships?|prospects?)"
 )
 INTRODUCTION_SOURCE_PATTERN = (
     r"(?:introduced|surfaced|referred|presented|provided|identified|made\s+known)"
 )
 COMMERCIAL_CONTACT_ACTION_PATTERN = (
-    r"(?:contact|communicat\w+|transact|deal|solicit|poach|approach|pursu\w+)"
+    r"(?:contact|communicat\w+|transact|deal|solicit|poach|approach|pursu\w+|"
+    r"enter\s+into|engage\w*|work\s+with|partner\w*|do\s+business|"
+    r"steer\s+clear\s+of|stay\s+away\s+from|divert\w*)"
 )
 NON_CIRCUMVENTION_SEMANTIC_PATTERNS = [
     (
@@ -40,6 +50,19 @@ NON_CIRCUMVENTION_SEMANTIC_PATTERNS = [
         "introduced_contact_restriction",
         rf"(?:{RESTRICTION_PREFIX_PATTERN})[^.;\n]{{0,120}}\b{COMMERCIAL_CONTACT_ACTION_PATTERN}\b"
         rf"[^.;\n]{{0,120}}\b{INTRODUCTION_SOURCE_PATTERN}\b[^.;\n]{{0,120}}\b{INTRODUCED_OBJECT_PATTERN}\b",
+    ),
+    (
+        # Strong deal-specific object + introduction source, NO action verb required
+        # (the action axis is the easiest to paraphrase around; these objects are
+        # unambiguous enough that dropping it does not invite "party"-style FPs).
+        "introduced_contact_restriction",
+        rf"(?:{RESTRICTION_PREFIX_PATTERN})[^.;\n]{{0,140}}\b{STRONG_INTRODUCED_OBJECT_PATTERN}\b"
+        rf"[^.;\n]{{0,80}}\b{INTRODUCTION_SOURCE_PATTERN}\b",
+    ),
+    (
+        "introduced_contact_restriction",
+        rf"(?:{RESTRICTION_PREFIX_PATTERN})[^.;\n]{{0,80}}\b{INTRODUCTION_SOURCE_PATTERN}\b"
+        rf"[^.;\n]{{0,80}}\b{STRONG_INTRODUCED_OBJECT_PATTERN}\b",
     ),
     (
         "bypass_restriction",
