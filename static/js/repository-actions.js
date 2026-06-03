@@ -8,6 +8,7 @@ const RepositoryActions = (() => {
     getSelectedMatter,
     hasBoard,
     loadMatterIntoReview,
+    prepareMatterReviewLoad,
     redlineDownloadFilename,
     renderBoard,
     renderDetailPanel,
@@ -18,6 +19,7 @@ const RepositoryActions = (() => {
     setPendingDeleteMatterId,
     setPendingSendMatterId,
     setSelectedMatter,
+    showMatterReviewLoadError,
     state,
   }) {
     async function loadGmailStatus() {
@@ -132,9 +134,18 @@ const RepositoryActions = (() => {
       setSelectedMatter(updatedMatter || matter);
       renderBoard();
       renderDetailPanel(getSelectedMatter());
-      const reviewMatter = await loadMatterReview(getSelectedMatter().id);
+      const selectedReviewMatter = getSelectedMatter();
+      if (typeof prepareMatterReviewLoad === "function") {
+        prepareMatterReviewLoad(selectedReviewMatter);
+        closePanel();
+      }
+      const reviewMatter = await loadMatterReview(selectedReviewMatter.id);
       if (!reviewMatter) {
-        setPanelMessage("Matter review details could not load.");
+        if (typeof showMatterReviewLoadError === "function") {
+          showMatterReviewLoadError("Matter review details could not load.");
+        } else {
+          setPanelMessage("Matter review details could not load.");
+        }
         return;
       }
       loadMatterIntoReview(reviewMatter);

@@ -53,7 +53,9 @@ const repositoryController = createRepositoryController({
   downloadBlob,
   downloadFilename,
   loadMatterIntoReview,
+  prepareMatterReviewLoad,
   redlineDownloadFilename,
+  showMatterReviewLoadError,
   reviewErrorFromPayload,
 });
 createManualUploadController({

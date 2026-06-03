@@ -6,7 +6,9 @@ const RepositoryView = (() => {
     downloadBlob,
     downloadFilename,
     loadMatterIntoReview,
+    prepareMatterReviewLoad,
     redlineDownloadFilename,
+    showMatterReviewLoadError,
     reviewErrorFromPayload,
   }) {
     let selectedMatter = null;
@@ -66,11 +68,13 @@ const RepositoryView = (() => {
       getSelectedMatter: () => selectedMatter,
       hasBoard: Boolean(gmailDemoMatterList),
       loadMatterIntoReview,
+      prepareMatterReviewLoad,
       redlineDownloadFilename,
       renderBoard,
       renderDetailPanel,
       renderEmptyPanel,
       renderSyncStatus,
+      showMatterReviewLoadError,
       repositoryMatterPanel,
       setPanelMessage,
       setPendingDeleteMatterId: (matterId) => { pendingDeleteMatterId = matterId; },

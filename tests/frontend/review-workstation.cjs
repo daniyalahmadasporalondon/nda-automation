@@ -51,6 +51,7 @@ const tests = [
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
+  ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
@@ -1046,8 +1047,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "redline_ready", "0");
   await page.getByRole("tab", { name: "Repository" }).click();
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "In Review");
-  assert.equal(await page.locator(".repository-card.active").count(), 1);
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
+  assert.equal(await page.locator(".repository-card.active").count(), 0);
   await page.getByRole("tab", { name: "Review" }).click();
 
   const [reviewMatterExportRequest, reviewMatterDownload] = await Promise.all([
@@ -1063,6 +1064,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.getByRole("button", { name: "Review NDA" }).count(), 0);
 
   await page.getByRole("tab", { name: "Repository" }).click();
+  await page.locator(".repository-card").filter({ hasText: path.basename(docxPath, ".docx") }).click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Close Matter", exact: true }).click();
   await waitForRepositoryCount(page, "redline_ready", "0");
   await waitForRepositoryCount(page, "signed_closed", "1");
@@ -1079,6 +1082,142 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "signed_closed", "0");
 
   fs.rmSync(docxPath, { force: true });
+}
+
+async function testRepositoryOpenReviewRepeatedly(page) {
+  const buildMatter = (id, title, text) => ({
+    id,
+    attachment_filename: `${title}.docx`,
+    board_column: "in_review",
+    can_send_redline: false,
+    created_at: "2026-06-01T09:00:00+00:00",
+    document_title: title,
+    extracted_text: text,
+    issue_count: 0,
+    message_snippet: text,
+    received_at: "2026-06-01T09:00:00+00:00",
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+    review_result: {
+      checked_at: "2026-06-01T09:01:00+00:00",
+      clauses: [{
+        decision: "pass",
+        id: "mutuality",
+        issue_label: "No issue",
+        name: "Mutuality",
+        passes: true,
+        requirement: "The NDA must bind both parties symmetrically.",
+        why: "Mutual obligation language found.",
+      }],
+      overall_status: "meets_requirements",
+      paragraphs: [{ id: "p1", index: 1, source_index: 1, text }],
+      redline_edits: [],
+      requirements_failed: 0,
+      requirements_needs_review: 0,
+      requirements_passed: 1,
+    },
+    sender: "Legal Team <legal@example.com>",
+    source_filename: `${title}.docx`,
+    source_type: "manual_upload",
+    subject: title,
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+  });
+  const matters = [
+    buildMatter("matter_alpha_review", "Alpha Review NDA", "Alpha document text for repeated review opening."),
+    buildMatter("matter_beta_review", "Beta Review NDA", "Beta document text for the second review opening."),
+  ];
+  const matterById = new Map(matters.map((matter) => [matter.id, matter]));
+  let releaseBetaReview = () => {};
+  const betaReviewGate = new Promise((resolve) => {
+    releaseBetaReview = resolve;
+  });
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true, email: "inbound@example.com" },
+          outbound: { ready: false, error: "No outbound account configured" },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const parts = requestUrl.pathname.split("/").filter(Boolean);
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matters }),
+      });
+      return;
+    }
+    const matterId = parts[2];
+    const matter = matterById.get(matterId);
+    if (!matter) {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Not found" }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/stage")) {
+      const payload = route.request().postDataJSON();
+      matter.board_column = payload.board_column || matter.board_column;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      if (matter.id === "matter_beta_review") {
+        await betaReviewGate;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: matter.extracted_text,
+          matter,
+          review_result: matter.review_result,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+
+  await page.locator(".repository-card").filter({ hasText: "Alpha Review NDA" }).click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Alpha Review NDA");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
+  await assertTextContains(page.locator("#studioDocTitle"), "Alpha Review NDA");
+  await assertTextContains(page.locator("#studioDocumentRender"), "Alpha document text for repeated review opening.");
+
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
+  await page.locator(".repository-card").filter({ hasText: "Beta Review NDA" }).click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Beta Review NDA");
+  const betaReviewRequest = page.waitForRequest((request) => request.url().includes("/api/matters/matter_beta_review/review"));
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
+  await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
+  await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loading review");
+  await betaReviewRequest;
+  releaseBetaReview();
+  await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
+  await assertTextContains(page.locator("#studioDocumentRender"), "Beta document text for the second review opening.");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
 }
 
 async function testRepositoryLoadErrorClearsBoard(page) {
@@ -1185,7 +1324,7 @@ async function testManualUploadTab(page) {
   await page.waitForSelector("#reviewView:not([hidden])");
   await assertTextContains(page.locator("#studioCounterpartyMeta"), "counterparty@example.com");
   await page.getByRole("tab", { name: "Repository" }).click();
-  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
   await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
   await assertTextContains(uploadedCard, "Delete matter and stored document?");

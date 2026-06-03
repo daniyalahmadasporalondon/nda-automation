@@ -651,6 +651,23 @@ function loadMatterIntoReview(matter) {
       ? `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded - draft redline saved`
       : `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`
   );
-  setActiveTab("review");
+  activateTab("review");
   requestAnimationFrame(resizeSourceEditors);
+}
+
+function prepareMatterReviewLoad(matter) {
+  state.selectedMatter = matter;
+  state.selectedDocument = null;
+  setSourceText(matter.extracted_text || "");
+  setSourcePlaceholder(SOURCE_PLACEHOLDER);
+  setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
+  setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
+  renderStudioEmpty();
+  setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} matter loading review`);
+  activateTab("review");
+  requestAnimationFrame(resizeSourceEditors);
+}
+
+function showMatterReviewLoadError(message) {
+  setFileMeta(message || "Matter review details could not load.");
 }
