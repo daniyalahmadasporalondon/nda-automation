@@ -12,12 +12,14 @@ from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
     DocxExportError,
-    _needs_inline_space,
-    _strip_paragraph_property_revisions,
-    _tracked_replace_paragraph,
     build_review_report_docx,
     build_source_redline_docx,
     validate_docx_open_health,
+)
+from nda_automation.redline_xml import (
+    _needs_inline_space,
+    _strip_paragraph_property_revisions,
+    _tracked_replace_paragraph,
 )
 from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
