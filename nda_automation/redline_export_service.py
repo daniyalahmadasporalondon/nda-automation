@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export_service, matter_store, telemetry
+from . import export_service, telemetry
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
@@ -17,6 +17,7 @@ from .docx_export import (
 )
 from .docx_health import validate_docx_open_health, verify_export_content_coverage
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
+from .matter_repository import DiskMatterRepository, MatterRepository
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
@@ -42,18 +43,30 @@ class MatterNotFoundError(DocxExportError):
     pass
 
 
-def build_review_export(payload: dict, fallback_text: str, *, title: str = "NDA Review") -> RedlineExport:
-    return _build_redline_export(payload, fallback_text, title=title, persist=True)
+def build_review_export(
+    payload: dict, fallback_text: str, *, title: str = "NDA Review", repository: MatterRepository | None = None
+) -> RedlineExport:
+    return _build_redline_export(
+        payload, fallback_text, title=title, persist=True, repository=repository or DiskMatterRepository()
+    )
 
 
-def build_matter_redline(matter_id: str, payload: dict | None = None, *, persist: bool = False) -> RedlineExport:
+def build_matter_redline(
+    matter_id: str, payload: dict | None = None, *, persist: bool = False, repository: MatterRepository | None = None
+) -> RedlineExport:
     payload = {**(payload or {}), "matter_id": matter_id}
     title = str(payload.get("title") or "NDA Review")
-    return _build_redline_export(payload, "", title=title, persist=persist)
+    return _build_redline_export(
+        payload, "", title=title, persist=persist, repository=repository or DiskMatterRepository()
+    )
 
 
-def _build_redline_export(payload: dict, fallback_text: str, *, title: str, persist: bool) -> RedlineExport:
-    review_result, source_document_bytes, source_filename = _review_result_for_export(payload, fallback_text)
+def _build_redline_export(
+    payload: dict, fallback_text: str, *, title: str, persist: bool, repository: MatterRepository
+) -> RedlineExport:
+    review_result, source_document_bytes, source_filename = _review_result_for_export(
+        payload, fallback_text, repository=repository
+    )
     export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
     export_service.apply_review_comments(review_result, payload.get("review_comments"))
@@ -77,16 +90,18 @@ def _build_redline_export(payload: dict, fallback_text: str, *, title: str, pers
     )
 
 
-def _review_result_for_export(payload: dict, fallback_text: str) -> tuple[dict, bytes | None, str]:
+def _review_result_for_export(
+    payload: dict, fallback_text: str, *, repository: MatterRepository
+) -> tuple[dict, bytes | None, str]:
     matter_id = payload.get("matter_id")
     if isinstance(matter_id, str) and matter_id.strip():
-        matter = matter_store.get_matter(matter_id.strip())
+        matter = repository.get_matter(matter_id.strip())
         if matter is None:
             raise MatterNotFoundError("Matter not found.")
         review_result = matter.get("review_result")
         if not isinstance(review_result, dict):
             raise DocxExtractionError("Matter does not have a stored review result.")
-        source_document_bytes = matter_store.get_source_document_bytes(matter)
+        source_document_bytes = repository.get_source_document_bytes(matter)
         source_filename = str(matter.get("source_filename") or "")
         if source_document_bytes is None:
             raise DocxExtractionError("Matter source document is missing from storage.")
