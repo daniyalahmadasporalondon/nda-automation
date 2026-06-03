@@ -152,7 +152,7 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(openrouter_status["api_key_configured"], True)
         self.assertEqual(openrouter_status["api_key_source"], "local_settings")
         self.assertEqual(alibaba_status["provider"], "alibaba")
-        self.assertEqual(alibaba_status["model"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(alibaba_status["model"], "qwen3.5-plus")
         self.assertEqual(alibaba_status["api_key_configured"], True)
         self.assertEqual(alibaba_status["api_key_source"], "local_settings")
 
@@ -487,9 +487,9 @@ class AIReviewTests(unittest.TestCase):
             "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
         }
 
-        body = ai_review._alibaba_request_body(packet, "qwen3.7-plus-2026-05-26")
+        body = ai_review._alibaba_request_body(packet, "qwen3.5-plus")
 
-        self.assertEqual(body["model"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(body["model"], "qwen3.5-plus")
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["enable_thinking"], False)
         self.assertEqual(body["response_format"]["type"], "json_object")
@@ -553,12 +553,12 @@ class AIProviderAdapterTests(unittest.TestCase):
         captured = []
         response = json.dumps({"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}).encode("utf-8")
         with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
-            reviewer = ai_review.AlibabaAIReviewer(api_key="sk-ws-x", model="qwen3.7-plus-2026-05-26")
+            reviewer = ai_review.AlibabaAIReviewer(api_key="sk-ws-x", model="qwen3.5-plus")
             verdict = reviewer(self.PACKET)
 
         self.assertEqual(verdict, self.VERDICT)
         body = json.loads(captured[0].data.decode("utf-8"))
-        self.assertEqual(body["model"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(body["model"], "qwen3.5-plus")
         self.assertEqual(body["response_format"]["type"], "json_object")
 
     def test_openrouter_adapter_round_trip(self):

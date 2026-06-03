@@ -39,7 +39,7 @@ In `.env`, set the AI provider/model and API key:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=alibaba
-NDA_AI_MODEL=qwen3.7-plus-2026-05-26
+NDA_AI_MODEL=qwen3.5-plus
 ALIBABA_API_KEY="your-alibaba-api-key"
 ```
 
@@ -174,11 +174,11 @@ Optional AI semantic review:
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.7-plus-2026-05-26
+export NDA_AI_MODEL=qwen3.5-plus
 export ALIBABA_API_KEY=sk-...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and currently defaults to `qwen3.7-plus-2026-05-26`. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and currently defaults to `qwen3.5-plus`. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 

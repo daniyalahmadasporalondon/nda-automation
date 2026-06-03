@@ -750,7 +750,7 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "qwen3.7-plus-2026-05-26",
+      model: "qwen3.5-plus",
       provider: "alibaba",
       status: "completed",
     };
@@ -778,7 +778,7 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "AI CONFIRMED");
   await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs FAIL");
   await assertTextContains(page.locator("#studioDetailPanel"), "95%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus-2026-05-26");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
   await assertTextContains(page.locator("#studioDetailPanel"), "California is outside the approved governing-law set.");
   await assertTextContains(page.locator("#studioDetailPanel"), "Paragraph 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "UNAPPROVED GOVERNING LAW.");
@@ -844,7 +844,7 @@ async function testAiSecondOpinionButton(page) {
         ai_review: {
           confidence_threshold: 0.75,
           mode: "clause_second_opinion",
-          model: "qwen3.7-plus-2026-05-26",
+          model: "qwen3.5-plus",
           provider: "alibaba",
           record_count: 1,
           records: [],
@@ -874,7 +874,7 @@ async function testAiSecondOpinionButton(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "AI DISAGREEMENT");
   await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs PASS");
   await assertTextContains(page.locator("#studioDetailPanel"), "91%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus-2026-05-26");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
   await assertTextContains(page.locator("#studioDetailPanel"), "AI found possible one-way mutuality language.");
   await assertTextContains(page.locator("#studioDetailPanel"), "possible_one_way_language");
   await assertTextContains(page.locator("#studioDetailPanel"), "Confirm that both parties are bound symmetrically.");
@@ -916,7 +916,7 @@ async function testAiDraftFixValidationButton(page) {
         ai_review: {
           confidence_threshold: 0.75,
           mode: "draft_fix_validation",
-          model: "qwen3.7-plus-2026-05-26",
+          model: "qwen3.5-plus",
           provider: "alibaba",
           record_count: 1,
           records: [],
@@ -937,7 +937,7 @@ async function testAiDraftFixValidationButton(page) {
   assert.ok(requestPayload.redline_edit.replacement_text || requestPayload.redline_edit.insert_text);
   await assertTextContains(page.locator("#studioDetailPanel"), "AI DRAFT VALIDATED");
   await assertTextContains(page.locator("#studioDetailPanel"), "PASS · 92%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus-2026-05-26");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
   await assertTextContains(page.locator("#studioDetailPanel"), "caps ordinary confidentiality survival");
   await assertTextContains(page.locator("#studioDetailPanel"), "PROPOSED DRAFT");
   assert.equal(await page.getByRole("button", { name: "Revalidate draft fix" }).count(), 1);
