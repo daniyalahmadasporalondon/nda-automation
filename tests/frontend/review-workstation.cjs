@@ -1675,7 +1675,7 @@ async function testReviewOutboundSendModal(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  await page.waitForSelector("#studioSendButton:not(:disabled)");
+  await page.waitForSelector("#studioSendButton:not(:disabled):not(.blocked)");
 
   await page.locator("#studioSendButton").click();
   await page.waitForSelector("#studioSendModal:not([hidden])");

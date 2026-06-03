@@ -85,7 +85,14 @@ function updateExportButtonState() {
   studioSendButton.hidden = !hasSendableMatter;
   const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
   const canSend = Boolean(canExport && hasSendableMatter && !sendBlockReason);
-  studioSendButton.disabled = !canSend;
+  // Keep the button clickable once a review has run, even when blocked, so a
+  // click can surface *why* sending is blocked (openReviewSendComposer writes the
+  // reason to the file-meta line) instead of leaving a silent, dead icon. The
+  // .blocked class + aria-disabled mark it not-ready without swallowing the click.
+  const interactive = Boolean(canExport && hasSendableMatter);
+  studioSendButton.disabled = !interactive;
+  studioSendButton.classList.toggle("blocked", interactive && Boolean(sendBlockReason));
+  studioSendButton.setAttribute("aria-disabled", String(!canSend));
   if (!canSend) {
     pendingReviewSendMatterId = null;
     const sendLabel = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
