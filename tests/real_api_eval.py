@@ -201,6 +201,12 @@ def format_report(provider: str, model: str, key_source: str, rows: list[dict], 
     if stats["ai_status_breakdown"]:
         breakdown = ", ".join(f"{status}×{count}" for status, count in stats["ai_status_breakdown"].most_common())
         lines.append(f"  AI status breakdown: {breakdown}")
+    for row in stats["disagreements"]:
+        verdict = "blocked" if row["final_decision"] == row["py_decision"] else "ESCALATED"
+        lines.append(
+            f"    ~ {row['clause_id']}: {row['name']} — py={row['py_decision']} "
+            f"ai={row['ai_decision']} -> final={row['final_decision']} [{row['ai_status']}, {verdict}]"
+        )
     lines.append(f"Invalid AI outputs (status=invalid): {len(stats['invalid'])}")
 
     lines.append(f"False clears CAUGHT by AI (pass->review, expected not-pass): {len(stats['caught'])}")
