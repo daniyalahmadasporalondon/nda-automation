@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import ai_review
-from nda_automation.checker import review_nda
+from nda_automation.checker import ai_second_opinion_for_clause, review_nda
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -210,6 +210,33 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(term["decision"], "review")
         self.assertEqual(term["reason_code"], "ai_citation_validation_failed")
         self.assertTrue(term["ai_review_analysis"]["validation_errors"])
+
+    def test_ai_second_opinion_targets_one_clause_and_updates_review_state(self):
+        calls = []
+
+        def reviewer(packet):
+            calls.append(packet["clause"]["id"])
+            return {
+                "decision": "fail",
+                "confidence": 0.91,
+                "reason": "The mutuality language appears one-way.",
+                "cited_spans": [_first_citation(packet)],
+                "issues": ["possible_one_way_language"],
+                "suggested_fix": "Confirm both parties are bound symmetrically.",
+            }
+
+        review_result = review_nda(_pass_sample_text())
+        result = ai_second_opinion_for_clause(review_result, "mutuality", ai_reviewer=reviewer)
+
+        self.assertEqual(calls, ["mutuality"])
+        self.assertEqual(result["ai_review"]["mode"], "clause_second_opinion")
+        self.assertEqual(result["ai_review"]["target_clause_id"], "mutuality")
+        self.assertEqual(result["ai_review"]["record_count"], 1)
+        self.assertEqual(result["clause"]["id"], "mutuality")
+        self.assertEqual(result["clause"]["decision"], "review")
+        self.assertEqual(result["clause"]["reason_code"], "ai_semantic_disagreement")
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["review_state"]["counts"]["review"], 1)
 
     def test_gemini_request_body_uses_structured_json_response_format(self):
         packet = {

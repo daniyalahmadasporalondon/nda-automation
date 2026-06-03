@@ -14,7 +14,13 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry
-from .checker import PLAYBOOK_PATH, EvidenceProvenanceError, PlaybookTemplateError, review_nda
+from .checker import (
+    PLAYBOOK_PATH,
+    EvidenceProvenanceError,
+    PlaybookTemplateError,
+    ai_second_opinion_for_clause,
+    review_nda,
+)
 from .deployment import (
     DURABLE_DATA_DIR_REQUIRED_MESSAGE as DURABLE_DATA_DIR_REQUIRED_MESSAGE,
     EPHEMERAL_DATA_DIR_MESSAGE as EPHEMERAL_DATA_DIR_MESSAGE,
@@ -89,6 +95,13 @@ def _handle_document_review_post(handler) -> None:
     )
 
 
+def _handle_ai_second_opinion_post(handler) -> None:
+    review_routes.handle_ai_second_opinion(
+        handler,
+        second_opinion_func=ai_second_opinion_for_clause,
+    )
+
+
 def _handle_matter_upload_post(handler) -> None:
     matter_routes.handle_matter_upload(
         handler,
@@ -117,6 +130,7 @@ _GET_EXACT_ROUTES = {
 
 _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
+    "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/gmail/import": gmail_routes.handle_gmail_import,

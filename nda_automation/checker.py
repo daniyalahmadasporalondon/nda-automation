@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import string
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -84,9 +85,11 @@ FOLLOWING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
     ),
 }
 __all__ = [
+    "AISecondOpinionError",
     "EvidenceProvenanceError",
     "ParagraphAlignmentError",
     "PlaybookTemplateError",
+    "ai_second_opinion_for_clause",
     "_paragraph_matches",
     "load_playbook",
     "review_nda",
@@ -95,6 +98,12 @@ __all__ = [
     "validate_playbook",
     "validate_clause_evidence_trust",
 ]
+
+
+class AISecondOpinionError(RuntimeError):
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def load_playbook() -> Dict[str, object]:
@@ -202,6 +211,111 @@ def review_nda(
         raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
     result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
+
+
+def ai_second_opinion_for_clause(
+    review_result: Dict[str, object],
+    clause_id: str,
+    *,
+    ai_reviewer: AIReviewFn | None = None,
+) -> Dict[str, object]:
+    target_clause_id = str(clause_id or "").strip()
+    if not target_clause_id:
+        raise AISecondOpinionError("Provide a clause id for AI second opinion.")
+
+    raw_clauses = review_result.get("clauses", [])
+    if not isinstance(raw_clauses, list):
+        raise AISecondOpinionError("Review result does not include clause results.")
+    clauses = [deepcopy(clause) for clause in raw_clauses if isinstance(clause, dict)]
+    selected_clause = next((clause for clause in clauses if str(clause.get("id") or "") == target_clause_id), None)
+    if selected_clause is None:
+        raise AISecondOpinionError("Selected clause was not found in the review result.", status=404)
+
+    raw_paragraphs = review_result.get("paragraphs", [])
+    if not isinstance(raw_paragraphs, list):
+        raise AISecondOpinionError("Review result does not include document paragraphs.")
+    paragraphs = [deepcopy(paragraph) for paragraph in raw_paragraphs if isinstance(paragraph, dict)]
+    if not paragraphs:
+        raise AISecondOpinionError("AI second opinion needs reviewed document paragraphs.")
+
+    playbook = load_playbook()
+    _validate_playbook_contract(playbook)
+    clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
+    if target_clause_id not in clauses_by_id:
+        raise AISecondOpinionError("Selected clause is not in the playbook.", status=404)
+
+    review_context = _review_context_from_result(review_result, paragraphs)
+    updated_clauses, ai_review = apply_ai_review(
+        clause_results=[selected_clause],
+        clauses_by_id=clauses_by_id,
+        paragraphs=paragraphs,
+        review_context=review_context,
+        reviewer=ai_reviewer,
+        target_clause_ids={target_clause_id},
+    )
+    if str(ai_review.get("status") or "") != "completed":
+        error = str(ai_review.get("error") or "").strip()
+        status = str(ai_review.get("status") or "unavailable").replace("_", " ")
+        raise AISecondOpinionError(
+            f"AI second opinion is {status}.{f' {error}' if error else ''}",
+            status=409,
+        )
+    if not updated_clauses or int(ai_review.get("record_count") or 0) < 1:
+        raise AISecondOpinionError("AI second opinion is not enabled for this clause.", status=400)
+
+    updated_clause = updated_clauses[0]
+    _apply_clause_decision(updated_clause)
+    merged_clauses = [
+        updated_clause if str(clause.get("id") or "") == target_clause_id else clause
+        for clause in clauses
+    ]
+    review_state = _aggregate_clause_results(merged_clauses)
+    ai_review["mode"] = "clause_second_opinion"
+    ai_review["target_clause_id"] = target_clause_id
+    return {
+        "clause": updated_clause,
+        "ai_review": ai_review,
+        **review_state,
+    }
+
+
+def _review_context_from_result(review_result: Dict[str, object], paragraphs: List[Paragraph]) -> Dict[str, object]:
+    contract_structure = review_result.get("contract_structure")
+    if not isinstance(contract_structure, dict):
+        contract_structure = build_contract_structure(paragraphs)
+
+    reference_resolver = review_result.get("reference_resolver")
+    if not isinstance(reference_resolver, dict):
+        reference_resolver = resolve_document_references(paragraphs, contract_structure)
+
+    concept_classifier = review_result.get("concept_classifier")
+    if not isinstance(concept_classifier, dict):
+        concept_classifier = classify_document_concepts(paragraphs, contract_structure)
+
+    return {
+        "contract_structure": contract_structure,
+        "reference_resolver": reference_resolver,
+        "concept_classifier": concept_classifier,
+    }
+
+
+def _aggregate_clause_results(clauses: List[ClauseResult]) -> Dict[str, object]:
+    failed = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_FAIL]
+    review = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_REVIEW]
+    passed = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_PASS]
+    review_state = aggregate_review_state(
+        clauses,
+        pass_count=len(passed),
+        review_count=len(review),
+        check_count=len(failed),
+    )
+    return {
+        "overall_status": review_state["overall_status"],
+        "review_state": review_state,
+        "requirements_passed": len(passed),
+        "requirements_failed": len(failed),
+        "requirements_needs_review": len(review),
+    }
 
 
 def _apply_clause_decision(clause: ClauseResult) -> None:

@@ -726,6 +726,51 @@ class ServerTests(unittest.TestCase):
         self.assertIn("redline_edits", payload)
         self.assert_review_payload_contract(payload)
 
+    def test_ai_second_opinion_route_updates_selected_clause(self):
+        expected = {
+            "clause": {"id": "mutuality", "decision": "review"},
+            "ai_review": {
+                "status": "completed",
+                "record_count": 1,
+                "mode": "clause_second_opinion",
+                "target_clause_id": "mutuality",
+            },
+            "overall_status": "needs_review",
+            "review_state": {"counts": {"pass": 5, "review": 1, "check": 0}},
+            "requirements_passed": 5,
+            "requirements_needs_review": 1,
+            "requirements_failed": 0,
+        }
+        current_review = {"clauses": [{"id": "mutuality"}], "paragraphs": [{"id": "p1", "index": 1, "text": "Each party."}]}
+        with patch.object(server_module, "ai_second_opinion_for_clause", return_value=expected) as second_opinion:
+            status, payload = self.request(
+                "POST",
+                "/api/review/ai-second-opinion",
+                {"clause_id": "mutuality", "review_result": current_review},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        second_opinion.assert_called_once_with(current_review, "mutuality")
+        self.assertEqual(telemetry.snapshot()["counters"]["ai_second_opinion_requests"], 1)
+
+    def test_ai_second_opinion_route_rejects_missing_inputs(self):
+        missing_clause_status, missing_clause_payload = self.request(
+            "POST",
+            "/api/review/ai-second-opinion",
+            {"review_result": {"clauses": []}},
+        )
+        missing_review_status, missing_review_payload = self.request(
+            "POST",
+            "/api/review/ai-second-opinion",
+            {"clause_id": "mutuality"},
+        )
+
+        self.assertEqual(missing_clause_status, 400)
+        self.assertEqual(missing_clause_payload["error"], "Provide a clause id for AI second opinion.")
+        self.assertEqual(missing_review_status, 400)
+        self.assertEqual(missing_review_payload["error"], "Provide the current review result for AI second opinion.")
+
     def test_review_payload_contract_covers_pass_check_and_missing_flows(self):
         scenarios = [
             ("pass", "Each party may disclose Confidential Information and this Agreement is governed by the laws of the DIFC for two years.\n\nFor Aspora Ltd\nBy: A. Signatory\nTitle: Director\nDate: 2026-05-30\n\nFor Counterparty Ltd\nBy: B. Signatory\nTitle: CEO\nDate: 2026-05-30"),

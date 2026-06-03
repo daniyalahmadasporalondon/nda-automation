@@ -28,6 +28,8 @@ const AppState = (() => {
       redlineTemplateSelections: {},
       redlineDraft: null,
       redlineDraftDirty: false,
+      pendingAiSecondOpinionClauseId: null,
+      aiSecondOpinionErrors: {},
       reviewInspectorView: "clause",
       documentViewMode,
     };

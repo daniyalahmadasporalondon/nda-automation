@@ -11,6 +11,8 @@ function renderResult(result, reviewedText) {
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.redlineDraft = null;
   state.redlineDraftDirty = false;
+  state.pendingAiSecondOpinionClauseId = null;
+  state.aiSecondOpinionErrors = {};
   resetReviewEditHistory();
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
@@ -682,15 +684,51 @@ function renderStudioDetail() {
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
+  bindAiSecondOpinionControls(studioDetailPanel);
 }
 
 function renderAiEvidenceSummaryBlock(clause) {
   const analysis = clause?.ai_review_analysis && typeof clause.ai_review_analysis === "object"
     ? clause.ai_review_analysis
     : null;
-  if (!analysis) return "";
+  const canRunSecondOpinion = supportsAiSecondOpinion(clause);
+  if (!analysis && !canRunSecondOpinion) return "";
 
   const aiReview = state.latestReviewResult?.ai_review || {};
+  const pending = state.pendingAiSecondOpinionClauseId === clause.id;
+  const error = state.aiSecondOpinionErrors?.[clause.id] || "";
+  const actionLabel = analysis ? "Rerun second opinion" : "Run second opinion";
+  const clauseName = String(clause?.name || clause?.id || "selected clause");
+  const actionButton = canRunSecondOpinion
+    ? `
+      <button
+        class="ai-second-opinion-button"
+        type="button"
+        data-ai-second-opinion-clause-id="${escapeHtml(clause.id)}"
+        aria-label="${escapeHtml(`${actionLabel} for ${clauseName}`)}"
+        ${pending ? "disabled" : ""}
+      >${escapeHtml(pending ? "Running" : actionLabel)}</button>
+    `
+    : "";
+
+  if (!analysis) {
+    return `
+      <div class="studio-detail-block ai-summary-block neutral">
+        <small>AI evidence</small>
+        <div class="ai-summary-content">
+          <div class="ai-summary-head">
+            <strong>AI not run</strong>
+            <span>Clause-specific</span>
+          </div>
+          <div class="ai-summary-actions">
+            ${actionButton}
+          </div>
+          ${error ? `<p class="ai-second-opinion-error">${escapeHtml(error)}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
   const confidence = Number(analysis.ai_confidence);
   const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
   const statusLabel = aiReviewStatusLabel(analysis.status);
@@ -738,9 +776,24 @@ function renderAiEvidenceSummaryBlock(clause) {
           </div>
         ` : ""}
         ${suggestedFix ? `<p class="ai-suggested-fix"><strong>Suggested fix:</strong> ${escapeHtml(suggestedFix)}</p>` : ""}
+        <div class="ai-summary-actions">
+          ${actionButton}
+        </div>
+        ${error ? `<p class="ai-second-opinion-error">${escapeHtml(error)}</p>` : ""}
       </div>
     </div>
   `;
+}
+
+function supportsAiSecondOpinion(clause) {
+  const supportedClauseIds = new Set([
+    "mutuality",
+    "confidential_information",
+    "governing_law",
+    "term_and_survival",
+    "non_circumvention",
+  ]);
+  return hasReviewResults() && supportedClauseIds.has(String(clause?.id || ""));
 }
 
 function renderAiCitation(span) {
@@ -941,6 +994,73 @@ function bindReviewCommentControls(container) {
       setClauseReviewComment(input.dataset.reviewCommentClauseId, input.value);
     });
   });
+}
+
+function bindAiSecondOpinionControls(container) {
+  container.querySelectorAll("[data-ai-second-opinion-clause-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAiSecondOpinionForClause(button.dataset.aiSecondOpinionClauseId);
+    });
+  });
+}
+
+async function runAiSecondOpinionForClause(clauseId) {
+  const targetClauseId = String(clauseId || "").trim();
+  if (!targetClauseId || !state.latestReviewResult) return;
+  state.pendingAiSecondOpinionClauseId = targetClauseId;
+  state.aiSecondOpinionErrors = { ...(state.aiSecondOpinionErrors || {}) };
+  delete state.aiSecondOpinionErrors[targetClauseId];
+  renderStudioDetail();
+
+  try {
+    const response = await fetch("/api/review/ai-second-opinion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clause_id: targetClauseId,
+        review_result: state.latestReviewResult,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "AI second opinion could not run");
+    applyAiSecondOpinionResult(payload);
+    setFileMeta("AI second opinion completed");
+  } catch (error) {
+    state.aiSecondOpinionErrors = {
+      ...(state.aiSecondOpinionErrors || {}),
+      [targetClauseId]: error.message || "AI second opinion could not run.",
+    };
+    setFileMeta(error.message || "AI second opinion could not run.");
+  } finally {
+    state.pendingAiSecondOpinionClauseId = null;
+    renderStudioResult({ clauses: state.reviewClauses });
+    updateExportButtonState();
+  }
+}
+
+function applyAiSecondOpinionResult(payload) {
+  const updatedClause = payload?.clause && typeof payload.clause === "object" ? payload.clause : null;
+  if (!updatedClause?.id) return;
+  state.reviewClauses = state.reviewClauses.map((clause) => (
+    clause.id === updatedClause.id ? updatedClause : clause
+  ));
+  if (!state.latestReviewResult) return;
+  state.latestReviewResult = {
+    ...state.latestReviewResult,
+    clauses: state.reviewClauses,
+    ai_review: payload.ai_review || state.latestReviewResult.ai_review,
+    overall_status: payload.overall_status || state.latestReviewResult.overall_status,
+    review_state: payload.review_state || state.latestReviewResult.review_state,
+    requirements_passed: Number.isFinite(Number(payload.requirements_passed))
+      ? Number(payload.requirements_passed)
+      : state.latestReviewResult.requirements_passed,
+    requirements_failed: Number.isFinite(Number(payload.requirements_failed))
+      ? Number(payload.requirements_failed)
+      : state.latestReviewResult.requirements_failed,
+    requirements_needs_review: Number.isFinite(Number(payload.requirements_needs_review))
+      ? Number(payload.requirements_needs_review)
+      : state.latestReviewResult.requirements_needs_review,
+  };
 }
 
 function bindParagraphCommentControls(container) {

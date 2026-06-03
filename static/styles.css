@@ -2163,6 +2163,42 @@ textarea::placeholder {
   font-weight: 850;
 }
 
+.ai-summary-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.ai-second-opinion-button {
+  background: #ffffff;
+  border: 1px solid #d9d3ea;
+  border-radius: var(--r-pill);
+  color: var(--violet);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 850;
+  min-height: 26px;
+  padding: 5px 10px;
+}
+
+.ai-second-opinion-button:hover:not(:disabled) {
+  background: #f7f2ff;
+  border-color: #c8b7f6;
+}
+
+.ai-second-opinion-button:disabled {
+  color: var(--ink-muted);
+  cursor: wait;
+}
+
+.ai-second-opinion-error {
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 750;
+}
+
 .evidence-signal-list {
   display: grid;
   gap: 7px;

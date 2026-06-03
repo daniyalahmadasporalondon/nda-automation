@@ -5,7 +5,7 @@ import binascii
 from urllib.parse import quote
 
 from .. import redline_export_service, telemetry
-from ..checker import ParagraphAlignmentError, review_nda
+from ..checker import AISecondOpinionError, ParagraphAlignmentError, ai_second_opinion_for_clause, review_nda
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
@@ -78,6 +78,30 @@ def handle_document_review(handler, *, extract_document_func=extract_document, r
         if isinstance(warnings, list) and warnings:
             result.setdefault("review_warnings", []).extend(warnings)
     result["extracted_text"] = extracted_text
+    handler._send_json(result)
+
+
+def handle_ai_second_opinion(handler, *, second_opinion_func=ai_second_opinion_for_clause) -> None:
+    telemetry.increment("ai_second_opinion_requests")
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    clause_id = payload.get("clause_id", "")
+    if not isinstance(clause_id, str) or not clause_id.strip():
+        handler._send_json({"error": "Provide a clause id for AI second opinion."}, status=400)
+        return
+    review_result = payload.get("review_result")
+    if not isinstance(review_result, dict):
+        handler._send_json({"error": "Provide the current review result for AI second opinion."}, status=400)
+        return
+
+    try:
+        result = second_opinion_func(review_result, clause_id.strip())
+    except AISecondOpinionError as error:
+        handler._send_json({"error": str(error)}, status=error.status)
+        return
+
     handler._send_json(result)
 
 

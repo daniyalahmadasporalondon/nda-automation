@@ -238,6 +238,7 @@ def apply_ai_review(
     paragraphs: List[Paragraph],
     review_context: Dict[str, object],
     reviewer: AIReviewFn | None = None,
+    target_clause_ids: Iterable[str] | None = None,
 ) -> Tuple[List[ClauseResult], Dict[str, object]]:
     settings = _ai_review_settings()
     if reviewer is None and not settings["enabled"]:
@@ -257,7 +258,14 @@ def apply_ai_review(
 
     updated_results = [deepcopy(result) for result in clause_results]
     records: List[Dict[str, object]] = []
-    targeted_clause_ids = _targeted_clause_ids(settings)
+    if target_clause_ids is None:
+        targeted_clause_ids = _targeted_clause_ids(settings)
+    else:
+        targeted_clause_ids = {
+            str(clause_id).strip()
+            for clause_id in target_clause_ids
+            if str(clause_id).strip() in AI_REVIEW_CLAUSE_IDS
+        }
     threshold = _confidence_threshold(settings)
     for clause in updated_results:
         clause_id = str(clause.get("id") or "")

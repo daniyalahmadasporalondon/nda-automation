@@ -37,6 +37,7 @@ const tests = [
   ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
+  ["runs AI second opinion for the selected clause", testAiSecondOpinionButton],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
@@ -773,6 +774,102 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel"), "UNAPPROVED GOVERNING LAW.");
   await assertTextContains(page.locator("#studioDetailPanel"), "unapproved_governing_law");
   await assertTextContains(page.locator("#studioDetailPanel"), "Use Delaware, India, England and Wales, or DIFC.");
+}
+
+async function testAiSecondOpinionButton(page) {
+  await runReview(page, passNda);
+
+  let requestPayload;
+  await page.route("**/api/review/ai-second-opinion", async (route) => {
+    requestPayload = route.request().postDataJSON();
+    const reviewResult = requestPayload.review_result;
+    const clause = reviewResult.clauses.find((item) => item.id === requestPayload.clause_id);
+    const paragraph = reviewResult.paragraphs[0];
+    const reason = "AI found possible one-way mutuality language.";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        clause: {
+          ...clause,
+          decision: "review",
+          decision_reason: reason,
+          needs_review: true,
+          reason,
+          reason_code: "ai_semantic_disagreement",
+          reason_codes: ["ai_semantic_disagreement"],
+          review_state: {
+            blocks_auto_send: true,
+            blocks_send: true,
+            decision: "review",
+            label: "REVIEW",
+            reason,
+            reason_code: "ai_semantic_disagreement",
+            reason_codes: ["ai_semantic_disagreement"],
+            requires_attention: true,
+            requires_human_review: true,
+            requires_redline: false,
+            state: "review",
+            tone: "review",
+            version: 1,
+          },
+          ai_review_analysis: {
+            ai_confidence: 0.91,
+            ai_decision: "fail",
+            ai_reason: reason,
+            cited_spans: [{
+              paragraph_id: paragraph.id,
+              quote: paragraph.text.slice(0, 80),
+              relevance: "Possible one-way language.",
+            }],
+            disagreement: true,
+            deterministic_decision: "pass",
+            issues: ["possible_one_way_language"],
+            reason: "AI semantic review disagreed with the deterministic checker.",
+            status: "disagreement",
+            suggested_fix: "Confirm that both parties are bound symmetrically.",
+            validation_errors: [],
+          },
+        },
+        ai_review: {
+          confidence_threshold: 0.75,
+          mode: "clause_second_opinion",
+          model: "qwen3.7-plus",
+          provider: "alibaba",
+          record_count: 1,
+          records: [],
+          status: "completed",
+          target_clause_id: "mutuality",
+          version: 1,
+        },
+        overall_status: "needs_review",
+        review_state: {
+          counts: { check: 0, pass: 5, review: 1, total: 6 },
+          overall_status: "needs_review",
+          state: "review",
+        },
+        requirements_failed: 0,
+        requirements_needs_review: 1,
+        requirements_passed: 5,
+      }),
+    });
+  });
+
+  await page.locator('[data-ai-second-opinion-clause-id="mutuality"]').click();
+  await page.waitForFunction(() => state.latestReviewResult?.overall_status === "needs_review");
+
+  assert.equal(requestPayload.clause_id, "mutuality");
+  assert.ok(Array.isArray(requestPayload.review_result.clauses));
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI DISAGREEMENT");
+  await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs PASS");
+  await assertTextContains(page.locator("#studioDetailPanel"), "91%");
+  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.7-plus");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI found possible one-way mutuality language.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "possible_one_way_language");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Confirm that both parties are bound symmetrically.");
+  assert.equal(await page.locator('[data-ai-second-opinion-clause-id="mutuality"]').innerText(), "Rerun second opinion");
+  await page.unroute("**/api/review/ai-second-opinion");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {
