@@ -904,6 +904,28 @@ class CheckerTests(unittest.TestCase):
                 self.assertEqual(governing_law["reason"], "Approved governing law found.")
                 self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p1"])
 
+    def test_governing_law_accepts_india_with_new_delhi_forum_selection(self):
+        result = review_nda(
+            "GOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and interpreted in "
+            "accordance with laws of India. The Parties irrevocably agree to submit to the exclusive "
+            "jurisdiction of the courts in New Delhi, India in relation to any action or proceeding "
+            "concerning or arising out of this Agreement."
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["status"], "match")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["reason"], "Approved governing law found.")
+        self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p1"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unclear_paragraph_ids"], [])
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], [])
+        self.assertEqual(
+            governing_law["governing_law_analysis"]["candidate_records"],
+            [{"paragraph_id": "p1", "value": "India", "approved": True, "needs_review": False}],
+        )
+        self.assertFalse(self.redlines_for_clause(result, "governing_law"))
+
     def test_governing_law_needs_review_for_placeholder_jurisdiction(self):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
             "This Agreement shall be governed by the laws of England and Wales.",

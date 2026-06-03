@@ -489,8 +489,17 @@ def _trim_governing_law_candidate(text: str) -> str:
 
 def _is_noise_governing_law_candidate(candidate: str) -> bool:
     trimmed = _trim_governing_law_candidate(candidate).lower()
-    return trimmed in {"", "law", "laws"} or bool(
-        re.search(r"\b(?:by|under|with|according\s+to|pursuant\s+to)\s+(?:the(?:\s+|$))?$", trimmed)
+    if trimmed in {"", "law", "laws"}:
+        return True
+    if re.search(r"\b(?:by|under|with|according\s+to|pursuant\s+to)\s+(?:the(?:\s+|$))?$", trimmed):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:this|the)\s+agreement\b|"
+            r"\b(?:and\s+)?(?:interpreted|construed)\s+in\s+accordance\s+with\b",
+            trimmed,
+            flags=re.IGNORECASE,
+        )
     )
 
 

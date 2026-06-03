@@ -163,6 +163,22 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(len(reviewed), 5)
         self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
 
+    def test_ai_provider_error_does_not_override_deterministic_pass(self):
+        def reviewer(_packet):
+            raise RuntimeError("AI quota exhausted")
+
+        result = review_nda(_pass_sample_text(), ai_reviewer=reviewer)
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+        self.assertEqual(result["ai_review"]["status"], "completed")
+        self.assertEqual(result["ai_review"]["record_count"], 5)
+        self.assertTrue(all(record["status"] == "error" for record in result["ai_review"]["records"]))
+        self.assertEqual(result["overall_status"], "meets_requirements")
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["reason_code"], "approved_governing_law")
+        self.assertEqual(governing_law["ai_review_analysis"]["status"], "error")
+        self.assertIn("AI quota exhausted", governing_law["ai_review_analysis"]["reason"])
+
     def test_ai_disagreement_escalates_to_review_without_auto_redline(self):
         def reviewer(packet):
             if packet["clause"]["id"] == "mutuality":

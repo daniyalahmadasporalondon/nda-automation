@@ -532,7 +532,7 @@ def _evaluate_clause_with_ai(
             reason=str(error),
             threshold=threshold,
         )
-        _attach_ai_analysis(clause, analysis, "ai_review_unavailable")
+        clause["ai_review_analysis"] = analysis
         return _record_from_analysis(clause, analysis)
 
     validation = _validate_ai_response(raw_response, paragraphs)
