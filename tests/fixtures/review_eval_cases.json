@@ -1,0 +1,142 @@
+[
+  {
+    "name": "mutuality_reciprocal_pass",
+    "clause_id": "mutuality",
+    "kind": "deterministic",
+    "text": "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party.",
+    "expected": {"decision": "pass", "reason_code": "mutuality_obligation_found"}
+  },
+  {
+    "name": "mutuality_one_way_fail",
+    "clause_id": "mutuality",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "This one-way NDA requires only the Receiving Party to protect the Company's information.",
+    "expected": {"decision": "fail", "reason_code": "one_way_mutuality_language"}
+  },
+  {
+    "name": "governing_law_difc_pass",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "text": "This Agreement shall be governed by the laws of the DIFC.",
+    "expected": {"decision": "pass", "reason_code": "approved_governing_law"}
+  },
+  {
+    "name": "governing_law_california_fail",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "This Agreement shall be governed by the laws of California.",
+    "expected": {"decision": "fail", "reason_code": "unapproved_governing_law"}
+  },
+  {
+    "name": "term_three_years_pass",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "text": "The confidentiality obligations survive for three (3) years.",
+    "expected": {"decision": "pass", "reason_code": "term_survival_within_cap"}
+  },
+  {
+    "name": "term_seven_years_fail",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "The confidentiality obligations survive for seven (7) years.",
+    "expected": {"decision": "fail", "reason_code": "term_survival_over_cap"}
+  },
+  {
+    "name": "confidential_information_broad_with_standard_exclusions_pass",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that is public, already known, received from a lawful third party, or independently developed without use of the Confidential Information.",
+    "expected": {"decision": "pass"}
+  },
+  {
+    "name": "non_circumvention_absent_pass",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "text": "The parties will use Confidential Information solely to evaluate a potential commercial relationship.",
+    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
+  },
+  {
+    "name": "non_circumvention_explicit_fail",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
+  },
+  {
+    "name": "non_circumvention_introduced_contact_paraphrase_trap",
+    "clause_id": "non_circumvention",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "The Receiving Party shall not solicit, approach, or contact any customers or business relationships introduced or made known to it by the Disclosing Party.",
+    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
+  },
+  {
+    "name": "confidential_information_unqualified_independent_development_trap",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that is independently developed by the Receiving Party.",
+    "expected": {"decision": "fail", "reason_code": "problematic_confidential_information_exclusion"}
+  },
+  {
+    "name": "term_survival_decoy_duration_trap",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "The term of this Agreement is two (2) years. The confidentiality obligations survive for seven (7) years after disclosure.",
+    "expected": {"decision": "fail", "reason_code": "term_survival_over_cap"}
+  },
+  {
+    "name": "term_survival_unresolved_by_reference_trap",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "text": "The confidentiality obligations survive in accordance with Section 7.2 of this Agreement.",
+    "expected": {"decision": "fail", "reason_code": "unresolved_survival_reference"}
+  },
+  {
+    "name": "ai_agreement_confirms_pass_no_escalation",
+    "clause_id": "governing_law",
+    "kind": "ai_agreement",
+    "text": "This Agreement shall be governed by the laws of the DIFC.",
+    "ai": {"decision": "pass", "confidence": 0.93, "reason": "The cited paragraph names an approved jurisdiction."},
+    "expected": {"decision": "pass", "reason_code": "approved_governing_law"}
+  },
+  {
+    "name": "ai_disagreement_escalates_to_review",
+    "clause_id": "governing_law",
+    "kind": "ai_disagreement",
+    "text": "This Agreement shall be governed by the laws of the DIFC.",
+    "ai": {"decision": "fail", "confidence": 0.91, "reason": "Scripted dissent: the governing-law provision is deficient."},
+    "expected": {"decision": "review", "reason_code": "ai_semantic_disagreement"}
+  },
+  {
+    "name": "ai_invalid_citation_escalates_to_review",
+    "clause_id": "governing_law",
+    "kind": "ai_invalid",
+    "text": "This Agreement shall be governed by the laws of the DIFC.",
+    "ai": {"decision": "pass", "confidence": 0.9, "invalid_citation": true, "reason": "Scripted pass with a fabricated citation."},
+    "expected": {"decision": "review", "reason_code": "ai_citation_validation_failed"}
+  },
+  {
+    "name": "ai_low_confidence_escalates_to_review",
+    "clause_id": "governing_law",
+    "kind": "ai_invalid",
+    "text": "This Agreement shall be governed by the laws of the DIFC.",
+    "ai": {"decision": "pass", "confidence": 0.4, "reason": "Scripted low-confidence pass."},
+    "expected": {"decision": "review", "reason_code": "ai_confidence_below_threshold"}
+  },
+  {
+    "name": "governing_law_conditional_unless_agreed_OBSERVATION",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "gated": false,
+    "label_note": "Engine currently PASSES an approved jurisdiction with an 'unless otherwise agreed' escape hatch. Counsel must decide whether conditional governing-law should escalate to review; provisional-expected=review is a guess, not gated.",
+    "text": "This Agreement shall be governed by the laws of England and Wales, unless otherwise agreed in writing by the parties.",
+    "expected": {"decision": "review"}
+  }
+]
