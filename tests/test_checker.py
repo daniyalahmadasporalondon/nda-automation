@@ -1890,7 +1890,9 @@ class CheckerTests(unittest.TestCase):
             )
 
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
-        self.assertEqual(result_clause["status"], "check")
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
+        self.assertEqual(result_clause["reason_code"], "unqualified_independent_development_exclusion")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
 
     def test_independent_development_qualification_terms_come_from_playbook(self):
@@ -1948,8 +1950,9 @@ class CheckerTests(unittest.TestCase):
                 )
 
                 result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
-                self.assertEqual(result_clause["status"], "check")
-                self.assertFalse(result_clause["passes"])
+                self.assertEqual(result_clause["decision"], "review")
+                self.assertTrue(result_clause["needs_review"])
+                self.assertEqual(result_clause["reason_code"], "unqualified_independent_development_exclusion")
                 self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
 
     def test_qualified_independent_development_synonyms_can_pass(self):
@@ -2018,8 +2021,9 @@ class CheckerTests(unittest.TestCase):
         )
 
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
-        self.assertEqual(result_clause["status"], "check")
-        self.assertFalse(result_clause["passes"])
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
+        self.assertEqual(result_clause["reason_code"], "unqualified_independent_development_exclusion")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
 
     def test_independent_development_qualification_before_carveout_does_not_hide_issue(self):
@@ -2035,8 +2039,9 @@ class CheckerTests(unittest.TestCase):
         )
 
         result_clause = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
-        self.assertEqual(result_clause["status"], "check")
-        self.assertFalse(result_clause["passes"])
+        self.assertEqual(result_clause["decision"], "review")
+        self.assertTrue(result_clause["needs_review"])
+        self.assertEqual(result_clause["reason_code"], "unqualified_independent_development_exclusion")
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
 
     def test_independent_development_preposed_qualification_can_pass(self):

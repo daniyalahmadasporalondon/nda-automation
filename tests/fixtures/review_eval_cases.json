@@ -120,13 +120,14 @@
     "expected": {"decision": "pass"}
   },
   {
-    "name": "confidential_information_unqualified_independent_development_trap",
+    "name": "confidential_information_unqualified_independent_development_review",
     "clause_id": "confidential_information",
     "kind": "deterministic",
     "high_risk": true,
-    "label_source": "engineering",
+    "label_source": "product_review",
+    "label_note": "Unqualified short-form independent-development exclusion is near-universal NDA language; product decision to review rather than auto-fail (counsel may upgrade).",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that is independently developed by the Receiving Party.",
-    "expected": {"decision": "fail", "reason_code": "problematic_confidential_information_exclusion"}
+    "expected": {"decision": "review", "reason_code": "unqualified_independent_development_exclusion"}
   },
   {
     "name": "confidential_information_reverse_engineering_exclusion_trap",

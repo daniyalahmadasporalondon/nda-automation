@@ -28,16 +28,16 @@
     }
   },
   {
-    "name": "confidential_information_detached_independent_development_qualification_checks",
+    "name": "confidential_information_detached_independent_development_qualification_reviews",
     "clause_id": "confidential_information",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include materials evaluated without use of Confidential Information, or independently developed information.",
     "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "problematic_confidential_information_exclusion",
-      "redline_count": 1,
+      "status": "match",
+      "decision": "review",
+      "reason_code": "unqualified_independent_development_exclusion",
+      "redline_count": 0,
       "analysis": {
-        "confidential_information_analysis.explicit_problematic_exclusion_paragraph_ids": ["p2"]
+        "confidential_information_analysis.independent_development_review_paragraph_ids": ["p2"]
       }
     }
   },

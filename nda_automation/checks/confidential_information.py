@@ -94,7 +94,33 @@ def _check_confidential_information(
         exclusion_analysis=exclusion_analysis,
     )
     explicit_exclusion_paragraphs = exclusion_analysis["explicit_exclusion_paragraphs"]
+    independent_development_review_paragraphs = exclusion_analysis["independent_development_review_paragraphs"]
     usage_right_review_paragraphs = exclusion_analysis["usage_right_review_paragraphs"]
+
+    # An unqualified independent-development carve-out alone (no residual-knowledge or
+    # reverse-engineering term) is near-universal NDA language: surface for human/counsel
+    # judgment rather than auto-failing (product decision). Hard problematic exclusions
+    # still fail below.
+    if (
+        broad_definition
+        and independent_development_review_paragraphs
+        and not explicit_exclusion_paragraphs
+        and not usage_right_review_paragraphs
+    ):
+        result = _review(
+            clause,
+            (
+                "The Confidential Information definition includes an unqualified "
+                "independent-development carve-out, which is common but should be confirmed."
+            ),
+            independent_development_review_paragraphs,
+            what_to_verify=(
+                "Confirm whether the independent-development exclusion should require a "
+                "'without use of or access to the Confidential Information' qualifier."
+            ),
+        )
+        _attach_confidential_information_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
 
     if broad_definition and not explicit_exclusion_paragraphs and not usage_right_review_paragraphs:
         result = _match(
@@ -229,6 +255,7 @@ def _confidential_exclusion_analysis(
     independent_development_patterns = [_literal_word_pattern(term) for term in independent_development_terms]
     qualification_patterns = [_literal_word_pattern(term) for term in independent_development_qualification_terms]
     explicit_exclusion_paragraphs: List[Paragraph] = []
+    independent_development_review_paragraphs: List[Paragraph] = []
     usage_right_review_paragraphs: List[Paragraph] = []
 
     for paragraph in paragraphs:
@@ -253,12 +280,19 @@ def _confidential_exclusion_analysis(
             continue
 
         if has_exclusion_context:
-            explicit_exclusion_paragraphs.append(paragraph)
+            if has_problematic_term:
+                # Residual-knowledge / reverse-engineering carve-outs remain a hard fail.
+                explicit_exclusion_paragraphs.append(paragraph)
+            else:
+                # Unqualified independent-development carve-out only: near-universal NDA
+                # language -> human/counsel review, not auto-fail (product decision).
+                independent_development_review_paragraphs.append(paragraph)
         elif has_usage_right_context:
             usage_right_review_paragraphs.append(paragraph)
 
     return {
         "explicit_exclusion_paragraphs": explicit_exclusion_paragraphs,
+        "independent_development_review_paragraphs": independent_development_review_paragraphs,
         "usage_right_review_paragraphs": usage_right_review_paragraphs,
     }
 
@@ -275,6 +309,9 @@ def _confidential_information_analysis(
         "definition_paragraph_ids": _paragraph_ids(definition_paragraphs),
         "explicit_problematic_exclusion_paragraph_ids": _paragraph_ids(
             exclusion_analysis["explicit_exclusion_paragraphs"]
+        ),
+        "independent_development_review_paragraph_ids": _paragraph_ids(
+            exclusion_analysis["independent_development_review_paragraphs"]
         ),
         "usage_right_review_paragraph_ids": _paragraph_ids(
             exclusion_analysis["usage_right_review_paragraphs"]
@@ -392,6 +429,8 @@ def reason_code(clause: Mapping[str, Any], decision: str) -> str:
         return semantic_code
     if _has_ids(clause, "confidential_information_analysis", "explicit_problematic_exclusion_paragraph_ids"):
         return "problematic_confidential_information_exclusion"
+    if _has_ids(clause, "confidential_information_analysis", "independent_development_review_paragraph_ids"):
+        return "unqualified_independent_development_exclusion"
     if _has_ids(clause, "confidential_information_analysis", "usage_right_review_paragraph_ids"):
         return "usage_right_language_needs_review"
     issue = _issue_type(clause)
