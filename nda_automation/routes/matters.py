@@ -235,6 +235,28 @@ def handle_matter_stage_update(handler, path: str) -> None:
     handler._send_json({"matter": matter_view.public_matter(matter)})
 
 
+def handle_matter_reviewed_update(handler, path: str) -> None:
+    matter_id = parse_matter_id(path, suffix="/reviewed")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    reviewed = payload.get("reviewed", True)
+    if not isinstance(reviewed, bool):
+        handler._send_json({"error": "reviewed must be true or false."}, status=400)
+        return
+
+    matter = matter_store.update_matter_fields(matter_id, {"human_reviewed": reviewed})
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    handler._send_json({"matter": matter_view.public_matter(matter)})
+
+
 def handle_matter_redline_draft_update(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/redline-draft")
     if matter_id is None:

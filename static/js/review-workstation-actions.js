@@ -47,6 +47,10 @@ function setupReviewWorkstationActions() {
     openReviewSendComposer();
   });
 
+  studioReviewedButton?.addEventListener("click", () => {
+    markMatterReviewed();
+  });
+
   studioSendModalClose?.addEventListener("click", () => closeReviewSendComposer());
   studioSendCancelButton?.addEventListener("click", () => closeReviewSendComposer());
   studioSendForm?.addEventListener("submit", async (event) => {
@@ -183,6 +187,37 @@ async function exportReviewDocx() {
     updateExportButtonState();
   }
 }
+
+async function markMatterReviewed() {
+  const matterId = state.selectedMatter?.id;
+  if (!matterId || !studioReviewedButton) return;
+  studioReviewedButton.disabled = true;
+  studioReviewedButton.textContent = "Marking…";
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/reviewed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed: true }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter reviewed");
+    if (payload.matter?.id) {
+      const merged = { ...state.selectedMatter, ...payload.matter };
+      // The server omits send_block_reason once it clears; drop any stale value
+      // so the client gate (which checks it first) unblocks too.
+      if (!payload.matter.send_block_reason) delete merged.send_block_reason;
+      state.selectedMatter = merged;
+    }
+    setFileMeta("Marked reviewed — you can send the redline now.");
+  } catch (error) {
+    renderOperationError(error, "Could not mark this matter reviewed.");
+  } finally {
+    studioReviewedButton.textContent = "Mark reviewed";
+    studioReviewedButton.disabled = false;
+    updateExportButtonState();
+  }
+}
+
 
 function openReviewSendComposer() {
   if (!state.selectedMatter?.id) return;

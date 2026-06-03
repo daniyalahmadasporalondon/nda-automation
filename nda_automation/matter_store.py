@@ -40,6 +40,7 @@ GMAIL_METADATA_FIELDS = (
 )
 MATTER_UPDATE_FIELDS = {
     "board_column",
+    "human_reviewed",
     "last_outbound_account",
     "last_outbound_at",
     "last_outbound_filename",
@@ -206,6 +207,8 @@ def update_matter_review(
                 **matter,
                 "review_result": review_result,
                 **triage,
+                # A fresh review supersedes any prior human sign-off.
+                "human_reviewed": False,
                 "updated_at": now,
             }
             matters[index] = updated_matter

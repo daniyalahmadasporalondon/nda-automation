@@ -231,6 +231,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 matter_routes.handle_matter_stage_update(self, path)
                 return
+            if path.startswith("/api/matters/") and path.endswith("/reviewed"):
+                matter_routes.handle_matter_reviewed_update(self, path)
+                return
             if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
                 matter_routes.handle_matter_redline_draft_update(self, path)
                 return

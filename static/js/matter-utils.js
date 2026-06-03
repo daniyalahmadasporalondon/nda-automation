@@ -39,7 +39,7 @@ const MatterUtils = (() => {
   }
 
   function canSendRedline(matter) {
-    return Boolean(matter?.can_send_redline && recipientEmail(matter) && !needsHumanReview(matter));
+    return Boolean(matter?.can_send_redline && recipientEmail(matter) && (!needsHumanReview(matter) || matter?.human_reviewed));
   }
 
   function reviewState(matter) {
@@ -66,7 +66,7 @@ const MatterUtils = (() => {
 
   function gmailSendBlock(matter, gmailStatus = {}) {
     if (matter?.send_block_reason) return String(matter.send_block_reason);
-    if (needsHumanReview(matter)) return "Matter needs human review before a redline can be sent.";
+    if (needsHumanReview(matter) && !matter?.human_reviewed) return "Matter needs human review before a redline can be sent.";
     if (!canSendRedline(matter)) return "Matter does not have a valid reply recipient email address.";
     const outbound = gmailStatus?.outbound || {};
     if (outbound.enabled === false) return "Gmail outbound is disabled in Admin.";

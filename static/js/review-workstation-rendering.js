@@ -101,6 +101,16 @@ function updateExportButtonState() {
     pendingReviewSendMatterId = null;
     setStudioSendButtonLabel("Send Redline");
   }
+  if (studioReviewedButton) {
+    // Offer "Mark reviewed" only while the sole thing blocking send is the
+    // human-review gate and it has not been signed off yet.
+    const matter = state.selectedMatter;
+    const reviewBlocked = Boolean(
+      canExport && hasSendableMatter && matter
+      && MatterUtils.needsHumanReview(matter) && !matter.human_reviewed,
+    );
+    studioReviewedButton.hidden = !reviewBlocked;
+  }
   updateRedlineDraftControls();
 }
 

@@ -19,6 +19,7 @@ class PublicMatter(TypedDict, total=False):
     document_title: str
     gmail_account: str
     has_redline_draft: bool
+    human_reviewed: bool
     id: str
     issue_count: int
     last_outbound_account: str
@@ -53,6 +54,7 @@ PUBLIC_MATTER_FIELDS = {
     "created_at",
     "document_title",
     "gmail_account",
+    "human_reviewed",
     "id",
     "issue_count",
     "last_outbound_account",
@@ -89,7 +91,7 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
             "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
-    elif matter_needs_human_review(matter):
+    elif matter_needs_human_review(matter) and not matter.get("human_reviewed"):
         send_block_reason = "Matter needs human review before a redline can be sent."
     public = {
         key: value
@@ -100,6 +102,7 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
         "recipient_email": recipient,
         "can_send_redline": bool(recipient and not send_block_reason),
         "has_redline_draft": isinstance(matter.get("redline_draft"), dict),
+        "human_reviewed": bool(matter.get("human_reviewed")),
     })
     review_state = matter_review_state(matter)
     if review_state:

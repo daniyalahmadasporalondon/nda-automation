@@ -2235,6 +2235,47 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result["imported"][0]["gmail_detection_sources"], "attachment_content")
         self.assertIn("non-disclosure agreement", result["imported"][0]["gmail_detection_terms"])
 
+    def test_mark_reviewed_clears_human_review_block_and_resets_on_rereview(self):
+        review_result = {
+            "clauses": [{"id": "mutuality", "decision": "review"}],
+            "requirements_needs_review": 1,
+            "review_state": {"state": "review", "requires_human_review": True},
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                created = matter_store.create_matter(
+                    source_filename="NDA.docx",
+                    document_bytes=make_docx(["Confidential information."]),
+                    extracted_text="Confidential information.",
+                    review_result=review_result,
+                    triage={},
+                    source_type="manual_upload",
+                    intake_metadata={},
+                )
+                mid = created["id"]
+
+                before = matter_view.public_matter(matter_store.get_matter(mid))
+                self.assertFalse(before["human_reviewed"])
+                self.assertEqual(
+                    before["send_block_reason"],
+                    "Matter needs human review before a redline can be sent.",
+                )
+
+                status, payload = self.request("POST", f"/api/matters/{mid}/reviewed", body={"reviewed": True})
+                self.assertEqual(status, 200)
+                self.assertTrue(payload["matter"]["human_reviewed"])
+                self.assertNotIn("send_block_reason", payload["matter"])
+
+                # A fresh review supersedes the human sign-off.
+                matter_store.update_matter_review(mid, review_result, {})
+                after = matter_view.public_matter(matter_store.get_matter(mid))
+                self.assertFalse(after["human_reviewed"])
+                self.assertEqual(
+                    after["send_block_reason"],
+                    "Matter needs human review before a redline can be sent.",
+                )
+
     def test_gmail_message_body_prefers_plain_text_in_multipart_alternative(self):
         def inline(value):
             return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")

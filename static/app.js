@@ -8,6 +8,7 @@ const studioSaveDraftButton = document.querySelector("#studioSaveDraftButton");
 const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButton");
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioSendButton = document.querySelector("#studioSendButton");
+const studioReviewedButton = document.querySelector("#studioReviewedButton");
 const studioSendModal = document.querySelector("#studioSendModal");
 const studioSendForm = document.querySelector("#studioSendForm");
 const studioSendModalClose = document.querySelector("#studioSendModalClose");
