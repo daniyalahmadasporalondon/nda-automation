@@ -40,6 +40,7 @@ from nda_automation import user_store
 from nda_automation.review_comparison import ReviewComparisonError
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, AI_FIRST_FALLBACK_MODE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
+from nda_automation.routes import playbook as playbook_routes
 from nda_automation.routes import review as review_routes
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
@@ -171,6 +172,19 @@ class ServerTests(unittest.TestCase):
             patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
             patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
         )
+
+    def active_playbook_review_runtime(self):
+        runtime = playbook_routes.ensure_active_playbook_runtime()
+        return {
+            "active_version_id": str(runtime.get("active_version_id") or ""),
+            "active_hash": str(runtime.get("active_hash") or ""),
+            "playbook_name": str(runtime.get("playbook_name") or ""),
+            "playbook_version": str(runtime.get("playbook_version") or ""),
+            "published_at": str(runtime.get("published_at") or ""),
+            "published_by": str(runtime.get("published_by") or ""),
+            "source": "active",
+            "active_source": str(runtime.get("source") or ""),
+        }
 
     def assert_review_payload_contract(self, payload, *, expected_source_type=None):
         for key in [
@@ -1525,6 +1539,7 @@ class ServerTests(unittest.TestCase):
                 "fallback_used": False,
             },
         }
+        active_result["playbook_runtime"] = self.active_playbook_review_runtime()
 
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -1593,6 +1608,7 @@ class ServerTests(unittest.TestCase):
                 "fallback_used": False,
             },
         }
+        active_result["playbook_runtime"] = self.active_playbook_review_runtime()
 
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -1728,6 +1744,7 @@ class ServerTests(unittest.TestCase):
                 "fallback_used": False,
             },
         }
+        active_result["playbook_runtime"] = self.active_playbook_review_runtime()
         captured_redline_counts = []
 
         def capture_redline_build(_source_bytes, review_result):

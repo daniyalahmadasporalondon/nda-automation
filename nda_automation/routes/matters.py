@@ -12,7 +12,6 @@ from ..checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
     PlaybookTemplateError,
-    REVIEW_ENGINE_VERSION,
 )
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError
@@ -21,6 +20,7 @@ from ..ingestion_service import create_matter_from_document, is_supported_docume
 from ..pdf_text import PdfExtractionError
 from ..review_comparison import ReviewComparisonError, compare_nda_reviews
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
+from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..triage import triage_review_result
 from .common import parse_matter_id, request_owner_user_id
 
@@ -88,9 +88,10 @@ def _matter_review_payload(
     had_redline_draft: bool = False,
     refresh_attempted: bool = False,
 ) -> dict:
+    staleness = review_result_staleness(matter.get("review_result"))
     if was_stale is None:
-        was_stale = review_result_is_stale(matter.get("review_result"))
-    is_stale = review_result_is_stale(matter.get("review_result"))
+        was_stale = bool(staleness["stale"])
+    is_stale = bool(staleness["stale"])
     refreshed = bool(refresh_attempted and was_stale and not is_stale)
     redline_draft_cleared = bool(
         refreshed
@@ -104,7 +105,13 @@ def _matter_review_payload(
         "refresh_url": f"/api/matters/{matter_id}/review-refresh",
         "refreshed": refreshed,
         "redline_draft_cleared": redline_draft_cleared,
+        "stale_reasons": staleness["stale_reasons"],
+        "current_playbook": staleness["current_playbook"],
+        "review_playbook": staleness["review_playbook"],
+        "current_review_engine_version": staleness["current_review_engine_version"],
     }
+    if is_stale and staleness.get("message"):
+        payload["review_refresh"]["stale_message"] = staleness["message"]
     if redline_draft_cleared:
         payload["review_refresh"]["message"] = "Saved redline draft was cleared because the review was re-analyzed."
     return payload
@@ -153,24 +160,6 @@ def refresh_stale_matter_review(matter: dict) -> dict:
     }
     refreshed_matter.pop("redline_draft", None)
     return refreshed_matter
-
-
-def review_result_is_stale(review_result: object) -> bool:
-    if not isinstance(review_result, dict):
-        return True
-    if review_result.get("review_engine_version") != REVIEW_ENGINE_VERSION:
-        return True
-    clauses = review_result.get("clauses")
-    if not isinstance(clauses, list) or not clauses:
-        return True
-    if not isinstance(review_result.get("review_state"), dict):
-        return True
-    return any(
-        not isinstance(clause, dict)
-        or not isinstance(clause.get("structure_context"), dict)
-        or not isinstance(clause.get("review_state"), dict)
-        for clause in clauses
-    )
 
 
 def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:

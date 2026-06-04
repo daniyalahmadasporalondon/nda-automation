@@ -242,6 +242,13 @@ def handle_review_docx_export(handler) -> None:
     except redline_export_service.MatterSourceTextChangedError as error:
         handler._send_json({"error": str(error)}, status=409)
         return
+    except redline_export_service.StaleMatterReviewError as error:
+        handler._send_json({
+            "error": str(error),
+            "stale_reasons": error.reasons,
+            "review_refresh": error.summary,
+        }, status=409)
+        return
     except redline_export_service.MatterNotFoundError as error:
         handler._send_json({"error": str(error)}, status=404)
         return

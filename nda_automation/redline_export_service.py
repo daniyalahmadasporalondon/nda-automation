@@ -18,6 +18,7 @@ from .docx_export import (
 from .docx_health import validate_docx_open_health, verify_export_content_coverage
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
+from .review_staleness import review_result_staleness, stale_review_message
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
@@ -41,6 +42,14 @@ class MatterSourceTextChangedError(DocxExportError):
 
 class MatterNotFoundError(DocxExportError):
     pass
+
+
+class StaleMatterReviewError(DocxExportError):
+    def __init__(self, summary: dict):
+        reasons = summary.get("stale_reasons")
+        self.reasons = [str(reason) for reason in reasons] if isinstance(reasons, list) else []
+        self.summary = summary
+        super().__init__(stale_review_message(self.reasons))
 
 
 def build_review_export(
@@ -117,6 +126,9 @@ def _review_result_for_export(
         review_result = matter.get("review_result")
         if not isinstance(review_result, dict):
             raise DocxExtractionError("Matter does not have a stored review result.")
+        staleness = review_result_staleness(review_result)
+        if staleness["stale"]:
+            raise StaleMatterReviewError(staleness)
         source_document_bytes = repository.get_source_document_bytes(matter)
         source_filename = str(matter.get("source_filename") or "")
         if source_document_bytes is None:
