@@ -1,7 +1,11 @@
 import unittest
 from copy import deepcopy
 
-from nda_automation.ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_REDLINE_NO_CHANGE
+from nda_automation.ai_assessment_contract import (
+    AI_ASSESSMENT_CONTRACT_VERSION,
+    AI_REDLINE_NO_CHANGE,
+    AIAssessmentContractError,
+)
 from nda_automation.ai_first_review import AI_FIRST_REVIEW_MODE, build_ai_first_review_result
 from nda_automation.checker import load_playbook
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
@@ -180,6 +184,38 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["matched_paragraph_ids"], ["p3"])
         self.assertEqual(governing_law["structured_evidence"][0]["matched_text"], "laws of california")
         self.assertEqual(governing_law["structured_evidence"][0]["match_spans"][0]["text"], "laws of California")
+
+    def test_ambiguous_quote_without_paragraph_id_is_rejected_before_redline_anchor(self):
+        with self.assertRaises(AIAssessmentContractError) as error:
+            build_ai_first_review_result(
+                SOURCE_TEXT,
+                [
+                    _assessment("mutuality", "pass"),
+                    _assessment("confidential_information", "pass", paragraph_id="p2"),
+                    _assessment(
+                        "governing_law",
+                        "fail",
+                        paragraph_id="p3",
+                        issue_type="present_but_wrong",
+                        rationale="Governing law is present but not an approved jurisdiction.",
+                        proposed_redline={
+                            "action": REDLINE_REPLACE_PARAGRAPH,
+                            "paragraph_id": "p3",
+                            "text": "This Agreement shall be governed by the laws of England and Wales.",
+                            "jurisdiction": "England and Wales",
+                        },
+                        evidence=[{
+                            "quote": "Confidential Information",
+                            "relevance": "This short phrase appears in more than one paragraph.",
+                        }],
+                    ),
+                    _assessment("term_and_survival", "pass", paragraph_id="p4"),
+                    _assessment("non_circumvention", "pass", paragraph_id="p5"),
+                    _assessment("signatures", "pass", paragraph_id="p6"),
+                ],
+            )
+
+        self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
 
 
 if __name__ == "__main__":

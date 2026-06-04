@@ -293,10 +293,14 @@ def _validated_evidence(
                 errors.append(f"{item_location}: quote does not appear in paragraph {paragraph_id}")
                 continue
         else:
-            paragraph_id = _paragraph_id_for_quote(quote, paragraph_by_id)
-            if not paragraph_id:
+            matching_paragraph_ids = _paragraph_ids_for_quote(quote, paragraph_by_id)
+            if not matching_paragraph_ids:
                 errors.append(f"{item_location}: quote does not appear in any reviewed paragraph")
                 continue
+            if len(matching_paragraph_ids) > 1:
+                errors.append(f"{item_location}: quote matches multiple reviewed paragraphs; provide paragraph_id")
+                continue
+            paragraph_id = matching_paragraph_ids[0]
         cleaned.append({"paragraph_id": paragraph_id, "quote": quote, "relevance": relevance})
     return cleaned
 
@@ -341,15 +345,12 @@ def _validated_proposed_redline(
     return cleaned
 
 
-def _paragraph_id_for_quote(quote: str, paragraph_by_id: Mapping[str, str]) -> str:
-    return next(
-        (
-            paragraph_id
-            for paragraph_id, paragraph_text in paragraph_by_id.items()
-            if _quote_appears_in_text(quote, paragraph_text)
-        ),
-        "",
-    )
+def _paragraph_ids_for_quote(quote: str, paragraph_by_id: Mapping[str, str]) -> list[str]:
+    return [
+        paragraph_id
+        for paragraph_id, paragraph_text in paragraph_by_id.items()
+        if _quote_appears_in_text(quote, paragraph_text)
+    ]
 
 
 def _quote_appears_in_text(quote: str, text: str) -> bool:

@@ -376,12 +376,14 @@ def _evidence_paragraph_ids(assessment: Mapping[str, Any], paragraphs: list[Para
 
 
 def _paragraph_id_for_quote(paragraphs: list[Paragraph], quote: str) -> str:
+    matching_ids: list[str] = []
     quote_lower = quote.casefold()
     for paragraph in paragraphs:
         text = str(paragraph.get("text") or "")
         if quote_lower in text.casefold():
-            return str(paragraph.get("id") or "")
-    return ""
+            matching_ids.append(str(paragraph.get("id") or ""))
+    matching_ids = [paragraph_id for paragraph_id in matching_ids if paragraph_id]
+    return matching_ids[0] if len(matching_ids) == 1 else ""
 
 
 def _dedupe_ids(ids: list[str]) -> list[str]:
@@ -457,14 +459,7 @@ def _quotes_by_paragraph_id(
             continue
         paragraph_id = str(item.get("paragraph_id") or "").strip()
         if not paragraph_id:
-            paragraph_id = next(
-                (
-                    str(paragraph.get("id") or "")
-                    for paragraph in matched_paragraphs
-                    if quote.casefold() in str(paragraph.get("text") or "").casefold()
-                ),
-                "",
-            )
+            paragraph_id = _paragraph_id_for_quote(matched_paragraphs, quote)
         if paragraph_id in paragraph_ids:
             quotes[paragraph_id] = quote
     return quotes

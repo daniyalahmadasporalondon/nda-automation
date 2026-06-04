@@ -79,6 +79,24 @@ class AIAssessmentContractTests(unittest.TestCase):
         }])
         self.assertEqual(governing_law["proposed_redline"]["action"], REDLINE_REPLACE_PARAGRAPH)
 
+    def test_quote_only_evidence_must_resolve_to_one_paragraph(self):
+        source_text = "\n\n".join([
+            "Confidential Information may be disclosed by either party.",
+            "Confidential Information means non-public technical information.",
+        ])
+
+        with self.assertRaises(AIAssessmentContractError) as error:
+            validate_ai_clause_assessments(
+                [_valid_assessment(evidence=[{
+                    "quote": "Confidential Information",
+                    "relevance": "Short phrase appears more than once.",
+                }])],
+                valid_clause_ids=_valid_clause_ids(),
+                paragraphs=split_document_paragraphs(source_text),
+            )
+
+        self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
+
     def test_pass_assessment_requires_no_change_redline_and_none_issue_type(self):
         assessments = validate_ai_clause_assessments(
             [{
