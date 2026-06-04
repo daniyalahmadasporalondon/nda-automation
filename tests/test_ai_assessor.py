@@ -159,6 +159,9 @@ class AIAssessorTests(unittest.TestCase):
         gemini_schema_json = json.dumps(gemini_body["generationConfig"]["responseSchema"])
         for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
             self.assertNotIn(f'"{unsupported_key}"', gemini_schema_json)
+        self.assertIn('"minimum"', gemini_schema_json)
+        self.assertIn('"maximum"', gemini_schema_json)
+        self.assertIn('"additionalProperties"', gemini_schema_json)
 
         openrouter_body = openrouter_ai_assessment_request_body(packet, "openai/gpt-4o-mini")
         self.assertEqual(openrouter_body["response_format"]["json_schema"]["schema"], AI_ASSESSMENT_RESPONSE_SCHEMA)

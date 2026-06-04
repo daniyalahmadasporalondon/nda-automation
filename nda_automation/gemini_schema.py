@@ -5,10 +5,7 @@ from typing import Any
 
 
 GEMINI_UNSUPPORTED_SCHEMA_KEYS = {
-    "additionalProperties",
     "const",
-    "maximum",
-    "minimum",
 }
 
 
