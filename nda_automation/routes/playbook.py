@@ -40,6 +40,13 @@ _DRAFT_RUNTIME_KEYS = [
 ]
 
 
+class PlaybookDraftConflict(RuntimeError):
+    def __init__(self, payload: dict[str, Any], *, status: int = 409) -> None:
+        super().__init__(str(payload.get("error") or "Playbook draft conflict."))
+        self.payload = payload
+        self.status = status
+
+
 @contextmanager
 def locked_playbook(playbook_path=PLAYBOOK_PATH):
     with _PLAYBOOK_LOCK:
@@ -260,6 +267,8 @@ def public_playbook_history(entries: list[dict[str, Any]]) -> list[dict[str, Any
                 "playbook_name",
                 "playbook_version",
                 "changed_clause_ids",
+                "active_version_id",
+                "active_hash",
                 "draft_id",
                 "draft_hash",
                 "base_active_version_id",
@@ -440,6 +449,80 @@ def handle_playbook_draft_discard(handler, *, playbook_path=PLAYBOOK_PATH, repla
         "draft": None,
         "history": public_playbook_history(history),
         "discarded_draft_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def handle_playbook_publish(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    try:
+        with locked_playbook(playbook_path):
+            active_playbook = read_playbook_from_path(playbook_path)
+            validate_playbook(active_playbook)
+            runtime = ensure_active_runtime_for_playbook(
+                active_playbook,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+                source="bootstrap",
+            )
+            conflict = _expected_active_conflict(payload, runtime)
+            if conflict:
+                handler._send_json(conflict, status=409)
+                return
+
+            draft = read_playbook_draft(playbook_path=playbook_path)
+            publish_playbook, source_draft = _publish_candidate_from_payload(payload, draft)
+            if publish_playbook is None:
+                handler._send_json({"error": "Provide a Playbook draft id or playbook object to publish."}, status=400)
+                return
+            conflict = _draft_base_conflict(source_draft, runtime)
+            if conflict:
+                handler._send_json(conflict, status=409)
+                return
+            validate_playbook(publish_playbook)
+
+            write_playbook_atomically(publish_playbook, playbook_path=playbook_path, replace_file=replace_file)
+            runtime = _active_runtime_from_playbook(
+                publish_playbook,
+                actor=_actor_from_payload(payload),
+                source="publish",
+            )
+            write_playbook_runtime(runtime, playbook_path=playbook_path, replace_file=replace_file)
+            if source_draft is not None:
+                try:
+                    draft_path_for(playbook_path).unlink()
+                except FileNotFoundError:
+                    pass
+            history = read_playbook_history(playbook_path=playbook_path)
+            history.insert(0, _publish_history_entry(
+                publish_playbook,
+                active_playbook,
+                runtime,
+                payload,
+                source_draft,
+            ))
+            write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+    except PlaybookTemplateError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    except PlaybookDraftConflict as error:
+        handler._send_json(error.payload, status=error.status)
+        return
+    except OSError:
+        handler._send_json({"error": "Playbook draft could not be published."}, status=500)
+        return
+
+    handler._send_json({
+        "playbook": publish_playbook,
+        "active": {
+            "playbook": publish_playbook,
+            "metadata": public_playbook_runtime(runtime),
+        },
+        "draft": None,
+        "history": public_playbook_history(history),
+        "published_at": runtime["published_at"],
     })
 
 
@@ -641,6 +724,8 @@ def _history_summary(action: str, changed_clause_ids: list[str], playbook: dict[
         return "Saved Playbook draft."
     if action == "draft_discard":
         return "Discarded Playbook draft."
+    if action == "publish":
+        return "Published Playbook changes."
     if not changed_clause_ids:
         return "Saved playbook with no clause-level policy changes."
     names = _clause_names(playbook, changed_clause_ids)
@@ -767,6 +852,90 @@ def _draft_discard_history_entry(
     return entry
 
 
+def _publish_candidate_from_payload(
+    payload: dict[str, Any],
+    draft: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    requested_draft_id = str(payload.get("draft_id") or "").strip()
+    supplied_playbook = payload.get("playbook")
+    if isinstance(supplied_playbook, dict):
+        if requested_draft_id:
+            _require_matching_draft(draft, requested_draft_id)
+            return json.loads(json.dumps(supplied_playbook)), draft
+        if draft is not None:
+            raise PlaybookDraftConflict({
+                "error": "A Playbook draft already exists. Publish that draft or discard it before direct publishing.",
+                "code": "playbook_draft_exists",
+                "draft": public_playbook_draft_payload(
+                    _runtime_fields_for_draft(draft),
+                    draft,
+                ),
+            })
+        return json.loads(json.dumps(supplied_playbook)), None
+
+    if requested_draft_id:
+        _require_matching_draft(draft, requested_draft_id)
+        return _snapshot_from_draft(draft), draft
+    if draft is not None:
+        return _snapshot_from_draft(draft), draft
+    return None, None
+
+
+def _snapshot_from_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(draft, dict) or not isinstance(draft.get("snapshot"), dict):
+        raise PlaybookDraftConflict({
+            "error": "Playbook draft was not found.",
+            "code": "playbook_draft_missing",
+        }, status=404)
+    return json.loads(json.dumps(draft["snapshot"]))
+
+
+def _require_matching_draft(draft: dict[str, Any] | None, requested_draft_id: str) -> None:
+    if not requested_draft_id:
+        return
+    if not isinstance(draft, dict):
+        raise PlaybookDraftConflict({
+            "error": "Playbook draft was not found.",
+            "code": "playbook_draft_missing",
+        }, status=404)
+    actual_draft_id = str(draft.get("draft_id") or "")
+    if actual_draft_id != requested_draft_id:
+        raise PlaybookDraftConflict({
+            "error": "The Playbook draft changed while this request was open.",
+            "code": "playbook_draft_conflict",
+            "draft": public_playbook_draft_payload(
+                _runtime_fields_for_draft(draft),
+                draft,
+            ),
+        })
+
+
+def _publish_history_entry(
+    playbook: dict[str, Any],
+    previous_playbook: dict[str, Any],
+    runtime: dict[str, Any],
+    payload: dict[str, Any],
+    draft: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = str(payload.get("summary") or "").strip()
+    entry = _history_entry(
+        playbook,
+        action="publish",
+        actor=_actor_from_payload(payload),
+        previous_playbook=previous_playbook,
+        summary=summary or "Published Playbook changes.",
+    )
+    entry["active_version_id"] = runtime.get("active_version_id")
+    entry["active_hash"] = runtime.get("active_hash")
+    entry["snapshot_hash"] = runtime.get("active_hash")
+    if isinstance(draft, dict):
+        entry["draft_id"] = draft.get("draft_id")
+        entry["draft_hash"] = draft.get("draft_hash")
+        entry["base_active_version_id"] = draft.get("base_active_version_id")
+        entry["base_active_hash"] = draft.get("base_active_hash")
+    return entry
+
+
 def _expected_active_conflict(payload: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any] | None:
     expected_hash = str(payload.get("expected_base_active_hash") or payload.get("expected_active_hash") or "").strip()
     expected_version = str(
@@ -779,6 +948,32 @@ def _expected_active_conflict(payload: dict[str, Any], runtime: dict[str, Any]) 
     if expected_version and expected_version != active_version:
         return _active_conflict_payload(runtime)
     return None
+
+
+def _draft_base_conflict(draft: dict[str, Any] | None, runtime: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(draft, dict):
+        return None
+    base_hash = str(draft.get("base_active_hash") or "")
+    base_version = str(draft.get("base_active_version_id") or "")
+    active_hash = str(runtime.get("active_hash") or "")
+    active_version = str(runtime.get("active_version_id") or "")
+    if base_hash and base_hash != active_hash:
+        return _draft_base_conflict_payload(runtime, draft)
+    if base_version and base_version != active_version:
+        return _draft_base_conflict_payload(runtime, draft)
+    return None
+
+
+def _draft_base_conflict_payload(runtime: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "error": "The active Playbook changed after this draft was saved.",
+        "code": "playbook_draft_base_conflict",
+        "active": public_playbook_runtime(runtime),
+        "draft": public_playbook_draft_payload(
+            _runtime_fields_for_draft(draft),
+            draft,
+        ),
+    }
 
 
 def _active_conflict_payload(runtime: dict[str, Any]) -> dict[str, Any]:

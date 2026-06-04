@@ -170,6 +170,14 @@ def _handle_playbook_draft_discard_post(handler) -> None:
     )
 
 
+def _handle_playbook_publish_post(handler) -> None:
+    playbook_routes.handle_playbook_publish(
+        handler,
+        playbook_path=PLAYBOOK_PATH,
+        replace_file=os.replace,
+    )
+
+
 _GET_EXACT_ROUTES = {
     "/": _handle_index_get,
     "/api/deployment/status": admin_routes.handle_deployment_status,
@@ -210,6 +218,7 @@ _POST_EXACT_ROUTES = {
     "/api/playbook": _handle_playbook_save_post,
     "/api/playbook/draft": _handle_playbook_draft_save_post,
     "/api/playbook/discard-draft": _handle_playbook_draft_discard_post,
+    "/api/playbook/publish": _handle_playbook_publish_post,
     "/api/playbook/restore": _handle_playbook_restore_post,
 }
 
