@@ -430,9 +430,13 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "playbook");
   await assertTextContains(page.locator("#adminPlaybookPanel"), "Aspora playbook");
   await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
-  await assertTextContains(page.locator("#clauseDetail"), "Policy Version History");
+  await assertTextContains(page.locator("#clauseDetail"), "Policy");
+  await assertTextContains(page.locator("#clauseDetail"), "Redline");
+  await assertTextContains(page.locator("#clauseDetail"), "Decision Logic");
+  await assertTextContains(page.locator("#clauseDetail"), "Audit");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
+  await page.getByRole("button", { name: "Decision Logic" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
   await assertTextContains(page.locator("#clauseDetail"), "Decision Logic Visibility");
   await assertTextContains(page.locator("#clauseDetail"), "AUDIT READING ORDER");
@@ -446,12 +450,14 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "review_state");
   await assertTextContains(page.locator("#clauseDetail"), "structured_evidence");
   await assertTextContains(page.locator("#clauseDetail"), "audit_trace");
+  await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
+  await assertTextContains(page.locator("#clauseDetail"), "weak_mutuality_paragraph_ids");
+  await page.getByRole("button", { name: "Audit" }).click();
+  await assertTextContains(page.locator("#clauseDetail"), "Policy Version History");
   await assertTextContains(page.locator("#clauseDetail"), "analysis_purpose");
   await assertTextContains(page.locator("#clauseDetail"), "primary_inputs");
   await assertTextContains(page.locator("#clauseDetail"), "reason_code_taxonomy");
   await assertTextContains(page.locator("#clauseDetail"), "hardening_guards");
-  await assertTextContains(page.locator("#clauseDetail"), "mutuality_analysis");
-  await assertTextContains(page.locator("#clauseDetail"), "weak_mutuality_paragraph_ids");
   await assertTextContains(page.locator("#clauseDetail"), "mutuality");
   assert.equal(await page.getByText("Walk-away", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Negotiate", { exact: false }).count(), 0);
@@ -510,6 +516,7 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "negated_reference_paragraph_ids");
   await assertTextContains(page.locator("#clauseDetail"), "may not include non-solicitation obligations");
   await page.locator('[data-clause-id="mutuality"]').click();
+  await page.getByRole("button", { name: "Policy" }).click();
 
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
   await assertTextContains(page.locator("#playbookDraftDiff"), "check_trigger");
@@ -537,6 +544,7 @@ async function testPlaybookAdminEditor(page) {
   });
   await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
+  await page.getByRole("button", { name: "Audit" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "Saved changes to Mutuality.");
   assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
   const savedConfidentialInfo = savedPayload.playbook.clauses.find((clause) => clause.id === "confidential_information");

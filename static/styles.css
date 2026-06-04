@@ -3418,6 +3418,71 @@ body.modal-open {
   padding: 18px;
 }
 
+.playbook-editor-tabbed {
+  gap: 14px;
+}
+
+.playbook-subpanel-tabs {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+}
+
+.playbook-subpanel-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink-muted);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 0 11px;
+}
+
+.playbook-subpanel-tabs button:hover {
+  background: rgba(26, 19, 51, 0.035);
+  color: var(--ink);
+}
+
+.playbook-subpanel-tabs button.active,
+.playbook-subpanel-tabs button[aria-pressed="true"] {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.playbook-subpanel {
+  display: grid;
+  gap: 14px;
+}
+
+.playbook-subpanel[hidden] {
+  display: none;
+}
+
+.playbook-subpanel-head {
+  display: grid;
+  gap: 4px;
+}
+
+.playbook-subpanel-head h3 {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.playbook-subpanel-head p {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .admin-head {
   align-items: flex-start;
   border-bottom: 1px solid var(--border);

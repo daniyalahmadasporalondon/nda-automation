@@ -55,6 +55,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       clauseDetail.innerHTML = '<div class="detail-empty">No clause selected</div>';
       return;
     }
+    if (clause.id === "mutuality") {
+      renderMutualityClauseDetail(clause);
+      return;
+    }
 
     clauseDetail.innerHTML = `
       <form class="playbook-editor" id="playbookEditor">
@@ -115,6 +119,99 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
     setupSpecialControls(clause);
+    setupPlaybookHistoryControls();
+  }
+
+  function renderMutualityClauseDetail(clause) {
+    const allowedPanels = new Set(["policy", "redline", "decision", "audit"]);
+    const activePanel = allowedPanels.has(state.playbookMutualityPanel) ? state.playbookMutualityPanel : "policy";
+    const panelActive = (name) => activePanel === name;
+    clauseDetail.innerHTML = `
+      <form class="playbook-editor playbook-editor-tabbed" id="playbookEditor">
+        <div class="admin-head">
+          <div>
+            <p class="eyebrow">clause ${escapeHtml(clause.id)}</p>
+            <h2>Edit Clause: ${escapeHtml(clause.name)}</h2>
+          </div>
+          <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
+        </div>
+
+        <nav class="playbook-subpanel-tabs" aria-label="Mutuality editor sections">
+          <button class="${panelActive("policy") ? "active" : ""}" type="button" data-playbook-panel-tab="policy" aria-pressed="${panelActive("policy") ? "true" : "false"}">Policy</button>
+          <button class="${panelActive("redline") ? "active" : ""}" type="button" data-playbook-panel-tab="redline" aria-pressed="${panelActive("redline") ? "true" : "false"}">Redline</button>
+          <button class="${panelActive("decision") ? "active" : ""}" type="button" data-playbook-panel-tab="decision" aria-pressed="${panelActive("decision") ? "true" : "false"}">Decision Logic</button>
+          <button class="${panelActive("audit") ? "active" : ""}" type="button" data-playbook-panel-tab="audit" aria-pressed="${panelActive("audit") ? "true" : "false"}">Audit</button>
+        </nav>
+
+        <section class="playbook-subpanel ${panelActive("policy") ? "active" : ""}" data-playbook-panel="policy" ${panelActive("policy") ? "" : "hidden"}>
+          <div class="playbook-subpanel-head">
+            <h3>Policy</h3>
+            <p>Define the Mutuality rule the review engine should apply.</p>
+          </div>
+          <div class="admin-grid">
+            ${textInput("Clause Name", "name", clause.name)}
+          </div>
+          <fieldset class="admin-fieldset">
+            <legend>Stance</legend>
+            <label>
+              <input type="radio" name="type" value="required" ${clause.type === "prohibited" ? "" : "checked"}>
+              <span>Required - Check if absent or deficient</span>
+            </label>
+            <label>
+              <input type="radio" name="type" value="prohibited" ${clause.type === "prohibited" ? "checked" : ""}>
+              <span>Prohibited - Check if present</span>
+            </label>
+          </fieldset>
+          ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
+          ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+        </section>
+
+        <section class="playbook-subpanel ${panelActive("redline") ? "active" : ""}" data-playbook-panel="redline" ${panelActive("redline") ? "" : "hidden"}>
+          <div class="playbook-subpanel-head">
+            <h3>Redline</h3>
+            <p>Control the replacement language exported when Mutuality needs a redline.</p>
+          </div>
+          ${redlineTemplateEditors(clause)}
+        </section>
+
+        <section class="playbook-subpanel ${panelActive("decision") ? "active" : ""}" data-playbook-panel="decision" ${panelActive("decision") ? "" : "hidden"}>
+          <div class="playbook-subpanel-head">
+            <h3>Decision Logic</h3>
+            <p>Review how Mutuality is assessed and what evidence appears in audit output.</p>
+          </div>
+          ${checkerVisibilityPanel(clause)}
+          ${sharedContextControls(clause)}
+        </section>
+
+        <section class="playbook-subpanel ${panelActive("audit") ? "active" : ""}" data-playbook-panel="audit" ${panelActive("audit") ? "" : "hidden"}>
+          <div class="playbook-subpanel-head">
+            <h3>Audit</h3>
+            <p>Inspect the raw rule payload, local draft diff, and version history.</p>
+          </div>
+          <section class="admin-rules">
+            <h3>Raw Engine Rules</h3>
+            <pre>${escapeHtml(engineRulesForClause(clause))}</pre>
+          </section>
+          <section class="admin-rules diff">
+            <h3>Draft Modifications Diff</h3>
+            <pre id="playbookDraftDiff">${escapeHtml(diffForClause(clause.id) || "No unsaved changes.")}</pre>
+          </section>
+          ${playbookHistoryPanel()}
+        </section>
+
+        <div class="admin-actions">
+          <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
+          <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Draft</button>
+          <button type="submit" id="savePlaybookButton" ${hasAnyDraft() && !hasTemplateValidationErrors() ? "" : "disabled"}>Commit & Save Playbook</button>
+        </div>
+      </form>
+    `;
+
+    const editor = clauseDetail.querySelector("#playbookEditor");
+    editor.addEventListener("input", handleEditorInput);
+    editor.addEventListener("submit", savePlaybook);
+    clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
+    setupPlaybookSubpanels();
     setupPlaybookHistoryControls();
   }
 
@@ -231,6 +328,27 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         });
       });
     }
+  }
+
+  function setupPlaybookSubpanels() {
+    const tabs = [...clauseDetail.querySelectorAll("[data-playbook-panel-tab]")];
+    const panels = [...clauseDetail.querySelectorAll("[data-playbook-panel]")];
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const target = tab.dataset.playbookPanelTab;
+        state.playbookMutualityPanel = target;
+        tabs.forEach((item) => {
+          const active = item === tab;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        panels.forEach((panel) => {
+          const active = panel.dataset.playbookPanel === target;
+          panel.classList.toggle("active", active);
+          panel.hidden = !active;
+        });
+      });
+    });
   }
 
   async function savePlaybook(event) {
