@@ -97,6 +97,10 @@ def _handle_playbook_api_get(handler, *, send_body: bool) -> None:
     playbook_routes.handle_playbook_get(handler, playbook_path=PLAYBOOK_PATH, send_body=send_body)
 
 
+def _handle_playbook_draft_get(handler, *, send_body: bool) -> None:
+    playbook_routes.handle_playbook_draft_get(handler, playbook_path=PLAYBOOK_PATH, send_body=send_body)
+
+
 def _handle_text_review_post(handler) -> None:
     review_routes.handle_text_review(handler, review_nda_func=review_nda_with_active_engine)
 
@@ -150,11 +154,28 @@ def _handle_playbook_restore_post(handler) -> None:
     )
 
 
+def _handle_playbook_draft_save_post(handler) -> None:
+    playbook_routes.handle_playbook_draft_save(
+        handler,
+        playbook_path=PLAYBOOK_PATH,
+        replace_file=os.replace,
+    )
+
+
+def _handle_playbook_draft_discard_post(handler) -> None:
+    playbook_routes.handle_playbook_draft_discard(
+        handler,
+        playbook_path=PLAYBOOK_PATH,
+        replace_file=os.replace,
+    )
+
+
 _GET_EXACT_ROUTES = {
     "/": _handle_index_get,
     "/api/deployment/status": admin_routes.handle_deployment_status,
     "/playbook": _handle_playbook_get,
     "/api/playbook": _handle_playbook_api_get,
+    "/api/playbook/draft": _handle_playbook_draft_get,
     "/api/gmail/status": gmail_routes.handle_gmail_status,
     "/auth/gmail/start": gmail_routes.handle_gmail_connect_start,
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
@@ -187,6 +208,8 @@ _POST_EXACT_ROUTES = {
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
     "/api/playbook": _handle_playbook_save_post,
+    "/api/playbook/draft": _handle_playbook_draft_save_post,
+    "/api/playbook/discard-draft": _handle_playbook_draft_discard_post,
     "/api/playbook/restore": _handle_playbook_restore_post,
 }
 

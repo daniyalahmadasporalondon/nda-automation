@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nda_automation.checker import load_playbook
 from nda_automation.routes import playbook as playbook_routes
+from nda_automation import server as server_module
 
 
 class _JsonHandler:
@@ -95,6 +96,131 @@ class PlaybookRuntimeTests(unittest.TestCase):
         self.assertEqual(handler.response["active"]["metadata"]["published_by"], "legal-admin")
         self.assertEqual(saved_runtime["active_hash"], playbook_routes.playbook_snapshot_hash(changed_playbook))
         self.assertEqual(saved_runtime["source"], "save")
+
+    def test_playbook_draft_save_validates_without_changing_active_playbook(self):
+        original_playbook = deepcopy(load_playbook())
+        draft_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in draft_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "Draft-only Mutuality policy."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            runtime = playbook_routes.ensure_active_playbook_runtime(playbook_path=playbook_path)
+            handler = _JsonHandler({
+                "playbook": draft_playbook,
+                "actor": "legal-admin",
+                "summary": "Draft Mutuality change.",
+                "expected_base_active_hash": runtime["active_hash"],
+            })
+
+            playbook_routes.handle_playbook_draft_save(handler, playbook_path=playbook_path)
+
+            active_after_save = json.loads(playbook_path.read_text(encoding="utf-8"))
+            saved_draft = json.loads(playbook_routes.draft_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(active_after_save, original_playbook)
+        self.assertEqual(saved_draft["snapshot"], draft_playbook)
+        self.assertEqual(saved_draft["summary"], "Draft Mutuality change.")
+        self.assertEqual(saved_draft["changed_clause_ids"], ["mutuality"])
+        self.assertEqual(saved_runtime["draft_id"], saved_draft["draft_id"])
+        self.assertEqual(handler.response["draft"]["metadata"]["draft_id"], saved_draft["draft_id"])
+        self.assertEqual(handler.response["draft"]["playbook"], draft_playbook)
+        self.assertEqual(handler.response["history"][0]["action"], "draft_save")
+        self.assertEqual(handler.response["history"][0]["draft_id"], saved_draft["draft_id"])
+
+    def test_playbook_api_get_returns_saved_draft_snapshot(self):
+        original_playbook = deepcopy(load_playbook())
+        draft_playbook = deepcopy(original_playbook)
+        term = next(clause for clause in draft_playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["preferred_position"] = "Draft-only survival policy."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            save_handler = _JsonHandler({"playbook": draft_playbook, "actor": "legal-admin"})
+            get_handler = _JsonHandler()
+
+            playbook_routes.handle_playbook_draft_save(save_handler, playbook_path=playbook_path)
+            playbook_routes.handle_playbook_get(get_handler, playbook_path=playbook_path)
+
+        self.assertEqual(get_handler.status, 200)
+        self.assertEqual(get_handler.response["playbook"], original_playbook)
+        self.assertEqual(get_handler.response["active"]["playbook"], original_playbook)
+        self.assertEqual(get_handler.response["draft"]["playbook"], draft_playbook)
+        self.assertEqual(get_handler.response["draft"]["metadata"]["draft_id"], save_handler.response["draft"]["metadata"]["draft_id"])
+
+    def test_playbook_draft_save_rejects_active_base_conflict(self):
+        original_playbook = deepcopy(load_playbook())
+        draft_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in draft_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "This should not be written."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            handler = _JsonHandler({
+                "playbook": draft_playbook,
+                "expected_base_active_hash": "sha256:" + "0" * 64,
+            })
+
+            playbook_routes.handle_playbook_draft_save(handler, playbook_path=playbook_path)
+
+        self.assertEqual(handler.status, 409)
+        self.assertEqual(handler.response["code"], "playbook_conflict")
+        self.assertFalse(playbook_routes.draft_path_for(playbook_path).exists())
+
+    def test_playbook_draft_discard_removes_draft_sidecar_and_runtime_fields(self):
+        original_playbook = deepcopy(load_playbook())
+        draft_playbook = deepcopy(original_playbook)
+        signatures = next(clause for clause in draft_playbook["clauses"] if clause["id"] == "signatures")
+        signatures["preferred_position"] = "Draft-only signature policy."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            save_handler = _JsonHandler({"playbook": draft_playbook, "actor": "legal-admin"})
+            playbook_routes.handle_playbook_draft_save(save_handler, playbook_path=playbook_path)
+            draft_id = save_handler.response["draft"]["metadata"]["draft_id"]
+            discard_handler = _JsonHandler({"draft_id": draft_id, "actor": "legal-admin"})
+
+            playbook_routes.handle_playbook_draft_discard(discard_handler, playbook_path=playbook_path)
+
+            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(discard_handler.status, 200)
+        self.assertFalse(playbook_routes.draft_path_for(playbook_path).exists())
+        self.assertNotIn("draft_id", saved_runtime)
+        self.assertIsNone(discard_handler.response["draft"])
+        self.assertEqual(discard_handler.response["history"][0]["action"], "draft_discard")
+        self.assertEqual(discard_handler.response["history"][0]["draft_id"], draft_id)
+
+    def test_playbook_draft_discard_rejects_draft_id_conflict(self):
+        original_playbook = deepcopy(load_playbook())
+        draft_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in draft_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "Draft-only Mutuality policy."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            save_handler = _JsonHandler({"playbook": draft_playbook, "actor": "legal-admin"})
+            conflict_handler = _JsonHandler({"draft_id": "pbd_wrong"})
+
+            playbook_routes.handle_playbook_draft_save(save_handler, playbook_path=playbook_path)
+            playbook_routes.handle_playbook_draft_discard(conflict_handler, playbook_path=playbook_path)
+            draft_still_exists = playbook_routes.draft_path_for(playbook_path).exists()
+
+        self.assertEqual(conflict_handler.status, 409)
+        self.assertEqual(conflict_handler.response["code"], "playbook_draft_conflict")
+        self.assertTrue(draft_still_exists)
+
+    def test_playbook_draft_routes_are_registered(self):
+        self.assertIn("/api/playbook/draft", server_module._GET_EXACT_ROUTES)
+        self.assertIn("/api/playbook/draft", server_module._POST_EXACT_ROUTES)
+        self.assertIn("/api/playbook/discard-draft", server_module._POST_EXACT_ROUTES)
 
 
 if __name__ == "__main__":
