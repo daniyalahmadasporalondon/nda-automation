@@ -540,6 +540,7 @@ def _prune_stored_matters(
         if matter.get("id") != protected_matter_id and not _matter_is_active(matter)
     ]
     if not removable:
+        telemetry.increment("matter_retention_over_cap_without_prune")
         return matters, []
     removable.sort(key=lambda item: _matter_retention_sort_key(item[1]))
     remove_count = min(len(matters) - retention_limit, len(removable))

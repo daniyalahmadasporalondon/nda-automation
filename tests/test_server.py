@@ -2379,6 +2379,7 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(first_path_exists)
 
     def test_matter_retention_keeps_active_uploads_over_limit(self):
+        telemetry.reset()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "2"}):
@@ -2410,6 +2411,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"], third["id"]})
         self.assertTrue(first_path_exists)
+        self.assertEqual(telemetry.snapshot()["counters"]["matter_retention_over_cap_without_prune"], 1)
 
     def test_matter_retention_keeps_pruned_matter_when_archive_fails(self):
         with tempfile.TemporaryDirectory() as data_dir:
