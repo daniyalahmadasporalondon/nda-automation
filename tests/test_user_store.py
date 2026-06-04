@@ -33,6 +33,7 @@ class UserStoreTests(unittest.TestCase):
                 })
                 token = user_store.create_session(user["id"])
                 session_user = user_store.user_for_session_token(token)
+                listed_users = user_store.list_users()
                 users_payload = json.loads((Path(data_dir) / "users.json").read_text(encoding="utf-8"))
 
         self.assertEqual(first_state["next_path"], "/api/matters")
@@ -41,6 +42,7 @@ class UserStoreTests(unittest.TestCase):
         self.assertEqual(user["id"], "google:google-subject")
         self.assertEqual(user["email"], "user@example.com")
         self.assertEqual(session_user["id"], user["id"])
+        self.assertEqual([listed_user["id"] for listed_user in listed_users], [user["id"]])
         self.assertNotIn(token, json.dumps(users_payload))
         self.assertEqual(len(users_payload["sessions"]), 1)
 

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import patch
+from unittest.mock import call, patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -3235,6 +3235,108 @@ class ServerTests(unittest.TestCase):
         record_sync.assert_called_once()
         self.assertEqual(record_sync.call_args.args[0], {**result, "deduplicated_count": 2})
 
+    def test_gmail_sync_owner_user_ids_only_include_connected_inbound_users(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                first_user = user_store.upsert_google_user({
+                    "sub": "google-user-a",
+                    "email": "a@example.com",
+                    "name": "A",
+                    "picture": "",
+                })
+                second_user = user_store.upsert_google_user({
+                    "sub": "google-user-b",
+                    "email": "b@example.com",
+                    "name": "B",
+                    "picture": "",
+                })
+                first_token_dir = matter_store.DATA_DIR / "users" / "gmail" / first_user["id"]
+                first_token_dir.mkdir(parents=True, exist_ok=True)
+                (first_token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+                second_token_dir = matter_store.DATA_DIR / "users" / "gmail" / second_user["id"]
+                second_token_dir.mkdir(parents=True, exist_ok=True)
+                (second_token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]).write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+
+                owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
+
+        self.assertEqual(owner_user_ids, [first_user["id"]])
+
+    def test_scheduled_gmail_sync_runs_for_each_connected_google_user(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                first_user = user_store.upsert_google_user({
+                    "sub": "google-user-a",
+                    "email": "a@example.com",
+                    "name": "A",
+                    "picture": "",
+                })
+                second_user = user_store.upsert_google_user({
+                    "sub": "google-user-b",
+                    "email": "b@example.com",
+                    "name": "B",
+                    "picture": "",
+                })
+                for user in (first_user, second_user):
+                    token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                    token_dir.mkdir(parents=True, exist_ok=True)
+                    (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                        "{}\n",
+                        encoding="utf-8",
+                    )
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    self.assertEqual(limit, gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+                    self.assertIsNone(query)
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"matter-{owner_user_id}"}],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [{"message_id": f"msg-{owner_user_id}", "reason": "duplicate_attachment"}],
+                    }
+
+                def deduplicate_side_effect(*, owner_user_id=""):
+                    return 1 if owner_user_id == first_user["id"] else 2
+
+                with patch.object(
+                    server_module.gmail_integration,
+                    "import_inbound_matters",
+                    side_effect=import_side_effect,
+                ) as import_inbound:
+                    with patch.object(
+                        server_module.matter_store,
+                        "deduplicate_gmail_matters",
+                        side_effect=deduplicate_side_effect,
+                    ) as deduplicate:
+                        with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                            server_module._run_scheduled_gmail_sync()
+
+        import_inbound.assert_has_calls([
+            call(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT, owner_user_id=first_user["id"]),
+            call(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT, owner_user_id=second_user["id"]),
+        ])
+        deduplicate.assert_has_calls([
+            call(owner_user_id=first_user["id"]),
+            call(owner_user_id=second_user["id"]),
+        ])
+        record_sync.assert_called_once()
+        recorded_result = record_sync.call_args.args[0]
+        self.assertEqual(len(recorded_result["imported"]), 2)
+        self.assertEqual(len(recorded_result["skipped"]), 2)
+        self.assertEqual(recorded_result["deduplicated_count"], 3)
+        self.assertEqual(recorded_result["query"], "in:inbox has:attachment")
+        self.assertEqual(
+            [entry["owner_user_id"] for entry in recorded_result["per_user"]],
+            [first_user["id"], second_user["id"]],
+        )
+
     def test_gmail_sync_scheduler_step_idles_when_interval_has_not_elapsed(self):
         with patch.object(
             server_module.app_settings,
@@ -4904,6 +5006,52 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 410)
         self.assertEqual(payload["error"], "Manual Gmail sync is disabled. Use Admin sync frequency.")
         import_inbound_matters.assert_not_called()
+
+    def test_gmail_import_endpoint_runs_user_scoped_sync_for_google_user(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        result = {
+            "account": "alice@example.com",
+            "imported": [{"id": "matter_1"}],
+            "query": "has:attachment",
+            "skipped": [{"message_id": "m1", "reason": "no_reviewable_attachment"}],
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                session_headers, user = self.google_session_headers()
+                with patch.object(
+                    server_module.gmail_integration,
+                    "import_inbound_matters",
+                    return_value=result,
+                ) as import_inbound_matters:
+                    with patch.object(
+                        server_module.matter_store,
+                        "deduplicate_gmail_matters",
+                        return_value=1,
+                    ) as deduplicate:
+                        with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                            status, payload = self.request(
+                                "POST",
+                                "/api/gmail/import",
+                                {"limit": 2, "query": "has:attachment"},
+                                headers=session_headers,
+                            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"], {**result, "deduplicated_count": 1})
+        import_inbound_matters.assert_called_once_with(
+            limit=2,
+            query="has:attachment",
+            owner_user_id=user["id"],
+        )
+        deduplicate.assert_called_once_with(owner_user_id=user["id"])
+        record_sync.assert_called_once()
 
     def test_gmail_send_redline_preflights_outbound_before_building_attachment(self):
         matter = {

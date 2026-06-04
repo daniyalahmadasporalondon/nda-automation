@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
     fcntl = None
 
-from . import app_settings, gmail_attachment_selector, google_identity, matter_store
+from . import app_settings, gmail_attachment_selector, google_identity, matter_store, user_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -284,6 +284,22 @@ def gmail_role_token_status(role: str, owner_user_id: str = "") -> dict[str, obj
         "label": f"{env_name} or {local_label}",
         "source": "missing",
     }
+
+
+def gmail_sync_owner_user_ids() -> list[str]:
+    try:
+        users = user_store.list_users()
+    except user_store.UserStoreError as exc:
+        raise GmailIntegrationError("User store could not be read for Gmail sync.") from exc
+
+    owner_user_ids: list[str] = []
+    for user in users:
+        owner_user_id = _clean_user_token_segment(user.get("id"))
+        if not owner_user_id:
+            continue
+        if gmail_role_token_status("inbound", owner_user_id=owner_user_id)["configured"]:
+            owner_user_ids.append(owner_user_id)
+    return owner_user_ids
 
 
 def import_inbound_matters(*, limit: int = 10, query: str | None = None, owner_user_id: str = "") -> dict[str, Any]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry
@@ -101,7 +102,44 @@ def handle_gmail_disconnect(handler) -> None:
 
 
 def handle_gmail_import(handler) -> None:
-    handler._send_json({"error": "Manual Gmail sync is disabled. Use Admin sync frequency."}, status=410)
+    owner_user_id = gmail_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json({"error": "Manual Gmail sync is disabled. Use Admin sync frequency."}, status=410)
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    try:
+        result = gmail_integration.import_inbound_matters(
+            limit=_manual_import_limit(payload.get("limit")),
+            query=payload.get("query") if isinstance(payload.get("query"), str) else None,
+            owner_user_id=owner_user_id,
+        )
+        result = {
+            **result,
+            "deduplicated_count": matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id),
+        }
+    except gmail_integration.GmailRateLimitError as error:
+        handler._send_json({"error": str(error)}, status=429)
+        return
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=finished_at, finished_at=finished_at)
+    handler._send_json({
+        "gmail": gmail_integration.gmail_status(owner_user_id=owner_user_id),
+        "result": result,
+    })
+
+
+def _manual_import_limit(value: object) -> int:
+    try:
+        return int(value or gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+    except (TypeError, ValueError):
+        return gmail_integration.MAX_GMAIL_IMPORT_LIMIT
 
 
 def handle_gmail_settings_update(handler) -> None:

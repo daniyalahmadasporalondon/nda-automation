@@ -154,6 +154,21 @@ def user_for_session_token(token: str) -> dict[str, Any] | None:
     return dict(user) if isinstance(user, dict) else None
 
 
+def list_users() -> list[dict[str, Any]]:
+    now = _now_epoch()
+    with _locked_user_store():
+        store = _load_store_unlocked()
+        changed = _prune_expired_unlocked(store, now=now)
+        users = [
+            dict(user)
+            for user in store.setdefault("users", {}).values()
+            if isinstance(user, dict)
+        ]
+        if changed:
+            _save_store_unlocked(store)
+    return sorted(users, key=lambda user: (str(user.get("email") or ""), str(user.get("id") or "")))
+
+
 def delete_session(token: str) -> bool:
     token_hash = _token_hash(token)
     if not token_hash:

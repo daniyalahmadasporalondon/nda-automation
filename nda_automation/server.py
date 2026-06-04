@@ -632,6 +632,8 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
 
 
 def _gmail_inbound_configured_for_scheduled_sync() -> bool:
+    if gmail_integration.gmail_sync_owner_user_ids():
+        return True
     return not gmail_integration.gmail_role_setup_error("inbound")
 
 
@@ -663,8 +665,12 @@ def _run_scheduled_gmail_sync() -> None:
     started_at = datetime.now(timezone.utc).isoformat()
     telemetry.increment("gmail_sync_runs")
     try:
-        result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
-        result = {**result, "deduplicated_count": matter_store.deduplicate_gmail_matters()}
+        owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
+        if owner_user_ids:
+            result = _run_scheduled_user_gmail_sync(owner_user_ids)
+        else:
+            result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+            result = {**result, "deduplicated_count": matter_store.deduplicate_gmail_matters()}
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
         telemetry.increment("gmail_sync_successes")
@@ -680,6 +686,69 @@ def _run_scheduled_gmail_sync() -> None:
         )
         _log_background_error("Gmail scheduled sync failed", error)
         time.sleep(5)
+
+
+def _run_scheduled_user_gmail_sync(owner_user_ids: list[str]) -> dict[str, object]:
+    imported: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    accounts: list[str] = []
+    queries: list[str] = []
+    per_user: list[dict[str, object]] = []
+    deduplicated_count = 0
+
+    for owner_user_id in owner_user_ids:
+        try:
+            result = gmail_integration.import_inbound_matters(
+                limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT,
+                owner_user_id=owner_user_id,
+            )
+            owner_deduplicated_count = matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id)
+        except gmail_integration.GmailRateLimitError:
+            raise
+        except gmail_integration.GmailIntegrationError as error:
+            skipped.append({
+                "owner_user_id": owner_user_id,
+                "reason": "user_sync_failed",
+                "detail": str(error),
+            })
+            per_user.append({
+                "owner_user_id": owner_user_id,
+                "account": "",
+                "imported_count": 0,
+                "skipped_count": 1,
+                "deduplicated_count": 0,
+                "error": str(error),
+            })
+            continue
+
+        result_imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+        result_skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+        account = str(result.get("account") or "")
+        query = str(result.get("query") or "")
+        if account and account not in accounts:
+            accounts.append(account)
+        if query and query not in queries:
+            queries.append(query)
+        imported.extend(item for item in result_imported if isinstance(item, dict))
+        skipped.extend(item for item in result_skipped if isinstance(item, dict))
+        deduplicated_count += owner_deduplicated_count
+        per_user.append({
+            "owner_user_id": owner_user_id,
+            "account": account,
+            "imported_count": len(result_imported),
+            "skipped_count": len(result_skipped),
+            "deduplicated_count": owner_deduplicated_count,
+        })
+
+    return {
+        "account": ", ".join(accounts),
+        "accounts": accounts,
+        "deduplicated_count": deduplicated_count,
+        "imported": imported,
+        "per_user": per_user,
+        "query": queries[0] if len(queries) == 1 else "per-user Gmail sync",
+        "skipped": skipped,
+    }
 
 
 if __name__ == "__main__":
