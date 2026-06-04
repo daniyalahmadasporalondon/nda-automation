@@ -23,9 +23,32 @@ class DeploymentConfigTests(unittest.TestCase):
     def test_ci_runs_pytest_gate(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-        self.assertRegex(workflow, r"python -m pip install .*pytest")
+        self.assertRegex(workflow, r"python -m pip install .*--constraint requirements-ci\.txt.*pytest")
         self.assertIn("python -m pytest -q", workflow)
         self.assertNotIn("python -m unittest discover", workflow)
+
+    def test_ci_installs_gmail_extra_with_pinned_constraints(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        constraints = (ROOT / "requirements-ci.txt").read_text(encoding="utf-8")
+
+        self.assertIn('--constraint requirements-ci.txt -e ".[pdf,gmail]"', workflow)
+        self.assertIn("from google.oauth2.credentials import Credentials", workflow)
+        self.assertIn("from googleapiclient.discovery import build", workflow)
+        self.assertIn(
+            'python -m pytest -q tests/test_user_store.py tests/test_server.py -k "gmail or google_oauth or oauth or google_identity"',
+            workflow,
+        )
+        self.assertRegex(constraints, re.compile(r"^pytest==\d+\.\d+\.\d+$", re.MULTILINE))
+        self.assertRegex(constraints, re.compile(r"^ruff==\d+\.\d+\.\d+$", re.MULTILINE))
+        self.assertRegex(constraints, re.compile(r"^pypdf==\d+\.\d+\.\d+$", re.MULTILINE))
+        self.assertRegex(constraints, re.compile(r"^google-api-python-client==\d+\.\d+\.\d+$", re.MULTILINE))
+        self.assertRegex(constraints, re.compile(r"^google-auth==\d+\.\d+\.\d+$", re.MULTILINE))
+
+    def test_ruff_checks_more_than_pyflakes(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn('select = ["E", "F", "B"]', pyproject)
+        self.assertNotIn('select = ["F"]', pyproject)
 
     def test_render_blueprint_keeps_public_deploy_hardened(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")

@@ -23,4 +23,5 @@ gmail = [
 include = ["nda_automation*"]
 
 [tool.ruff.lint]
-select = ["F"]
+select = ["E", "F", "B"]
+ignore = ["E501"]

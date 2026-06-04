@@ -11,6 +11,7 @@ from nda_automation.checker import (
     ai_validate_draft_fix,
     review_nda,
 )
+from nda_automation.gemini_schema import GEMINI_UNSUPPORTED_SCHEMA_KEYS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -463,7 +464,11 @@ class AIReviewTests(unittest.TestCase):
         )
         self.assertIn("responseSchema", body["generationConfig"])
         schema_json = json.dumps(body["generationConfig"]["responseSchema"])
-        self.assertNotIn('"additionalProperties"', schema_json)
+        for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
+            self.assertNotIn(f'"{unsupported_key}"', schema_json)
+        self.assertIn('"additionalProperties"', schema_json)
+        self.assertIn('"minimum"', schema_json)
+        self.assertIn('"maximum"', schema_json)
         self.assertIn("semantic_clause_crosscheck", encoded)
 
     def test_openrouter_request_body_uses_chat_completion_structured_output(self):

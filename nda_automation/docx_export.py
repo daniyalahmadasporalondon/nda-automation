@@ -651,7 +651,7 @@ def _apply_comment_anchors_to_report_document(
         return
     report_paragraph_by_id = {}
     report_paragraph_index = 4
-    for index, paragraph in enumerate(review_paragraphs):
+    for paragraph in review_paragraphs:
         if not isinstance(paragraph, dict):
             continue
         if report_paragraph_index >= len(body_paragraphs):

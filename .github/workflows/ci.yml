@@ -30,17 +30,30 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Install test and lint tools
-        run: python -m pip install ruff pytest
+      - name: Install pinned CI tools
+        run: python -m pip install --constraint requirements-ci.txt ruff pytest
 
       - name: Install Python dependencies
-        run: python -m pip install -e ".[pdf]"
+        run: python -m pip install --constraint requirements-ci.txt -e ".[pdf,gmail]"
 
       - name: Lint Python
         run: ruff check nda_automation tests
 
       - name: Compile Python
         run: python -m py_compile nda_automation/*.py
+
+      - name: Check Gmail OAuth dependencies
+        run: |
+          python - <<'PY'
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+
+          assert Credentials is not None
+          assert build is not None
+          PY
+
+      - name: Run Gmail and OAuth tests
+        run: python -m pytest -q tests/test_user_store.py tests/test_server.py -k "gmail or google_oauth or oauth or google_identity"
 
       - name: Run Python tests
         run: python -m pytest -q
@@ -70,7 +83,7 @@ jobs:
           node-version: "24"
 
       - name: Install Python dependencies
-        run: python -m pip install -e ".[pdf]"
+        run: python -m pip install --constraint requirements-ci.txt -e ".[pdf,gmail]"
 
       - name: Install browser test dependencies
         run: npm install
