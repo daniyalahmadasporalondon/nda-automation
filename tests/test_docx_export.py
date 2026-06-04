@@ -724,6 +724,52 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
         self.assertIn('w:commentRangeStart w:id="0"', document_xml)
 
+    def test_source_docx_export_does_not_count_nested_textbox_paragraphs_for_comment_anchors(self):
+        target_text = "This Agreement shall be governed by the laws of California."
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p><w:r><w:t>Intro paragraph.</w:t>"
+            "<w:drawing><w:txbxContent><w:p><w:r><w:t>Textbox note.</w:t></w:r></w:p></w:txbxContent></w:drawing>"
+            "</w:r></w:p>"
+            f"<w:p><w:r><w:t>{target_text}</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        review_result = {
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": paragraphs[0]["text"]},
+                {"id": "p2", "index": 2, "source_index": 2, "text": target_text},
+            ],
+            "review_comments": [
+                {
+                    "author": "Reviewer",
+                    "clause_id": "governing_law",
+                    "clause_name": "Governing Law",
+                    "paragraph_id": "p2",
+                    "text": "Comment should target the governing law paragraph.",
+                }
+            ],
+            "redline_edits": [],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        _comments_root, _document_root, comments_xml, exported_xml = docx_comments(redlined_docx)
+        self.assertIn("Comment should target the governing law paragraph.", comments_xml)
+        target_index = exported_xml.index(target_text)
+        comment_start_index = exported_xml.index("commentRangeStart")
+        comment_end_index = exported_xml.index("commentRangeEnd")
+        textbox_index = exported_xml.index("Textbox note.")
+        self.assertGreater(comment_start_index, textbox_index)
+        self.assertLess(comment_start_index, target_index)
+        self.assertGreater(comment_end_index, target_index)
+
     def test_source_docx_export_anchors_selected_text_comments(self):
         source_docx = make_source_docx([
             "Intro paragraph.",

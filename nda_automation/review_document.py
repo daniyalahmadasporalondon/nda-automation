@@ -53,30 +53,36 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
     aligned: List[Paragraph] = []
     cursor = 0
     for paragraph in paragraphs:
-        paragraph_text = str(paragraph.get("text", "")).strip()
-        if not paragraph_text:
+        paragraph_text = str(paragraph.get("text", ""))
+        paragraph_parts = split_document_paragraphs(paragraph_text)
+        if not paragraph_parts:
             continue
 
-        start = source_text.find(paragraph_text, cursor)
-        if start == -1:
-            source_index = paragraph.get("source_index")
-            paragraph_label = f"source_index {source_index}" if source_index is not None else f"position {len(aligned) + 1}"
-            raise ParagraphAlignmentError(f"Could not align paragraph {paragraph_label} to source text.")
-        end = start + len(paragraph_text)
-        cursor = end
+        for paragraph_part in paragraph_parts:
+            paragraph_text = str(paragraph_part.get("text", "")).strip()
+            if not paragraph_text:
+                continue
 
-        index = len(aligned) + 1
-        aligned_paragraph: Paragraph = {
-            "id": f"p{index}",
-            "index": index,
-            "text": paragraph_text,
-            "start": start,
-            "end": end,
-        }
-        for key in STRUCTURAL_METADATA_KEYS:
-            if key in paragraph:
-                aligned_paragraph[key] = paragraph[key]
-        aligned.append(aligned_paragraph)
+            start = source_text.find(paragraph_text, cursor)
+            if start == -1:
+                source_index = paragraph.get("source_index")
+                paragraph_label = f"source_index {source_index}" if source_index is not None else f"position {len(aligned) + 1}"
+                raise ParagraphAlignmentError(f"Could not align paragraph {paragraph_label} to source text.")
+            end = start + len(paragraph_text)
+            cursor = end
+
+            index = len(aligned) + 1
+            aligned_paragraph: Paragraph = {
+                "id": f"p{index}",
+                "index": index,
+                "text": paragraph_text,
+                "start": start,
+                "end": end,
+            }
+            for key in STRUCTURAL_METADATA_KEYS:
+                if key in paragraph:
+                    aligned_paragraph[key] = paragraph[key]
+            aligned.append(aligned_paragraph)
     return aligned
 
 

@@ -512,6 +512,7 @@ def _indexed_source_paragraphs(root: ET.Element) -> List[SourceParagraph]:
                         normalized_text=_normalize_paragraph_text(text),
                     )
                 )
+                continue
             visit(child)
 
     visit(root)
