@@ -36,6 +36,7 @@ from .http_auth import (
     AUTH_REALM,
     AUTH_REQUIRED_MESSAGE,
     HOST_NOT_ALLOWED_MESSAGE,
+    _basic_auth_credentials,
     _auth_required_for_host,
     _basic_auth_matches,
     _env_flag_enabled as _env_flag_enabled,
@@ -412,6 +413,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
 
     def _authorize_request(self, *, send_body: bool = True) -> bool:
+        self.current_user_id = ""
         if not _auth_required_for_host(str(self.server.server_address[0])):
             return True
         username = os.environ.get("NDA_AUTH_USERNAME", "").strip()
@@ -419,7 +421,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if not username or not password:
             self._send_json({"error": AUTH_NOT_CONFIGURED_MESSAGE}, status=503, send_body=send_body)
             return False
-        if _basic_auth_matches(self.headers.get("Authorization", ""), username, password):
+        auth_header = self.headers.get("Authorization", "")
+        if _basic_auth_matches(auth_header, username, password):
+            credentials = _basic_auth_credentials(auth_header)
+            self.current_user_id = credentials[0] if credentials else username
             return True
         self._send_json(
             {"error": AUTH_REQUIRED_MESSAGE},

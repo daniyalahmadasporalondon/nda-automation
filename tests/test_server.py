@@ -393,8 +393,13 @@ class ServerTests(unittest.TestCase):
                     extracted_text="Sensitive extracted NDA text",
                     review_result={"clauses": [{"id": "governing_law", "status": "check"}]},
                     triage={"triage_status": "legal_review", "issue_count": 1},
+                    owner_user_id="nda-admin",
                 )
-                matter_store.update_redline_draft(matter["id"], {"manual_redline_edits": []})
+                matter_store.update_redline_draft(
+                    matter["id"],
+                    {"manual_redline_edits": []},
+                    owner_user_id="nda-admin",
+                )
                 with patch.dict(os.environ, auth_env):
                     unauth_status, unauth_payload = self.request("GET", "/api/matters/export")
                     authed_status, authed_payload, authed_headers = self.request_with_headers(
@@ -420,6 +425,116 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(authed_payload["documents"][0]["present"])
         self.assertEqual(authed_payload["documents"][0]["size_bytes"], len(b"backup-source-docx"))
         self.assertNotIn("content_base64", authed_payload["documents"][0])
+
+    def test_authenticated_matter_routes_are_owner_scoped(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient shall keep Confidential Information confidential for five years.",
+        ])
+        alice_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "alice@example.com",
+            "NDA_AUTH_PASSWORD": "secret",
+            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+        }
+        bob_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "bob@example.com",
+            "NDA_AUTH_PASSWORD": "secret",
+            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, alice_env):
+                    create_status, create_payload = self.request(
+                        "POST",
+                        "/api/matters",
+                        {
+                            "filename": "Alice NDA.docx",
+                            "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        },
+                        headers=self.basic_auth_headers(username="alice@example.com"),
+                )
+                matter = create_payload["matter"]
+                matter_id = matter["id"]
+                stored_alice_matter = matter_store.get_matter(matter_id, owner_user_id="alice@example.com")
+                self.assertEqual(stored_alice_matter["owner_user_id"], "alice@example.com")
+
+                with patch.dict(os.environ, bob_env):
+                    list_status, list_payload = self.request(
+                        "GET",
+                        "/api/matters",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    detail_status, detail_payload = self.request(
+                        "GET",
+                        f"/api/matters/{matter_id}",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    review_status, review_payload = self.request(
+                        "POST",
+                        f"/api/matters/{matter_id}/review-refresh",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    stage_status, stage_payload = self.request(
+                        "POST",
+                        f"/api/matters/{matter_id}/stage",
+                        {"board_column": "signed_closed"},
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    export_status, export_payload = self.request(
+                        "POST",
+                        "/api/export-review-docx",
+                        {
+                            "matter_id": matter_id,
+                            "reviewed_text": "This Agreement shall be governed by the laws of California.",
+                        },
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    backup_status, backup_payload = self.request(
+                        "GET",
+                        "/api/matters/export",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    reset_status, reset_payload = self.request(
+                        "POST",
+                        "/api/demo/reset",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    delete_status, delete_payload = self.request(
+                        "DELETE",
+                        f"/api/matters/{matter_id}",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+
+                with patch.dict(os.environ, alice_env):
+                    alice_list_status, alice_list_payload = self.request(
+                        "GET",
+                        "/api/matters",
+                        headers=self.basic_auth_headers(username="alice@example.com"),
+                    )
+
+        self.assertEqual(create_status, 201)
+        self.assertEqual(list_status, 200)
+        self.assertEqual(list_payload["matters"], [])
+        self.assertEqual(detail_status, 404)
+        self.assertEqual(detail_payload["error"], "Matter not found.")
+        self.assertEqual(review_status, 404)
+        self.assertEqual(review_payload["error"], "Matter not found.")
+        self.assertEqual(stage_status, 404)
+        self.assertEqual(stage_payload["error"], "Matter not found.")
+        self.assertEqual(export_status, 404)
+        self.assertEqual(export_payload["error"], "Matter not found.")
+        self.assertEqual(backup_status, 200)
+        self.assertEqual(backup_payload["matter_count"], 0)
+        self.assertEqual(reset_status, 200)
+        self.assertEqual(reset_payload["removed"], 0)
+        self.assertEqual(delete_status, 404)
+        self.assertEqual(delete_payload["error"], "Matter not found.")
+        self.assertEqual(alice_list_status, 200)
+        self.assertEqual([item["id"] for item in alice_list_payload["matters"]], [matter_id])
 
     def test_admin_deployment_status_requires_auth_and_omits_secrets(self):
         auth_env = {

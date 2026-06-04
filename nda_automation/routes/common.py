@@ -16,3 +16,7 @@ def parse_matter_id(path: str, *, suffix: str = "") -> str | None:
     if not matter_id or "/" in matter_id:
         return None
     return matter_id
+
+
+def request_owner_user_id(handler) -> str:
+    return str(getattr(handler, "current_user_id", "") or "").strip()

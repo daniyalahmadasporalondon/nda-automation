@@ -12,6 +12,7 @@ from ..review_engine import (
     REVIEW_ENGINE_DETERMINISTIC,
     active_review_engine_status,
 )
+from .common import request_owner_user_id
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -216,7 +217,7 @@ def _operational_warnings() -> list[dict[str, str]]:
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     telemetry.increment("matter_backup_requests")
     try:
-        backup = matter_store.export_matters_backup()
+        backup = matter_store.export_matters_backup(owner_user_id=request_owner_user_id(handler))
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return

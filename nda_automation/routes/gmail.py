@@ -3,6 +3,7 @@ from __future__ import annotations
 from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
+from .common import request_owner_user_id
 
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
@@ -73,7 +74,8 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": "Confirm send is required before emailing a redline."}, status=400)
         return
 
-    matter = matter_store.get_matter(matter_id.strip())
+    owner_user_id = request_owner_user_id(handler)
+    matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -97,7 +99,11 @@ def handle_gmail_send_redline(handler) -> None:
         return
 
     try:
-        redline_export = redline_export_service.build_matter_redline(matter_id.strip(), payload)
+        redline_export = redline_export_service.build_matter_redline(
+            matter_id.strip(),
+            payload,
+            owner_user_id=owner_user_id,
+        )
     except redline_export_service.DocxOpenHealthError as error:
         handler._send_json({"error": str(error), "details": error.details}, status=500)
         return
@@ -111,7 +117,7 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    send_matter = matter_store.get_matter(matter_id.strip())
+    send_matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
     if send_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -145,6 +151,7 @@ def handle_gmail_send_redline(handler) -> None:
             "last_outbound_to": sent.get("to", ""),
             "status": "active",
         },
+        owner_user_id=owner_user_id,
     )
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)

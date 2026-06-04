@@ -22,6 +22,7 @@ def create_matter_from_document(
     board_column: str = "gmail_demo",
     intake_metadata: dict[str, Any] | None = None,
     dedupe_gmail: bool = False,
+    owner_user_id: str = "",
     repository: MatterRepository | None = None,
 ) -> dict[str, Any]:
     repository = repository or DiskMatterRepository()
@@ -49,6 +50,7 @@ def create_matter_from_document(
         board_column=board_column,
         intake_metadata=intake_metadata,
         dedupe_gmail=dedupe_gmail,
+        owner_user_id=owner_user_id,
     )
 
 

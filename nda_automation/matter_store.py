@@ -73,9 +73,13 @@ def list_matters(owner_user_id: str = "") -> list[dict[str, Any]]:
     return sorted(matters, key=lambda matter: str(matter.get("created_at") or ""), reverse=True)
 
 
-def export_matters_backup() -> dict[str, Any]:
+def export_matters_backup(owner_user_id: str = "") -> dict[str, Any]:
     with _locked_store():
-        matters = _load_matters()
+        matters = [
+            matter
+            for matter in _load_matters()
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
         documents = [_stored_document_manifest(matter) for matter in matters]
     return {
         "version": 1,
@@ -293,13 +297,23 @@ def update_matter_review_comparison(
     return None
 
 
-def reset_demo_repository() -> int:
+def reset_demo_repository(owner_user_id: str = "") -> int:
     with _locked_store():
         matters = _load_matters()
-        _save_matters([])
-    for matter in matters:
+        removed = [
+            matter
+            for matter in matters
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
+        kept = [
+            matter
+            for matter in matters
+            if not _matter_owner_matches(matter, owner_user_id)
+        ]
+        _save_matters(kept)
+    for matter in removed:
         _delete_stored_document(matter)
-    return len(matters)
+    return len(removed)
 
 
 def delete_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
@@ -312,7 +326,11 @@ def delete_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | N
         ), None)
         if deleted_matter is None:
             return None
-        kept_matters = [matter for matter in matters if matter.get("id") != matter_id]
+        kept_matters = [
+            matter
+            for matter in matters
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id)
+        ]
         _save_matters(kept_matters)
     _delete_stored_document(deleted_matter)
     return deleted_matter
