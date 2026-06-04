@@ -58,7 +58,9 @@ You can also paste/save the AI key from **Admin -> AI** after the app is running
 
 ### 4. Connect Gmail inbound/outbound
 
-Place OAuth token JSON files outside Git, then point the app at them in `.env`:
+For hosted/private deployments, sign in with Google and connect Gmail from **Admin -> Email**. The app stores Gmail OAuth tokens per signed-in user under durable app data, so one user's Gmail account is not shared with another user.
+
+For local development with shared token files, place OAuth token JSON files outside Git, then point the app at them in `.env`:
 
 ```bash
 NDA_GMAIL_INBOUND_TOKEN_PATH="/absolute/path/to/inbound-token.json"
@@ -72,7 +74,7 @@ data/gmail/inbound-token.json
 data/gmail/outbound-token.json
 ```
 
-Use **Admin -> Email** to confirm whether inbound sync and outbound send are ready. Gmail remains disabled until token files are configured and readable by the service.
+Use **Admin -> Email** to confirm whether inbound sync and outbound send are ready. Gmail remains disabled until a signed-in user connects Gmail or legacy local token files are configured and readable by the service.
 
 ### 5. Open the app
 
@@ -93,7 +95,9 @@ Do not commit real API keys, `.env` files, or Gmail token JSON files. Share thos
 - Import uploaded matters into a Repository board with review state, source documents, redline drafts, and stage tracking.
 - Sync inbound Gmail NDA attachments into the Repository when Gmail is configured.
 - Send outbound Gmail redlines only after an explicit confirmation action.
-- Edit the review playbook and inspect checker/AI logic from the Admin interface.
+- Edit the review playbook from the Playbook tab with schema validation, redline-template previews, allowed placeholders, generated Governing Law options, version history, and restore.
+- Keep AI/runtime controls, Gmail settings, deployment status, telemetry, and backup operations in Admin.
+- Keep methodology and checker/AI explanation in Guide.
 - Inspect deployment status and non-sensitive telemetry from auth-gated admin endpoints.
 - Download a sensitive matter backup from an auth-gated backup endpoint.
 
@@ -101,7 +105,9 @@ Do not commit real API keys, `.env` files, or Gmail token JSON files. Share thos
 
 - **Review Workstation**: selected matter review, clause checklist, structure view, AI evidence, evidence navigation, viewer edits, reviewed toggles, DOCX export, and outbound send confirmation.
 - **Repository**: imported matters, board lanes, stored source documents, redline drafts, and matter review views.
-- **Admin**: playbook editor, deterministic engine explainability, AI-first runtime controls, Email/Gmail connection state/settings, deployment status, telemetry, and matter backup.
+- **Playbook**: editable clause policy, safe playbook fields, Governing Law jurisdiction options, term/survival caps, redline-template preview/validation, policy version history, and restore.
+- **Admin**: AI-first runtime controls, provider/API-key status, Email/Gmail connection state/settings, deployment status, telemetry, and matter backup.
+- **Guide**: read-only methodology, document-processing model, checker explainability, shared structure/reference/concept layers, and AI assessment guide.
 - **Gmail workflows**: inbound attachment import and outbound redline reply/send.
 
 ## Review Architecture
@@ -116,6 +122,18 @@ The active review path is:
 The active review engine defaults to **AI-first** with **fail closed** behavior. If AI is unavailable and fallback mode is `fail_closed`, new review creation returns an error instead of silently substituting deterministic results. Admin can change the active engine and AI-first fallback mode at runtime from **Admin -> AI** when those values are not pinned by environment variables. Runtime changes are audit-logged without secrets, and env-pinned values are reported as read-only operational warnings.
 
 Set `NDA_ACTIVE_REVIEW_ENGINE=deterministic` only when deployment configuration should force deterministic review as the saved `review_result` for new reviews. Set `NDA_AI_FIRST_FALLBACK_MODE=deterministic` only when AI-first failures should fall back to deterministic review and record that fallback in metadata. Leave the fallback unset or set `fail_closed` when missing AI output should block review creation. Set `NDA_AI_FIRST_REVIEW_ENABLED=true` to store AI-first shadow/comparison output while a deterministic matter review is created elsewhere.
+
+## Playbook, Admin, and Guide
+
+The operational surfaces are intentionally split:
+
+- **Playbook** changes review policy. It is the only place to edit safe playbook fields such as clause name, stance, preferred position, check trigger, term/survival cap, permitted longer-survival carve-outs, and Governing Law jurisdictions.
+- **Admin** changes runtime operations. It manages AI provider/key status, active review engine, AI-first fallback behavior, Gmail toggles/search/sync cadence, deployment health, telemetry, and backups.
+- **Guide** explains methodology. It is read-only and documents how document structure, reference resolution, concept classification, deterministic validation, and AI-first assessment fit together.
+
+Playbook saves are validated before they are written. The frontend blocks unknown redline-template placeholders, and the backend validates the full playbook schema and redline templates again before saving. Every Playbook save records a version-history snapshot; restore is disabled while there are unsaved drafts.
+
+Governing Law is edited through approved jurisdiction options and draft phrases. It does not use a free redline-template field. The UI shows generated insertable redline text for each approved jurisdiction.
 
 ## Run Locally
 
@@ -133,7 +151,7 @@ http://127.0.0.1:8787
 
 Local development can use the default local data directory. Public or non-loopback deployments must use durable storage and authentication.
 
-In the browser, use **Upload** for manual `.docx`/PDF intake, **Repository** to open stored matter reviews, **Review** to inspect and edit the current matter, and **Admin** to manage AI/Gmail/runtime settings. The Review workstation no longer has a standalone `Review NDA` action.
+In the browser, use **Upload** for manual `.docx`/PDF intake, **Repository** to open stored matter reviews, **Review** to inspect and edit the current matter, **Playbook** to edit review policy, **Admin** to manage AI/Gmail/runtime settings, and **Guide** to read methodology. The Review workstation no longer has a standalone `Review NDA` action.
 
 ## Optional Dependencies
 
@@ -164,8 +182,8 @@ Common environment variables:
 - `NDA_GMAIL_OAUTH_REDIRECT_URI`: fixed redirect URI for hosted Gmail connection, for example `https://your-service.onrender.com/auth/gmail/callback`.
 - `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: optional HTTP Basic auth fallback credentials.
 - `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
-- `NDA_GMAIL_INBOUND_TOKEN_PATH`: OAuth token file for inbound Gmail sync.
-- `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
+- `NDA_GMAIL_INBOUND_TOKEN_PATH`: legacy shared OAuth token file for local inbound Gmail sync. Leave unset for hosted per-user Gmail.
+- `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: legacy shared OAuth token file for local outbound Gmail sends. Leave unset for hosted per-user Gmail.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
 - `NDA_AI_MODEL`: provider model name. Use `qwen3.5-122b-a10b` for the current Alibaba/Qwen local setup, or another model your key can access.
@@ -262,7 +280,9 @@ If Gmail should import PDF attachments too:
 python3 -m pip install -e ".[pdf,gmail]"
 ```
 
-Configure token files:
+For hosted/private deployments, users connect Gmail through Google OAuth after login. The app stores per-user Gmail tokens under durable data storage and uses the signed-in user's token for inbound sync and outbound sends.
+
+For local shared-token development, configure token files:
 
 ```bash
 export NDA_GMAIL_INBOUND_TOKEN_PATH=/path/to/inbound-token.json
@@ -276,17 +296,17 @@ data/gmail/inbound-token.json
 data/gmail/outbound-token.json
 ```
 
-Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the Repository. Outbound send generates the same Word redline/report used by download/export, opens a confirmation composer, then emails it back to the matter sender only after confirmation.
+Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the Repository for the current owner. Outbound send generates the same Word redline/report used by download/export, opens a confirmation composer, then emails it back to the matter sender only after confirmation.
 
-Gmail remains disabled until token files are configured and readable by the service. Gmail web access and Gmail API access are separate: the browser can still be logged in while the API token is missing, expired, rate-limited, or blocked by quota. The app records recent Gmail sync/send failures and backs off repeated sync attempts when the Gmail API reports a temporary lockout.
+Gmail remains disabled until a user connects Gmail or legacy token files are configured and readable by the service. Gmail web access and Gmail API access are separate: the browser can still be logged in while the API token is missing, expired, rate-limited, or blocked by quota. The app records recent Gmail sync/send failures and backs off repeated sync attempts when the Gmail API reports a temporary lockout.
 
 ## Current Checks
 
 - Mutual NDA obligations.
 - Broad Confidential Information definition.
 - Standard Confidential Information exclusions, including qualified independent-development carve-outs.
-- Approved governing law: India, Delaware, England and Wales, or DIFC.
-- Term and ordinary confidentiality survival up to five years.
+- Approved governing law, defaulting to India, Delaware, England and Wales, or DIFC unless the Playbook is edited.
+- Term and ordinary confidentiality survival up to the Playbook cap, defaulting to five years.
 - No non-circumvention or substitute-purpose exclusivity.
 - Complete execution/signature block.
 
@@ -303,21 +323,22 @@ Repository imports preserve the original uploaded `.docx` so matter exports can 
 Install the test extras you need:
 
 ```bash
-python3 -m pip install -e ".[pdf]"
+python3 -m pip install -e ".[pdf,gmail]"
+python3 -m pip install pytest
+npm install
 ```
 
 Run backend tests:
 
 ```bash
-PYTHONPATH=. pytest -q
+NDA_ACTIVE_REVIEW_ENGINE=deterministic python3 -m pytest -q
 ```
 
 Run frontend behavior tests:
 
 ```bash
-NODE_PATH=/Users/daniyalahmad/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules \
-PYTHON=/opt/anaconda3/bin/python \
-/Users/daniyalahmad/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node tests/frontend/review-workstation.cjs
+npm run test:frontend:utils
+npm run test:frontend
 ```
 
 Frontend tests run the real app in Chromium and cover repository/matter review loading, review view modes, viewer editing, redline rendering, Gmail/admin surfaces, and DOCX export behavior.
