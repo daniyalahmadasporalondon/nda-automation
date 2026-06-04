@@ -6,9 +6,11 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 from ..checker import PLAYBOOK_PATH, PlaybookTemplateError, validate_playbook
+from ..durable_io import fsync_parent_directory
 
 try:
     import fcntl
@@ -56,6 +58,7 @@ def locked_playbook(playbook_path=PLAYBOOK_PATH):
             if fcntl is not None:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
+                recover_playbook_transaction(playbook_path=playbook_path)
                 yield
             finally:
                 if fcntl is not None:
@@ -72,6 +75,10 @@ def runtime_path_for(playbook_path=PLAYBOOK_PATH):
 
 def draft_path_for(playbook_path=PLAYBOOK_PATH):
     return playbook_path.with_name(f"{playbook_path.stem}.draft.json")
+
+
+def transaction_path_for(playbook_path=PLAYBOOK_PATH):
+    return playbook_path.with_name(f"{playbook_path.stem}.transaction.json")
 
 
 def read_playbook_from_path(playbook_path=PLAYBOOK_PATH) -> dict[str, Any]:
@@ -91,6 +98,7 @@ def write_json_atomically(value: object, path, *, replace_file=os.replace) -> No
             handle.flush()
             os.fsync(handle.fileno())
         replace_file(temporary_path, path)
+        fsync_parent_directory(path)
     except OSError:
         try:
             temporary_path.unlink()
@@ -122,11 +130,7 @@ def read_playbook_history(*, playbook_path=PLAYBOOK_PATH) -> list[dict[str, Any]
 
 
 def write_playbook_history(entries: list[dict[str, Any]], *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
-    history = {
-        "version": PLAYBOOK_HISTORY_VERSION,
-        "entries": entries[:PLAYBOOK_HISTORY_LIMIT],
-    }
-    write_json_atomically(history, history_path_for(playbook_path), replace_file=replace_file)
+    write_json_atomically(_history_payload(entries), history_path_for(playbook_path), replace_file=replace_file)
 
 
 def read_playbook_runtime(*, playbook_path=PLAYBOOK_PATH) -> dict[str, Any] | None:
@@ -150,6 +154,97 @@ def write_playbook_runtime(
 ) -> None:
     payload = {"version": PLAYBOOK_RUNTIME_VERSION, **runtime}
     write_json_atomically(payload, runtime_path_for(playbook_path), replace_file=replace_file)
+
+
+def write_active_playbook_bundle_atomically(
+    playbook: dict[str, Any],
+    runtime: dict[str, Any],
+    history: list[dict[str, Any]],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> None:
+    transaction = {
+        "version": 1,
+        "playbook": json.loads(json.dumps(playbook)),
+        "runtime": {"version": PLAYBOOK_RUNTIME_VERSION, **runtime},
+        "history": _history_payload(history),
+    }
+    transaction_path = transaction_path_for(playbook_path)
+    write_json_atomically(transaction, transaction_path, replace_file=replace_file)
+    try:
+        _write_playbook_transaction_payload(transaction, playbook_path=playbook_path, replace_file=replace_file)
+        _remove_file_durably(transaction_path)
+    except OSError:
+        try:
+            transaction_path.unlink()
+            fsync_parent_directory(transaction_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def recover_playbook_transaction(*, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> bool:
+    transaction_path = transaction_path_for(playbook_path)
+    try:
+        with transaction_path.open("r", encoding="utf-8") as handle:
+            transaction = json.load(handle)
+    except FileNotFoundError:
+        return False
+    except (json.JSONDecodeError, OSError):
+        _remove_file_durably(transaction_path)
+        return False
+    if not _valid_playbook_transaction(transaction):
+        _remove_file_durably(transaction_path)
+        return False
+    _write_playbook_transaction_payload(transaction, playbook_path=playbook_path, replace_file=replace_file)
+    _remove_file_durably(transaction_path)
+    return True
+
+
+def _history_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "version": PLAYBOOK_HISTORY_VERSION,
+        "entries": entries[:PLAYBOOK_HISTORY_LIMIT],
+    }
+
+
+def _write_playbook_transaction_payload(
+    transaction: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> None:
+    runtime_payload = transaction["runtime"]
+    history_payload = transaction["history"]
+    # Sidecars are prepared before the active playbook file. The active
+    # playbook is the commit point for readers after a crash recovery replay.
+    write_json_atomically(runtime_payload, runtime_path_for(playbook_path), replace_file=replace_file)
+    write_json_atomically(history_payload, history_path_for(playbook_path), replace_file=replace_file)
+    write_json_atomically(transaction["playbook"], playbook_path, replace_file=replace_file)
+
+
+def _valid_playbook_transaction(transaction: object) -> bool:
+    if not isinstance(transaction, dict) or transaction.get("version") != 1:
+        return False
+    if not isinstance(transaction.get("playbook"), dict):
+        return False
+    runtime = transaction.get("runtime")
+    if not isinstance(runtime, dict) or runtime.get("version") != PLAYBOOK_RUNTIME_VERSION:
+        return False
+    history = transaction.get("history")
+    if not isinstance(history, dict) or history.get("version") != PLAYBOOK_HISTORY_VERSION:
+        return False
+    return isinstance(history.get("entries"), list)
+
+
+def _remove_file_durably(path) -> None:
+    path = Path(path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    fsync_parent_directory(path)
 
 
 def read_playbook_draft(*, playbook_path=PLAYBOOK_PATH) -> dict[str, Any] | None:
@@ -425,10 +520,7 @@ def handle_playbook_draft_discard(handler, *, playbook_path=PLAYBOOK_PATH, repla
                 }, status=409)
                 return
 
-            try:
-                draft_path_for(playbook_path).unlink()
-            except FileNotFoundError:
-                pass
+            _remove_file_durably(draft_path_for(playbook_path))
             runtime = {key: value for key, value in runtime.items() if key not in _DRAFT_RUNTIME_KEYS}
             write_playbook_runtime(runtime, playbook_path=playbook_path, replace_file=replace_file)
             history = read_playbook_history(playbook_path=playbook_path)
@@ -483,18 +575,11 @@ def handle_playbook_publish(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
                 return
             validate_playbook(publish_playbook)
 
-            write_playbook_atomically(publish_playbook, playbook_path=playbook_path, replace_file=replace_file)
             runtime = _active_runtime_from_playbook(
                 publish_playbook,
                 actor=_actor_from_payload(payload),
                 source="publish",
             )
-            write_playbook_runtime(runtime, playbook_path=playbook_path, replace_file=replace_file)
-            if source_draft is not None:
-                try:
-                    draft_path_for(playbook_path).unlink()
-                except FileNotFoundError:
-                    pass
             history = read_playbook_history(playbook_path=playbook_path)
             history.insert(0, _publish_history_entry(
                 publish_playbook,
@@ -503,7 +588,15 @@ def handle_playbook_publish(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
                 payload,
                 source_draft,
             ))
-            write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+            write_active_playbook_bundle_atomically(
+                publish_playbook,
+                runtime,
+                history,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+            )
+            if source_draft is not None:
+                _remove_file_durably(draft_path_for(playbook_path))
     except PlaybookTemplateError as error:
         handler._send_json({"error": str(error)}, status=400)
         return
@@ -548,21 +641,29 @@ def handle_playbook_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=o
                     actor="system",
                     summary="Initial playbook snapshot before version history.",
                 ))
-            write_playbook_atomically(playbook, playbook_path=playbook_path, replace_file=replace_file)
-            runtime = ensure_active_runtime_for_playbook(
-                playbook,
-                playbook_path=playbook_path,
-                replace_file=replace_file,
-                actor=_actor_from_payload(payload),
-                source="save",
-            )
+            existing_runtime = read_playbook_runtime(playbook_path=playbook_path)
+            runtime = {
+                "version": PLAYBOOK_RUNTIME_VERSION,
+                **_active_runtime_from_playbook(
+                    playbook,
+                    actor=_actor_from_payload(payload),
+                    source="save",
+                ),
+                **_draft_runtime_fields(existing_runtime),
+            }
             history.insert(0, _history_entry(
                 playbook,
-                action="save",
                 actor=_actor_from_payload(payload),
+                action="save",
                 previous_playbook=previous_playbook,
             ))
-            write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+            write_active_playbook_bundle_atomically(
+                playbook,
+                runtime,
+                history,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+            )
     except PlaybookTemplateError as error:
         handler._send_json({"error": str(error)}, status=400)
         return
@@ -605,23 +706,31 @@ def handle_playbook_restore(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
             validate_playbook(snapshot)
             previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
             restored_playbook = json.loads(json.dumps(snapshot))
-            write_playbook_atomically(restored_playbook, playbook_path=playbook_path, replace_file=replace_file)
-            runtime = ensure_active_runtime_for_playbook(
-                restored_playbook,
-                playbook_path=playbook_path,
-                replace_file=replace_file,
-                actor=_actor_from_payload(payload),
-                source="restore",
-            )
+            existing_runtime = read_playbook_runtime(playbook_path=playbook_path)
+            runtime = {
+                "version": PLAYBOOK_RUNTIME_VERSION,
+                **_active_runtime_from_playbook(
+                    restored_playbook,
+                    actor=_actor_from_payload(payload),
+                    source="restore",
+                ),
+                **_draft_runtime_fields(existing_runtime),
+            }
             history.insert(0, _history_entry(
                 restored_playbook,
-                action="restore",
                 actor=_actor_from_payload(payload),
+                action="restore",
                 previous_playbook=previous_playbook,
                 restored_from_id=history_id,
                 summary=f"Restored playbook version from {str(source_entry.get('recorded_at') or 'history')}.",
             ))
-            write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+            write_active_playbook_bundle_atomically(
+                restored_playbook,
+                runtime,
+                history,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+            )
     except PlaybookTemplateError as error:
         handler._send_json({"error": str(error)}, status=400)
         return

@@ -28,6 +28,7 @@ from . import app_settings, gmail_attachment_selector, google_identity, matter_s
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
+from .durable_io import fsync_parent_directory
 from .ingestion_service import (
     create_matter_from_document,
     extract_document_paragraphs,
@@ -924,6 +925,7 @@ def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
             os.chmod(token_path, 0o600)
         except OSError:
             pass
+        fsync_parent_directory(token_path)
     except OSError as exc:
         try:
             temporary_path.unlink()
@@ -1034,6 +1036,7 @@ def disconnect_user_gmail(owner_user_id: str, *, role: str = "all") -> int:
         token_path = _user_token_path_for_role(disconnect_role, owner_user_id)
         try:
             token_path.unlink()
+            fsync_parent_directory(token_path)
             removed += 1
         except FileNotFoundError:
             pass

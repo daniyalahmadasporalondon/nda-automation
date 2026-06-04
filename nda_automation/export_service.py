@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import telemetry
+from .durable_io import fsync_parent_directory
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -241,6 +242,7 @@ def persist_export(data: bytes, filename: str) -> Path | None:
             os.fsync(tmp_file.fileno())
         os.replace(tmp_path, export_path)
         tmp_path = None
+        fsync_parent_directory(export_path)
         prune_saved_exports(export_path)
         return export_path
     except OSError as error:
