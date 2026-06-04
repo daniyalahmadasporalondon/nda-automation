@@ -15,6 +15,8 @@ services:
         value: nda-admin
       - key: NDA_AUTH_PASSWORD
         sync: false
+      - key: NDA_ALLOWED_HOSTS
+        sync: false
       - key: NDA_GOOGLE_OAUTH_CLIENT_ID
         sync: false
       - key: NDA_GOOGLE_OAUTH_CLIENT_SECRET
@@ -25,10 +27,24 @@ services:
         sync: false
       - key: NDA_DATA_DIR
         value: /var/data
+      - key: NDA_USERS_PATH
+        value: /var/data/users.json
       - key: NDA_EXPORTS_DIR
         value: /var/data/exports
       - key: NDA_RATE_LIMIT_PER_MINUTE
         value: "120"
+      - key: NDA_AI_REVIEW_ENABLED
+        value: "true"
+      - key: NDA_AI_PROVIDER
+        value: alibaba
+      - key: NDA_AI_MODEL
+        value: qwen3.5-122b-a10b
+      - key: ALIBABA_API_KEY
+        sync: false
+      - key: NDA_GMAIL_TRIAGE_API_KEY
+        sync: false
+      - key: NDA_GMAIL_TRIAGE_MODEL
+        value: qwen/qwen3-32b
     disk:
       name: nda-automation-data
       mountPath: /var/data

@@ -245,6 +245,10 @@ def gmail_sync_status_from_payload(payload: object) -> dict[str, Any]:
     }
 
 
+def users_path() -> Path:
+    return _users_path()
+
+
 def delete_session(token: str) -> bool:
     token_hash = _token_hash(token)
     if not token_hash:

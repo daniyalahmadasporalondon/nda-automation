@@ -25,6 +25,7 @@ from .deployment import (
     DURABLE_DATA_DIR_REQUIRED_MESSAGE as DURABLE_DATA_DIR_REQUIRED_MESSAGE,
     EPHEMERAL_DATA_DIR_MESSAGE as EPHEMERAL_DATA_DIR_MESSAGE,
     EPHEMERAL_EXPORTS_DIR_MESSAGE as EPHEMERAL_EXPORTS_DIR_MESSAGE,
+    EPHEMERAL_USERS_PATH_MESSAGE as EPHEMERAL_USERS_PATH_MESSAGE,
     _deployment_status_for_host as _deployment_status_for_host,
     _is_ephemeral_storage_path as _is_ephemeral_storage_path,
     _validate_public_auth,

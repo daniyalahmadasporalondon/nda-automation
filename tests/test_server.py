@@ -730,8 +730,18 @@ class ServerTests(unittest.TestCase):
             "NDA_AUTH_PASSWORD": "",
             "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
             "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
+            "NDA_GOOGLE_OAUTH_REDIRECT_URI": "",
+            "NDA_GMAIL_OAUTH_REDIRECT_URI": "",
+            "NDA_ALLOWED_HOSTS": "",
             "NDA_DATA_DIR": "",
+            "NDA_USERS_PATH": "",
             "NDA_RATE_LIMIT_PER_MINUTE": "0",
+            "NDA_AI_REVIEW_ENABLED": "",
+            "NDA_AI_PROVIDER": "",
+            "NDA_AI_MODEL": "",
+            "ALIBABA_API_KEY": "",
+            "NDA_GMAIL_TRIAGE_API_KEY": "",
+            "NDA_GMAIL_TRIAGE_MODEL": "",
             "NDA_ALLOW_EPHEMERAL_DATA": "",
         }):
             with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda-automation-data")):
@@ -741,8 +751,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(deployment["status"], "needs_attention")
         self.assertTrue(deployment["auth_required"])
         self.assertFalse(checks["auth"]["ok"])
+        self.assertFalse(checks["google_identity"]["ok"])
+        self.assertFalse(checks["allowed_hosts"]["ok"])
         self.assertFalse(checks["data_dir"]["ok"])
+        self.assertFalse(checks["gmail_triage_ai"]["ok"])
         self.assertFalse(checks["rate_limit"]["ok"])
+
+    def test_public_deployment_status_accepts_render_hardening_env(self):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_ALLOWED_HOSTS": "nda-example.onrender.com",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_GOOGLE_OAUTH_REDIRECT_URI": "https://nda-example.onrender.com/auth/google/callback",
+            "NDA_GMAIL_OAUTH_REDIRECT_URI": "https://nda-example.onrender.com/auth/gmail/callback",
+            "NDA_DATA_DIR": "/var/data",
+            "NDA_USERS_PATH": "/var/data/users.json",
+            "NDA_RATE_LIMIT_PER_MINUTE": "120",
+            "NDA_GMAIL_INBOUND_TOKEN_PATH": "",
+            "NDA_GMAIL_OUTBOUND_TOKEN_PATH": "",
+            "NDA_AI_REVIEW_ENABLED": "true",
+            "NDA_AI_PROVIDER": "alibaba",
+            "NDA_AI_MODEL": "qwen3.5-122b-a10b",
+            "ALIBABA_API_KEY": "configured",
+            "NDA_GMAIL_TRIAGE_API_KEY": "configured",
+            "NDA_GMAIL_TRIAGE_MODEL": "qwen/qwen3-32b",
+            "NDA_ALLOW_EPHEMERAL_DATA": "",
+        }):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/var/data/exports")):
+                    deployment = server_module._deployment_status_for_host("0.0.0.0")
+
+        checks = {check["id"]: check for check in deployment["checks"]}
+        self.assertEqual(deployment["status"], "ok")
+        self.assertTrue(deployment["allowed_hosts_configured"])
+        self.assertTrue(deployment["google_oauth_redirect_uri_configured"])
+        self.assertTrue(deployment["gmail_oauth_redirect_uri_configured"])
+        self.assertFalse(deployment["legacy_gmail_token_paths_configured"])
+        self.assertTrue(deployment["ai_review_env_configured"])
+        self.assertTrue(deployment["gmail_triage_ai_configured"])
+        self.assertTrue(checks["oauth_redirects"]["ok"])
+        self.assertTrue(checks["users_path"]["ok"])
+        self.assertTrue(checks["gmail_token_mode"]["ok"])
 
     def test_local_deployment_status_message_matches_ok_data_dir_check(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
@@ -785,8 +837,23 @@ class ServerTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, server_module.EPHEMERAL_EXPORTS_DIR_MESSAGE):
                         server_module._validate_public_storage("0.0.0.0")
 
+    def test_public_bind_rejects_ephemeral_users_path(self):
+        with patch.dict(os.environ, {
+            "NDA_DATA_DIR": "/var/data",
+            "NDA_USERS_PATH": "/tmp/nda-users.json",
+            "NDA_ALLOW_EPHEMERAL_DATA": "",
+        }):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/var/data/exports")):
+                    with self.assertRaisesRegex(RuntimeError, server_module.EPHEMERAL_USERS_PATH_MESSAGE):
+                        server_module._validate_public_storage("0.0.0.0")
+
     def test_public_bind_accepts_persistent_data_paths(self):
-        with patch.dict(os.environ, {"NDA_DATA_DIR": "/var/data", "NDA_ALLOW_EPHEMERAL_DATA": ""}):
+        with patch.dict(os.environ, {
+            "NDA_DATA_DIR": "/var/data",
+            "NDA_USERS_PATH": "/var/data/users.json",
+            "NDA_ALLOW_EPHEMERAL_DATA": "",
+        }):
             with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
                 with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/var/data/exports")):
                     server_module._validate_public_storage("0.0.0.0")
