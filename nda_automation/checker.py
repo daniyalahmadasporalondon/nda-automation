@@ -38,7 +38,7 @@ from .checks.common import (
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .reference_resolver import resolve_document_references
-from .playbook_rules import PlaybookRulesError, validate_playbook_rules
+from .playbook_rules import PlaybookRulesError, normalize_playbook_policy, validate_playbook_rules
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
@@ -152,6 +152,7 @@ def review_nda(
     normalized = _normalize(source_text)
     playbook = load_playbook()
     _validate_playbook_contract(playbook)
+    playbook = normalize_playbook_policy(playbook)
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
     contract_structure = build_contract_structure(document_paragraphs)

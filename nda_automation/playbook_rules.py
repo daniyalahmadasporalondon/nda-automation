@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -15,6 +16,7 @@ from .checks.common import (
     ISSUE_TYPE_NONE,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
     ISSUE_TYPE_UNCLEAR,
+    _year_count_label,
 )
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -121,7 +123,8 @@ PLAYBOOK_POLICY_SCHEMA: dict[str, object] = {
     },
     "term_and_survival": {
         "max_term_years": {"type": "integer", "minimum": 1, "maximum": 25},
-        "required_text_lists": ["indefinite_terms", "longer_survival_carve_out_terms"],
+        "required_text_lists": ["indefinite_terms"],
+        "optional_text_lists": ["longer_survival_carve_out_terms"],
     },
 }
 
@@ -178,8 +181,8 @@ def validate_playbook_rules(playbook: Mapping[str, Any]) -> None:
 
 
 def playbook_rules_for_ai(playbook: Mapping[str, Any]) -> dict[str, Any]:
-    validate_playbook_rules(playbook)
-    clauses = playbook.get("clauses", [])
+    normalized_playbook = normalize_playbook_policy(playbook)
+    clauses = normalized_playbook.get("clauses", [])
     return {
         "version": PLAYBOOK_RULES_VERSION,
         "assessment_schema": deepcopy(AI_CLAUSE_ASSESSMENT_SCHEMA),
@@ -191,17 +194,187 @@ def playbook_rules_for_ai(playbook: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_playbook_policy(playbook: Mapping[str, Any]) -> dict[str, Any]:
+    validate_playbook_rules(playbook)
+    normalized = deepcopy(dict(playbook))
+    clauses = normalized.get("clauses", [])
+    if isinstance(clauses, list):
+        normalized["clauses"] = [
+            normalize_clause_policy(clause) if isinstance(clause, Mapping) else deepcopy(clause)
+            for clause in clauses
+        ]
+    return normalized
+
+
+def normalize_clause_policy(clause: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(dict(clause))
+    clause_id = _text(normalized.get("id"))
+    if clause_id == "governing_law":
+        _normalize_governing_law_clause(normalized)
+    elif clause_id == "term_and_survival":
+        _normalize_term_survival_clause(normalized)
+    return normalized
+
+
 def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
-    rules = clause.get("rules")
+    normalized = normalize_clause_policy(clause)
+    rules = normalized.get("rules")
     return {
-        "clause_id": str(clause.get("id") or ""),
-        "name": str(clause.get("name") or ""),
-        "type": str(clause.get("type") or ""),
-        "requirement": str(clause.get("requirement") or ""),
-        "preferred_position": str(clause.get("preferred_position") or ""),
-        "check_trigger": str(clause.get("check_trigger") or ""),
+        "clause_id": str(normalized.get("id") or ""),
+        "name": str(normalized.get("name") or ""),
+        "type": str(normalized.get("type") or ""),
+        "requirement": str(normalized.get("requirement") or ""),
+        "preferred_position": str(normalized.get("preferred_position") or ""),
+        "check_trigger": str(normalized.get("check_trigger") or ""),
         "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
     }
+
+
+def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
+    approved_laws = [_text(law) for law in clause.get("approved_laws", []) if _text(law)]
+    if not approved_laws:
+        return
+    approved_label = _join_with_or(approved_laws)
+    preferred_law = _text(clause.get("preferred_law"))
+    if preferred_law not in approved_laws:
+        preferred_law = approved_laws[0]
+
+    clause["requirement"] = f"Governing law must be {approved_label}."
+    clause["preferred_position"] = (
+        "The governing law is one of the approved jurisdictions, preferably "
+        f"{preferred_law} unless the matter context supports another approved option."
+    )
+    clause["check_trigger"] = (
+        "The governing law is missing, unclear, or names a jurisdiction outside "
+        f"{approved_label}."
+    )
+    clause["acceptable_language"] = (
+        "This Agreement shall be governed by the laws of "
+        + _join_with_or([_law_phrase(clause, law) for law in approved_laws])
+        + "."
+    )
+
+    rules = _normalized_rules(clause)
+    if not rules:
+        return
+    rules["acceptable_position"] = (
+        "The governing law is one of the approved jurisdictions in the playbook, "
+        f"with {preferred_law} as the preferred option unless matter context supports another approved jurisdiction."
+    )
+    _set_condition_description(
+        rules.get("pass_conditions"),
+        "approved_governing_law",
+        f"The governing-law clause names {approved_label}.",
+    )
+    _set_condition_description(
+        rules.get("fail_conditions"),
+        "unapproved_governing_law",
+        f"The governing-law clause names a jurisdiction outside {approved_label}.",
+    )
+    redline_guidance = rules.get("redline_guidance")
+    if isinstance(redline_guidance, dict):
+        redline_guidance["drafting_note"] = (
+            "Use one of the approved jurisdiction options. Default to "
+            f"{preferred_law} unless another approved option is selected."
+        )
+    rules["approved_options"] = [
+        {
+            "id": _option_id(law),
+            "label": law,
+            "value": law,
+            "default": law == preferred_law,
+        }
+        for law in approved_laws
+    ]
+
+
+def _normalize_term_survival_clause(clause: dict[str, Any]) -> None:
+    max_years = _int_value(clause.get("max_term_years")) or 5
+    cap_label = _year_count_label(max_years)
+
+    clause["requirement"] = (
+        "The NDA term and ordinary confidentiality survival must be fixed at up to "
+        f"{cap_label}."
+    )
+    clause["preferred_position"] = (
+        "Ordinary confidentiality obligations survive for a fixed period of up to "
+        f"{cap_label}. Narrow trade-secret, legal/regulatory, and data-protection obligations may survive "
+        "for as long as the protected status or law requires."
+    )
+    clause["check_trigger"] = (
+        "Ordinary confidentiality is perpetual, indefinite, relationship-based, tied to information remaining "
+        f"confidential, longer than {cap_label}, or missing a clear fixed term or survival period."
+    )
+    clause["acceptable_language"] = (
+        "The confidentiality obligations survive for a fixed period of up to "
+        f"{cap_label}, except for trade secrets or legal obligations that require a longer period."
+    )
+
+    rules = _normalized_rules(clause)
+    if not rules:
+        return
+    rules["acceptable_position"] = (
+        "Ordinary confidentiality obligations have a fixed survival period of up to "
+        f"{cap_label}, while narrow trade-secret, legal, regulatory, or data-protection carve-outs may survive longer."
+    )
+    _set_condition_description(
+        rules.get("pass_conditions"),
+        "fixed_survival_within_cap",
+        f"The term or ordinary confidentiality survival period is fixed and does not exceed {cap_label}.",
+    )
+    _set_condition_description(
+        rules.get("fail_conditions"),
+        "ordinary_survival_exceeds_cap_or_is_indefinite",
+        "Ordinary confidentiality survival is indefinite, perpetual, relationship-based, "
+        f"tied to information remaining confidential, or longer than {cap_label}.",
+    )
+    redline_guidance = rules.get("redline_guidance")
+    if isinstance(redline_guidance, dict):
+        redline_guidance["drafting_note"] = (
+            "Use the survival template with the playbook maximum term and narrow longer-survival carve-outs."
+        )
+
+
+def _normalized_rules(clause: dict[str, Any]) -> dict[str, Any] | None:
+    rules = clause.get("rules")
+    if not isinstance(rules, Mapping):
+        return None
+    copied = deepcopy(dict(rules))
+    clause["rules"] = copied
+    return copied
+
+
+def _set_condition_description(conditions: object, condition_id: str, description: str) -> None:
+    if not isinstance(conditions, list):
+        return
+    for condition in conditions:
+        if isinstance(condition, dict) and _text(condition.get("id")) == condition_id:
+            condition["description"] = description
+            return
+
+
+def _law_phrase(clause: Mapping[str, Any], law: str) -> str:
+    law_phrases = clause.get("law_phrases")
+    if isinstance(law_phrases, Mapping):
+        phrase = _text(law_phrases.get(law))
+        if phrase:
+            return phrase
+    return law
+
+
+def _option_id(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_") or "option"
+
+
+def _join_with_or(values: Sequence[str]) -> str:
+    cleaned = [_text(value) for value in values if _text(value)]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} or {cleaned[1]}"
+    return ", ".join(cleaned[:-1]) + f", or {cleaned[-1]}"
 
 
 def _validate_playbook_policy_schema(playbook: Mapping[str, Any], errors: list[str]) -> None:
@@ -281,7 +454,7 @@ def _validate_term_survival_policy_schema(clause: Mapping[str, Any], errors: lis
     elif max_term_years < 1 or max_term_years > 25:
         errors.append("Playbook clause term_and_survival max_term_years must be between 1 and 25.")
     _validate_text_list_field(clause, "indefinite_terms", "term_and_survival", errors, required=True)
-    _validate_text_list_field(clause, "longer_survival_carve_out_terms", "term_and_survival", errors, required=True)
+    _validate_text_list_field(clause, "longer_survival_carve_out_terms", "term_and_survival", errors, required=False)
 
 
 def _validate_text_list_field(
