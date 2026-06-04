@@ -5294,6 +5294,19 @@ class ServerTests(unittest.TestCase):
             self.assertFalse(temporary_path.exists())
             self.assertTrue(lock_path.exists())
 
+    def test_user_gmail_token_path_rejects_dot_segments(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            with patch.object(matter_store, "DATA_DIR", server_module.Path(data_dir)):
+                for owner_user_id in ("", ".", "..", "./", "../"):
+                    with self.subTest(owner_user_id=owner_user_id):
+                        with self.assertRaisesRegex(gmail_integration.GmailIntegrationError, "valid signed-in user"):
+                            gmail_integration._user_token_path_for_role("inbound", owner_user_id)
+
+                token_path = gmail_integration._user_token_path_for_role("inbound", "google:123")
+
+        self.assertEqual(token_path.name, "inbound-token.json")
+        self.assertIn("google:123", token_path.parts)
+
     def test_gmail_send_payload_replies_in_thread_for_same_account(self):
         class FakeExecutable:
             def __init__(self, payload):

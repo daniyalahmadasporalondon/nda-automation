@@ -1067,7 +1067,10 @@ def _gmail_oauth_roles_for_role(role: str) -> tuple[str, ...]:
 
 
 def _user_token_path_for_role(role: str, owner_user_id: str) -> Path:
-    return matter_store.DATA_DIR / "users" / "gmail" / owner_user_id / ROLE_LOCAL_TOKEN_FILENAME[role]
+    owner_segment = _clean_user_token_segment(owner_user_id)
+    if owner_segment in {"", ".", ".."}:
+        raise GmailIntegrationError("A valid signed-in user is required to store Gmail tokens.")
+    return matter_store.DATA_DIR / "users" / "gmail" / owner_segment / ROLE_LOCAL_TOKEN_FILENAME[role]
 
 
 def _clean_user_token_segment(value: object) -> str:
