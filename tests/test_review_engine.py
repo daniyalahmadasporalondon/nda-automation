@@ -18,6 +18,18 @@ from nda_automation.review_engine import (
 )
 
 
+def _playbook_runtime():
+    return {
+        "active_version_id": "pbv_test",
+        "active_hash": "sha256:" + "a" * 64,
+        "playbook_name": "Test Playbook",
+        "playbook_version": "2026.06",
+        "published_at": "2026-06-05T00:00:00+00:00",
+        "published_by": "legal-admin",
+        "source": "publish",
+    }
+
+
 class ReviewEngineTests(unittest.TestCase):
     def setUp(self):
         telemetry.reset()
@@ -74,6 +86,7 @@ class ReviewEngineTests(unittest.TestCase):
                 paragraphs=paragraphs,
                 deterministic_review_func=deterministic,
                 ai_first_review_func=ai_first,
+                playbook_runtime_func=_playbook_runtime,
             )
 
         deterministic.assert_not_called()
@@ -83,9 +96,39 @@ class ReviewEngineTests(unittest.TestCase):
         self.assertEqual(result["active_review_engine"]["selected_engine"], REVIEW_ENGINE_AI_FIRST)
         self.assertEqual(result["active_review_engine"]["executed_engine"], REVIEW_ENGINE_AI_FIRST)
         self.assertFalse(result["active_review_engine"]["fallback_used"])
+        self.assertEqual(result["playbook_runtime"], {
+            "active_version_id": "pbv_test",
+            "active_hash": "sha256:" + "a" * 64,
+            "playbook_name": "Test Playbook",
+            "playbook_version": "2026.06",
+            "published_at": "2026-06-05T00:00:00+00:00",
+            "published_by": "legal-admin",
+            "source": "active",
+            "active_source": "publish",
+        })
         counters = telemetry.snapshot()["counters"]
         self.assertEqual(counters["active_review_ai_first_attempted"], 1)
         self.assertEqual(counters["active_review_ai_first_completed"], 1)
+
+    def test_deterministic_engine_records_playbook_runtime_metadata(self):
+        deterministic = Mock(return_value={"review_mode": "deterministic"})
+        ai_first = Mock(return_value={"review_mode": "ai_first_compat"})
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+            result = review_nda_with_active_engine(
+                "Clause text",
+                deterministic_review_func=deterministic,
+                ai_first_review_func=ai_first,
+                playbook_runtime_func=_playbook_runtime,
+            )
+
+        deterministic.assert_called_once_with("Clause text", paragraphs=None)
+        ai_first.assert_not_called()
+        self.assertEqual(result["active_review_engine"]["selected_engine"], REVIEW_ENGINE_DETERMINISTIC)
+        self.assertEqual(result["active_review_engine"]["executed_engine"], REVIEW_ENGINE_DETERMINISTIC)
+        self.assertEqual(result["playbook_runtime"]["active_version_id"], "pbv_test")
+        self.assertEqual(result["playbook_runtime"]["active_hash"], "sha256:" + "a" * 64)
+        self.assertEqual(result["playbook_runtime"]["source"], "active")
 
     def test_runtime_settings_select_ai_first_when_environment_is_unset(self):
         deterministic = Mock(return_value={"review_mode": "deterministic"})
@@ -150,6 +193,7 @@ class ReviewEngineTests(unittest.TestCase):
                 "NDA text",
                 deterministic_review_func=deterministic,
                 ai_first_review_func=ai_first,
+                playbook_runtime_func=_playbook_runtime,
             )
 
         ai_first.assert_called_once()
@@ -160,11 +204,24 @@ class ReviewEngineTests(unittest.TestCase):
         self.assertEqual(result["active_review_engine"]["executed_engine"], REVIEW_ENGINE_DETERMINISTIC)
         self.assertEqual(result["active_review_engine"]["fallback_mode"], FALLBACK_MODE_DETERMINISTIC)
         self.assertTrue(result["active_review_engine"]["fallback_used"])
+        self.assertEqual(result["playbook_runtime"]["active_version_id"], "pbv_test")
+        self.assertEqual(result["playbook_runtime"]["active_source"], "publish")
         self.assertIn("deterministic fallback", result["review_warnings"][0])
         counters = telemetry.snapshot()["counters"]
         self.assertEqual(counters["active_review_ai_first_attempted"], 1)
         self.assertEqual(counters["active_review_ai_first_failed"], 1)
         self.assertEqual(counters["active_review_ai_first_fallback_deterministic"], 1)
+
+    def test_review_result_requires_complete_playbook_runtime_metadata(self):
+        deterministic = Mock(return_value={"review_mode": "deterministic"})
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+            with self.assertRaisesRegex(ActiveReviewEngineError, "active_hash"):
+                review_nda_with_active_engine(
+                    "NDA text",
+                    deterministic_review_func=deterministic,
+                    playbook_runtime_func=lambda: {"active_version_id": "pbv_test"},
+                )
 
     def test_ai_first_fail_closed_errors_are_normalized_for_routes(self):
         with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", AI_FIRST_FALLBACK_MODE_ENV: "fail_closed"}):

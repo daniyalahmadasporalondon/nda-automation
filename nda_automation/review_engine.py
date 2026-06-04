@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from . import app_settings
@@ -10,6 +10,7 @@ from .ai_assessor import AIAssessorError, assess_nda_with_ai
 from .checker import review_nda
 from .review_document import Paragraph
 from . import telemetry
+from .routes import playbook as playbook_routes
 
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
 AI_FIRST_FALLBACK_MODE_ENV = "NDA_AI_FIRST_FALLBACK_MODE"
@@ -29,6 +30,7 @@ class ActiveReviewEngineError(RuntimeError):
 
 
 ReviewEngineFn = Callable[..., dict[str, Any]]
+PlaybookRuntimeFn = Callable[[], dict[str, Any]]
 
 
 def active_review_engine() -> str:
@@ -65,6 +67,7 @@ def review_nda_with_active_engine(
     paragraphs: Sequence[Paragraph] | None = None,
     deterministic_review_func: ReviewEngineFn = review_nda,
     ai_first_review_func: ReviewEngineFn = assess_nda_with_ai,
+    playbook_runtime_func: PlaybookRuntimeFn = playbook_routes.ensure_active_playbook_runtime,
 ) -> dict[str, Any]:
     engine_config = _active_review_engine_config()
     fallback_config = _ai_first_fallback_mode_config()
@@ -73,6 +76,7 @@ def review_nda_with_active_engine(
     if selected_engine != REVIEW_ENGINE_AI_FIRST:
         telemetry.increment("active_review_deterministic_completed")
         result = deterministic_review_func(text, paragraphs=paragraphs)
+        playbook_runtime = _review_playbook_runtime(playbook_runtime_func)
         return _with_active_engine_metadata(
             result,
             selected_engine=REVIEW_ENGINE_DETERMINISTIC,
@@ -81,6 +85,7 @@ def review_nda_with_active_engine(
             fallback_mode=fallback_mode,
             engine_source=engine_config["source"],
             fallback_source=fallback_config["source"],
+            playbook_runtime=playbook_runtime,
         )
 
     telemetry.increment("active_review_ai_first_attempted")
@@ -103,6 +108,7 @@ def review_nda_with_active_engine(
             "fallback_used": True,
             "error_type": error.__class__.__name__,
         }
+        playbook_runtime = _review_playbook_runtime(playbook_runtime_func)
         return _with_active_engine_metadata(
             result,
             selected_engine=REVIEW_ENGINE_AI_FIRST,
@@ -111,6 +117,7 @@ def review_nda_with_active_engine(
             fallback_mode=fallback_mode,
             engine_source=engine_config["source"],
             fallback_source=fallback_config["source"],
+            playbook_runtime=playbook_runtime,
             fallback_used=True,
             error=error,
         )
@@ -119,6 +126,7 @@ def review_nda_with_active_engine(
     ai_first_status = _ai_first_status(result)
     if ai_first_status == "partial":
         telemetry.increment("active_review_ai_first_partial")
+    playbook_runtime = _review_playbook_runtime(playbook_runtime_func)
     return _with_active_engine_metadata(
         result,
         selected_engine=REVIEW_ENGINE_AI_FIRST,
@@ -127,6 +135,7 @@ def review_nda_with_active_engine(
         fallback_mode=fallback_mode,
         engine_source=engine_config["source"],
         fallback_source=fallback_config["source"],
+        playbook_runtime=playbook_runtime,
     )
 
 
@@ -139,6 +148,7 @@ def _with_active_engine_metadata(
     fallback_mode: str,
     engine_source: str,
     fallback_source: str,
+    playbook_runtime: Mapping[str, Any],
     fallback_used: bool = False,
     error: Exception | None = None,
 ) -> dict[str, Any]:
@@ -165,7 +175,41 @@ def _with_active_engine_metadata(
         if isinstance(missing_clause_ids, list):
             metadata["missing_clause_ids"] = [str(clause_id) for clause_id in missing_clause_ids]
     updated["active_review_engine"] = metadata
+    updated["playbook_runtime"] = _public_review_playbook_runtime(playbook_runtime)
     return updated
+
+
+def _review_playbook_runtime(playbook_runtime_func: PlaybookRuntimeFn) -> dict[str, Any]:
+    runtime = playbook_runtime_func()
+    if not isinstance(runtime, dict):
+        raise ActiveReviewEngineError("Active Playbook runtime metadata could not be loaded.")
+    required_keys = [
+        "active_version_id",
+        "active_hash",
+        "playbook_name",
+        "playbook_version",
+        "published_at",
+        "published_by",
+    ]
+    missing_keys = [key for key in required_keys if key not in runtime]
+    if missing_keys:
+        raise ActiveReviewEngineError(
+            "Active Playbook runtime metadata is incomplete: " + ", ".join(missing_keys)
+        )
+    return runtime
+
+
+def _public_review_playbook_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "active_version_id": str(runtime.get("active_version_id") or ""),
+        "active_hash": str(runtime.get("active_hash") or ""),
+        "playbook_name": str(runtime.get("playbook_name") or ""),
+        "playbook_version": str(runtime.get("playbook_version") or ""),
+        "published_at": str(runtime.get("published_at") or ""),
+        "published_by": str(runtime.get("published_by") or ""),
+        "source": "active",
+        "active_source": str(runtime.get("source") or ""),
+    }
 
 
 def _append_review_warning(result: dict[str, Any], warning: str) -> dict[str, Any]:
