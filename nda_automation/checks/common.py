@@ -26,11 +26,20 @@ FREEDOM_PRESERVING_CIRCUMVENTION_PATTERN = (
 # present we do NOT treat the paragraph as freedom-preserving, so real restrictions
 # are still caught. Matches "[modal] not [action]" but NOT the inversion
 # "[modal] not be restricted from [action]" (where "be" follows "not").
+_CIRCUMVENTION_ACTION_PATTERN = (
+    r"(?:solicit|contact|deal|approach|poach|circumvent|bypass|pursu|engage|transact|divert|"
+    r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
+)
 _BARE_CIRCUMVENTION_PROHIBITION_PATTERN = (
     r"\b(?:shall|will|must|may|agrees?|undertakes?|covenants?)\s+not\s+(?:to\s+)?"
     r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
-    r"(?:solicit|contact|deal|approach|poach|circumvent|bypass|pursu|engage|transact|divert|"
-    r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
+    rf"{_CIRCUMVENTION_ACTION_PATTERN}"
+    r"|"
+    r"\b(?:is|are|was|were|be|been|being|remains?|remained|shall\s+be|will\s+be|must\s+be|may\s+be)\s+"
+    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
+    r"(?:prohibited|restricted|barred|prevented|precluded|restrained)\s+from\s+"
+    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
+    rf"{_CIRCUMVENTION_ACTION_PATTERN}"
 )
 
 

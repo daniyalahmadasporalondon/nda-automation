@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from nda_automation import checker as checker_module
 from nda_automation import semantic as semantic_module
-from nda_automation.checks.common import _match, _not_present
+from nda_automation.checks.common import _match, _not_present, is_circumvention_freedom_preserving
 from nda_automation.checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
@@ -2286,6 +2286,25 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(non_circumvention["status"], "check")
         self.assertFalse(non_circumvention["passes"])
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+
+    def test_non_circumvention_passive_prohibition_overrides_freedom_carveout(self):
+        text = (
+            "Each party is not restricted from ordinary public-market dealings; however, "
+            "the Recipient is prohibited from dealing directly with introduced parties."
+        )
+        self.assertFalse(is_circumvention_freedom_preserving(text))
+
+        result = review_nda(text)
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertFalse(non_circumvention["passes"])
+        self.assertEqual(non_circumvention["decision"], "fail")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+            ["p1"],
+        )
 
     def test_non_circumvention_does_not_ignore_company_restriction_near_law(self):
         result = review_nda("The Recipient must not circumvent the Company under applicable law.")
