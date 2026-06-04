@@ -5832,6 +5832,73 @@ class ServerTests(unittest.TestCase):
         saved_mutuality = next(clause for clause in saved["clauses"] if clause["id"] == "mutuality")
         self.assertEqual(saved_mutuality["preferred_position"], "Mutual NDA policy saved by admin.")
 
+    def test_playbook_api_get_returns_playbook_with_public_history(self):
+        playbook = deepcopy(load_playbook())
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = server_module.Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(playbook), encoding="utf-8")
+            history_path = playbook_path.parent / "playbook.history.json"
+            history_path.write_text(json.dumps({
+                "version": 1,
+                "entries": [{
+                    "id": "pbv_test",
+                    "recorded_at": "2026-06-04T12:00:00+00:00",
+                    "actor": "admin",
+                    "action": "save",
+                    "summary": "Saved changes to Mutuality.",
+                    "playbook_name": playbook["name"],
+                    "playbook_version": playbook["version"],
+                    "changed_clause_ids": ["mutuality"],
+                    "snapshot": playbook,
+                }],
+            }), encoding="utf-8")
+
+            with patch.object(server_module, "PLAYBOOK_PATH", playbook_path):
+                status, payload = self.request("GET", "/api/playbook")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["playbook"]["name"], playbook["name"])
+        self.assertEqual(payload["history"][0]["id"], "pbv_test")
+        self.assertEqual(payload["history"][0]["changed_clause_ids"], ["mutuality"])
+        self.assertNotIn("snapshot", payload["history"][0])
+
+    def test_playbook_save_records_history_and_restore_recovers_snapshot(self):
+        original_playbook = deepcopy(load_playbook())
+        changed_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in changed_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "Versioned Playbook save."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = server_module.Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+
+            with patch.object(server_module, "PLAYBOOK_PATH", playbook_path):
+                status, payload = self.request("POST", "/api/playbook", {"playbook": changed_playbook, "actor": "legal-admin"})
+
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["history"][0]["action"], "save")
+                self.assertEqual(payload["history"][0]["actor"], "legal-admin")
+                self.assertEqual(payload["history"][0]["changed_clause_ids"], ["mutuality"])
+                self.assertEqual(payload["history"][1]["action"], "baseline")
+                self.assertNotIn("snapshot", payload["history"][0])
+
+                baseline_id = payload["history"][1]["id"]
+                status, restore_payload = self.request("POST", "/api/playbook/restore", {
+                    "history_id": baseline_id,
+                    "actor": "legal-admin",
+                })
+
+            self.assertEqual(status, 200)
+            self.assertEqual(restore_payload["history"][0]["action"], "restore")
+            self.assertEqual(restore_payload["history"][0]["restored_from_id"], baseline_id)
+            self.assertEqual(restore_payload["history"][0]["changed_clause_ids"], ["mutuality"])
+            restored = json.loads(playbook_path.read_text(encoding="utf-8"))
+
+        restored_mutuality = next(clause for clause in restored["clauses"] if clause["id"] == "mutuality")
+        original_mutuality = next(clause for clause in original_playbook["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(restored_mutuality["preferred_position"], original_mutuality["preferred_position"])
+
     def test_playbook_save_preserves_existing_file_when_atomic_replace_fails(self):
         original_playbook = deepcopy(load_playbook())
         changed_playbook = deepcopy(original_playbook)

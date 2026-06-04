@@ -30,6 +30,7 @@ from .review_document import (
     split_document_paragraphs,
     validate_clause_evidence_trust,
 )
+from .playbook_rules import normalize_playbook_policy
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
@@ -82,6 +83,7 @@ def build_ai_first_review_result(
     document_paragraphs = _review_paragraphs(text, paragraphs)
     playbook = deepcopy(playbook) if isinstance(playbook, Mapping) else load_playbook()
     validate_playbook(playbook)
+    playbook = normalize_playbook_policy(playbook)
     playbook_clauses = [
         clause
         for clause in playbook.get("clauses", [])

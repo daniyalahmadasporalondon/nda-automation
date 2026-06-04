@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 from nda_automation.ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_REDLINE_NO_CHANGE
 from nda_automation.ai_first_review import AI_FIRST_REVIEW_MODE, build_ai_first_review_result
@@ -135,6 +136,32 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["decision"], "review")
         self.assertEqual(governing_law["reason_code"], "ai_first_missing_assessment")
         self.assertTrue(governing_law["review_state"]["blocks_send"])
+
+    def test_ai_first_review_result_uses_normalized_playbook_policy_text(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 3
+        term["requirement"] = "The NDA term and ordinary confidentiality survival must be fixed at up to five years."
+        term["preferred_position"] = "Old five year preferred position."
+        term["check_trigger"] = "Old five year trigger."
+
+        result = build_ai_first_review_result(
+            SOURCE_TEXT,
+            [
+                _assessment("mutuality", "pass"),
+                _assessment("confidential_information", "pass", paragraph_id="p2"),
+                _assessment("governing_law", "pass", paragraph_id="p3"),
+                _assessment("term_and_survival", "pass", paragraph_id="p4"),
+                _assessment("non_circumvention", "pass", paragraph_id="p5"),
+                _assessment("signatures", "pass", paragraph_id="p6"),
+            ],
+            playbook=playbook,
+        )
+
+        term_result = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertIn("three years", term_result["requirement"])
+        self.assertIn("three years", term_result["preferred_position"])
+        self.assertIn("longer than three years", term_result["check_trigger"])
 
     def test_evidence_quote_without_paragraph_id_resolves_to_source_paragraph(self):
         result = build_ai_first_review_result(

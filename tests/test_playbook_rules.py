@@ -4,14 +4,34 @@ from copy import deepcopy
 from nda_automation.ai_assessment_contract import AI_CLAUSE_ASSESSMENT_SCHEMA
 from nda_automation.checker import PlaybookTemplateError, load_playbook, validate_playbook
 from nda_automation.playbook_rules import (
+    PLAYBOOK_POLICY_SCHEMA,
+    PLAYBOOK_POLICY_SCHEMA_VERSION,
     PLAYBOOK_RULES_VERSION,
     PlaybookRulesError,
+    normalize_playbook_policy,
     playbook_rules_for_ai,
     validate_playbook_rules,
 )
 
 
 class PlaybookRulesTests(unittest.TestCase):
+    def test_playbook_policy_schema_documents_editable_fields(self):
+        self.assertEqual(PLAYBOOK_POLICY_SCHEMA["version"], PLAYBOOK_POLICY_SCHEMA_VERSION)
+        self.assertIn("preferred_position", PLAYBOOK_POLICY_SCHEMA["clause"]["required_text"])
+        self.assertIn("governing_law", PLAYBOOK_POLICY_SCHEMA["clause_overrides"])
+        self.assertEqual(
+            PLAYBOOK_POLICY_SCHEMA["governing_law"]["rules_option_source"],
+            "approved_laws",
+        )
+        self.assertEqual(
+            PLAYBOOK_POLICY_SCHEMA["term_and_survival"]["max_term_years"],
+            {"type": "integer", "minimum": 1, "maximum": 25},
+        )
+        self.assertIn(
+            "longer_survival_carve_out_terms",
+            PLAYBOOK_POLICY_SCHEMA["term_and_survival"]["optional_text_lists"],
+        )
+
     def test_all_playbook_clauses_have_structured_rules(self):
         playbook = load_playbook()
         validate_playbook_rules(playbook)
@@ -75,11 +95,77 @@ class PlaybookRulesTests(unittest.TestCase):
         governing_law = next(clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law")
         self.assertEqual(governing_law["rules"]["approved_options"][2]["value"], "England and Wales")
 
+    def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"] = ["UAE", "Singapore"]
+        governing_law["preferred_law"] = "Singapore"
+        governing_law["law_phrases"] = {"UAE": "the UAE", "Singapore": "Singapore"}
+        governing_law["requirement"] = "Governing law must be India, Delaware, England and Wales, or DIFC."
+        governing_law["preferred_position"] = "Prefer England and Wales."
+        governing_law["check_trigger"] = "Names a jurisdiction outside the old approved list."
+        governing_law["rules"]["acceptable_position"] = "Old England and Wales policy text."
+        _sync_governing_law_options(governing_law)
+
+        normalized = normalize_playbook_policy(playbook)
+        normalized_governing_law = next(
+            clause for clause in normalized["clauses"] if clause["id"] == "governing_law"
+        )
+
+        self.assertEqual(governing_law["requirement"], "Governing law must be India, Delaware, England and Wales, or DIFC.")
+        self.assertEqual(normalized_governing_law["requirement"], "Governing law must be UAE or Singapore.")
+        self.assertIn("preferably Singapore", normalized_governing_law["preferred_position"])
+        self.assertIn("outside UAE or Singapore", normalized_governing_law["check_trigger"])
+        self.assertIn("Singapore as the preferred option", normalized_governing_law["rules"]["acceptable_position"])
+        self.assertEqual(
+            [option["value"] for option in normalized_governing_law["rules"]["approved_options"]],
+            ["UAE", "Singapore"],
+        )
+        self.assertEqual(
+            [option["value"] for option in normalized_governing_law["rules"]["approved_options"] if option.get("default")],
+            ["Singapore"],
+        )
+
+    def test_ai_rules_packet_derives_term_survival_guidance_from_cap(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 3
+        term["requirement"] = "The NDA term and ordinary confidentiality survival must be fixed at up to five years."
+        term["preferred_position"] = "Old five year preferred position."
+        term["check_trigger"] = "Old five year trigger."
+        term["rules"]["acceptable_position"] = "Old five year acceptable position."
+
+        packet = playbook_rules_for_ai(playbook)
+        term_rules = next(clause for clause in packet["clauses"] if clause["clause_id"] == "term_and_survival")
+
+        self.assertIn("three years", term_rules["requirement"])
+        self.assertIn("three years", term_rules["preferred_position"])
+        self.assertIn("longer than three years", term_rules["check_trigger"])
+        self.assertIn("three years", term_rules["rules"]["acceptable_position"])
+        self.assertIn("three years", term_rules["rules"]["pass_conditions"][0]["description"])
+        self.assertIn("longer than three years", term_rules["rules"]["fail_conditions"][1]["description"])
+
     def test_rule_validator_rejects_missing_rules(self):
         playbook = deepcopy(load_playbook())
         del playbook["clauses"][0]["rules"]
 
         with self.assertRaisesRegex(PlaybookRulesError, "must include rules"):
+            validate_playbook_rules(playbook)
+
+    def test_rule_validator_rejects_non_object_conditions(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["rules"]["pass_conditions"].append("not a condition object")
+
+        with self.assertRaisesRegex(PlaybookRulesError, r"pass_conditions\[1\] must be an object"):
+            validate_playbook_rules(playbook)
+
+    def test_rule_validator_rejects_duplicate_condition_ids(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["rules"]["fail_conditions"][1]["id"] = mutuality["rules"]["fail_conditions"][0]["id"]
+
+        with self.assertRaisesRegex(PlaybookRulesError, "must not contain duplicate id"):
             validate_playbook_rules(playbook)
 
     def test_validate_playbook_rejects_malformed_structured_rules(self):
@@ -89,6 +175,74 @@ class PlaybookRulesTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PlaybookTemplateError, "approved_options must have exactly one default option"):
             validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_governing_law_policy_drift(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"] = ["India", "England and Wales", "DIFC"]
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_options values must match approved_laws"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_governing_law_redline_template_field(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["redline_template"] = "This Agreement shall be governed by the laws of India."
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "unsupported field\\(s\\): redline_template"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_duplicate_governing_law_options(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"].append("india")
+        governing_law["law_phrases"]["india"] = "India"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_laws must not contain duplicate value india"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_orphan_governing_law_phrase(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["law_phrases"]["California"] = "California"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "law_phrases has unsupported key"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_governing_law_default_drift(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["preferred_law"] = "DIFC"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_options default must match preferred_law"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_invalid_survival_cap(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 30
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "max_term_years must be between 1 and 25"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_allows_empty_longer_survival_carveouts(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["longer_survival_carve_out_terms"] = []
+
+        validate_playbook(playbook)
+
+
+def _sync_governing_law_options(governing_law):
+    governing_law["rules"]["approved_options"] = [
+        {
+            "id": law.lower().replace(" ", "_"),
+            "label": law,
+            "value": law,
+            "default": law == governing_law["preferred_law"],
+        }
+        for law in governing_law["approved_laws"]
+    ]
 
 
 if __name__ == "__main__":

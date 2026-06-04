@@ -202,9 +202,13 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#studioFileMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.getByRole("tablist", { name: "Workspace" }).count(), 1);
   assert.equal(await page.locator("#reviewTab").getAttribute("role"), "tab");
-  assert.equal(await page.locator("#clausesTab").getAttribute("role"), "tab");
+  assert.equal(await page.locator("#playbookTab").getAttribute("role"), "tab");
+  assert.equal(await page.locator("#adminTab").getAttribute("role"), "tab");
+  assert.equal(await page.locator("#guideTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#adminTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#guideTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
@@ -222,20 +226,22 @@ async function testAccessibleControlState(page) {
 
   await page.locator("#reviewTab").focus();
   await page.locator("#reviewTab").press("ArrowRight");
-  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator("#clausesTab").getAttribute("tabindex"), "0");
+  assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#playbookTab").getAttribute("tabindex"), "0");
   assert.equal(await page.locator("#reviewTab").getAttribute("tabindex"), "-1");
-  await page.locator("#clausesTab").press("Home");
+  await page.locator("#playbookTab").press("Home");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
   await page.locator("#repositoryTab").press("End");
-  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
-  await page.locator("#clausesTab").press("Home");
+  assert.equal(await page.locator("#guideTab").getAttribute("aria-selected"), "true");
+  await page.locator("#guideTab").press("Home");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
 
-  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.getByRole("tab", { name: "Playbook" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
-  assert.equal(await page.locator("#clausesTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "playbook");
+  assert.equal(await page.locator(".admin-nav").isHidden(), true);
   const activePlaybookRow = await page.locator(".playbook-row.active").first().evaluate((node) => {
     const styles = getComputedStyle(node);
     return {
@@ -247,6 +253,14 @@ async function testAccessibleControlState(page) {
   assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
   assert.equal(activePlaybookRow.borderLeftColor, "rgb(79, 27, 179)");
   assert.equal(activePlaybookRow.borderLeftWidth, "3px");
+  await page.getByRole("tab", { name: "Admin" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
+  await assertTextContains(page.locator("#adminAiPanel"), "AI runtime");
+  assert.equal(await page.locator("#adminAiPanel").isHidden(), false);
+  await page.getByRole("tab", { name: "Guide" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "guide");
+  await assertTextContains(page.locator("#adminDocumentPanel"), "Structure, references, and concepts");
+  assert.equal(await page.locator("#adminDocumentPanel").isHidden(), false);
 
   await page.getByRole("tab", { name: "Review" }).click();
   await page.getByRole("button", { name: "Clean" }).click();
@@ -411,9 +425,11 @@ async function testPlaybookAdminEditor(page) {
     });
   });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.getByRole("tab", { name: "Playbook" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "playbook");
   await assertTextContains(page.locator("#adminPlaybookPanel"), "Aspora playbook");
   await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
+  await assertTextContains(page.locator("#clauseDetail"), "Policy Version History");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
   await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
@@ -459,13 +475,35 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "term_survival_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "Claims survive for three years");
   await assertTextContains(page.locator("#clauseDetail"), "unresolved_reference_count");
+  await assertTextContains(page.locator("#clauseDetail"), "Template Preview");
+  await assertTextContains(page.locator("#clauseDetail"), "{max_term_years_label}");
+  await assertTextContains(page.locator("#clauseDetail"), "up to five years");
+  const termTemplate = await page.locator('textarea[name="redline_template"]').inputValue();
+  await page.locator('textarea[name="redline_template"]').fill("Bad {unknown_placeholder}");
+  await assertTextContains(page.locator("#clauseDetail"), "Unknown placeholder: unknown_placeholder.");
+  assert.equal(await page.getByRole("button", { name: "Commit & Save Playbook" }).isEnabled(), false);
+  await page.locator('textarea[name="redline_template"]').fill(termTemplate);
+  await assertTextContains(page.locator("#clauseDetail"), "up to five years");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
   await assertTextContains(page.locator("#playbookDraftDiff"), "longer_survival_carve_out_terms");
   await page.locator('[data-clause-id="governing_law"]').click();
+  await assertTextContains(page.locator("#clauseDetail"), "Approved Governing Laws");
+  assert.equal(await page.locator('textarea[name="redline_template"]').count(), 0);
+  await assertTextContains(page.locator("#clauseDetail"), "Draft phrase");
+  await assertTextContains(page.locator("#clauseDetail"), "Generated Governing Law Redlines");
+  await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of India.");
   await assertTextContains(page.locator("#clauseDetail"), "governing_law_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "heading_only_paragraph_ids");
+  await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
+  await page.locator("#addGoverningLaw").click();
+  await assertTextContains(page.locator("#clauseDetail"), "UAE");
+  await page.locator('input[name="governing_law_phrase_4"]').fill("the UAE");
+  await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of the UAE.");
+  await page.locator('input[name="preferred_law_index"][value="4"]').check();
+  await assertTextContains(page.locator("#playbookDraftDiff"), "approved_laws");
+  await assertTextContains(page.locator("#playbookDraftDiff"), "rules.approved_options");
   await page.locator('[data-clause-id="non_circumvention"]').click();
   await assertTextContains(page.locator("#clauseDetail"), "non_circumvention_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "negated_reference_paragraph_ids");
@@ -482,17 +520,40 @@ async function testPlaybookAdminEditor(page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ playbook: savedPayload.playbook, saved_at: "2026-05-31T20:00:00+00:00" }),
+      body: JSON.stringify({
+        playbook: savedPayload.playbook,
+        saved_at: "2026-05-31T20:00:00+00:00",
+        history: [{
+          id: "pbv_frontend_test",
+          recorded_at: "2026-05-31T20:00:00+00:00",
+          actor: "admin",
+          action: "save",
+          summary: "Saved changes to Mutuality.",
+          changed_clause_ids: ["mutuality"],
+        }],
+      }),
     });
   });
   await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
+  await assertTextContains(page.locator("#clauseDetail"), "Saved changes to Mutuality.");
   assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
   const savedConfidentialInfo = savedPayload.playbook.clauses.find((clause) => clause.id === "confidential_information");
   assert.equal(savedConfidentialInfo.standard_exclusions_template, "Publicly known information is excluded.");
   const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
   assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
-  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
+  const savedGoverningLaw = savedPayload.playbook.clauses.find((clause) => clause.id === "governing_law");
+  assert.ok(savedGoverningLaw.approved_laws.includes("UAE"));
+  assert.equal(savedGoverningLaw.preferred_law, "UAE");
+  assert.equal(savedGoverningLaw.law_phrases.UAE, "the UAE");
+  assert.equal(Object.prototype.hasOwnProperty.call(savedGoverningLaw, "redline_template"), false);
+  assert.deepEqual(
+    savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
+    [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],
+  );
+  await page.getByRole("tab", { name: "Admin" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
+  await page.locator('[data-admin-section="email"]').click();
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Gmail");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "INBOUND ACCOUNT");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "inbound@example.com");
@@ -722,7 +783,8 @@ async function testContractStructureReviewPanel(page) {
   await page.locator('[data-review-inspector="clause"]').click();
   await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
 
-  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.getByRole("tab", { name: "Guide" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "guide");
   await page.locator('[data-admin-section="document"]').click();
   await page.waitForSelector("#adminDocumentPanel .engine-card");
 
@@ -776,15 +838,20 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(checkersPanel, "SIGNATURES");
   await assertTextContains(checkersPanel, "separate from the legal-concept review-state upgrades");
 
-  await page.locator('[data-admin-section="ai"]').click();
+  await page.locator('[data-admin-section="ai_guide"]').click();
+  const aiGuidePanel = page.locator("#adminAiGuidePanel");
+  await assertTextContains(aiGuidePanel, "AI review methodology");
+  await assertTextContains(aiGuidePanel, "How AI-first and comparison work");
+  await assertTextContains(aiGuidePanel, "GEMINI_API_KEY");
+  await assertTextContains(aiGuidePanel, "OPENROUTER_API_KEY");
+  await assertTextContains(aiGuidePanel, "ai_review_analysis");
+  await assertTextContains(aiGuidePanel, "AI disagreement");
+
+  await page.getByRole("tab", { name: "Admin" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
   const aiPanel = page.locator("#adminAiPanel");
-  await assertTextContains(aiPanel, "AI review layer");
-  await assertTextContains(aiPanel, "How AI-first and comparison work");
-  await assertTextContains(aiPanel, "GEMINI_API_KEY");
-  await assertTextContains(aiPanel, "OPENROUTER_API_KEY");
-  await assertTextContains(aiPanel, "ai_review_analysis");
-  await assertTextContains(aiPanel, "AI disagreement");
-  await assertTextContains(aiPanel, "AI Semantic Review");
+  await assertTextContains(aiPanel, "AI runtime");
+  await assertTextContains(aiPanel, "AI Runtime");
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing AI API key");
@@ -1323,7 +1390,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator("#gmailLastSync").count(), 0);
   assert.equal(await page.locator("#gmailSyncButton").count(), 0);
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
+  await page.locator('[data-admin-section="email"]').click();
   const serverSyncLabel = await page.evaluate(() => new Date("2026-05-31T12:34:00+00:00").toLocaleString(undefined, {
     day: "2-digit",
     hour: "2-digit",
@@ -2273,7 +2340,7 @@ async function testGmailSetupRequiredStatus(page) {
   assert.equal((await syncStatus.innerText()).includes("Last sync error"), false);
 
   await page.getByRole("tab", { name: "Admin" }).click();
-  await page.getByRole("button", { name: "Email Gmail accounts and sync state" }).click();
+  await page.locator('[data-admin-section="email"]').click();
   await waitForText(page, "#adminGmailOverall", "NEEDS SETUP");
   const adminPanel = page.locator("#adminIntegrationsPanel");
   await assertTextContains(adminPanel, "NEEDS SETUP");
