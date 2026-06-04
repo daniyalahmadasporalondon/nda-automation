@@ -800,7 +800,7 @@ h3 {
   flex: 1;
   gap: 14px;
   grid-template-columns: minmax(460px, 1fr) minmax(560px, 680px);
-  margin: 14px 24px 0;
+  margin: 14px 24px 18px;
   min-height: 0;
 }
 
@@ -4873,6 +4873,7 @@ body.modal-open {
 
   .studio-grid {
     margin-left: 16px;
+    margin-bottom: 24px;
     margin-right: 16px;
   }
 
