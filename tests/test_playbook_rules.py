@@ -184,6 +184,14 @@ class PlaybookRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(PlaybookTemplateError, "approved_options values must match approved_laws"):
             validate_playbook(playbook)
 
+    def test_validate_playbook_rejects_governing_law_redline_template_field(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["redline_template"] = "This Agreement shall be governed by the laws of India."
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "unsupported field\\(s\\): redline_template"):
+            validate_playbook(playbook)
+
     def test_validate_playbook_rejects_duplicate_governing_law_options(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")

@@ -475,19 +475,32 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "term_survival_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "Claims survive for three years");
   await assertTextContains(page.locator("#clauseDetail"), "unresolved_reference_count");
+  await assertTextContains(page.locator("#clauseDetail"), "Template Preview");
+  await assertTextContains(page.locator("#clauseDetail"), "{max_term_years_label}");
+  await assertTextContains(page.locator("#clauseDetail"), "up to five years");
+  const termTemplate = await page.locator('textarea[name="redline_template"]').inputValue();
+  await page.locator('textarea[name="redline_template"]').fill("Bad {unknown_placeholder}");
+  await assertTextContains(page.locator("#clauseDetail"), "Unknown placeholder: unknown_placeholder.");
+  assert.equal(await page.getByRole("button", { name: "Commit & Save Playbook" }).isEnabled(), false);
+  await page.locator('textarea[name="redline_template"]').fill(termTemplate);
+  await assertTextContains(page.locator("#clauseDetail"), "up to five years");
   await page.getByPlaceholder("Add carve-out term").fill("regulatory obligation");
   await page.locator("#addSurvivalCarveOut").click();
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
   await assertTextContains(page.locator("#playbookDraftDiff"), "longer_survival_carve_out_terms");
   await page.locator('[data-clause-id="governing_law"]').click();
   await assertTextContains(page.locator("#clauseDetail"), "Approved Governing Laws");
+  assert.equal(await page.locator('textarea[name="redline_template"]').count(), 0);
   await assertTextContains(page.locator("#clauseDetail"), "Draft phrase");
+  await assertTextContains(page.locator("#clauseDetail"), "Generated Governing Law Redlines");
+  await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of India.");
   await assertTextContains(page.locator("#clauseDetail"), "governing_law_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "heading_only_paragraph_ids");
   await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
   await page.locator("#addGoverningLaw").click();
   await assertTextContains(page.locator("#clauseDetail"), "UAE");
   await page.locator('input[name="governing_law_phrase_4"]').fill("the UAE");
+  await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of the UAE.");
   await page.locator('input[name="preferred_law_index"][value="4"]').check();
   await assertTextContains(page.locator("#playbookDraftDiff"), "approved_laws");
   await assertTextContains(page.locator("#playbookDraftDiff"), "rules.approved_options");
@@ -533,6 +546,7 @@ async function testPlaybookAdminEditor(page) {
   assert.ok(savedGoverningLaw.approved_laws.includes("UAE"));
   assert.equal(savedGoverningLaw.preferred_law, "UAE");
   assert.equal(savedGoverningLaw.law_phrases.UAE, "the UAE");
+  assert.equal(Object.prototype.hasOwnProperty.call(savedGoverningLaw, "redline_template"), false);
   assert.deepEqual(
     savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
     [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],

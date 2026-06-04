@@ -3409,6 +3409,103 @@ body.modal-open {
   color: var(--ink-muted);
 }
 
+.admin-template-field {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.admin-template-field.invalid {
+  border-color: var(--red-border);
+}
+
+.admin-template-meta {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(180px, 0.75fr);
+}
+
+.admin-template-meta > div {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+}
+
+.admin-template-meta h3,
+.admin-template-error {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  margin: 0;
+}
+
+.admin-template-meta p {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.admin-template-error {
+  color: var(--red);
+  min-height: 14px;
+}
+
+.admin-generated-redlines {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-redline-option-preview {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.admin-redline-option-preview.preferred {
+  border-color: var(--brand);
+}
+
+.admin-redline-option-preview strong {
+  align-items: center;
+  color: var(--ink);
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 8px;
+}
+
+.admin-redline-option-preview strong span {
+  background: var(--bg-softer);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 850;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+.admin-redline-option-preview p {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.42;
+  margin: 0;
+}
+
 .admin-history {
   background: var(--bg-panel);
 }
@@ -5018,6 +5115,7 @@ body.modal-open {
   .admin-code-groups,
   .admin-hardening-list,
   .admin-policy-option,
+  .admin-template-meta,
   .admin-logic-list div {
     grid-template-columns: 1fr;
   }
