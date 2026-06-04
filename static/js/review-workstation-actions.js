@@ -39,6 +39,10 @@ function setupReviewWorkstationActions() {
     await exportReviewDocx();
   });
 
+  studioRefreshReviewButton?.addEventListener("click", async () => {
+    await refreshSelectedMatterReview();
+  });
+
   studioSendButton.addEventListener("click", () => {
     openReviewSendComposer();
   });
@@ -68,6 +72,10 @@ async function exportReviewDocx() {
   pendingReviewSendMatterId = null;
   const text = studioNdaText.value.trim() || state.reviewSourceText.trim();
   if (!text) return;
+  if (reviewIsStale()) {
+    handleStaleReviewOperationError({ reviewRefresh: state.selectedMatter?.review_refresh }, "Export could not run.");
+    return;
+  }
   const exportMatter = state.selectedMatter?.id ? state.selectedMatter : null;
   const exportDocument = !exportMatter && state.selectedDocument ? state.selectedDocument : null;
   const exportTitle = studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE;
@@ -131,7 +139,11 @@ async function exportReviewDocx() {
     }
     await repositoryController.markMatterRedlineReady(exportMatter);
   } catch (error) {
-    renderOperationError(error, "Export could not run.");
+    if (isStaleReviewError(error)) {
+      handleStaleReviewOperationError(error, "Export could not run.");
+    } else {
+      renderOperationError(error, "Export could not run.");
+    }
   } finally {
     studioExportButton.title = "Export DOCX";
     updateExportButtonState();
@@ -247,6 +259,10 @@ async function runMatterReviewComparison(matterId) {
 
 function openReviewSendComposer() {
   if (!state.selectedMatter?.id) return;
+  if (reviewIsStale()) {
+    handleStaleReviewOperationError({ reviewRefresh: state.selectedMatter?.review_refresh }, "Redline email could not send.");
+    return;
+  }
   const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
   const missingRecipientBlock = isMissingRecipientSendBlock(sendBlockReason);
   if (sendBlockReason && !missingRecipientBlock) {
@@ -362,8 +378,13 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
     studioSendButton?.focus?.();
   } catch (error) {
     pendingReviewSendMatterId = null;
-    setReviewSendStatus(error.message || "Redline email could not send.");
-    renderOperationError(error, "Redline email could not send.");
+    if (isStaleReviewError(error)) {
+      closeReviewSendComposer({ restoreFocus: false });
+      handleStaleReviewOperationError(error, "Redline email could not send.");
+    } else {
+      setReviewSendStatus(error.message || "Redline email could not send.");
+      renderOperationError(error, "Redline email could not send.");
+    }
   } finally {
     setReviewSendComposerBusy(false);
     setStudioSendButtonLabel("Send Redline");
@@ -561,6 +582,10 @@ function setReviewSendStatus(message) {
 }
 
 function renderOperationError(error, fallbackMeta) {
+  if (isStaleReviewError(error)) {
+    handleStaleReviewOperationError(error, fallbackMeta);
+    return;
+  }
   studioOverallTitle.textContent = error.message || fallbackMeta;
   studioResultMark.textContent = "!";
   studioResultMark.className = "check";
@@ -568,6 +593,113 @@ function renderOperationError(error, fallbackMeta) {
     ? ` ${error.details.slice(0, 3).join(" ")}`
     : "";
   studioResultMeta.textContent = `${fallbackMeta}${details}`;
+}
+
+async function refreshSelectedMatterReview() {
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  const previousLabel = studioRefreshReviewButton?.textContent || "Refresh Review";
+  if (studioRefreshReviewButton) {
+    studioRefreshReviewButton.disabled = true;
+    studioRefreshReviewButton.textContent = "Refreshing";
+  }
+  setFileMeta("Refreshing review against the active Playbook.");
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not refresh");
+    const refreshedMatter = matterReviewPayloadToMatter(payload);
+    loadMatterIntoReview(refreshedMatter);
+    await repositoryController.loadMatters();
+    if (payload.review_refresh?.stale) {
+      setFileMeta(staleReviewMessage(payload.review_refresh));
+    } else if (payload.review_refresh?.redline_draft_cleared) {
+      setFileMeta(payload.review_refresh.message || "Review refreshed. Saved redline draft was cleared.");
+    } else {
+      setFileMeta("Review refreshed against the active Playbook.");
+    }
+  } catch (error) {
+    if (isStaleReviewError(error)) {
+      handleStaleReviewOperationError(error, "Review could not refresh.");
+    } else {
+      renderOperationError(error, "Review could not refresh.");
+    }
+  } finally {
+    if (studioRefreshReviewButton?.isConnected) {
+      studioRefreshReviewButton.disabled = false;
+      studioRefreshReviewButton.textContent = previousLabel;
+    }
+    updateExportButtonState();
+  }
+}
+
+function matterReviewPayloadToMatter(payload) {
+  return {
+    ...(payload?.matter || {}),
+    extracted_text: payload?.extracted_text || "",
+    redline_draft: payload?.redline_draft || null,
+    review_comparison: payload?.review_comparison || null,
+    review_refresh: payload?.review_refresh || null,
+    review_result: payload?.review_result || {},
+  };
+}
+
+function reviewIsStale() {
+  return Boolean(state.selectedMatter?.review_refresh?.stale);
+}
+
+function isStaleReviewError(error) {
+  return Boolean(error?.reviewRefresh?.stale || (Array.isArray(error?.staleReasons) && error.staleReasons.length));
+}
+
+function handleStaleReviewOperationError(error, fallbackMeta) {
+  const refresh = error?.reviewRefresh || {
+    stale: true,
+    stale_reasons: Array.isArray(error?.staleReasons) ? error.staleReasons : [],
+  };
+  if (state.selectedMatter?.id) {
+    state.selectedMatter = {
+      ...state.selectedMatter,
+      review_refresh: refresh,
+    };
+  }
+  const message = staleReviewMessage(refresh, error?.message || fallbackMeta);
+  renderReviewRefreshNotice(refresh);
+  updateExportButtonState();
+  setFileMeta(message);
+  studioOverallTitle.textContent = error?.message || "Review is stale";
+  studioResultMark.textContent = "!";
+  studioResultMark.className = "review";
+  studioResultMeta.textContent = message;
+  studioRefreshReviewButton?.focus?.();
+}
+
+function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
+  if (!studioRefreshReviewButton) return;
+  const stale = Boolean(refresh?.stale);
+  studioRefreshReviewButton.hidden = !stale;
+  studioRefreshReviewButton.disabled = false;
+  studioRefreshReviewButton.textContent = "Refresh Review";
+  studioRefreshReviewButton.title = stale ? staleReviewMessage(refresh) : "";
+}
+
+function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
+  const message = String(refresh?.stale_message || refresh?.message || "").trim();
+  if (message) return message;
+  const reasons = Array.isArray(refresh?.stale_reasons) ? refresh.stale_reasons : [];
+  if (reasons.includes("playbook_changed")) {
+    return "Active Playbook changed. Refresh review before exporting or sending.";
+  }
+  if (reasons.includes("review_engine_version_changed")) {
+    return "Review engine changed. Refresh review before exporting or sending.";
+  }
+  if (reasons.includes("missing_playbook_runtime")) {
+    return "Review was created before Playbook runtime tracking. Refresh review before exporting or sending.";
+  }
+  return fallback;
 }
 
 function markRedlineDraftDirty() {

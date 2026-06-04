@@ -33,6 +33,7 @@ const studioOverallTitle = document.querySelector("#studioOverallTitle") || {};
 const studioResultMark = document.querySelector("#studioResultMark") || {};
 const studioResultMeta = document.querySelector("#studioResultMeta") || {};
 const studioDraftMeta = document.querySelector("#studioDraftMeta");
+const studioRefreshReviewButton = document.querySelector("#studioRefreshReviewButton");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
 const adminWorkspaceTabs = new Set(["playbook", "admin", "guide"]);
@@ -197,6 +198,12 @@ function reviewErrorFromPayload(payload, fallbackMessage) {
   const error = new Error(payload?.error || fallbackMessage);
   if (Array.isArray(payload?.details)) {
     error.details = payload.details.filter(Boolean).map((item) => String(item));
+  }
+  if (payload?.review_refresh && typeof payload.review_refresh === "object") {
+    error.reviewRefresh = payload.review_refresh;
+  }
+  if (Array.isArray(payload?.stale_reasons)) {
+    error.staleReasons = payload.stale_reasons.filter(Boolean).map((item) => String(item));
   }
   return error;
 }

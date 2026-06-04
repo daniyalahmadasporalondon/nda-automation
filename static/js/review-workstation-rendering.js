@@ -54,6 +54,7 @@ function renderStudioEmpty() {
   state.latestReviewResult = null;
   setReviewComparison(null);
   showStudioSourceEditor();
+  renderReviewRefreshNotice(null);
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioResultMark.textContent = "-";
   studioResultMark.className = "";
@@ -84,8 +85,10 @@ function setReviewComparisonError(error) {
 
 function updateExportButtonState() {
   const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
+  const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale);
   if (studioExportButton) {
-    studioExportButton.disabled = !canExport;
+    studioExportButton.disabled = !canExport || staleReview;
+    studioExportButton.title = staleReview ? "Refresh review before exporting" : "Export DOCX";
   }
   if (!studioSendButton) {
     updateRedlineDraftControls();
@@ -94,16 +97,19 @@ function updateExportButtonState() {
   const hasSendableMatter = Boolean(state.selectedMatter?.id);
   studioSendButton.hidden = !hasSendableMatter;
   const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
-  const canSend = Boolean(canExport && hasSendableMatter && !sendBlockReason);
+  const canSend = Boolean(canExport && hasSendableMatter && !sendBlockReason && !staleReview);
   // Keep the button clickable once a review has run, even when blocked, so a
   // click can surface *why* sending is blocked (openReviewSendComposer writes the
   // reason to the file-meta line) instead of leaving a silent, dead icon. The
   // .blocked class + aria-disabled mark it not-ready without swallowing the click.
-  const interactive = Boolean(canExport && hasSendableMatter);
+  const interactive = Boolean(canExport && hasSendableMatter && !staleReview);
   studioSendButton.disabled = !interactive;
   studioSendButton.classList.toggle("blocked", interactive && Boolean(sendBlockReason));
   studioSendButton.setAttribute("aria-disabled", String(!interactive));
-  if (!canSend) {
+  if (staleReview) {
+    pendingReviewSendMatterId = null;
+    setStudioSendButtonLabel("Send Redline", "Refresh review before sending a redline");
+  } else if (!canSend) {
     pendingReviewSendMatterId = null;
     const sendLabel = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
     setStudioSendButtonLabel(sendLabel, sendBlockReason || sendLabel);

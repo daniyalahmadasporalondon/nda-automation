@@ -1247,6 +1247,23 @@ h3 {
   font-weight: 600;
 }
 
+.studio-refresh-review {
+  background: #fff;
+  border: 1px solid var(--amber-border);
+  border-radius: var(--r-pill);
+  color: var(--amber-ink);
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+}
+
+.studio-refresh-review:hover:not(:disabled),
+.studio-refresh-review:focus-visible {
+  background: var(--amber-bg);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+}
+
 .studio-undo-edit {
   align-items: center;
   background: #ffffff;

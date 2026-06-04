@@ -181,7 +181,7 @@ const RepositoryActions = (() => {
           setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Redline Ready.` : `Downloading ${filename}. Stage could not update.`);
         }
       } catch (error) {
-        setPanelMessage(error.message || "Export could not run");
+        setPanelMessage(repositoryStaleReviewMessage(error, "Export could not run"));
       } finally {
         if (exportButton?.isConnected) {
           exportButton.disabled = false;
@@ -232,7 +232,7 @@ const RepositoryActions = (() => {
       } catch (error) {
         setPendingSendMatterId(null);
         renderDetailPanel(matter);
-        setPanelMessage(error.message || "Redline email could not send");
+        setPanelMessage(repositoryStaleReviewMessage(error, "Redline email could not send"));
       }
     }
 
@@ -308,6 +308,16 @@ const RepositoryActions = (() => {
       if (state.selectedMatter?.id === updatedMatter.id) {
         state.selectedMatter = updatedMatter;
       }
+    }
+
+    function repositoryStaleReviewMessage(error, fallback) {
+      if (typeof isStaleReviewError === "function" && isStaleReviewError(error)) {
+        const message = typeof staleReviewMessage === "function"
+          ? staleReviewMessage(error.reviewRefresh, error.message || fallback)
+          : (error.message || fallback);
+        return `${message} Open Review to refresh.`;
+      }
+      return error.message || fallback;
     }
 
     return {

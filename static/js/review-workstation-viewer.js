@@ -673,10 +673,11 @@ function loadMatterIntoReview(matter) {
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
   setReviewComparison(matter.review_comparison || null);
   applyMatterRedlineDraft(matter.redline_draft);
+  renderReviewRefreshNotice(matter.review_refresh);
   const refreshMessage = matter.review_refresh?.redline_draft_cleared
     ? matter.review_refresh.message || "Saved redline draft cleared after review refresh"
     : matter.review_refresh?.stale
-      ? "Saved review is stale and could not be refreshed. Review output may be out of date."
+      ? staleReviewMessage(matter.review_refresh)
       : "";
   setFileMeta(
     refreshMessage

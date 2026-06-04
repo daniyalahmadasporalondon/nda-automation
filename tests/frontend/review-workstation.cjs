@@ -56,6 +56,7 @@ const tests = [
   ["renders backend redlines across all document modes", testBackendRedlineModes],
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
+  ["wires stale review refresh controls", testStaleReviewRefreshWiring],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the Upload tab", testManualUploadTab],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
@@ -1671,6 +1672,134 @@ async function testRepositoryOpenReviewRepeatedly(page) {
     reviewRefresh: { refreshed: true, stale: false },
     status: "idle",
   });
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+async function testStaleReviewRefreshWiring(page) {
+  const reviewText = "This Agreement shall be governed by the laws of India.";
+  const reviewResult = {
+    checked_at: "2026-06-01T09:01:00+00:00",
+    clauses: [{
+      decision: "pass",
+      id: "governing_law",
+      issue_label: "Pass",
+      name: "Governing Law",
+      passes: true,
+      requirement: "Use an approved governing law.",
+      structure_context: {},
+      review_state: { state: "pass" },
+      why: "Approved governing law found.",
+    }],
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: reviewText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+  const matter = {
+    id: "matter_stale_review",
+    attachment_filename: "Stale Review NDA.docx",
+    board_column: "in_review",
+    can_send_redline: true,
+    document_title: "Stale Review NDA",
+    extracted_text: reviewText,
+    issue_count: 0,
+    message_snippet: reviewText,
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    review_result: reviewResult,
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Stale Review NDA.docx",
+    source_type: "manual_upload",
+    subject: "Stale Review NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+  };
+  let refreshCount = 0;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true, email: "inbound@example.com" },
+          outbound: { ready: true, email: "daniyal.ahmad@aspora.com" },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matters: [matter] }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/stage")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matter }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
+      refreshCount += 1;
+      const stale = refreshCount === 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: reviewText,
+          matter,
+          review_refresh: stale
+            ? {
+                stale: true,
+                stale_message: "Active Playbook changed. Refresh review before exporting or sending.",
+                stale_reasons: ["playbook_changed"],
+              }
+            : {
+                refreshed: true,
+                stale: false,
+                stale_reasons: [],
+              },
+          review_result: reviewResult,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await waitForText(page, "#studioFileMeta", "Active Playbook changed");
+  await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
+  assert.equal(await page.locator("#studioExportButton").isDisabled(), true);
+  assert.equal(await page.locator("#studioSendButton").isDisabled(), true);
+
+  await page.getByRole("button", { name: "Refresh Review" }).click();
+  await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
+  await page.waitForSelector("#studioRefreshReviewButton[hidden]", { state: "attached" });
+  assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
+  assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
+  assert.equal(refreshCount, 2);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
