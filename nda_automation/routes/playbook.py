@@ -18,6 +18,26 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev portabi
 _PLAYBOOK_LOCK = threading.RLock()
 PLAYBOOK_HISTORY_VERSION = 1
 PLAYBOOK_HISTORY_LIMIT = 25
+PLAYBOOK_RUNTIME_VERSION = 1
+
+_ACTIVE_RUNTIME_KEYS = [
+    "active_version_id",
+    "active_hash",
+    "published_at",
+    "published_by",
+    "playbook_name",
+    "playbook_version",
+    "source",
+]
+
+_DRAFT_RUNTIME_KEYS = [
+    "draft_id",
+    "draft_hash",
+    "draft_updated_at",
+    "draft_updated_by",
+    "draft_base_active_version_id",
+    "draft_base_active_hash",
+]
 
 
 @contextmanager
@@ -37,6 +57,14 @@ def locked_playbook(playbook_path=PLAYBOOK_PATH):
 
 def history_path_for(playbook_path=PLAYBOOK_PATH):
     return playbook_path.with_name(f"{playbook_path.stem}.history.json")
+
+
+def runtime_path_for(playbook_path=PLAYBOOK_PATH):
+    return playbook_path.with_name(f"{playbook_path.stem}.runtime.json")
+
+
+def draft_path_for(playbook_path=PLAYBOOK_PATH):
+    return playbook_path.with_name(f"{playbook_path.stem}.draft.json")
 
 
 def read_playbook_from_path(playbook_path=PLAYBOOK_PATH) -> dict[str, Any]:
@@ -94,6 +122,86 @@ def write_playbook_history(entries: list[dict[str, Any]], *, playbook_path=PLAYB
     write_json_atomically(history, history_path_for(playbook_path), replace_file=replace_file)
 
 
+def read_playbook_runtime(*, playbook_path=PLAYBOOK_PATH) -> dict[str, Any] | None:
+    try:
+        with runtime_path_for(playbook_path).open("r", encoding="utf-8") as handle:
+            runtime = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(runtime, dict):
+        return None
+    return runtime
+
+
+def write_playbook_runtime(
+    runtime: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> None:
+    payload = {"version": PLAYBOOK_RUNTIME_VERSION, **runtime}
+    write_json_atomically(payload, runtime_path_for(playbook_path), replace_file=replace_file)
+
+
+def playbook_snapshot_hash(playbook: dict[str, Any]) -> str:
+    return "sha256:" + sha256(_stable_json(playbook).encode("utf-8")).hexdigest()
+
+
+def ensure_active_playbook_runtime(
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+    actor: str = "system",
+    source: str = "bootstrap",
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(playbook)
+        return ensure_active_runtime_for_playbook(
+            playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            actor=actor,
+            source=source,
+        )
+
+
+def ensure_active_runtime_for_playbook(
+    playbook: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+    actor: str = "system",
+    source: str = "bootstrap",
+) -> dict[str, Any]:
+    runtime = read_playbook_runtime(playbook_path=playbook_path)
+    active_hash = playbook_snapshot_hash(playbook)
+    if _runtime_matches_active_playbook(runtime, active_hash):
+        return runtime or {}
+
+    active_runtime = _active_runtime_from_playbook(playbook, actor=actor, source=source)
+    next_runtime = {
+        **active_runtime,
+        **_draft_runtime_fields(runtime),
+    }
+    write_playbook_runtime(next_runtime, playbook_path=playbook_path, replace_file=replace_file)
+    return {"version": PLAYBOOK_RUNTIME_VERSION, **next_runtime}
+
+
+def public_playbook_runtime(runtime: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(runtime, dict):
+        return {}
+    return {key: runtime.get(key) for key in _ACTIVE_RUNTIME_KEYS if key in runtime}
+
+
+def public_playbook_draft(runtime: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(runtime, dict) or not runtime.get("draft_id"):
+        return None
+    return {key: runtime.get(key) for key in _DRAFT_RUNTIME_KEYS if key in runtime}
+
+
 def public_playbook_history(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     public_entries = []
     for entry in entries[:PLAYBOOK_HISTORY_LIMIT]:
@@ -120,6 +228,11 @@ def handle_playbook_get(handler, *, playbook_path=PLAYBOOK_PATH, send_body: bool
         with locked_playbook(playbook_path):
             playbook = read_playbook_from_path(playbook_path)
             validate_playbook(playbook)
+            runtime = ensure_active_runtime_for_playbook(
+                playbook,
+                playbook_path=playbook_path,
+                source="bootstrap",
+            )
             history = read_playbook_history(playbook_path=playbook_path)
     except (OSError, json.JSONDecodeError):
         handler._send_json({"error": "Playbook could not be loaded."}, status=500, send_body=send_body)
@@ -130,6 +243,11 @@ def handle_playbook_get(handler, *, playbook_path=PLAYBOOK_PATH, send_body: bool
     handler._send_json(
         {
             "playbook": playbook,
+            "active": {
+                "playbook": playbook,
+                "metadata": public_playbook_runtime(runtime),
+            },
+            "draft": public_playbook_draft(runtime),
             "history": public_playbook_history(history),
         },
         send_body=send_body,
@@ -159,6 +277,13 @@ def handle_playbook_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=o
                     summary="Initial playbook snapshot before version history.",
                 ))
             write_playbook_atomically(playbook, playbook_path=playbook_path, replace_file=replace_file)
+            runtime = ensure_active_runtime_for_playbook(
+                playbook,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+                actor=_actor_from_payload(payload),
+                source="save",
+            )
             history.insert(0, _history_entry(
                 playbook,
                 action="save",
@@ -175,6 +300,11 @@ def handle_playbook_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=o
 
     handler._send_json({
         "playbook": playbook,
+        "active": {
+            "playbook": playbook,
+            "metadata": public_playbook_runtime(runtime),
+        },
+        "draft": public_playbook_draft(runtime),
         "history": public_playbook_history(history),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -204,6 +334,13 @@ def handle_playbook_restore(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
             previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
             restored_playbook = json.loads(json.dumps(snapshot))
             write_playbook_atomically(restored_playbook, playbook_path=playbook_path, replace_file=replace_file)
+            runtime = ensure_active_runtime_for_playbook(
+                restored_playbook,
+                playbook_path=playbook_path,
+                replace_file=replace_file,
+                actor=_actor_from_payload(payload),
+                source="restore",
+            )
             history.insert(0, _history_entry(
                 restored_playbook,
                 action="restore",
@@ -222,6 +359,11 @@ def handle_playbook_restore(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
 
     handler._send_json({
         "playbook": restored_playbook,
+        "active": {
+            "playbook": restored_playbook,
+            "metadata": public_playbook_runtime(runtime),
+        },
+        "draft": public_playbook_draft(runtime),
         "history": public_playbook_history(history),
         "restored_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -253,6 +395,48 @@ def _history_entry(
     if restored_from_id:
         entry["restored_from_id"] = restored_from_id
     return entry
+
+
+def _active_runtime_from_playbook(
+    playbook: dict[str, Any],
+    *,
+    actor: str,
+    source: str,
+    recorded_at: str | None = None,
+) -> dict[str, Any]:
+    published_at = recorded_at or datetime.now(timezone.utc).isoformat()
+    active_hash = playbook_snapshot_hash(playbook)
+    return {
+        "active_version_id": _runtime_version_id(published_at, active_hash),
+        "active_hash": active_hash,
+        "published_at": published_at,
+        "published_by": actor[:80] or "system",
+        "playbook_name": str(playbook.get("name") or ""),
+        "playbook_version": str(playbook.get("version") or ""),
+        "source": source[:80] or "bootstrap",
+    }
+
+
+def _runtime_version_id(recorded_at: str, active_hash: str) -> str:
+    digest = active_hash.removeprefix("sha256:")[:12]
+    compact_time = recorded_at.replace("+00:00", "Z").replace("-", "").replace(":", "").replace(".", "")
+    return f"pbv_{compact_time}_{digest}"
+
+
+def _runtime_matches_active_playbook(runtime: dict[str, Any] | None, active_hash: str) -> bool:
+    if not isinstance(runtime, dict):
+        return False
+    if runtime.get("version") != PLAYBOOK_RUNTIME_VERSION:
+        return False
+    if runtime.get("active_hash") != active_hash:
+        return False
+    return all(key in runtime for key in _ACTIVE_RUNTIME_KEYS)
+
+
+def _draft_runtime_fields(runtime: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(runtime, dict):
+        return {}
+    return {key: runtime.get(key) for key in _DRAFT_RUNTIME_KEYS if key in runtime}
 
 
 def _history_id(recorded_at: str, snapshot: dict[str, Any]) -> str:
@@ -300,7 +484,7 @@ def _clause_names(playbook: dict[str, Any], clause_ids: list[str]) -> list[str]:
 
 
 def _stable_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def _actor_from_payload(payload: dict[str, Any]) -> str:

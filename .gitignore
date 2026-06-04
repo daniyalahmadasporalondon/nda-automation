@@ -18,6 +18,9 @@ exports/
 data/
 .claude/
 playbook.json.lock
+playbook.runtime.json
+playbook.draft.json
+playbook.history.json
 
 # Counsel-labeled eval: real NDAs + counsel labels are client-confidential.
 # Keep real corpora out of the repo (point NDA_COUNSEL_EVAL_DIR at an out-of-tree
