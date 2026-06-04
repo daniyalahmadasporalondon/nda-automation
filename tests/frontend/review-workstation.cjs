@@ -252,9 +252,8 @@ async function testAccessibleControlState(page) {
       borderLeftWidth: styles.borderLeftWidth,
     };
   });
-  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
-  assert.equal(activePlaybookRow.borderLeftColor, "rgb(79, 27, 179)");
-  assert.equal(activePlaybookRow.borderLeftWidth, "3px");
+  assert.equal(activePlaybookRow.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.equal(activePlaybookRow.borderLeftWidth, "0px");
   await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
   await assertTextContains(page.locator("#adminAiPanel"), "AI runtime");

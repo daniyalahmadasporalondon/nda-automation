@@ -25,13 +25,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function renderPlaybookList() {
     playbookList.innerHTML = state.playbookClauses
-      .map((clause, index) => {
+      .map((clause) => {
         const selected = clause.id === state.selectedClauseId ? "selected active" : "";
-        const position = String(index + 1).padStart(2, "0");
         const draft = hasClauseDraft(clause.id) ? '<em>Draft</em>' : "";
         return `
           <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
-            <span class="clause-number">${position}</span>
             <span>
               <strong>${escapeHtml(clause.name)}</strong>
               <small>${escapeHtml(stanceLabel(clause))}</small>
