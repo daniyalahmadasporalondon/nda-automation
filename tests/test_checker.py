@@ -35,6 +35,10 @@ class CheckerTests(unittest.TestCase):
         return redlines[0]
 
     def sync_governing_law_rule_options(self, clause):
+        clause["law_phrases"] = {
+            law: clause.get("law_phrases", {}).get(law, law)
+            for law in clause["approved_laws"]
+        }
         clause["rules"]["approved_options"] = [
             {
                 "id": str(law).lower().replace(" ", "_"),

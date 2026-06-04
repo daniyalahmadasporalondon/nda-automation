@@ -4,6 +4,8 @@ from copy import deepcopy
 from nda_automation.ai_assessment_contract import AI_CLAUSE_ASSESSMENT_SCHEMA
 from nda_automation.checker import PlaybookTemplateError, load_playbook, validate_playbook
 from nda_automation.playbook_rules import (
+    PLAYBOOK_POLICY_SCHEMA,
+    PLAYBOOK_POLICY_SCHEMA_VERSION,
     PLAYBOOK_RULES_VERSION,
     PlaybookRulesError,
     playbook_rules_for_ai,
@@ -12,6 +14,19 @@ from nda_automation.playbook_rules import (
 
 
 class PlaybookRulesTests(unittest.TestCase):
+    def test_playbook_policy_schema_documents_editable_fields(self):
+        self.assertEqual(PLAYBOOK_POLICY_SCHEMA["version"], PLAYBOOK_POLICY_SCHEMA_VERSION)
+        self.assertIn("preferred_position", PLAYBOOK_POLICY_SCHEMA["clause"]["required_text"])
+        self.assertIn("governing_law", PLAYBOOK_POLICY_SCHEMA["clause_overrides"])
+        self.assertEqual(
+            PLAYBOOK_POLICY_SCHEMA["governing_law"]["rules_option_source"],
+            "approved_laws",
+        )
+        self.assertEqual(
+            PLAYBOOK_POLICY_SCHEMA["term_and_survival"]["max_term_years"],
+            {"type": "integer", "minimum": 1, "maximum": 25},
+        )
+
     def test_all_playbook_clauses_have_structured_rules(self):
         playbook = load_playbook()
         validate_playbook_rules(playbook)
@@ -82,6 +97,22 @@ class PlaybookRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(PlaybookRulesError, "must include rules"):
             validate_playbook_rules(playbook)
 
+    def test_rule_validator_rejects_non_object_conditions(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["rules"]["pass_conditions"].append("not a condition object")
+
+        with self.assertRaisesRegex(PlaybookRulesError, r"pass_conditions\[1\] must be an object"):
+            validate_playbook_rules(playbook)
+
+    def test_rule_validator_rejects_duplicate_condition_ids(self):
+        playbook = deepcopy(load_playbook())
+        mutuality = next(clause for clause in playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["rules"]["fail_conditions"][1]["id"] = mutuality["rules"]["fail_conditions"][0]["id"]
+
+        with self.assertRaisesRegex(PlaybookRulesError, "must not contain duplicate id"):
+            validate_playbook_rules(playbook)
+
     def test_validate_playbook_rejects_malformed_structured_rules(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
@@ -98,12 +129,37 @@ class PlaybookRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(PlaybookTemplateError, "approved_options values must match approved_laws"):
             validate_playbook(playbook)
 
+    def test_validate_playbook_rejects_duplicate_governing_law_options(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"].append("india")
+        governing_law["law_phrases"]["india"] = "India"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_laws must not contain duplicate value india"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_orphan_governing_law_phrase(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["law_phrases"]["California"] = "California"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "law_phrases has unsupported key"):
+            validate_playbook(playbook)
+
     def test_validate_playbook_rejects_governing_law_default_drift(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
         governing_law["preferred_law"] = "DIFC"
 
         with self.assertRaisesRegex(PlaybookTemplateError, "approved_options default must match preferred_law"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_invalid_survival_cap(self):
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 30
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "max_term_years must be between 1 and 25"):
             validate_playbook(playbook)
 
 

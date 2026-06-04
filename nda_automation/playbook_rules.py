@@ -24,6 +24,106 @@ from .redline_actions import (
 from .review_state import CLAUSE_DECISION_FAIL, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
 
 PLAYBOOK_RULES_VERSION = 1
+PLAYBOOK_POLICY_SCHEMA_VERSION = 1
+
+CORE_REQUIRED_TEXT_FIELDS = ["id", "name", "requirement", "type", "preferred_position", "check_trigger"]
+
+CORE_CLAUSE_FIELDS = {
+    "id",
+    "name",
+    "requirement",
+    "type",
+    "preferred_position",
+    "check_trigger",
+    "acceptable_language",
+    "rationale",
+    "evidence_guidance",
+    "search_terms",
+    "taxonomy_groups",
+    "semantic_signals",
+    "rules",
+}
+
+CLAUSE_POLICY_FIELDS: dict[str, set[str]] = {
+    "mutuality": {
+        "one_way_terms",
+        "redline_template",
+        "role_reciprocity_terms",
+        "role_terms",
+    },
+    "confidential_information": {
+        "allowed_exclusions",
+        "definition_categories",
+        "exclusion_context_terms",
+        "independent_development_qualification_terms",
+        "independent_development_terms",
+        "problematic_exclusion_terms",
+        "redline_template",
+        "standard_exclusions_template",
+    },
+    "governing_law": {
+        "approved_laws",
+        "law_phrases",
+        "preferred_law",
+    },
+    "term_and_survival": {
+        "indefinite_terms",
+        "longer_survival_carve_out_terms",
+        "max_term_years",
+        "redline_template",
+    },
+    "non_circumvention": set(),
+    "signatures": {
+        "redline_template",
+    },
+}
+
+CLAUSE_TEXT_LIST_FIELDS = {
+    "allowed_exclusions",
+    "approved_laws",
+    "definition_categories",
+    "exclusion_context_terms",
+    "indefinite_terms",
+    "independent_development_qualification_terms",
+    "independent_development_terms",
+    "longer_survival_carve_out_terms",
+    "one_way_terms",
+    "problematic_exclusion_terms",
+    "role_reciprocity_terms",
+    "role_terms",
+    "search_terms",
+    "semantic_signals",
+    "taxonomy_groups",
+}
+
+PLAYBOOK_POLICY_SCHEMA: dict[str, object] = {
+    "version": PLAYBOOK_POLICY_SCHEMA_VERSION,
+    "top_level": {
+        "required_text": ["name", "version"],
+        "required_array": ["clauses"],
+    },
+    "clause": {
+        "allowed_fields": sorted(CORE_CLAUSE_FIELDS),
+        "required_text": CORE_REQUIRED_TEXT_FIELDS,
+        "required_text_lists": ["search_terms"],
+        "optional_text_lists": ["taxonomy_groups", "semantic_signals"],
+        "types": ["required", "prohibited"],
+    },
+    "clause_overrides": {
+        clause_id: sorted(fields)
+        for clause_id, fields in CLAUSE_POLICY_FIELDS.items()
+    },
+    "governing_law": {
+        "required_text_lists": ["approved_laws"],
+        "required_mapping": ["law_phrases"],
+        "preferred_field": "preferred_law",
+        "rules_option_source": "approved_laws",
+    },
+    "term_and_survival": {
+        "max_term_years": {"type": "integer", "minimum": 1, "maximum": 25},
+        "required_text_lists": ["indefinite_terms", "longer_survival_carve_out_terms"],
+    },
+}
 
 PLAYBOOK_RULE_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -60,8 +160,11 @@ class PlaybookRulesError(ValueError):
 
 def validate_playbook_rules(playbook: Mapping[str, Any]) -> None:
     errors: list[str] = []
+    _validate_playbook_policy_schema(playbook, errors)
     clauses = playbook.get("clauses")
     if not isinstance(clauses, list):
+        if errors:
+            raise PlaybookRulesError(errors)
         raise PlaybookRulesError(["playbook clauses must be a list"])
 
     for clause in clauses:
@@ -99,6 +202,120 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
         "check_trigger": str(clause.get("check_trigger") or ""),
         "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
     }
+
+
+def _validate_playbook_policy_schema(playbook: Mapping[str, Any], errors: list[str]) -> None:
+    if not _text(playbook.get("name")):
+        errors.append("Playbook name must be text.")
+    if not _text(playbook.get("version")):
+        errors.append("Playbook version must be text.")
+    clauses = playbook.get("clauses")
+    if not isinstance(clauses, list):
+        errors.append("Playbook clauses must be a list.")
+        return
+    if not clauses:
+        errors.append("Playbook clauses must not be empty.")
+        return
+
+    seen_clause_ids: set[str] = set()
+    for index, clause in enumerate(clauses):
+        if not isinstance(clause, Mapping):
+            errors.append(f"Playbook clauses[{index}] must be an object.")
+            continue
+        _validate_clause_policy_schema(clause, errors)
+        clause_id = _text(clause.get("id"))
+        if not clause_id:
+            continue
+        normalized = clause_id.lower()
+        if normalized in seen_clause_ids:
+            errors.append(f"Playbook clause {clause_id} id must be unique.")
+        seen_clause_ids.add(normalized)
+
+
+def _validate_clause_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:
+    clause_id = _text(clause.get("id")) or "unknown"
+    allowed_fields = CORE_CLAUSE_FIELDS | CLAUSE_POLICY_FIELDS.get(clause_id, set())
+    unknown_fields = sorted(str(field) for field in clause.keys() if str(field) not in allowed_fields)
+    if clause_id in CLAUSE_POLICY_FIELDS and unknown_fields:
+        errors.append(f"Playbook clause {clause_id} has unsupported field(s): {', '.join(unknown_fields)}.")
+
+    for field in CORE_REQUIRED_TEXT_FIELDS:
+        if not _text(clause.get(field)):
+            errors.append(f"Playbook clause {clause_id} must include {field}.")
+    if _text(clause.get("type")) not in {"required", "prohibited"}:
+        errors.append(f"Playbook clause {clause_id} type must be required or prohibited.")
+    _validate_text_list_field(clause, "search_terms", clause_id, errors, required=True)
+    for field in sorted(CLAUSE_TEXT_LIST_FIELDS - {"search_terms"}):
+        if field in clause:
+            _validate_text_list_field(clause, field, clause_id, errors, required=False)
+
+    if clause_id == "governing_law":
+        _validate_governing_law_policy_schema(clause, errors)
+    elif clause_id == "term_and_survival":
+        _validate_term_survival_policy_schema(clause, errors)
+
+
+def _validate_governing_law_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:
+    clause_id = "governing_law"
+    approved_laws = _validate_text_list_field(clause, "approved_laws", clause_id, errors, required=True)
+    preferred_law = _text(clause.get("preferred_law"))
+    if preferred_law and approved_laws and preferred_law not in approved_laws:
+        errors.append("Playbook clause governing_law preferred_law must be in approved_laws.")
+    law_phrases = clause.get("law_phrases")
+    if not isinstance(law_phrases, Mapping):
+        errors.append("Playbook clause governing_law law_phrases must be an object.")
+        return
+    phrase_keys = [_text(key) for key in law_phrases.keys() if _text(key)]
+    missing_phrases = [law for law in approved_laws if not _text(law_phrases.get(law))]
+    if missing_phrases:
+        errors.append("Playbook clause governing_law law_phrases missing: " + ", ".join(missing_phrases) + ".")
+    extra_phrases = sorted(key for key in phrase_keys if key not in approved_laws)
+    if extra_phrases:
+        errors.append("Playbook clause governing_law law_phrases has unsupported key(s): " + ", ".join(extra_phrases) + ".")
+
+
+def _validate_term_survival_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:
+    max_term_years = clause.get("max_term_years")
+    if isinstance(max_term_years, bool) or not isinstance(max_term_years, int):
+        errors.append("Playbook clause term_and_survival max_term_years must be an integer.")
+    elif max_term_years < 1 or max_term_years > 25:
+        errors.append("Playbook clause term_and_survival max_term_years must be between 1 and 25.")
+    _validate_text_list_field(clause, "indefinite_terms", "term_and_survival", errors, required=True)
+    _validate_text_list_field(clause, "longer_survival_carve_out_terms", "term_and_survival", errors, required=True)
+
+
+def _validate_text_list_field(
+    clause: Mapping[str, Any],
+    field: str,
+    clause_id: str,
+    errors: list[str],
+    *,
+    required: bool,
+) -> list[str]:
+    value = clause.get(field)
+    if value is None:
+        if required:
+            errors.append(f"Playbook clause {clause_id} must include {field}.")
+        return []
+    if not isinstance(value, list):
+        errors.append(f"Playbook clause {clause_id} {field} must be a list.")
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        text = _text(item)
+        if not text:
+            errors.append(f"Playbook clause {clause_id} {field}[{index}] must be text.")
+            continue
+        normalized = text.lower()
+        if normalized in seen:
+            errors.append(f"Playbook clause {clause_id} {field} must not contain duplicate value {text}.")
+            continue
+        seen.add(normalized)
+        items.append(text)
+    if required and not items:
+        errors.append(f"Playbook clause {clause_id} {field} must not be empty.")
+    return items
 
 
 def _validate_clause_rules(clause: Mapping[str, Any], errors: list[str]) -> None:
@@ -167,7 +384,20 @@ def _required_rule_list(
     if not isinstance(raw_items, list) or not raw_items:
         errors.append(f"Playbook clause {clause_id} rules.{field} must be a non-empty list.")
         return []
-    return [item for item in raw_items if isinstance(item, Mapping)]
+    items: list[Mapping[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, Mapping):
+            errors.append(f"Playbook clause {clause_id} rules.{field}[{index}] must be an object.")
+            continue
+        condition_id = _text(item.get("id"))
+        if condition_id:
+            normalized = condition_id.lower()
+            if normalized in seen_ids:
+                errors.append(f"Playbook clause {clause_id} rules.{field} must not contain duplicate id {condition_id}.")
+            seen_ids.add(normalized)
+        items.append(item)
+    return items
 
 
 def _validate_condition_list(
