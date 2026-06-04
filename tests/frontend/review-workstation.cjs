@@ -429,6 +429,7 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "playbook");
   await assertTextContains(page.locator("#adminPlaybookPanel"), "Aspora playbook");
   await assertTextContains(page.locator("#clauseDetail"), "Edit Clause: Mutuality");
+  await assertTextContains(page.locator("#clauseDetail"), "Policy Version History");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
   await assertTextContains(page.locator("#clauseDetail"), "Shared Structure Layer");
@@ -506,11 +507,23 @@ async function testPlaybookAdminEditor(page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ playbook: savedPayload.playbook, saved_at: "2026-05-31T20:00:00+00:00" }),
+      body: JSON.stringify({
+        playbook: savedPayload.playbook,
+        saved_at: "2026-05-31T20:00:00+00:00",
+        history: [{
+          id: "pbv_frontend_test",
+          recorded_at: "2026-05-31T20:00:00+00:00",
+          actor: "admin",
+          action: "save",
+          summary: "Saved changes to Mutuality.",
+          changed_clause_ids: ["mutuality"],
+        }],
+      }),
     });
   });
   await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
+  await assertTextContains(page.locator("#clauseDetail"), "Saved changes to Mutuality.");
   assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
   const savedConfidentialInfo = savedPayload.playbook.clauses.find((clause) => clause.id === "confidential_information");
   assert.equal(savedConfidentialInfo.standard_exclusions_template, "Publicly known information is excluded.");

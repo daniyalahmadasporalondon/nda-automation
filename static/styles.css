@@ -3409,6 +3409,50 @@ body.modal-open {
   color: var(--ink-muted);
 }
 
+.admin-history {
+  background: var(--bg-panel);
+}
+
+.admin-history-row {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 0 0;
+}
+
+.admin-history-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.admin-history-row strong,
+.admin-history-row span,
+.admin-history-row small {
+  display: block;
+}
+
+.admin-history-row strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-history-row span,
+.admin-history-row small {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.admin-history-row p {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 4px 0;
+}
+
 .checker-visibility {
   gap: 12px;
 }

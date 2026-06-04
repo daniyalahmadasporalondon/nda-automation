@@ -4,13 +4,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     clauseDetail.innerHTML = '<div class="detail-empty">Loading playbook</div>';
 
     try {
-      const response = await fetch("/playbook");
-      const playbook = await response.json();
-      if (!response.ok) throw new Error(playbook.error || "Playbook could not load");
+      const response = await fetch("/api/playbook");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Playbook could not load");
 
-      state.playbook = clonePlaybook(playbook);
-      state.savedPlaybook = clonePlaybook(playbook);
-      state.playbookClauses = state.playbook.clauses || [];
+      updatePlaybookStateFromPayload(payload);
       state.selectedClauseId = state.playbookClauses[0]?.id || null;
       renderStudioEmpty();
       renderPlaybookList();
@@ -100,6 +98,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <pre id="playbookDraftDiff">${escapeHtml(diffForClause(clause.id) || "No unsaved changes.")}</pre>
         </section>
 
+        ${playbookHistoryPanel()}
+
         <div class="admin-actions">
           <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
           <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Draft</button>
@@ -113,6 +113,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
     setupSpecialControls(clause);
+    setupPlaybookHistoryControls();
   }
 
   function handleEditorInput(event) {
@@ -239,9 +240,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Playbook could not be saved");
-      state.playbook = clonePlaybook(payload.playbook);
-      state.savedPlaybook = clonePlaybook(payload.playbook);
-      state.playbookClauses = state.playbook.clauses || [];
+      updatePlaybookStateFromPayload(payload);
       if (status) status.textContent = "Playbook saved.";
       renderPlaybookList();
       renderClauseDetail();
@@ -262,12 +261,46 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     renderClauseDetail();
   }
 
+  async function restorePlaybookVersion(historyId) {
+    const status = clauseDetail.querySelector("#playbookSaveStatus");
+    if (hasAnyDraft()) {
+      if (status) status.textContent = "Discard unsaved drafts before restoring a saved version.";
+      return;
+    }
+    if (status) status.textContent = "Restoring playbook version...";
+
+    try {
+      const response = await fetch("/api/playbook/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ history_id: historyId, actor: "admin" }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Playbook version could not be restored");
+      updatePlaybookStateFromPayload(payload);
+      if (!selectedClause()) state.selectedClauseId = state.playbookClauses[0]?.id || null;
+      if (status) status.textContent = "Playbook version restored.";
+      renderPlaybookList();
+      renderClauseDetail();
+    } catch (error) {
+      if (status) status.textContent = error.message;
+    }
+  }
+
   function selectedClause() {
     return state.playbookClauses.find((item) => item.id === state.selectedClauseId);
   }
 
   function savedClause(clauseId) {
     return (state.savedPlaybook?.clauses || []).find((item) => item.id === clauseId);
+  }
+
+  function updatePlaybookStateFromPayload(payload) {
+    const playbook = payload?.playbook && typeof payload.playbook === "object" ? payload.playbook : payload;
+    state.playbook = clonePlaybook(playbook);
+    state.savedPlaybook = clonePlaybook(playbook);
+    state.playbookClauses = state.playbook.clauses || [];
+    state.playbookHistory = Array.isArray(payload?.history) ? payload.history : [];
   }
 
   function hasClauseDraft(clauseId) {
@@ -389,6 +422,63 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       `;
     }
     return "";
+  }
+
+  function playbookHistoryPanel() {
+    const history = Array.isArray(state.playbookHistory) ? state.playbookHistory.slice(0, 8) : [];
+    const restoreDisabled = hasAnyDraft();
+    const rows = history
+      .map((entry) => {
+        const changed = Array.isArray(entry.changed_clause_ids) && entry.changed_clause_ids.length
+          ? entry.changed_clause_ids.join(", ")
+          : "No clause-level changes";
+        return `
+          <article class="admin-history-row">
+            <div>
+              <strong>${escapeHtml(historyActionLabel(entry.action))}</strong>
+              <span>${escapeHtml(formatHistoryDate(entry.recorded_at))} by ${escapeHtml(entry.actor || "admin")}</span>
+              <p>${escapeHtml(entry.summary || changed)}</p>
+              <small>${escapeHtml(changed)}</small>
+            </div>
+            <button class="secondary" type="button" data-restore-playbook-version="${escapeHtml(entry.id || "")}" ${restoreDisabled || !entry.id ? "disabled" : ""}>Restore</button>
+          </article>
+        `;
+      })
+      .join("");
+    return `
+      <section class="admin-special admin-history">
+        <h3>Policy Version History</h3>
+        <p class="admin-muted">Every Playbook save stores a restorable snapshot. Restore is disabled while there are unsaved drafts.</p>
+        ${rows || '<p class="admin-muted">No saved policy versions yet.</p>'}
+      </section>
+    `;
+  }
+
+  function setupPlaybookHistoryControls() {
+    clauseDetail.querySelectorAll("[data-restore-playbook-version]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const historyId = button.dataset.restorePlaybookVersion;
+        if (historyId) restorePlaybookVersion(historyId);
+      });
+    });
+  }
+
+  function historyActionLabel(action) {
+    if (action === "baseline") return "Baseline";
+    if (action === "restore") return "Restored";
+    return "Saved";
+  }
+
+  function formatHistoryDate(value) {
+    if (!value) return "Unknown time";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString(undefined, {
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      month: "short",
+    });
   }
 
   function checkerVisibilityPanel(clause) {
