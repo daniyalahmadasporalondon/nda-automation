@@ -163,6 +163,7 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "connect_url": "/auth/gmail/start" if owner_user_id else "",
         "disconnect_url": "/api/gmail/disconnect" if owner_user_id else "",
         "settings": settings,
+        "sync": user_store.gmail_sync_status(owner_user_id) if owner_user_id else _global_gmail_sync_status(settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),
     }
@@ -225,6 +226,15 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             if selector_enabled
             else "Gmail query prefilters inbox attachments; local parsing verifies each message, then validates each attachment before import."
         ),
+    }
+
+
+def _global_gmail_sync_status(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "last_sync_at": str(settings.get("last_sync_at") or ""),
+        "last_sync_imported_count": int(settings.get("last_sync_imported_count") or 0),
+        "last_sync_skipped_count": int(settings.get("last_sync_skipped_count") or 0),
+        "sync_history": settings.get("sync_history") if isinstance(settings.get("sync_history"), list) else [],
     }
 
 

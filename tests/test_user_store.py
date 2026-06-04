@@ -34,6 +34,28 @@ class UserStoreTests(unittest.TestCase):
                 token = user_store.create_session(user["id"])
                 session_user = user_store.user_for_session_token(token)
                 listed_users = user_store.list_users()
+                sync_status = user_store.record_user_gmail_sync(
+                    user["id"],
+                    {
+                        "imported": [{"id": "matter_1"}],
+                        "query": "has:attachment",
+                        "skipped": [
+                            {"reason": "duplicate_attachment"},
+                            {"reason": "review_failed"},
+                        ],
+                        "deduplicated_count": 2,
+                    },
+                    synced_at="2026-06-04T17:00:00+00:00",
+                    started_at="2026-06-04T16:59:58+00:00",
+                    finished_at="2026-06-04T17:00:00+00:00",
+                )
+                user_store.upsert_google_user({
+                    "sub": "google-subject",
+                    "email": "User@Example.com",
+                    "name": "User Example",
+                    "picture": "https://example.com/profile.png",
+                })
+                sync_after_login = user_store.gmail_sync_status(user["id"])
                 users_payload = json.loads((Path(data_dir) / "users.json").read_text(encoding="utf-8"))
 
         self.assertEqual(first_state["next_path"], "/api/matters")
@@ -43,6 +65,12 @@ class UserStoreTests(unittest.TestCase):
         self.assertEqual(user["email"], "user@example.com")
         self.assertEqual(session_user["id"], user["id"])
         self.assertEqual([listed_user["id"] for listed_user in listed_users], [user["id"]])
+        self.assertEqual(sync_status["last_sync_imported_count"], 1)
+        self.assertEqual(sync_status["last_sync_skipped_count"], 2)
+        self.assertEqual(sync_status["sync_history"][0]["duplicate_count"], 1)
+        self.assertEqual(sync_status["sync_history"][0]["deduplicated_count"], 2)
+        self.assertEqual(sync_status["sync_history"][0]["review_failed_count"], 1)
+        self.assertEqual(sync_after_login, sync_status)
         self.assertNotIn(token, json.dumps(users_payload))
         self.assertEqual(len(users_payload["sessions"]), 1)
 

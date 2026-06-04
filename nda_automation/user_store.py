@@ -24,6 +24,13 @@ SESSION_COOKIE_NAME = "nda_session"
 OAUTH_STATE_COOKIE_NAME = "nda_oauth_state"
 SESSION_TTL_SECONDS = 14 * 24 * 60 * 60
 LOGIN_STATE_TTL_SECONDS = 10 * 60
+MAX_USER_GMAIL_SYNC_HISTORY = 5
+DEFAULT_USER_GMAIL_SYNC = {
+    "last_sync_at": "",
+    "last_sync_imported_count": 0,
+    "last_sync_skipped_count": 0,
+    "sync_history": [],
+}
 _USER_STORE_LOCK = threading.RLock()
 
 
@@ -111,6 +118,7 @@ def upsert_google_user(profile: dict[str, Any]) -> dict[str, Any]:
         existing = users.get(user_id)
         if isinstance(existing, dict):
             user["created_at"] = str(existing.get("created_at") or now)
+            user["gmail_sync"] = gmail_sync_status_from_payload(existing.get("gmail_sync"))
         users[user_id] = user
         _save_store_unlocked(store)
     return dict(user)
@@ -169,6 +177,74 @@ def list_users() -> list[dict[str, Any]]:
     return sorted(users, key=lambda user: (str(user.get("email") or ""), str(user.get("id") or "")))
 
 
+def gmail_sync_status(user_id: str) -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return gmail_sync_status_from_payload(None)
+    now = _now_epoch()
+    with _locked_user_store():
+        store = _load_store_unlocked()
+        changed = _prune_expired_unlocked(store, now=now)
+        user = store.setdefault("users", {}).get(user_id)
+        sync = user.get("gmail_sync") if isinstance(user, dict) else None
+        if changed:
+            _save_store_unlocked(store)
+    return gmail_sync_status_from_payload(sync)
+
+
+def record_user_gmail_sync(
+    user_id: str,
+    result: dict[str, Any],
+    *,
+    synced_at: str,
+    started_at: str = "",
+    finished_at: str = "",
+) -> dict[str, Any]:
+    sync_run = _sync_history_entry(
+        result,
+        started_at=started_at or synced_at,
+        finished_at=finished_at or synced_at,
+        status="success",
+    )
+    return _record_user_gmail_sync_run(user_id, result, sync_run=sync_run, synced_at=synced_at)
+
+
+def record_user_gmail_sync_error(
+    user_id: str,
+    error: str,
+    *,
+    started_at: str,
+    finished_at: str,
+    query: str = "",
+) -> dict[str, Any]:
+    result = {"imported": [], "skipped": [], "query": query}
+    sync_run = _sync_history_entry(
+        result,
+        started_at=started_at,
+        finished_at=finished_at,
+        status="error",
+        error=error,
+    )
+    return _record_user_gmail_sync_run(user_id, result, sync_run=sync_run, synced_at=finished_at)
+
+
+def gmail_sync_status_from_payload(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_USER_GMAIL_SYNC["last_sync_at"]),
+        "last_sync_imported_count": _nonnegative_int(
+            payload.get("last_sync_imported_count"),
+            DEFAULT_USER_GMAIL_SYNC["last_sync_imported_count"],
+        ),
+        "last_sync_skipped_count": _nonnegative_int(
+            payload.get("last_sync_skipped_count"),
+            DEFAULT_USER_GMAIL_SYNC["last_sync_skipped_count"],
+        ),
+        "sync_history": _sync_history_from_payload(payload.get("sync_history")),
+    }
+
+
 def delete_session(token: str) -> bool:
     token_hash = _token_hash(token)
     if not token_hash:
@@ -212,6 +288,99 @@ def _clean_metadata(value: dict[str, Any] | None) -> dict[str, str]:
             continue
         cleaned[cleaned_key] = _clean_display_text(item, max_length=500)
     return cleaned
+
+
+def _record_user_gmail_sync_run(
+    user_id: str,
+    result: dict[str, Any],
+    *,
+    sync_run: dict[str, Any],
+    synced_at: str,
+) -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        raise UserStoreError("Gmail sync user is required.")
+    imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+    skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    with _locked_user_store():
+        store = _load_store_unlocked()
+        users = store.setdefault("users", {})
+        user = users.get(user_id)
+        if not isinstance(user, dict):
+            raise UserStoreError("Gmail sync user does not exist.")
+        current_sync = gmail_sync_status_from_payload(user.get("gmail_sync"))
+        user["gmail_sync"] = {
+            **current_sync,
+            "last_sync_at": str(synced_at or ""),
+            "last_sync_imported_count": len(imported),
+            "last_sync_skipped_count": len(skipped),
+            "sync_history": _prepend_sync_history(current_sync.get("sync_history"), sync_run),
+        }
+        _save_store_unlocked(store)
+    return gmail_sync_status_from_payload(user["gmail_sync"])
+
+
+def _sync_history_entry(
+    result: dict[str, Any],
+    *,
+    started_at: str,
+    finished_at: str,
+    status: str,
+    error: str = "",
+) -> dict[str, Any]:
+    imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+    skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    duplicate_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "duplicate_attachment")
+    deduplicated_count = _nonnegative_int(result.get("deduplicated_count"), 0)
+    review_failed_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "review_failed")
+    return {
+        "started_at": str(started_at or ""),
+        "finished_at": str(finished_at or ""),
+        "query": str(result.get("query") or ""),
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "duplicate_count": duplicate_count,
+        "deduplicated_count": deduplicated_count,
+        "review_failed_count": review_failed_count,
+        "status": "error" if status == "error" else "success",
+        "error": str(error or "")[:500],
+    }
+
+
+def _prepend_sync_history(history: object, sync_run: dict[str, Any]) -> list[dict[str, Any]]:
+    return [sync_run, *_sync_history_from_payload(history)][:MAX_USER_GMAIL_SYNC_HISTORY]
+
+
+def _sync_history_from_payload(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    history: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        history.append({
+            "started_at": str(item.get("started_at") or ""),
+            "finished_at": str(item.get("finished_at") or ""),
+            "query": str(item.get("query") or ""),
+            "imported_count": _nonnegative_int(item.get("imported_count"), 0),
+            "skipped_count": _nonnegative_int(item.get("skipped_count"), 0),
+            "duplicate_count": _nonnegative_int(item.get("duplicate_count"), 0),
+            "deduplicated_count": _nonnegative_int(item.get("deduplicated_count"), 0),
+            "review_failed_count": _nonnegative_int(item.get("review_failed_count"), 0),
+            "status": "error" if item.get("status") == "error" else "success",
+            "error": str(item.get("error") or "")[:500],
+        })
+        if len(history) >= MAX_USER_GMAIL_SYNC_HISTORY:
+            break
+    return history
+
+
+def _nonnegative_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, parsed)
 
 
 @contextmanager

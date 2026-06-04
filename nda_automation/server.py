@@ -697,15 +697,41 @@ def _run_scheduled_user_gmail_sync(owner_user_ids: list[str]) -> dict[str, objec
     deduplicated_count = 0
 
     for owner_user_id in owner_user_ids:
+        user_started_at = datetime.now(timezone.utc).isoformat()
         try:
             result = gmail_integration.import_inbound_matters(
                 limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT,
                 owner_user_id=owner_user_id,
             )
             owner_deduplicated_count = matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id)
-        except gmail_integration.GmailRateLimitError:
+            result = {**result, "deduplicated_count": owner_deduplicated_count}
+            user_finished_at = datetime.now(timezone.utc).isoformat()
+            user_store.record_user_gmail_sync(
+                owner_user_id,
+                result,
+                synced_at=user_finished_at,
+                started_at=user_started_at,
+                finished_at=user_finished_at,
+            )
+        except gmail_integration.GmailRateLimitError as error:
+            user_finished_at = datetime.now(timezone.utc).isoformat()
+            user_store.record_user_gmail_sync_error(
+                owner_user_id,
+                str(error),
+                started_at=user_started_at,
+                finished_at=user_finished_at,
+                query=gmail_integration._default_inbound_query(),
+            )
             raise
         except gmail_integration.GmailIntegrationError as error:
+            user_finished_at = datetime.now(timezone.utc).isoformat()
+            user_store.record_user_gmail_sync_error(
+                owner_user_id,
+                str(error),
+                started_at=user_started_at,
+                finished_at=user_finished_at,
+                query=gmail_integration._default_inbound_query(),
+            )
             skipped.append({
                 "owner_user_id": owner_user_id,
                 "reason": "user_sync_failed",

@@ -3317,6 +3317,8 @@ class ServerTests(unittest.TestCase):
                     ) as deduplicate:
                         with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
                             server_module._run_scheduled_gmail_sync()
+                first_sync = user_store.gmail_sync_status(first_user["id"])
+                second_sync = user_store.gmail_sync_status(second_user["id"])
 
         import_inbound.assert_has_calls([
             call(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT, owner_user_id=first_user["id"]),
@@ -3336,6 +3338,12 @@ class ServerTests(unittest.TestCase):
             [entry["owner_user_id"] for entry in recorded_result["per_user"]],
             [first_user["id"], second_user["id"]],
         )
+        self.assertEqual(first_sync["last_sync_imported_count"], 1)
+        self.assertEqual(first_sync["last_sync_skipped_count"], 1)
+        self.assertEqual(first_sync["sync_history"][0]["deduplicated_count"], 1)
+        self.assertEqual(second_sync["last_sync_imported_count"], 1)
+        self.assertEqual(second_sync["last_sync_skipped_count"], 1)
+        self.assertEqual(second_sync["sync_history"][0]["deduplicated_count"], 2)
 
     def test_gmail_sync_scheduler_step_idles_when_interval_has_not_elapsed(self):
         with patch.object(
@@ -5045,6 +5053,10 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["result"], {**result, "deduplicated_count": 1})
+        self.assertEqual(payload["gmail"]["sync"]["last_sync_imported_count"], 1)
+        self.assertEqual(payload["gmail"]["sync"]["last_sync_skipped_count"], 1)
+        self.assertEqual(payload["gmail"]["sync"]["sync_history"][0]["query"], "has:attachment")
+        self.assertEqual(payload["gmail"]["sync"]["sync_history"][0]["deduplicated_count"], 1)
         import_inbound_matters.assert_called_once_with(
             limit=2,
             query="has:attachment",

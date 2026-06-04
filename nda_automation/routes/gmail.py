@@ -110,6 +110,7 @@ def handle_gmail_import(handler) -> None:
     if payload is None:
         return
 
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         result = gmail_integration.import_inbound_matters(
             limit=_manual_import_limit(payload.get("limit")),
@@ -121,14 +122,37 @@ def handle_gmail_import(handler) -> None:
             "deduplicated_count": matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id),
         }
     except gmail_integration.GmailRateLimitError as error:
+        finished_at = datetime.now(timezone.utc).isoformat()
+        user_store.record_user_gmail_sync_error(
+            owner_user_id,
+            str(error),
+            started_at=started_at,
+            finished_at=finished_at,
+            query=payload.get("query") if isinstance(payload.get("query"), str) else gmail_integration._default_inbound_query(),
+        )
         handler._send_json({"error": str(error)}, status=429)
         return
     except gmail_integration.GmailIntegrationError as error:
+        finished_at = datetime.now(timezone.utc).isoformat()
+        user_store.record_user_gmail_sync_error(
+            owner_user_id,
+            str(error),
+            started_at=started_at,
+            finished_at=finished_at,
+            query=payload.get("query") if isinstance(payload.get("query"), str) else gmail_integration._default_inbound_query(),
+        )
         handler._send_json({"error": str(error)}, status=502)
         return
 
     finished_at = datetime.now(timezone.utc).isoformat()
-    app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=finished_at, finished_at=finished_at)
+    user_store.record_user_gmail_sync(
+        owner_user_id,
+        result,
+        synced_at=finished_at,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
     handler._send_json({
         "gmail": gmail_integration.gmail_status(owner_user_id=owner_user_id),
         "result": result,
