@@ -2442,12 +2442,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(save_status, 200)
         self.assertEqual(save_payload["ai_review"]["enabled"], True)
         self.assertEqual(save_payload["ai_review"]["provider"], "alibaba")
-        self.assertEqual(save_payload["ai_review"]["model"], "qwen3.5-plus")
+        self.assertEqual(save_payload["ai_review"]["model"], "qwen3.5-flash")
         self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
         self.assertNotIn("sk-ws-local-secret", json.dumps(save_payload))
         self.assertEqual(settings["provider"], "alibaba")
-        self.assertEqual(settings["model"], "qwen3.5-plus")
+        self.assertEqual(settings["model"], "qwen3.5-flash")
 
     def test_gmail_sync_history_records_recent_counts_and_errors(self):
         with tempfile.TemporaryDirectory() as data_dir:

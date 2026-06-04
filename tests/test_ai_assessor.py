@@ -159,7 +159,7 @@ class AIAssessorTests(unittest.TestCase):
         self.assertEqual(openrouter_body["response_format"]["json_schema"]["schema"], AI_ASSESSMENT_RESPONSE_SCHEMA)
         self.assertEqual(openrouter_body["response_format"]["json_schema"]["name"], "nda_ai_first_clause_assessment")
 
-        alibaba_body = alibaba_ai_assessment_request_body(packet, "qwen3.5-plus")
+        alibaba_body = alibaba_ai_assessment_request_body(packet, "qwen3.5-flash")
         self.assertIn("Schema:", alibaba_body["messages"][0]["content"])
         self.assertIn("assessments", alibaba_body["messages"][0]["content"])
         self.assertEqual(result["ai_first_review"]["mode"], AI_FIRST_ASSESSOR_MODE)

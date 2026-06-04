@@ -841,7 +841,7 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "qwen3.5-plus",
+      model: "qwen3.5-flash",
       provider: "alibaba",
       status: "completed",
     };

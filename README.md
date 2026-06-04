@@ -41,7 +41,7 @@ In `.env`, set the AI provider/model and API key:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=alibaba
-NDA_AI_MODEL=qwen3.5-122b-a10b
+NDA_AI_MODEL=qwen3.5-flash
 # Active review defaults to AI-first + fail-closed. Leave these unset unless pinning runtime.
 NDA_ACTIVE_REVIEW_ENGINE=
 NDA_AI_FIRST_FALLBACK_MODE=
@@ -163,7 +163,7 @@ Common environment variables:
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
-- `NDA_AI_MODEL`: provider model name. Use `qwen3.5-122b-a10b` for the current Alibaba/Qwen local setup, or another model your key can access.
+- `NDA_AI_MODEL`: provider model name. Use `qwen3.5-flash` for the current Alibaba/Qwen local setup, or another model your key can access.
 - `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
 - `NDA_AI_FIRST_FALLBACK_MODE`: optional environment pin for `fail_closed` or `deterministic`.
 - `NDA_AI_FIRST_REVIEW_ENABLED`: stores AI-first shadow/comparison results when enabled.
@@ -188,11 +188,11 @@ Optional AI semantic review:
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.5-122b-a10b
+export NDA_AI_MODEL=qwen3.5-flash
 export ALIBABA_API_KEY=sk-...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. The code default for Alibaba remains `qwen3.5-plus` when no model is configured, so set `NDA_AI_MODEL` explicitly when using `qwen3.5-122b-a10b` or any other preferred Qwen model. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. The code default for Alibaba is `qwen3.5-flash` when no model is configured; set `NDA_AI_MODEL` explicitly only when using another preferred Qwen model. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 
