@@ -139,12 +139,12 @@ def matter_needs_human_review(matter: dict[str, Any]) -> bool:
 
 
 def matter_review_state(matter: dict[str, Any]) -> dict[str, Any]:
-    existing = matter.get("review_state")
-    if isinstance(existing, dict) and existing.get("state"):
-        return existing
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
         return review_state_from_result(review_result)
+    existing = matter.get("review_state")
+    if isinstance(existing, dict) and existing.get("state"):
+        return existing
     if any(key in matter for key in ["requirements_passed", "requirements_needs_review", "requirements_failed"]):
         return aggregate_review_state(
             [],

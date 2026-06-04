@@ -49,6 +49,14 @@ class DecisionArbiterTests(unittest.TestCase):
         self.assertEqual(arbiter.arbitrate({"passes": False})["decision"], "fail")
         self.assertEqual(arbiter.arbitrate({"needs_review": True})["decision"], "review")
 
+    def test_unknown_or_empty_explicit_decision_fails_safe_to_review(self):
+        for decision in ("", "unknown"):
+            with self.subTest(decision=decision):
+                verdict = arbiter.arbitrate({"decision": decision, "passes": True})
+
+                self.assertEqual(verdict["decision"], "review")
+                self.assertEqual(verdict["source"], "deterministic")
+
     def test_low_deterministic_confidence_is_review(self):
         verdict = arbiter.arbitrate({"passes": True, "semantic_confidence": 0.4})
         self.assertEqual(verdict["decision"], "review")

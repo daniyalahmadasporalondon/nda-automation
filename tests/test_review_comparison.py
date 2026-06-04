@@ -72,6 +72,25 @@ class ReviewComparisonTests(unittest.TestCase):
         self.assertEqual(governing_law["final_verdict"]["source"], COMPARISON_SOURCE_MOST_CONSERVATIVE)
         self.assertEqual(comparison["final_verdict"]["source"], COMPARISON_SOURCE_MOST_CONSERVATIVE)
 
+    def test_unknown_or_empty_clause_decision_snapshots_as_review(self):
+        deterministic = _result(
+            {"id": "mutuality", "decision": "", "passes": True},
+            {"id": "governing_law", "decision": "unknown", "passes": True},
+        )
+        ai_first = _result(
+            _clause("mutuality", "pass"),
+            _clause("governing_law", "pass"),
+            review_mode="ai_first_compat",
+        )
+
+        comparison = build_review_comparison(deterministic, ai_first)
+
+        clauses = {item["clause_id"]: item for item in comparison["clauses"]}
+        self.assertEqual(clauses["mutuality"]["deterministic"]["decision"], "review")
+        self.assertEqual(clauses["governing_law"]["deterministic"]["decision"], "review")
+        self.assertEqual(clauses["mutuality"]["final_verdict"]["decision"], "review")
+        self.assertEqual(clauses["governing_law"]["final_verdict"]["decision"], "review")
+
     def test_compare_nda_reviews_runs_both_engines_and_records_telemetry(self):
         deterministic = Mock(return_value=_result(_clause("mutuality", "pass", paragraph_ids=["p1"])))
         ai_first = Mock(return_value=_result(_clause("mutuality", "pass", paragraph_ids=["p1"]), review_mode="ai_first_compat"))

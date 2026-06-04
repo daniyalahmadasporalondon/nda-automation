@@ -64,14 +64,18 @@ def deterministic_decision(clause: Dict[str, object]) -> str:
     explicit = str(clause.get("decision") or "").strip().lower()
     if explicit in _DECISIONS:
         return explicit
+    if "decision" in clause:
+        return CLAUSE_DECISION_REVIEW
     if clause.get("needs_review"):
         return CLAUSE_DECISION_REVIEW
     confidence = semantic_confidence(clause)
     if confidence is not None and confidence < SEMANTIC_REVIEW_THRESHOLD:
         return CLAUSE_DECISION_REVIEW
-    if not clause.get("passes"):
+    if clause.get("passes") is False:
         return CLAUSE_DECISION_FAIL
-    return CLAUSE_DECISION_PASS
+    if clause.get("passes") is True:
+        return CLAUSE_DECISION_PASS
+    return CLAUSE_DECISION_REVIEW
 
 
 def arbitrate(clause: Dict[str, object]) -> Dict[str, object]:

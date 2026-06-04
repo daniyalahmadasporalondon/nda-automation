@@ -192,11 +192,15 @@ def _clause_decision(clause: dict[str, Any]) -> str:
     decision = str(clause.get("decision") or "").strip()
     if decision in {CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW, CLAUSE_DECISION_FAIL}:
         return decision
+    if "decision" in clause:
+        return CLAUSE_DECISION_REVIEW
     if bool(clause.get("needs_review")):
         return CLAUSE_DECISION_REVIEW
-    if bool(clause.get("passes")):
+    if clause.get("passes") is False:
+        return CLAUSE_DECISION_FAIL
+    if clause.get("passes") is True:
         return CLAUSE_DECISION_PASS
-    return CLAUSE_DECISION_FAIL
+    return CLAUSE_DECISION_REVIEW
 
 
 def _matched_paragraph_ids(clause: dict[str, Any]) -> list[str]:

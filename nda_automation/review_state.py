@@ -107,9 +107,6 @@ def reason_codes_for_clause(clause: Dict[str, Any], decision: str | None = None)
 
 
 def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
-    existing = review_result.get("review_state")
-    if isinstance(existing, dict) and existing.get("state"):
-        return existing
     clauses = review_result.get("clauses", [])
     if isinstance(clauses, list):
         clause_dicts = [clause for clause in clauses if isinstance(clause, dict)]
@@ -124,6 +121,9 @@ def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
             review_count=_optional_int(review_result.get("requirements_needs_review")),
             check_count=_optional_int(review_result.get("requirements_failed")),
         )
+    existing = review_result.get("review_state")
+    if isinstance(existing, dict) and existing.get("state"):
+        return existing
     status = str(review_result.get("overall_status") or "").strip()
     if status == "needs_review":
         return aggregate_review_state([], pass_count=0, review_count=1, check_count=0)
@@ -148,35 +148,32 @@ def result_requires_human_review(review_result: Dict[str, Any]) -> bool:
 
 
 def clause_needs_review(clause: Dict[str, Any]) -> bool:
-    review_state = clause.get("review_state")
-    if isinstance(review_state, dict):
-        return str(review_state.get("state") or "").strip().lower() == REVIEW_STATE_REVIEW
     return _normalize_clause_decision(clause) == CLAUSE_DECISION_REVIEW
 
 
 def clause_fails(clause: Dict[str, Any]) -> bool:
-    review_state = clause.get("review_state")
-    if isinstance(review_state, dict):
-        return str(review_state.get("state") or "").strip().lower() == REVIEW_STATE_CHECK
     return _normalize_clause_decision(clause) == CLAUSE_DECISION_FAIL
 
 
 def clause_passes(clause: Dict[str, Any]) -> bool:
-    review_state = clause.get("review_state")
-    if isinstance(review_state, dict):
-        return str(review_state.get("state") or "").strip().lower() == REVIEW_STATE_PASS
     return _normalize_clause_decision(clause) == CLAUSE_DECISION_PASS
 
 
 def _normalize_clause_decision(clause: Dict[str, Any], decision: str | None = None) -> str:
-    raw_decision = str(decision or clause.get("decision") or "").strip().lower()
+    has_supplied_decision = decision is not None
+    has_clause_decision = "decision" in clause
+    raw_decision = str(decision if has_supplied_decision else clause.get("decision", "")).strip().lower()
     if raw_decision in {CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW, CLAUSE_DECISION_FAIL}:
         return raw_decision
+    if has_supplied_decision or has_clause_decision:
+        return CLAUSE_DECISION_REVIEW
     if bool(clause.get("needs_review")):
         return CLAUSE_DECISION_REVIEW
     if clause.get("passes") is False:
         return CLAUSE_DECISION_FAIL
-    return CLAUSE_DECISION_PASS
+    if clause.get("passes") is True:
+        return CLAUSE_DECISION_PASS
+    return CLAUSE_DECISION_REVIEW
 
 
 def _state_for_clause_decision(decision: str) -> str:
