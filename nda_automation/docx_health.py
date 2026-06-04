@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import posixpath
 import re
 import xml.etree.ElementTree as ET
@@ -51,7 +52,11 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
             corrupt_part = archive.testzip()
             if corrupt_part:
                 errors.append(f"ZIP integrity check failed at {corrupt_part}.")
-            names = set(archive.namelist())
+            archive_names = archive.namelist()
+            duplicate_names = sorted(name for name, count in Counter(archive_names).items() if count > 1)
+            if duplicate_names:
+                errors.append(f"DOCX package contains duplicate entries: {', '.join(duplicate_names)}.")
+            names = set(archive_names)
             missing_parts = sorted(required_parts - names)
             if missing_parts:
                 errors.append(f"Missing DOCX parts: {', '.join(missing_parts)}.")

@@ -176,6 +176,8 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 with ZipFile(output, "w", ZIP_DEFLATED) as redlined_archive:
                     written = set()
                     for item in source_archive.infolist():
+                        if item.filename in written:
+                            continue
                         if item.filename in overrides:
                             data = overrides.pop(item.filename)
                         else:

@@ -4,6 +4,7 @@ import posixpath
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import warnings
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -272,6 +273,20 @@ def replace_docx_parts(docx_bytes, replacements):
                     if isinstance(data, str):
                         data = data.encode("utf-8")
                     patched_archive.writestr(name, data)
+            return output.getvalue()
+
+
+def duplicate_docx_part(docx_bytes, part_name):
+    with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
+        with BytesIO() as output:
+            with ZipFile(output, "w", ZIP_DEFLATED) as patched_archive:
+                for item in source_archive.infolist():
+                    data = source_archive.read(item.filename)
+                    patched_archive.writestr(item, data)
+                    if item.filename == part_name:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            patched_archive.writestr(item, data)
             return output.getvalue()
 
 
@@ -606,6 +621,23 @@ class DocxExportTests(unittest.TestCase):
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
 
+    def test_source_docx_export_collapses_duplicate_document_xml_entries(self):
+        source_docx = duplicate_docx_part(
+            make_source_docx(["This Agreement shall be governed by the laws of California."]),
+            "word/document.xml",
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertEqual(archive.namelist().count("word/document.xml"), 1)
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("England and Wales", document_xml)
+        self.assertIn("w:del", document_xml)
+
     def test_source_redline_preserves_run_formatting_on_replaced_paragraph(self):
         # A bold + colored source paragraph must keep that run formatting after a
         # replace redline; otherwise the redline silently strips bold/italic/color.
@@ -691,6 +723,13 @@ class DocxExportTests(unittest.TestCase):
             errors = verify_export_content_coverage(oversized_docx, "Expected source text.")
 
         self.assertEqual(errors, ["Exported document body contains no text."])
+
+    def test_docx_open_health_flags_duplicate_zip_entries(self):
+        source_docx = duplicate_docx_part(make_source_docx(["Some body text."]), "word/document.xml")
+
+        errors = validate_docx_open_health(source_docx)
+
+        self.assertIn("DOCX package contains duplicate entries: word/document.xml.", errors)
 
     def test_source_docx_export_writes_native_word_comments(self):
         source_docx = make_source_docx([
