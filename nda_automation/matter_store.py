@@ -686,7 +686,8 @@ def _matter_owner_matches(matter: dict[str, Any], owner_user_id: str = "") -> bo
     owner_user_id = _clean_owner_user_id(owner_user_id)
     if not owner_user_id:
         return True
-    return _clean_owner_user_id(matter.get("owner_user_id")) == owner_user_id
+    matter_owner_user_id = _clean_owner_user_id(matter.get("owner_user_id"))
+    return not matter_owner_user_id or matter_owner_user_id == owner_user_id
 
 
 def _clean_owner_user_id(value: object) -> str:

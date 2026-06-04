@@ -63,6 +63,32 @@ class MatterOwnershipTest(unittest.TestCase):
                 self.assertEqual(deleted["id"], user_b["id"])
                 self.assertEqual([matter["id"] for matter in matter_store.list_matters()], [user_a["id"]])
 
+    def test_ownerless_legacy_matters_remain_visible_to_authenticated_users(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                legacy = matter_store.create_matter(**_matter_kwargs())
+                owned = matter_store.create_matter(**_matter_kwargs(
+                    owner_user_id="user_b",
+                    intake_metadata={
+                        "attachment_filename": "Other NDA.docx",
+                        "gmail_message_id": "msg_456",
+                        "gmail_attachment_sha256": "hash_b",
+                    },
+                ))
+
+                user_a_matters = matter_store.list_matters("user_a")
+                user_b_matters = matter_store.list_matters("user_b")
+                fetched_legacy = matter_store.get_matter(legacy["id"], owner_user_id="user_a")
+                fetched_owned = matter_store.get_matter(owned["id"], owner_user_id="user_a")
+                updated_legacy = matter_store.update_matter_stage(legacy["id"], "in_review", owner_user_id="user_a")
+
+        self.assertEqual([matter["id"] for matter in user_a_matters], [legacy["id"]])
+        self.assertEqual({matter["id"] for matter in user_b_matters}, {legacy["id"], owned["id"]})
+        self.assertEqual(fetched_legacy["id"], legacy["id"])
+        self.assertIsNone(fetched_owned)
+        self.assertEqual(updated_legacy["board_column"], "in_review")
+
     def test_gmail_duplicate_lookup_is_owner_scoped(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
