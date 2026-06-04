@@ -688,41 +688,83 @@ def _matter_is_active(matter: dict[str, Any]) -> bool:
 
 
 def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> bool:
-    # Retention pruning deletes stored documents. Archive each full matter record
-    # before saving the pruned store so an archive failure keeps the matter live.
+    # Retention pruning deletes stored documents. Archive each source document and
+    # full matter record before saving the pruned store so an archive failure
+    # keeps the matter live.
     if not pruned_matters:
         return True
     archive_dir = DATA_DIR / PRUNED_ARCHIVE_DIRNAME
-    archived = 0
+    archived_records = 0
+    archived_sources = 0
     try:
         archive_dir.mkdir(parents=True, exist_ok=True)
         for matter in pruned_matters:
             matter_id = str(matter.get("id") or "")
-            if not matter_id:
+            cleaned_matter_id = _clean_matter_record_id(matter_id)
+            if not cleaned_matter_id:
                 continue
-            archive_path = archive_dir / f"{matter_id}.json"
-            temporary_path = archive_path.with_suffix(".json.tmp")
-            with temporary_path.open("w", encoding="utf-8") as handle:
-                json.dump(matter, handle, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary_path.replace(archive_path)
-            archived += 1
-    except OSError as error:
+            archived_matter = copy.deepcopy(matter)
+            source_archive = _archive_pruned_source_document(matter, archive_dir)
+            if source_archive is not None:
+                archived_matter["archived_source_document"] = source_archive
+                if source_archive.get("present"):
+                    archived_sources += 1
+            archive_path = archive_dir / f"{cleaned_matter_id}.json"
+            _write_json_atomic(archive_path, archived_matter)
+            archived_records += 1
+    except (MatterStoreError, OSError) as error:
         telemetry.increment("matter_prune_archive_failures")
         print(f"Could not archive pruned matters before deletion: {error.__class__.__name__}")
         return False
     telemetry.increment("matters_pruned", len(pruned_matters))
+    if archived_sources:
+        telemetry.increment("matter_sources_archived", archived_sources)
     active_count = sum(1 for matter in pruned_matters if _matter_is_active(matter))
     if active_count:
         telemetry.increment("active_matters_pruned", active_count)
         # Log counts only, never matter titles, to avoid leaking NDA content.
         print(
             f"Retention limit reached: pruned {len(pruned_matters)} matter(s) including "
-            f"{active_count} active NDA(s); archived {archived} record(s) to {archive_dir.name}/."
+            f"{active_count} active NDA(s); archived {archived_records} record(s) and "
+            f"{archived_sources} source document(s) to {archive_dir.name}/."
         )
     return True
+
+
+def _archive_pruned_source_document(matter: dict[str, Any], archive_dir: Path) -> dict[str, Any] | None:
+    stored_filename = str(matter.get("stored_filename") or "")
+    if not stored_filename:
+        return None
+    source_archive: dict[str, Any] = {
+        "stored_filename": stored_filename,
+        "present": False,
+    }
+    source_path = source_document_path(matter)
+    if source_path is None:
+        return source_archive
+
+    archive_relative_path = Path("uploads") / source_path.name
+    archive_path = archive_dir / archive_relative_path
+    document_bytes = source_path.read_bytes()
+    _write_bytes_atomic(archive_path, document_bytes)
+    source_archive.update({
+        "present": True,
+        "archive_path": archive_relative_path.as_posix(),
+        "size_bytes": len(document_bytes),
+        "sha256": hashlib.sha256(document_bytes).hexdigest(),
+    })
+    return source_archive
+
+
+def _write_bytes_atomic(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.tmp")
+    with temporary_path.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary_path.replace(path)
+    _fsync_directory(path.parent)
 
 
 def _gmail_attachment_keys_for_metadata(metadata: dict[str, Any]) -> tuple[tuple[str, str], ...]:

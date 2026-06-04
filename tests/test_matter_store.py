@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +124,72 @@ class MatterStorePersistenceTests(unittest.TestCase):
                 self.assertEqual(updated["board_column"], "in_review")
                 self.assertTrue(fielded["human_reviewed"])
                 self.assertEqual(deleted["id"], matter["id"])
+
+    def test_retention_prune_archives_source_document_before_deleting_live_upload(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            root = Path(data_dir)
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    first = repo.create_matter(**_create_kwargs(
+                        source_filename="First NDA.docx",
+                        document_bytes=b"first source bytes",
+                    ))
+                    first_live_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    repo.update_matter_stage(first["id"], "signed_closed")
+
+                    second = repo.create_matter(**_create_kwargs(
+                        source_filename="Second NDA.docx",
+                        document_bytes=b"second source bytes",
+                    ))
+
+                    matters = repo.list_matters()
+                    archived_record = root / "pruned-matters" / f"{first['id']}.json"
+                    archived_source = root / "pruned-matters" / "uploads" / first["stored_filename"]
+                    first_live_exists = first_live_path.exists()
+                    archived_record_exists = archived_record.is_file()
+                    archived_record_payload = (
+                        json.loads(archived_record.read_text(encoding="utf-8")) if archived_record_exists else {}
+                    )
+                    archived_source_bytes = archived_source.read_bytes() if archived_source.exists() else None
+
+        self.assertEqual([matter["id"] for matter in matters], [second["id"]])
+        self.assertFalse(first_live_exists)
+        self.assertTrue(archived_record_exists)
+        self.assertEqual(
+            archived_record_payload["archived_source_document"]["archive_path"],
+            "uploads/" + first["stored_filename"],
+        )
+        self.assertEqual(archived_source_bytes, b"first source bytes")
+
+    def test_retention_prune_keeps_live_source_document_when_source_archive_fails(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    first = repo.create_matter(**_create_kwargs(
+                        source_filename="First NDA.docx",
+                        document_bytes=b"first source bytes",
+                    ))
+                    first_live_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    repo.update_matter_stage(first["id"], "signed_closed")
+
+                    with (
+                        patch.object(matter_store, "_write_bytes_atomic", side_effect=OSError("boom")),
+                        patch("builtins.print"),
+                    ):
+                        second = repo.create_matter(**_create_kwargs(
+                            source_filename="Second NDA.docx",
+                            document_bytes=b"second source bytes",
+                        ))
+
+                    matters = repo.list_matters()
+                    first_live_exists = first_live_path.exists()
+
+        self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"]})
+        self.assertTrue(first_live_exists)
 
 
 if __name__ == "__main__":
