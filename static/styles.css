@@ -3955,6 +3955,66 @@ body.modal-open {
   padding: 6px 7px;
 }
 
+.playbook-editor-tabbed .admin-special,
+.playbook-editor-tabbed .admin-rules,
+.playbook-editor-tabbed .admin-template-field,
+.playbook-editor-tabbed .admin-template-meta > div,
+.playbook-editor-tabbed .admin-decision-card,
+.playbook-editor-tabbed .admin-signal-grid article,
+.playbook-editor-tabbed .admin-code-group,
+.playbook-editor-tabbed .admin-hardening-list article,
+.playbook-editor-tabbed .admin-history,
+.playbook-editor-tabbed .admin-hardening-list code {
+  background: #fff;
+  border-color: #111;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.playbook-editor-tabbed .admin-decision-card,
+.playbook-editor-tabbed .admin-decision-card.pass,
+.playbook-editor-tabbed .admin-decision-card.review,
+.playbook-editor-tabbed .admin-decision-card.check,
+.playbook-editor-tabbed .admin-code-group.pass,
+.playbook-editor-tabbed .admin-code-group.review,
+.playbook-editor-tabbed .admin-code-group.check {
+  border-left: 1px solid #111;
+}
+
+.playbook-editor-tabbed .admin-chip {
+  background: #fff;
+  border-color: #111;
+  border-radius: 0;
+  color: var(--ink);
+}
+
+.playbook-editor-tabbed .admin-reading-order {
+  border-top: 1px solid #111;
+  gap: 0;
+}
+
+.playbook-editor-tabbed .admin-reading-order li {
+  border-bottom: 1px solid #111;
+  display: grid;
+  gap: 4px 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 10px 0;
+}
+
+.playbook-editor-tabbed .admin-reading-order li span {
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  height: auto;
+  justify-content: start;
+  width: auto;
+}
+
+.playbook-editor-tabbed .admin-reading-order p {
+  grid-column: 2;
+}
+
 .admin-inline-add {
   display: grid;
   gap: 8px;
