@@ -93,6 +93,11 @@ const AdminIntegrationsView = (() => {
       event.preventDefault();
       updateGmailSearchTerms();
     });
+    gmailSetupPanel?.addEventListener("click", (event) => {
+      const disconnectButton = event.target.closest("[data-gmail-disconnect-role]");
+      if (!disconnectButton) return;
+      disconnectGmailRole(disconnectButton.dataset.gmailDisconnectRole || "all", disconnectButton);
+    });
 
     async function load() {
       if (!gmailCard) return;
@@ -186,6 +191,34 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function disconnectGmailRole(role, control) {
+      if (!role) return;
+      if (control) {
+        control.disabled = true;
+        control.setAttribute("aria-busy", "true");
+      }
+      setOverall("Disconnecting", "pending");
+      try {
+        const response = await fetch("/api/gmail/disconnect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail disconnect failed");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Disconnect failed", "blocked");
+        renderConnectionSetup(state.gmailStatus || {});
+      } finally {
+        if (control?.isConnected) {
+          control.disabled = false;
+          control.removeAttribute("aria-busy");
+        }
+      }
+    }
+
     function renderGmail(status, matters) {
       state.gmailStatus = status;
       const inbound = status.inbound || {};
@@ -207,7 +240,7 @@ const AdminIntegrationsView = (() => {
       setFact("parsed-terms", parsingTermsLabel(inbound.parsing));
       setFact("last-sync", lastSyncLabel(status));
       renderConnectionSetup(status);
-      renderSyncHistory(status.settings?.sync_history || []);
+      renderSyncHistory(syncStatus(status).sync_history || []);
       renderRecentSend(matters);
     }
 
@@ -247,6 +280,7 @@ const AdminIntegrationsView = (() => {
               <dd>${escapeHtml(connectionNextStep(role.id, account, token))}</dd>
             </div>
           </dl>
+          ${connectionActions(role.id, account)}
         </div>
       `;
     }
@@ -333,7 +367,7 @@ const AdminIntegrationsView = (() => {
       setFact("parsed-terms", DEFAULT_PARSED_TERMS);
       setFact("last-sync", lastSyncLabel(state.gmailStatus || {}));
       renderConnectionSetup(state.gmailStatus || {});
-      renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
+      renderSyncHistory(syncStatus(state.gmailStatus || {}).sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(state.gmailStatus || {});
@@ -401,7 +435,7 @@ const AdminIntegrationsView = (() => {
       if (gmailSearchSaveButton) gmailSearchSaveButton.disabled = disabled;
     }
 
-    return { load };
+    return { load, renderGmailStatus: (gmailStatus) => renderGmail(gmailStatus || {}, []) };
   }
 
   function accountLabel(account) {
@@ -420,6 +454,7 @@ const AdminIntegrationsView = (() => {
     const label = String(token.label || "").trim();
     if (token.source === "environment") return `Environment: ${label || "configured env var"}`;
     if (token.source === "local_data") return `Local data: ${label || "data/gmail token"}`;
+    if (token.source === "user_data") return `User Gmail: ${label || "connected OAuth token"}`;
     if (token.source === "missing") return `Missing: ${label || "token path"}`;
     if (token.configured === true) return "Configured";
     if (token.configured === false) return "Missing";
@@ -464,6 +499,9 @@ const AdminIntegrationsView = (() => {
   function connectionNextStep(role, account, token) {
     if (account?.enabled === false) return `Turn on ${role} email when this mailbox should be active.`;
     if (account?.ready === true) return role === "inbound" ? "Ready for scheduled sync." : "Ready to send redlines.";
+    if (account?.connect_url || token?.label === `Connect Gmail for ${role}`) {
+      return `Connect this user's ${role} Gmail account.`;
+    }
     if (token?.source === "environment" && token?.configured === false) {
       return `Fix ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"} or unset it to use data/gmail/${role}-token.json.`;
     }
@@ -473,8 +511,31 @@ const AdminIntegrationsView = (() => {
     return account?.error || "Reconnect Gmail and refresh status.";
   }
 
+  function connectionActions(role, account) {
+    const actions = [];
+    if (account?.connect_url && account?.ready !== true) {
+      actions.push(`<a class="integration-connection-action" href="${escapeHtml(withNext(account.connect_url))}">Connect ${escapeHtml(role)}</a>`);
+    }
+    if (account?.token?.source === "user_data" && account?.token?.configured === true) {
+      actions.push(`<button class="integration-connection-action secondary" type="button" data-gmail-disconnect-role="${escapeHtml(role)}">Disconnect ${escapeHtml(role)}</button>`);
+    }
+    return actions.length ? `<div class="integration-connection-actions">${actions.join("")}</div>` : "";
+  }
+
+  function withNext(url) {
+    const target = new URL(url, window.location.origin);
+    if (!target.searchParams.has("next")) {
+      target.searchParams.set("next", window.location.pathname + window.location.search);
+    }
+    return `${target.pathname}${target.search}${target.hash}`;
+  }
+
+  function syncStatus(status) {
+    return status?.sync || status?.settings || {};
+  }
+
   function lastSyncLabel(statusOrSettings) {
-    const settings = statusOrSettings?.settings || statusOrSettings || {};
+    const settings = syncStatus(statusOrSettings);
     const inbound = statusOrSettings?.inbound || {};
     if (inbound.enabled === false) return "Gmail inbound paused";
     if (inbound.ready === false) return `Gmail inbound setup required: ${inbound.error || "check inbound setup"}`;

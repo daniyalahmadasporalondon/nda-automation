@@ -11,6 +11,19 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     return payload.gmail || {};
   }
 
+  async function syncGmail({ limit = 25 } = {}) {
+    const payload = await jsonRequest(
+      "/api/gmail/import",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit }),
+      },
+      "Gmail sync could not run",
+    );
+    return payload;
+  }
+
   async function listMatters() {
     const payload = await jsonRequest("/api/matters", {}, "Repository could not load");
     return Array.isArray(payload.matters) ? payload.matters : [];
@@ -130,5 +143,6 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     loadGmailStatus,
     moveMatterToColumn,
     sendRedline,
+    syncGmail,
   };
 }

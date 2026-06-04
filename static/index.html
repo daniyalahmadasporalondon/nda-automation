@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260604r">
+    <link rel="stylesheet" href="/static/styles.css?v=20260604s">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260604a">
   </head>
   <body>
@@ -34,6 +34,20 @@
               <span>Guide</span>
             </button>
           </nav>
+          <section class="session-strip" id="sessionStrip" aria-label="Account and Gmail status">
+            <div class="session-summary">
+              <span class="session-user" data-session-user>Checking account</span>
+              <span class="session-gmail" data-session-gmail>Checking Gmail</span>
+            </div>
+            <div class="session-actions">
+              <a class="session-action" data-session-login href="/auth/google/start" hidden>Sign in</a>
+              <button class="session-action" data-session-gmail-connect type="button" hidden>Connect Gmail</button>
+              <button class="session-action secondary" data-session-gmail-sync type="button" hidden>Sync now</button>
+              <button class="session-action secondary" data-session-gmail-disconnect type="button" hidden>Disconnect Gmail</button>
+              <button class="session-action secondary" data-session-logout type="button" hidden>Sign out</button>
+            </div>
+            <span class="session-warning" data-session-warning hidden></span>
+          </section>
         </header>
 
         <main class="studio-review view active" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review">
@@ -1080,16 +1094,17 @@
     <script src="/static/js/inline-diff.js"></script>
     <script src="/static/js/matter-utils.js"></script>
     <script src="/static/js/redline-rendering.js?v=20260604a"></script>
-    <script src="/static/js/repository-api.js"></script>
+    <script src="/static/js/repository-api.js?v=20260604a"></script>
     <script src="/static/js/repository-model.js"></script>
-    <script src="/static/js/repository-board.js"></script>
+    <script src="/static/js/repository-board.js?v=20260604a"></script>
     <script src="/static/js/repository-send.js"></script>
     <script src="/static/js/repository-detail.js"></script>
     <script src="/static/js/repository-actions.js"></script>
     <script src="/static/js/repository.js"></script>
     <script src="/static/js/manual-upload.js"></script>
+    <script src="/static/js/auth-session.js?v=20260604a"></script>
     <script src="/static/js/admin-ai.js"></script>
-    <script src="/static/js/admin-integrations.js"></script>
+    <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-view.js"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260604f"></script>
@@ -1098,6 +1113,6 @@
     <script src="/static/js/review-workstation-viewer.js"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js?v=20260604a"></script>
+    <script src="/static/app.js?v=20260604b"></script>
   </body>
 </html>

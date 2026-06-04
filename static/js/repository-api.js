@@ -11,6 +11,7 @@ const RepositoryApi = (() => {
     "loadGmailStatus",
     "moveMatterToColumn",
     "sendRedline",
+    "syncGmail",
   ];
 
   function create({ reviewErrorFromPayload }) {

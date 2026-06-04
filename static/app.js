@@ -47,6 +47,7 @@ const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
 const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE });
 let pendingReviewSendMatterId = null;
+let authSessionController;
 let adminAiController;
 let adminIntegrationsController;
 
@@ -111,6 +112,28 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailSyncHistory: document.querySelector("#adminGmailSyncHistory"),
   reviewErrorFromPayload,
 });
+authSessionController = createAuthSessionController({
+  state,
+  root: document.querySelector("#sessionStrip"),
+  userNode: document.querySelector("[data-session-user]"),
+  gmailNode: document.querySelector("[data-session-gmail]"),
+  warningNode: document.querySelector("[data-session-warning]"),
+  loginLink: document.querySelector("[data-session-login]"),
+  logoutButton: document.querySelector("[data-session-logout]"),
+  connectButton: document.querySelector("[data-session-gmail-connect]"),
+  syncButton: document.querySelector("[data-session-gmail-sync]"),
+  disconnectButton: document.querySelector("[data-session-gmail-disconnect]"),
+  reviewErrorFromPayload,
+  onGmailStatus: (gmailStatus) => {
+    state.gmailStatus = gmailStatus;
+    repositoryController.renderBoard();
+    adminIntegrationsController.renderGmailStatus(gmailStatus);
+  },
+  onSyncComplete: () => {
+    repositoryController.loadMatters();
+    adminIntegrationsController.load();
+  },
+});
 const playbookController = createPlaybookController({
   state,
   playbookList,
@@ -136,6 +159,7 @@ emptyState();
 playbookController.loadPlaybook();
 repositoryController.loadMatters();
 repositoryController.loadGmailStatus();
+authSessionController.load();
 adminAiController.load();
 adminIntegrationsController.load();
 window.setInterval(() => {

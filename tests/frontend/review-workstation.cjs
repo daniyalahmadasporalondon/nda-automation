@@ -62,6 +62,7 @@ const tests = [
   ["sends review redline email from editable composer", testReviewOutboundSendModal],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
   ["shows Gmail setup required instead of stale sync errors", testGmailSetupRequiredStatus],
+  ["renders user Gmail session controls and sync history", testUserGmailSessionControls],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
   ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
@@ -1657,7 +1658,7 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   await betaReviewRequest;
   releaseBetaReview();
   await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
-  await assertTextContains(page.locator("#studioDocumentRender"), "Beta document text for the second review opening.");
+  await waitForText(page, "#studioDocumentRender", "Beta document text for the second review opening.");
   const betaComparison = await page.evaluate(() => ({
     comparison: state.reviewComparison,
     error: state.reviewComparisonError,
@@ -2350,6 +2351,158 @@ async function testGmailSetupRequiredStatus(page) {
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
+}
+
+async function testUserGmailSessionControls(page) {
+  const buildGmailStatus = ({ ready = true, imported = 3, skipped = 1, syncedAt = "2026-06-04T18:00:00+00:00" } = {}) => ({
+    user_scoped: true,
+    connect_url: "/auth/gmail/start",
+    disconnect_url: "/api/gmail/disconnect",
+    sync: {
+      last_sync_at: syncedAt,
+      last_sync_imported_count: imported,
+      last_sync_skipped_count: skipped,
+      sync_history: [{
+        deduplicated_count: 1,
+        duplicate_count: 0,
+        error: "",
+        finished_at: syncedAt,
+        imported_count: imported,
+        query: 'has:attachment newer_than:30d ("NDA" OR "non-disclosure agreement")',
+        review_failed_count: 0,
+        skipped_count: skipped,
+        started_at: syncedAt,
+        status: "success",
+      }],
+    },
+    inbound: {
+      configured: ready,
+      connect_url: "/auth/gmail/start?role=inbound",
+      email: "alice@example.com",
+      enabled: true,
+      ready,
+      token: ready
+        ? { configured: true, label: "alice@example.com", source: "user_data" }
+        : { configured: false, label: "Connect Gmail for inbound", source: "missing" },
+    },
+    outbound: {
+      configured: ready,
+      connect_url: "/auth/gmail/start?role=outbound",
+      email: ready ? "alice@example.com" : "",
+      enabled: true,
+      ready,
+      token: ready
+        ? { configured: true, label: "alice@example.com", source: "user_data" }
+        : { configured: false, label: "Connect Gmail for outbound", source: "missing" },
+    },
+  });
+  let gmailStatus = buildGmailStatus();
+  let disconnectPayload = null;
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        google_oauth_configured: true,
+        login_url: "/auth/google/start",
+        logout_url: "/api/auth/logout",
+        user: { email: "alice@example.com", id: "user_alice", name: "Alice Reviewer" },
+      }),
+    });
+  });
+  await page.route("**/api/deployment/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        deployment: {
+          status: "needs_attention",
+          checks: [
+            { id: "allowed_hosts", ok: false, message: "Set NDA_ALLOWED_HOSTS to the deployed Render hostname." },
+            { id: "data_dir", ok: true, message: "Persistent data directory configured." },
+          ],
+        },
+      }),
+    });
+  });
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: gmailStatus }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [] }),
+    });
+  });
+  await page.route("**/api/gmail/import", async (route) => {
+    gmailStatus = buildGmailStatus({ imported: 4, skipped: 0, syncedAt: "2026-06-04T18:10:00+00:00" });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: gmailStatus,
+        result: { imported: [{ id: "matter_sync_1" }], imported_count: 4, skipped_count: 0 },
+      }),
+    });
+  });
+  await page.route("**/api/gmail/disconnect", async (route) => {
+    disconnectPayload = route.request().postDataJSON();
+    gmailStatus = buildGmailStatus({ ready: false, imported: 4, skipped: 0, syncedAt: "2026-06-04T18:10:00+00:00" });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ disconnected: ["inbound", "outbound"], gmail: gmailStatus }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await waitForText(page, "#sessionStrip", "Signed in: alice@example.com");
+  await assertTextContains(page.locator("#sessionStrip"), "Gmail connected: alice@example.com");
+  await assertTextContains(page.locator("#sessionStrip"), "Set NDA_ALLOWED_HOSTS to the deployed Render hostname.");
+  assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), true);
+  assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), false);
+
+  const syncRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/import"));
+  await page.locator("[data-session-gmail-sync]").click();
+  const syncRequest = await syncRequestPromise;
+  assert.deepEqual(syncRequest.postDataJSON(), { limit: 25 });
+
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await waitForText(page, "[data-repository-sync-status]", "Your last sync");
+  await assertTextContains(page.locator("[data-repository-sync-status]"), "4 imported / 0 skipped");
+
+  await page.getByRole("tab", { name: "Admin" }).click();
+  await page.locator('[data-admin-section="email"]').click();
+  await waitForText(page, "#adminGmailSyncHistory", "4 imported / 0 skipped");
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "User Gmail: alice@example.com");
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "Disconnect inbound");
+  await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
+
+  const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));
+  await page.locator("[data-session-gmail-disconnect]").click();
+  await disconnectRequestPromise;
+  assert.deepEqual(disconnectPayload, { role: "all" });
+  await waitForText(page, "#sessionStrip", "Gmail needs connection");
+  assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), true);
+  assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), false);
+
+  await page.unroute("**/api/auth/status");
+  await page.unroute("**/api/deployment/status");
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/gmail/import");
+  await page.unroute("**/api/gmail/disconnect");
 }
 
 async function testMatterRedlineDraftPersistence(page) {

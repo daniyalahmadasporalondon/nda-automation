@@ -346,6 +346,103 @@ h3 {
   color: var(--brand);
 }
 
+.session-strip {
+  align-items: center;
+  border-left: 1px solid var(--border);
+  display: grid;
+  flex: 0 0 auto;
+  gap: 7px;
+  grid-template-columns: minmax(150px, 220px) auto;
+  max-width: 520px;
+  padding-left: 16px;
+}
+
+.session-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.session-user,
+.session-gmail {
+  display: block;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-user {
+  color: var(--ink);
+}
+
+.session-gmail {
+  color: var(--ink-muted);
+}
+
+.session-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.session-action {
+  align-items: center;
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  font: 800 11px/1 var(--font-body);
+  height: 28px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.session-action[hidden] {
+  display: none;
+}
+
+.session-action.secondary {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+  color: var(--ink-soft);
+}
+
+.session-action:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.session-action.secondary:hover:not(:disabled) {
+  background: var(--bg-chip);
+  color: var(--brand);
+}
+
+.session-action:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.session-warning {
+  color: #9a3412;
+  font-size: 11px;
+  font-weight: 750;
+  grid-column: 1 / -1;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-button {
   align-items: center;
   background: var(--bg-chip);
@@ -4689,6 +4786,41 @@ body.modal-open {
   overflow-wrap: anywhere;
 }
 
+.integration-connection-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.integration-connection-action {
+  align-items: center;
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  height: 30px;
+  justify-content: center;
+  padding: 0 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.integration-connection-action.secondary {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+  color: var(--ink-soft);
+}
+
+.integration-connection-action:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .integration-status {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -5017,11 +5149,25 @@ body.modal-open {
   }
 
   .tabbar {
-    flex: 1 1 100%;
+    flex: 1 1 calc(100% - 240px);
     gap: 18px;
     justify-content: flex-start;
     margin-left: 0;
     overflow-x: auto;
+  }
+
+  .session-strip {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    flex: 1 1 100%;
+    grid-template-columns: minmax(0, 1fr);
+    max-width: none;
+    padding-left: 0;
+    padding-top: 10px;
+  }
+
+  .session-actions {
+    justify-content: flex-start;
   }
 
   .tab-button {

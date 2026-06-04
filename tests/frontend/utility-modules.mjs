@@ -107,6 +107,7 @@ const repositoryApi = createRepositoryApi({
       });
     }
     if (url === "/api/gmail/send-redline") return jsonResponse({ sent: true });
+    if (url === "/api/gmail/import") return jsonResponse({ result: { imported: [{ id: "matter-2" }] } });
     return jsonResponse({ error: "not found" }, { ok: false });
   },
   reviewErrorFromPayload: (payload, fallback) => new Error(payload.error || fallback),
@@ -136,8 +137,12 @@ assert.deepEqual(await repositoryApi.compareMatterReview("matter one"), {
   review_comparison: { mode: "deterministic_vs_ai_first", source: "matter" },
 });
 assert.deepEqual(await repositoryApi.sendRedline({ matter_id: "matter-1", confirm_send: true }), { sent: true });
+assert.deepEqual(await repositoryApi.syncGmail({ limit: 2 }), { result: { imported: [{ id: "matter-2" }] } });
 assert.equal(calls[3].url, "/api/matters/matter%20one/review-refresh");
 assert.equal(calls[3].options.method, "POST");
+assert.equal(calls[calls.length - 1].url, "/api/gmail/import");
+assert.equal(calls[calls.length - 1].options.method, "POST");
+assert.deepEqual(JSON.parse(calls[calls.length - 1].options.body), { limit: 2 });
 assert.equal(calls[4].options.method, "POST");
 assert.deepEqual(JSON.parse(calls[4].options.body), { board_column: "in_review" });
 assert.deepEqual(JSON.parse(calls[5].options.body), { text: "Contract text" });

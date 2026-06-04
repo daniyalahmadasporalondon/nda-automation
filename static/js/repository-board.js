@@ -66,9 +66,9 @@ const RepositoryBoard = (() => {
   function renderSyncStatus(state) {
     const node = document.querySelector("[data-repository-sync-status]");
     if (!node) return;
-    const settings = state.gmailStatus?.settings || {};
+    const sync = state.gmailStatus?.sync || state.gmailStatus?.settings || {};
     const inbound = state.gmailStatus?.inbound || {};
-    const recentRun = Array.isArray(settings.sync_history) ? settings.sync_history[0] : null;
+    const recentRun = Array.isArray(sync.sync_history) ? sync.sync_history[0] : null;
     const inboundSetupBlocked = inbound.enabled !== false && inbound.ready === false;
     node.classList.toggle("error", inboundSetupBlocked || recentRun?.status === "error");
     if (inbound.enabled === false) {
@@ -83,13 +83,14 @@ const RepositoryBoard = (() => {
       node.textContent = `Last sync error: ${recentRun.error || "check Admin"}`;
       return;
     }
-    if (!settings.last_sync_at) {
-      node.textContent = "Waiting for scheduled sync";
+    if (!sync.last_sync_at) {
+      node.textContent = state.gmailStatus?.user_scoped ? "Waiting for your Gmail sync" : "Waiting for scheduled sync";
       return;
     }
-    const imported = Number(settings.last_sync_imported_count || 0);
-    const skipped = Number(settings.last_sync_skipped_count || 0);
-    node.textContent = `Last sync ${RepositoryModel.formatMatterDateTime(settings.last_sync_at) || settings.last_sync_at} - ${imported} imported / ${skipped} skipped`;
+    const imported = Number(sync.last_sync_imported_count || 0);
+    const skipped = Number(sync.last_sync_skipped_count || 0);
+    const ownerLabel = state.gmailStatus?.user_scoped ? "Your last sync" : "Last sync";
+    node.textContent = `${ownerLabel} ${RepositoryModel.formatMatterDateTime(sync.last_sync_at) || sync.last_sync_at} - ${imported} imported / ${skipped} skipped`;
   }
 
   function renderMatterCard(matter, options = {}) {
