@@ -115,7 +115,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     setupSpecialControls(clause);
   }
 
-  function handleEditorInput() {
+  function handleEditorInput(event) {
     const clause = selectedClause();
     if (!clause) return;
     const form = clauseDetail.querySelector("#playbookEditor");
@@ -129,6 +129,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "term_and_survival") {
       clause.max_term_years = Math.max(1, Number.parseInt(data.get("max_term_years"), 10) || 5);
     }
+    if (clause.id === "governing_law") {
+      applyGoverningLawFormData(clause, form, data);
+    }
+    syncStructuredRules(clause, event?.target?.name);
     renderDraftState();
   }
 
@@ -145,34 +149,79 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function setupSpecialControls(clause) {
-    if (clause.id !== "term_and_survival") return;
-    const addButton = clauseDetail.querySelector("#addSurvivalCarveOut");
-    const input = clauseDetail.querySelector("#survivalCarveOutInput");
-    if (addButton && input) {
-      addButton.addEventListener("click", () => {
-        const value = input.value.trim();
-        if (!value) return;
-        clause.longer_survival_carve_out_terms = dedupeList([
-          ...(clause.longer_survival_carve_out_terms || []),
-          value,
-        ]);
-        input.value = "";
-        renderClauseDetail();
-      });
-      input.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        addButton.click();
+    if (clause.id === "term_and_survival") {
+      const addButton = clauseDetail.querySelector("#addSurvivalCarveOut");
+      const input = clauseDetail.querySelector("#survivalCarveOutInput");
+      if (addButton && input) {
+        addButton.addEventListener("click", () => {
+          const value = input.value.trim();
+          if (!value) return;
+          clause.longer_survival_carve_out_terms = dedupeList([
+            ...(clause.longer_survival_carve_out_terms || []),
+            value,
+          ]);
+          input.value = "";
+          renderClauseDetail();
+        });
+        input.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          addButton.click();
+        });
+      }
+      clauseDetail.querySelectorAll("[data-remove-survival-carveout]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const value = button.dataset.removeSurvivalCarveout;
+          clause.longer_survival_carve_out_terms = (clause.longer_survival_carve_out_terms || [])
+            .filter((item) => item !== value);
+          renderClauseDetail();
+        });
       });
     }
-    clauseDetail.querySelectorAll("[data-remove-survival-carveout]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const value = button.dataset.removeSurvivalCarveout;
-        clause.longer_survival_carve_out_terms = (clause.longer_survival_carve_out_terms || [])
-          .filter((item) => item !== value);
-        renderClauseDetail();
+    if (clause.id === "governing_law") {
+      const addButton = clauseDetail.querySelector("#addGoverningLaw");
+      const input = clauseDetail.querySelector("#governingLawInput");
+      if (addButton && input) {
+        addButton.addEventListener("click", () => {
+          const value = input.value.trim();
+          if (!value) return;
+          clause.approved_laws = dedupeList([...(clause.approved_laws || []), value]);
+          clause.law_phrases = { ...(clause.law_phrases || {}), [value]: value };
+          if (!clause.preferred_law) clause.preferred_law = value;
+          syncStructuredRules(clause);
+          input.value = "";
+          renderClauseDetail();
+        });
+        input.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          addButton.click();
+        });
+      }
+      clauseDetail.querySelectorAll("[data-remove-governing-law]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const index = Number.parseInt(button.dataset.removeGoverningLaw, 10);
+          const approved = clause.approved_laws || [];
+          if (!Number.isInteger(index) || approved.length <= 1) return;
+          const nextApproved = approved.filter((_law, lawIndex) => lawIndex !== index);
+          clause.approved_laws = nextApproved;
+          if (!nextApproved.includes(clause.preferred_law)) {
+            clause.preferred_law = nextApproved[0] || "";
+          }
+          syncStructuredRules(clause);
+          renderClauseDetail();
+        });
       });
-    });
+      clauseDetail.querySelectorAll("[data-preferred-governing-law]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const index = Number.parseInt(input.value, 10);
+          const approved = clause.approved_laws || [];
+          clause.preferred_law = approved[index] || approved[0] || "";
+          syncStructuredRules(clause);
+          renderClauseDetail();
+        });
+      });
+    }
   }
 
   async function savePlaybook(event) {
@@ -242,10 +291,17 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       "standard_exclusions_template",
       "max_term_years",
       "longer_survival_carve_out_terms",
+      "approved_laws",
+      "preferred_law",
+      "law_phrases",
+      "rules.clause_type",
+      "rules.acceptable_position",
+      "rules.approved_options",
+      "rules.redline_guidance",
     ];
     return fields
-      .filter((field) => stableJson(clause[field]) !== stableJson(saved[field]))
-      .map((field) => `${field}:\n- ${formatDiffValue(saved[field])}\n+ ${formatDiffValue(clause[field])}`)
+      .filter((field) => stableJson(valueAt(clause, field)) !== stableJson(valueAt(saved, field)))
+      .map((field) => `${field}:\n- ${formatDiffValue(valueAt(saved, field))}\n+ ${formatDiffValue(valueAt(clause, field))}`)
       .join("\n\n");
   }
 
@@ -298,11 +354,36 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       `;
     }
     if (clause.id === "governing_law") {
+      const approved = clause.approved_laws || [];
+      const preferredLaw = clause.preferred_law || approved[0] || "";
+      const lawPhrases = clause.law_phrases || {};
+      const rows = approved
+        .map((law, index) => `
+          <article class="admin-policy-option" data-governing-law-row="${index}">
+            <label class="admin-policy-default">
+              <input type="radio" name="preferred_law_index" value="${index}" data-preferred-governing-law="true" ${law === preferredLaw ? "checked" : ""}>
+              <span>Preferred</span>
+            </label>
+            <label class="admin-field">
+              <span>Jurisdiction</span>
+              <input name="governing_law_value_${index}" data-governing-law-value="${index}" type="text" value="${escapeHtml(law)}">
+            </label>
+            <label class="admin-field">
+              <span>Draft phrase</span>
+              <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
+            </label>
+            <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
+          </article>
+        `)
+        .join("");
       return `
         <section class="admin-special">
           <h3>Approved Governing Laws</h3>
-          <div class="admin-chip-row">
-            ${(clause.approved_laws || []).map((law) => `<span class="admin-chip">${escapeHtml(law)}</span>`).join("")}
+          <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, and insertable Governing Law redline choices.</p>
+          <div class="admin-policy-options">${rows}</div>
+          <div class="admin-inline-add">
+            <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
+            <button class="secondary" id="addGoverningLaw" type="button">Add</button>
           </div>
         </section>
       `;
@@ -951,8 +1032,70 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return clause.check_trigger || clause.evidence_guidance || "";
   }
 
+  function applyGoverningLawFormData(clause, form, data) {
+    const rows = [...form.querySelectorAll("[data-governing-law-row]")];
+    const approvedLaws = [];
+    const lawPhrases = {};
+    rows.forEach((row) => {
+      const law = String(row.querySelector("[data-governing-law-value]")?.value || "").trim();
+      if (!law) return;
+      if (approvedLaws.some((item) => item.toLowerCase() === law.toLowerCase())) return;
+      const phrase = String(row.querySelector("[data-governing-law-phrase]")?.value || "").trim() || law;
+      approvedLaws.push(law);
+      lawPhrases[law] = phrase;
+    });
+    clause.approved_laws = approvedLaws;
+    clause.law_phrases = lawPhrases;
+    const preferredIndex = Number.parseInt(data.get("preferred_law_index"), 10);
+    clause.preferred_law = approvedLaws[preferredIndex] || approvedLaws[0] || "";
+  }
+
+  function syncStructuredRules(clause, changedField) {
+    if (!clause.rules || typeof clause.rules !== "object") return;
+    clause.rules.clause_type = clause.type;
+    if (changedField === "preferred_position" && clause.preferred_position) {
+      clause.rules.acceptable_position = clause.preferred_position;
+    }
+    if (clause.id === "governing_law") {
+      syncGoverningLawRules(clause);
+    }
+  }
+
+  function syncGoverningLawRules(clause) {
+    const approved = dedupeList(clause.approved_laws || []);
+    clause.approved_laws = approved;
+    if (!approved.includes(clause.preferred_law)) {
+      clause.preferred_law = approved[0] || "";
+    }
+    const lawPhrases = {};
+    const existingPhrases = clause.law_phrases || {};
+    approved.forEach((law) => {
+      lawPhrases[law] = String(existingPhrases[law] || law).trim() || law;
+    });
+    clause.law_phrases = lawPhrases;
+    const rules = clause.rules || {};
+    rules.approved_options = approved.map((law) => ({
+      id: optionIdForLaw(law),
+      label: law,
+      value: law,
+      default: law === clause.preferred_law,
+    }));
+    if (rules.redline_guidance && typeof rules.redline_guidance === "object") {
+      const preferred = clause.preferred_law || approved[0] || "the preferred approved jurisdiction";
+      rules.redline_guidance.drafting_note = `Use one of the approved jurisdiction options. Default to ${preferred} unless another approved option is selected.`;
+    }
+    clause.rules = rules;
+  }
+
   function stanceLabel(clause) {
     return clause.type === "prohibited" ? "Prohibited" : "Required";
+  }
+
+  function valueAt(object, path) {
+    return path.split(".").reduce((value, key) => {
+      if (!value || typeof value !== "object") return undefined;
+      return value[key];
+    }, object);
   }
 
   function stableJson(value) {
@@ -961,6 +1104,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function formatDiffValue(value) {
     if (Array.isArray(value)) return `[${value.join(", ")}]`;
+    if (value && typeof value === "object") return JSON.stringify(value, null, 2);
     if (typeof value === "boolean") return value ? "true" : "false";
     if (value === undefined || value === null || value === "") return "(blank)";
     return String(value);
@@ -972,13 +1116,20 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function dedupeList(values) {
     const seen = new Set();
-    return values.filter((value) => {
+    return values.map((value) => String(value).trim()).filter((value) => {
       const key = String(value).trim();
       const normalized = key.toLowerCase();
       if (!key || seen.has(normalized)) return false;
       seen.add(normalized);
       return true;
     });
+  }
+
+  function optionIdForLaw(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
   }
 
   return { loadPlaybook, renderClauseDetail, renderPlaybookList };

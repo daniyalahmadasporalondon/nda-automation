@@ -479,8 +479,17 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "regulatory obligation");
   await assertTextContains(page.locator("#playbookDraftDiff"), "longer_survival_carve_out_terms");
   await page.locator('[data-clause-id="governing_law"]').click();
+  await assertTextContains(page.locator("#clauseDetail"), "Approved Governing Laws");
+  await assertTextContains(page.locator("#clauseDetail"), "Draft phrase");
   await assertTextContains(page.locator("#clauseDetail"), "governing_law_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "heading_only_paragraph_ids");
+  await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
+  await page.locator("#addGoverningLaw").click();
+  await assertTextContains(page.locator("#clauseDetail"), "UAE");
+  await page.locator('input[name="governing_law_phrase_4"]').fill("the UAE");
+  await page.locator('input[name="preferred_law_index"][value="4"]').check();
+  await assertTextContains(page.locator("#playbookDraftDiff"), "approved_laws");
+  await assertTextContains(page.locator("#playbookDraftDiff"), "rules.approved_options");
   await page.locator('[data-clause-id="non_circumvention"]').click();
   await assertTextContains(page.locator("#clauseDetail"), "non_circumvention_analysis");
   await assertTextContains(page.locator("#clauseDetail"), "negated_reference_paragraph_ids");
@@ -507,6 +516,14 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(savedConfidentialInfo.standard_exclusions_template, "Publicly known information is excluded.");
   const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
   assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
+  const savedGoverningLaw = savedPayload.playbook.clauses.find((clause) => clause.id === "governing_law");
+  assert.ok(savedGoverningLaw.approved_laws.includes("UAE"));
+  assert.equal(savedGoverningLaw.preferred_law, "UAE");
+  assert.equal(savedGoverningLaw.law_phrases.UAE, "the UAE");
+  assert.deepEqual(
+    savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
+    [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],
+  );
   await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
   await page.locator('[data-admin-section="email"]').click();

@@ -3597,6 +3597,40 @@ body.modal-open {
   grid-template-columns: minmax(180px, 260px) auto;
 }
 
+.admin-policy-options {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-policy-option {
+  align-items: end;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 110px minmax(160px, 1fr) minmax(180px, 1fr) auto;
+  padding: 10px;
+}
+
+.admin-policy-default {
+  align-items: center;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  gap: 7px;
+  min-height: 38px;
+}
+
+.admin-policy-default input {
+  accent-color: var(--brand);
+}
+
+.admin-remove-button {
+  min-height: 38px;
+}
+
 .admin-logic-list {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -4939,6 +4973,7 @@ body.modal-open {
   .admin-explainability-grid,
   .admin-code-groups,
   .admin-hardening-list,
+  .admin-policy-option,
   .admin-logic-list div {
     grid-template-columns: 1fr;
   }

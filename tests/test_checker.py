@@ -34,6 +34,17 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(redlines, f"Expected a redline for {clause_id}")
         return redlines[0]
 
+    def sync_governing_law_rule_options(self, clause):
+        clause["rules"]["approved_options"] = [
+            {
+                "id": str(law).lower().replace(" ", "_"),
+                "label": law,
+                "value": law,
+                "default": law == clause.get("preferred_law"),
+            }
+            for law in clause["approved_laws"]
+        ]
+
     def test_redline_registry_mirrors_checker_registry(self):
         self.assertEqual(
             [clause_id for clause_id, _builder in checker_module.REDLINE_BUILDERS],
@@ -2559,6 +2570,7 @@ class CheckerTests(unittest.TestCase):
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
         governing_law["approved_laws"] = ["DIFC"]
         governing_law["preferred_law"] = "DIFC"
+        self.sync_governing_law_rule_options(governing_law)
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
             result = review_nda("This Agreement shall be governed by the laws of Delaware.")
@@ -2574,6 +2586,7 @@ class CheckerTests(unittest.TestCase):
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
         governing_law["approved_laws"] = ["DIFC"]
         governing_law["preferred_law"] = "DIFC"
+        self.sync_governing_law_rule_options(governing_law)
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
             result = review_nda("This Agreement shall be governed by the laws of California.")
@@ -2588,6 +2601,7 @@ class CheckerTests(unittest.TestCase):
         governing_law["approved_laws"] = ["DIFC"]
         governing_law["preferred_law"] = "DIFC"
         governing_law["law_phrases"] = {"DIFC": "DIFC"}
+        self.sync_governing_law_rule_options(governing_law)
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
             result = review_nda("This Agreement shall be governed by the laws of California.")

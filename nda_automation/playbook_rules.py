@@ -278,9 +278,17 @@ def _validate_approved_options(clause: Mapping[str, Any], rules: Mapping[str, An
 
     if not options:
         errors.append("Playbook clause governing_law rules.approved_options must include approved jurisdiction options.")
+    approved_laws = [_text(law) for law in clause.get("approved_laws", []) if _text(law)]
+    option_values = [_text(option.get("value")) for option in options]
+    if option_values != approved_laws:
+        errors.append("Playbook clause governing_law rules.approved_options values must match approved_laws.")
     defaults = [option for option in options if option.get("default") is True]
     if len(defaults) != 1:
         errors.append("Playbook clause governing_law rules.approved_options must have exactly one default option.")
+    elif approved_laws:
+        preferred_law = _text(clause.get("preferred_law")) or approved_laws[0]
+        if _text(defaults[0].get("value")) != preferred_law:
+            errors.append("Playbook clause governing_law rules.approved_options default must match preferred_law.")
 
 
 def _text(value: object) -> str:

@@ -90,6 +90,22 @@ class PlaybookRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(PlaybookTemplateError, "approved_options must have exactly one default option"):
             validate_playbook(playbook)
 
+    def test_validate_playbook_rejects_governing_law_policy_drift(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["approved_laws"] = ["India", "England and Wales", "DIFC"]
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_options values must match approved_laws"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_governing_law_default_drift(self):
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        governing_law["preferred_law"] = "DIFC"
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "approved_options default must match preferred_law"):
+            validate_playbook(playbook)
+
 
 if __name__ == "__main__":
     unittest.main()
