@@ -4,38 +4,43 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from nda_automation import matter_store, telemetry
+from nda_automation import matter_store
 
 
 class MatterRetentionArchiveTests(unittest.TestCase):
     def test_pruned_matters_are_archived_before_deletion(self):
         pruned = [
             {
-                "id": "m-active",
-                "status": "active",
-                "board_column": "in_review",
+                "id": "m-closed",
+                "status": "closed",
+                "board_column": "signed_closed",
                 "extracted_text": "confidential nda body",
             },
-            {"id": "m-closed", "status": "closed", "board_column": "signed_closed"},
         ]
-        before = telemetry.snapshot()["counters"].get("active_matters_pruned", 0)
 
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
             with patch.object(matter_store, "DATA_DIR", data_dir):
-                matter_store._archive_pruned_matters(pruned)
+                archived = matter_store._archive_pruned_matters(pruned)
 
                 archive_dir = data_dir / matter_store.PRUNED_ARCHIVE_DIRNAME
-                active_archive = archive_dir / "m-active.json"
                 closed_archive = archive_dir / "m-closed.json"
-                self.assertTrue(active_archive.is_file())
+                self.assertTrue(archived)
                 self.assertTrue(closed_archive.is_file())
-                restored = json.loads(active_archive.read_text(encoding="utf-8"))
+                restored = json.loads(closed_archive.read_text(encoding="utf-8"))
                 self.assertEqual(restored["extracted_text"], "confidential nda body")
 
-        after = telemetry.snapshot()["counters"].get("active_matters_pruned", 0)
-        # Only the active matter should count toward the active-pruning warning.
-        self.assertEqual(after - before, 1)
+    def test_archive_pruned_matters_fails_closed_on_write_error(self):
+        pruned = [{"id": "m-closed", "status": "closed", "board_column": "signed_closed"}]
+
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            with patch.object(matter_store, "DATA_DIR", data_dir):
+                with patch.object(Path, "replace", side_effect=OSError("boom")):
+                    with patch("builtins.print"):
+                        archived = matter_store._archive_pruned_matters(pruned)
+
+        self.assertFalse(archived)
 
 
 if __name__ == "__main__":

@@ -33,10 +33,13 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     );
   }
 
-  async function getMatterReview(matterId) {
+  async function getMatterReview(matterId, options = {}) {
+    const refresh = options?.refresh === true;
     const payload = await jsonRequest(
-      `/api/matters/${encodeURIComponent(matterId)}/review`,
-      {},
+      refresh
+        ? `/api/matters/${encodeURIComponent(matterId)}/review-refresh`
+        : `/api/matters/${encodeURIComponent(matterId)}/review`,
+      refresh ? { method: "POST" } : {},
       "Matter review details could not load",
     );
     return {
@@ -44,6 +47,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       extracted_text: payload.extracted_text || "",
       redline_draft: payload.redline_draft || null,
       review_comparison: payload.review_comparison || null,
+      review_refresh: payload.review_refresh || null,
       review_result: payload.review_result || {},
     };
   }

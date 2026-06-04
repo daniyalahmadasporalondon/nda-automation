@@ -1,6 +1,9 @@
 """Tests for the matter-persistence seam (MatterRepository + adapters)."""
 from __future__ import annotations
 
+from pathlib import Path
+import threading
+
 from nda_automation import matter_store
 from nda_automation.matter_repository import (
     DiskMatterRepository,
@@ -89,9 +92,22 @@ def test_updates_stage_fields_redline_review():
     cleared = repo.update_redline_draft(matter_id, None)
     assert "redline_draft" not in cleared
 
+    signed_off = repo.update_matter_fields(matter_id, {"human_reviewed": True})
+    assert signed_off["human_reviewed"] is True
+    stale_draft = repo.update_redline_draft(
+        matter_id,
+        {
+            "redline_decisions": {"old-redline-id": False},
+            "template_selections": {"old-redline-id": "india"},
+        },
+    )
+    assert "redline_draft" in stale_draft
+
     reviewed = repo.update_matter_review(matter_id, {"clauses": []}, {"triage_status": "pass"})
     assert reviewed["review_result"] == {"clauses": []}
     assert reviewed["triage_status"] == "pass"
+    assert reviewed["human_reviewed"] is False
+    assert "redline_draft" not in reviewed
 
     ai_reviewed = repo.update_matter_ai_first_review(
         matter_id,
@@ -213,3 +229,95 @@ def test_disk_inmemory_parity(tmp_path, monkeypatch):
 
     assert disk.get_source_document_bytes(disk_matter) == b"shared bytes"
     assert mem.get_source_document_bytes(mem_matter) == b"shared bytes"
+
+
+def test_review_comparison_update_isolates_nested_payload_for_both_adapters(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
+    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
+
+    for repo in [DiskMatterRepository(), InMemoryMatterRepository()]:
+        matter = repo.create_matter(**_create_kwargs())
+        comparison = {
+            "mode": "deterministic_vs_ai_first",
+            "summary": {
+                "disagreement_count": 1,
+                "decision_disagreement_clause_ids": ["governing_law"],
+            },
+            "clauses": [
+                {
+                    "clause_id": "governing_law",
+                    "deterministic": {"decision": "fail"},
+                    "ai_first": {"decision": "pass"},
+                }
+            ],
+        }
+
+        updated = repo.update_matter_review_comparison(matter["id"], comparison)
+        comparison["summary"]["decision_disagreement_clause_ids"].append("mutuality")
+        comparison["clauses"][0]["deterministic"]["decision"] = "mutated"
+        updated["review_comparison"]["summary"]["decision_disagreement_clause_ids"].append("term_and_survival")
+
+        assert updated["review_comparison"]["clauses"][0]["deterministic"]["decision"] == "fail"
+        assert updated["review_comparison"]["summary"]["decision_disagreement_clause_ids"] == [
+            "governing_law",
+            "term_and_survival",
+        ]
+
+        stored = repo.get_matter(matter["id"])["review_comparison"]
+        assert stored["summary"]["decision_disagreement_clause_ids"] == ["governing_law"]
+        assert stored["clauses"][0]["deterministic"]["decision"] == "fail"
+
+
+def test_disk_create_does_not_hold_store_lock_while_writing_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
+    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
+
+    original_write_bytes = Path.write_bytes
+    first_upload_started = threading.Event()
+    second_upload_started = threading.Event()
+    release_first_upload = threading.Event()
+    write_count_lock = threading.Lock()
+    upload_write_count = 0
+    errors: list[BaseException] = []
+
+    def delayed_write_bytes(path: Path, data: bytes) -> int:
+        nonlocal upload_write_count
+        if path.parent == matter_store.UPLOADS_DIR and path.name.startswith("matter_"):
+            with write_count_lock:
+                upload_write_count += 1
+                write_number = upload_write_count
+            if write_number == 1:
+                first_upload_started.set()
+                if not release_first_upload.wait(timeout=3):
+                    raise AssertionError("timed out waiting to release first upload write")
+            elif write_number == 2:
+                second_upload_started.set()
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", delayed_write_bytes)
+
+    def create_matter(document_bytes: bytes) -> None:
+        try:
+            matter_store.create_matter(**_create_kwargs(document_bytes=document_bytes))
+        except BaseException as error:  # noqa: BLE001 - surfaced below for the worker thread
+            errors.append(error)
+
+    first_writer = threading.Thread(target=create_matter, args=(b"slow upload bytes",))
+    first_writer.start()
+    assert first_upload_started.wait(timeout=2)
+
+    second_writer = threading.Thread(target=create_matter, args=(b"second upload bytes",))
+    second_writer.start()
+    second_started_while_first_upload_paused = second_upload_started.wait(timeout=1)
+
+    release_first_upload.set()
+    first_writer.join(timeout=2)
+    second_writer.join(timeout=2)
+
+    assert second_started_while_first_upload_paused
+    assert not first_writer.is_alive()
+    assert not second_writer.is_alive()
+    assert errors == []
+    assert len(matter_store.list_matters()) == 2

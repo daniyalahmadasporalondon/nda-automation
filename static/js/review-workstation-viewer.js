@@ -673,10 +673,16 @@ function loadMatterIntoReview(matter) {
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
   setReviewComparison(matter.review_comparison || null);
   applyMatterRedlineDraft(matter.redline_draft);
+  const refreshMessage = matter.review_refresh?.redline_draft_cleared
+    ? matter.review_refresh.message || "Saved redline draft cleared after review refresh"
+    : matter.review_refresh?.stale
+      ? "Saved review is stale and could not be refreshed. Review output may be out of date."
+      : "";
   setFileMeta(
-    matter.redline_draft
-      ? `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded - draft redline saved`
-      : `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`
+    refreshMessage
+      || (matter.redline_draft
+        ? `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded - draft redline saved`
+        : `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`)
   );
   activateTab("review");
   requestAnimationFrame(resizeSourceEditors);

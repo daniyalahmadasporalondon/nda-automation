@@ -35,9 +35,6 @@ const AppState = (() => {
       reviewedClauseIds: {},
       pendingAiSecondOpinionClauseId: null,
       aiSecondOpinionErrors: {},
-      aiDraftValidations: {},
-      aiDraftValidationErrors: {},
-      pendingAiDraftValidationKey: null,
       reviewInspectorView: "clause",
       documentViewMode,
     };

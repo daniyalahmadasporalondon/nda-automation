@@ -1,6 +1,6 @@
 """Unit tests for the counsel-eval measurement logic.
 
-These test the metric computation (deterministic, no model) and a Python-only smoke
+These test the metric computation (deterministic, no model) and an offline smoke
 run on the bundled synthetic example. They do NOT gate on counsel labels.
 """
 from __future__ import annotations
@@ -37,15 +37,13 @@ def test_mode_metrics_names_each_error_cell():
 def test_compare_modes_citation_overlap_and_disagreement_usefulness():
     observations = {
         ("d1", "governing_law"): {
-            "py_decision": "pass",
-            "ai_final_decision": "review",   # AI escalated
-            "ai_only_decision": "review",
+            "baseline_decision": "pass",
+            "active_decision": "review",
             "cited_ids": {"p3"},
         },
         ("d1", "confidential_information"): {
-            "py_decision": "pass",
-            "ai_final_decision": "pass",
-            "ai_only_decision": "pass",
+            "baseline_decision": "pass",
+            "active_decision": "pass",
             "cited_ids": {"p9"},
         },
     }
@@ -58,28 +56,27 @@ def test_compare_modes_citation_overlap_and_disagreement_usefulness():
     results = compare(observations, labels)
 
     assert results["scored"] == 2
-    # Python only: GL fail->pass is a false clear; CI pass->pass correct.
-    py = results["modes"]["python_only"]
-    assert py["false_clears"] == 1
-    assert py["correct"] == 1
-    # Python + AI: GL fail->review (no longer a false clear), CI correct.
-    ai = results["modes"]["python_plus_ai"]
-    assert ai["false_clears"] == 0
-    assert ai["correct"] == 1
-    assert "ai_only_report" in results["modes"]
+    # Deterministic baseline: GL fail->pass is a false clear; CI pass->pass correct.
+    baseline = results["modes"]["deterministic_baseline"]
+    assert baseline["false_clears"] == 1
+    assert baseline["correct"] == 1
+    # Active engine: GL fail->review (no longer a false clear), CI correct.
+    active = results["modes"]["active_engine"]
+    assert active["false_clears"] == 0
+    assert active["correct"] == 1
 
     # Citation overlap only over labels that cite paragraphs (the GL one).
     assert results["citation"]["labeled"] == 1
     assert results["citation"]["hit_rate"] == 1.0
     assert abs(results["citation"]["mean_jaccard"] - 0.5) < 1e-9  # {p3} ∩ {p3,p4} / union
 
-    # The AI escalated GL pass->review and counsel wanted fail -> useful, not noise.
-    assert results["disagreement"] == {"escalations": 1, "useful": 1, "noise": 0}
+    # The active engine escalated GL pass->review and counsel wanted fail -> useful, not noise.
+    assert results["active_engine_changes"] == {"changes": 1, "useful": 1, "noise": 0}
 
 
 def test_unmatched_label_is_reported_not_scored():
     observations = {("d1", "mutuality"): {
-        "py_decision": "pass", "ai_final_decision": "", "ai_only_decision": "", "cited_ids": set()}}
+        "baseline_decision": "pass", "active_decision": "", "cited_ids": set()}}
     labels = [
         {"document_id": "d1", "clause_id": "mutuality", "expected_decision": "pass", "cited_paragraph_ids": []},
         {"document_id": "missing_doc", "clause_id": "mutuality", "expected_decision": "pass", "cited_paragraph_ids": []},
@@ -99,9 +96,9 @@ def test_load_example_labels_normalizes():
     assert gl["cited_paragraph_ids"] == ["p3"]
 
 
-def test_example_corpus_runs_python_only_offline():
-    # reviewer=None -> AI columns omitted; Python-only must still score every label.
-    results = run(EXAMPLE_DIR, reviewer=None)
+def test_example_corpus_runs_deterministic_baseline_offline():
+    # ai_first_review_func=None -> active-engine columns omitted; baseline still scores every label.
+    results = run(EXAMPLE_DIR, ai_first_review_func=None)
     assert results["scored"] == 4
-    assert "python_only" in results["modes"]
-    assert "python_plus_ai" not in results["modes"]
+    assert "deterministic_baseline" in results["modes"]
+    assert "active_engine" not in results["modes"]

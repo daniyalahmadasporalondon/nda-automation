@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import contextmanager
 import hashlib
 import json
@@ -28,7 +29,13 @@ PRUNED_ARCHIVE_DIRNAME = "pruned-matters"
 MAX_SOURCE_FILENAME_LENGTH = 180
 GMAIL_METADATA_FIELDS = (
     "gmail_account",
+    "gmail_attachment_reasons",
     "gmail_attachment_id",
+    "gmail_attachment_score",
+    "gmail_attachment_selector",
+    "gmail_attachment_selector_confidence",
+    "gmail_attachment_selector_model",
+    "gmail_attachment_selector_reason",
     "gmail_attachment_sha256",
     "gmail_detection_excerpt",
     "gmail_detection_sources",
@@ -100,9 +107,13 @@ def source_document_path(matter: dict[str, Any]) -> Path | None:
 
 
 def get_source_document_bytes(matter: dict[str, Any]) -> bytes | None:
-    with _locked_store():
-        source_path = source_document_path(matter)
-        return source_path.read_bytes() if source_path is not None else None
+    source_path = source_document_path(matter)
+    if source_path is None:
+        return None
+    try:
+        return source_path.read_bytes()
+    except OSError:
+        return None
 
 
 def find_gmail_attachment(
@@ -211,6 +222,7 @@ def update_matter_review(
                 "human_reviewed": False,
                 "updated_at": now,
             }
+            updated_matter.pop("redline_draft", None)
             matters[index] = updated_matter
             _save_matters(matters)
             return updated_matter
@@ -256,7 +268,7 @@ def update_matter_review_comparison(
             updated_matter = {
                 **matter,
                 "review_comparison": {
-                    **review_comparison,
+                    **copy.deepcopy(review_comparison),
                     "stored_at": now,
                 },
                 "updated_at": now,
@@ -271,8 +283,8 @@ def reset_demo_repository() -> int:
     with _locked_store():
         matters = _load_matters()
         _save_matters([])
-        for matter in matters:
-            _delete_stored_document(matter)
+    for matter in matters:
+        _delete_stored_document(matter)
     return len(matters)
 
 
@@ -284,8 +296,8 @@ def delete_matter(matter_id: str) -> dict[str, Any] | None:
             return None
         kept_matters = [matter for matter in matters if matter.get("id") != matter_id]
         _save_matters(kept_matters)
-        _delete_stored_document(deleted_matter)
-        return deleted_matter
+    _delete_stored_document(deleted_matter)
+    return deleted_matter
 
 
 def deduplicate_gmail_matters() -> int:
@@ -332,9 +344,9 @@ def deduplicate_gmail_matters() -> int:
         if not removed:
             return 0
         _save_matters(kept)
-        for matter in removed:
-            _delete_stored_document(matter)
-        return len(removed)
+    for matter in removed:
+        _delete_stored_document(matter)
+    return len(removed)
 
 
 def create_matter(
@@ -358,42 +370,56 @@ def create_matter(
     if dedupe_gmail and not metadata.get("gmail_attachment_sha256"):
         metadata["gmail_attachment_sha256"] = hashlib.sha256(document_bytes).hexdigest()
 
-    with _locked_store():
-        matters = _load_matters()
-        if dedupe_gmail:
-            existing_matter = _find_gmail_duplicate_unlocked(matters, metadata)
+    if dedupe_gmail:
+        with _locked_store():
+            existing_matter = _find_gmail_duplicate_unlocked(_load_matters(), metadata)
             if existing_matter is not None:
                 return {**existing_matter, "_existing_gmail_duplicate": True}
 
-        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        stored_path = UPLOADS_DIR / stored_filename
-        stored_path.write_bytes(document_bytes)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    stored_path = UPLOADS_DIR / stored_filename
+    stored_path.write_bytes(document_bytes)
 
-        matter: dict[str, Any] = {
-            "id": matter_id,
-            "created_at": now,
-            "updated_at": now,
-            "source_type": source_type,
-            "source_filename": source_filename,
-            "stored_filename": stored_filename,
-            "document_title": Path(source_filename).stem or "Untitled NDA",
-            "status": "active",
-            "board_column": board_column,
-            **metadata,
-            "extracted_text": extracted_text,
-            "review_result": review_result,
-            **triage,
-        }
-        matters.append(matter)
-        matters, pruned_matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
-        try:
-            _save_matters(matters)
-        except Exception:
-            stored_path.unlink(missing_ok=True)
-            raise
-        _archive_pruned_matters(pruned_matters)
-        for pruned_matter in pruned_matters:
-            _delete_stored_document(pruned_matter)
+    matter: dict[str, Any] = {
+        "id": matter_id,
+        "created_at": now,
+        "updated_at": now,
+        "source_type": source_type,
+        "source_filename": source_filename,
+        "stored_filename": stored_filename,
+        "document_title": Path(source_filename).stem or "Untitled NDA",
+        "status": "active",
+        "board_column": board_column,
+        **metadata,
+        "extracted_text": extracted_text,
+        "review_result": review_result,
+        **triage,
+    }
+    pruned_matters: list[dict[str, Any]] = []
+    duplicate_matter: dict[str, Any] | None = None
+    try:
+        with _locked_store():
+            matters = _load_matters()
+            if dedupe_gmail:
+                existing_matter = _find_gmail_duplicate_unlocked(matters, metadata)
+                if existing_matter is not None:
+                    duplicate_matter = {**existing_matter, "_existing_gmail_duplicate": True}
+                else:
+                    matters.append(matter)
+                    matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
+                    _save_matters(matters)
+            else:
+                matters.append(matter)
+                matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
+                _save_matters(matters)
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
+    if duplicate_matter is not None:
+        stored_path.unlink(missing_ok=True)
+        return duplicate_matter
+    for pruned_matter in pruned_matters:
+        _delete_stored_document(pruned_matter)
     return matter
 
 
@@ -466,13 +492,30 @@ def _prune_stored_matters(
     removable = [
         (index, matter)
         for index, matter in enumerate(matters)
-        if matter.get("id") != protected_matter_id
+        if matter.get("id") != protected_matter_id and not _matter_is_active(matter)
     ]
+    if not removable:
+        return matters, []
     removable.sort(key=lambda item: _matter_retention_sort_key(item[1]))
-    remove_count = len(matters) - retention_limit
+    remove_count = min(len(matters) - retention_limit, len(removable))
+    if remove_count <= 0:
+        return matters, []
     removed_indexes = {index for index, _matter in removable[:remove_count]}
     kept = [matter for index, matter in enumerate(matters) if index not in removed_indexes]
     pruned = [matter for _index, matter in removable[:remove_count]]
+    return kept, pruned
+
+
+def _apply_retention_pruning(
+    matters: list[dict[str, Any]],
+    *,
+    protected_matter_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    kept, pruned = _prune_stored_matters(matters, protected_matter_id=protected_matter_id)
+    if not pruned:
+        return kept, []
+    if not _archive_pruned_matters(pruned):
+        return matters, []
     return kept, pruned
 
 
@@ -493,13 +536,11 @@ def _matter_is_active(matter: dict[str, Any]) -> bool:
     return matter.get("status") != "closed" and matter.get("board_column") != "signed_closed"
 
 
-def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> None:
-    # Retention pruning is destructive (it deletes the oldest matters, which can
-    # include active NDAs once the limit is hit). Archive each full matter record
-    # before its document is deleted, and warn when active NDAs are pruned, so the
-    # data is recoverable and the deletion is never silent.
+def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> bool:
+    # Retention pruning deletes stored documents. Archive each full matter record
+    # before saving the pruned store so an archive failure keeps the matter live.
     if not pruned_matters:
-        return
+        return True
     archive_dir = DATA_DIR / PRUNED_ARCHIVE_DIRNAME
     archived = 0
     try:
@@ -520,6 +561,7 @@ def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> None:
     except OSError as error:
         telemetry.increment("matter_prune_archive_failures")
         print(f"Could not archive pruned matters before deletion: {error.__class__.__name__}")
+        return False
     telemetry.increment("matters_pruned", len(pruned_matters))
     active_count = sum(1 for matter in pruned_matters if _matter_is_active(matter))
     if active_count:
@@ -529,6 +571,7 @@ def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> None:
             f"Retention limit reached: pruned {len(pruned_matters)} matter(s) including "
             f"{active_count} active NDA(s); archived {archived} record(s) to {archive_dir.name}/."
         )
+    return True
 
 
 def _gmail_attachment_keys_for_metadata(metadata: dict[str, Any]) -> tuple[tuple[str, str], ...]:

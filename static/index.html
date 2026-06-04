@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260604f">
+    <link rel="stylesheet" href="/static/styles.css?v=20260604r">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260604a">
   </head>
   <body>
@@ -16,33 +16,15 @@
           </div>
           <nav class="tabbar" aria-label="Workspace" role="tablist">
             <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
-              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <rect x="2.5" y="4" width="19" height="4.5" rx="1.4"/>
-                <path d="M4.5 8.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8.5"/>
-                <path d="M10 12.5h4"/>
-              </svg>
               <span>Repository</span>
             </button>
             <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
-              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M12 15.5V4"/>
-                <path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
-                <path d="M4.5 15.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.5"/>
-              </svg>
               <span>Upload</span>
             </button>
             <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
-              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M12 3.25 18.5 6v5.4c0 3.8-2.7 6.95-6.5 7.85C8.2 18.35 5.5 15.2 5.5 11.4V6L12 3.25Z"/>
-                <path d="m9.2 11.7 2 2 3.6-3.9"/>
-              </svg>
               <span>Review</span>
             </button>
             <button class="tab-button" id="clausesTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="clauses">
-              <svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
-                <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 0 1-4 0v-.06a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 0 1 0-4h.06A1.8 1.8 0 0 0 4.7 8.8a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2 2 0 0 1 7.13 3.95l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.25 2.7V2.6a2 2 0 0 1 4 0v.06a1.8 1.8 0 0 0 1.1 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.1h.06a2 2 0 0 1 0 4h-.06A1.8 1.8 0 0 0 19.4 15Z"/>
-              </svg>
               <span>Admin</span>
             </button>
           </nav>
@@ -53,9 +35,6 @@
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
               <div>
-                <div class="studio-tags">
-                  <span>In Review</span>
-                </div>
                 <h1 id="studioDocTitle">Untitled NDA</h1>
               </div>
             </div>
@@ -87,10 +66,6 @@
           </section>
 
           <section class="studio-grid">
-            <aside class="studio-clauses" aria-label="Studio clause map">
-              <div class="studio-clause-list" id="studioClauseLane"></div>
-            </aside>
-
             <section class="studio-document">
               <div class="studio-doc-toolbar">
                 <div class="studio-toolbar-left">
@@ -153,12 +128,27 @@
 
             <aside class="studio-playbook" aria-label="Selected clause details">
               <h2 id="studioInspectorTitle">Selected Clause</h2>
+              <section class="studio-clause-navigator" aria-label="Clause navigator">
+                <div class="studio-clause-navigator-head">
+                  <span>Clause Navigator</span>
+                </div>
+                <div class="studio-clause-scroll-shell">
+                  <button class="studio-clause-scroll-btn prev" type="button" data-clause-scroll="prev" aria-label="Previous clauses" title="Previous clauses">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 18-6-6 6-6"/></svg>
+                  </button>
+                  <div class="studio-clause-scroll">
+                    <div class="studio-clause-list" id="studioClauseLane"></div>
+                  </div>
+                  <button class="studio-clause-scroll-btn next" type="button" data-clause-scroll="next" aria-label="Next clauses" title="Next clauses">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"/></svg>
+                  </button>
+                </div>
+              </section>
               <div class="studio-inspector-tabs" role="tablist" aria-label="Review inspector">
                 <button class="active" type="button" data-review-inspector="clause" role="tab" aria-selected="true">Clause</button>
                 <button type="button" data-review-inspector="structure" role="tab" aria-selected="false">Structure</button>
               </div>
               <section class="studio-card" id="studioDetailPanel">
-                <p>No review yet.</p>
               </section>
             </aside>
           </section>
@@ -237,7 +227,6 @@
           <section class="repository-shell">
             <header class="repository-header">
               <div class="repository-title">
-                <span class="repository-icon" aria-hidden="true"></span>
                 <h1>Contract Repository</h1>
               </div>
               <div class="repository-header-actions">
@@ -924,6 +913,17 @@
                   </section>
 
                   <section class="integration-subsection">
+                    <h3>Inbound search terms</h3>
+                    <form class="integration-search-form" id="adminGmailSearchForm">
+                      <textarea id="adminGmailSearchTermsInput" rows="7" spellcheck="false" aria-label="Gmail inbound search terms"></textarea>
+                      <div class="integration-search-actions">
+                        <p data-admin-gmail="search-terms-copy">Checking terms</p>
+                        <button class="secondary" id="adminGmailSearchSaveButton" type="submit">Save terms</button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section class="integration-subsection">
                     <h3>Connection setup</h3>
                     <div class="integration-connection-list" id="adminGmailSetupPanel">
                       <div class="integration-connection-empty">Checking Gmail connection</div>
@@ -1054,10 +1054,10 @@
 
     <script src="/static/js/config.js"></script>
     <script src="/static/js/html-utils.js"></script>
-    <script src="/static/js/clause-status.js"></script>
+    <script src="/static/js/clause-status.js?v=20260604a"></script>
     <script src="/static/js/inline-diff.js"></script>
     <script src="/static/js/matter-utils.js"></script>
-    <script src="/static/js/redline-rendering.js"></script>
+    <script src="/static/js/redline-rendering.js?v=20260604a"></script>
     <script src="/static/js/repository-api.js"></script>
     <script src="/static/js/repository-model.js"></script>
     <script src="/static/js/repository-board.js"></script>
@@ -1072,7 +1072,7 @@
     <script src="/static/js/playbook-view.js"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260604f"></script>
     <script src="/static/js/review-workstation-source.js?v=20260604a"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260604f"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260604m"></script>
     <script src="/static/js/review-workstation-viewer.js"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>

@@ -237,6 +237,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 matter_routes.handle_matter_stage_update(self, path)
                 return
+            if path.startswith("/api/matters/") and path.endswith("/review-refresh"):
+                matter_routes.handle_matter_review_refresh(self, path)
+                return
             if path.startswith("/api/matters/") and path.endswith("/reviewed"):
                 matter_routes.handle_matter_reviewed_update(self, path)
                 return
@@ -590,7 +593,7 @@ def _run_scheduled_gmail_sync() -> None:
             str(error),
             started_at=started_at,
             finished_at=finished_at,
-            query=gmail_integration.DEFAULT_INBOUND_QUERY,
+            query=gmail_integration._default_inbound_query(),
         )
         _log_background_error("Gmail scheduled sync failed", error)
         time.sleep(5)

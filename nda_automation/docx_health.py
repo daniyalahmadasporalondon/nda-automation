@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple
 from zipfile import BadZipFile, ZipFile
 
 from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
+from .docx_text import DocxExtractionError, validate_docx_archive
 
 # Tracked redlines only add text (insertions as w:t, deletions retained as
 # w:delText), so the exported visible text is always >= the source text. An
@@ -41,6 +42,12 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
 
     try:
         with ZipFile(BytesIO(docx_bytes)) as archive:
+            try:
+                validate_docx_archive(archive)
+            except DocxExtractionError as exc:
+                errors.append(str(exc))
+                return errors
+
             corrupt_part = archive.testzip()
             if corrupt_part:
                 errors.append(f"ZIP integrity check failed at {corrupt_part}.")
@@ -128,8 +135,9 @@ def exported_document_text(docx_bytes: bytes) -> str:
     """Visible + tracked-deleted text of the export (w:t and w:delText nodes)."""
     try:
         with ZipFile(BytesIO(docx_bytes)) as archive:
+            validate_docx_archive(archive)
             document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
-    except (BadZipFile, KeyError, ET.ParseError, UnsafeDocxXmlError):
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
         return ""
     parts = [
         node.text or ""

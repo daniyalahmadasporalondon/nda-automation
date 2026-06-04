@@ -193,6 +193,41 @@ class CheckerTests(unittest.TestCase):
         self.assertTrue(result_clause["passes"])
         self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
 
+    def test_mutuality_accepts_reciprocal_covenants_despite_one_way_destruction_duty(self):
+        result = review_nda(
+            """
+            Each party may disclose Confidential Information, and each party acts as both a Disclosing Party and a Receiving Party.
+
+            The Receiving Party has a unilateral obligation to destroy or return all copies of Confidential Information on request.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "match")
+        self.assertTrue(result_clause["passes"])
+        self.assertEqual(result_clause["reason_code"], "mutuality_obligation_found")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(result_clause["mutuality_analysis"]["strong_mutuality_paragraph_ids"], ["p1"])
+        self.assertEqual(result_clause["mutuality_analysis"]["one_way_paragraph_ids"], ["p2"])
+
+    def test_mutuality_checks_operative_one_way_clause_despite_reciprocal_boilerplate(self):
+        result = review_nda(
+            """
+            Each party may disclose Confidential Information, and each party acts as both a Disclosing Party and a Receiving Party.
+
+            Only the Receiving Party shall keep Confidential Information confidential and protect it from unauthorized use or disclosure.
+            """
+        )
+
+        result_clause = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertEqual(result_clause["status"], "check")
+        self.assertFalse(result_clause["passes"])
+        self.assertEqual(result_clause["decision"], "fail")
+        self.assertEqual(result_clause["reason_code"], "one_way_mutuality_language")
+        self.assertEqual(result_clause["matched_paragraph_ids"], ["p2"])
+        self.assertEqual(result_clause["mutuality_analysis"]["strong_mutuality_paragraph_ids"], ["p1"])
+        self.assertEqual(result_clause["mutuality_analysis"]["one_way_paragraph_ids"], ["p2"])
+
     def test_mutuality_rejects_fixed_one_way_role_labels(self):
         result = review_nda(
             """
@@ -574,6 +609,16 @@ class CheckerTests(unittest.TestCase):
         self.assertFalse(term_clause["passes"])
         self.assertEqual(term_clause["issue_type"], "present_but_wrong")
         self.assertIn("five years or less", term_clause["what_to_fix"])
+
+    def test_term_and_survival_rejects_hyphenated_compound_years(self):
+        result = review_nda("The confidentiality obligations survive for twenty-five years.")
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertEqual(term_clause["issue_type"], "present_but_wrong")
+        self.assertEqual(term_clause["reason_code"], "term_survival_over_cap")
+        self.assertIn("twenty-five years", term_clause["matched_text"])
 
     def test_term_and_survival_allows_numbered_trade_secret_carve_out(self):
         result = review_nda(
@@ -996,6 +1041,10 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(
             [record["approved"] for record in governing_law["governing_law_analysis"]["candidate_records"]],
+            [True, False],
+        )
+        self.assertEqual(
+            [record["needs_review"] for record in governing_law["governing_law_analysis"]["candidate_records"]],
             [True, False],
         )
 
@@ -2184,10 +2233,12 @@ class CheckerTests(unittest.TestCase):
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
         self.assertEqual(result["overall_status"], "needs_review")
         self.assertEqual(result["requirements_needs_review"], 1)
-        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["status"], "review")
+        self.assertTrue(non_circumvention["passes"])
         self.assertEqual(non_circumvention["issue_type"], "unclear")
         self.assertEqual(non_circumvention["decision"], "review")
         self.assertTrue(non_circumvention["needs_review"])
+        self.assertEqual(non_circumvention["review_state"]["state"], "review")
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p5"])
         self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p5"])
         self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
@@ -2312,10 +2363,12 @@ class CheckerTests(unittest.TestCase):
         )
 
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
-        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["status"], "review")
+        self.assertTrue(non_circumvention["passes"])
         self.assertEqual(non_circumvention["issue_type"], "unclear")
         self.assertEqual(non_circumvention["decision"], "review")
         self.assertTrue(non_circumvention["needs_review"])
+        self.assertEqual(non_circumvention["review_state"]["state"], "review")
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
         self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p1"])
         self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
@@ -2363,9 +2416,11 @@ class CheckerTests(unittest.TestCase):
         )
 
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
-        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["status"], "review")
+        self.assertTrue(non_circumvention["passes"])
         self.assertEqual(non_circumvention["decision"], "review")
         self.assertEqual(non_circumvention["reason_code"], "unclear_non_circumvention_reference")
+        self.assertEqual(non_circumvention["review_state"]["state"], "review")
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p3"])
         self.assertEqual(non_circumvention["non_circumvention_analysis"]["review_paragraph_ids"], ["p3"])
         self.assertEqual(non_circumvention["non_circumvention_analysis"]["references"][0]["status"], "unresolved")
@@ -2391,9 +2446,11 @@ class CheckerTests(unittest.TestCase):
         )
 
         non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
-        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["status"], "review")
+        self.assertTrue(non_circumvention["passes"])
         self.assertEqual(non_circumvention["decision"], "review")
         self.assertEqual(non_circumvention["reason_code"], "unclear_non_circumvention_reference")
+        self.assertEqual(non_circumvention["review_state"]["state"], "review")
         self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p3", "p4", "p5"])
         self.assertEqual(
             non_circumvention["non_circumvention_analysis"]["references"][0]["status"],

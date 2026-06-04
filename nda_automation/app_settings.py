@@ -17,8 +17,79 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev portabi
 _SETTINGS_LOCK = threading.RLock()
 MAX_GMAIL_SYNC_HISTORY = 5
 MAX_SETTINGS_AUDIT_HISTORY = 25
+MAX_GMAIL_SEARCH_TERMS = 60
+MAX_GMAIL_SEARCH_TERM_LENGTH = 80
+LEGACY_GMAIL_INBOUND_SEARCH_TERMS = [
+    "NDA",
+    "MNDA",
+    "mutual NDA",
+    "non-disclosure",
+    "non disclosure",
+    "non-disclosure agreement",
+    "non disclosure agreement",
+    "mutual non-disclosure",
+    "mutual non disclosure",
+    "confidentiality agreement",
+    "mutual confidentiality agreement",
+    "confidentiality",
+    "confidential",
+    "confidential disclosure agreement",
+    "CDA",
+    "confidentiality deed",
+    "non-disclosure deed",
+    "confidentiality undertaking",
+    "letter of confidentiality",
+    "data processing agreement",
+    "DPA",
+]
+DEFAULT_GMAIL_INBOUND_SEARCH_TERMS = [
+    "NDA",
+    "MNDA",
+    "mutual NDA",
+    "non-disclosure",
+    "non disclosure",
+    "non-disclosure agreement",
+    "non disclosure agreement",
+    "mutual non-disclosure",
+    "mutual non disclosure",
+    "mutual non-disclosure agreement",
+    "mutual non disclosure agreement",
+    "mutual NDA agreement",
+    "mutual MNDA",
+    "confidentiality agreement",
+    "mutual confidentiality agreement",
+    "confidentiality",
+    "confidential",
+    "confidential disclosure agreement",
+    "mutual confidential disclosure agreement",
+    "CDA",
+    "MCDA",
+    "confidentiality deed",
+    "non-disclosure deed",
+    "mutual confidentiality deed",
+    "mutual non-disclosure deed",
+    "confidentiality undertaking",
+    "non-disclosure undertaking",
+    "letter of confidentiality",
+    "confidentiality letter",
+    "confidentiality terms",
+    "confidentiality obligations",
+    "confidential information",
+    "confidential materials",
+    "confidentiality provisions",
+    "confidentiality clause",
+    "confidentiality clauses",
+    "secrecy agreement",
+    "proprietary information agreement",
+    "restricted disclosure",
+    "do not disclose",
+    "not disclose",
+    "data processing agreement",
+    "DPA",
+]
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
+    "inbound_search_terms": DEFAULT_GMAIL_INBOUND_SEARCH_TERMS,
     "outbound_enabled": True,
     "sync_frequency": "10_minutes",
     "last_sync_at": "",
@@ -38,6 +109,7 @@ DEFAULT_REVIEW_RUNTIME_SETTINGS = {
 SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
 SUPPORTED_AI_FIRST_FALLBACK_MODES = {"deterministic", "fail_closed"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
+GMAIL_TRIAGE_API_KEY_FILENAME = "gmail_triage_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
@@ -133,6 +205,11 @@ def stored_ai_api_key() -> str:
         return _stored_ai_api_key_unlocked()
 
 
+def stored_gmail_triage_api_key() -> str:
+    with _locked_settings():
+        return _stored_secret_key_unlocked(_gmail_triage_api_key_path(), "Gmail triage API key")
+
+
 def save_ai_api_key(api_key: str) -> None:
     cleaned_key = str(api_key or "").strip()
     if not cleaned_key:
@@ -144,10 +221,29 @@ def save_ai_api_key(api_key: str) -> None:
         _save_ai_api_key_unlocked(cleaned_key)
 
 
+def save_gmail_triage_api_key(api_key: str) -> None:
+    cleaned_key = str(api_key or "").strip()
+    if not cleaned_key:
+        raise AppSettingsError("Gmail triage API key is required.")
+    if len(cleaned_key) > MAX_AI_API_KEY_LENGTH:
+        raise AppSettingsError("Gmail triage API key is too long.")
+
+    with _locked_settings():
+        _save_secret_key_unlocked(_gmail_triage_api_key_path(), cleaned_key, "Gmail triage API key")
+
+
 def clear_ai_api_key() -> None:
     with _locked_settings():
         try:
             _ai_api_key_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def clear_gmail_triage_api_key() -> None:
+    with _locked_settings():
+        try:
+            _gmail_triage_api_key_path().unlink()
         except FileNotFoundError:
             pass
 
@@ -174,6 +270,10 @@ def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
 def gmail_role_enabled(role: str) -> bool:
     key = f"{role}_enabled"
     return gmail_settings().get(key, True)
+
+
+def gmail_inbound_search_terms() -> list[str]:
+    return gmail_settings()["inbound_search_terms"]
 
 
 def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
@@ -249,8 +349,12 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sync_frequency = str(raw_frequency or DEFAULT_GMAIL_SETTINGS["sync_frequency"])
     if sync_frequency not in GMAIL_SYNC_FREQUENCIES:
         sync_frequency = DEFAULT_GMAIL_SETTINGS["sync_frequency"]
+    inbound_search_terms = gmail_search_terms_from_payload(payload.get("inbound_search_terms"))
+    if _is_legacy_default_gmail_search_terms(inbound_search_terms):
+        inbound_search_terms = list(DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
     return {
         "inbound_enabled": bool(payload.get("inbound_enabled", DEFAULT_GMAIL_SETTINGS["inbound_enabled"])),
+        "inbound_search_terms": inbound_search_terms,
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
         "sync_frequency": sync_frequency,
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
@@ -360,9 +464,59 @@ def _normalized_runtime_value(value: Any) -> str:
 def _valid_gmail_setting(key: str, value: Any) -> bool:
     if key in ("inbound_enabled", "outbound_enabled"):
         return isinstance(value, bool)
+    if key == "inbound_search_terms":
+        return bool(gmail_search_terms_from_payload(value, fallback=[]))
     if key == "sync_frequency":
         return isinstance(value, str) and value in GMAIL_SYNC_FREQUENCIES
     return False
+
+
+def gmail_search_terms_from_payload(value: object, *, fallback: list[str] | None = None) -> list[str]:
+    fallback_terms = DEFAULT_GMAIL_INBOUND_SEARCH_TERMS if fallback is None else fallback
+    raw_terms: list[object]
+    if value is None:
+        raw_terms = list(fallback_terms)
+    elif isinstance(value, str):
+        raw_terms = value.replace("\n", ",").split(",")
+    elif isinstance(value, list):
+        raw_terms = value
+    else:
+        raw_terms = list(fallback_terms)
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw_term in raw_terms:
+        term = _clean_gmail_search_term(raw_term)
+        if not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        terms.append(term)
+        seen.add(key)
+        if len(terms) >= MAX_GMAIL_SEARCH_TERMS:
+            break
+    if not terms and fallback_terms:
+        return gmail_search_terms_from_payload(list(fallback_terms), fallback=[])
+    return terms
+
+
+def _clean_gmail_search_term(value: object) -> str:
+    term = " ".join(str(value or "").split())
+    term = term.strip("\"'()")
+    if not term or len(term) > MAX_GMAIL_SEARCH_TERM_LENGTH:
+        return ""
+    if any(character in term for character in "\r\n\t"):
+        return ""
+    return term
+
+
+def _is_legacy_default_gmail_search_terms(terms: list[str]) -> bool:
+    if len(terms) != len(LEGACY_GMAIL_INBOUND_SEARCH_TERMS):
+        return False
+    return [term.casefold() for term in terms] == [
+        term.casefold() for term in LEGACY_GMAIL_INBOUND_SEARCH_TERMS
+    ]
 
 
 def _nonnegative_int(value: Any, fallback: int) -> int:
@@ -492,6 +646,10 @@ def _ai_api_key_path():
     return matter_store.DATA_DIR / AI_API_KEY_FILENAME
 
 
+def _gmail_triage_api_key_path():
+    return matter_store.DATA_DIR / GMAIL_TRIAGE_API_KEY_FILENAME
+
+
 def _load_settings_unlocked() -> dict[str, Any]:
     settings_path = _settings_path()
     if not settings_path.is_file():
@@ -509,23 +667,29 @@ def _load_settings_unlocked() -> dict[str, Any]:
 
 
 def _stored_ai_api_key_unlocked() -> str:
-    api_key_path = _ai_api_key_path()
+    return _stored_secret_key_unlocked(_ai_api_key_path(), "AI API key")
+
+
+def _stored_secret_key_unlocked(api_key_path: Path, label: str) -> str:
     if not api_key_path.is_file():
         return ""
     try:
         with api_key_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except OSError as exc:
-        raise AppSettingsError("AI API key could not be read.") from exc
+        raise AppSettingsError(f"{label} could not be read.") from exc
     except json.JSONDecodeError as exc:
-        raise AppSettingsError("AI API key storage is not valid JSON.") from exc
+        raise AppSettingsError(f"{label} storage is not valid JSON.") from exc
     if not isinstance(payload, dict):
-        raise AppSettingsError("AI API key storage must contain a JSON object.")
+        raise AppSettingsError(f"{label} storage must contain a JSON object.")
     return str(payload.get("api_key") or "").strip()
 
 
 def _save_ai_api_key_unlocked(api_key: str) -> None:
-    api_key_path = _ai_api_key_path()
+    _save_secret_key_unlocked(_ai_api_key_path(), api_key, "AI API key")
+
+
+def _save_secret_key_unlocked(api_key_path: Path, api_key: str, label: str) -> None:
     matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
     temporary_path = api_key_path.with_name(f".{api_key_path.name}.tmp")
     try:
@@ -546,7 +710,7 @@ def _save_ai_api_key_unlocked(api_key: str) -> None:
             temporary_path.unlink()
         except FileNotFoundError:
             pass
-        raise AppSettingsError("AI API key could not be saved.") from exc
+        raise AppSettingsError(f"{label} could not be saved.") from exc
 
 
 def _save_settings_unlocked(settings: dict[str, Any]) -> None:

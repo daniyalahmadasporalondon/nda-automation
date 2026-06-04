@@ -1,12 +1,62 @@
 const AdminIntegrationsView = (() => {
   const DEFAULT_QUERY_FALLBACK = [
     "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me",
-    '(NDA OR "non-disclosure" OR "non disclosure"',
+    '(NDA OR MNDA OR "mutual NDA" OR "non-disclosure" OR "non disclosure"',
     'OR "non-disclosure agreement" OR "non disclosure agreement"',
-    'OR "confidentiality agreement" OR confidentiality OR confidential)',
+    'OR "mutual non-disclosure" OR "mutual non disclosure"',
+    'OR "confidentiality agreement" OR "mutual confidentiality agreement"',
+    'OR confidentiality OR confidential OR "confidential disclosure agreement"',
+    'OR CDA OR "confidentiality deed" OR "non-disclosure deed"',
+    'OR "confidentiality undertaking" OR "letter of confidentiality"',
+    'OR "data processing agreement" OR DPA)',
   ].join(" ");
   const DEFAULT_PARSED_FIELDS = "Subject headers, plain text body, HTML body, Gmail snippet, attachment filenames";
-  const DEFAULT_PARSED_TERMS = "non-disclosure agreement, non-disclosure, confidentiality agreement, confidentiality, confidential, NDA";
+  const DEFAULT_SEARCH_TERMS = [
+    "NDA",
+    "MNDA",
+    "mutual NDA",
+    "non-disclosure",
+    "non disclosure",
+    "non-disclosure agreement",
+    "non disclosure agreement",
+    "mutual non-disclosure",
+    "mutual non disclosure",
+    "mutual non-disclosure agreement",
+    "mutual non disclosure agreement",
+    "mutual NDA agreement",
+    "mutual MNDA",
+    "confidentiality agreement",
+    "mutual confidentiality agreement",
+    "confidentiality",
+    "confidential",
+    "confidential disclosure agreement",
+    "mutual confidential disclosure agreement",
+    "CDA",
+    "MCDA",
+    "confidentiality deed",
+    "non-disclosure deed",
+    "mutual confidentiality deed",
+    "mutual non-disclosure deed",
+    "confidentiality undertaking",
+    "non-disclosure undertaking",
+    "letter of confidentiality",
+    "confidentiality letter",
+    "confidentiality terms",
+    "confidentiality obligations",
+    "confidential information",
+    "confidential materials",
+    "confidentiality provisions",
+    "confidentiality clause",
+    "confidentiality clauses",
+    "secrecy agreement",
+    "proprietary information agreement",
+    "restricted disclosure",
+    "do not disclose",
+    "not disclose",
+    "data processing agreement",
+    "DPA",
+  ];
+  const DEFAULT_PARSED_TERMS = DEFAULT_SEARCH_TERMS.join(", ");
   const DEFAULT_FREQUENCY = "10_minutes";
   const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",
@@ -27,6 +77,9 @@ const AdminIntegrationsView = (() => {
     gmailInboundToggle,
     gmailOutboundToggle,
     gmailFrequencyControl,
+    gmailSearchForm,
+    gmailSearchTermsInput,
+    gmailSearchSaveButton,
     gmailSyncHistory,
     reviewErrorFromPayload,
   }) {
@@ -35,6 +88,10 @@ const AdminIntegrationsView = (() => {
     gmailOutboundToggle?.addEventListener("click", () => updateGmailToggle("outbound"));
     gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
       button.addEventListener("click", () => updateGmailFrequency(button.dataset.gmailFrequency || DEFAULT_FREQUENCY));
+    });
+    gmailSearchForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      updateGmailSearchTerms();
     });
 
     async function load() {
@@ -102,6 +159,33 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function updateGmailSearchTerms() {
+      const terms = parseSearchTerms(gmailSearchTermsInput?.value || "");
+      if (!terms.length) {
+        setOverall("Add terms", "blocked");
+        setFact("search-terms-copy", "Add at least one search term.");
+        return;
+      }
+      setSearchTermsDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const response = await fetch("/api/gmail/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inbound_search_terms: terms }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail search terms could not save");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Save failed", "blocked");
+        renderSearchTerms(state.gmailStatus || {});
+      } finally {
+        setSearchTermsDisabled(false);
+      }
+    }
+
     function renderGmail(status, matters) {
       state.gmailStatus = status;
       const inbound = status.inbound || {};
@@ -111,6 +195,7 @@ const AdminIntegrationsView = (() => {
       setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
       renderToggleControls(status);
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
+      renderSearchTerms(status);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", inbound.error || configuredLabel(inbound));
@@ -251,6 +336,7 @@ const AdminIntegrationsView = (() => {
       renderSyncHistory(state.gmailStatus?.settings?.sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
+      renderSearchTerms(state.gmailStatus || {});
     }
 
     function setOverall(label, tone) {
@@ -304,6 +390,17 @@ const AdminIntegrationsView = (() => {
       });
     }
 
+    function renderSearchTerms(status) {
+      const terms = searchTermsFromStatus(status);
+      if (gmailSearchTermsInput) gmailSearchTermsInput.value = terms.join("\n");
+      setFact("search-terms-copy", `${terms.length} Gmail search terms.`);
+    }
+
+    function setSearchTermsDisabled(disabled) {
+      if (gmailSearchTermsInput) gmailSearchTermsInput.disabled = disabled;
+      if (gmailSearchSaveButton) gmailSearchSaveButton.disabled = disabled;
+    }
+
     return { load };
   }
 
@@ -339,6 +436,29 @@ const AdminIntegrationsView = (() => {
   function parsingTermsLabel(parsing) {
     const terms = Array.isArray(parsing?.terms) ? parsing.terms.filter(Boolean) : [];
     return terms.length ? terms.join(", ") : DEFAULT_PARSED_TERMS;
+  }
+
+  function searchTermsFromStatus(status) {
+    const settingsTerms = Array.isArray(status?.settings?.inbound_search_terms) ? status.settings.inbound_search_terms : [];
+    const parsingTerms = Array.isArray(status?.inbound?.parsing?.terms) ? status.inbound.parsing.terms : [];
+    const terms = settingsTerms.length ? settingsTerms : parsingTerms;
+    return terms.length ? terms.map((term) => String(term)).filter(Boolean) : DEFAULT_SEARCH_TERMS;
+  }
+
+  function parseSearchTerms(value) {
+    const terms = [];
+    const seen = new Set();
+    String(value || "")
+      .split(/\n|,/)
+      .map((term) => term.replace(/^["'()]+|["'()]+$/g, "").trim().replace(/\s+/g, " "))
+      .filter(Boolean)
+      .forEach((term) => {
+        const key = term.toLowerCase();
+        if (seen.has(key)) return;
+        terms.push(term);
+        seen.add(key);
+      });
+    return terms.slice(0, 60);
   }
 
   function connectionNextStep(role, account, token) {

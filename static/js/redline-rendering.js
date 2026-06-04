@@ -149,13 +149,8 @@ function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commen
   if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
   if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
   if (attributes) frameAttributes.push(attributes);
-  const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount) : "";
-  return `
-    <div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>
-      ${commentTools}
-      ${body}
-    </div>
-  `;
+  const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount).trim() : "";
+  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${body}</div>`;
 }
 
 function renderParagraphCommentTools(paragraphId, commentCount) {

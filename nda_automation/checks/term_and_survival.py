@@ -8,7 +8,6 @@ from .common import (
     ClauseResult,
     Paragraph,
     YEAR_TERM_PATTERN,
-    YEAR_WORDS,
     _check,
     _clause_term_patterns,
     _clause_terms,
@@ -20,6 +19,7 @@ from .common import (
     _paragraph_matches,
     _term_context_patterns,
     _year_count_label,
+    _year_word_value,
 )
 from .context import attach_structure_context
 from ..review_state import _semantic_review_code, _issue_type, _generic_reason_code, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
@@ -184,9 +184,9 @@ def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:
         elif parenthetical_digit:
             value = int(parenthetical_digit)
         elif word_value:
-            value = YEAR_WORDS[word_value]
+            value = _year_word_value(word_value)
         elif parenthetical_word:
-            value = YEAR_WORDS[parenthetical_word]
+            value = _year_word_value(parenthetical_word)
         else:
             continue
         years = value / 12 if unit.startswith("month") else value

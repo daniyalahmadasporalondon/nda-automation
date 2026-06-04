@@ -26,7 +26,7 @@ function clauseStatus(clause) {
   return {
     dotTone,
     fails: fail && !idle,
-    issueLabel: idle ? "Pending" : review ? "Needs review" : clause?.issue_label || "Needs review",
+    issueLabel: idle ? "Pending" : review ? "Needs review" : fail ? "Fail" : "Pass",
     blocksSend: Boolean(reviewState.blocks_send),
     needsReview: review && !idle,
     passes,

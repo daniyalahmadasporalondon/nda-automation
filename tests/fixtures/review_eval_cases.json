@@ -8,6 +8,15 @@
     "expected": {"decision": "pass", "reason_code": "mutuality_obligation_found"}
   },
   {
+    "name": "mutuality_reciprocal_destruction_obligation_pass",
+    "clause_id": "mutuality",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "Each party may disclose Confidential Information, and each party acts as both a Disclosing Party and a Receiving Party.\n\nThe Receiving Party has a unilateral obligation to destroy or return all copies of Confidential Information on request.",
+    "expected": {"decision": "pass", "reason_code": "mutuality_obligation_found"}
+  },
+  {
     "name": "mutuality_one_way_fail",
     "clause_id": "mutuality",
     "kind": "deterministic",
@@ -42,6 +51,15 @@
     "label_note": "Product judgment (not counsel-final): an approved law with an 'unless otherwise agreed' escape hatch is not a fail, but the governing-law position can move later without review, so surface it. Gate as review only.",
     "text": "This Agreement shall be governed by the laws of England and Wales, unless otherwise agreed in writing by the parties.",
     "expected": {"decision": "review", "reason_code": "governing_law_conditional_override"}
+  },
+  {
+    "name": "governing_law_approved_with_unapproved_choice_carveout_review",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "text": "This Agreement shall be governed by the laws of England and Wales except that intellectual property disputes shall be governed by the laws of France.",
+    "expected": {"decision": "review", "reason_code": "unclear_governing_law"}
   },
   {
     "name": "governing_law_missing_fail",

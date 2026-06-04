@@ -16,9 +16,6 @@ function renderResult(result, reviewedText) {
   state.reviewedClauseIds = {};
   state.pendingAiSecondOpinionClauseId = null;
   state.aiSecondOpinionErrors = {};
-  state.aiDraftValidations = {};
-  state.aiDraftValidationErrors = {};
-  state.pendingAiDraftValidationKey = null;
   resetReviewEditHistory();
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
@@ -66,9 +63,7 @@ function renderStudioEmpty() {
   if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
   } else {
-    studioDetailPanel.innerHTML = `
-      <p>No review yet.</p>
-    `;
+    studioDetailPanel.innerHTML = "";
   }
   updateReviewInspectorTabs();
   updateExportButtonState();
@@ -234,16 +229,21 @@ function humanReviewAcknowledged() {
   return ids.length > 0 && ids.every((clauseId) => clauseReviewAcknowledged(clauseId));
 }
 
-function renderClauseReviewAction(clause, status) {
-  if (!hasReviewResults() || !status.needsReview) return "";
-  const reviewed = clauseReviewAcknowledged(clause.id);
-  const label = reviewed ? "Reviewed" : "Mark reviewed";
+function renderActiveClauseStatusToggle(clause, status) {
+  const reviewed = status.needsReview && clauseReviewAcknowledged(clause.id);
+  const label = reviewed ? "Reviewed" : status.issueLabel;
+  if (!status.needsReview) {
+    return `<span class="active-clause-status ${escapeHtml(status.tone)}">${escapeHtml(label)}</span>`;
+  }
   return `
-    <div class="studio-review-action">
-      <span class="studio-export-controls" role="group" aria-label="${escapeHtml(clause.name)} review action">
-        <button class="export-choice review-choice ${reviewed ? "active" : ""}" type="button" data-review-action="mark-reviewed" data-review-clause-id="${escapeHtml(clause.id)}" aria-pressed="${reviewed ? "true" : "false"}">${escapeHtml(label)}</button>
-      </span>
-    </div>
+    <button
+      class="active-clause-status ${escapeHtml(status.tone)} ${reviewed ? "reviewed" : ""}"
+      type="button"
+      data-review-action="mark-reviewed"
+      data-review-clause-id="${escapeHtml(clause.id)}"
+      aria-pressed="${reviewed ? "true" : "false"}"
+      title="${escapeHtml(reviewed ? "Mark as needs review" : "Mark reviewed")}"
+    >${escapeHtml(label)}</button>
   `;
 }
 
@@ -331,8 +331,11 @@ function applyDraftClauseDecisions(decisions) {
 
 function applyDraftRedlineDecisions(decisions) {
   if (!decisions || typeof decisions !== "object") return;
+  const validRedlineIds = new Set(state.reviewRedlines.map((edit) => edit.id));
   Object.entries(decisions).forEach(([redlineId, included]) => {
-    state.exportRedlineDecisions[redlineId] = Boolean(included);
+    if (validRedlineIds.has(redlineId)) {
+      state.exportRedlineDecisions[redlineId] = Boolean(included);
+    }
   });
 }
 
@@ -659,27 +662,6 @@ function selectedRedlineTemplateOptionId(edit) {
     || "";
 }
 
-function renderLaneRedlineTemplateOptions(edit) {
-  const options = edit.template_options || [];
-  if (options.length <= 1) return "";
-  const selectedOptionId = selectedRedlineTemplateOptionId(edit);
-  return `
-    <div class="studio-redline-template-options" aria-label="Jurisdiction options">
-      <span>Jurisdiction</span>
-      <div class="studio-template-choice-row">
-        ${options.map((option) => {
-          const selected = String(option.id || "") === String(selectedOptionId || "");
-          return `
-            <button class="studio-template-choice ${selected ? "selected" : ""}" type="button" data-redline-template-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-pressed="${selected ? "true" : "false"}" title="${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}">
-              ${escapeHtml(option.label || "Option")}
-            </button>
-          `;
-        }).join("")}
-      </div>
-    </div>
-  `;
-}
-
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -695,40 +677,23 @@ function renderStudioClauseLane() {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseStatus(clause);
       const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
-      const redlineCount = clauseRedlines.length;
-      const canDecide = hasReviewResults() && redlineCount > 0;
-      const included = clauseExportIncluded(clause.id);
-      const exportState = renderClauseExportState(clause, canDecide, included);
-      const redlineOptions = canDecide
-        ? clauseRedlines
-            .map((edit) => {
-              const editIncluded = redlineExportIncluded(edit);
-              const selectedEdit = applyTemplateSelectionToRedline(edit);
-              const insertText = String(selectedEdit.insert_text || selectedEdit.replacement_text || "").trim();
-              const isRemoval = !insertText;
-              const text = insertText || String(selectedEdit.original_text || selectedEdit.matched_text || "").trim() || "Removes this paragraph.";
-              return `
-                <div class="studio-redline-option">
-                  <span class="studio-export-controls" role="group" aria-label="Redline decision">
-                    <button class="export-choice ${editIncluded ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="include" aria-pressed="${editIncluded ? "true" : "false"}">Include</button>
-                    <button class="export-choice ${!editIncluded ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="ignore" aria-pressed="${!editIncluded ? "true" : "false"}">Ignore</button>
-                  </span>
-                  ${renderLaneRedlineTemplateOptions(edit)}
-                  <p class="studio-clause-insert${isRemoval ? " removal" : ""}">${escapeHtml(text)}</p>
-                </div>
-              `;
-            })
-            .join("")
-        : "";
-      const commentState = renderClauseCommentState(clause);
-      const reviewAction = renderClauseReviewAction(clause, status);
+      const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
+      const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !redlineExportIncluded(edit));
+      const reviewed = hasReviewResults() && clauseReviewAcknowledged(clause.id);
+      const comment = hasReviewResults() && Boolean(clauseReviewComment(clause.id));
+      const stateLabel = reviewed
+        ? "Reviewed"
+        : allRedlinesIgnored
+          ? "Ignored"
+          : redlineCount
+            ? `${redlineCount} proposed ${redlineCount === 1 ? "redline" : "redlines"}`
+            : status.issueLabel;
       const selectable = hasReviewResults()
         ? `
-          <button class="studio-clause-select" type="button" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${clause.name}: ${status.pillLabel}`)}">
+          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${clause.name}: ${stateLabel}`)}" title="${escapeHtml(`${clause.name}: ${stateLabel}`)}">
             <span class="studio-clause-dot ${status.dotTone}"></span>
             <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
-            ${exportState}
-            ${commentState}
+            ${comment ? '<span class="studio-comment-state">Comment</span>' : ""}
           </button>
         `
         : `
@@ -738,19 +703,36 @@ function renderStudioClauseLane() {
           </div>
         `;
       return `
-        <article class="studio-clause-item ${selected} ${status.tone}"${hasReviewResults() ? ` data-studio-lane-id="${escapeHtml(clause.id)}"` : ""}>
+        <article class="studio-clause-item ${selected} ${status.tone} ${reviewed ? "reviewed" : ""} ${allRedlinesIgnored ? "ignored" : ""}">
           ${selectable}
-          ${reviewAction}
-          ${redlineOptions}
         </article>
       `;
     })
     .join("");
 
   bindClauseSelection(studioClauseLane, "[data-studio-lane-id]", "studioLaneId");
-  bindExportDecisionControls(studioClauseLane);
-  bindTemplateOptionControls(studioClauseLane);
-  bindReviewAcknowledgementControls(studioClauseLane);
+  bindClauseNavigatorScrollControls();
+}
+
+function bindClauseNavigatorScrollControls() {
+  const scrollNode = document.querySelector(".studio-clause-scroll");
+  const previousButton = document.querySelector("[data-clause-scroll='prev']");
+  const nextButton = document.querySelector("[data-clause-scroll='next']");
+  if (!scrollNode || !previousButton || !nextButton) return;
+
+  const updateButtons = () => {
+    const maxScroll = Math.max(0, scrollNode.scrollWidth - scrollNode.clientWidth);
+    previousButton.disabled = scrollNode.scrollLeft <= 1;
+    nextButton.disabled = scrollNode.scrollLeft >= maxScroll - 1;
+  };
+  previousButton.onclick = () => {
+    scrollNode.scrollBy({ left: -Math.max(160, Math.round(scrollNode.clientWidth * 0.75)), behavior: "smooth" });
+  };
+  nextButton.onclick = () => {
+    scrollNode.scrollBy({ left: Math.max(160, Math.round(scrollNode.clientWidth * 0.75)), behavior: "smooth" });
+  };
+  scrollNode.onscroll = updateButtons;
+  requestAnimationFrame(updateButtons);
 }
 
 function renderClauseEvidenceList(paragraphs) {
@@ -777,23 +759,29 @@ function renderClauseAiEvidenceList(spans) {
   return `<div class="evidence-list">${list.map(renderAiCitation).join("")}</div>`;
 }
 
-function renderClauseWhyBlocks({ fine, problem }) {
+function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "" }) {
   return `
-    <div class="studio-detail-block side-block problem">
-      <small>Why it might be a problem</small>
-      <p>${escapeHtml(problem.text)}</p>
-      ${problem.ev || ""}
+    <div class="studio-detail-block assessment-block">
+      <small>Assessment</small>
+      <p>${escapeHtml(assessment)}</p>
     </div>
-    <div class="studio-detail-block side-block fine">
-      <small>Why it may be fine</small>
-      <p>${escapeHtml(fine.text)}</p>
-      ${fine.ev || ""}
-    </div>
+    ${evidence ? `
+      <div class="studio-detail-block studio-detail-evidence">
+        <small>Evidence</small>
+        ${evidence}
+      </div>
+    ` : ""}
+    ${note ? `
+      <div class="studio-detail-block review-note-block">
+        <small>Review note</small>
+        <p>${escapeHtml(note)}</p>
+      </div>
+    ` : ""}
   `;
 }
 
-// Builds the heart of the panel as two stable position blocks. Each paragraph is
-// shown once when AI cites overlap with deterministic evidence.
+// Builds the heart of the panel around the active AI-first assessment. The
+// deterministic result is no longer presented as a competing counterchecker.
 function renderClauseExplanation(clause) {
   const analysis = clause && typeof clause.ai_review_analysis === "object" ? clause.ai_review_analysis : null;
   const findingText = clause.reason || clause.finding || "Clause review available.";
@@ -807,24 +795,18 @@ function renderClauseExplanation(clause) {
     ? clause.evidence_paragraphs.filter((paragraph) => paragraph && paragraph.text)
     : [];
   const aiSpans = Array.isArray(analysis?.cited_spans) ? analysis.cited_spans.filter(Boolean) : [];
+  const evidence = aiSpans.length ? renderClauseAiEvidenceList(aiSpans) : renderClauseEvidenceList(allDetParas);
 
   if (isDisagreement) {
-    const aiParaIds = new Set(
-      aiSpans
-        .map((span) => (span && typeof span === "object" ? String(span.paragraph_id || "").trim() : ""))
-        .filter(Boolean),
-    );
-    const detParas = allDetParas.filter((paragraph) => !aiParaIds.has(String(paragraph.id || "").trim()));
-    const detSide = { text: findingText, ev: renderClauseEvidenceList(detParas) };
-    const aiSide = { text: aiReason, ev: renderClauseAiEvidenceList(aiSpans) };
-    const detIsProblem = detDecision !== "pass";
-    const problem = detIsProblem ? detSide : aiSide;
-    const fine = detIsProblem ? aiSide : detSide;
-    return renderClauseWhyBlocks({ fine, problem });
+    return renderClauseAssessmentBlocks({
+      assessment: aiReason || findingText,
+      evidence,
+      note: "AI assessment and deterministic validation recorded different outcomes. Treat the assessment as the review verdict; the validation result is audit context.",
+    });
   }
 
-  // A clause can land on REVIEW because the blind AI second opinion raised a
-  // technical problem. Keep the standard headings, but explain that escalation.
+  // A clause can land on REVIEW because the AI assessment could not be trusted
+  // enough to close it automatically.
   const verdict = clauseStatus(clause);
   const aiStatus = analysis ? String(analysis.status || "").trim().toLowerCase() : "";
   const deterministicDecision = String(analysis?.deterministic_decision || "").trim().toLowerCase();
@@ -833,40 +815,30 @@ function renderClauseExplanation(clause) {
     && ["invalid", "low_confidence", "error"].includes(aiStatus);
   if (technicalEscalation) {
     const detail = aiStatus === "low_confidence"
-      ? "the AI second opinion was not confident enough to confirm it"
+      ? "the AI assessment was not confident enough to confirm it"
       : aiStatus === "invalid"
-        ? "the AI second opinion cited evidence that could not be verified in the document"
-        : "the AI second opinion was unavailable";
-    return renderClauseWhyBlocks({
-      problem: {
-        text: `The automated check did not flag this clause, but it was escalated for human review because ${detail}.`,
-      },
-      fine: {
-        text: findingText,
-        ev: renderClauseEvidenceList(allDetParas),
-      },
+        ? "the AI assessment cited evidence that could not be verified in the document"
+        : "the AI assessment was unavailable";
+    return renderClauseAssessmentBlocks({
+      assessment: `This clause was escalated for human review because ${detail}.`,
+      evidence,
+      note: findingText,
     });
   }
 
   const aiAgrees = analysis && String(analysis.status || "").toLowerCase() === "confirmed"
-    ? " AI second opinion confirmed this finding."
+    ? " AI assessment confirmed this finding."
     : "";
   if (verdict.passes) {
-    return renderClauseWhyBlocks({
-      problem: { text: "No issue was recorded for this clause." },
-      fine: {
-        text: `${findingText}${aiAgrees}`,
-        ev: renderClauseEvidenceList(allDetParas),
-      },
+    return renderClauseAssessmentBlocks({
+      assessment: `${findingText}${aiAgrees}`,
+      evidence,
     });
   }
 
-  return renderClauseWhyBlocks({
-    problem: {
-      text: `${findingText}${aiAgrees}`,
-      ev: renderClauseEvidenceList(allDetParas),
-    },
-    fine: { text: "None." },
+  return renderClauseAssessmentBlocks({
+    assessment: `${findingText}${aiAgrees}`,
+    evidence,
   });
 }
 
@@ -899,16 +871,22 @@ function renderStudioDetail() {
   }
   const clause = getSelectedReviewClause();
   if (!clause) {
-    studioDetailPanel.innerHTML = "<p>No review yet.</p>";
+    studioDetailPanel.innerHTML = "";
     return;
   }
   const status = clauseStatus(clause);
   const explanation = renderClauseExplanation(clause);
   const rationale = clause.rationale || clause.requirement || "";
+  const proposedRedlines = renderProposedRedlinesBlock(clause);
+  const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
-    <div class="studio-detail-heading">
-      <h3>${escapeHtml(clause.name)}</h3>
+    <div class="studio-detail-heading active-clause-heading">
+      <div>
+        <small>Active clause</small>
+        <h3>${escapeHtml(clause.name)}</h3>
+      </div>
+      ${activeStatus}
     </div>
     <div class="studio-detail-stack">
       <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
@@ -917,14 +895,15 @@ function renderStudioDetail() {
       </div>
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${explanation}
+      ${proposedRedlines}
       ${commentBlock}
     </div>
   `;
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
+  bindReviewAcknowledgementControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
   bindAiSecondOpinionControls(studioDetailPanel);
-  bindAiDraftValidationControls(studioDetailPanel);
 }
 
 function renderAiEvidenceSummaryBlock(clause) {
@@ -1084,30 +1063,6 @@ function aiReviewStatusTone(status, disagreement) {
   return "neutral";
 }
 
-function aiDraftValidationStatusLabel(status) {
-  const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "validated") return "AI draft validated";
-  if (normalized === "needs_revision") return "Needs revision";
-  if (normalized === "low_confidence") return "Low confidence";
-  if (normalized === "invalid") return "Citation issue";
-  if (normalized === "error") return "AI unavailable";
-  return normalized ? normalized.replaceAll("_", " ") : "AI draft not validated";
-}
-
-function aiDraftValidationTone(status) {
-  const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "validated") return "validated";
-  if (normalized === "needs_revision" || normalized === "low_confidence" || normalized === "invalid" || normalized === "error") {
-    return "attention";
-  }
-  return "neutral";
-}
-
-function aiDraftValidationKey(edit) {
-  const selectedOptionId = state.redlineTemplateSelections?.[edit.id] || "";
-  return `${edit.id || "draft"}:${selectedOptionId}`;
-}
-
 function renderReasonCodeBlock(clause) {
   const codes = Array.isArray(clause?.reason_codes)
     ? clause.reason_codes.filter(Boolean)
@@ -1206,71 +1161,77 @@ function renderEvidenceBlock(clause) {
   return '<div class="studio-detail-block studio-detail-evidence muted"><small>Evidence</small><p>No matching paragraph identified.</p></div>';
 }
 
-function renderDetailRedlineEdit(edit) {
-  const replacement = renderRedlineReplacement(edit, "p");
-  const original = edit.action === "insert_after_paragraph"
-    ? renderRedlineAnchor(edit)
-    : `<p class="redline-original">${escapeHtml(edit.original_text || "")}</p>`;
+function renderProposedRedlinesBlock(clause) {
+  const redlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
+  if (!redlines.length) {
+    return clauseStatus(clause).requiresAttention
+      ? `
+        <div class="studio-detail-block proposed-redline-block muted">
+          <small>Proposed redline</small>
+          <p>No proposed redline was recorded for this clause.</p>
+        </div>
+      `
+      : "";
+  }
   return `
-    <div class="detail-redline-edit">
-      <span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span>
-      ${original}
-      ${replacement}
-      ${renderRedlineTemplateOptions(edit)}
-      ${renderAiDraftValidationBlock(edit)}
+    <div class="studio-detail-block proposed-redline-block">
+      <small>${redlines.length === 1 ? "Proposed redline" : "Proposed redlines"}</small>
+      <div class="detail-redline-list">
+        ${redlines.map(renderDetailRedlineEdit).join("")}
+      </div>
     </div>
   `;
 }
 
-function renderAiDraftValidationBlock(edit) {
-  const key = aiDraftValidationKey(edit);
-  const validation = state.aiDraftValidations?.[key] || null;
-  const pending = state.pendingAiDraftValidationKey === key;
-  const error = state.aiDraftValidationErrors?.[key] || "";
-  const actionLabel = validation ? "Revalidate draft fix" : "Validate draft fix";
-  const confidence = Number(validation?.ai_confidence);
-  const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
-  const decision = String(validation?.ai_decision || "").trim().toLowerCase();
-  const statusLabel = aiDraftValidationStatusLabel(validation?.status);
-  const tone = aiDraftValidationTone(validation?.status);
-  const citedSpans = Array.isArray(validation?.cited_spans)
-    ? validation.cited_spans.filter(Boolean).slice(0, 3)
-    : [];
-  const issues = Array.isArray(validation?.issues)
-    ? validation.issues.filter(Boolean).slice(0, 6)
-    : [];
-  const suggestedFix = String(validation?.suggested_fix || "").trim();
-  const providerText = [validation?.provider, validation?.model].filter(Boolean).join(" / ");
+function renderDetailRedlineEdit(edit) {
+  const included = redlineExportIncluded(edit);
+  const selectedEdit = applyTemplateSelectionToRedline(edit);
+  const replacement = renderRedlineReplacement(selectedEdit, "p");
+  const original = selectedEdit.action === "insert_after_paragraph"
+    ? renderRedlineAnchor(selectedEdit)
+    : `<p class="redline-original">${escapeHtml(selectedEdit.original_text || "")}</p>`;
   return `
-    <div class="ai-draft-validation ${escapeHtml(tone)}">
-      <div class="ai-draft-validation-head">
-        <strong>${escapeHtml(statusLabel)}</strong>
-        ${validation ? `<span>${escapeHtml(decision ? decision.toUpperCase() : "No AI decision")} · ${escapeHtml(confidenceLabel)}</span>` : ""}
+    <div class="detail-redline-edit ${included ? "included" : "ignored"}">
+      <div class="detail-redline-head">
+        <span class="redline-label">${escapeHtml(redlineActionLabel(selectedEdit))}</span>
+        <span class="detail-export-controls" role="group" aria-label="Redline decision">
+          <button class="export-choice ${included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Include</button>
+          <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
+        </span>
       </div>
-      ${providerText ? `<p class="ai-summary-provider">${escapeHtml(providerText)}</p>` : ""}
-      ${validation ? `<p>${escapeHtml(validation.ai_reason || validation.reason || "No AI explanation was recorded.")}</p>` : ""}
-      ${citedSpans.length ? `
-        <div class="ai-citation-list">
-          ${citedSpans.map(renderAiCitation).join("")}
-        </div>
-      ` : ""}
-      ${issues.length ? `
-        <div class="ai-summary-chips">
-          ${issues.map((issue) => `<span>${escapeHtml(issue)}</span>`).join("")}
-        </div>
-      ` : ""}
-      ${suggestedFix ? `<p class="ai-suggested-fix"><strong>Suggested fix:</strong> ${escapeHtml(suggestedFix)}</p>` : ""}
-      <div class="ai-summary-actions">
-        <button
-          class="ai-draft-validation-button"
-          type="button"
-          data-ai-draft-validation-redline-id="${escapeHtml(edit.id)}"
-          ${pending ? "disabled" : ""}
-        >${escapeHtml(pending ? "Validating" : actionLabel)}</button>
-      </div>
-      ${error ? `<p class="ai-second-opinion-error">${escapeHtml(error)}</p>` : ""}
+      ${original}
+      ${replacement}
+      ${renderRedlineTemplateOptions(selectedEdit)}
+      ${renderRedlineRationaleBlock(selectedEdit)}
     </div>
   `;
+}
+
+function renderRedlineRationaleBlock(edit) {
+  return `
+    <div class="redline-rationale">
+      <div class="redline-rationale-head">
+        <strong>Redline Rationale</strong>
+      </div>
+      <p>${escapeHtml(redlineRationaleFallback(edit))}</p>
+    </div>
+  `;
+}
+
+function redlineRationaleFallback(edit) {
+  const selectedOption = (edit.template_options || []).find((option) => option.selected);
+  const optionLabel = selectedOption ? displayRedlineOptionLabel(selectedOption) : "";
+  const action = String(edit.action || "").trim();
+  if (optionLabel) {
+    return `This applies the ${optionLabel} playbook wording to address the flagged clause.`;
+  }
+  if (action === REDLINE_DELETE_PARAGRAPH) {
+    return "This removes language that is outside the playbook position for this clause.";
+  }
+  if (action === REDLINE_INSERT_AFTER_PARAGRAPH) {
+    return "This adds playbook wording where the document needs an express clause.";
+  }
+  return "This replaces the flagged wording with the playbook position for this clause.";
 }
 
 function renderRedlineAnchor(edit) {
@@ -1293,12 +1254,20 @@ function renderRedlineTemplateOptions(edit) {
       <span class="redline-options-title">Jurisdiction options</span>
       ${options.map((option) => `
         <button class="redline-option ${option.selected ? "selected" : ""}" type="button" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-pressed="${option.selected ? "true" : "false"}">
-          <strong>${escapeHtml(option.label || "Option")}${option.selected ? " - Default" : ""}</strong>
-          <span>${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}</span>
+          <span class="redline-option-dot" aria-hidden="true"></span>
+          <span class="redline-option-copy">
+            <strong>${escapeHtml(displayRedlineOptionLabel(option))}</strong>
+            <span>${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}</span>
+          </span>
         </button>
       `).join("")}
     </div>
   `;
+}
+
+function displayRedlineOptionLabel(option) {
+  const label = String(option?.label || "Option").replace(/\s*[-–—]\s*default\s*$/i, "").trim();
+  return label || "Option";
 }
 
 function bindTemplateOptionControls(container) {
@@ -1323,14 +1292,6 @@ function bindAiSecondOpinionControls(container) {
   container.querySelectorAll("[data-ai-second-opinion-clause-id]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAiSecondOpinionForClause(button.dataset.aiSecondOpinionClauseId);
-    });
-  });
-}
-
-function bindAiDraftValidationControls(container) {
-  container.querySelectorAll("[data-ai-draft-validation-redline-id]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await runAiDraftValidationForRedline(button.dataset.aiDraftValidationRedlineId);
     });
   });
 }
@@ -1392,63 +1353,6 @@ function applyAiSecondOpinionResult(payload) {
       ? Number(payload.requirements_needs_review)
       : state.latestReviewResult.requirements_needs_review,
   };
-}
-
-async function runAiDraftValidationForRedline(redlineId) {
-  const targetRedlineId = String(redlineId || "").trim();
-  const clause = getSelectedReviewClause();
-  const redline = getSelectedRedlineEdits().find((edit) => String(edit.id || "") === targetRedlineId);
-  if (!targetRedlineId || !clause?.id || !redline || !state.latestReviewResult) return;
-  const key = aiDraftValidationKey(redline);
-  state.pendingAiDraftValidationKey = key;
-  state.aiDraftValidationErrors = { ...(state.aiDraftValidationErrors || {}) };
-  delete state.aiDraftValidationErrors[key];
-  renderStudioDetail();
-
-  try {
-    const response = await fetch("/api/review/ai-draft-validation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        clause_id: clause.id,
-        redline_edit: redline,
-        review_result: state.latestReviewResult,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "AI draft validation could not run");
-    applyAiDraftValidationResult(key, payload);
-    setFileMeta("AI draft fix validation completed");
-  } catch (error) {
-    state.aiDraftValidationErrors = {
-      ...(state.aiDraftValidationErrors || {}),
-      [key]: error.message || "AI draft validation could not run.",
-    };
-    setFileMeta(error.message || "AI draft validation could not run.");
-  } finally {
-    state.pendingAiDraftValidationKey = null;
-    renderStudioResult({ clauses: state.reviewClauses });
-    updateExportButtonState();
-  }
-}
-
-function applyAiDraftValidationResult(key, payload) {
-  const validation = payload?.validation && typeof payload.validation === "object" ? payload.validation : null;
-  if (!validation) return;
-  state.aiDraftValidations = {
-    ...(state.aiDraftValidations || {}),
-    [key]: {
-      ...validation,
-      provider: payload.ai_review?.provider || validation.provider,
-      model: payload.ai_review?.model || validation.model,
-    },
-  };
-  if (state.latestReviewResult) {
-    state.latestReviewResult = {
-      ...state.latestReviewResult,
-      ai_draft_validation: payload.ai_review || state.latestReviewResult.ai_draft_validation,
-    };
-  }
 }
 
 function bindParagraphCommentControls(container) {

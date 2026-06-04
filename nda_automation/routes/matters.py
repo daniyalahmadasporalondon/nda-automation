@@ -39,19 +39,72 @@ def handle_matter_list(handler, *, send_body: bool = True) -> None:
 
 def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/review")
+    matter = _matter_for_review_response(handler, matter_id, send_body=send_body)
+    if matter is None:
+        return
+    handler._send_json(_matter_review_payload(matter, matter_id), send_body=send_body)
+
+
+def handle_matter_review_refresh(handler, path: str) -> None:
+    matter_id = parse_matter_id(path, suffix="/review-refresh")
+    matter = _matter_for_review_response(handler, matter_id, send_body=True)
+    if matter is None:
+        return
+    was_stale = review_result_is_stale(matter.get("review_result"))
+    had_redline_draft = isinstance(matter.get("redline_draft"), dict)
+    refreshed_matter = refresh_stale_matter_review(matter)
+    handler._send_json(_matter_review_payload(
+        refreshed_matter,
+        matter_id,
+        was_stale=was_stale,
+        had_redline_draft=had_redline_draft,
+        refresh_attempted=True,
+    ))
+
+
+def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bool) -> dict | None:
     if matter_id is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return
+        return None
     try:
         matter = matter_store.get_matter(matter_id)
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
-        return
+        return None
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return
-    matter = refresh_stale_matter_review(matter)
-    handler._send_json(matter_view.review_matter(matter), send_body=send_body)
+        return None
+    return matter
+
+
+def _matter_review_payload(
+    matter: dict,
+    matter_id: str | None,
+    *,
+    was_stale: bool | None = None,
+    had_redline_draft: bool = False,
+    refresh_attempted: bool = False,
+) -> dict:
+    if was_stale is None:
+        was_stale = review_result_is_stale(matter.get("review_result"))
+    is_stale = review_result_is_stale(matter.get("review_result"))
+    refreshed = bool(refresh_attempted and was_stale and not is_stale)
+    redline_draft_cleared = bool(
+        refreshed
+        and had_redline_draft
+        and not isinstance(matter.get("redline_draft"), dict)
+    )
+    payload = matter_view.review_matter(matter)
+    payload["review_refresh"] = {
+        "stale": is_stale,
+        "refresh_method": "POST",
+        "refresh_url": f"/api/matters/{matter_id}/review-refresh",
+        "refreshed": refreshed,
+        "redline_draft_cleared": redline_draft_cleared,
+    }
+    if redline_draft_cleared:
+        payload["review_refresh"]["message"] = "Saved redline draft was cleared because the review was re-analyzed."
+    return payload
 
 
 def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
@@ -80,16 +133,22 @@ def refresh_stale_matter_review(matter: dict) -> dict:
         review_result = review_nda_with_active_engine(extracted_text)
     except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
         return matter
+    triage = triage_review_result(review_result)
     updated_matter = matter_store.update_matter_review(
         str(matter.get("id") or ""),
         review_result,
-        triage_review_result(review_result),
+        triage,
     )
-    return updated_matter or {
+    if updated_matter is not None:
+        return updated_matter
+    refreshed_matter = {
         **matter,
         "review_result": review_result,
-        **triage_review_result(review_result),
+        **triage,
+        "human_reviewed": False,
     }
+    refreshed_matter.pop("redline_draft", None)
+    return refreshed_matter
 
 
 def review_result_is_stale(review_result: object) -> bool:
@@ -348,9 +407,6 @@ def handle_matter_review_comparison(handler, path: str) -> None:
         )
     except ReviewComparisonError as error:
         handler._send_json({"error": str(error)}, status=502)
-        return
-    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError) as error:
-        handler._send_json({"error": f"Review comparison could not be completed: {error}"}, status=500)
         return
 
     updated_matter = matter_store.update_matter_review_comparison(matter_id, review_comparison)

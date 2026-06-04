@@ -18,6 +18,10 @@ class PublicMatter(TypedDict, total=False):
     created_at: str
     document_title: str
     gmail_account: str
+    gmail_attachment_selector: str
+    gmail_attachment_selector_confidence: str
+    gmail_attachment_selector_model: str
+    gmail_attachment_selector_reason: str
     has_redline_draft: bool
     human_reviewed: bool
     id: str
@@ -54,6 +58,10 @@ PUBLIC_MATTER_FIELDS = {
     "created_at",
     "document_title",
     "gmail_account",
+    "gmail_attachment_selector",
+    "gmail_attachment_selector_confidence",
+    "gmail_attachment_selector_model",
+    "gmail_attachment_selector_reason",
     "human_reviewed",
     "id",
     "issue_count",

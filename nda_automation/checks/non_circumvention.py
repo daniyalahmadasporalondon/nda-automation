@@ -151,6 +151,8 @@ def _review(
         issue_type=ISSUE_TYPE_UNCLEAR,
         what_to_fix=what_to_verify,
     )
+    result["status"] = "review"
+    result["passes"] = True
     result["decision"] = "review"
     result["needs_review"] = True
     result["review_reason"] = reason

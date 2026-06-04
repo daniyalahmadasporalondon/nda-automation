@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
 from .checks.common import ClauseResult, Paragraph
+from .gemini_schema import gemini_compatible_response_schema
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -1016,7 +1017,7 @@ def _gemini_request_body(packet: Dict[str, object]) -> Dict[str, object]:
         "generationConfig": {
             "temperature": 0,
             "responseMimeType": "application/json",
-            "responseSchema": AI_REVIEW_SCHEMA,
+            "responseSchema": gemini_compatible_response_schema(AI_REVIEW_SCHEMA),
         },
     }
 

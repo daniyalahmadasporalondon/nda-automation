@@ -21,6 +21,7 @@ from nda_automation.redline_xml import (
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
 )
+from nda_automation import docx_health
 from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
@@ -683,6 +684,14 @@ class DocxExportTests(unittest.TestCase):
         docx = make_source_docx(["Some body text."])
         self.assertEqual(verify_export_content_coverage(docx, ""), [])
 
+    def test_export_content_coverage_rejects_excessive_uncompressed_docx_size(self):
+        oversized_docx = make_source_docx(["A" * 4096])
+
+        with patch.object(docx_text, "MAX_DOCX_UNCOMPRESSED_BYTES", 1024):
+            errors = verify_export_content_coverage(oversized_docx, "Expected source text.")
+
+        self.assertEqual(errors, ["Exported document body contains no text."])
+
     def test_source_docx_export_writes_native_word_comments(self):
         source_docx = make_source_docx([
             "Intro paragraph.",
@@ -974,7 +983,7 @@ class DocxExportTests(unittest.TestCase):
         )
         self.assertIn(("The Recipient must not circumvent the Company.", ""), states)
 
-    def test_source_docx_export_skips_ambiguous_text_anchor_without_source_index(self):
+    def test_source_docx_export_rejects_ambiguous_text_anchor_without_source_index(self):
         source_docx = make_source_docx([
             "Duplicate paragraph.",
             "Duplicate paragraph.",
@@ -999,21 +1008,8 @@ class DocxExportTests(unittest.TestCase):
             ],
         }
 
-        with self.assertLogs("nda_automation.docx_export", level="WARNING") as logs:
-            redlined_docx = build_source_redline_docx(source_docx, review_result)
-        self.assertIn("unresolved or ambiguous anchor", "\n".join(logs.output))
-
-        assert_docx_package_healthy(self, redlined_docx)
-        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
-        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
-        states = [
-            (
-                revision_text_for_state(paragraph, accepted=False),
-                revision_text_for_state(paragraph, accepted=True),
-            )
-            for paragraph in paragraphs
-        ]
-        self.assertEqual(states, [("Duplicate paragraph.", "Duplicate paragraph.")] * 2)
+        with self.assertRaisesRegex(DocxExportError, "could not anchor 1 approved redline"):
+            build_source_redline_docx(source_docx, review_result)
 
     def test_source_docx_export_skips_supplemental_part_redlines(self):
         source_docx = make_source_docx([
@@ -1297,6 +1293,18 @@ class DocxExportTests(unittest.TestCase):
             any("unsupported XML DTD/entity declarations" in error for error in errors),
             errors,
         )
+
+    def test_docx_open_health_rejects_excessive_uncompressed_docx_size_before_integrity_check(self):
+        oversized_docx = make_source_docx(["A" * 4096])
+
+        with (
+            patch.object(docx_text, "MAX_DOCX_UNCOMPRESSED_BYTES", 1024),
+            patch.object(ZipFile, "testzip", side_effect=AssertionError("integrity check should not run")),
+            patch.object(docx_health, "parse_docx_xml", side_effect=AssertionError("XML parse should not run")),
+        ):
+            errors = validate_docx_open_health(oversized_docx)
+
+        self.assertEqual(errors, ["The Word document is too large after decompression."])
 
     def test_review_report_docx_preserves_track_changes_contract_by_redline_action(self):
         result = track_changes_contract_review_result()

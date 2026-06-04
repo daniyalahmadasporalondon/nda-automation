@@ -101,6 +101,9 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailInboundToggle: document.querySelector("#adminGmailInboundToggle"),
   gmailOutboundToggle: document.querySelector("#adminGmailOutboundToggle"),
   gmailFrequencyControl: document.querySelector("#adminGmailFrequencyControl"),
+  gmailSearchForm: document.querySelector("#adminGmailSearchForm"),
+  gmailSearchTermsInput: document.querySelector("#adminGmailSearchTermsInput"),
+  gmailSearchSaveButton: document.querySelector("#adminGmailSearchSaveButton"),
   gmailSyncHistory: document.querySelector("#adminGmailSyncHistory"),
   reviewErrorFromPayload,
 });

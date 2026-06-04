@@ -45,6 +45,7 @@ def _check_mutuality(
     )
     separated_role_paragraphs = _mutual_role_paragraphs(normalized, clause, paragraphs)
     one_way_paragraphs = _paragraph_matches(paragraphs, one_way_patterns)
+    operative_one_way_paragraphs = _operative_one_way_paragraphs(one_way_paragraphs)
     analysis = _mutuality_analysis(
         strong_mutual_paragraphs=strong_mutual_paragraphs,
         weak_mutual_paragraphs=weak_mutual_paragraphs,
@@ -52,11 +53,11 @@ def _check_mutuality(
         one_way_paragraphs=one_way_paragraphs,
     )
 
-    if one_way_paragraphs:
+    if operative_one_way_paragraphs:
         result = _check(
             clause,
-            "One-way or unilateral confidentiality language needs review.",
-            one_way_paragraphs,
+            "Operative one-way confidentiality language needs review despite reciprocal boilerplate.",
+            operative_one_way_paragraphs,
             what_to_fix="Revise the NDA so both parties are bound as both Disclosing Party and Receiving Party.",
         )
         _attach_mutuality_analysis(result, analysis)
@@ -67,6 +68,16 @@ def _check_mutuality(
             clause,
             "Mutual obligation language found.",
             strong_mutual_paragraphs + separated_role_paragraphs,
+        )
+        _attach_mutuality_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
+
+    if one_way_paragraphs:
+        result = _check(
+            clause,
+            "One-way or unilateral confidentiality language needs review.",
+            one_way_paragraphs,
+            what_to_fix="Revise the NDA so both parties are bound as both Disclosing Party and Receiving Party.",
         )
         _attach_mutuality_analysis(result, analysis)
         return attach_structure_context(result, review_context, context_concepts)
@@ -197,6 +208,39 @@ def _weak_mutuality_paragraphs(
     ]
 
 
+def _operative_one_way_paragraphs(paragraphs: Iterable[Paragraph]) -> List[Paragraph]:
+    return [
+        paragraph
+        for paragraph in paragraphs
+        if _has_operative_one_way_confidentiality_language(str(paragraph["text"]))
+    ]
+
+
+def _has_operative_one_way_confidentiality_language(text: str) -> bool:
+    if _is_administrative_one_way_duty(text):
+        return False
+    patterns = [
+        r"\b(?:only\s+the\s+receiving\s+party|recipient\s+only|solely\s+the\s+recipient|receiving\s+party\s+only)\b"
+        r".{0,180}\b(?:confidential|protect|safeguard|keep|maintain|hold|use|disclos(?:e|es|ing)|not\s+disclose|not\s+use)\b",
+        r"\b(?:one[-\s]?way|unilateral|non[-\s]?mutual)\b"
+        r".{0,180}\b(?:confidentiality\s+obligations?|non[-\s]?disclosure|nda|protect|safeguard|keep\s+confidential|not\s+disclose|not\s+use)\b",
+    ]
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _is_administrative_one_way_duty(text: str) -> bool:
+    administrative_pattern = (
+        r"\b(?:destroy|return|delete|erase|certif(?:y|ies|ication)|copies|copy|materials?)\b"
+    )
+    operative_confidentiality_pattern = (
+        r"\b(?:keep\s+confidential|protect|safeguard|not\s+disclose|not\s+use|"
+        r"confidentiality\s+obligations?|non[-\s]?disclosure|nda)\b"
+    )
+    return bool(re.search(administrative_pattern, text, flags=re.IGNORECASE)) and not bool(
+        re.search(operative_confidentiality_pattern, text, flags=re.IGNORECASE)
+    )
+
+
 def _has_strong_mutuality_obligation(text: str) -> bool:
     scoped_parties = r"(?:(?:each|both|either)\s+part(?:y|ies)|(?:each|both)\s+of\s+the\s+parties)"
     strong_patterns = [
@@ -261,6 +305,8 @@ def reason_code(clause: Mapping[str, Any], decision: str) -> str:
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
         return semantic_code
+    if decision != CLAUSE_DECISION_FAIL and _has_ids(clause, "mutuality_analysis", "strong_mutuality_paragraph_ids"):
+        return "mutuality_obligation_found"
     if _has_ids(clause, "mutuality_analysis", "one_way_paragraph_ids"):
         return "one_way_mutuality_language"
     if _has_ids(clause, "mutuality_analysis", "role_definition_paragraph_ids"):

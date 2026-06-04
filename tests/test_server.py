@@ -1145,7 +1145,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["error"], "AI-first review failed: no key")
 
-    def test_stale_matter_refresh_uses_active_review_engine_result(self):
+    def test_stale_matter_review_opens_saved_result_without_implicit_refresh(self):
         active_result = {
             "review_engine_version": REVIEW_ENGINE_VERSION,
             "review_mode": "ai_first_compat",
@@ -1205,10 +1205,240 @@ class ServerTests(unittest.TestCase):
                 stored_matter = matter_store.get_matter(matter["id"])
 
         self.assertEqual(status, 200)
+        active_review.assert_not_called()
+        self.assertEqual(payload["review_result"]["clauses"], [])
+        self.assertNotIn("review_mode", payload["review_result"])
+        self.assertNotIn("active_review_engine", payload["review_result"])
+        self.assertEqual(payload["review_refresh"]["stale"], True)
+        self.assertEqual(stored_matter["review_result"], {"clauses": []})
+        self.assertEqual(stored_matter["triage_status"], "needs_redline")
+
+    def test_explicit_stale_matter_refresh_uses_active_review_engine_result(self):
+        active_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_mode": "ai_first_compat",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "meets_requirements",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": "Mutual NDA text."}],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "mutuality",
+                    "decision": "pass",
+                    "passes": True,
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "active_review_engine": {
+                "selected_engine": "ai_first",
+                "executed_engine": "ai_first",
+                "engine": "ai_first",
+                "fallback_used": False,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="Mutual NDA text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with (
+                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                ):
+                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertEqual(status, 200)
         active_review.assert_called_once_with("Mutual NDA text.")
         self.assertEqual(payload["review_result"]["review_mode"], "ai_first_compat")
+        self.assertEqual(payload["review_refresh"]["stale"], False)
+        self.assertEqual(payload["review_refresh"]["refresh_method"], "POST")
+        self.assertEqual(payload["review_refresh"]["refresh_url"], f"/api/matters/{matter['id']}/review-refresh")
         self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
         self.assertEqual(stored_matter["triage_status"], "ready_to_sign")
+
+    def test_get_review_refresh_query_is_read_only(self):
+        active_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_mode": "ai_first_compat",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "meets_requirements",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": "Mutual NDA text."}],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "mutuality",
+                    "decision": "pass",
+                    "passes": True,
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="Mutual NDA text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review:
+                    status, payload = self.request("GET", f"/api/matters/{matter['id']}/review?refresh=1")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertEqual(status, 200)
+        active_review.assert_not_called()
+        self.assertEqual(payload["review_refresh"]["stale"], True)
+        self.assertEqual(stored_matter["review_result"], {"clauses": []})
+        self.assertEqual(stored_matter["triage_status"], "needs_redline")
+
+    def test_stale_matter_refresh_clears_saved_redline_draft_before_export(self):
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_docx = make_docx([source_text])
+        refreshed_redline = {
+            "id": "redline-governing-law-new",
+            "clause_id": "governing_law",
+            "paragraph_id": "p1",
+            "action": "replace_paragraph",
+            "original_text": source_text,
+            "replacement_text": "This Agreement shall be governed by the laws of Delaware.",
+            "status": "proposed",
+        }
+        active_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_mode": "ai_first_compat",
+            "overall_status": "redline_required",
+            "requirements_passed": 0,
+            "requirements_needs_review": 0,
+            "requirements_failed": 1,
+            "review_state": {
+                "state": "check",
+                "overall_status": "redline_required",
+                "counts": {"pass": 0, "review": 0, "check": 1},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "fail",
+                    "passes": False,
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [refreshed_redline],
+            "active_review_engine": {
+                "selected_engine": "ai_first",
+                "executed_engine": "ai_first",
+                "engine": "ai_first",
+                "fallback_used": False,
+            },
+        }
+        captured_redline_counts = []
+
+        def capture_redline_build(_source_bytes, review_result):
+            captured_redline_counts.append(len(review_result.get("redline_edits") or []))
+            return source_docx
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Draft NDA.docx",
+                    document_bytes=source_docx,
+                    extracted_text=source_text,
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                matter_store.update_redline_draft(
+                    matter["id"],
+                    {
+                        "redline_decisions": {"redline-governing-law-old": False},
+                        "template_selections": {"redline-governing-law-old": "india"},
+                        "export_redline_edits": [],
+                        "manual_redline_edits": [],
+                    },
+                )
+                self.assertIn("redline_draft", matter_store.get_matter(matter["id"]))
+                with (
+                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)),
+                ):
+                    review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
+                stored_after_refresh = matter_store.get_matter(matter["id"])
+                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                        export_status, _export_payload = self.request(
+                            "POST",
+                            "/api/export-review-docx",
+                            {"matter_id": matter["id"]},
+                        )
+
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["review_refresh"]["stale"], False)
+        self.assertTrue(review_payload["review_refresh"]["refreshed"])
+        self.assertTrue(review_payload["review_refresh"]["redline_draft_cleared"])
+        self.assertIn("re-analyzed", review_payload["review_refresh"]["message"])
+        self.assertFalse(review_payload["matter"]["has_redline_draft"])
+        self.assertNotIn("redline_draft", review_payload)
+        self.assertNotIn("redline_draft", stored_after_refresh)
+        self.assertEqual(export_status, 200)
+        self.assertEqual(captured_redline_counts, [1])
 
     def test_gmail_attachment_import_preserves_active_review_engine_result(self):
         source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
@@ -1405,7 +1635,8 @@ class ServerTests(unittest.TestCase):
                         "requirements_failed": 1,
                     },
                 )
-                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
                 stored_matter = matter_store.get_matter(matter["id"])
 
         term_clause = next(
@@ -1796,9 +2027,71 @@ class ServerTests(unittest.TestCase):
                         triage={},
                     )
                     matters = matter_store.list_matters()
+                    first_path_exists = first_path.exists()
 
         self.assertEqual({matter["id"] for matter in matters}, {second["id"], third["id"]})
-        self.assertFalse(first_path.exists())
+        self.assertFalse(first_path_exists)
+
+    def test_matter_retention_keeps_active_uploads_over_limit(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "2"}):
+                with patches[0], patches[1], patches[2]:
+                    first = matter_store.create_matter(
+                        source_filename="first.docx",
+                        document_bytes=b"first",
+                        extracted_text="first",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    second = matter_store.create_matter(
+                        source_filename="second.docx",
+                        document_bytes=b"second",
+                        extracted_text="second",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    third = matter_store.create_matter(
+                        source_filename="third.docx",
+                        document_bytes=b"third",
+                        extracted_text="third",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    matters = matter_store.list_matters()
+                    first_path_exists = first_path.exists()
+
+        self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"], third["id"]})
+        self.assertTrue(first_path_exists)
+
+    def test_matter_retention_keeps_pruned_matter_when_archive_fails(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    first = matter_store.create_matter(
+                        source_filename="first.docx",
+                        document_bytes=b"first",
+                        extracted_text="first",
+                        review_result={"clauses": []},
+                        triage={},
+                    )
+                    first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
+                    matter_store.update_matter_stage(first["id"], "signed_closed")
+                    with patch.object(matter_store, "_archive_pruned_matters", return_value=False):
+                        second = matter_store.create_matter(
+                            source_filename="second.docx",
+                            document_bytes=b"second",
+                            extracted_text="second",
+                            review_result={"clauses": []},
+                            triage={},
+                        )
+                    matters = matter_store.list_matters()
+                    first_path_exists = first_path.exists()
+
+        self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"]})
+        self.assertTrue(first_path_exists)
 
     def test_matter_create_removes_upload_when_save_fails(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -2051,6 +2344,13 @@ class ServerTests(unittest.TestCase):
         self.assertIn("plain text email body", status["inbound"]["parsing"]["fields"])
         self.assertIn("HTML email body", status["inbound"]["parsing"]["fields"])
         self.assertIn("NDA", status["inbound"]["parsing"]["terms"])
+        self.assertIn("MNDA", status["inbound"]["parsing"]["terms"])
+        self.assertIn("mutual non-disclosure agreement", status["inbound"]["parsing"]["terms"])
+        self.assertIn("mutual non disclosure agreement", status["inbound"]["parsing"]["terms"])
+        self.assertIn("data processing agreement", status["inbound"]["parsing"]["terms"])
+        self.assertIn('"mutual NDA"', status["inbound"]["query"])
+        self.assertIn('"mutual non-disclosure agreement"', status["inbound"]["query"])
+        self.assertIn('"data processing agreement"', status["inbound"]["query"])
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
         self.assertIn("data/gmail/inbound-token.json", status["inbound"]["error"])
         self.assertEqual(status["inbound"]["token"], {
@@ -2058,6 +2358,54 @@ class ServerTests(unittest.TestCase):
             "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
             "source": "missing",
         })
+
+    def test_gmail_settings_updates_inbound_search_terms(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {
+                        "inbound_search_terms": [
+                            "NDA",
+                            "mutual NDA",
+                            "confidentiality deed",
+                            "data processing agreement",
+                        ],
+                    },
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["inbound_search_terms"], [
+            "NDA",
+            "mutual NDA",
+            "confidentiality deed",
+            "data processing agreement",
+        ])
+        query = payload["gmail"]["inbound"]["query"]
+        self.assertIn('NDA OR "mutual NDA"', query)
+        self.assertIn('"confidentiality deed"', query)
+        self.assertIn('"data processing agreement"', query)
+        self.assertEqual(payload["gmail"]["inbound"]["parsing"]["terms"], [
+            "NDA",
+            "mutual NDA",
+            "confidentiality deed",
+            "data processing agreement",
+        ])
+
+    def test_gmail_settings_rejects_empty_inbound_search_terms(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"inbound_search_terms": ["", "  "]},
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Provide at least one Gmail inbound search term.")
 
     def test_gmail_status_uses_local_data_tokens_when_env_paths_are_missing(self):
         class FakeExecutable:
@@ -2657,6 +3005,9 @@ class ServerTests(unittest.TestCase):
                 return self.users_api
 
         docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each party may disclose Confidential Information to the other party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
             "This Agreement shall be governed by the laws of California.",
             "The Recipient must not circumvent the Company.",
         ])
@@ -2736,8 +3087,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(result["imported"]), 1)
         self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_new")
         self.assertEqual(result["imported"][0]["reply_to"], "Legal <legal@example.com>")
-        self.assertEqual(result["imported"][0]["gmail_detection_sources"], "subject, attachment_filename")
-        self.assertEqual(result["imported"][0]["gmail_detection_terms"], "NDA")
+        self.assertEqual(result["imported"][0]["gmail_detection_sources"], "subject, attachment_filename, attachment_content")
+        self.assertIn("NDA", result["imported"][0]["gmail_detection_terms"])
+        self.assertIn("confidential information", result["imported"][0]["gmail_detection_terms"])
         self.assertEqual(matter_view.public_matter(result["imported"][0])["recipient_email"], "legal@example.com")
         self.assertEqual(len(stored), 2)
 
@@ -2782,11 +3134,19 @@ class ServerTests(unittest.TestCase):
         def inline(value):
             return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
-        docx_bytes = make_docx([
+        nda_docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each party may disclose Confidential Information to the other party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
             "This Agreement shall be governed by the laws of California.",
             "The Recipient must not circumvent the Company.",
         ])
-        docx_data = inline(docx_bytes)
+        non_nda_docx_bytes = make_docx([
+            "STATEMENT OF WORK",
+            "This document describes implementation milestones and support responsibilities.",
+        ])
+        docx_data = inline(nda_docx_bytes)
+        non_nda_docx_data = inline(non_nda_docx_bytes)
         plain_body = inline(b"Please review the attached non-disclosure agreement.")
         html_body = inline(b"<html><body><p>Please review the attached confidentiality agreement.</p></body></html>")
         irrelevant_body = inline(b"Please review the attached statement of work.")
@@ -2826,7 +3186,7 @@ class ServerTests(unittest.TestCase):
                     "headers": [{"name": "From", "value": "Ops <ops@example.com>"}, {"name": "Subject", "value": "Attached contract"}],
                     "parts": [
                         {"partId": "body", "mimeType": "text/plain", "body": {"data": irrelevant_body}},
-                        {"partId": "doc", "filename": "Contract.docx", "body": {"data": docx_data}},
+                        {"partId": "doc", "filename": "Contract.docx", "body": {"data": non_nda_docx_data}},
                     ],
                 },
             },
@@ -2836,16 +3196,19 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
-                        result = gmail_integration.import_inbound_matters(limit=25)
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
 
         self.assertEqual([item["reason"] for item in result["skipped"]], ["no_nda_signal"])
         self.assertEqual(len(result["imported"]), 2)
         imported_by_id = {item["gmail_message_id"]: item for item in result["imported"]}
-        self.assertEqual(imported_by_id["msg_plain_body"]["gmail_detection_sources"], "body")
+        self.assertEqual(imported_by_id["msg_plain_body"]["gmail_detection_sources"], "body, attachment_content")
         self.assertIn("non-disclosure agreement", imported_by_id["msg_plain_body"]["gmail_detection_terms"])
-        self.assertEqual(imported_by_id["msg_html_body"]["gmail_detection_sources"], "body")
+        self.assertIn("confidential information", imported_by_id["msg_plain_body"]["gmail_detection_terms"])
+        self.assertEqual(imported_by_id["msg_html_body"]["gmail_detection_sources"], "body, attachment_content")
         self.assertIn("confidentiality agreement", imported_by_id["msg_html_body"]["gmail_detection_terms"])
+        self.assertIn("confidential information", imported_by_id["msg_html_body"]["gmail_detection_terms"])
 
     def test_gmail_import_detects_nda_signal_inside_attachment_content(self):
         # Regression: an e-signature forward (Juro/DocuSign) whose subject, body,
@@ -2921,14 +3284,311 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
-                        result = gmail_integration.import_inbound_matters(limit=25)
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
 
         self.assertEqual(result["skipped"], [])
         self.assertEqual(len(result["imported"]), 1)
         self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_esign")
         self.assertEqual(result["imported"][0]["gmail_detection_sources"], "attachment_content")
         self.assertIn("non-disclosure agreement", result["imported"][0]["gmail_detection_terms"])
+
+    @requires_pypdf
+    def test_gmail_import_filters_non_nda_collateral_after_message_match(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def attachments(self):
+                return self
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                if messageId:
+                    message = self.messages["msg_moorwand"]
+                    for part in message["payload"]["parts"]:
+                        body = part.get("body") or {}
+                        if body.get("attachmentId") == id:
+                            return FakeExecutable({"data": body["data"]})
+                    return FakeExecutable({"data": ""})
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        programme_manager_pdf = make_pdf(
+            "Moorwand expectations of a Programme Manager. Brief summary of programme resources and capabilities."
+        )
+        mutual_nda_pdf = make_pdf(
+            "MUTUAL CONFIDENTIALITY AND NON-DISCLOSURE AGREEMENT. "
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party. "
+            "The Receiving Party shall not disclose Confidential Information."
+        )
+        proposal_docx = make_docx([
+            "Project Proposal Form",
+            "Client Contact Details",
+            "Questions Answers Details",
+            "Programme/product overview and summary of business plan.",
+        ])
+        body = inline(b"Hi legal, can you please help review and sign the NDA?")
+        messages = {
+            "msg_moorwand": {
+                "id": "msg_moorwand",
+                "threadId": "thr_moorwand",
+                "labelIds": ["INBOX"],
+                "snippet": "Can you please help review and sign the NDA?",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Neha Chawla <neha@example.com>"},
+                        {"name": "Subject", "value": "Fwd: Moorwand // Aspora"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": body}},
+                        {
+                            "partId": "1",
+                            "filename": "Moorwand - Programme Manager - Expectations.pdf",
+                            "body": {"attachmentId": "att_programme", "data": inline(programme_manager_pdf)},
+                        },
+                        {
+                            "partId": "2",
+                            "filename": "Moorwand - Mutual NDA - 2026 v1.0.pdf",
+                            "body": {"attachmentId": "att_nda", "data": inline(mutual_nda_pdf)},
+                        },
+                        {
+                            "partId": "3",
+                            "filename": "Moorwand Project Proposal Form - 2026.docx",
+                            "body": {"attachmentId": "att_proposal", "data": inline(proposal_docx)},
+                        },
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual([item["source_filename"] for item in result["imported"]], ["Moorwand - Mutual NDA - 2026 v1.0.pdf"])
+        skipped_by_filename = {item["attachment_filename"]: item["reason"] for item in result["skipped"]}
+        self.assertEqual(skipped_by_filename["Moorwand - Programme Manager - Expectations.pdf"], "non_nda_attachment")
+        self.assertEqual(skipped_by_filename["Moorwand Project Proposal Form - 2026.docx"], "non_nda_attachment")
+        imported = result["imported"][0]
+        self.assertEqual(imported["gmail_detection_sources"], "body, snippet, attachment_filename, attachment_content")
+        self.assertIn("NDA", imported["gmail_detection_terms"])
+        self.assertIn("non-disclosure agreement", imported["gmail_detection_terms"])
+
+    def test_gmail_import_uses_qwen_selector_for_multi_attachment_candidates(self):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        proposal_docx = make_docx([
+            "Project Proposal Form",
+            "Confidential Information may be exchanged during the project.",
+        ])
+        nda_docx = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose Confidential Information.",
+        ])
+        attachments = [
+            {
+                "attachment_id": "att_proposal",
+                "data": inline(proposal_docx),
+                "filename": "Moorwand Project Proposal Form - 2026.docx",
+                "part_id": "1",
+            },
+            {
+                "attachment_id": "att_nda",
+                "data": inline(nda_docx),
+                "filename": "Moorwand - Mutual NDA - 2026 v1.0.docx",
+                "part_id": "2",
+            },
+        ]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_moorwand",
+            "message_snippet": "Can you please help review and sign the NDA?",
+            "sender": "Neha <neha@example.com>",
+            "subject": "Fwd: Moorwand // Aspora",
+        }
+
+        def accepted_validation(filename, paragraphs, *, message_metadata=None):
+            return {
+                "accepted": True,
+                "excerpt": filename,
+                "reason": "test accepted candidate",
+                "score": 100,
+                "sources": ["attachment_filename", "attachment_content"],
+                "terms": ["NDA", "confidential information"],
+            }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.object(gmail_integration, "_attachment_nda_validation", side_effect=accepted_validation):
+                        with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=True):
+                            with patch.object(
+                                gmail_integration.gmail_attachment_selector,
+                                "select_nda_attachments",
+                                return_value={
+                                    "status": "selected",
+                                    "selected_attachment_ids": ["att_nda"],
+                                    "confidence": 0.92,
+                                    "reason": "The mutual NDA is the actual legal review document.",
+                                    "model": "qwen/qwen3-32b",
+                                },
+                            ) as select_nda_attachments:
+                                result = gmail_integration._import_inbound_attachments(
+                                    None,
+                                    "msg_moorwand",
+                                    attachments,
+                                    metadata,
+                                )
+
+        self.assertEqual([item["source_filename"] for item in result["imported"]], ["Moorwand - Mutual NDA - 2026 v1.0.docx"])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["attachment_filename"], "Moorwand Project Proposal Form - 2026.docx")
+        self.assertEqual(result["skipped"][0]["reason"], "ai_not_selected_attachment")
+        imported = result["imported"][0]
+        self.assertEqual(imported["gmail_attachment_selector"], "groq_qwen")
+        self.assertEqual(imported["gmail_attachment_selector_model"], "qwen/qwen3-32b")
+        select_nda_attachments.assert_called_once()
+
+    def test_gmail_import_lets_qwen_select_generic_attachment_from_nda_adjacent_email(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+                self.query = ""
+
+            def list(self, userId, q, maxResults):
+                self.query = q
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        document_bytes = make_docx([
+            "Commercial Services Agreement",
+            "The parties will discuss launch planning, commercial terms, and rollout milestones.",
+            "This document is intentionally generic for the deterministic scorer.",
+        ])
+        messages = {
+            "msg_pismo": {
+                "id": "msg_pismo",
+                "threadId": "thr_pismo",
+                "labelIds": ["INBOX"],
+                "snippet": "Could you review this confidentiality agreement for Pismo?",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Pismo Legal <legal@pismo.example>"},
+                        {"name": "Subject", "value": "Pismo confidentiality review"},
+                    ],
+                    "parts": [
+                        {
+                            "partId": "body",
+                            "mimeType": "text/plain",
+                            "body": {"data": inline(b"Hi, please review the attached confidentiality agreement for us.")},
+                        },
+                        {
+                            "partId": "1",
+                            "filename": "Pismo Agreement.docx",
+                            "body": {"data": inline(document_bytes)},
+                        },
+                    ],
+                },
+            },
+        }
+        service = FakeGmailService(messages)
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=service):
+                            with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=True):
+                                with patch.object(
+                                    gmail_integration.gmail_attachment_selector,
+                                    "select_nda_attachments",
+                                    return_value={
+                                        "status": "selected",
+                                        "selected_attachment_ids": ["inline:1"],
+                                        "confidence": 0.88,
+                                        "reason": "The email context asks legal to review this attached agreement.",
+                                        "model": "qwen/qwen3-32b",
+                                    },
+                                ) as select_nda_attachments:
+                                    result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual(service.users_api.messages_api.query, gmail_integration.DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR)
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual([item["source_filename"] for item in result["imported"]], ["Pismo Agreement.docx"])
+        imported = result["imported"][0]
+        self.assertEqual(imported["gmail_attachment_selector"], "groq_qwen")
+        self.assertEqual(imported["gmail_attachment_selector_confidence"], "0.88")
+        self.assertEqual(imported["gmail_attachment_score"], "10")
+        selector_call = select_nda_attachments.call_args.kwargs
+        self.assertIn("please review the attached confidentiality agreement", selector_call["message_metadata"]["message_body_preview"])
+        self.assertEqual(selector_call["candidates"][0]["validation"]["accepted"], False)
 
     def test_mark_reviewed_clears_human_review_block_and_resets_on_rereview(self):
         review_result = {
@@ -2964,11 +3624,21 @@ class ServerTests(unittest.TestCase):
                     payload["matter"]["send_block_reason"],
                     "Matter does not have a valid reply recipient email address.",
                 )
+                matter_store.update_redline_draft(
+                    mid,
+                    {
+                        "redline_decisions": {"old-redline-id": False},
+                        "template_selections": {"old-redline-id": "delaware"},
+                    },
+                )
+                self.assertIn("redline_draft", matter_store.get_matter(mid))
 
-                # A fresh review supersedes the human sign-off.
+                # A fresh review supersedes the human sign-off and any stale redline-ID-keyed draft.
                 matter_store.update_matter_review(mid, review_result, {})
                 after = matter_view.public_matter(matter_store.get_matter(mid))
                 self.assertFalse(after["human_reviewed"])
+                self.assertFalse(after["has_redline_draft"])
+                self.assertNotIn("redline_draft", matter_store.get_matter(mid))
                 self.assertEqual(
                     after["send_block_reason"],
                     "Matter needs human review before a redline can be sent.",
@@ -4218,6 +4888,65 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(send_redline_email.call_args.kwargs["subject"], "Aspora redline Update")
         self.assertEqual(send_redline_email.call_args.kwargs["body"], "Attached redline.\nThanks.")
         self.assertEqual(send_redline_email.call_args.kwargs["to"], None)
+
+    def test_gmail_send_redline_rechecks_review_gate_after_export(self):
+        source_docx = make_docx([
+            "Each party may disclose Confidential Information to the other party.",
+        ])
+        redline_export = server_module.redline_export_service.RedlineExport(
+            data=b"redline-docx",
+            filename="Race-NDA-redlined.docx",
+        )
+
+        def make_matter_needs_review(*_args, **_kwargs):
+            stale_review = {
+                "overall_status": "needs_review",
+                "requirements_needs_review": 1,
+                "review_state": {"state": "review", "requires_human_review": True},
+                "clauses": [{"id": "mutuality", "decision": "review"}],
+            }
+            matter_store.update_matter_review(
+                matter_id,
+                stale_review,
+                {
+                    "triage_status": "needs_redline",
+                    "issue_count": 1,
+                    "requirements_passed": 0,
+                    "requirements_needs_review": 1,
+                    "requirements_failed": 0,
+                },
+            )
+            return redline_export
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = server_module.create_matter_from_document(
+                    filename="Race NDA.docx",
+                    document_bytes=source_docx,
+                    source_type="gmail_inbound",
+                    board_column="gmail_demo",
+                    intake_metadata={
+                        "sender": "Legal Team <legal@example.com>",
+                        "subject": "Race NDA",
+                    },
+                )
+                matter_id = matter["id"]
+                self.assertFalse(matter_view.matter_needs_human_review(matter))
+                with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                    with patch.object(server_module.redline_export_service, "build_matter_redline", side_effect=make_matter_needs_review):
+                        with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
+                            send_status, send_payload = self.request(
+                                "POST",
+                                "/api/gmail/send-redline",
+                                {"matter_id": matter_id, "confirm_send": True},
+                            )
+                stored_matter = matter_store.get_matter(matter_id)
+
+        self.assertEqual(send_status, 409)
+        self.assertEqual(send_payload["error"], "Matter needs human review before a redline can be sent.")
+        send_redline_email.assert_not_called()
+        self.assertEqual(stored_matter["triage_status"], "needs_redline")
 
     def test_gmail_send_redline_applies_review_export_decisions(self):
         source_docx = make_docx([

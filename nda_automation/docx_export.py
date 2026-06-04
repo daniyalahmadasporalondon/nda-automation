@@ -317,10 +317,11 @@ def _redlines_by_source_paragraph(
     redlines: object,
     source_paragraphs: List[SourceParagraph],
     review_paragraphs: object = None,
-) -> Dict[int, List[RedlineEdit]]:
+) -> Tuple[Dict[int, List[RedlineEdit]], List[RedlineEdit]]:
     grouped: Dict[int, List[RedlineEdit]] = {}
+    unresolved: List[RedlineEdit] = []
     if not isinstance(redlines, list):
-        return grouped
+        return grouped, unresolved
 
     review_paragraphs_by_id = _review_paragraphs_by_id(review_paragraphs)
     for redline in redlines:
@@ -328,6 +329,9 @@ def _redlines_by_source_paragraph(
             continue
         source_paragraph = _resolve_source_paragraph(redline, source_paragraphs, review_paragraphs_by_id)
         if source_paragraph is None:
+            if not _redline_source_part(redline, review_paragraphs_by_id):
+                unresolved.append(redline)
+                continue
             LOGGER.warning(
                 "Skipping source redline with unresolved or ambiguous anchor: id=%s action=%s paragraph_id=%s",
                 redline.get("id"),
@@ -336,7 +340,7 @@ def _redlines_by_source_paragraph(
             )
             continue
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
-    return grouped
+    return grouped, unresolved
 
 
 def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, Paragraph]:
@@ -426,7 +430,13 @@ def _apply_redline_edits_to_source_document(
     review_paragraphs: object = None,
 ) -> None:
     source_paragraphs = _indexed_source_paragraphs(document_root)
-    redlines_by_source_index = _redlines_by_source_paragraph(redlines, source_paragraphs, review_paragraphs)
+    redlines_by_source_index, unresolved_redlines = _redlines_by_source_paragraph(
+        redlines,
+        source_paragraphs,
+        review_paragraphs,
+    )
+    if unresolved_redlines:
+        raise DocxExportError(_unanchored_redline_error(unresolved_redlines))
     if not redlines_by_source_index:
         return
 
@@ -466,6 +476,21 @@ def _apply_redline_edits_to_source_document(
                 source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
                 revision_id += 1
+
+
+def _unanchored_redline_error(redlines: List[RedlineEdit]) -> str:
+    count = len(redlines)
+    plural = "" if count == 1 else "s"
+    ids = [
+        str(redline.get("id") or redline.get("clause_id") or redline.get("paragraph_id") or "").strip()
+        for redline in redlines[:5]
+    ]
+    visible_ids = [redline_id for redline_id in ids if redline_id]
+    suffix = f" ({', '.join(visible_ids)})" if visible_ids else ""
+    return (
+        f"The uploaded Word document could not anchor {count} approved redline{plural}{suffix}. "
+        "Re-run the review or add source paragraph indexes before exporting."
+    )
 
 
 def _indexed_source_paragraphs(root: ET.Element) -> List[SourceParagraph]:

@@ -100,7 +100,6 @@ const RepositoryBoard = (() => {
       <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${escapeHtml(matter.id)}" aria-label="Open matter ${escapeHtml(RepositoryModel.matterSubject(matter))}">
         <span class="repository-card-top">
           <span class="repository-card-badges">
-            <span class="repository-priority">${escapeHtml(RepositoryModel.triageLabel(matter.triage_status))}</span>
             <span class="repository-source-badge ${escapeHtml(RepositoryModel.sourceBadgeClass(matter.source_type))}">${escapeHtml(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
           </span>
           <span class="repository-card-top-actions">

@@ -36,6 +36,7 @@ from .ai_review import (
     _trusted_https_context,
 )
 from .checker import load_playbook, validate_playbook
+from .gemini_schema import gemini_compatible_response_schema
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 
 AI_ASSESSOR_VERSION = 1
@@ -276,7 +277,7 @@ def gemini_ai_assessment_request_body(packet: Mapping[str, Any]) -> dict[str, An
         "generationConfig": {
             "temperature": 0,
             "responseMimeType": "application/json",
-            "responseSchema": AI_ASSESSMENT_RESPONSE_SCHEMA,
+            "responseSchema": gemini_compatible_response_schema(AI_ASSESSMENT_RESPONSE_SCHEMA),
         },
     }
 

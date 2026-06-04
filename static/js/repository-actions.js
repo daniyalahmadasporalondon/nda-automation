@@ -139,7 +139,7 @@ const RepositoryActions = (() => {
         prepareMatterReviewLoad(selectedReviewMatter);
         closePanel();
       }
-      const reviewMatter = await loadMatterReview(selectedReviewMatter.id);
+      const reviewMatter = await loadMatterReview(selectedReviewMatter.id, { refresh: true });
       if (!reviewMatter) {
         if (typeof showMatterReviewLoadError === "function") {
           showMatterReviewLoadError("Matter review details could not load.");
@@ -151,9 +151,9 @@ const RepositoryActions = (() => {
       loadMatterIntoReview(reviewMatter);
     }
 
-    async function loadMatterReview(matterId) {
+    async function loadMatterReview(matterId, options = {}) {
       try {
-        return await api.getMatterReview(matterId);
+        return await api.getMatterReview(matterId, options);
       } catch (error) {
         console.warn(error.message || "Matter review details could not load");
         return null;

@@ -14,6 +14,21 @@
     }
   },
   {
+    "name": "mutuality_reciprocal_destruction_obligation_passes",
+    "clause_id": "mutuality",
+    "text": "Each party may disclose Confidential Information, and each party acts as both a Disclosing Party and a Receiving Party.\n\nThe Receiving Party has a unilateral obligation to destroy or return all copies of Confidential Information on request.",
+    "expected": {
+      "status": "match",
+      "decision": "pass",
+      "reason_code": "mutuality_obligation_found",
+      "redline_count": 0,
+      "analysis": {
+        "mutuality_analysis.strong_mutuality_paragraph_ids": ["p1"],
+        "mutuality_analysis.one_way_paragraph_ids": ["p2"]
+      }
+    }
+  },
+  {
     "name": "confidential_information_preposed_independent_development_qualification_passes",
     "clause_id": "confidential_information",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that, without use of or reference to Confidential Information, is independently developed by the Receiving Party.",
@@ -131,6 +146,7 @@
       "analysis": {
         "governing_law_analysis.unclear_paragraph_ids": ["p1"],
         "governing_law_analysis.candidate_records.0.approved": true,
+        "governing_law_analysis.candidate_records.0.needs_review": true,
         "governing_law_analysis.candidate_records.1.approved": false
       }
     }
@@ -148,6 +164,7 @@
         "governing_law_analysis.unclear_paragraph_ids": ["p3", "p5"],
         "governing_law_analysis.references.0.status": "unclear",
         "governing_law_analysis.candidate_records.1.approved": true,
+        "governing_law_analysis.candidate_records.1.needs_review": true,
         "governing_law_analysis.candidate_records.2.approved": false
       }
     }
@@ -318,7 +335,7 @@
     "clause_id": "non_circumvention",
     "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with the non-circumvention provisions in Section 99.",
     "expected": {
-      "status": "check",
+      "status": "review",
       "decision": "review",
       "reason_code": "unclear_non_circumvention_reference",
       "redline_count": 0,

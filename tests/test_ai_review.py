@@ -462,6 +462,8 @@ class AIReviewTests(unittest.TestCase):
             "application/json",
         )
         self.assertIn("responseSchema", body["generationConfig"])
+        schema_json = json.dumps(body["generationConfig"]["responseSchema"])
+        self.assertNotIn('"additionalProperties"', schema_json)
         self.assertIn("semantic_clause_crosscheck", encoded)
 
     def test_openrouter_request_body_uses_chat_completion_structured_output(self):

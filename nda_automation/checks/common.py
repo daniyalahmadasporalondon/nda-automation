@@ -65,9 +65,13 @@ YEAR_WORDS = {
     "twenty": 20,
     "thirty": 30,
 }
-YEAR_WORD_PATTERN = "|".join(YEAR_WORDS)
-YEAR_TERM_PATTERN = rf"\b(?:({YEAR_WORD_PATTERN})|(\d{{1,3}}))(?:\s*\(\s*(?:(\d{{1,3}})|({YEAR_WORD_PATTERN}))\s*\))?(?:\s*-\s*|\s+)(months?|years?)\b"
-YEAR_TERM_EVIDENCE_PATTERN = rf"\b(?:{YEAR_WORD_PATTERN}|\d{{1,3}})(?:\s*\(\s*(?:\d{{1,3}}|{YEAR_WORD_PATTERN})\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
+YEAR_ONES_PATTERN = "|".join(word for word, value in YEAR_WORDS.items() if 1 <= value <= 9)
+YEAR_TENS_PATTERN = "|".join(word for word, value in YEAR_WORDS.items() if value in {20, 30})
+YEAR_COMPOUND_WORD_PATTERN = rf"(?:{YEAR_TENS_PATTERN})(?:\s*-\s*|\s+)(?:{YEAR_ONES_PATTERN})"
+YEAR_WORD_PATTERN = rf"(?:{YEAR_COMPOUND_WORD_PATTERN}|{'|'.join(YEAR_WORDS)})"
+YEAR_TERM_START_BOUNDARY = r"(?<![\w\-–—])"
+YEAR_TERM_PATTERN = rf"{YEAR_TERM_START_BOUNDARY}(?:({YEAR_WORD_PATTERN})|(\d{{1,3}}))(?:\s*\(\s*(?:(\d{{1,3}})|({YEAR_WORD_PATTERN}))\s*\))?(?:\s*-\s*|\s+)(months?|years?)\b"
+YEAR_TERM_EVIDENCE_PATTERN = rf"{YEAR_TERM_START_BOUNDARY}(?:{YEAR_WORD_PATTERN}|\d{{1,3}})(?:\s*\(\s*(?:\d{{1,3}}|{YEAR_WORD_PATTERN})\s*\))?(?:\s*-\s*|\s+)(?:months?|years?)\b"
 INDEPENDENT_DEVELOPMENT_QUALIFICATION_WINDOW = 160
 MAX_EVIDENCE_PARAGRAPHS = 3
 MAX_STRUCTURED_MATCH_SPANS = 12
@@ -93,6 +97,13 @@ def _year_count_label(years: int) -> str:
     number_label = next((word for word, value in YEAR_WORDS.items() if value == years), str(years))
     unit = "year" if years == 1 else "years"
     return f"{number_label} {unit}"
+
+def _year_word_value(value: str) -> int:
+    cleaned = re.sub(r"\s*-\s*", " ", value.strip().lower())
+    parts = [part for part in cleaned.split() if part]
+    if len(parts) == 1:
+        return YEAR_WORDS[parts[0]]
+    return sum(YEAR_WORDS[part] for part in parts)
 
 def _max_term_years(clause: Dict[str, object]) -> int:
     return int(clause.get("max_term_years", clause.get("term_years", 5)))

@@ -333,7 +333,14 @@ class InMemoryMatterRepository:
             for index, matter in enumerate(self._matters):
                 if matter.get("id") != matter_id:
                     continue
-                updated_matter = {**matter, "review_result": review_result, **triage, "updated_at": now}
+                updated_matter = {
+                    **matter,
+                    "review_result": review_result,
+                    **triage,
+                    "human_reviewed": False,
+                    "updated_at": now,
+                }
+                updated_matter.pop("redline_draft", None)
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None

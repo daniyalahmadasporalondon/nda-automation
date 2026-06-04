@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
     fcntl = None
 
-from . import app_settings, matter_store
+from . import app_settings, gmail_attachment_selector, matter_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -42,11 +42,82 @@ NDA_DETECTION_TERMS = (
     ("confidential", r"\bconfidential\b"),
     ("NDA", r"\bNDA\b"),
 )
-NDA_MESSAGE_QUERY = (
-    '(NDA OR "non-disclosure" OR "non disclosure" OR "non-disclosure agreement" '
-    'OR "non disclosure agreement" OR "confidentiality agreement" OR confidentiality OR confidential)'
+EXPLICIT_NDA_TERMS = {"non-disclosure agreement", "non-disclosure", "confidentiality agreement", "NDA"}
+ATTACHMENT_FILENAME_NDA_SIGNALS = (
+    ("non-disclosure agreement", r"\bnon[-\s]?disclosure\s+agreement\b", 90, True),
+    ("confidentiality agreement", r"\bconfidentiality\s+agreement\b", 80, True),
+    ("non-disclosure", r"\bnon[-\s]?disclosure\b", 75, True),
+    ("NDA", r"\bM?NDA\b", 80, True),
+    ("confidentiality", r"\bconfidentiality\b", 35, False),
+    ("confidential", r"\bconfidential\b", 25, False),
+    ("agreement", r"\bagreement\b", 10, False),
+    ("contract", r"\bcontract\b", 8, False),
+    ("document", r"\bdocument\b", 5, False),
 )
-DEFAULT_INBOUND_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me {NDA_MESSAGE_QUERY}"
+ATTACHMENT_CONTENT_NDA_SIGNALS = (
+    ("non-disclosure agreement", r"\bnon[-\s]?disclosure\s+agreement\b", 95, True),
+    ("confidentiality and non-disclosure", r"\bconfidentiality\s+and\s+non[-\s]?disclosure\b", 90, True),
+    ("confidentiality agreement", r"\bconfidentiality\s+agreement\b", 85, True),
+    ("mutual confidentiality", r"\bmutual\s+confidentiality\b", 70, True),
+    ("non-disclosure", r"\bnon[-\s]?disclosure\b", 45, False),
+    ("confidential information", r"\bconfidential\s+information\b", 35, False),
+    ("disclosing party", r"\bdisclosing\s+party\b", 20, False),
+    ("receiving party", r"\breceiving\s+party\b", 20, False),
+    ("confidentiality obligations", r"\bconfidentiality\s+obligations?\b", 25, False),
+    ("not disclose", r"\b(?:shall|must|may)\s+not\s+disclose\b", 20, False),
+    ("keep confidential", r"\bkeep\s+(?:all\s+)?(?:confidential\s+information\s+)?confidential\b", 20, False),
+)
+ATTACHMENT_COLLATERAL_SIGNALS = (
+    ("project proposal", r"\bproject\s+proposal\b", 70),
+    ("proposal", r"\bproposal\b", 45),
+    ("proposal form", r"\bproposal\s+form\b", 80),
+    ("programme manager", r"\bprogramme\s+manager\b", 55),
+    ("program manager", r"\bprogram\s+manager\b", 55),
+    ("expectations", r"\bexpectations\b", 50),
+    ("questionnaire", r"\bquestionnaire\b", 55),
+    ("pricing", r"\bpricing\b", 50),
+    ("deck", r"\bdeck\b", 45),
+    ("presentation", r"\bpresentation\b", 45),
+    ("business plan", r"\bbusiness\s+plan\b", 45),
+    ("statement of work", r"\bstatement\s+of\s+work\b|\bSOW\b", 60),
+    ("invoice", r"\binvoice\b", 80),
+    ("purchase order", r"\bpurchase\s+order\b|\bPO\b", 80),
+    ("client contact details", r"\bclient\s+contact\s+details\b", 35),
+    ("questions answers", r"\bquestions\s+answers\b", 30),
+)
+MIN_ATTACHMENT_NDA_SCORE = 70
+MIN_MESSAGE_BACKED_CONTENT_SCORE = 55
+
+
+def _gmail_search_terms_query(terms: list[str]) -> str:
+    query_terms: list[str] = []
+    for term in terms:
+        query_term = _gmail_search_query_term(term)
+        if query_term:
+            query_terms.append(query_term)
+    if not query_terms:
+        query_terms = [
+            query_term
+            for term in app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS
+            if (query_term := _gmail_search_query_term(term))
+        ]
+    return f"({' OR '.join(query_terms)})"
+
+
+def _gmail_search_query_term(term: str) -> str:
+    cleaned = " ".join(str(term or "").split()).strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace('"', "")
+    if re.search(r"[^A-Za-z0-9_]", cleaned):
+        return f'"{cleaned}"'
+    return cleaned
+
+
+GMAIL_INBOUND_BASE_QUERY = "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me"
+NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
+DEFAULT_INBOUND_QUERY = f"{GMAIL_INBOUND_BASE_QUERY} {NDA_MESSAGE_QUERY}"
+DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 MAX_GMAIL_IMPORT_LIMIT = 25
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 GMAIL_BODY_PREVIEW_LIMIT = 5000
@@ -89,7 +160,7 @@ def gmail_status() -> dict[str, Any]:
             "token": gmail_role_token_status(role),
         }
         if role == "inbound":
-            role_status["query"] = DEFAULT_INBOUND_QUERY
+            role_status["query"] = _default_inbound_query()
             role_status["parsing"] = gmail_inbound_parsing_summary()
         setup_error = gmail_role_setup_error(role)
         if setup_error:
@@ -115,6 +186,8 @@ def gmail_status() -> dict[str, Any]:
 
 
 def gmail_inbound_parsing_summary() -> dict[str, object]:
+    selector_enabled = gmail_attachment_selector.selector_configured()
+    search_terms = app_settings.gmail_inbound_search_terms()
     return {
         "fields": [
             "subject headers",
@@ -123,10 +196,22 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             "Gmail snippet",
             "attachment filenames",
             "attachment text content (docx/pdf)",
+            "attachment-level deterministic NDA/collateral scoring",
+            "Qwen contextual attachment selection" if selector_enabled else "deterministic attachment selection",
         ],
-        "terms": [term for term, _pattern in NDA_DETECTION_TERMS],
-        "mode": "Gmail query prefilters inbox attachments; local parsing verifies each message (including attachment text) before import.",
+        "terms": search_terms,
+        "deterministic_terms": [term for term, _pattern in NDA_DETECTION_TERMS],
+        "mode": (
+            "Qwen reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
+            "signals before selecting import attachments. Deterministic rules are used as fallback."
+            if selector_enabled
+            else "Gmail query prefilters inbox attachments; local parsing verifies each message, then validates each attachment before import."
+        ),
     }
+
+
+def _default_inbound_query() -> str:
+    return f"{GMAIL_INBOUND_BASE_QUERY} {_gmail_search_terms_query(app_settings.gmail_inbound_search_terms())}"
 
 
 def gmail_role_setup_error(role: str) -> str:
@@ -172,7 +257,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
         raise GmailIntegrationError("Gmail inbound is disabled in Admin.")
     service = _gmail_service("inbound")
     profile = _gmail_profile_for_role("inbound", service=service)
-    inbound_query = query.strip() if isinstance(query, str) and query.strip() else DEFAULT_INBOUND_QUERY
+    inbound_query = query.strip() if isinstance(query, str) and query.strip() else _default_inbound_query()
     try:
         requested_limit = int(limit or 10)
     except (TypeError, ValueError):
@@ -180,6 +265,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
     import_limit = max(1, min(requested_limit, MAX_GMAIL_IMPORT_LIMIT))
 
     account_email = str(profile.get("emailAddress") or "")
+    selector_enabled = gmail_attachment_selector.selector_configured()
 
     try:
         result = service.users().messages().list(
@@ -214,23 +300,23 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             continue
 
         detection = _message_nda_detection(message, attachments)
-        if not detection["matched"]:
+        if not detection["matched"] and not selector_enabled:
             # The header/body/filename scan cannot see inside a .docx/.pdf, but
             # Gmail's query matches attachment text -- so e-signature forwards
             # (Juro/DocuSign) whose NDA wording lives only in the attachment land
             # here. Read the document content before giving up.
             detection = _attachment_nda_detection(service, message_id, attachments)
-        if not detection["matched"]:
+        if not detection["matched"] and not selector_enabled:
             skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
             continue
 
-        metadata = _message_metadata(message, account_email, detection=detection)
-        for attachment in attachments:
-            matter, skip = _import_inbound_attachment(service, message_id, attachment, metadata)
-            if skip is not None:
-                skipped.append(skip)
-            elif matter is not None:
-                imported.append(matter)
+        metadata = _message_selector_metadata(
+            message,
+            _message_metadata(message, account_email, detection=detection if detection["matched"] else None),
+        )
+        attachment_result = _import_inbound_attachments(service, message_id, attachments, metadata)
+        imported.extend(attachment_result["imported"])
+        skipped.extend(attachment_result["skipped"])
 
     return {
         "account": account_email,
@@ -240,11 +326,84 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
     }
 
 
+def _import_inbound_attachments(
+    service: Any,
+    message_id: str,
+    attachments: list[dict[str, Any]],
+    metadata: dict[str, str],
+) -> dict[str, list[dict[str, Any]]]:
+    prepared: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    selector_enabled = gmail_attachment_selector.selector_configured()
+    for attachment in attachments:
+        candidate, skip = _prepare_inbound_attachment(
+            service,
+            message_id,
+            attachment,
+            metadata,
+            require_deterministic_acceptance=not selector_enabled,
+        )
+        if skip is not None:
+            skipped.append(skip)
+        elif candidate is not None:
+            prepared.append(candidate)
+
+    selected_ids, selector_metadata = _selected_candidate_attachment_ids(metadata, prepared)
+    deterministic_fallback = selected_ids is None
+    imported: list[dict[str, Any]] = []
+    for candidate in prepared:
+        attachment_id = str(candidate.get("attachment_id") or "")
+        validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
+        if deterministic_fallback and not validation.get("accepted"):
+            skipped.append(_gmail_attachment_skip(
+                message_id,
+                str(candidate.get("filename") or ""),
+                "non_nda_attachment",
+                detail=str(validation.get("reason") or ""),
+                score=str(validation.get("score") or "0"),
+            ))
+            continue
+        if selected_ids is not None and attachment_id not in selected_ids:
+            skipped.append(_gmail_attachment_skip(
+                message_id,
+                str(candidate.get("filename") or ""),
+                "ai_not_selected_attachment",
+                detail=selector_metadata.get("reason", ""),
+                model=selector_metadata.get("model", ""),
+                confidence=selector_metadata.get("confidence", ""),
+            ))
+            continue
+        matter, skip = _create_matter_from_prepared_attachment(
+            candidate,
+            metadata,
+            selector_metadata=selector_metadata if selected_ids is not None else None,
+        )
+        if skip is not None:
+            skipped.append(skip)
+        elif matter is not None:
+            imported.append(matter)
+    return {"imported": imported, "skipped": skipped}
+
+
 def _import_inbound_attachment(
     service: Any,
     message_id: str,
     attachment: dict[str, Any],
     metadata: dict[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    candidate, skip = _prepare_inbound_attachment(service, message_id, attachment, metadata)
+    if skip is not None or candidate is None:
+        return None, skip
+    return _create_matter_from_prepared_attachment(candidate, metadata)
+
+
+def _prepare_inbound_attachment(
+    service: Any,
+    message_id: str,
+    attachment: dict[str, Any],
+    metadata: dict[str, str],
+    *,
+    require_deterministic_acceptance: bool = True,
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     attachment_id = str(attachment.get("attachment_id") or "")
     attachment_filename = str(attachment.get("filename") or "")
@@ -274,6 +433,72 @@ def _import_inbound_attachment(
         return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
 
     try:
+        _document_type, paragraphs = extract_document_paragraphs(attachment_filename, document_bytes)
+    except PdfExtractionError as error:
+        return None, _gmail_attachment_skip(
+            message_id,
+            attachment_filename,
+            _pdf_attachment_skip_reason(error),
+            detail=str(error),
+        )
+    except DocxExtractionError as error:
+        return None, _gmail_attachment_skip(
+            message_id,
+            attachment_filename,
+            "review_failed",
+            detail=str(error),
+        )
+
+    validation = _attachment_nda_validation(
+        attachment_filename,
+        paragraphs,
+        message_metadata=metadata,
+    )
+    if require_deterministic_acceptance and not validation["accepted"]:
+        return None, _gmail_attachment_skip(
+            message_id,
+            attachment_filename,
+            "non_nda_attachment",
+            detail=str(validation.get("reason") or ""),
+            score=str(validation.get("score") or "0"),
+        )
+
+    return {
+        "attachment": attachment,
+        "attachment_id": attachment_id,
+        "attachment_sha256": attachment_sha256,
+        "document_bytes": document_bytes,
+        "filename": attachment_filename,
+        "message_id": message_id,
+        "paragraphs": paragraphs,
+        "part_id": part_id,
+        "text_preview": _attachment_text_preview(paragraphs),
+        "validation": validation,
+    }, None
+
+
+def _create_matter_from_prepared_attachment(
+    candidate: dict[str, Any],
+    metadata: dict[str, str],
+    *,
+    selector_metadata: dict[str, object] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    message_id = str(candidate.get("message_id") or "")
+    attachment_id = str(candidate.get("attachment_id") or "")
+    attachment_filename = str(candidate.get("filename") or "")
+    attachment_sha256 = str(candidate.get("attachment_sha256") or "")
+    document_bytes = candidate.get("document_bytes")
+    part_id = str(candidate.get("part_id") or "")
+    validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
+
+    if not isinstance(document_bytes, bytes):
+        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
+
+    metadata = _attachment_validation_metadata(metadata, validation)
+    if selector_metadata:
+        metadata = _attachment_selector_metadata(metadata, selector_metadata)
+
+    try:
         matter = create_matter_from_document(
             filename=attachment_filename or "nda.docx",
             document_bytes=document_bytes,
@@ -296,6 +521,48 @@ def _import_inbound_attachment(
     return matter, None
 
 
+def _selected_candidate_attachment_ids(
+    metadata: dict[str, str],
+    prepared: list[dict[str, Any]],
+) -> tuple[set[str] | None, dict[str, object]]:
+    if not prepared or not gmail_attachment_selector.selector_configured():
+        return None, {}
+    try:
+        selection = gmail_attachment_selector.select_nda_attachments(
+            message_metadata=metadata,
+            candidates=prepared,
+        )
+    except gmail_attachment_selector.GmailAttachmentSelectorError:
+        return None, {}
+    if selection.get("status") != "selected":
+        return None, {}
+    selected_ids = {
+        str(attachment_id)
+        for attachment_id in selection.get("selected_attachment_ids", [])
+        if str(attachment_id)
+    }
+    return (selected_ids or None), selection
+
+
+def _message_selector_metadata(message: dict[str, Any], metadata: dict[str, str]) -> dict[str, str]:
+    body_preview = _message_body_text(message.get("payload") or {})
+    if not body_preview:
+        return metadata
+    return {
+        **metadata,
+        "message_body_preview": body_preview[:GMAIL_BODY_PREVIEW_LIMIT],
+    }
+
+
+def _attachment_text_preview(paragraphs: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for paragraph in paragraphs[:12]:
+        text = " ".join(str(paragraph.get("text") or "").split())
+        if text:
+            chunks.append(text)
+    return "\n".join(chunks)[:3000]
+
+
 def _gmail_attachment_already_imported(
     message_id: str,
     attachment_id: str,
@@ -313,12 +580,17 @@ def _gmail_attachment_already_imported(
     ) is not None
 
 
-def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str) -> dict[str, str]:
-    return {
+def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str, **details: object) -> dict[str, str]:
+    skip = {
         "attachment_filename": attachment_filename,
         "message_id": message_id,
         "reason": reason,
     }
+    for key, value in details.items():
+        cleaned = " ".join(str(value or "").split())
+        if cleaned:
+            skip[key] = cleaned[:500]
+    return skip
 
 
 def send_redline_email(
@@ -792,16 +1064,188 @@ def _attachment_nda_detection(
             )
         except (GmailIntegrationError, DocumentSizeError, DocxExtractionError, PdfExtractionError):
             continue
-        text = "\n".join(str(paragraph.get("text") or "") for paragraph in paragraphs)
-        terms = _nda_terms_in_text(text)
-        if terms:
+        validation = _attachment_nda_validation(str(attachment.get("filename") or ""), paragraphs)
+        if validation["accepted"]:
             return {
                 "matched": True,
-                "sources": ["attachment_content"],
-                "terms": terms,
-                "excerpt": _detection_excerpt(text, terms[0]),
+                "sources": validation["sources"],
+                "terms": validation["terms"],
+                "excerpt": validation["excerpt"],
             }
     return {"matched": False, "sources": [], "terms": [], "excerpt": ""}
+
+
+def _attachment_nda_validation(
+    filename: str,
+    paragraphs: list[dict[str, Any]],
+    *,
+    message_metadata: dict[str, str] | None = None,
+) -> dict[str, object]:
+    text = "\n".join(str(paragraph.get("text") or "") for paragraph in paragraphs)
+    filename_score, filename_terms, filename_reasons, strong_filename = _attachment_signal_score(
+        filename,
+        ATTACHMENT_FILENAME_NDA_SIGNALS,
+    )
+    content_score, content_terms, content_reasons, strong_content = _attachment_signal_score(
+        text,
+        ATTACHMENT_CONTENT_NDA_SIGNALS,
+    )
+    collateral_score, collateral_reasons = _attachment_collateral_score(filename, text)
+    has_role_pair = _text_matches(text, r"\bdisclosing\s+party\b") and _text_matches(text, r"\breceiving\s+party\b")
+    message_signal = _metadata_has_explicit_nda_signal(message_metadata)
+    score = max(0, filename_score + content_score - collateral_score)
+    has_content_basis = (
+        strong_content
+        or has_role_pair
+        or (strong_filename and content_score >= 25)
+        or (message_signal and content_score >= MIN_MESSAGE_BACKED_CONTENT_SCORE)
+    )
+    accepted = score >= MIN_ATTACHMENT_NDA_SCORE and has_content_basis
+    sources: list[str] = []
+    stored_filename_terms: list[str] = []
+    if filename_terms and filename_score >= 25:
+        sources.append("attachment_filename")
+        stored_filename_terms = filename_terms
+    if content_terms:
+        sources.append("attachment_content")
+    terms = _unique_strings([*stored_filename_terms, *content_terms])
+    reasons = [*filename_reasons, *content_reasons]
+    if collateral_reasons:
+        reasons.extend(f"collateral:{reason}" for reason in collateral_reasons)
+    if not accepted and not reasons:
+        reasons.append("no attachment-level NDA signal")
+    return {
+        "accepted": accepted,
+        "excerpt": _attachment_validation_excerpt(text, terms),
+        "reason": ", ".join(_unique_strings(reasons)),
+        "score": score,
+        "sources": sources,
+        "terms": terms,
+    }
+
+
+def _attachment_signal_score(
+    text: object,
+    signals: tuple[tuple[str, str, int, bool], ...],
+) -> tuple[int, list[str], list[str], bool]:
+    value = str(text or "")
+    score = 0
+    terms: list[str] = []
+    reasons: list[str] = []
+    strong = False
+    for term, pattern, weight, is_strong in signals:
+        if not re.search(pattern, value, flags=re.IGNORECASE):
+            continue
+        score += weight
+        terms.append(term)
+        reasons.append(term)
+        strong = strong or is_strong
+    return score, _unique_strings(terms), _unique_strings(reasons), strong
+
+
+def _attachment_collateral_score(filename: str, text: str) -> tuple[int, list[str]]:
+    searchable = f"{filename}\n{text[:4000]}"
+    score = 0
+    reasons: list[str] = []
+    for term, pattern, weight in ATTACHMENT_COLLATERAL_SIGNALS:
+        if not re.search(pattern, searchable, flags=re.IGNORECASE):
+            continue
+        score += weight
+        reasons.append(term)
+    return score, _unique_strings(reasons)
+
+
+def _attachment_validation_excerpt(text: str, terms: list[str]) -> str:
+    for term in terms:
+        if term in {"agreement", "contract", "document"}:
+            continue
+        excerpt = _detection_excerpt(text, term)
+        if excerpt:
+            return excerpt
+    return _detection_excerpt(text, terms[0]) if terms else ""
+
+
+def _metadata_has_explicit_nda_signal(metadata: dict[str, str] | None) -> bool:
+    if not metadata:
+        return False
+    sources = _metadata_csv_values(metadata.get("gmail_detection_sources"))
+    if not any(source in {"subject", "body", "snippet"} for source in sources):
+        return False
+    terms = _metadata_csv_values(metadata.get("gmail_detection_terms"))
+    return any(term in EXPLICIT_NDA_TERMS for term in terms)
+
+
+def _attachment_validation_metadata(metadata: dict[str, str], validation: dict[str, object]) -> dict[str, str]:
+    message_sources = [
+        source
+        for source in _metadata_csv_values(metadata.get("gmail_detection_sources"))
+        if source in {"subject", "body", "snippet"}
+    ]
+    validation_sources = [
+        str(source)
+        for source in validation.get("sources", [])
+        if isinstance(source, str) and source
+    ]
+    message_terms = _metadata_csv_values(metadata.get("gmail_detection_terms"))
+    validation_terms = [
+        str(term)
+        for term in validation.get("terms", [])
+        if isinstance(term, str) and term
+    ]
+    updated = dict(metadata)
+    sources = _unique_strings([*message_sources, *validation_sources])
+    terms = _unique_strings([*message_terms, *validation_terms])
+    if sources:
+        updated["gmail_detection_sources"] = ", ".join(sources)
+    if terms:
+        updated["gmail_detection_terms"] = ", ".join(terms)
+    excerpt = str(validation.get("excerpt") or "").strip()
+    if excerpt:
+        updated["gmail_detection_excerpt"] = excerpt
+    updated["gmail_attachment_score"] = str(validation.get("score") or 0)
+    reason = str(validation.get("reason") or "").strip()
+    if reason:
+        updated["gmail_attachment_reasons"] = reason
+    return updated
+
+
+def _attachment_selector_metadata(metadata: dict[str, str], selection: dict[str, object]) -> dict[str, str]:
+    updated = dict(metadata)
+    updated["gmail_attachment_selector"] = "groq_qwen"
+    model = str(selection.get("model") or "").strip()
+    if model:
+        updated["gmail_attachment_selector_model"] = model[:120]
+    reason = str(selection.get("reason") or "").strip()
+    if reason:
+        updated["gmail_attachment_selector_reason"] = reason[:500]
+    confidence = selection.get("confidence")
+    if confidence is not None:
+        updated["gmail_attachment_selector_confidence"] = str(confidence)[:40]
+    return updated
+
+
+def _metadata_csv_values(value: object) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        if value and value not in unique:
+            unique.append(value)
+    return unique
+
+
+def _text_matches(text: object, pattern: str) -> bool:
+    return bool(re.search(pattern, str(text or ""), flags=re.IGNORECASE))
+
+
+def _pdf_attachment_skip_reason(error: PdfExtractionError) -> str:
+    if "No readable text" in str(error):
+        return "pdf_text_unreadable_needs_ocr"
+    return "review_failed"
 
 
 def _nda_terms_in_text(text: object) -> list[str]:

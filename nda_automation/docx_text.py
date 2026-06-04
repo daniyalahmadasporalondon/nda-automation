@@ -11,8 +11,10 @@ from .docx_xml import UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reje
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
+MAX_DOCX_ZIP_ENTRIES = 4096
 DOCX_TOO_LARGE_MESSAGE = "The Word document is too large after decompression."
 DOCX_SUSPICIOUS_COMPRESSION_MESSAGE = "The Word document uses a suspicious compression ratio."
+DOCX_TOO_MANY_ENTRIES_MESSAGE = "The Word document contains too many archive entries."
 SUPPLEMENTAL_PART_PREFIXES = (
     "word/header",
     "word/footer",
@@ -49,8 +51,12 @@ def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
 
 
 def validate_docx_archive(document: ZipFile) -> None:
+    entries = document.infolist()
+    if len(entries) > MAX_DOCX_ZIP_ENTRIES:
+        raise DocxExtractionError(DOCX_TOO_MANY_ENTRIES_MESSAGE)
+
     total_uncompressed = 0
-    for item in document.infolist():
+    for item in entries:
         if item.is_dir():
             continue
         total_uncompressed += item.file_size

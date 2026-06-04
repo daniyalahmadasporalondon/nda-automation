@@ -73,7 +73,52 @@ class PdfTextTests(unittest.TestCase):
         )
 
     @requires_pypdf
+    def test_preserves_standalone_clause_numbers(self):
+        data = make_pdf_lines([
+            "1",
+            "Definitions",
+            "Confidential Information means non-public information.",
+            "2",
+            "Term",
+            "The confidentiality obligations survive for five years.",
+        ])
+
+        paragraphs = extract_pdf_paragraphs(data)
+
+        self.assertEqual(
+            [paragraph["text"] for paragraph in paragraphs],
+            [
+                "1 Definitions Confidential Information means non-public information.",
+                "2 Term The confidentiality obligations survive for five years.",
+            ],
+        )
+
+    @requires_pypdf
     def test_removes_repeated_pdf_headers_and_page_numbers(self):
+        data = make_pdf_pages([
+            [
+                "Acme Legal",
+                "1. Definitions",
+                "Confidential Information means technical information.",
+                "1",
+            ],
+            [
+                "Acme Legal",
+                "2. Term",
+                "The obligations survive for three years.",
+                "2",
+            ],
+        ])
+
+        extraction = extract_pdf_document(data)
+        extracted_text = "\n\n".join(paragraph["text"] for paragraph in extraction.paragraphs)
+
+        self.assertNotIn("Acme Legal", extracted_text)
+        self.assertNotIn("\n\n1\n\n", f"\n\n{extracted_text}\n\n")
+        self.assertEqual(extraction.quality["repeated_margin_lines_removed"], 1)
+
+    @requires_pypdf
+    def test_preserves_repeated_substantive_pdf_titles(self):
         data = make_pdf_pages([
             [
                 "Acme Mutual NDA",
@@ -92,9 +137,31 @@ class PdfTextTests(unittest.TestCase):
         extraction = extract_pdf_document(data)
         extracted_text = "\n\n".join(paragraph["text"] for paragraph in extraction.paragraphs)
 
-        self.assertNotIn("Acme Mutual NDA", extracted_text)
-        self.assertNotIn("\n\n1\n\n", f"\n\n{extracted_text}\n\n")
-        self.assertEqual(extraction.quality["repeated_margin_lines_removed"], 1)
+        self.assertIn("Acme Mutual NDA", extracted_text)
+        self.assertEqual(extraction.quality["repeated_margin_lines_removed"], 0)
+
+    @requires_pypdf
+    def test_preserves_repeated_multiword_document_titles(self):
+        data = make_pdf_pages([
+            [
+                "Moorwand Project Proposal Form",
+                "1. Overview",
+                "The proposal describes project scope and commercial assumptions.",
+                "1",
+            ],
+            [
+                "Moorwand Project Proposal Form",
+                "2. Timeline",
+                "The implementation timeline is subject to mutual agreement.",
+                "2",
+            ],
+        ])
+
+        extraction = extract_pdf_document(data)
+        extracted_text = "\n\n".join(paragraph["text"] for paragraph in extraction.paragraphs)
+
+        self.assertIn("Moorwand Project Proposal Form", extracted_text)
+        self.assertEqual(extraction.quality["repeated_margin_lines_removed"], 0)
 
     @requires_pypdf
     def test_quality_report_warns_when_some_pages_have_no_text(self):

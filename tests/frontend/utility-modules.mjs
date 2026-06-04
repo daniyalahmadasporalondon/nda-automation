@@ -90,6 +90,14 @@ const repositoryApi = createRepositoryApi({
         review_result: { clauses: [] },
       });
     }
+    if (url === "/api/matters/matter%20one/review-refresh") {
+      return jsonResponse({
+        extracted_text: "Refreshed contract text",
+        matter: { id: "matter one" },
+        review_refresh: { refreshed: true, stale: false },
+        review_result: { clauses: [{ id: "mutuality" }] },
+      });
+    }
     if (url === "/api/matters/matter%20one/stage") return jsonResponse({ matter: { id: "matter one", board_column: "in_review" } });
     if (url === "/api/review/compare") return jsonResponse({ review_comparison: { mode: "deterministic_vs_ai_first", source: "text" } });
     if (url === "/api/matters/matter%20one/review-comparison") {
@@ -110,7 +118,16 @@ assert.deepEqual(await repositoryApi.getMatterReview("matter one"), {
   extracted_text: "Contract text",
   redline_draft: null,
   review_comparison: { mode: "deterministic_vs_ai_first", status: "completed" },
+  review_refresh: null,
   review_result: { clauses: [] },
+});
+assert.deepEqual(await repositoryApi.getMatterReview("matter one", { refresh: true }), {
+  id: "matter one",
+  extracted_text: "Refreshed contract text",
+  redline_draft: null,
+  review_comparison: null,
+  review_refresh: { refreshed: true, stale: false },
+  review_result: { clauses: [{ id: "mutuality" }] },
 });
 assert.deepEqual(await repositoryApi.moveMatterToColumn("matter one", "in_review"), { id: "matter one", board_column: "in_review" });
 assert.deepEqual(await repositoryApi.compareTextReview("Contract text"), { mode: "deterministic_vs_ai_first", source: "text" });
@@ -119,11 +136,13 @@ assert.deepEqual(await repositoryApi.compareMatterReview("matter one"), {
   review_comparison: { mode: "deterministic_vs_ai_first", source: "matter" },
 });
 assert.deepEqual(await repositoryApi.sendRedline({ matter_id: "matter-1", confirm_send: true }), { sent: true });
+assert.equal(calls[3].url, "/api/matters/matter%20one/review-refresh");
 assert.equal(calls[3].options.method, "POST");
-assert.deepEqual(JSON.parse(calls[3].options.body), { board_column: "in_review" });
-assert.deepEqual(JSON.parse(calls[4].options.body), { text: "Contract text" });
-assert.equal(calls[5].options.method, "POST");
-assert.deepEqual(JSON.parse(calls[6].options.body), { matter_id: "matter-1", confirm_send: true });
+assert.equal(calls[4].options.method, "POST");
+assert.deepEqual(JSON.parse(calls[4].options.body), { board_column: "in_review" });
+assert.deepEqual(JSON.parse(calls[5].options.body), { text: "Contract text" });
+assert.equal(calls[6].options.method, "POST");
+assert.deepEqual(JSON.parse(calls[7].options.body), { matter_id: "matter-1", confirm_send: true });
 
 function jsonResponse(payload, { ok = true } = {}) {
   return {

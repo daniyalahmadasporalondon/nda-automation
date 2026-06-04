@@ -106,6 +106,8 @@ function startServer() {
     cwd: ROOT,
     env: {
       ...process.env,
+      NDA_AI_FIRST_REVIEW_ENABLED: "true",
+      NDA_AI_FIRST_FALLBACK_MODE: "deterministic",
       NDA_DATA_DIR: TEST_DATA_DIR,
       NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
       PYTHONUNBUFFERED: "1",
@@ -212,8 +214,8 @@ async function testAccessibleControlState(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(matterCardStyles.borderRadius, "16px");
-  assert.equal(matterCardStyles.boxShadow, "none");
+  assert.equal(matterCardStyles.borderRadius, "22px");
+  assert.equal(matterCardStyles.boxShadow, "rgba(26, 19, 51, 0.2) 0px 10px 30px -20px");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
@@ -242,8 +244,8 @@ async function testAccessibleControlState(page) {
       borderLeftWidth: styles.borderLeftWidth,
     };
   });
-  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 250, 252)");
-  assert.equal(activePlaybookRow.borderLeftColor, "rgb(96, 40, 200)");
+  assert.equal(activePlaybookRow.backgroundColor, "rgb(250, 248, 255)");
+  assert.equal(activePlaybookRow.borderLeftColor, "rgb(79, 27, 179)");
   assert.equal(activePlaybookRow.borderLeftWidth, "3px");
 
   await page.getByRole("tab", { name: "Review" }).click();
@@ -718,7 +720,7 @@ async function testContractStructureReviewPanel(page) {
   assert.deepEqual(referenceResolver.references[1].resolved_section_ids, ["section-10"]);
 
   await page.locator('[data-review-inspector="clause"]').click();
-  await assertTextContains(page.locator("#studioDetailPanel"), "Rationale");
+  await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
 
   await page.getByRole("tab", { name: "Admin" }).click();
   await page.locator('[data-admin-section="document"]').click();
@@ -804,7 +806,7 @@ async function testContractStructureReviewPanel(page) {
   await page.locator("#adminActiveReviewEngineSelect").selectOption("ai_first");
   await page.locator("#adminAiFirstFallbackSelect").selectOption("fail_closed");
   await page.locator("#adminRuntimeSaveButton").click();
-  await page.waitForFunction(() => document.querySelector('[data-admin-ai="active-engine"]')?.textContent?.trim() === "AI-first");
+  await page.waitForFunction(() => document.querySelector('[data-admin-ai="runtime-source"]')?.textContent?.trim() === "Admin runtime settings");
   assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], {
     active_review_engine: "ai_first",
     ai_first_fallback_mode: "fail_closed",
@@ -828,16 +830,15 @@ async function testStructuredEvidenceAndRationale(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   await page.getByRole("button", { name: /Governing Law/ }).click();
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "Issue type");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Rationale");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Why it might be a problem");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Why it may be fine");
-  await assertTextContains(page.locator("#studioDetailPanel"), "None.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "ISSUE TYPE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "ASSESSMENT");
+  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
   await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
+  await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
@@ -865,7 +866,7 @@ async function testStructuredEvidenceAndRationale(page) {
     };
     renderStudioResult({ clauses: state.reviewClauses });
   });
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI second opinion confirmed this finding.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI assessment confirmed this finding.");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI agrees|No contrary reason/);
 }
@@ -873,7 +874,7 @@ async function testStructuredEvidenceAndRationale(page) {
 async function testAiSecondOpinionButton(page) {
   await runReview(page, passNda);
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
+  await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
   assert.equal(await page.locator('[data-ai-second-opinion-clause-id]').count(), 0);
   assert.equal(await page.getByRole("button", { name: /second opinion/i }).count(), 0);
 }
@@ -881,7 +882,7 @@ async function testAiSecondOpinionButton(page) {
 async function testAiDraftFixValidationButton(page) {
   await runReview(page, termOnlyRedlineNda);
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
+  await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
   assert.equal(await page.locator('[data-ai-draft-validation-redline-id]').count(), 0);
   assert.equal(await page.getByRole("button", { name: /validate draft fix/i }).count(), 0);
   assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI DRAFT/i);
@@ -931,13 +932,17 @@ async function testPerClauseReviewedToggle(page) {
 
   const confidentialCard = page.locator('[data-studio-lane-id="confidential_information"]');
   const termCard = page.locator('[data-studio-lane-id="term_and_survival"]');
-  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
-  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  const activeReviewToggle = page.locator('#studioDetailPanel [data-review-action="mark-reviewed"]');
+  await confidentialCard.click();
+  await assertTextContains(activeReviewToggle, "NEEDS REVIEW");
+  await assertAttributeMatches(confidentialCard, "aria-label", /Needs review/);
+  await assertAttributeMatches(termCard, "aria-label", /Needs review/);
 
-  await confidentialCard.locator('[data-review-action="mark-reviewed"]').click();
+  await activeReviewToggle.click();
   await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === true);
-  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Reviewed");
-  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  await assertTextContains(activeReviewToggle, "REVIEWED");
+  await assertAttributeMatches(confidentialCard, "aria-label", /Reviewed/);
+  await assertAttributeMatches(termCard, "aria-label", /Needs review/);
   assert.deepEqual(
     await page.evaluate(() => ({
       confidential: state.reviewedClauseIds.confidential_information,
@@ -946,10 +951,11 @@ async function testPerClauseReviewedToggle(page) {
     { confidential: true, term: undefined },
   );
 
-  await confidentialCard.locator('[data-review-action="mark-reviewed"]').click();
+  await activeReviewToggle.click();
   await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === false);
-  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
-  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  await assertTextContains(activeReviewToggle, "NEEDS REVIEW");
+  await assertAttributeMatches(confidentialCard, "aria-label", /Needs review/);
+  await assertAttributeMatches(termCard, "aria-label", /Needs review/);
 }
 
 async function testReviewSendUsesCurrentMatterAfterSwitch(page) {
@@ -1511,7 +1517,7 @@ async function testRepositoryOpenReviewRepeatedly(page) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
       return;
     }
-    if (requestUrl.pathname.endsWith("/review")) {
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
       if (matter.id === "matter_beta_review") {
         await betaReviewGate;
       }
@@ -1522,6 +1528,21 @@ async function testRepositoryOpenReviewRepeatedly(page) {
           extracted_text: matter.extracted_text,
           matter,
           review_comparison: matter.review_comparison || null,
+          review_refresh: { refreshed: true, stale: false },
+          review_result: matter.review_result,
+        }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review") || requestUrl.pathname.endsWith("/review-refresh")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: matter.extracted_text,
+          matter,
+          review_comparison: matter.review_comparison || null,
+          review_refresh: { stale: true },
           review_result: matter.review_result,
         }),
       });
@@ -1558,7 +1579,9 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   await page.locator(".repository-card").filter({ hasText: "Beta Review NDA" }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Beta Review NDA");
-  const betaReviewRequest = page.waitForRequest((request) => request.url().includes("/api/matters/matter_beta_review/review"));
+  const betaReviewRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().includes("/api/matters/matter_beta_review/review-refresh")
+  ));
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
@@ -1571,11 +1594,13 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   const betaComparison = await page.evaluate(() => ({
     comparison: state.reviewComparison,
     error: state.reviewComparisonError,
+    reviewRefresh: state.selectedMatter?.review_refresh || null,
     status: state.reviewComparisonStatus,
   }));
   assert.deepEqual(betaComparison, {
     comparison: null,
     error: "",
+    reviewRefresh: { refreshed: true, stale: false },
     status: "idle",
   });
 
@@ -1851,6 +1876,7 @@ async function testReviewOutboundSendModal(page) {
     document_title: "Counterparty NDA",
     gmail_account: "daniyal.ahmad@aspora.com",
     has_redline_draft: true,
+    human_reviewed: true,
     issue_count: 1,
     message_snippet: "Please review the attached NDA.",
     next_action: "Review redline",
@@ -1977,7 +2003,7 @@ async function testReviewOutboundSendModal(page) {
       });
       return;
     }
-    if (requestUrl.pathname.endsWith("/review")) {
+    if (requestUrl.pathname.endsWith("/review") || requestUrl.pathname.endsWith("/review-refresh")) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -2283,8 +2309,7 @@ async function testMatterRedlineDraftPersistence(page) {
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
 
   await page.getByRole("button", { name: /Governing Law/ }).click();
-  const governingLawCard = page.locator('[data-studio-lane-id="governing_law"]');
-  await governingLawCard.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
+  await page.locator("#studioDetailPanel [data-export-redline-id][data-export-decision=\"ignore\"]").first().click();
   await assertTextContains(page.locator("#studioDraftMeta"), "Unsaved redline draft changes");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), true);
   await page.locator("#studioSaveDraftButton").click();
@@ -2302,7 +2327,8 @@ async function testMatterRedlineDraftPersistence(page) {
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await waitForText(page, "#studioDraftMeta", "Draft redline saved");
-  const ignoredState = await page.locator('[data-studio-lane-id="governing_law"] [data-export-redline-id][data-export-decision="ignore"]').first().evaluate((node) => ({
+  await page.getByRole("button", { name: /Governing Law/ }).click();
+  const ignoredState = await page.locator('#studioDetailPanel [data-export-redline-id][data-export-decision="ignore"]').first().evaluate((node) => ({
     active: node.classList.contains("active"),
     pressed: node.getAttribute("aria-pressed"),
   }));
@@ -2558,8 +2584,8 @@ async function testBackendRedlineModes(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.notEqual(checkRowStyles.backgroundColor, "rgba(0, 0, 0, 0)");
-  assert.match(checkRowStyles.boxShadow, /239, 68, 68/);
+  assert.equal(checkRowStyles.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.equal(checkRowStyles.boxShadow, "none");
 
   const checkDotStyles = await page.locator(".studio-clause-dot.verify").first().evaluate((node) => {
     const styles = getComputedStyle(node);
@@ -2569,7 +2595,7 @@ async function testBackendRedlineModes(page) {
     };
   });
   assert.equal(checkDotStyles.backgroundColor, "rgb(239, 68, 68)");
-  assert.match(checkDotStyles.boxShadow, /239, 68, 68/);
+  assert.match(checkDotStyles.boxShadow, /252, 165, 165/);
 
   const prohibitedParagraphStyles = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => {
     const styles = getComputedStyle(node);
@@ -2581,7 +2607,8 @@ async function testBackendRedlineModes(page) {
     };
   });
   assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
-  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "0px");
+  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
+  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
 
   const viewerSpacing = await page.evaluate(() => {
@@ -2621,7 +2648,7 @@ async function testBackendRedlineModes(page) {
       borderLeftColor: styles.borderLeftColor,
     };
   });
-  assert.equal(termParagraphStyles.backgroundColor, "rgba(96, 40, 200, 0.08)");
+  assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
   assert.equal(termParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   await assertRedlinePreview(termParagraph, {
     originalText: "seven",
@@ -2638,7 +2665,9 @@ async function testBackendRedlineModes(page) {
   assert.equal(await page.locator('[data-paragraph-id="p2"]').count(), 1);
   const cleanDeleteAnchor = page.locator('[data-paragraph-id="p2"]');
   assert.equal(await cleanDeleteAnchor.evaluate((node) => node.classList.contains("doc-clean-removed-anchor")), true);
-  assert.equal((await cleanDeleteAnchor.innerText()).trim(), "");
+  assert.equal(await cleanDeleteAnchor.evaluate((node) => (
+    node.querySelector(".paragraph-redline-preview, .paragraph-editable, .paragraph-redline-note, .paragraph-insertion")?.textContent || ""
+  ).trim()), "");
   await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
 
@@ -2700,29 +2729,31 @@ async function testClauseDecisionControls(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   const governingLawCard = page.locator('[data-studio-lane-id="governing_law"]');
   const signaturesCard = page.locator('[data-studio-lane-id="signatures"]');
+  const detailPanel = page.locator("#studioDetailPanel");
 
-  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  await governingLawCard.click();
   assert.deepEqual(
-    await governingLawCard.locator(".studio-template-choice").evaluateAll((nodes) => nodes.map((node) => node.innerText.trim())),
+    await detailPanel.locator(".redline-option strong").evaluateAll((nodes) => nodes.map((node) => node.innerText.trim())),
     ["India", "Delaware", "England and Wales", "DIFC"],
   );
-  await governingLawCard.locator('[data-redline-option-id="governing_law_difc"]').click();
-  await assertTextContains(governingLawCard.locator(".studio-template-choice.selected"), "DIFC");
-  await assertTextContains(governingLawCard.locator(".studio-clause-insert"), "the DIFC");
+  await detailPanel.locator('[data-redline-option-id="governing_law_difc"]').click();
+  await assertTextContains(detailPanel.locator(".redline-option.selected"), "DIFC");
+  await assertTextContains(detailPanel, "the DIFC");
   await page.locator("#studioUndoEditButton").click();
-  assert.equal(await governingLawCard.locator(".studio-template-choice.selected").filter({ hasText: "DIFC" }).count(), 0);
-  await governingLawCard.locator('[data-redline-option-id="governing_law_difc"]').click();
-  await assertTextContains(governingLawCard.locator(".studio-template-choice.selected"), "DIFC");
+  assert.equal(await detailPanel.locator(".redline-option.selected").filter({ hasText: "DIFC" }).count(), 0);
+  await detailPanel.locator('[data-redline-option-id="governing_law_difc"]').click();
+  await assertTextContains(detailPanel.locator(".redline-option.selected"), "DIFC");
 
-  await signaturesCard.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
-  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="ignore"]')?.getAttribute("aria-pressed") === "true");
+  await signaturesCard.click();
+  await detailPanel.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
+  await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="ignore"]')?.getAttribute("aria-pressed") === "true");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
-  await page.locator('[data-studio-lane-id="signatures"]').click();
+  await signaturesCard.click();
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
-  await signaturesCard.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
-  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
+  await detailPanel.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
+  await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
@@ -2730,8 +2761,8 @@ async function testClauseDecisionControls(page) {
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   await assertTextContains(page.locator("#studioFileMeta"), "Undid clause suggestion change");
 
-  await signaturesCard.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
-  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
+  await detailPanel.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
+  await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
@@ -3299,6 +3330,11 @@ async function colorPixelCounts(locator) {
 async function assertTextContains(locator, expected) {
   const text = await locator.innerText();
   assert.ok(text.includes(expected), `expected "${text}" to include "${expected}"`);
+}
+
+async function assertAttributeMatches(locator, attribute, expected) {
+  const value = await locator.getAttribute(attribute);
+  assert.match(value || "", expected);
 }
 
 async function waitForText(page, selector, expected) {

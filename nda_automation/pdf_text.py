@@ -88,7 +88,7 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
 
     paragraphs: List[Paragraph] = []
     for page_index, lines in enumerate(page_lines, start=1):
-        filtered_lines = [line for line in lines if line not in repeated_margins and not _is_page_number(line)]
+        filtered_lines = _filtered_pdf_lines(lines, repeated_margins)
         for paragraph_text in _split_pdf_paragraphs(filtered_lines):
             paragraphs.append({
                 "id": f"p{len(paragraphs) + 1}",
@@ -180,15 +180,63 @@ def _is_page_number(line: str) -> bool:
     return bool(re.match(r"^(?:page\s+)?\d+(?:\s+of\s+\d+)?$", line, flags=re.IGNORECASE))
 
 
+def _filtered_pdf_lines(lines: list[str], repeated_margins: set[str]) -> list[str]:
+    filtered: list[str] = []
+    for index, line in enumerate(lines):
+        if line in repeated_margins:
+            continue
+        if _is_disposable_page_number(line, index, lines):
+            continue
+        filtered.append(line)
+    return filtered
+
+
+def _is_disposable_page_number(line: str, index: int, lines: list[str]) -> bool:
+    if not _is_page_number(line):
+        return False
+    if _looks_like_standalone_clause_marker(line, index, lines):
+        return False
+    return True
+
+
+def _looks_like_standalone_clause_marker(line: str, index: int, lines: list[str]) -> bool:
+    if not _is_standalone_clause_number(line):
+        return False
+    if index >= len(lines) - 1:
+        return False
+    next_line = lines[index + 1]
+    if _is_page_number(next_line):
+        return False
+    return bool(re.search(r"[A-Za-z]", next_line)) and len(next_line) <= 120
+
+
 def _repeated_margin_lines(page_lines: list[list[str]]) -> set[str]:
     candidates: dict[str, int] = {}
     for lines in page_lines:
         for line in set([*lines[:2], *lines[-2:]]):
-            if len(line) < 4 or _is_page_number(line):
+            if len(line) < 4 or _is_page_number(line) or not _is_non_substantive_margin_line(line):
                 continue
             candidates[line] = candidates.get(line, 0) + 1
     minimum_repeats = max(2, int(len(page_lines) * 0.5))
     return {line for line, count in candidates.items() if count >= minimum_repeats}
+
+
+def _is_non_substantive_margin_line(line: str) -> bool:
+    normalized = str(line or "").strip()
+    if not normalized or len(normalized) > 80 or _ends_sentence(normalized):
+        return False
+    words = re.findall(r"[A-Za-z]+", normalized)
+    if len(words) > 2:
+        return False
+    return not re.search(
+        r"\b(?:"
+        r"agreement|clause|confidential|confidentiality|definition|disclos(?:e|ing|ure)|"
+        r"information|mutual|nda|non-disclosure|nondisclosure|obligation|party|parties|"
+        r"recipient|schedule|term|undertaking"
+        r")\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
 
 
 def _pdf_quality_report(

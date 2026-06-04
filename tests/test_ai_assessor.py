@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import patch
 
 from nda_automation.ai_assessment_prompt import AI_ASSESSMENT_RESPONSE_SCHEMA, AI_ASSESSMENT_TASK
@@ -11,6 +12,7 @@ from nda_automation.ai_assessor import (
     gemini_ai_assessment_request_body,
     openrouter_ai_assessment_request_body,
 )
+from nda_automation.gemini_schema import GEMINI_UNSUPPORTED_SCHEMA_KEYS
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 
 
@@ -152,8 +154,11 @@ class AIAssessorTests(unittest.TestCase):
         packet = reviewer.packets[0]
 
         gemini_body = gemini_ai_assessment_request_body(packet)
-        self.assertEqual(gemini_body["generationConfig"]["responseSchema"], AI_ASSESSMENT_RESPONSE_SCHEMA)
+        self.assertNotEqual(gemini_body["generationConfig"]["responseSchema"], AI_ASSESSMENT_RESPONSE_SCHEMA)
         self.assertEqual(gemini_body["generationConfig"]["responseMimeType"], "application/json")
+        gemini_schema_json = json.dumps(gemini_body["generationConfig"]["responseSchema"])
+        for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
+            self.assertNotIn(f'"{unsupported_key}"', gemini_schema_json)
 
         openrouter_body = openrouter_ai_assessment_request_body(packet, "openai/gpt-4o-mini")
         self.assertEqual(openrouter_body["response_format"]["json_schema"]["schema"], AI_ASSESSMENT_RESPONSE_SCHEMA)

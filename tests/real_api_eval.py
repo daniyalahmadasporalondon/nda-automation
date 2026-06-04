@@ -1,20 +1,17 @@
-"""Real-API eval harness — run the fixture set through the *live* AI provider.
+"""Real-API eval harness — run fixtures through the active AI-first engine.
 
 This is deliberately SEPARATE from CI. The deterministic gate
-(``tests/test_review_eval.py``) scripts the AI for reproducibility; this harness
+(``tests/test_review_eval.py``) is reproducible and provider-free; this harness
 makes real network calls to the configured provider (Alibaba / OpenRouter /
-Gemini) and reports how the blind second opinion changes outcomes on the same
-authored fixtures.
+Gemini) and reports how the active AI-first review engine changes outcomes on
+the same authored fixtures.
 
 It compares, per clause fixture:
-  * Python only          — deterministic engine, AI off
-  * Python + AI          — real blind second opinion, gated by the arbiter
-  * AI disagreements      — AI verdict != Python's deterministic verdict
-  * false clears caught   — Python passed, expected fail/review, AI escalated
-  * review noise added     — Python passed, expected pass, AI escalated anyway
-
-The arbiter's fail-floor means AI can only ever escalate pass -> review, so every
-AI-driven outcome change is exactly one of {caught a false clear, added noise}.
+  * Deterministic baseline — rules engine directly, AI overlay off
+  * Active engine          — current runtime engine, normally AI-first/fail-closed
+  * Outcome changes         — active-engine verdict != deterministic verdict
+  * false clears caught     — deterministic passed, expected fail/review, active engine caught it
+  * review noise added      — deterministic passed, expected pass, active engine escalated anyway
 
 Run (needs a configured provider key in settings or env; never prints the key):
 
@@ -27,26 +24,38 @@ from __future__ import annotations
 import os
 from collections import Counter
 
-from nda_automation import ai_review
+from nda_automation.ai_assessor import assess_nda_with_ai, configured_ai_assessment_reviewer
+from nda_automation.ai_review import AI_REVIEW_ENV_ENABLED, _ai_review_settings, _api_key_source
 from nda_automation.checker import review_nda
+from nda_automation.review_engine import (
+    ACTIVE_REVIEW_ENGINE_ENV,
+    AI_FIRST_FALLBACK_MODE_ENV,
+    FALLBACK_MODE_FAIL_CLOSED,
+    REVIEW_ENGINE_AI_FIRST,
+    review_nda_with_active_engine,
+)
 from tests.review_eval import classify, load_cases
 
 
-def build_real_reviewer():
-    """Return (reviewer | None, provider, key_source, model). Never returns the key."""
-    settings = ai_review._ai_review_settings()  # same assembly production uses
+def build_real_ai_first_review_func():
+    """Return (ai_first_review_func | None, provider, key_source, model). Never returns the key."""
+    settings = _ai_review_settings()  # same provider/model assembly production uses
     provider = str(settings.get("provider") or "").strip().lower()
     model = str(settings.get("model") or "")
     if not provider:
         return None, provider, "", model
-    key_source = ai_review._api_key_source(provider)  # "environment" | "local_settings" | ""
+    key_source = _api_key_source(provider)  # "environment" | "local_settings" | ""
     if not key_source:
         return None, provider, "", model
     try:
-        reviewer = ai_review._configured_reviewer(settings)
+        reviewer = configured_ai_assessment_reviewer(settings)
     except Exception as exc:  # misconfigured settings -> treat as unavailable
         return None, provider, f"unavailable ({type(exc).__name__})", model
-    return reviewer, provider, key_source, model
+
+    def ai_first_review_func(text: str, *, paragraphs=None) -> dict:
+        return assess_nda_with_ai(text, paragraphs=paragraphs, reviewer=reviewer)
+
+    return ai_first_review_func, provider, key_source, model
 
 
 def _focus_clause(result: dict, clause_id: str) -> dict | None:
@@ -62,13 +71,43 @@ def _decision_and_reason(clause: dict | None) -> tuple[str, str]:
     return str(clause.get("decision") or ""), str(clause.get("reason_code") or "")
 
 
-def run_case_real(case: dict, reviewer) -> dict:
+def deterministic_review(text: str) -> dict:
+    previous_enabled = os.environ.get(AI_REVIEW_ENV_ENABLED)
+    os.environ[AI_REVIEW_ENV_ENABLED] = ""
+    try:
+        return review_nda(text)
+    finally:
+        if previous_enabled is None:
+            os.environ.pop(AI_REVIEW_ENV_ENABLED, None)
+        else:
+            os.environ[AI_REVIEW_ENV_ENABLED] = previous_enabled
+
+
+def active_engine_review(text: str, ai_first_review_func) -> dict:
+    previous_engine = os.environ.get(ACTIVE_REVIEW_ENGINE_ENV)
+    previous_fallback = os.environ.get(AI_FIRST_FALLBACK_MODE_ENV)
+    os.environ[ACTIVE_REVIEW_ENGINE_ENV] = REVIEW_ENGINE_AI_FIRST
+    os.environ[AI_FIRST_FALLBACK_MODE_ENV] = FALLBACK_MODE_FAIL_CLOSED
+    try:
+        return review_nda_with_active_engine(text, ai_first_review_func=ai_first_review_func)
+    finally:
+        if previous_engine is None:
+            os.environ.pop(ACTIVE_REVIEW_ENGINE_ENV, None)
+        else:
+            os.environ[ACTIVE_REVIEW_ENGINE_ENV] = previous_engine
+        if previous_fallback is None:
+            os.environ.pop(AI_FIRST_FALLBACK_MODE_ENV, None)
+        else:
+            os.environ[AI_FIRST_FALLBACK_MODE_ENV] = previous_fallback
+
+
+def run_case_real(case: dict, ai_first_review_func) -> dict:
     text = str(case["text"])
     clause_id = str(case["clause_id"])
     expected = case["expected"]
 
-    py_clause = _focus_clause(review_nda(text), clause_id)
-    py_decision, py_reason = _decision_and_reason(py_clause)
+    baseline_clause = _focus_clause(deterministic_review(text), clause_id)
+    baseline_decision, baseline_reason = _decision_and_reason(baseline_clause)
 
     row = {
         "name": str(case["name"]),
@@ -76,80 +115,74 @@ def run_case_real(case: dict, reviewer) -> dict:
         "high_risk": bool(case.get("high_risk")),
         "label_source": str(case.get("label_source") or "engineering"),
         "expected_decision": str(expected.get("decision") or ""),
-        "py_decision": py_decision,
-        "py_class": classify({"expected": expected, "actual_decision": py_decision, "actual_reason_code": py_reason}),
-        "ai_ran": False,
-        "ai_error": "",
-        "ai_status": "",
-        "ai_decision": "",
-        "final_decision": py_decision,
-        "final_class": "",
+        "baseline_decision": baseline_decision,
+        "baseline_class": classify({
+            "expected": expected,
+            "actual_decision": baseline_decision,
+            "actual_reason_code": baseline_reason,
+        }),
+        "active_ran": False,
+        "active_error": "",
+        "active_engine": "",
+        "active_status": "",
+        "active_decision": baseline_decision,
+        "active_class": "",
     }
 
-    if reviewer is None:
+    if ai_first_review_func is None:
         return row
 
-    # Scope the AI to the focus clause only: the metric reads just this clause, and the
-    # AI reviews each clause independently, so this is identical to a full review for the
-    # focus clause -- at ~1 call/case instead of ~6.
-    previous_clause_filter = os.environ.get("NDA_AI_REVIEW_CLAUSES")
-    os.environ["NDA_AI_REVIEW_CLAUSES"] = clause_id
     try:
-        ai_clause = _focus_clause(review_nda(text, ai_reviewer=reviewer), clause_id)
-    except Exception as exc:  # network/provider error: arbiter would treat AI as absent
-        row["ai_error"] = type(exc).__name__
+        active_result = active_engine_review(text, ai_first_review_func)
+        active_clause = _focus_clause(active_result, clause_id)
+    except Exception as exc:  # network/provider error: active-engine columns absent for this case
+        row["active_error"] = type(exc).__name__
         return row
-    finally:
-        if previous_clause_filter is None:
-            os.environ.pop("NDA_AI_REVIEW_CLAUSES", None)
-        else:
-            os.environ["NDA_AI_REVIEW_CLAUSES"] = previous_clause_filter
 
-    final_decision, final_reason = _decision_and_reason(ai_clause)
-    analysis = ai_clause.get("ai_review_analysis") if isinstance(ai_clause, dict) else None
-    analysis = analysis if isinstance(analysis, dict) else {}
+    active_decision, active_reason = _decision_and_reason(active_clause)
+    metadata = active_result.get("active_review_engine")
+    metadata = metadata if isinstance(metadata, dict) else {}
     row.update(
-        ai_ran=True,
-        ai_status=str(analysis.get("status") or ""),
-        ai_decision=str(analysis.get("ai_decision") or ""),
-        final_decision=final_decision,
-        final_class=classify(
-            {"expected": expected, "actual_decision": final_decision, "actual_reason_code": final_reason}
-        ),
+        active_ran=True,
+        active_engine=str(metadata.get("executed_engine") or metadata.get("engine") or ""),
+        active_status=str(metadata.get("status") or ""),
+        active_decision=active_decision,
+        active_class=classify({
+            "expected": expected,
+            "actual_decision": active_decision,
+            "actual_reason_code": active_reason,
+        }),
     )
     return row
 
 
 def compare(rows: list[dict]) -> dict:
-    ai_rows = [r for r in rows if r["ai_ran"]]
-    disagreements = [r for r in ai_rows if r["ai_decision"] and r["ai_decision"] != r["py_decision"]]
-    escalated = [r for r in ai_rows if r["final_decision"] != r["py_decision"]]
+    active_rows = [r for r in rows if r["active_ran"]]
+    changed = [r for r in active_rows if r["active_decision"] != r["baseline_decision"]]
     caught = [
         r
-        for r in ai_rows
-        if r["py_decision"] == "pass"
+        for r in active_rows
+        if r["baseline_decision"] == "pass"
         and r["expected_decision"] in {"fail", "review"}
-        and r["final_decision"] == "review"
+        and r["active_decision"] in {"fail", "review"}
     ]
     noise = [
         r
-        for r in ai_rows
-        if r["py_decision"] == "pass"
+        for r in active_rows
+        if r["baseline_decision"] == "pass"
         and r["expected_decision"] == "pass"
-        and r["final_decision"] == "review"
+        and r["active_decision"] in {"fail", "review"}
     ]
     return {
         "total": len(rows),
         "high_risk": sum(1 for r in rows if r["high_risk"]),
-        "ai_ran": len(ai_rows),
-        "ai_errors": [r for r in rows if r["ai_error"]],
-        "invalid": [r for r in ai_rows if r["ai_status"] == "invalid"],
-        "ai_status_breakdown": Counter(r["ai_status"] for r in ai_rows if r["ai_status"]),
-        "python_only": Counter(r["py_class"] for r in rows),
-        "python_only_on_ai_rows": Counter(r["py_class"] for r in ai_rows),
-        "python_plus_ai": Counter(r["final_class"] for r in ai_rows),
-        "disagreements": disagreements,
-        "escalated": escalated,
+        "active_ran": len(active_rows),
+        "active_errors": [r for r in rows if r["active_error"]],
+        "active_status_breakdown": Counter(r["active_status"] for r in active_rows if r["active_status"]),
+        "deterministic_baseline": Counter(r["baseline_class"] for r in rows),
+        "baseline_on_active_rows": Counter(r["baseline_class"] for r in active_rows),
+        "active_engine": Counter(r["active_class"] for r in active_rows),
+        "changed": changed,
         "caught": caught,
         "noise": noise,
     }
@@ -163,88 +196,80 @@ def _acc(counter: Counter, total: int) -> str:
 
 def format_report(provider: str, model: str, key_source: str, rows: list[dict], stats: dict) -> str:
     lines = []
-    lines.append(f"Real-API eval — provider={provider or '?'} model={model or '?'} key={key_source or 'NONE'}")
-    lines.append(f"cases={stats['total']} (high_risk={stats['high_risk']}, ai_ran={stats['ai_ran']})")
+    lines.append(f"Real-API active-engine eval — provider={provider or '?'} model={model or '?'} key={key_source or 'NONE'}")
+    lines.append(f"cases={stats['total']} (high_risk={stats['high_risk']}, active_ran={stats['active_ran']})")
     lines.append("")
 
-    py = stats["python_only"]
+    baseline = stats["deterministic_baseline"]
     header = f"{'':14}{'correct':>9}{'false_clear':>13}{'false_flag':>12}{'wrong_reason':>14}{'acc':>7}"
     lines.append(header)
     lines.append(
-        f"{'Python only':14}{py.get('correct', 0):>9}{py.get('false_clear', 0):>13}"
-        f"{py.get('false_flag', 0):>12}{py.get('wrong_reason_code', 0):>14}{_acc(py, stats['total']):>7}"
+        f"{'Deterministic':14}{baseline.get('correct', 0):>9}{baseline.get('false_clear', 0):>13}"
+        f"{baseline.get('false_flag', 0):>12}{baseline.get('wrong_reason_code', 0):>14}{_acc(baseline, stats['total']):>7}"
     )
-    if stats["ai_ran"]:
-        ai = stats["python_plus_ai"]
+    if stats["active_ran"]:
+        active = stats["active_engine"]
         lines.append(
-            f"{'Python + AI':14}{ai.get('correct', 0):>9}{ai.get('false_clear', 0):>13}"
-            f"{ai.get('false_flag', 0):>12}{ai.get('wrong_reason_code', 0):>14}{_acc(ai, stats['ai_ran']):>7}"
+            f"{'Active engine':14}{active.get('correct', 0):>9}{active.get('false_clear', 0):>13}"
+            f"{active.get('false_flag', 0):>12}{active.get('wrong_reason_code', 0):>14}{_acc(active, stats['active_ran']):>7}"
         )
-        po = stats["python_only_on_ai_rows"]
-        py_acc = 100 * po.get("correct", 0) / stats["ai_ran"]
-        ai_acc = 100 * ai.get("correct", 0) / stats["ai_ran"]
+        baseline_on_active = stats["baseline_on_active_rows"]
+        baseline_acc = 100 * baseline_on_active.get("correct", 0) / stats["active_ran"]
+        active_acc = 100 * active.get("correct", 0) / stats["active_ran"]
         lines.append(
-            f"  Δ per-clause accuracy on the {stats['ai_ran']} AI-run cases: "
-            f"{py_acc:.0f}% -> {ai_acc:.0f}% ({ai_acc - py_acc:+.0f} pts)"
+            f"  Δ per-clause accuracy on the {stats['active_ran']} active-engine cases: "
+            f"{baseline_acc:.0f}% -> {active_acc:.0f}% ({active_acc - baseline_acc:+.0f} pts)"
         )
     lines.append("")
-    gaps = [r for r in rows if r["py_class"] == "false_clear"]
-    lines.append(f"Python-only false clears (the gaps AI exists to catch): {len(gaps)}")
+    gaps = [r for r in rows if r["baseline_class"] == "false_clear"]
+    lines.append(f"Deterministic false clears (the gaps active AI-first exists to catch): {len(gaps)}")
     for row in gaps:
-        lines.append(f"    ! {row['clause_id']}: {row['name']} (expected {row['expected_decision']}, py=pass)")
+        lines.append(f"    ! {row['clause_id']}: {row['name']} (expected {row['expected_decision']}, baseline=pass)")
     lines.append("")
     lines.append(
-        f"AI disagreements: {len(stats['disagreements'])}/{stats['ai_ran']}  "
-        f"(arbiter escalated: {len(stats['escalated'])}, "
-        f"recorded-only/blocked by fail-floor: {len(stats['disagreements']) - len(stats['escalated'])})"
+        f"Active-engine outcome changes: {len(stats['changed'])}/{stats['active_ran']}"
     )
-    if stats["ai_status_breakdown"]:
-        breakdown = ", ".join(f"{status}×{count}" for status, count in stats["ai_status_breakdown"].most_common())
-        lines.append(f"  AI status breakdown: {breakdown}")
-    for row in stats["disagreements"]:
-        verdict = "blocked" if row["final_decision"] == row["py_decision"] else "ESCALATED"
+    if stats["active_status_breakdown"]:
+        breakdown = ", ".join(f"{status}×{count}" for status, count in stats["active_status_breakdown"].most_common())
+        lines.append(f"  Active-engine status breakdown: {breakdown}")
+    for row in stats["changed"]:
         lines.append(
-            f"    ~ {row['clause_id']}: {row['name']} — py={row['py_decision']} "
-            f"ai={row['ai_decision']} -> final={row['final_decision']} [{row['ai_status']}, {verdict}]"
+            f"    ~ {row['clause_id']}: {row['name']} — baseline={row['baseline_decision']} "
+            f"-> active={row['active_decision']} [{row['active_status'] or '?'}]"
         )
-    lines.append(f"Invalid AI outputs (status=invalid): {len(stats['invalid'])}")
 
-    lines.append(f"False clears CAUGHT by AI (pass->review, expected not-pass): {len(stats['caught'])}")
+    lines.append(f"False clears CAUGHT by active engine (pass->review/fail, expected not-pass): {len(stats['caught'])}")
     for row in stats["caught"]:
         lines.append(f"    + {row['clause_id']}: {row['name']} (expected {row['expected_decision']})")
 
-    lines.append(f"Review NOISE added by AI (pass->review, expected pass): {len(stats['noise'])}")
+    lines.append(f"Review NOISE added by active engine (pass->review/fail, expected pass): {len(stats['noise'])}")
     for row in stats["noise"]:
         lines.append(f"    - {row['clause_id']}: {row['name']}")
 
-    if stats["ai_errors"]:
-        kinds = Counter(r["ai_error"] for r in stats["ai_errors"])
-        lines.append(f"AI errors: {len(stats['ai_errors'])} ({', '.join(f'{k}×{v}' for k, v in kinds.items())})")
+    if stats["active_errors"]:
+        kinds = Counter(r["active_error"] for r in stats["active_errors"])
+        lines.append(f"Active-engine errors: {len(stats['active_errors'])} ({', '.join(f'{k}×{v}' for k, v in kinds.items())})")
     return "\n".join(lines)
 
 
 def main() -> int:
-    # Ambient AI is forced off; we drive the AI explicitly via the injected reviewer,
-    # so the Python-only column is a true deterministic baseline regardless of env.
-    os.environ["NDA_AI_REVIEW_ENABLED"] = ""
-
-    reviewer, provider, key_source, model = build_real_reviewer()
+    ai_first_review_func, provider, key_source, model = build_real_ai_first_review_func()
     cases = load_cases()
     limit = os.environ.get("NDA_EVAL_LIMIT", "").strip()
     if limit.isdigit():
         cases = cases[: int(limit)]
-    if reviewer is None:
+    if ai_first_review_func is None:
         print(
             f"No usable AI provider configured (provider={provider or '?'}, key={key_source or 'NONE'}).\n"
             "Configure a provider key in app settings or set the provider env var, then re-run:\n"
             "    python -m tests.real_api_eval\n"
-            f"(Loaded {len(cases)} fixtures; Python-only baseline below.)\n"
+            f"(Loaded {len(cases)} fixtures; deterministic baseline below.)\n"
         )
 
     rows = []
     for index, case in enumerate(cases, 1):
         print(f"[{index}/{len(cases)}] {case['name']} ({case['clause_id']})", flush=True)
-        rows.append(run_case_real(case, reviewer))
+        rows.append(run_case_real(case, ai_first_review_func))
     stats = compare(rows)
     print(format_report(provider, model, key_source, rows, stats))
     return 0

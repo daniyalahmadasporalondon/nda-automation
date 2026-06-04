@@ -42,6 +42,15 @@ def handle_gmail_settings_update(handler) -> None:
             handler._send_json({"error": "Unsupported Gmail sync frequency."}, status=400)
             return
         updates["sync_frequency"] = sync_frequency
+    if "inbound_search_terms" in payload:
+        inbound_search_terms = app_settings.gmail_search_terms_from_payload(
+            payload.get("inbound_search_terms"),
+            fallback=[],
+        )
+        if not inbound_search_terms:
+            handler._send_json({"error": "Provide at least one Gmail inbound search term."}, status=400)
+            return
+        updates["inbound_search_terms"] = inbound_search_terms
     if not updates:
         handler._send_json({"error": "Provide a Gmail setting to update."}, status=400)
         return
@@ -72,7 +81,7 @@ def handle_gmail_send_redline(handler) -> None:
     if not outbound_to and not gmail_integration.matter_reply_recipient(matter):
         handler._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
         return
-    if matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed"):
+    if matter_blocks_redline_send(matter):
         handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
         return
     if not app_settings.gmail_role_enabled("outbound"):
@@ -102,9 +111,17 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
+    send_matter = matter_store.get_matter(matter_id.strip())
+    if send_matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    if matter_blocks_redline_send(send_matter):
+        handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
+        return
+
     try:
         sent = gmail_integration.send_redline_email(
-            matter,
+            send_matter,
             redline_export.data,
             redline_export.filename,
             body=outbound_body,
@@ -137,6 +154,10 @@ def handle_gmail_send_redline(handler) -> None:
         "matter": matter_view.public_matter(updated_matter),
         "sent": sent,
     })
+
+
+def matter_blocks_redline_send(matter: dict) -> bool:
+    return matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed")
 
 
 def clean_outbound_subject(value: object) -> str | None:

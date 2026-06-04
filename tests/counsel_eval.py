@@ -4,7 +4,7 @@ Report-only. NOT a CI gate (keep it report-only until the label set is stable an
 counsel-approved), and it makes NO model or threshold changes — it only measures.
 
 Where the deterministic fixture eval scores authored traps and the real-API eval
-checks "does the model behave sensibly on traps we already know about", THIS asks
+checks "does the active engine behave sensibly on traps we already know about", THIS asks
 the only question that yields real rates: "are our decisions right on real NDAs,
 as judged by counsel?"
 
@@ -12,13 +12,12 @@ It ingests:
   * a corpus of real NDA documents      (<corpus>/documents/<doc_id>.{docx,pdf,txt})
   * counsel labels                       (<corpus>/labels.json or labels.csv)
 and compares three modes against the counsel labels:
-  * Python only            (deterministic engine, AI off)
-  * Python + AI            (real blind second opinion, arbiter-gated)   [if a key is configured]
-  * AI only (report-only)  (the AI's raw per-clause verdict)            [if AI ran]
+  * Deterministic baseline (rules engine directly, AI overlay off)
+  * Active engine          (current runtime engine, normally AI-first/fail-closed) [if a key is configured]
 
 Metrics (per the agreed readout):
   false clears / false flags / review misses / review noise, per-clause accuracy,
-  citation overlap with counsel citations, and Python/AI disagreement usefulness.
+  citation overlap with counsel citations, and active-engine change usefulness.
 
 Confidentiality: real NDAs and counsel labels are client-sensitive and MUST NOT be
 committed. Point the harness at an out-of-tree corpus:
@@ -36,24 +35,10 @@ import os
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from nda_automation.checker import review_nda
-from tests.real_api_eval import build_real_reviewer
+from tests.real_api_eval import active_engine_review, build_real_ai_first_review_func, deterministic_review
 
 DECISIONS = ("pass", "review", "fail")
 EXAMPLE_DIR = Path(__file__).parent / "fixtures" / "counsel_eval_example"
-
-# The columns a counsel label carries (see counsel_eval_template.{json,csv}).
-LABEL_FIELDS = (
-    "document_id",
-    "clause_id",
-    "expected_decision",      # pass | review | fail
-    "cited_paragraph_ids",    # list[str] (e.g. ["p3","p4"]) — the IDs the review surfaces
-    "cited_text",             # optional free-text span, when paragraph IDs are not used
-    "legal_reason",           # short counsel rationale
-    "label_source",           # "counsel"
-    "confidence",             # optional: high | medium | low
-    "notes",                  # optional
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -137,27 +122,25 @@ def _clause_by_id(result: dict, clause_id: str) -> dict | None:
     return None
 
 
-def observe(documents: dict[str, str], reviewer) -> dict[tuple[str, str], dict]:
+def observe(documents: dict[str, str], ai_first_review_func) -> dict[tuple[str, str], dict]:
     """Map (document_id, clause_id) -> the system's decisions across modes."""
     observations: dict[tuple[str, str], dict] = {}
     for document_id, text in documents.items():
-        py_result = review_nda(text)
-        ai_result = None
-        if reviewer is not None:
+        baseline_result = deterministic_review(text)
+        active_result = None
+        if ai_first_review_func is not None:
             try:
-                ai_result = review_nda(text, ai_reviewer=reviewer)
-            except Exception:  # noqa: BLE001 - provider/network error -> AI columns absent for this doc
-                ai_result = None
-        for clause in py_result.get("clauses", []):
+                active_result = active_engine_review(text, ai_first_review_func)
+            except Exception:  # noqa: BLE001 - provider/network error -> active-engine columns absent for this doc
+                active_result = None
+        for clause in baseline_result.get("clauses", []):
             clause_id = str(clause.get("id"))
-            ai_clause = _clause_by_id(ai_result, clause_id) if ai_result else None
-            analysis = ai_clause.get("ai_review_analysis") if isinstance(ai_clause, dict) else None
-            analysis = analysis if isinstance(analysis, dict) else {}
+            active_clause = _clause_by_id(active_result, clause_id) if active_result else None
+            evidence_clause = active_clause if isinstance(active_clause, dict) else clause
             observations[(document_id, clause_id)] = {
-                "py_decision": str(clause.get("decision") or ""),
-                "ai_final_decision": str(ai_clause.get("decision") or "") if ai_clause else "",
-                "ai_only_decision": str(analysis.get("ai_decision") or ""),
-                "cited_ids": _system_cited_ids(clause),
+                "baseline_decision": str(clause.get("decision") or ""),
+                "active_decision": str(active_clause.get("decision") or "") if active_clause else "",
+                "cited_ids": _system_cited_ids(evidence_clause),
             }
     return observations
 
@@ -190,13 +173,12 @@ def _mode_metrics(triples: list[tuple[str, str, str]]) -> dict:
 
 
 def compare(observations: dict[tuple[str, str], dict], labels: list[dict]) -> dict:
-    py_triples: list[tuple[str, str, str]] = []
-    ai_triples: list[tuple[str, str, str]] = []
-    ai_only_triples: list[tuple[str, str, str]] = []
+    baseline_triples: list[tuple[str, str, str]] = []
+    active_triples: list[tuple[str, str, str]] = []
     citation_overlaps: list[float] = []
     citation_hits = 0
     citation_labeled = 0
-    escalations = useful_escalations = noise_escalations = 0
+    changes = useful_changes = noise_changes = 0
     unmatched: list[dict] = []
 
     for label in labels:
@@ -207,11 +189,9 @@ def compare(observations: dict[tuple[str, str], dict], labels: list[dict]) -> di
             unmatched.append(label)
             continue
 
-        py_triples.append((label["clause_id"], counsel, obs["py_decision"]))
-        if obs["ai_final_decision"]:
-            ai_triples.append((label["clause_id"], counsel, obs["ai_final_decision"]))
-        if obs["ai_only_decision"]:
-            ai_only_triples.append((label["clause_id"], counsel, obs["ai_only_decision"]))
+        baseline_triples.append((label["clause_id"], counsel, obs["baseline_decision"]))
+        if obs["active_decision"]:
+            active_triples.append((label["clause_id"], counsel, obs["active_decision"]))
 
         # citation overlap (only for labels that cite paragraphs)
         counsel_ids = set(label["cited_paragraph_ids"])
@@ -223,23 +203,21 @@ def compare(observations: dict[tuple[str, str], dict], labels: list[dict]) -> di
             if counsel_ids & system_ids:
                 citation_hits += 1
 
-        # disagreement usefulness: where AI moved off the deterministic verdict
-        if obs["ai_final_decision"] and obs["ai_final_decision"] != obs["py_decision"]:
-            escalations += 1
+        # change usefulness: where the active engine moved off the deterministic verdict
+        if obs["active_decision"] and obs["active_decision"] != obs["baseline_decision"]:
+            changes += 1
             if counsel in {"review", "fail"}:
-                useful_escalations += 1
+                useful_changes += 1
             else:
-                noise_escalations += 1
+                noise_changes += 1
 
-    modes = {"python_only": _mode_metrics(py_triples)}
-    if ai_triples:
-        modes["python_plus_ai"] = _mode_metrics(ai_triples)
-    if ai_only_triples:
-        modes["ai_only_report"] = _mode_metrics(ai_only_triples)
+    modes = {"deterministic_baseline": _mode_metrics(baseline_triples)}
+    if active_triples:
+        modes["active_engine"] = _mode_metrics(active_triples)
 
     return {
         "labels": len(labels),
-        "scored": len(py_triples),
+        "scored": len(baseline_triples),
         "unmatched": unmatched,
         "modes": modes,
         "citation": {
@@ -247,10 +225,10 @@ def compare(observations: dict[tuple[str, str], dict], labels: list[dict]) -> di
             "hit_rate": (citation_hits / citation_labeled) if citation_labeled else None,
             "mean_jaccard": (sum(citation_overlaps) / len(citation_overlaps)) if citation_overlaps else None,
         },
-        "disagreement": {
-            "escalations": escalations,
-            "useful": useful_escalations,
-            "noise": noise_escalations,
+        "active_engine_changes": {
+            "changes": changes,
+            "useful": useful_changes,
+            "noise": noise_changes,
         },
     }
 
@@ -261,14 +239,13 @@ def compare(observations: dict[tuple[str, str], dict], labels: list[dict]) -> di
 def format_report(provider: str, key_source: str, results: dict) -> str:
     lines = []
     lines.append(f"Counsel-labeled eval — labels={results['labels']} scored={results['scored']}")
-    lines.append(f"(Python+AI uses provider={provider or '?'} key={key_source or 'NONE'}; report-only, no gate)")
+    lines.append(f"(Active engine uses provider={provider or '?'} key={key_source or 'NONE'}; report-only, no gate)")
     lines.append("")
     header = f"{'mode':22}{'acc':>6}{'false_clear':>13}{'review_miss':>13}{'false_flag':>12}{'review_noise':>14}"
     lines.append(header)
     for mode, label in (
-        ("python_only", "Python only"),
-        ("python_plus_ai", "Python + AI"),
-        ("ai_only_report", "AI only (report)"),
+        ("deterministic_baseline", "Deterministic"),
+        ("active_engine", "Active engine"),
     ):
         metrics = results["modes"].get(mode)
         if not metrics:
@@ -285,10 +262,10 @@ def format_report(provider: str, key_source: str, results: dict) -> str:
         lines.append("")
         lines.append(f"Citation overlap with counsel ({cit['labeled']} cited labels): hit-rate {hit}, mean Jaccard {jac}")
 
-    dis = results["disagreement"]
+    dis = results["active_engine_changes"]
     lines.append("")
     lines.append(
-        f"Python/AI disagreement usefulness: {dis['escalations']} AI escalations "
+        f"Active-engine change usefulness: {dis['changes']} active-engine changes "
         f"-> useful (counsel review/fail): {dis['useful']}, noise (counsel pass): {dis['noise']}"
     )
 
@@ -300,31 +277,28 @@ def format_report(provider: str, key_source: str, results: dict) -> str:
     return "\n".join(lines)
 
 
-def run(corpus: Path, reviewer) -> dict:
+def run(corpus: Path, ai_first_review_func) -> dict:
     documents = load_documents(corpus / "documents")
     labels_path = corpus / "labels.json"
     if not labels_path.is_file():
         labels_path = corpus / "labels.csv"
     labels = load_labels(labels_path) if labels_path.is_file() else []
-    observations = observe(documents, reviewer)
+    observations = observe(documents, ai_first_review_func)
     return compare(observations, labels)
 
 
 def main() -> int:
-    # Python-only must be a true deterministic baseline regardless of ambient env.
-    os.environ["NDA_AI_REVIEW_ENABLED"] = ""
-
     corpus = corpus_dir()
     if corpus == EXAMPLE_DIR:
         print("NDA_COUNSEL_EVAL_DIR not set — running the bundled SYNTHETIC example.")
         print("Point it at a real corpus (documents/ + labels.json) for counsel-labeled measurement.\n")
 
-    reviewer, provider, key_source, _model = build_real_reviewer()
-    if reviewer is None:
+    ai_first_review_func, provider, key_source, _model = build_real_ai_first_review_func()
+    if ai_first_review_func is None:
         print(f"No AI provider configured (provider={provider or '?'}, key={key_source or 'NONE'}); "
-              "AI columns will be omitted.\n")
+              "active-engine columns will be omitted.\n")
 
-    results = run(corpus, reviewer)
+    results = run(corpus, ai_first_review_func)
     print(format_report(provider, key_source, results))
     return 0
 

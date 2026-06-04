@@ -96,6 +96,19 @@ class DocxTextTests(unittest.TestCase):
             with self.assertRaisesRegex(DocxExtractionError, "too large after decompression"):
                 extract_docx_paragraphs(data)
 
+    def test_rejects_excessive_docx_zip_entry_count(self):
+        data = make_zip(
+            {
+                "word/document.xml": part_xml("Safe body text."),
+                "word/header1.xml": part_xml("Header text."),
+            },
+            compression=ZIP_STORED,
+        )
+
+        with patch.object(docx_text, "MAX_DOCX_ZIP_ENTRIES", 1):
+            with self.assertRaisesRegex(DocxExtractionError, "too many archive entries"):
+                extract_docx_paragraphs(data)
+
     def test_rejects_suspicious_docx_compression_ratio(self):
         data = make_zip({"word/document.xml": "A" * 4096}, compression=ZIP_DEFLATED)
 

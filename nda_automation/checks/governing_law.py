@@ -292,8 +292,10 @@ def _governing_law_candidate_record(
     clause: Dict[str, object],
 ) -> Dict[str, object]:
     approved = _starts_with_approved_law(candidate, clause)
-    needs_review = _is_unclear_governing_law_candidate(candidate) or (
-        approved and _approved_governing_candidate_needs_review(candidate)
+    needs_review = (
+        _is_unclear_governing_law_candidate(candidate)
+        or (approved and _approved_governing_candidate_needs_review(candidate))
+        or (approved and _approved_candidate_has_unapproved_secondary_governing_law(candidate, clause))
     )
     return {
         "paragraph_id": paragraph_id,
@@ -555,6 +557,34 @@ def _is_unclear_governing_law_candidate(candidate: str) -> bool:
 def _approved_governing_candidate_needs_review(candidate: str) -> bool:
     trimmed = _trim_governing_law_candidate(candidate)
     return bool(re.search(APPROVED_GOVERNING_LAW_REVIEW_PATTERN, trimmed, flags=re.IGNORECASE))
+
+
+def _approved_candidate_has_unapproved_secondary_governing_law(
+    candidate: str,
+    clause: Dict[str, object],
+) -> bool:
+    for secondary_candidate in _secondary_governing_law_candidates(candidate):
+        if (
+            not _starts_with_approved_law(secondary_candidate, clause)
+            and not _is_unclear_governing_law_candidate(secondary_candidate)
+        ):
+            return True
+    return False
+
+
+def _secondary_governing_law_candidates(text: str) -> List[str]:
+    candidates: List[str] = []
+    seen = set()
+    for fragment in _governing_law_candidate_fragments(text)[1:]:
+        for pattern in GOVERNING_LAW_VALUE_PATTERNS:
+            for match in re.finditer(pattern, fragment, flags=re.IGNORECASE):
+                candidate = match.group("law").strip()
+                candidate_key = _trim_governing_law_candidate(candidate).lower()
+                if _is_noise_governing_law_candidate(candidate) or candidate_key in seen:
+                    continue
+                candidates.append(candidate)
+                seen.add(candidate_key)
+    return candidates
 
 
 def _has_unclear_governing_law_text(text: str) -> bool:
