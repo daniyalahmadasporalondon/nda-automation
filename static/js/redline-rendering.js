@@ -113,6 +113,7 @@ function renderSideBySideDocumentParagraph(model) {
 }
 
 function renderRedlineDocumentParagraph(model) {
+  const status = model.primaryClause ? clauseStatus(model.primaryClause) : null;
   return renderParagraphFrame(model, {
     body: renderRedlineParagraphBody(model.paragraph, model.primaryRedline, model.visibleRedlines),
     classes: [
@@ -122,10 +123,11 @@ function renderRedlineDocumentParagraph(model) {
       model.primaryRedline?.action === REDLINE_DELETE_PARAGRAPH ? "redline-delete" : "",
       model.primaryRedline?.action === REDLINE_INSERT_AFTER_PARAGRAPH ? "redline-insert" : "",
       model.linkedClauses.some(isFailedProhibitedClause) ? "prohibited" : "",
-      model.primaryClause && clauseStatus(model.primaryClause).needsReview ? "review" : "",
-      model.primaryClause && clauseStatus(model.primaryClause).fails ? "verify" : "",
-      model.primaryClause && !clauseStatus(model.primaryClause).requiresAttention ? "match" : "",
+      status?.needsReview ? "review" : "",
+      status?.fails ? "verify" : "",
+      status && !status.requiresAttention ? "match" : "",
     ],
+    verdict: paragraphVerdict(model.primaryClause, status),
   });
 }
 
@@ -133,7 +135,18 @@ function isFailedProhibitedClause(clause) {
   return clause?.type === "prohibited" && clauseStatus(clause).fails;
 }
 
-function renderParagraphFrame(model, { body, classes = [] }) {
+function paragraphVerdict(clause, status) {
+  if (!clause || !status) return null;
+  const label = status.needsReview ? "Review" : status.fails ? "Fail" : status.passes ? "Pass" : status.resultLabel;
+  if (!label || label === "Pending") return null;
+  return {
+    detail: `${clause.name || clause.id}: ${label}`,
+    label,
+    tone: status.tone,
+  };
+}
+
+function renderParagraphFrame(model, { body, classes = [], verdict = null }) {
   return renderStudioParagraphFrame({
     body,
     classes,
@@ -141,16 +154,24 @@ function renderParagraphFrame(model, { body, classes = [] }) {
     commentCount: model.commentCount,
     paragraphId: model.paragraph.id,
     selected: model.selected,
+    verdict,
   });
 }
 
-function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "" }) {
+function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", verdict = null }) {
   const frameAttributes = [];
   if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
   if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
   if (attributes) frameAttributes.push(attributes);
   const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount).trim() : "";
-  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${body}</div>`;
+  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${renderParagraphVerdict(verdict)}${body}</div>`;
+}
+
+function renderParagraphVerdict(verdict) {
+  if (!verdict?.label) return "";
+  const label = String(verdict.label);
+  const detail = String(verdict.detail || label);
+  return `<span class="${joinClasses("paragraph-verdict-label", verdict.tone ? `is-${verdict.tone}` : "")}" data-paragraph-verdict="${escapeHtml(label)}" contenteditable="false" aria-label="${escapeHtml(detail)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
 }
 
 function renderParagraphCommentTools(paragraphId, commentCount) {

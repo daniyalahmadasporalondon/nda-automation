@@ -2958,6 +2958,9 @@ async function testBackendRedlineModes(page) {
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
   assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
+  const prohibitedVerdict = page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label');
+  await prohibitedVerdict.waitFor({ state: "visible" });
+  assert.equal(await prohibitedVerdict.innerText(), "FAIL");
 
   const viewerSpacing = await page.evaluate(() => {
     const pageNode = document.querySelector("#reviewView .studio-page");
