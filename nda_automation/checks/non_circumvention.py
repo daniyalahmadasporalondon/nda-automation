@@ -32,6 +32,10 @@ FLEXIBLE_NON_CIRCUMVENTION_CANDIDATE_PATTERNS = [
     r"\bsolicit\w*\b",
     r"\bintroduced\b.{0,60}\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b",
     r"\b(?:part(?:y|ies)|contacts?|customers?|counterpart(?:y|ies))\b.{0,60}\bintroduced\b",
+    r"\bdevelop(?:s|ed|ing)?\b.{0,80}\bcompet(?:ing|itive)\s+"
+    r"(?:business(?:es)?|products?|services?|solutions?)\b",
+    r"\bcompet(?:ing|itive)\s+(?:business(?:es)?|products?|services?|solutions?)\b"
+    r".{0,80}\bdevelop(?:s|ed|ing)?\b",
 ]
 NEGATED_NON_CIRCUMVENTION_REFERENCE_PATTERN = (
     r"\b(?:does|do|doesn't|don't|shall|will|may|can|must)\s+not\s+"

@@ -334,21 +334,52 @@ textarea:focus-visible,
   color: color-mix(in srgb, var(--red) 80%, black);
 }
 /* One Include/Ignore per redline (per-insertion decision). */
+#reviewView .studio-review-action {
+  margin: 2px 16px 12px;
+}
 #reviewView .studio-redline-option {
   margin: 8px 16px 10px 16px;
 }
 #reviewView .studio-redline-option .studio-clause-insert {
   margin: 5px 0 0 2px;
 }
+#reviewView .studio-redline-template-options {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+#reviewView .studio-redline-template-options > span {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+#reviewView .studio-template-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#reviewView .studio-template-choice {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 7px 10px;
+}
+#reviewView .studio-template-choice:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+#reviewView .studio-template-choice.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 #reviewView .studio-clause-dot {
   border-width: 2px;
-}
-
-/* Pills — soft chips */
-#reviewView .studio-issue-pill {
-  font-size: 9px;
-  letter-spacing: 0.03em;
-  padding: 4px 9px;
 }
 
 /* Document pane */
@@ -933,6 +964,13 @@ textarea:focus-visible,
   border-color: var(--accent);
   color: #fff;
 }
+#reviewView .review-choice.active,
+#reviewView .review-choice.active:disabled {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+  opacity: 1;
+}
 
 /* ---------- 4b. Toolbar action buttons ---------- */
 #reviewView .actions button {
@@ -1081,7 +1119,7 @@ textarea:focus-visible,
 #reviewView .studio-matter-meta dt { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
 #reviewView .studio-matter-meta dd { font-size: 13px; font-weight: 550; color: var(--ink-soft); }
 
-/* Clause lane: clean rows + verdict pills */
+/* Clause lane: clean rows with status carried by row tint and copy */
 #reviewView .studio-clause-item {
   border-left: 3px solid transparent; border-bottom: 1px solid var(--border-soft);
   border-radius: 0; background: transparent; box-shadow: none; margin: 0; padding: 0;
@@ -1094,22 +1132,8 @@ textarea:focus-visible,
   background: transparent; border: 0; cursor: pointer;
 }
 #reviewView .studio-clause-dot { display: none; }
-#reviewView .studio-clause-number { flex: 0 0 auto; width: 14px; font-size: 11px; font-weight: 600; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
 #reviewView .studio-clause-title { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); letter-spacing: -.005em; }
 #reviewView .studio-clause-item.selected .studio-clause-title { color: var(--brand); }
-#reviewView .studio-clause-finding { flex: 0 0 100%; padding-left: 22px; margin-top: 1px; font-size: 12.5px; line-height: 1.45; color: var(--ink-soft); font-weight: 400; }
-
-/* Verdict pills (clause lane + inspector heading) */
-#reviewView .studio-issue-pill,
-#reviewView .studio-detail-heading .status {
-  flex: 0 0 auto; display: inline-flex; align-items: center;
-  height: 21px; padding: 0 9px; border-radius: 999px;
-  font-size: 10.5px; font-weight: 700; letter-spacing: .03em; border: 1px solid transparent;
-}
-#reviewView .studio-issue-pill.pass, #reviewView .studio-detail-heading .status.pass { background: var(--green-bg); color: var(--green-ink); border-color: var(--green-border); }
-#reviewView .studio-issue-pill.review, #reviewView .studio-detail-heading .status.review { background: var(--amber-bg); color: var(--amber-ink); border-color: var(--amber-border); }
-#reviewView .studio-issue-pill.check, #reviewView .studio-detail-heading .status.check { background: var(--red-bg); color: var(--red-ink); border-color: var(--red-border); }
-#reviewView .studio-issue-pill.pending, #reviewView .studio-detail-heading .status.pending { background: var(--bg-chip); color: var(--ink-muted); }
 
 /* Inspector: labeled sections */
 #reviewView .studio-playbook > h2 { font-size: 15px; font-weight: 600; }
@@ -1331,7 +1355,7 @@ textarea:focus-visible,
   align-items: center;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: var(--r-xl);
+  border-radius: var(--r-lg);
   gap: 18px;
   margin: 20px 28px 0;
   padding: 14px 22px;
@@ -1387,23 +1411,8 @@ textarea:focus-visible,
   border-left-color: var(--accent);
 }
 #reviewView .studio-clause-select { padding: 14px 16px 15px; gap: 9px; }
-#reviewView .studio-clause-number {
-  width: 22px; height: 22px; flex: 0 0 22px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-xs); background: var(--bg-chip);
-  font-size: 11px; font-weight: 650; color: var(--ink-soft); font-variant-numeric: tabular-nums;
-}
-#reviewView .studio-clause-item.selected .studio-clause-number { background: var(--accent); color: #fff; }
 #reviewView .studio-clause-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
 #reviewView .studio-clause-item.selected .studio-clause-title { color: var(--accent); }
-#reviewView .studio-clause-finding { padding-left: 31px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
-
-/* ---- Verdict pills — crisper ---- */
-#reviewView .studio-issue-pill,
-#reviewView .studio-detail-heading .status {
-  height: 22px; padding: 0 10px; border-radius: 9999px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-}
 
 /* ===========================================================================
    Document pane — the MS Word canvas
@@ -1418,7 +1427,8 @@ textarea:focus-visible,
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 2px rgba(23, 10, 51, 0.03);
-  grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr);
+  grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) max-content;
+  height: auto;
   min-height: 52px;
   padding: 8px 14px;
 }
@@ -1427,6 +1437,7 @@ textarea:focus-visible,
 
 /* View switch → premium segmented control, gradient active thumb */
 #reviewView .studio-view-switch {
+  flex: 0 1 auto;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 9999px;
@@ -1455,6 +1466,16 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: 9999px;
   padding: 2px;
+}
+#reviewView .studio-toolbar-center,
+#reviewView .studio-viewer-controls {
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+#reviewView .studio-viewer-controls {
+  flex: 0 1 auto;
+  justify-content: center;
 }
 #reviewView .studio-viewer-controls .vc-btn {
   width: 28px; height: 28px; flex: 0 0 28px; border-radius: 9999px;

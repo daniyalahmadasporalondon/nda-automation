@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import export_service, gmail_integration, matter_store, matter_view, telemetry
+from ..ai_assessor import AIAssessorError, assess_nda_with_ai
 from ..checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
@@ -16,11 +17,13 @@ from ..checker import (
 )
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError
+from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
 from ..triage import triage_review_result
 from .common import parse_matter_id
 
+AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
 MAX_REDLINE_DRAFT_ITEMS = 200
@@ -257,6 +260,101 @@ def handle_matter_reviewed_update(handler, path: str) -> None:
     handler._send_json({"matter": matter_view.public_matter(matter)})
 
 
+def handle_matter_ai_first_review(handler, path: str) -> None:
+    matter_id = parse_matter_id(path, suffix="/ai-first-review")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    if not _env_flag_enabled(AI_FIRST_REVIEW_FEATURE_FLAG):
+        handler._send_json(
+            {
+                "error": (
+                    "AI-first matter review is disabled. "
+                    f"Set {AI_FIRST_REVIEW_FEATURE_FLAG}=true to run it."
+                )
+            },
+            status=403,
+        )
+        return
+
+    matter = matter_store.get_matter(matter_id)
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    extracted_text = str(matter.get("extracted_text") or "")
+    if not extracted_text.strip():
+        handler._send_json({"error": "Matter has no extracted text to assess."}, status=400)
+        return
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        ai_first_review_result = assess_nda_with_ai(
+            extracted_text,
+            paragraphs=review_result_paragraphs(matter.get("review_result")),
+        )
+    except AIAssessorError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError) as error:
+        handler._send_json({"error": f"AI-first review could not be completed: {error}"}, status=500)
+        return
+
+    completed_at = datetime.now(timezone.utc).isoformat()
+    metadata = ai_first_review_store_metadata(
+        ai_first_review_result,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    updated_matter = matter_store.update_matter_ai_first_review(
+        matter_id,
+        ai_first_review_result,
+        metadata,
+    )
+    if updated_matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    handler._send_json({
+        "matter": matter_view.public_matter(updated_matter),
+        "ai_first_review_metadata": updated_matter.get("ai_first_review_metadata"),
+        "ai_first_review_result": ai_first_review_result,
+    })
+
+
+def review_result_paragraphs(review_result: object) -> list[dict] | None:
+    if not isinstance(review_result, dict):
+        return None
+    paragraphs = review_result.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        return None
+    cleaned = [paragraph for paragraph in paragraphs if isinstance(paragraph, dict)]
+    return cleaned or None
+
+
+def ai_first_review_store_metadata(
+    ai_first_review_result: dict,
+    *,
+    started_at: str,
+    completed_at: str,
+) -> dict[str, object]:
+    result_metadata = ai_first_review_result.get("ai_first_review")
+    if not isinstance(result_metadata, dict):
+        result_metadata = {}
+    return {
+        "status": str(result_metadata.get("status") or "completed"),
+        "mode": str(result_metadata.get("mode") or "ai_first_assessor"),
+        "provider": str(result_metadata.get("provider") or ""),
+        "model": str(result_metadata.get("model") or ""),
+        "review_mode": str(ai_first_review_result.get("review_mode") or ""),
+        "review_engine_version": ai_first_review_result.get("review_engine_version"),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "requirements_passed": int(ai_first_review_result.get("requirements_passed") or 0),
+        "requirements_needs_review": int(ai_first_review_result.get("requirements_needs_review") or 0),
+        "requirements_failed": int(ai_first_review_result.get("requirements_failed") or 0),
+    }
+
+
 def handle_matter_redline_draft_update(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/redline-draft")
     if matter_id is None:
@@ -296,6 +394,7 @@ def clean_redline_draft(draft: dict) -> dict:
         "clause_decisions": clean_bool_map(draft.get("clause_decisions")),
         "redline_decisions": clean_bool_map(draft.get("redline_decisions")),
         "template_selections": clean_text_map(draft.get("template_selections")),
+        "reviewed_clause_ids": clean_bool_map(draft.get("reviewed_clause_ids")),
         "export_redline_edits": clean_dict_list(draft.get("export_redline_edits")),
         "manual_redline_edits": manual_redlines,
         "review_comments": export_service.clean_review_comments(draft.get("review_comments")),

@@ -217,6 +217,32 @@ def update_matter_review(
     return None
 
 
+def update_matter_ai_first_review(
+    matter_id: str,
+    ai_first_review_result: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        matters = _load_matters()
+        for index, matter in enumerate(matters):
+            if matter.get("id") != matter_id:
+                continue
+            updated_matter = {
+                **matter,
+                "ai_first_review_result": ai_first_review_result,
+                "ai_first_review_metadata": {
+                    **metadata,
+                    "stored_at": now,
+                },
+                "updated_at": now,
+            }
+            matters[index] = updated_matter
+            _save_matters(matters)
+            return updated_matter
+    return None
+
+
 def reset_demo_repository() -> int:
     with _locked_store():
         matters = _load_matters()

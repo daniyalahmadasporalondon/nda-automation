@@ -68,7 +68,8 @@ def handle_gmail_send_redline(handler) -> None:
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
-    if not gmail_integration.matter_reply_recipient(matter):
+    outbound_to = clean_outbound_recipient(payload.get("to"))
+    if not outbound_to and not gmail_integration.matter_reply_recipient(matter):
         handler._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
         return
     if matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed"):
@@ -81,7 +82,7 @@ def handle_gmail_send_redline(handler) -> None:
     outbound_body = clean_outbound_body(payload.get("body"))
 
     try:
-        gmail_integration.validate_outbound_send_ready(matter)
+        gmail_integration.validate_outbound_send_ready(matter, to=outbound_to)
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
@@ -108,6 +109,7 @@ def handle_gmail_send_redline(handler) -> None:
             redline_export.filename,
             body=outbound_body,
             subject=outbound_subject,
+            to=outbound_to,
         )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
@@ -144,6 +146,11 @@ def clean_outbound_subject(value: object) -> str | None:
     if not cleaned:
         return None
     return cleaned[:MAX_OUTBOUND_SUBJECT_CHARS]
+
+
+def clean_outbound_recipient(value: object) -> str | None:
+    recipient = gmail_integration.recipient_email(value)
+    return recipient or None
 
 
 def clean_outbound_body(value: object) -> str | None:

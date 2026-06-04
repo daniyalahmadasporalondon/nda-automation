@@ -45,8 +45,11 @@ const tests = [
   ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
-  ["runs AI second opinion for the selected clause", testAiSecondOpinionButton],
-  ["validates proposed draft fixes with AI", testAiDraftFixValidationButton],
+  ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
+  ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
+  ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
+  ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
+  ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
@@ -634,7 +637,7 @@ async function testContractStructureReviewPanel(page) {
   assert.deepEqual(referenceResolver.references[1].resolved_section_ids, ["section-10"]);
 
   await page.locator('[data-review-inspector="clause"]').click();
-  await assertTextContains(page.locator("#studioDetailPanel"), "REQUIREMENT");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Rationale");
 
   await page.getByRole("tab", { name: "Admin" }).click();
   await page.locator('[data-admin-section="document"]').click();
@@ -729,24 +732,16 @@ async function testStructuredEvidenceAndRationale(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   await page.getByRole("button", { name: /Governing Law/ }).click();
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Issue type");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Rationale");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Why it might be a problem");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Why it may be fine");
+  await assertTextContains(page.locator("#studioDetailPanel"), "None.");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE SIGNALS");
-  await assertTextContains(page.locator("#studioDetailPanel"), "CHECK_EVIDENCE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "REASON CODES");
-  await assertTextContains(page.locator("#studioDetailPanel"), "unapproved_governing_law");
-  await assertTextContains(page.locator("#studioDetailPanel"), "laws of");
-  await assertTextContains(page.locator("#studioDetailPanel"), "AUDIT TRACE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Evidence collection");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Signal classification");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Analysis outputs");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Decision");
-  await assertTextContains(page.locator("#studioDetailPanel"), "WHY");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK RATIONALE");
   await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
-  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE GUIDANCE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
@@ -764,7 +759,7 @@ async function testStructuredEvidenceAndRationale(page) {
         quote: "This Agreement shall be governed by the laws of California.",
         relevance: "Unapproved governing law.",
       }],
-      disagreement: true,
+      disagreement: false,
       deterministic_decision: "fail",
       issues: ["unapproved_governing_law"],
       reason: "AI semantic review confirmed the deterministic decision.",
@@ -774,174 +769,420 @@ async function testStructuredEvidenceAndRationale(page) {
     };
     renderStudioResult({ clauses: state.reviewClauses });
   });
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI EVIDENCE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI CONFIRMED");
-  await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs FAIL");
-  await assertTextContains(page.locator("#studioDetailPanel"), "95%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
-  await assertTextContains(page.locator("#studioDetailPanel"), "California is outside the approved governing-law set.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Paragraph 1");
-  await assertTextContains(page.locator("#studioDetailPanel"), "UNAPPROVED GOVERNING LAW.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "unapproved_governing_law");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Use Delaware, India, England and Wales, or DIFC.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "AI second opinion confirmed this finding.");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
+  assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI agrees|No contrary reason/);
 }
 
 async function testAiSecondOpinionButton(page) {
   await runReview(page, passNda);
 
-  let requestPayload;
-  await page.route("**/api/review/ai-second-opinion", async (route) => {
-    requestPayload = route.request().postDataJSON();
-    const reviewResult = requestPayload.review_result;
-    const clause = reviewResult.clauses.find((item) => item.id === requestPayload.clause_id);
-    const paragraph = reviewResult.paragraphs[0];
-    const reason = "AI found possible one-way mutuality language.";
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        clause: {
-          ...clause,
-          decision: "review",
-          decision_reason: reason,
-          needs_review: true,
-          reason,
-          reason_code: "ai_semantic_disagreement",
-          reason_codes: ["ai_semantic_disagreement"],
-          review_state: {
-            blocks_auto_send: true,
-            blocks_send: true,
-            decision: "review",
-            label: "REVIEW",
-            reason,
-            reason_code: "ai_semantic_disagreement",
-            reason_codes: ["ai_semantic_disagreement"],
-            requires_attention: true,
-            requires_human_review: true,
-            requires_redline: false,
-            state: "review",
-            tone: "review",
-            version: 1,
-          },
-          ai_review_analysis: {
-            ai_confidence: 0.91,
-            ai_decision: "fail",
-            ai_reason: reason,
-            cited_spans: [{
-              paragraph_id: paragraph.id,
-              quote: paragraph.text.slice(0, 80),
-              relevance: "Possible one-way language.",
-            }],
-            disagreement: true,
-            deterministic_decision: "pass",
-            issues: ["possible_one_way_language"],
-            reason: "AI semantic review disagreed with the deterministic checker.",
-            status: "disagreement",
-            suggested_fix: "Confirm that both parties are bound symmetrically.",
-            validation_errors: [],
-          },
-        },
-        ai_review: {
-          confidence_threshold: 0.75,
-          mode: "clause_second_opinion",
-          model: "qwen3.5-plus",
-          provider: "alibaba",
-          record_count: 1,
-          records: [],
-          status: "completed",
-          target_clause_id: "mutuality",
-          version: 1,
-        },
-        overall_status: "needs_review",
-        review_state: {
-          counts: { check: 0, pass: 5, review: 1, total: 6 },
-          overall_status: "needs_review",
-          state: "review",
-        },
-        requirements_failed: 0,
-        requirements_needs_review: 1,
-        requirements_passed: 5,
-      }),
-    });
-  });
-
-  await page.locator('[data-ai-second-opinion-clause-id="mutuality"]').click();
-  await page.waitForFunction(() => state.latestReviewResult?.overall_status === "needs_review");
-
-  assert.equal(requestPayload.clause_id, "mutuality");
-  assert.ok(Array.isArray(requestPayload.review_result.clauses));
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI EVIDENCE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI DISAGREEMENT");
-  await assertTextContains(page.locator("#studioDetailPanel"), "FAIL vs PASS");
-  await assertTextContains(page.locator("#studioDetailPanel"), "91%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI found possible one-way mutuality language.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "possible_one_way_language");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Confirm that both parties are bound symmetrically.");
-  assert.equal(await page.locator('[data-ai-second-opinion-clause-id="mutuality"]').innerText(), "Rerun second opinion");
-  await page.unroute("**/api/review/ai-second-opinion");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
+  assert.equal(await page.locator('[data-ai-second-opinion-clause-id]').count(), 0);
+  assert.equal(await page.getByRole("button", { name: /second opinion/i }).count(), 0);
 }
 
 async function testAiDraftFixValidationButton(page) {
   await runReview(page, termOnlyRedlineNda);
 
-  let requestPayload;
-  await page.route("**/api/review/ai-draft-validation", async (route) => {
-    requestPayload = route.request().postDataJSON();
-    const redline = requestPayload.redline_edit;
+  await assertTextContains(page.locator("#studioDetailPanel"), "Attach comment");
+  assert.equal(await page.locator('[data-ai-draft-validation-redline-id]').count(), 0);
+  assert.equal(await page.getByRole("button", { name: /validate draft fix/i }).count(), 0);
+  assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI DRAFT/i);
+}
+
+async function testPerClauseReviewedToggle(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    const paragraphs = [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "Survival applies as set out in the referenced schedule." },
+    ];
+    renderResult({
+      checked_at: "2026-06-04T09:00:00+00:00",
+      clauses: [
+        {
+          decision: "review",
+          evidence_paragraphs: [paragraphs[0]],
+          id: "confidential_information",
+          issue_label: "Needs review",
+          name: "Confidential Information",
+          needs_review: true,
+          reason: "Broad confidential information definition needs human review.",
+          review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+          status: "review",
+        },
+        {
+          decision: "review",
+          evidence_paragraphs: [paragraphs[1]],
+          id: "term_and_survival",
+          issue_label: "Needs review",
+          name: "Term and Survival",
+          needs_review: true,
+          reason: "Survival reference needs human review.",
+          review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+          status: "review",
+        },
+      ],
+      overall_status: "needs_review",
+      paragraphs,
+      redline_edits: [],
+      requirements_failed: 0,
+      requirements_needs_review: 2,
+      requirements_passed: 0,
+    }, paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  });
+
+  const confidentialCard = page.locator('[data-studio-lane-id="confidential_information"]');
+  const termCard = page.locator('[data-studio-lane-id="term_and_survival"]');
+  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+
+  await confidentialCard.locator('[data-review-action="mark-reviewed"]').click();
+  await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === true);
+  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Reviewed");
+  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      confidential: state.reviewedClauseIds.confidential_information,
+      term: state.reviewedClauseIds.term_and_survival,
+    })),
+    { confidential: true, term: undefined },
+  );
+
+  await confidentialCard.locator('[data-review-action="mark-reviewed"]').click();
+  await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === false);
+  await assertTextContains(confidentialCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+  await assertTextContains(termCard.locator('[data-review-action="mark-reviewed"]'), "Mark reviewed");
+}
+
+async function testReviewSendUsesCurrentMatterAfterSwitch(page) {
+  const buildMatter = ({ id, title, text, redlineText, commentText }) => ({
+    id,
+    board_column: "in_review",
+    can_send_redline: true,
+    document_title: title,
+    extracted_text: text,
+    human_reviewed: true,
+    recipient_email: `${id}@example.com`,
+    requirements_failed: 1,
+    requirements_needs_review: 0,
+    requirements_passed: 5,
+    review_result: {
+      checked_at: "2026-06-04T09:00:00+00:00",
+      clauses: [{
+        decision: "fail",
+        evidence_paragraphs: [{ id: "p1", index: 1, source_index: 1, text }],
+        id: "confidential_information",
+        issue_label: "Present but wrong",
+        matched_paragraph_ids: ["p1"],
+        name: "Confidential Information",
+        needs_review: false,
+        passes: false,
+        reason: "The definition is too narrow.",
+        review_state: { requires_redline: true, state: "check" },
+        status: "check",
+      }],
+      overall_status: "needs_redline",
+      paragraphs: [{ id: "p1", index: 1, source_index: 1, text }],
+      redline_edits: [{
+        action: "replace_paragraph",
+        action_label: "Replace paragraph",
+        clause_id: "confidential_information",
+        id: `${id}-redline-confidential-information`,
+        original_text: text,
+        paragraph_id: "p1",
+        paragraph_index: 1,
+        replacement_text: redlineText,
+        status: "proposed",
+      }],
+      requirements_failed: 1,
+      requirements_needs_review: 0,
+      requirements_passed: 5,
+    },
+    review_comments: [],
+    redline_draft: {
+      manual_redline_edits: [],
+      review_comments: [{
+        author: "Reviewer",
+        clause_id: "confidential_information",
+        clause_name: "Confidential Information",
+        id: `${id}-comment-confidential-information`,
+        paragraph_id: "p1",
+        paragraph_index: 1,
+        scope: "clause",
+        text: commentText,
+      }],
+    },
+    sender: `${title} Sender <${id}@example.com>`,
+    source_filename: `${title}.docx`,
+    source_type: "gmail_inbound",
+    subject: title,
+    triage_status: "needs_redline",
+  });
+  const matters = [
+    buildMatter({
+      id: "matter_alpha_send",
+      title: "Alpha NDA",
+      text: "Alpha Confidential Information only includes marked information.",
+      redlineText: "Alpha replacement confidential information language.",
+      commentText: "Alpha comment only.",
+    }),
+    buildMatter({
+      id: "matter_beta_send",
+      title: "Beta NDA",
+      text: "Beta Confidential Information only includes labelled information.",
+      redlineText: "Beta replacement confidential information language.",
+      commentText: "Beta comment only.",
+    }),
+  ];
+  const sendPayloads = [];
+
+  await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        clause_id: requestPayload.clause_id,
-        redline_id: redline.id,
-        validation: {
-          ai_confidence: 0.92,
-          ai_decision: "pass",
-          ai_reason: "The proposed draft caps ordinary confidentiality survival within the playbook limit.",
-          cited_spans: [{
-            paragraph_id: `draft-proposed-${redline.id}`,
-            quote: redline.replacement_text || redline.insert_text,
-            relevance: "Proposed compliant survival language.",
-          }],
-          deterministic_decision: "pass",
-          disagreement: false,
-          issues: [],
-          reason: "AI draft validation confirmed the proposed fix.",
-          status: "validated",
-          suggested_fix: "",
-          validation_errors: [],
-          version: 1,
+        gmail: {
+          inbound: { configured: true, email: "inbound@aspora.com", ready: true },
+          outbound: { configured: true, email: "outbound@aspora.com", ready: true },
         },
-        ai_review: {
-          confidence_threshold: 0.75,
-          mode: "draft_fix_validation",
-          model: "qwen3.5-plus",
-          provider: "alibaba",
-          record_count: 1,
-          records: [],
-          status: "completed",
-          target_clause_id: requestPayload.clause_id,
-          redline_id: redline.id,
-          version: 1,
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters }),
+    });
+  });
+  await page.route("**/api/gmail/send-redline", async (route) => {
+    const payload = route.request().postDataJSON();
+    sendPayloads.push(payload);
+    const matter = matters.find((item) => item.id === payload.matter_id);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filename: `${matter.document_title.replaceAll(" ", "-")}-redlined.docx`,
+        matter: {
+          ...matter,
+          board_column: "redline_ready",
+          last_outbound_subject: payload.subject,
+          last_outbound_to: matter.recipient_email,
+        },
+        sent: {
+          message_id: `${matter.id}-message`,
+          outbound_account: "outbound@aspora.com",
+          sent_at: "2026-06-04T09:00:00+00:00",
+          subject: payload.subject,
+          thread_id: `${matter.id}-thread`,
+          to: matter.recipient_email,
+        },
+      }),
+    });
+  });
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  async function loadMatterInReview(index) {
+    await page.evaluate((matter) => {
+      state.selectedMatter = matter;
+      state.selectedDocument = null;
+      setSourceText(matter.extracted_text);
+      setSourcePlaceholder(SOURCE_PLACEHOLDER);
+      setDocumentTitle(matter.document_title);
+      setCounterpartyMeta(matter.recipient_email);
+      renderResult(matter.review_result, matter.extracted_text);
+      applyMatterRedlineDraft(matter.redline_draft);
+      activateTab("review");
+      updateExportButtonState();
+    }, matters[index]);
+    await page.waitForSelector("#reviewView:not([hidden])");
+    await page.waitForSelector("#studioSendButton:not(:disabled):not(.blocked)");
+  }
+
+  async function sendLoadedMatter(expectedTitle) {
+    await page.locator("#studioSendButton").click();
+    await page.waitForSelector("#studioSendModal:not([hidden])");
+    assert.equal(await page.locator("#studioSendSubject").inputValue(), `Redline for ${expectedTitle}`);
+    await page.locator("#studioSendConfirmButton").click();
+    await page.waitForSelector("#studioSendModal[hidden]", { state: "attached" });
+  }
+
+  await loadMatterInReview(0);
+  await sendLoadedMatter("Alpha NDA");
+  await loadMatterInReview(1);
+  await sendLoadedMatter("Beta NDA");
+
+  assert.equal(sendPayloads.length, 2);
+  assert.equal(sendPayloads[0].matter_id, "matter_alpha_send");
+  assert.equal(sendPayloads[0].text, "Alpha Confidential Information only includes marked information.");
+  assert.equal(sendPayloads[0].export_redline_edits[0].replacement_text, "Alpha replacement confidential information language.");
+  assert.equal(sendPayloads[0].review_comments[0].text, "Alpha comment only.");
+  assert.equal(sendPayloads[1].matter_id, "matter_beta_send");
+  assert.equal(sendPayloads[1].to, "matter_beta_send@example.com");
+  assert.equal(sendPayloads[1].text, "Beta Confidential Information only includes labelled information.");
+  assert.equal(sendPayloads[1].export_redline_edits[0].replacement_text, "Beta replacement confidential information language.");
+  assert.equal(sendPayloads[1].review_comments[0].text, "Beta comment only.");
+  assert.doesNotMatch(sendPayloads[1].body, /Alpha/);
+  assert.match(sendPayloads[1].body, /Beta/);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/gmail/send-redline");
+}
+
+async function testReviewSendAcceptsManualRecipient(page) {
+  const matter = {
+    id: "matter_manual_recipient_send",
+    board_column: "in_review",
+    can_send_redline: false,
+    document_title: "Manual Upload NDA",
+    extracted_text: "The confidentiality obligations survive for seven years.",
+    human_reviewed: true,
+    recipient_email: "",
+    requirements_failed: 1,
+    requirements_needs_review: 0,
+    requirements_passed: 4,
+    send_block_reason: "Matter does not have a valid reply recipient email address.",
+    review_result: {
+      checked_at: "2026-06-04T09:00:00+00:00",
+      clauses: [{
+        decision: "fail",
+        evidence_paragraphs: [{
+          id: "p1",
+          index: 1,
+          source_index: 1,
+          text: "The confidentiality obligations survive for seven years.",
+        }],
+        id: "term_and_survival",
+        issue_label: "Requires redline",
+        matched_paragraph_ids: ["p1"],
+        name: "Term and Survival",
+        needs_review: false,
+        passes: false,
+        reason: "Survival is longer than the playbook cap.",
+        review_state: { requires_redline: true, state: "check" },
+        status: "check",
+      }],
+      overall_status: "needs_redline",
+      paragraphs: [{
+        id: "p1",
+        index: 1,
+        source_index: 1,
+        text: "The confidentiality obligations survive for seven years.",
+      }],
+      redline_edits: [{
+        action: "replace_paragraph",
+        action_label: "Replace paragraph",
+        clause_id: "term_and_survival",
+        id: "manual-recipient-term-redline",
+        original_text: "The confidentiality obligations survive for seven years.",
+        paragraph_id: "p1",
+        paragraph_index: 1,
+        replacement_text: "The confidentiality obligations survive for five years.",
+        status: "proposed",
+      }],
+      requirements_failed: 1,
+      requirements_needs_review: 0,
+      requirements_passed: 4,
+    },
+    sender: "Manual upload",
+    source_filename: "Manual Upload NDA.docx",
+    source_type: "upload",
+    subject: "Manual Upload NDA",
+    triage_status: "needs_redline",
+  };
+  let capturedSendPayload = null;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { configured: true, email: "inbound@aspora.com", ready: true },
+          outbound: { configured: true, email: "outbound@aspora.com", ready: true },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [matter] }),
+    });
+  });
+  await page.route("**/api/gmail/send-redline", async (route) => {
+    capturedSendPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filename: "Manual-Upload-NDA-redlined.docx",
+        matter: {
+          ...matter,
+          board_column: "redline_ready",
+          last_outbound_subject: capturedSendPayload.subject,
+          last_outbound_to: capturedSendPayload.to,
+        },
+        sent: {
+          message_id: "manual-recipient-message",
+          outbound_account: "outbound@aspora.com",
+          sent_at: "2026-06-04T09:15:00+00:00",
+          subject: capturedSendPayload.subject,
+          thread_id: "manual-recipient-thread",
+          to: capturedSendPayload.to,
         },
       }),
     });
   });
 
-  await page.getByRole("button", { name: "Validate draft fix" }).click();
-  await page.waitForFunction(() => Object.keys(state.aiDraftValidations || {}).length === 1);
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.evaluate((loadedMatter) => {
+    state.selectedMatter = loadedMatter;
+    state.selectedDocument = null;
+    setSourceText(loadedMatter.extracted_text);
+    setSourcePlaceholder(SOURCE_PLACEHOLDER);
+    setDocumentTitle(loadedMatter.document_title);
+    setCounterpartyMeta("");
+    renderResult(loadedMatter.review_result, loadedMatter.extracted_text);
+    activateTab("review");
+    updateExportButtonState();
+  }, matter);
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await page.waitForSelector("#studioSendButton.blocked");
 
-  assert.equal(requestPayload.clause_id, "term_and_survival");
-  assert.equal(requestPayload.redline_edit.clause_id, "term_and_survival");
-  assert.ok(requestPayload.redline_edit.replacement_text || requestPayload.redline_edit.insert_text);
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI DRAFT VALIDATED");
-  await assertTextContains(page.locator("#studioDetailPanel"), "PASS · 92%");
-  await assertTextContains(page.locator("#studioDetailPanel"), "alibaba / qwen3.5-plus");
-  await assertTextContains(page.locator("#studioDetailPanel"), "caps ordinary confidentiality survival");
-  await assertTextContains(page.locator("#studioDetailPanel"), "PROPOSED DRAFT");
-  assert.equal(await page.getByRole("button", { name: "Revalidate draft fix" }).count(), 1);
-  await page.unroute("**/api/review/ai-draft-validation");
+  await page.locator("#studioSendButton").click();
+  await page.waitForSelector("#studioSendModal:not([hidden])");
+  assert.equal(await page.locator("#studioSendTo").inputValue(), "");
+  await assertTextContains(page.locator("#studioSendStatus"), "Enter a recipient email address before sending.");
+
+  await page.locator("#studioSendConfirmButton").click();
+  await assertTextContains(page.locator("#studioSendStatus"), "Enter a valid recipient email address.");
+  await page.locator("#studioSendTo").fill("counterparty@example.com");
+  await page.locator("#studioSendConfirmButton").click();
+  await page.waitForSelector("#studioSendModal[hidden]", { state: "attached" });
+  await waitForText(page, "#studioFileMeta", "Sent redline to counterparty@example.com");
+
+  assert.equal(capturedSendPayload.matter_id, "matter_manual_recipient_send");
+  assert.equal(capturedSendPayload.to, "counterparty@example.com");
+  assert.equal(capturedSendPayload.export_redline_edits.length, 1);
+  assert.equal(capturedSendPayload.export_redline_edits[0].clause_id, "term_and_survival");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/gmail/send-redline");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {
@@ -1679,12 +1920,12 @@ async function testReviewOutboundSendModal(page) {
 
   await page.locator("#studioSendButton").click();
   await page.waitForSelector("#studioSendModal:not([hidden])");
-  assert.equal(await page.locator("#studioSendTo").innerText(), "legal@example.com");
+  assert.equal(await page.locator("#studioSendTo").inputValue(), "legal@example.com");
   assert.equal(await page.locator("#studioSendFrom").innerText(), "daniyal.ahmad@aspora.com");
   assert.equal(await page.locator("#studioSendAttachment").innerText(), "Counterparty-NDA-redlined.docx");
   assert.equal(
     await page.locator("#studioSendSubject").inputValue(),
-    "Redline for Counterparty NDA - clauses: Confidential Information; 2 text changes; 1 comment",
+    "Redline for Counterparty NDA",
   );
   const defaultBody = await page.locator("#studioSendBody").inputValue();
   assert.ok(defaultBody.includes("Confidential Information"), defaultBody);
@@ -1704,6 +1945,7 @@ async function testReviewOutboundSendModal(page) {
 
   assert.equal(capturedSendPayload.matter_id, "matter_review_send");
   assert.equal(capturedSendPayload.confirm_send, true);
+  assert.equal(capturedSendPayload.to, "legal@example.com");
   assert.equal(capturedSendPayload.subject, "Edited redline subject");
   assert.equal(capturedSendPayload.body, "Edited body before sending.");
   assert.equal(capturedSendPayload.export_redline_edits.length, 1);
@@ -1919,7 +2161,8 @@ async function testMatterRedlineDraftPersistence(page) {
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
 
   await page.getByRole("button", { name: /Governing Law/ }).click();
-  await page.locator('[data-export-clause-id="governing_law"][data-export-decision="ignore"]').first().click();
+  const governingLawCard = page.locator('[data-studio-lane-id="governing_law"]');
+  await governingLawCard.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
   await assertTextContains(page.locator("#studioDraftMeta"), "Unsaved redline draft changes");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), true);
   await page.locator("#studioSaveDraftButton").click();
@@ -1937,7 +2180,7 @@ async function testMatterRedlineDraftPersistence(page) {
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await waitForText(page, "#studioDraftMeta", "Draft redline saved");
-  const ignoredState = await page.locator('[data-export-clause-id="governing_law"][data-export-decision="ignore"]').first().evaluate((node) => ({
+  const ignoredState = await page.locator('[data-studio-lane-id="governing_law"] [data-export-redline-id][data-export-decision="ignore"]').first().evaluate((node) => ({
     active: node.classList.contains("active"),
     pressed: node.getAttribute("aria-pressed"),
   }));
@@ -2185,17 +2428,16 @@ async function testInlineDiffOperationRendering(page) {
 async function testBackendRedlineModes(page) {
   await runReview(page, redlineNda);
   assert.equal(await page.locator(".studio-check-card").count(), 0);
-  const checkPillStyles = await page.locator(".studio-clause-item.check .studio-issue-pill.check").first().evaluate((node) => {
+  assert.equal(await page.locator(".studio-clause-item .studio-issue-pill").count(), 0);
+  const checkRowStyles = await page.locator(".studio-clause-item.check").first().evaluate((node) => {
     const styles = getComputedStyle(node);
     return {
       backgroundColor: styles.backgroundColor,
-      color: styles.color,
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(checkPillStyles.backgroundColor, "rgb(254, 226, 226)");
-  assert.equal(checkPillStyles.color, "rgb(180, 35, 24)");
-  assert.match(checkPillStyles.boxShadow, /252, 165, 165/);
+  assert.notEqual(checkRowStyles.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.match(checkRowStyles.boxShadow, /239, 68, 68/);
 
   const checkDotStyles = await page.locator(".studio-clause-dot.verify").first().evaluate((node) => {
     const styles = getComputedStyle(node);
@@ -2217,9 +2459,8 @@ async function testBackendRedlineModes(page) {
     };
   });
   assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
-  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
-  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
-  assert.equal(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "0px");
+  assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
 
   const viewerSpacing = await page.evaluate(() => {
     const pageNode = document.querySelector("#reviewView .studio-page");
@@ -2243,10 +2484,10 @@ async function testBackendRedlineModes(page) {
       pageWidth: Math.round(pageBox.width),
     };
   });
-  assert.ok(viewerSpacing.borderToPageLeft <= 2, `paragraph marker should attach to page edge: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.borderToPageLeft >= 24, `paragraph should sit inside the page margin: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.commentRightToPageLeft <= -8, `comment controls should sit in the gray gutter: ${JSON.stringify(viewerSpacing)}`);
-  assert.ok(viewerSpacing.textToPageLeft <= 40, `paragraph text should start closer to page edge: ${JSON.stringify(viewerSpacing)}`);
-  assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 95, `paragraph text should use the page width: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.textToPageLeft > viewerSpacing.borderToPageLeft, `paragraph text should be inset from the paragraph frame: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 160, `paragraph text should use the page body width: ${JSON.stringify(viewerSpacing)}`);
 
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
@@ -2335,37 +2576,40 @@ async function testClauseAnchorCycling(page) {
 
 async function testClauseDecisionControls(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
-  const signaturesCard = page.locator(".studio-clause-item").filter({
-    has: page.locator('[data-studio-lane-id="signatures"]'),
-  });
+  const governingLawCard = page.locator('[data-studio-lane-id="governing_law"]');
+  const signaturesCard = page.locator('[data-studio-lane-id="signatures"]');
 
   await page.locator('[data-studio-lane-id="governing_law"]').click();
-  await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
-  await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
+  assert.deepEqual(
+    await governingLawCard.locator(".studio-template-choice").evaluateAll((nodes) => nodes.map((node) => node.innerText.trim())),
+    ["India", "Delaware", "England and Wales", "DIFC"],
+  );
+  await governingLawCard.locator('[data-redline-option-id="governing_law_difc"]').click();
+  await assertTextContains(governingLawCard.locator(".studio-template-choice.selected"), "DIFC");
+  await assertTextContains(governingLawCard.locator(".studio-clause-insert"), "the DIFC");
   await page.locator("#studioUndoEditButton").click();
-  assert.equal(await page.locator(".redline-option.selected").filter({ hasText: "DIFC" }).count(), 0);
-  await page.getByRole("button", { name: "DIFC This Agreement shall be governed by the laws of the DIFC." }).click();
-  await assertTextContains(page.locator(".redline-option.selected"), "DIFC");
+  assert.equal(await governingLawCard.locator(".studio-template-choice.selected").filter({ hasText: "DIFC" }).count(), 0);
+  await governingLawCard.locator('[data-redline-option-id="governing_law_difc"]').click();
+  await assertTextContains(governingLawCard.locator(".studio-template-choice.selected"), "DIFC");
 
-  await page.locator('[data-export-clause-id="signatures"][data-export-decision="ignore"]').click();
-  await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
+  await signaturesCard.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="ignore"]')?.getAttribute("aria-pressed") === "true");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   await page.locator('[data-studio-lane-id="signatures"]').click();
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
 
-  await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
-  assert.equal(await signaturesCard.locator(".studio-export-state").count(), 0);
+  await signaturesCard.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
   await page.locator("#studioUndoEditButton").click();
-  await assertTextContains(signaturesCard.locator(".studio-export-state"), "IGNORED IN EXPORT");
   assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
   await assertTextContains(page.locator("#studioFileMeta"), "Undid clause suggestion change");
 
-  await signaturesCard.locator('[data-export-clause-id="signatures"][data-export-decision="include"]').click();
-  assert.equal(await signaturesCard.locator(".studio-export-state").count(), 0);
+  await signaturesCard.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-studio-lane-id="signatures"] [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 

@@ -38,6 +38,7 @@ from .checks.common import (
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .reference_resolver import resolve_document_references
+from .playbook_rules import PlaybookRulesError, validate_playbook_rules
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
@@ -62,7 +63,7 @@ from .decision_arbiter import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
-REVIEW_ENGINE_VERSION = 5
+REVIEW_ENGINE_VERSION = 6
 AUDIT_TRACE_VERSION = 1
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
@@ -980,6 +981,10 @@ def _validate_playbook_contract(playbook: Dict[str, object]) -> None:
         allowed_placeholders={"max_term_years", "max_term_years_label"},
     )
     _require_template(clauses_by_id["signatures"], "redline_template")
+    try:
+        validate_playbook_rules(playbook)
+    except PlaybookRulesError as error:
+        raise PlaybookTemplateError(str(error)) from error
 
 
 def _validate_governing_law_playbook(clause: Dict[str, object]) -> None:

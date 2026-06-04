@@ -30,6 +30,56 @@
       ],
       "rationale": "A one-way NDA creates asymmetric risk; Aspora's baseline is reciprocal confidentiality unless the matter is deliberately unilateral.",
       "evidence_guidance": "Look for language tying both parties to disclosing and receiving roles, not only isolated defined terms.",
+      "rules": {
+        "version": 1,
+        "clause_type": "required",
+        "acceptable_position": "Both parties can disclose and receive Confidential Information, and confidentiality obligations operate symmetrically.",
+        "pass_conditions": [
+          {
+            "id": "reciprocal_party_roles",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "The contract clearly makes each party both a Disclosing Party and a Receiving Party, or otherwise creates reciprocal confidentiality obligations.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "mutuality_missing",
+            "decision": "fail",
+            "issue_type": "missing",
+            "description": "No operative language clearly makes confidentiality obligations mutual.",
+            "redline_action": "insert_after_paragraph"
+          },
+          {
+            "id": "one_way_party_roles",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The contract fixes only one party as the Receiving Party or otherwise creates one-way confidentiality obligations.",
+            "redline_action": "replace_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "weak_or_separated_mutuality_signal",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "Mutuality appears only in a title, recital, definition, or separated role language that does not clearly create reciprocal obligations.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 1,
+          "minimum_evidence_for_fail": 1,
+          "guidance": "Cite the operative language that creates reciprocal roles, or cite the one-way language that fixes only one receiving party."
+        },
+        "redline_guidance": {
+          "default_action": "insert_after_paragraph",
+          "template_field": "redline_template",
+          "drafting_note": "Use the mutuality template to add or replace language so both parties can disclose and receive Confidential Information."
+        }
+      },
       "role_terms": [
         "disclosing party",
         "receiving party"
@@ -78,6 +128,56 @@
       ],
       "rationale": "The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.",
       "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph for category breadth and nearby exclusion language.",
+      "rules": {
+        "version": 1,
+        "clause_type": "required",
+        "acceptable_position": "Confidential Information is defined broadly enough to cover non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret, and source code information, with only standard carve-outs.",
+        "pass_conditions": [
+          {
+            "id": "broad_definition_with_standard_exclusions",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "The definition covers the material categories in the playbook and contains only accepted exclusions.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "definition_missing",
+            "decision": "fail",
+            "issue_type": "missing",
+            "description": "The document does not define Confidential Information.",
+            "redline_action": "insert_after_paragraph"
+          },
+          {
+            "id": "definition_too_narrow_or_extra_exclusions",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The definition omits important protected categories or includes extra exclusions such as residuals, reverse engineering, or unqualified independent development.",
+            "redline_action": "replace_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "ambiguous_definition_or_exclusion_scope",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The definition or nearby exclusions are ambiguous enough that a human should confirm whether protection is materially narrowed.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 1,
+          "minimum_evidence_for_fail": 1,
+          "guidance": "Cite the defined term paragraph and any nearby exclusion language that supports the verdict."
+        },
+        "redline_guidance": {
+          "default_action": "replace_paragraph",
+          "template_field": "redline_template",
+          "drafting_note": "Use the full definition template for missing or narrow definitions; use the standard exclusions template when only exclusions need correction."
+        }
+      },
       "definition_categories": [
         "financial",
         "business",
@@ -191,6 +291,82 @@
       ],
       "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be changed or reviewed.",
       "evidence_guidance": "Use the governing-law sentence as evidence, not the whole dispute-resolution section unless needed.",
+      "rules": {
+        "version": 1,
+        "clause_type": "required",
+        "acceptable_position": "The governing law is one of the approved jurisdictions in the playbook, with England and Wales as the default preferred option unless matter context supports another approved jurisdiction.",
+        "pass_conditions": [
+          {
+            "id": "approved_governing_law",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "The governing-law clause names India, Delaware, England and Wales, or DIFC.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "governing_law_missing",
+            "decision": "fail",
+            "issue_type": "missing",
+            "description": "No governing-law clause is found.",
+            "redline_action": "insert_after_paragraph"
+          },
+          {
+            "id": "unapproved_governing_law",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The governing-law clause names a jurisdiction outside the approved playbook list.",
+            "redline_action": "replace_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "unclear_or_conditional_governing_law",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The governing-law language is unclear, conditional, conflicting, heading-only, or mixed with non-approved jurisdiction language.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 1,
+          "minimum_evidence_for_fail": 0,
+          "guidance": "Cite the governing-law sentence. If missing, explain that no governing-law sentence was found."
+        },
+        "redline_guidance": {
+          "default_action": "replace_paragraph",
+          "option_source": "approved_options",
+          "drafting_note": "Use one of the approved jurisdiction options. Default to England and Wales unless another approved option is selected."
+        },
+        "approved_options": [
+          {
+            "id": "india",
+            "label": "India",
+            "value": "India",
+            "default": false
+          },
+          {
+            "id": "delaware",
+            "label": "Delaware",
+            "value": "Delaware",
+            "default": false
+          },
+          {
+            "id": "england_and_wales",
+            "label": "England and Wales",
+            "value": "England and Wales",
+            "default": true
+          },
+          {
+            "id": "difc",
+            "label": "DIFC",
+            "value": "DIFC",
+            "default": false
+          }
+        ]
+      },
       "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, or the DIFC."
     },
     {
@@ -228,6 +404,56 @@
       ],
       "rationale": "Ordinary confidentiality should be time-limited; indefinite language is only acceptable for narrow trade-secret or legal exceptions.",
       "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording.",
+      "rules": {
+        "version": 1,
+        "clause_type": "required",
+        "acceptable_position": "Ordinary confidentiality obligations have a fixed survival period of up to five years, while narrow trade-secret, legal, regulatory, or data-protection carve-outs may survive longer.",
+        "pass_conditions": [
+          {
+            "id": "fixed_survival_within_cap",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "The term or ordinary confidentiality survival period is fixed and does not exceed five years.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "term_or_survival_missing",
+            "decision": "fail",
+            "issue_type": "missing",
+            "description": "No clear term or ordinary confidentiality survival period is found.",
+            "redline_action": "insert_after_paragraph"
+          },
+          {
+            "id": "ordinary_survival_exceeds_cap_or_is_indefinite",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "Ordinary confidentiality survival is indefinite, perpetual, relationship-based, tied to information remaining confidential, or longer than five years.",
+            "redline_action": "replace_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "ambiguous_survival_scope",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The term language is ambiguous, cross-referenced, unresolved, or unclear about whether the long survival applies only to accepted carve-outs.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 1,
+          "minimum_evidence_for_fail": 0,
+          "guidance": "Cite the term or survival paragraph, including the duration or indefinite wording. If missing, explain that no clear term or survival period was found."
+        },
+        "redline_guidance": {
+          "default_action": "replace_paragraph",
+          "template_field": "redline_template",
+          "drafting_note": "Use the survival template with the playbook maximum term and narrow longer-survival carve-outs."
+        }
+      },
       "indefinite_terms": [
         "indefinitely",
         "perpetuity",
@@ -283,6 +509,48 @@
       ],
       "rationale": "Non-circumvention and substitute-purpose restrictions turn the NDA into a broader commercial restraint.",
       "evidence_guidance": "Flag paragraphs restricting introduced parties, direct dealings, bypassing, substitute transactions, or exclusivity.",
+      "rules": {
+        "version": 1,
+        "clause_type": "prohibited",
+        "acceptable_position": "The NDA does not restrict direct dealings, introduced contacts, substitute transactions, exclusivity, or similar commercial conduct beyond confidentiality.",
+        "pass_conditions": [
+          {
+            "id": "prohibited_restriction_absent",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "No non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction appears.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "prohibited_business_restraint_present",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The document includes a non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction.",
+            "redline_action": "delete_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "ambiguous_business_restraint",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The language may restrict business conduct beyond confidentiality, but the scope or polarity is ambiguous.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 0,
+          "minimum_evidence_for_fail": 1,
+          "guidance": "For failures, cite the exact restriction. For passes, absence of matching prohibited language may be enough."
+        },
+        "redline_guidance": {
+          "default_action": "delete_paragraph",
+          "drafting_note": "Remove the prohibited restraint rather than replacing it with another commercial restriction."
+        }
+      },
       "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."
     },
     {
@@ -311,6 +579,56 @@
       ],
       "rationale": "A complete execution block reduces signing ambiguity and supports clean downstream storage.",
       "evidence_guidance": "Look for both parties' execution blocks with signatory, title or capacity, and date markers.",
+      "rules": {
+        "version": 1,
+        "clause_type": "required",
+        "acceptable_position": "Both parties have complete execution blocks showing legal entity name, authorised signatory, title or capacity, and date.",
+        "pass_conditions": [
+          {
+            "id": "complete_execution_blocks",
+            "decision": "pass",
+            "issue_type": "none",
+            "description": "Execution blocks show both parties, signatory markers, titles or capacities, and dates.",
+            "redline_action": "no_change"
+          }
+        ],
+        "fail_conditions": [
+          {
+            "id": "execution_block_missing",
+            "decision": "fail",
+            "issue_type": "missing",
+            "description": "No usable execution block is found.",
+            "redline_action": "insert_after_paragraph"
+          },
+          {
+            "id": "execution_block_incomplete",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "One or both execution blocks are present but missing party, signatory, title, or date markers.",
+            "redline_action": "replace_paragraph"
+          }
+        ],
+        "review_triggers": [
+          {
+            "id": "ambiguous_execution_block",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "Signature material is present but it is unclear whether both parties and required markers are complete.",
+            "redline_action": "no_change"
+          }
+        ],
+        "evidence_requirements": {
+          "quote_required": true,
+          "minimum_evidence_for_pass": 1,
+          "minimum_evidence_for_fail": 0,
+          "guidance": "Cite the execution block when present. If missing, explain that no complete execution block was found."
+        },
+        "redline_guidance": {
+          "default_action": "insert_after_paragraph",
+          "template_field": "redline_template",
+          "drafting_note": "Use the execution-block template when signatures are missing or materially incomplete."
+        }
+      },
       "redline_template": "For [Party 1 legal name]\nBy:\nName:\nTitle:\nDate:\n\nFor [Party 2 legal name]\nBy:\nName:\nTitle:\nDate:",
       "acceptable_language": "Each party should have an execution block showing the legal entity name, authorised signatory, title, and date."
     }

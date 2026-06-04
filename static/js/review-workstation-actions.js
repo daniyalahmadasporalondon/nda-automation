@@ -188,16 +188,56 @@ async function exportReviewDocx() {
   }
 }
 
-async function markMatterReviewed() {
+async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseId = "" } = {}) {
   const matterId = state.selectedMatter?.id;
-  if (!matterId || !studioReviewedButton) return;
-  studioReviewedButton.disabled = true;
-  studioReviewedButton.textContent = "Marking…";
+  const targetClauseId = clauseId || sourceButton?.dataset?.reviewClauseId || "";
+  const targetClauseIds = targetClauseId ? [targetClauseId] : reviewClauseIds();
+  if (!targetClauseIds.length) return;
+  const previousReviewedClauseIds = { ...reviewedClauseMap() };
+  const previousMatter = state.selectedMatter ? { ...state.selectedMatter } : null;
+  const previousMatterReviewed = Boolean(previousMatter?.human_reviewed);
+
+  if (state.selectedMatter?.human_reviewed) {
+    reviewClauseIds().forEach((id) => {
+      if (!Object.prototype.hasOwnProperty.call(reviewedClauseMap(), id)) {
+        reviewedClauseMap()[id] = true;
+      }
+    });
+  }
+
+  const nextReviewed = targetClauseIds.some((id) => !clauseReviewAcknowledged(id));
+  targetClauseIds.forEach((id) => {
+    if (state.reviewClauses.some((clause) => clause.id === id)) {
+      reviewedClauseMap()[id] = nextReviewed;
+    }
+  });
+  const allReviewed = humanReviewAcknowledged();
+  const shouldPersistMatterReviewed = Boolean(matterId && allReviewed !== previousMatterReviewed);
+
+  if (state.selectedMatter && shouldPersistMatterReviewed) {
+    state.selectedMatter = { ...state.selectedMatter, human_reviewed: allReviewed };
+    if (allReviewed) delete state.selectedMatter.send_block_reason;
+  }
+
+  markRedlineDraftDirty();
+  setFileMeta(
+    allReviewed
+      ? "All review clauses marked reviewed. You can send the redline now."
+      : nextReviewed
+        ? "Marked clause reviewed."
+        : "Marked clause not reviewed.",
+  );
+  renderStudioClauseLane();
+  renderStudioDetail();
+  updateExportButtonState();
+
+  if (!shouldPersistMatterReviewed) return;
+
   try {
     const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/reviewed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reviewed: true }),
+      body: JSON.stringify({ reviewed: allReviewed }),
     });
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter reviewed");
@@ -205,16 +245,17 @@ async function markMatterReviewed() {
       const merged = { ...state.selectedMatter, ...payload.matter };
       // The server omits send_block_reason once it clears; drop any stale value
       // so the client gate (which checks it first) unblocks too.
-      if (!payload.matter.send_block_reason) delete merged.send_block_reason;
+      if (allReviewed && !payload.matter.send_block_reason) delete merged.send_block_reason;
       state.selectedMatter = merged;
     }
-    setFileMeta("Marked reviewed — you can send the redline now.");
-  } catch (error) {
-    renderOperationError(error, "Could not mark this matter reviewed.");
-  } finally {
-    studioReviewedButton.textContent = "Reviewed";
-    studioReviewedButton.disabled = false;
     updateExportButtonState();
+  } catch (error) {
+    state.reviewedClauseIds = previousReviewedClauseIds;
+    if (previousMatter) state.selectedMatter = previousMatter;
+    renderStudioClauseLane();
+    renderStudioDetail();
+    updateExportButtonState();
+    renderOperationError(error, "Could not mark this matter reviewed.");
   }
 }
 
@@ -222,7 +263,8 @@ async function markMatterReviewed() {
 function openReviewSendComposer() {
   if (!state.selectedMatter?.id) return;
   const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
-  if (sendBlockReason) {
+  const missingRecipientBlock = isMissingRecipientSendBlock(sendBlockReason);
+  if (sendBlockReason && !missingRecipientBlock) {
     pendingReviewSendMatterId = null;
     setStudioSendButtonLabel(MatterUtils.gmailSendButtonLabel(sendBlockReason), sendBlockReason);
     setFileMeta(sendBlockReason);
@@ -230,13 +272,6 @@ function openReviewSendComposer() {
     return;
   }
   const recipient = MatterUtils.recipientEmail(state.selectedMatter);
-  if (!recipient) {
-    pendingReviewSendMatterId = null;
-    setStudioSendButtonLabel("Send Redline", "Matter does not have a valid reply recipient email address");
-    setFileMeta("Matter does not have a valid reply recipient email address");
-    updateExportButtonState();
-    return;
-  }
   if (!studioSendModal || !studioSendForm) {
     setFileMeta("Email composer is unavailable.");
     return;
@@ -247,16 +282,16 @@ function openReviewSendComposer() {
     ? document.activeElement
     : studioSendButton;
   if (studioSendFrom) studioSendFrom.textContent = reviewOutboundAccountLabel();
-  if (studioSendTo) studioSendTo.textContent = recipient;
+  if (studioSendTo) studioSendTo.value = recipient;
   if (studioSendAttachment) studioSendAttachment.textContent = reviewSendAttachmentLabel();
   if (studioSendSubject) studioSendSubject.value = draft.subject;
   if (studioSendBody) studioSendBody.value = draft.body;
   renderReviewSendSummary(draft.summary);
-  if (studioSendStatus) studioSendStatus.textContent = "";
+  if (studioSendStatus) studioSendStatus.textContent = missingRecipientBlock ? "Enter a recipient email address before sending." : "";
   setReviewSendComposerBusy(false);
   studioSendModal.hidden = false;
   document.body.classList.add("modal-open");
-  window.setTimeout(() => studioSendSubject?.focus(), 0);
+  window.setTimeout(() => (recipient ? studioSendSubject : studioSendTo)?.focus(), 0);
 }
 
 function closeReviewSendComposer({ restoreFocus = true } = {}) {
@@ -284,15 +319,21 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
     openReviewSendComposer();
     return;
   }
+  const recipient = reviewComposerRecipient();
   const sendBlockReason = MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus);
-  if (sendBlockReason) {
+  const missingRecipientBlock = isMissingRecipientSendBlock(sendBlockReason);
+  if (missingRecipientBlock && !recipient) {
+    setReviewSendStatus("Enter a valid recipient email address.");
+    updateExportButtonState();
+    return;
+  }
+  if (sendBlockReason && !(missingRecipientBlock && recipient)) {
     setReviewSendStatus(sendBlockReason);
     updateExportButtonState();
     return;
   }
-  const recipient = MatterUtils.recipientEmail(state.selectedMatter);
   if (!recipient) {
-    setReviewSendStatus("Matter does not have a valid reply recipient email address.");
+    setReviewSendStatus("Enter a valid recipient email address.");
     updateExportButtonState();
     return;
   }
@@ -315,6 +356,7 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
       export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
       review_comments: currentReviewComments(),
+      to: recipient,
       subject: subject.trim(),
       body: body.trim(),
     };
@@ -354,15 +396,20 @@ function buildReviewSendDraft(recipient) {
   };
 }
 
+function isMissingRecipientSendBlock(reason) {
+  return String(reason || "").toLowerCase().includes("valid reply recipient");
+}
+
+function reviewComposerRecipient() {
+  return MatterUtils.emailAddress(studioSendTo?.value || studioSendTo?.textContent || "");
+}
+
 function reviewSendChangeSummary() {
   const clauseRedlines = effectiveReviewRedlines()
     .filter((edit) => edit.clause_id && edit.clause_id !== "manual_viewer_edit");
   const manualRedlines = manualExportRedlines();
   const comments = currentReviewComments();
   const clauseNames = uniqueStrings(clauseRedlines.map((edit) => clauseNameForId(edit.clause_id)));
-  const ignoredNames = uniqueStrings(state.reviewClauses
-    .filter((clause) => !clauseExportIncluded(clause.id))
-    .map((clause) => clause.name || humanizeClauseId(clause.id)));
   const textSnippets = uniqueStrings([...clauseRedlines, ...manualRedlines]
     .map(redlineTextSnippet)
     .filter(Boolean));
@@ -375,26 +422,13 @@ function reviewSendChangeSummary() {
     clauseRedlineCount: clauseRedlines.length,
     commentCount: comments.length,
     commentSnippets,
-    ignoredNames,
     manualCount: manualRedlines.length,
     textSnippets,
   };
 }
 
 function reviewSendDefaultSubject(summary) {
-  const fragments = [];
-  if (summary.clauseNames.length) {
-    fragments.push(`clauses: ${formatCompactList(summary.clauseNames, 2)}`);
-  }
-  const textChangeCount = summary.textSnippets.length || summary.manualCount;
-  if (textChangeCount) {
-    fragments.push(`${textChangeCount} text ${plural("change", textChangeCount)}`);
-  }
-  if (summary.commentCount) {
-    fragments.push(`${summary.commentCount} ${plural("comment", summary.commentCount)}`);
-  }
-  const suffix = fragments.length ? ` - ${fragments.join("; ")}` : "";
-  return truncateText(`Redline for ${reviewSendMatterTitle()}${suffix}`, 160);
+  return truncateText(`Redline for ${reviewSendMatterTitle()}`, 80);
 }
 
 function reviewSendDefaultBody(summary) {
@@ -425,9 +459,6 @@ function reviewSendSummaryLines(summary) {
   }
   if (summary.commentCount) {
     lines.push(`${summary.commentCount} Word ${plural("comment", summary.commentCount)}: ${formatCompactList(summary.commentSnippets, 3)}.`);
-  }
-  if (summary.ignoredNames.length) {
-    lines.push(`Left out of this redline: ${formatCompactList(summary.ignoredNames, 4)}.`);
   }
   if (!lines.length) {
     lines.push("Redline generated from the current review state.");
@@ -585,6 +616,7 @@ function currentRedlineDraftPayload() {
     clause_decisions: { ...state.exportClauseDecisions },
     redline_decisions: { ...state.exportRedlineDecisions },
     template_selections: { ...state.redlineTemplateSelections },
+    reviewed_clause_ids: { ...reviewedClauseMap() },
     export_redline_edits: effectiveReviewRedlines(),
     manual_redline_edits: manualExportRedlines(),
     review_comments: currentReviewComments(),

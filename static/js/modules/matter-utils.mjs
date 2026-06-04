@@ -100,6 +100,7 @@ export function gmailSendButtonLabel(blockReason) {
 export const MatterUtils = {
   canSendRedline,
   counterpartyEmail,
+  emailAddress,
   gmailSendBlock,
   gmailSendButtonLabel,
   needsHumanReview,

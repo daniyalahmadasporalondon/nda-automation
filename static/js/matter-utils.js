@@ -98,5 +98,5 @@ const MatterUtils = (() => {
     return "Gmail Setup";
   }
 
-  return { canSendRedline, counterpartyEmail, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail, reviewState };
+  return { canSendRedline, counterpartyEmail, emailAddress, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail, reviewState };
 })();

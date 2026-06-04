@@ -34,6 +34,7 @@ from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation import telemetry
+from nda_automation.routes import matters as matter_routes
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -1058,6 +1059,133 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["requirements_failed"], review_payload["review_result"]["requirements_failed"])
         self.assertEqual(stored_matter["requirements_needs_review"], review_payload["review_result"]["requirements_needs_review"])
 
+    def test_ai_first_matter_review_requires_feature_flag(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="This Agreement shall be governed by the laws of Delaware.",
+                    review_result={"paragraphs": []},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with patch.dict(os.environ, {matter_routes.AI_FIRST_REVIEW_FEATURE_FLAG: ""}):
+                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/ai-first-review")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertEqual(status, 403)
+        self.assertIn("AI-first matter review is disabled", payload["error"])
+        self.assertNotIn("ai_first_review_result", stored_matter)
+
+    def test_ai_first_matter_review_stores_separate_result_without_replacing_active_review(self):
+        active_review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_needs_review": 0,
+            "requirements_failed": 1,
+            "paragraphs": [
+                {
+                    "id": "p1",
+                    "index": 1,
+                    "text": "This Agreement shall be governed by the laws of Delaware.",
+                    "start": 0,
+                    "end": 59,
+                }
+            ],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "status": "mismatch",
+                    "passes": False,
+                    "decision": "fail",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "review_state": {"state": "check", "overall_status": "does_not_meet_requirements"},
+        }
+        ai_first_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_mode": "ai_first_compat",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "paragraphs": active_review_result["paragraphs"],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [],
+            "redline_edits": [],
+            "ai_first_review": {
+                "status": "completed",
+                "mode": "ai_first_assessor",
+                "provider": "gemini",
+                "model": "gemini-test",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text=active_review_result["paragraphs"][0]["text"],
+                    review_result=deepcopy(active_review_result),
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with (
+                    patch.dict(os.environ, {matter_routes.AI_FIRST_REVIEW_FEATURE_FLAG: "true"}),
+                    patch.object(matter_routes, "assess_nda_with_ai", return_value=deepcopy(ai_first_result)) as assessor,
+                ):
+                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/ai-first-review")
+                stored_matter = matter_store.get_matter(matter["id"])
+                public_status, public_payload = self.request("GET", f"/api/matters/{matter['id']}")
+                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
+
+        assessor.assert_called_once()
+        call_args, call_kwargs = assessor.call_args
+        self.assertEqual(call_args[0], active_review_result["paragraphs"][0]["text"])
+        self.assertEqual(call_kwargs["paragraphs"], active_review_result["paragraphs"])
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["matter"]["id"], matter["id"])
+        self.assertEqual(payload["ai_first_review_result"], ai_first_result)
+        self.assertEqual(payload["ai_first_review_metadata"]["status"], "completed")
+        self.assertEqual(payload["ai_first_review_metadata"]["mode"], "ai_first_assessor")
+        self.assertEqual(payload["ai_first_review_metadata"]["requirements_passed"], 1)
+        self.assertEqual(stored_matter["review_result"], active_review_result)
+        self.assertEqual(stored_matter["requirements_failed"], 1)
+        self.assertEqual(stored_matter["triage_status"], "needs_redline")
+        self.assertEqual(stored_matter["ai_first_review_result"], ai_first_result)
+        self.assertEqual(public_status, 200)
+        self.assertNotIn("ai_first_review_result", public_payload["matter"])
+        self.assertNotIn("review_result", public_payload["matter"])
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["review_result"], active_review_result)
+        self.assertEqual(review_payload["ai_first_review_result"], ai_first_result)
+        self.assertEqual(review_payload["ai_first_review_metadata"]["mode"], "ai_first_assessor")
+
     def test_matter_upload_supports_manual_upload_source(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of Delaware.",
@@ -1257,6 +1385,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(public["recipient_email"], "daniyal.ahmad@aspora.com")
         self.assertEqual(public["can_send_redline"], False)
         self.assertIn("self-sent Gmail message", public["send_block_reason"])
+
+    def test_public_matter_surfaces_missing_reply_recipient_block(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "human_reviewed": True,
+            "sender": "Manual upload",
+            "subject": "Uploaded NDA",
+            "review_result": {
+                "overall_status": "needs_redline",
+                "requirements_needs_review": 0,
+            },
+        })
+
+        self.assertEqual(public["recipient_email"], "")
+        self.assertEqual(public["can_send_redline"], False)
+        self.assertIn("valid reply recipient", public["send_block_reason"])
 
     def test_matter_retention_prunes_old_closed_uploads(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -2265,7 +2409,10 @@ class ServerTests(unittest.TestCase):
                 status, payload = self.request("POST", f"/api/matters/{mid}/reviewed", body={"reviewed": True})
                 self.assertEqual(status, 200)
                 self.assertTrue(payload["matter"]["human_reviewed"])
-                self.assertNotIn("send_block_reason", payload["matter"])
+                self.assertEqual(
+                    payload["matter"]["send_block_reason"],
+                    "Matter does not have a valid reply recipient email address.",
+                )
 
                 # A fresh review supersedes the human sign-off.
                 matter_store.update_matter_review(mid, review_result, {})
@@ -3178,7 +3325,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "Outbound Gmail account mismatch.")
-        validate_ready.assert_called_once_with(matter)
+        validate_ready.assert_called_once_with(matter, to=None)
         build_matter_redline.assert_not_called()
 
     def test_gmail_send_error_status_does_not_treat_generic_mismatch_as_conflict(self):
@@ -3214,6 +3361,63 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Matter does not have a valid reply recipient email address.")
         validate_ready.assert_not_called()
         build_matter_redline.assert_not_called()
+
+    def test_gmail_send_redline_accepts_manual_recipient_for_missing_reply(self):
+        matter = {
+            "id": "matter_manual_reply",
+            "human_reviewed": True,
+            "sender": "Manual upload",
+            "subject": "NDA",
+            "review_result": {
+                "overall_status": "needs_redline",
+                "requirements_needs_review": 0,
+            },
+        }
+        redline_export = server_module.redline_export_service.RedlineExport(
+            data=b"redline docx",
+            filename="NDA-redlined.docx",
+        )
+        sent = {
+            "message_id": "msg_outbound",
+            "outbound_account": "outbound@example.com",
+            "sent_at": "2026-06-04T09:30:00+00:00",
+            "subject": "Redline for NDA",
+            "thread_id": "thread_outbound",
+            "to": "counterparty@example.com",
+        }
+        updated_matter = {
+            **matter,
+            "board_column": "redline_ready",
+            "last_outbound_to": "counterparty@example.com",
+        }
+
+        with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+            with patch.object(server_module.app_settings, "gmail_role_enabled", return_value=True):
+                with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}) as validate_ready:
+                    with patch.object(server_module.redline_export_service, "build_matter_redline", return_value=redline_export) as build_matter_redline:
+                        with patch.object(server_module.gmail_integration, "send_redline_email", return_value=sent) as send_redline_email:
+                            with patch.object(server_module.matter_store, "update_matter_fields", return_value=updated_matter) as update_matter_fields:
+                                status, payload = self.request(
+                                    "POST",
+                                    "/api/gmail/send-redline",
+                                    {
+                                        "matter_id": "matter_manual_reply",
+                                        "confirm_send": True,
+                                        "to": "Counterparty <counterparty@example.com>",
+                                    },
+                                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["sent"]["to"], "counterparty@example.com")
+        build_matter_redline.assert_called_once()
+        validate_ready.assert_called_once_with(
+            matter,
+            to="counterparty@example.com",
+        )
+        send_redline_email.assert_called_once()
+        self.assertEqual(send_redline_email.call_args.kwargs["to"], "counterparty@example.com")
+        update_matter_fields.assert_called_once()
+        self.assertEqual(update_matter_fields.call_args.args[1]["last_outbound_to"], "counterparty@example.com")
 
     def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
         with tempfile.TemporaryDirectory() as token_dir:
@@ -3462,6 +3666,7 @@ class ServerTests(unittest.TestCase):
         self.assertGreater(len(attachment_bytes), 1000)
         self.assertEqual(send_redline_email.call_args.kwargs["subject"], "Aspora redline Update")
         self.assertEqual(send_redline_email.call_args.kwargs["body"], "Attached redline.\nThanks.")
+        self.assertEqual(send_redline_email.call_args.kwargs["to"], None)
 
     def test_gmail_send_redline_applies_review_export_decisions(self):
         source_docx = make_docx([
@@ -3616,6 +3821,10 @@ class ServerTests(unittest.TestCase):
         redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
         self.assertEqual(redlines_by_clause["governing_law"]["action"], "insert_after_paragraph")
         self.assertIn("England and Wales", redlines_by_clause["governing_law"]["insert_text"])
+        self.assertEqual(
+            [option["label"] for option in redlines_by_clause["governing_law"]["template_options"]],
+            ["India", "Delaware", "England and Wales", "DIFC"],
+        )
         self.assertEqual(redlines_by_clause["term_and_survival"]["action"], "insert_after_paragraph")
         self.assertIn("up to five years", redlines_by_clause["term_and_survival"]["insert_text"])
         self.assertEqual(redlines_by_clause["signatures"]["action"], "insert_after_paragraph")

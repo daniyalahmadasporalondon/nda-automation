@@ -29,6 +29,7 @@ const AppState = (() => {
       redlineTemplateSelections: {},
       redlineDraft: null,
       redlineDraftDirty: false,
+      reviewedClauseIds: {},
       pendingAiSecondOpinionClauseId: null,
       aiSecondOpinionErrors: {},
       aiDraftValidations: {},

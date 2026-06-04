@@ -93,7 +93,20 @@ def test_updates_stage_fields_redline_review():
     assert reviewed["review_result"] == {"clauses": []}
     assert reviewed["triage_status"] == "pass"
 
+    ai_reviewed = repo.update_matter_ai_first_review(
+        matter_id,
+        {"review_mode": "ai_first_compat", "clauses": []},
+        {"status": "completed", "mode": "ai_first_assessor"},
+    )
+    assert ai_reviewed["ai_first_review_result"] == {"review_mode": "ai_first_compat", "clauses": []}
+    assert ai_reviewed["ai_first_review_metadata"]["status"] == "completed"
+    assert ai_reviewed["ai_first_review_metadata"]["mode"] == "ai_first_assessor"
+    assert "stored_at" in ai_reviewed["ai_first_review_metadata"]
+    assert ai_reviewed["review_result"] == {"clauses": []}
+    assert ai_reviewed["triage_status"] == "pass"
+
     assert repo.update_matter_stage("matter_missing", "intake") is None
+    assert repo.update_matter_ai_first_review("matter_missing", {}, {}) is None
 
 
 def test_delete_and_reset():

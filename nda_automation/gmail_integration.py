@@ -314,8 +314,9 @@ def send_redline_email(
     *,
     body: str | None = None,
     subject: str | None = None,
+    to: str | None = None,
 ) -> dict[str, str]:
-    recipient, service, outbound_account = _outbound_send_context(matter)
+    recipient, service, outbound_account = _outbound_send_context(matter, recipient_override=to)
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
     message = EmailMessage()
     message["To"] = recipient
@@ -350,13 +351,13 @@ def send_redline_email(
     }
 
 
-def validate_outbound_send_ready(matter: dict[str, Any]) -> dict[str, str]:
-    recipient, _service, outbound_account = _outbound_send_context(matter)
+def validate_outbound_send_ready(matter: dict[str, Any], *, to: str | None = None) -> dict[str, str]:
+    recipient, _service, outbound_account = _outbound_send_context(matter, recipient_override=to)
     return {"outbound_account": outbound_account, "to": recipient}
 
 
-def _outbound_send_context(matter: dict[str, Any]) -> tuple[str, Any, str]:
-    recipient = matter_reply_recipient(matter)
+def _outbound_send_context(matter: dict[str, Any], *, recipient_override: str | None = None) -> tuple[str, Any, str]:
+    recipient = recipient_email(recipient_override) or matter_reply_recipient(matter)
     if not recipient:
         raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
     if not app_settings.gmail_role_enabled("outbound"):

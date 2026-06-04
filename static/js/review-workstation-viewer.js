@@ -124,6 +124,11 @@ function undoLastViewerEdit() {
     return;
   }
 
+  if (lastEdit.type === "redline_export_decision") {
+    restoreRedlineExportDecision(lastEdit);
+    return;
+  }
+
   const paragraph = state.reviewParagraphs.find((item) => item.id === lastEdit.paragraphId);
   if (!paragraph) {
     updateReviewUndoButtonState();
@@ -168,6 +173,26 @@ function restoreRedlineTemplateSelection(historyEntry) {
     state.redlineTemplateSelections[historyEntry.editId] = historyEntry.previousOptionId;
   } else {
     delete state.redlineTemplateSelections[historyEntry.editId];
+  }
+  const edit = state.reviewRedlines.find((item) => item.id === historyEntry.editId);
+  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
+  markRedlineDraftDirty();
+  renderStudioResult({ clauses: state.reviewClauses });
+  setFileMeta("Undid clause suggestion change");
+  studioResultMeta.textContent = "Clause suggestion change undone.";
+  updateExportButtonState();
+  updateReviewUndoButtonState();
+}
+
+function restoreRedlineExportDecision(historyEntry) {
+  if (!historyEntry.editId) {
+    updateReviewUndoButtonState();
+    return;
+  }
+  if (historyEntry.hadPrevious) {
+    state.exportRedlineDecisions[historyEntry.editId] = Boolean(historyEntry.previousIncluded);
+  } else {
+    delete state.exportRedlineDecisions[historyEntry.editId];
   }
   const edit = state.reviewRedlines.find((item) => item.id === historyEntry.editId);
   if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;

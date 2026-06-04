@@ -93,6 +93,8 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
         )
     elif matter_needs_human_review(matter) and not matter.get("human_reviewed"):
         send_block_reason = "Matter needs human review before a redline can be sent."
+    elif not recipient:
+        send_block_reason = "Matter does not have a valid reply recipient email address."
     public = {
         key: value
         for key, value in matter.items()
@@ -154,6 +156,12 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
         review_payload["review_result"] = review_result_with_structure(review_result, extracted_text)
+    ai_first_review_metadata = matter.get("ai_first_review_metadata")
+    if isinstance(ai_first_review_metadata, dict):
+        review_payload["ai_first_review_metadata"] = ai_first_review_metadata
+    ai_first_review_result = matter.get("ai_first_review_result")
+    if isinstance(ai_first_review_result, dict):
+        review_payload["ai_first_review_result"] = review_result_with_structure(ai_first_review_result, extracted_text)
     redline_draft = matter.get("redline_draft")
     if isinstance(redline_draft, dict):
         review_payload["redline_draft"] = redline_draft

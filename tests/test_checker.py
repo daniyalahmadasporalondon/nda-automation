@@ -2269,6 +2269,43 @@ class CheckerTests(unittest.TestCase):
                     ["p1"],
                 )
 
+    def test_non_circumvention_flags_competing_service_substitute_purpose(self):
+        result = review_nda(
+            "NO LICENSE: The Receiving Party agrees that the Disclosing Party shall remain the exclusive owner "
+            "of the Confidential Information. Both the Parties agree not to use any Confidential Information "
+            "as a basis upon which to develop or have a third party develop a competing service."
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "check")
+        self.assertEqual(non_circumvention["decision"], "fail")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], ["p1"])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+            ["p1"],
+        )
+        redline = self.redline_for_clause(result, "non_circumvention")
+        self.assertEqual(redline["paragraph_id"], "p1")
+        self.assertEqual(redline["action"], "delete_paragraph")
+
+    def test_non_circumvention_ignores_governing_law_exclusive_jurisdiction(self):
+        result = review_nda(
+            "GOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and interpreted "
+            "in accordance with laws of India. The Parties irrevocably agree to submit to the exclusive "
+            "jurisdiction of the courts in New Delhi, India in relation to any action or proceeding "
+            "concerning or arising out of this Agreement."
+        )
+
+        non_circumvention = next(clause for clause in result["clauses"] if clause["id"] == "non_circumvention")
+        self.assertEqual(non_circumvention["status"], "not_present")
+        self.assertEqual(non_circumvention["decision"], "pass")
+        self.assertEqual(non_circumvention["matched_paragraph_ids"], [])
+        self.assertEqual(
+            non_circumvention["non_circumvention_analysis"]["prohibited_paragraph_ids"],
+            [],
+        )
+        self.assertFalse(self.redlines_for_clause(result, "non_circumvention"))
+
     def test_non_circumvention_paraphrased_introduced_party_reference_needs_review(self):
         result = review_nda(
             "The Recipient may contact parties introduced by the Company solely to evaluate the Purpose."
