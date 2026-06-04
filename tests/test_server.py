@@ -1052,11 +1052,11 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(matter_store.os, "fsync", wraps=matter_store.os.fsync) as fsync:
-                    matter_store._save_matters([{"id": "matter_1"}])
+                    matter_store._save_matter_record({"id": "matter_1"})
 
-                saved = json.loads(matter_store.MATTERS_PATH.read_text(encoding="utf-8"))
+                saved = json.loads((server_module.Path(data_dir) / "matters" / "matter_1.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(saved, [{"id": "matter_1"}])
+        self.assertEqual(saved, {"id": "matter_1"})
         self.assertGreaterEqual(fsync.call_count, 1)
 
     def test_app_settings_save_flushes_parent_directory(self):
@@ -2217,7 +2217,7 @@ class ServerTests(unittest.TestCase):
                     triage={},
                 )
                 with (
-                    patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("save failed")),
+                    patch.object(matter_store, "_delete_matter_record", side_effect=matter_store.MatterStoreError("save failed")),
                     patch.object(matter_store, "_delete_stored_document") as delete_stored_document,
                 ):
                     with self.assertRaisesRegex(matter_store.MatterStoreError, "save failed"):
@@ -2462,7 +2462,7 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                with patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("boom")):
+                with patch.object(matter_store, "_save_matter_record", side_effect=matter_store.MatterStoreError("boom")):
                     with self.assertRaises(matter_store.MatterStoreError):
                         matter_store.create_matter(
                             source_filename="orphan.docx",
@@ -2488,7 +2488,7 @@ class ServerTests(unittest.TestCase):
                         triage={},
                     )
                     first_path = matter_store.UPLOADS_DIR / first["stored_filename"]
-                    with patch.object(matter_store, "_save_matters", side_effect=matter_store.MatterStoreError("boom")):
+                    with patch.object(matter_store, "_save_matter_record", side_effect=matter_store.MatterStoreError("boom")):
                         with self.assertRaises(matter_store.MatterStoreError):
                             matter_store.create_matter(
                                 source_filename="second.docx",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import hashlib
 import json
 import os
@@ -25,6 +25,7 @@ MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
 DEFAULT_MAX_STORED_MATTERS = 250
+MATTER_RECORDS_DIRNAME = "matters"
 PRUNED_ARCHIVE_DIRNAME = "pruned-matters"
 MAX_SOURCE_FILENAME_LENGTH = 180
 GMAIL_METADATA_FIELDS = (
@@ -92,6 +93,11 @@ def export_matters_backup(owner_user_id: str = "") -> dict[str, Any]:
 
 def get_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
     with _locked_store():
+        if not MATTERS_PATH.is_file():
+            matter = _load_matter_record_by_id(matter_id)
+            if matter is not None and _matter_owner_matches(matter, owner_user_id):
+                return matter
+            return None
         for matter in _load_matters():
             if matter.get("id") == matter_id and _matter_owner_matches(matter, owner_user_id):
                 return matter
@@ -153,19 +159,18 @@ def find_gmail_attachment(
 def update_matter_stage(matter_id: str, board_column: str, owner_user_id: str = "") -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                "board_column": board_column,
-                "status": "closed" if board_column == "signed_closed" else "active",
-                "updated_at": now,
-            }
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "board_column": board_column,
+            "status": "closed" if board_column == "signed_closed" else "active",
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
@@ -176,20 +181,19 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any], owner_user_id: 
 
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                **cleaned_fields,
-                "updated_at": now,
-            }
-            if "board_column" in cleaned_fields and "status" not in cleaned_fields:
-                updated_matter["status"] = "closed" if cleaned_fields["board_column"] == "signed_closed" else "active"
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            **cleaned_fields,
+            "updated_at": now,
+        }
+        if "board_column" in cleaned_fields and "status" not in cleaned_fields:
+            updated_matter["status"] = "closed" if cleaned_fields["board_column"] == "signed_closed" else "active"
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
@@ -200,21 +204,20 @@ def update_redline_draft(
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                "updated_at": now,
-            }
-            if redline_draft is None:
-                updated_matter.pop("redline_draft", None)
-            else:
-                updated_matter["redline_draft"] = redline_draft
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "updated_at": now,
+        }
+        if redline_draft is None:
+            updated_matter.pop("redline_draft", None)
+        else:
+            updated_matter["redline_draft"] = redline_draft
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
@@ -226,22 +229,21 @@ def update_matter_review(
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                "review_result": review_result,
-                **triage,
-                # A fresh review supersedes any prior human sign-off.
-                "human_reviewed": False,
-                "updated_at": now,
-            }
-            updated_matter.pop("redline_draft", None)
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "review_result": review_result,
+            **triage,
+            # A fresh review supersedes any prior human sign-off.
+            "human_reviewed": False,
+            "updated_at": now,
+        }
+        updated_matter.pop("redline_draft", None)
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
@@ -253,22 +255,21 @@ def update_matter_ai_first_review(
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                "ai_first_review_result": ai_first_review_result,
-                "ai_first_review_metadata": {
-                    **metadata,
-                    "stored_at": now,
-                },
-                "updated_at": now,
-            }
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "ai_first_review_result": ai_first_review_result,
+            "ai_first_review_metadata": {
+                **metadata,
+                "stored_at": now,
+            },
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
@@ -279,38 +280,34 @@ def update_matter_review_comparison(
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
-        matters = _load_matters()
-        for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
-                continue
-            updated_matter = {
-                **matter,
-                "review_comparison": {
-                    **copy.deepcopy(review_comparison),
-                    "stored_at": now,
-                },
-                "updated_at": now,
-            }
-            matters[index] = updated_matter
-            _save_matters(matters)
-            return updated_matter
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "review_comparison": {
+                **copy.deepcopy(review_comparison),
+                "stored_at": now,
+            },
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
     return None
 
 
 def reset_demo_repository(owner_user_id: str = "") -> int:
     with _locked_store():
+        _ensure_matter_records_from_legacy()
         matters = _load_matters()
         removed = [
             matter
             for matter in matters
             if _matter_owner_matches(matter, owner_user_id)
         ]
-        kept = [
-            matter
-            for matter in matters
-            if not _matter_owner_matches(matter, owner_user_id)
-        ]
-        _save_matters(kept)
+        for matter in removed:
+            _delete_matter_record(matter)
     for matter in removed:
         _delete_stored_document(matter)
     return len(removed)
@@ -318,26 +315,20 @@ def reset_demo_repository(owner_user_id: str = "") -> int:
 
 def delete_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
     with _locked_store():
-        matters = _load_matters()
-        deleted_matter = next((
-            matter
-            for matter in matters
-            if matter.get("id") == matter_id and _matter_owner_matches(matter, owner_user_id)
-        ), None)
+        _ensure_matter_records_from_legacy()
+        deleted_matter = _load_matter_record_by_id(matter_id)
+        if deleted_matter is not None and not _matter_owner_matches(deleted_matter, owner_user_id):
+            deleted_matter = None
         if deleted_matter is None:
             return None
-        kept_matters = [
-            matter
-            for matter in matters
-            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id)
-        ]
-        _save_matters(kept_matters)
+        _delete_matter_record(deleted_matter)
     _delete_stored_document(deleted_matter)
     return deleted_matter
 
 
 def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
     with _locked_store():
+        _ensure_matter_records_from_legacy()
         matters = _load_matters()
         dedupe_candidates = [
             matter
@@ -375,16 +366,14 @@ def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
         }
 
         removed: list[dict[str, Any]] = []
-        kept: list[dict[str, Any]] = []
         for matter in matters:
             if id(matter) in duplicate_member_ids and id(matter) not in winner_ids:
                 removed.append(matter)
-                continue
-            kept.append(matter)
 
         if not removed:
             return 0
-        _save_matters(kept)
+        for matter in removed:
+            _delete_matter_record(matter)
     for matter in removed:
         _delete_stored_document(matter)
     return len(removed)
@@ -442,8 +431,10 @@ def create_matter(
     }
     pruned_matters: list[dict[str, Any]] = []
     duplicate_matter: dict[str, Any] | None = None
+    saved_new_record = False
     try:
         with _locked_store():
+            _ensure_matter_records_from_legacy()
             matters = _load_matters()
             if dedupe_gmail:
                 existing_matter = _find_gmail_duplicate_unlocked(matters, metadata, owner_user_id=owner_user_id)
@@ -452,13 +443,22 @@ def create_matter(
                 else:
                     matters.append(matter)
                     matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
-                    _save_matters(matters)
+                    _save_matter_record(matter)
+                    saved_new_record = True
+                    for pruned_matter in pruned_matters:
+                        _delete_matter_record(pruned_matter)
             else:
                 matters.append(matter)
                 matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
-                _save_matters(matters)
+                _save_matter_record(matter)
+                saved_new_record = True
+                for pruned_matter in pruned_matters:
+                    _delete_matter_record(pruned_matter)
     except Exception:
         stored_path.unlink(missing_ok=True)
+        if saved_new_record:
+            with suppress(MatterStoreError, OSError):
+                _delete_matter_record(matter_id)
         raise
     if duplicate_matter is not None:
         stored_path.unlink(missing_ok=True)
@@ -483,6 +483,12 @@ def _locked_store():
 
 
 def _load_matters() -> list[dict[str, Any]]:
+    if MATTERS_PATH.is_file():
+        return _load_legacy_matters()
+    return _load_matter_records()
+
+
+def _load_legacy_matters() -> list[dict[str, Any]]:
     if not MATTERS_PATH.is_file():
         return []
     try:
@@ -498,15 +504,114 @@ def _load_matters() -> list[dict[str, Any]]:
 
 
 def _save_matters(matters: list[dict[str, Any]]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    temporary_path = MATTERS_PATH.with_suffix(".json.tmp")
+    _write_json_atomic(MATTERS_PATH, matters)
+
+
+def _matter_records_dir() -> Path:
+    return MATTERS_PATH.parent / MATTER_RECORDS_DIRNAME
+
+
+def _matter_record_paths() -> list[Path]:
+    records_dir = _matter_records_dir()
+    if not records_dir.is_dir():
+        return []
+    return sorted(path for path in records_dir.glob("*.json") if path.is_file())
+
+
+def _load_matter_records() -> list[dict[str, Any]]:
+    matters: list[dict[str, Any]] = []
+    for record_path in _matter_record_paths():
+        matters.append(_load_matter_record_path(record_path))
+    return matters
+
+
+def _load_matter_record_by_id(matter_id: str) -> dict[str, Any] | None:
+    cleaned_id = _clean_matter_record_id(matter_id)
+    if not cleaned_id:
+        return None
+    record_path = _matter_records_dir() / f"{cleaned_id}.json"
+    if not record_path.is_file():
+        return None
+    return _load_matter_record_path(record_path)
+
+
+def _load_matter_record_path(record_path: Path) -> dict[str, Any]:
+    try:
+        with record_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except OSError as exc:
+        raise MatterStoreError(f"Matter record could not be read: {record_path.name}.") from exc
+    except json.JSONDecodeError as exc:
+        raise MatterStoreError(f"Matter record is not valid JSON: {record_path.name}.") from exc
+    if not isinstance(payload, dict):
+        raise MatterStoreError(f"Matter record must contain a JSON object: {record_path.name}.")
+    return payload
+
+
+def _save_matter_record(matter: dict[str, Any]) -> None:
+    _ensure_matter_records_from_legacy()
+    _write_matter_record(matter)
+
+
+def _write_matter_record(matter: dict[str, Any]) -> None:
+    matter_id = _clean_matter_record_id(matter.get("id"))
+    if not matter_id:
+        raise MatterStoreError("Matter record must include an id.")
+    _write_json_atomic(_matter_records_dir() / f"{matter_id}.json", matter)
+
+
+def _delete_matter_record(matter: dict[str, Any] | str) -> None:
+    matter_id = _clean_matter_record_id(matter.get("id") if isinstance(matter, dict) else matter)
+    if not matter_id:
+        raise MatterStoreError("Matter record must include an id.")
+    record_path = _matter_records_dir() / f"{matter_id}.json"
+    try:
+        record_path.unlink(missing_ok=True)
+        _fsync_directory(record_path.parent)
+    except OSError as exc:
+        raise MatterStoreError("Matter record could not be deleted.") from exc
+
+
+def _ensure_matter_records_from_legacy() -> None:
+    if not MATTERS_PATH.is_file():
+        _matter_records_dir().mkdir(parents=True, exist_ok=True)
+        return
+
+    legacy_matters = _load_legacy_matters()
+    _matter_records_dir().mkdir(parents=True, exist_ok=True)
+    for matter in legacy_matters:
+        if isinstance(matter, dict):
+            _write_matter_record(matter)
+
+    archive_path = _legacy_matters_archive_path()
+    try:
+        MATTERS_PATH.replace(archive_path)
+        _fsync_directory(MATTERS_PATH.parent)
+    except OSError as exc:
+        raise MatterStoreError("Legacy matter store could not be archived after migration.") from exc
+
+
+def _legacy_matters_archive_path() -> Path:
+    base_path = MATTERS_PATH.with_name(f"{MATTERS_PATH.name}.legacy")
+    if not base_path.exists():
+        return base_path
+    return MATTERS_PATH.with_name(f"{MATTERS_PATH.name}.legacy-{uuid.uuid4().hex[:8]}")
+
+
+def _clean_matter_record_id(value: object) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip())[:160].strip("-")
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.tmp")
     with temporary_path.open("w", encoding="utf-8") as handle:
-        json.dump(matters, handle, indent=2)
+        json.dump(payload, handle, indent=2)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    temporary_path.replace(MATTERS_PATH)
-    _fsync_directory(DATA_DIR)
+    temporary_path.replace(path)
+    _fsync_directory(path.parent)
 
 
 def _fsync_directory(path: Path) -> None:

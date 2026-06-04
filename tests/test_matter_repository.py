@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
+from unittest.mock import patch
 
 from nda_automation import matter_store
 from nda_automation.matter_repository import (
@@ -229,6 +230,78 @@ def test_disk_inmemory_parity(tmp_path, monkeypatch):
 
     assert disk.get_source_document_bytes(disk_matter) == b"shared bytes"
     assert mem.get_source_document_bytes(mem_matter) == b"shared bytes"
+
+
+def test_disk_store_migrates_legacy_matters_json_to_record_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
+    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
+    legacy_matter = {
+        "id": "matter_legacy",
+        "created_at": "2026-06-01T00:00:00+00:00",
+        "updated_at": "2026-06-01T00:00:00+00:00",
+        "source_filename": "Legacy NDA.docx",
+        "stored_filename": "matter_legacy-Legacy-NDA.docx",
+        "board_column": "gmail_demo",
+        "status": "active",
+    }
+    matter_store._save_matters([legacy_matter])
+    repo = DiskMatterRepository()
+
+    updated = repo.update_matter_stage("matter_legacy", "in_review")
+
+    record_path = tmp_path / "matters" / "matter_legacy.json"
+    assert updated["board_column"] == "in_review"
+    assert record_path.is_file()
+    assert not matter_store.MATTERS_PATH.exists()
+    assert (tmp_path / "matters.json.legacy").is_file()
+    assert repo.get_matter("matter_legacy")["board_column"] == "in_review"
+
+
+def test_disk_store_prefers_legacy_file_until_migration_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
+    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
+    legacy_matter = {
+        "id": "matter_legacy",
+        "created_at": "2026-06-01T00:00:00+00:00",
+        "updated_at": "2026-06-01T00:00:00+00:00",
+        "source_filename": "Legacy NDA.docx",
+        "stored_filename": "matter_legacy-Legacy-NDA.docx",
+        "board_column": "gmail_demo",
+        "status": "active",
+    }
+    matter_store._save_matters([legacy_matter])
+    (tmp_path / "matters").mkdir()
+    matter_store._write_matter_record({
+        **legacy_matter,
+        "id": "matter_partial",
+        "board_column": "signed_closed",
+    })
+    repo = DiskMatterRepository()
+
+    listed_before_migration = repo.list_matters()
+    updated = repo.update_matter_stage("matter_legacy", "in_review")
+
+    assert [matter["id"] for matter in listed_before_migration] == ["matter_legacy"]
+    assert updated["board_column"] == "in_review"
+    assert repo.get_matter("matter_legacy")["board_column"] == "in_review"
+
+
+def test_disk_create_update_delete_do_not_use_monolithic_save(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
+    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
+    repo = DiskMatterRepository()
+
+    with patch.object(matter_store, "_save_matters", side_effect=AssertionError("monolithic save used")):
+        matter = repo.create_matter(**_create_kwargs())
+        updated = repo.update_matter_stage(matter["id"], "in_review")
+        deleted = repo.delete_matter(matter["id"])
+
+    assert matter["id"] == updated["id"] == deleted["id"]
+    assert not matter_store.MATTERS_PATH.exists()
+    assert list((tmp_path / "matters").glob("*.json")) == []
 
 
 def test_review_comparison_update_isolates_nested_payload_for_both_adapters(tmp_path, monkeypatch):
