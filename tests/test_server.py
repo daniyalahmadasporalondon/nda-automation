@@ -3967,6 +3967,32 @@ class ServerTests(unittest.TestCase):
         self.assertIn("NDA", imported["gmail_detection_terms"])
         self.assertIn("non-disclosure agreement", imported["gmail_detection_terms"])
 
+    def test_attachment_nda_validation_accepts_nda_with_business_preamble(self):
+        # Regression: a genuine NDA that recites the deal's business context
+        # (proposal, SOW, pricing, programme details) must not be vetoed by
+        # collateral signals when it carries a strong NDA content basis.
+        paragraphs = [
+            {"text": "Mutual Non-Disclosure Agreement"},
+            {"text": "This Agreement is between the Disclosing Party and the Receiving Party."},
+            {"text": (
+                "It relates to the project proposal, statement of work (SOW), pricing, "
+                "and programme manager expectations for the engagement."
+            )},
+            {"text": "The Receiving Party shall not disclose the Confidential Information."},
+        ]
+        validation = gmail_integration._attachment_nda_validation("Agreement.pdf", paragraphs)
+        self.assertTrue(validation["accepted"], validation.get("reason"))
+
+    def test_attachment_nda_validation_still_rejects_pure_collateral(self):
+        # Guard the other side: a document with only collateral signals and no NDA
+        # content basis is still rejected, so the fix does not open false-positives.
+        paragraphs = [
+            {"text": "Project Proposal Form"},
+            {"text": "Programme manager expectations, pricing, statement of work (SOW), and questionnaire."},
+        ]
+        validation = gmail_integration._attachment_nda_validation("Project Proposal Form.docx", paragraphs)
+        self.assertFalse(validation["accepted"], validation.get("reason"))
+
     def test_gmail_import_uses_qwen_selector_for_multi_attachment_candidates(self):
         def inline(value):
             return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")

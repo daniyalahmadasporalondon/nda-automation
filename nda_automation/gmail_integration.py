@@ -1354,7 +1354,14 @@ def _attachment_nda_validation(
     collateral_score, collateral_reasons = _attachment_collateral_score(filename, text)
     has_role_pair = _text_matches(text, r"\bdisclosing\s+party\b") and _text_matches(text, r"\breceiving\s+party\b")
     message_signal = _metadata_has_explicit_nda_signal(message_metadata)
-    score = max(0, filename_score + content_score - collateral_score)
+    # A genuine NDA frequently recites the deal's business context (proposal, SOW,
+    # pricing, programme details, etc.), so collateral signals must not veto an
+    # attachment that already carries a strong NDA content basis. Apply the collateral
+    # penalty only when the document lacks that basis, so true collateral (proposals,
+    # questionnaires) is still rejected while real NDAs with business preamble are not.
+    strong_nda_content = strong_content or has_role_pair
+    effective_collateral_score = 0 if strong_nda_content else collateral_score
+    score = max(0, filename_score + content_score - effective_collateral_score)
     has_content_basis = (
         strong_content
         or has_role_pair
