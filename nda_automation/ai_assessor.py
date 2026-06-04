@@ -15,7 +15,6 @@ from .ai_assessment_contract import (
 from .ai_assessment_prompt import (
     AI_ASSESSMENT_PROMPT_VERSION,
     AI_ASSESSMENT_RESPONSE_SCHEMA,
-    AI_ASSESSMENT_SYSTEM_PROMPT,
     build_ai_assessment_packet,
     build_ai_assessment_prompt,
 )

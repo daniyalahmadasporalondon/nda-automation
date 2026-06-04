@@ -19,7 +19,6 @@ from .checks.common import (
     _year_count_label,
 )
 from .redline_actions import (
-    REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
