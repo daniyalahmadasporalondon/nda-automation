@@ -26,6 +26,7 @@ from ..ingestion_service import extract_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
 from ..review_comparison import ReviewComparisonError, compare_nda_reviews
 from ..review_engine import ActiveReviewEngineError
+from .common import request_owner_user_id
 
 
 def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
@@ -228,6 +229,7 @@ def handle_review_docx_export(handler) -> None:
                 str(payload.get("matter_id", "")).strip(),
                 payload,
                 persist=True,
+                owner_user_id=request_owner_user_id(handler),
             )
         else:
             redline_export = redline_export_service.build_review_export(payload, export_text, title=title)

@@ -22,7 +22,7 @@ from ..pdf_text import PdfExtractionError
 from ..review_comparison import ReviewComparisonError, compare_nda_reviews
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..triage import triage_review_result
-from .common import parse_matter_id
+from .common import parse_matter_id, request_owner_user_id
 
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
@@ -32,7 +32,10 @@ MAX_REDLINE_DRAFT_ITEMS = 200
 
 def handle_matter_list(handler, *, send_body: bool = True) -> None:
     try:
-        handler._send_json({"matters": matter_view.public_matters(matter_store.list_matters())}, send_body=send_body)
+        handler._send_json(
+            {"matters": matter_view.public_matters(matter_store.list_matters(request_owner_user_id(handler)))},
+            send_body=send_body,
+        )
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
 
@@ -67,7 +70,7 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
     try:
-        matter = matter_store.get_matter(matter_id)
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
@@ -113,7 +116,7 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
     try:
-        matter = matter_store.get_matter(matter_id)
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
@@ -138,6 +141,7 @@ def refresh_stale_matter_review(matter: dict) -> dict:
         str(matter.get("id") or ""),
         review_result,
         triage,
+        owner_user_id=str(matter.get("owner_user_id") or ""),
     )
     if updated_matter is not None:
         return updated_matter
@@ -176,7 +180,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
     try:
-        matter = matter_store.get_matter(matter_id)
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except matter_store.MatterStoreError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
@@ -239,6 +243,7 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
             source_type=source_type,
             board_column=board_column,
             intake_metadata=matter_intake_metadata(payload, filename),
+            owner_user_id=request_owner_user_id(handler),
         )
     except (DocxExtractionError, PdfExtractionError, ValueError) as error:
         handler._send_json({"error": str(error)}, status=400)
@@ -294,7 +299,7 @@ def handle_matter_stage_update(handler, path: str) -> None:
         handler._send_json({"error": "Unsupported matter stage."}, status=400)
         return
 
-    matter = matter_store.update_matter_stage(matter_id, board_column)
+    matter = matter_store.update_matter_stage(matter_id, board_column, owner_user_id=request_owner_user_id(handler))
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -316,7 +321,11 @@ def handle_matter_reviewed_update(handler, path: str) -> None:
         handler._send_json({"error": "reviewed must be true or false."}, status=400)
         return
 
-    matter = matter_store.update_matter_fields(matter_id, {"human_reviewed": reviewed})
+    matter = matter_store.update_matter_fields(
+        matter_id,
+        {"human_reviewed": reviewed},
+        owner_user_id=request_owner_user_id(handler),
+    )
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -340,7 +349,7 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         )
         return
 
-    matter = matter_store.get_matter(matter_id)
+    matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -373,6 +382,7 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         matter_id,
         ai_first_review_result,
         metadata,
+        owner_user_id=request_owner_user_id(handler),
     )
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
@@ -390,7 +400,7 @@ def handle_matter_review_comparison(handler, path: str) -> None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
-    matter = matter_store.get_matter(matter_id)
+    matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -409,7 +419,11 @@ def handle_matter_review_comparison(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=502)
         return
 
-    updated_matter = matter_store.update_matter_review_comparison(matter_id, review_comparison)
+    updated_matter = matter_store.update_matter_review_comparison(
+        matter_id,
+        review_comparison,
+        owner_user_id=request_owner_user_id(handler),
+    )
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -472,7 +486,11 @@ def handle_matter_redline_draft_update(handler, path: str) -> None:
         handler._send_json({"error": "Redline draft must be an object or null."}, status=400)
         return
 
-    matter = matter_store.update_redline_draft(matter_id, draft)
+    matter = matter_store.update_redline_draft(
+        matter_id,
+        draft,
+        owner_user_id=request_owner_user_id(handler),
+    )
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -546,7 +564,7 @@ def handle_matter_delete(handler, path: str) -> None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
-    matter = matter_store.delete_matter(matter_id)
+    matter = matter_store.delete_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -554,5 +572,5 @@ def handle_matter_delete(handler, path: str) -> None:
 
 
 def handle_demo_reset(handler) -> None:
-    removed_count = matter_store.reset_demo_repository()
+    removed_count = matter_store.reset_demo_repository(owner_user_id=request_owner_user_id(handler))
     handler._send_json({"removed": removed_count, "matters": []})

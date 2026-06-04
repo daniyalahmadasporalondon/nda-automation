@@ -156,14 +156,22 @@ Common environment variables:
 
 - `NDA_DATA_DIR`: directory for matter records, source uploads, app settings, and Gmail sync state.
 - `NDA_EXPORTS_DIR`: directory for persisted export downloads.
-- `NDA_REQUIRE_AUTH`: set to `true` to require HTTP Basic auth.
-- `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: Basic auth credentials.
+- `NDA_USERS_PATH`: optional path for user/session/sync history storage; hosted deployments should keep this on durable storage, for example `/var/data/users.json`.
+- `NDA_REQUIRE_AUTH`: set to `true` to require login.
+- `NDA_ALLOWED_HOSTS`: comma-separated allowed request hostnames. Set this to the Render hostname, for example `your-service.onrender.com`.
+- `NDA_GOOGLE_OAUTH_CLIENT_ID` and `NDA_GOOGLE_OAUTH_CLIENT_SECRET`: Google login credentials for per-user identity.
+- `NDA_GOOGLE_OAUTH_REDIRECT_URI`: fixed redirect URI for hosted Google login, for example `https://your-service.onrender.com/auth/google/callback`.
+- `NDA_GMAIL_OAUTH_REDIRECT_URI`: fixed redirect URI for hosted Gmail connection, for example `https://your-service.onrender.com/auth/gmail/callback`.
+- `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: optional HTTP Basic auth fallback credentials.
 - `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
 - `NDA_GMAIL_INBOUND_TOKEN_PATH`: OAuth token file for inbound Gmail sync.
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
 - `NDA_AI_MODEL`: provider model name. Use `qwen3.5-122b-a10b` for the current Alibaba/Qwen local setup, or another model your key can access.
+- `ALIBABA_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`: server-side AI review key for the selected provider.
+- `NDA_GMAIL_TRIAGE_API_KEY`: server-side key for Qwen/Groq Gmail attachment selection.
+- `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `qwen/qwen3-32b`.
 - `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
 - `NDA_AI_FIRST_FALLBACK_MODE`: optional environment pin for `fail_closed` or `deterministic`.
 - `NDA_AI_FIRST_REVIEW_ENABLED`: stores AI-first shadow/comparison results when enabled.
@@ -210,15 +218,23 @@ The production start command is:
 python -m nda_automation.server --host 0.0.0.0 --port $PORT
 ```
 
-Public deployments require HTTP Basic authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. If auth is required but credentials are missing, the server refuses to start.
+Public deployments require authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. Configure Google OAuth for per-user login, or HTTP Basic as a temporary fallback. If auth is required but no login method is configured, the server refuses to start.
 
-The only unauthenticated route is `/healthz` for platform health checks.
+Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, and `/api/auth/logout`.
+
+Signed-in Google users can connect Gmail at `/auth/gmail/start`. The Gmail OAuth flow stores per-user tokens under durable data storage, not in the legacy global Gmail token paths. For hosted per-user Gmail, leave `NDA_GMAIL_INBOUND_TOKEN_PATH` and `NDA_GMAIL_OUTBOUND_TOKEN_PATH` unset so one user's Gmail token cannot become a shared mailbox fallback.
+
+For Render, configure these Google OAuth redirect URIs in the Google Cloud OAuth client and set the matching env vars:
+
+- `https://your-service.onrender.com/auth/google/callback`
+- `https://your-service.onrender.com/auth/gmail/callback`
 
 The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
 Authenticated admins can check:
 
-- `/api/deployment/status`: auth, storage, health-check, and rate-limit shape.
+- `/api/deployment/status`: auth, Google identity, allowed host, OAuth redirect, storage, per-user Gmail mode, AI env, Gmail triage, health-check, and rate-limit shape.
+- `/api/auth/status`: current login state and public auth configuration.
 - `/api/telemetry`: non-sensitive counters such as review requests, export failures, Gmail sync failures, runtime-setting changes, and rate-limit hits.
 - `/api/matters/export`: sensitive JSON backup of matter records plus stored-document manifest. It does not embed uploaded source document bytes.
 

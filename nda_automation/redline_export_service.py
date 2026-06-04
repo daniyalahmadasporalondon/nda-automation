@@ -52,20 +52,36 @@ def build_review_export(
 
 
 def build_matter_redline(
-    matter_id: str, payload: dict | None = None, *, persist: bool = False, repository: MatterRepository | None = None
+    matter_id: str,
+    payload: dict | None = None,
+    *,
+    persist: bool = False,
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
 ) -> RedlineExport:
     payload = {**(payload or {}), "matter_id": matter_id}
     title = str(payload.get("title") or "NDA Review")
     return _build_redline_export(
-        payload, "", title=title, persist=persist, repository=repository or DiskMatterRepository()
+        payload,
+        "",
+        title=title,
+        persist=persist,
+        repository=repository or DiskMatterRepository(),
+        owner_user_id=owner_user_id,
     )
 
 
 def _build_redline_export(
-    payload: dict, fallback_text: str, *, title: str, persist: bool, repository: MatterRepository
+    payload: dict,
+    fallback_text: str,
+    *,
+    title: str,
+    persist: bool,
+    repository: MatterRepository,
+    owner_user_id: str = "",
 ) -> RedlineExport:
     review_result, source_document_bytes, source_filename = _review_result_for_export(
-        payload, fallback_text, repository=repository
+        payload, fallback_text, repository=repository, owner_user_id=owner_user_id
     )
     export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
@@ -91,11 +107,11 @@ def _build_redline_export(
 
 
 def _review_result_for_export(
-    payload: dict, fallback_text: str, *, repository: MatterRepository
+    payload: dict, fallback_text: str, *, repository: MatterRepository, owner_user_id: str = ""
 ) -> tuple[dict, bytes | None, str]:
     matter_id = payload.get("matter_id")
     if isinstance(matter_id, str) and matter_id.strip():
-        matter = repository.get_matter(matter_id.strip())
+        matter = repository.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
         if matter is None:
             raise MatterNotFoundError("Matter not found.")
         review_result = matter.get("review_result")

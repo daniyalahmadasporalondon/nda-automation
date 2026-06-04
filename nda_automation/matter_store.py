@@ -63,15 +63,23 @@ class MatterStoreError(RuntimeError):
     pass
 
 
-def list_matters() -> list[dict[str, Any]]:
+def list_matters(owner_user_id: str = "") -> list[dict[str, Any]]:
     with _locked_store():
-        matters = _load_matters()
+        matters = [
+            matter
+            for matter in _load_matters()
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
     return sorted(matters, key=lambda matter: str(matter.get("created_at") or ""), reverse=True)
 
 
-def export_matters_backup() -> dict[str, Any]:
+def export_matters_backup(owner_user_id: str = "") -> dict[str, Any]:
     with _locked_store():
-        matters = _load_matters()
+        matters = [
+            matter
+            for matter in _load_matters()
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
         documents = [_stored_document_manifest(matter) for matter in matters]
     return {
         "version": 1,
@@ -82,10 +90,10 @@ def export_matters_backup() -> dict[str, Any]:
     }
 
 
-def get_matter(matter_id: str) -> dict[str, Any] | None:
+def get_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
     with _locked_store():
         for matter in _load_matters():
-            if matter.get("id") == matter_id:
+            if matter.get("id") == matter_id and _matter_owner_matches(matter, owner_user_id):
                 return matter
     return None
 
@@ -123,6 +131,7 @@ def find_gmail_attachment(
     attachment_filename: str = "",
     attachment_sha256: str = "",
     part_id: str = "",
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     if not message_id:
         return None
@@ -135,16 +144,18 @@ def find_gmail_attachment(
                 "gmail_attachment_sha256": attachment_sha256,
                 "gmail_message_id": message_id,
                 "gmail_part_id": part_id,
+                "owner_user_id": _clean_owner_user_id(owner_user_id),
             },
+            owner_user_id=owner_user_id,
         )
 
 
-def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | None:
+def update_matter_stage(matter_id: str, board_column: str, owner_user_id: str = "") -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -158,16 +169,16 @@ def update_matter_stage(matter_id: str, board_column: str) -> dict[str, Any] | N
     return None
 
 
-def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+def update_matter_fields(matter_id: str, fields: dict[str, Any], owner_user_id: str = "") -> dict[str, Any] | None:
     cleaned_fields = {key: value for key, value in fields.items() if key in MATTER_UPDATE_FIELDS}
     if not cleaned_fields:
-        return get_matter(matter_id)
+        return get_matter(matter_id, owner_user_id=owner_user_id)
 
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -182,12 +193,16 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any]) -> dict[str, An
     return None
 
 
-def update_redline_draft(matter_id: str, redline_draft: dict[str, Any] | None) -> dict[str, Any] | None:
+def update_redline_draft(
+    matter_id: str,
+    redline_draft: dict[str, Any] | None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -207,12 +222,13 @@ def update_matter_review(
     matter_id: str,
     review_result: dict[str, Any],
     triage: dict[str, Any],
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -233,12 +249,13 @@ def update_matter_ai_first_review(
     matter_id: str,
     ai_first_review_result: dict[str, Any],
     metadata: dict[str, Any],
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -258,12 +275,13 @@ def update_matter_ai_first_review(
 def update_matter_review_comparison(
     matter_id: str,
     review_comparison: dict[str, Any],
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
         matters = _load_matters()
         for index, matter in enumerate(matters):
-            if matter.get("id") != matter_id:
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
                 continue
             updated_matter = {
                 **matter,
@@ -279,32 +297,55 @@ def update_matter_review_comparison(
     return None
 
 
-def reset_demo_repository() -> int:
+def reset_demo_repository(owner_user_id: str = "") -> int:
     with _locked_store():
         matters = _load_matters()
-        _save_matters([])
-    for matter in matters:
+        removed = [
+            matter
+            for matter in matters
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
+        kept = [
+            matter
+            for matter in matters
+            if not _matter_owner_matches(matter, owner_user_id)
+        ]
+        _save_matters(kept)
+    for matter in removed:
         _delete_stored_document(matter)
-    return len(matters)
+    return len(removed)
 
 
-def delete_matter(matter_id: str) -> dict[str, Any] | None:
+def delete_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
     with _locked_store():
         matters = _load_matters()
-        deleted_matter = next((matter for matter in matters if matter.get("id") == matter_id), None)
+        deleted_matter = next((
+            matter
+            for matter in matters
+            if matter.get("id") == matter_id and _matter_owner_matches(matter, owner_user_id)
+        ), None)
         if deleted_matter is None:
             return None
-        kept_matters = [matter for matter in matters if matter.get("id") != matter_id]
+        kept_matters = [
+            matter
+            for matter in matters
+            if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id)
+        ]
         _save_matters(kept_matters)
     _delete_stored_document(deleted_matter)
     return deleted_matter
 
 
-def deduplicate_gmail_matters() -> int:
+def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
     with _locked_store():
         matters = _load_matters()
+        dedupe_candidates = [
+            matter
+            for matter in matters
+            if _matter_owner_matches(matter, owner_user_id)
+        ]
         duplicate_groups: list[list[dict[str, Any]]] = []
-        for matter in matters:
+        for matter in dedupe_candidates:
             if not _gmail_attachment_keys_for_metadata(matter):
                 continue
             matching_groups = [
@@ -360,6 +401,7 @@ def create_matter(
     board_column: str = "gmail_demo",
     intake_metadata: dict[str, Any] | None = None,
     dedupe_gmail: bool = False,
+    owner_user_id: str = "",
 ) -> dict[str, Any]:
     matter_id = f"matter_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
@@ -367,12 +409,15 @@ def create_matter(
     safe_source_name = _safe_filename(source_filename)
     stored_filename = f"{matter_id}-{safe_source_name}"
     metadata = _intake_metadata(source_filename, now, intake_metadata)
+    owner_user_id = _clean_owner_user_id(owner_user_id or metadata.get("owner_user_id"))
+    if owner_user_id:
+        metadata["owner_user_id"] = owner_user_id
     if dedupe_gmail and not metadata.get("gmail_attachment_sha256"):
         metadata["gmail_attachment_sha256"] = hashlib.sha256(document_bytes).hexdigest()
 
     if dedupe_gmail:
         with _locked_store():
-            existing_matter = _find_gmail_duplicate_unlocked(_load_matters(), metadata)
+            existing_matter = _find_gmail_duplicate_unlocked(_load_matters(), metadata, owner_user_id=owner_user_id)
             if existing_matter is not None:
                 return {**existing_matter, "_existing_gmail_duplicate": True}
 
@@ -401,7 +446,7 @@ def create_matter(
         with _locked_store():
             matters = _load_matters()
             if dedupe_gmail:
-                existing_matter = _find_gmail_duplicate_unlocked(matters, metadata)
+                existing_matter = _find_gmail_duplicate_unlocked(matters, metadata, owner_user_id=owner_user_id)
                 if existing_matter is not None:
                     duplicate_matter = {**existing_matter, "_existing_gmail_duplicate": True}
                 else:
@@ -609,10 +654,14 @@ def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
 def _find_gmail_duplicate_unlocked(
     matters: list[dict[str, Any]],
     metadata: dict[str, Any],
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     if not _gmail_attachment_keys_for_metadata(metadata):
         return None
+    owner_user_id = _clean_owner_user_id(owner_user_id or metadata.get("owner_user_id"))
     for matter in matters:
+        if not _matter_owner_matches(matter, owner_user_id):
+            continue
         if _gmail_attachments_match(metadata, matter):
             return matter
     return None
@@ -631,6 +680,17 @@ def _gmail_attachments_match(left: dict[str, Any], right: dict[str, Any]) -> boo
 
 def _gmail_attachment_filename_key(filename: str) -> str:
     return _clean_source_filename(filename).casefold() if filename else ""
+
+
+def _matter_owner_matches(matter: dict[str, Any], owner_user_id: str = "") -> bool:
+    owner_user_id = _clean_owner_user_id(owner_user_id)
+    if not owner_user_id:
+        return True
+    return _clean_owner_user_id(matter.get("owner_user_id")) == owner_user_id
+
+
+def _clean_owner_user_id(value: object) -> str:
+    return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
 
 
 def _stored_document_manifest(matter: dict[str, Any]) -> dict[str, Any] | None:
