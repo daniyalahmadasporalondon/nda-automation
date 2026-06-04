@@ -5,7 +5,15 @@ import tempfile
 from pathlib import Path
 
 from . import export_service, matter_store
-from .http_auth import AUTH_NOT_CONFIGURED_MESSAGE, _auth_required_for_host, _env_flag_enabled, _is_loopback_host
+from .http_auth import (
+    AUTH_NOT_CONFIGURED_MESSAGE,
+    _auth_method_configured,
+    _auth_required_for_host,
+    _basic_auth_configured,
+    _env_flag_enabled,
+    _google_oauth_configured,
+    _is_loopback_host,
+)
 from .rate_limit import _rate_limit_per_window
 
 DURABLE_DATA_DIR_REQUIRED_MESSAGE = "Public deployments must set NDA_DATA_DIR to a durable storage path."
@@ -16,7 +24,7 @@ EPHEMERAL_EXPORTS_DIR_MESSAGE = "NDA_EXPORTS_DIR points at ephemeral storage; us
 def _validate_public_auth(host: str) -> None:
     if not _auth_required_for_host(host):
         return
-    if not os.environ.get("NDA_AUTH_USERNAME", "").strip() or not os.environ.get("NDA_AUTH_PASSWORD", ""):
+    if not _auth_method_configured():
         raise RuntimeError(AUTH_NOT_CONFIGURED_MESSAGE)
 
 
@@ -33,7 +41,9 @@ def _validate_public_storage(host: str) -> None:
 
 def _deployment_status_for_host(host: str) -> dict[str, object]:
     auth_required = _auth_required_for_host(host)
-    auth_configured = bool(os.environ.get("NDA_AUTH_USERNAME", "").strip() and os.environ.get("NDA_AUTH_PASSWORD", ""))
+    basic_auth_configured = _basic_auth_configured()
+    google_oauth_configured = _google_oauth_configured()
+    auth_configured = basic_auth_configured or google_oauth_configured
     data_dir_configured = bool(os.environ.get("NDA_DATA_DIR"))
     data_dir_ephemeral = _is_ephemeral_storage_path(matter_store.DATA_DIR)
     exports_dir = export_service.EXPORTS_DIR
@@ -67,6 +77,8 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "public_host": not _is_loopback_host(host),
         "auth_required": auth_required,
         "auth_configured": auth_configured,
+        "basic_auth_configured": basic_auth_configured,
+        "google_oauth_configured": google_oauth_configured,
         "data_dir_configured": data_dir_configured,
         "data_dir_ephemeral": data_dir_ephemeral,
         "exports_dir_configured": exports_dir is not None,
@@ -79,11 +91,13 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
 
 
 def _deployment_auth_message(auth_required: bool, auth_configured: bool) -> str:
-    if auth_configured:
+    if _google_oauth_configured():
+        return "Google OAuth login is configured."
+    if _basic_auth_configured():
         return "HTTP Basic auth is configured."
     if auth_required:
-        return "HTTP Basic auth credentials are not configured."
-    return "HTTP Basic auth is not required for this host."
+        return "No login method is configured."
+    return "Authentication is not required for this host."
 
 
 def _deployment_data_dir_check(host: str, data_dir_configured: bool, data_dir_ephemeral: bool) -> dict[str, object]:

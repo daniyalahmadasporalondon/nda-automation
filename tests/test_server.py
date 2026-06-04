@@ -13,6 +13,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from io import BytesIO
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
@@ -133,6 +134,9 @@ class ServerTests(unittest.TestCase):
     def basic_auth_headers(self, username="nda-admin", password="secret"):
         token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {token}"}
+
+    def cookie_header(self, set_cookie):
+        return set_cookie.split(";", 1)[0]
 
     @contextmanager
     def acquired_gmail_sync_lock(self):
@@ -301,14 +305,26 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(server_module._parse_matter_id("/api/gmail/status"))
 
     def test_public_bind_requires_auth_even_without_explicit_flag(self):
-        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
+        }):
             self.assertFalse(server_module._auth_required_for_host("127.0.0.1"))
             self.assertFalse(server_module._auth_required_for_host("localhost"))
             self.assertTrue(server_module._auth_required_for_host("0.0.0.0"))
             self.assertTrue(server_module._auth_required_for_host("::"))
 
     def test_public_bind_refuses_startup_without_auth_credentials(self):
-        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
+        }):
             with self.assertRaisesRegex(RuntimeError, "Authentication is required"):
                 server_module._validate_public_auth("0.0.0.0")
 
@@ -316,8 +332,31 @@ class ServerTests(unittest.TestCase):
         with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "", "NDA_AUTH_USERNAME": "nda-admin", "NDA_AUTH_PASSWORD": "secret"}):
             server_module._validate_public_auth("0.0.0.0")
 
+    def test_public_bind_accepts_startup_with_google_oauth(self):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "client-id",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "client-secret",
+        }):
+            server_module._validate_public_auth("0.0.0.0")
+            deployment = server_module._deployment_status_for_host("0.0.0.0")
+
+        checks = {check["id"]: check for check in deployment["checks"]}
+        self.assertTrue(checks["auth"]["ok"])
+        self.assertTrue(deployment["auth_configured"])
+        self.assertTrue(deployment["google_oauth_configured"])
+        self.assertFalse(deployment["basic_auth_configured"])
+
     def test_required_auth_fails_closed_without_credentials(self):
-        with patch.dict(os.environ, {"NDA_REQUIRE_AUTH": "true", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}):
+        with patch.dict(os.environ, {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
+        }):
             health_status, health_payload = self.request("GET", "/healthz")
             matter_status, matter_payload = self.request("GET", "/api/matters")
             matter_detail_status, matter_detail_payload = self.request("GET", "/api/matters/matter_1")
@@ -361,6 +400,11 @@ class ServerTests(unittest.TestCase):
                 "/api/matters",
                 headers=self.basic_auth_headers(),
             )
+            status_auth_status, status_auth_payload = self.request(
+                "GET",
+                "/api/auth/status",
+                headers=self.basic_auth_headers(),
+            )
 
         self.assertEqual(unauth_status, 401)
         self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
@@ -377,6 +421,111 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(review_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
         self.assertEqual(authed_status, 200)
         self.assertIn("matters", authed_payload)
+        self.assertEqual(status_auth_status, 200)
+        self.assertTrue(status_auth_payload["authenticated"])
+        self.assertEqual(status_auth_payload["user"]["provider"], "basic")
+        self.assertEqual(status_auth_payload["user"]["id"], "nda-admin")
+
+    def test_google_oauth_session_authenticates_and_scopes_matter_owner(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+            "The Recipient shall keep Confidential Information confidential for five years.",
+        ])
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_GOOGLE_OAUTH_REDIRECT_URI": "http://127.0.0.1/auth/google/callback",
+            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+        }
+        google_profile = {
+            "aud": "google-client",
+            "sub": "google-user-123",
+            "email": "alice@example.com",
+            "name": "Alice Example",
+            "picture": "https://example.com/alice.png",
+            "email_verified": "true",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                unauth_status, unauth_payload = self.request("GET", "/api/matters")
+                status_status, status_payload = self.request("GET", "/api/auth/status")
+                start_status, start_payload, start_headers = self.request_with_headers(
+                    "GET",
+                    "/auth/google/start?next=/api/matters",
+                )
+                start_location = start_headers["Location"]
+                parsed_start = urlparse(start_location)
+                state = parse_qs(parsed_start.query)["state"][0]
+                state_cookie = self.cookie_header(start_headers["Set-Cookie"])
+
+                with patch("nda_automation.routes.auth.google_identity.exchange_google_code", return_value={"id_token": "id-token"}), patch(
+                    "nda_automation.routes.auth.google_identity.verify_google_id_token",
+                    return_value=google_profile,
+                ):
+                    callback_status, callback_payload, callback_headers = self.request_with_headers(
+                        "GET",
+                        f"/auth/google/callback?code=auth-code&state={state}",
+                        headers={"Cookie": state_cookie},
+                    )
+
+                session_cookie = self.cookie_header(callback_headers["Set-Cookie"])
+                authed_status, authed_payload = self.request(
+                    "GET",
+                    "/api/auth/status",
+                    headers={"Cookie": session_cookie},
+                )
+                create_status, create_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Alice Google NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                    },
+                    headers={"Cookie": session_cookie},
+                )
+                matter = create_payload["matter"]
+                stored_matter = matter_store.get_matter(matter["id"], owner_user_id="google:google-user-123")
+                logout_status, logout_payload, logout_headers = self.request_with_headers(
+                    "POST",
+                    "/api/auth/logout",
+                    headers={"Cookie": session_cookie},
+                )
+                after_logout_status, after_logout_payload = self.request(
+                    "GET",
+                    "/api/matters",
+                    headers={"Cookie": self.cookie_header(logout_headers["Set-Cookie"])},
+                )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["login_url"], "/login")
+        self.assertEqual(status_status, 200)
+        self.assertFalse(status_payload["authenticated"])
+        self.assertEqual(start_status, 302)
+        self.assertEqual(start_payload, b"")
+        self.assertEqual(parsed_start.scheme, "https")
+        self.assertEqual(parsed_start.netloc, "accounts.google.com")
+        self.assertEqual(parse_qs(parsed_start.query)["client_id"], ["google-client"])
+        self.assertEqual(parse_qs(parsed_start.query)["redirect_uri"], ["http://127.0.0.1/auth/google/callback"])
+        self.assertEqual(callback_status, 302)
+        self.assertEqual(callback_payload, b"")
+        self.assertEqual(callback_headers["Location"], "/api/matters")
+        self.assertIn("nda_session=", callback_headers["Set-Cookie"])
+        self.assertEqual(authed_status, 200)
+        self.assertTrue(authed_payload["authenticated"])
+        self.assertEqual(authed_payload["user"]["id"], "google:google-user-123")
+        self.assertEqual(authed_payload["user"]["email"], "alice@example.com")
+        self.assertEqual(create_status, 201)
+        self.assertIsNotNone(stored_matter)
+        self.assertEqual(stored_matter["owner_user_id"], "google:google-user-123")
+        self.assertEqual(logout_status, 200)
+        self.assertFalse(logout_payload["authenticated"])
+        self.assertEqual(after_logout_status, 401)
+        self.assertEqual(after_logout_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
 
     def test_matter_backup_export_requires_auth_when_auth_is_enabled(self):
         auth_env = {
@@ -568,6 +717,8 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "",
             "NDA_AUTH_USERNAME": "",
             "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
             "NDA_DATA_DIR": "",
             "NDA_RATE_LIMIT_PER_MINUTE": "0",
             "NDA_ALLOW_EPHEMERAL_DATA": "",
@@ -596,12 +747,14 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "",
             "NDA_AUTH_USERNAME": "",
             "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "",
         }):
             deployment = server_module._deployment_status_for_host("127.0.0.1")
 
         checks = {check["id"]: check for check in deployment["checks"]}
         self.assertTrue(checks["auth"]["ok"])
-        self.assertEqual(checks["auth"]["message"], "HTTP Basic auth is not required for this host.")
+        self.assertEqual(checks["auth"]["message"], "Authentication is not required for this host.")
 
     def test_public_bind_requires_configured_durable_data_dir(self):
         with patch.dict(os.environ, {"NDA_DATA_DIR": "", "NDA_ALLOW_EPHEMERAL_DATA": ""}):

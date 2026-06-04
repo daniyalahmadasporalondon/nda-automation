@@ -7,7 +7,7 @@ import os
 
 AUTH_REALM = "nda-automation"
 AUTH_REQUIRED_MESSAGE = "Authentication required."
-AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but NDA_AUTH_USERNAME and NDA_AUTH_PASSWORD are not configured."
+AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but neither Google OAuth nor HTTP Basic auth is configured."
 
 
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:
@@ -41,9 +41,24 @@ def _basic_auth_credentials(header: str) -> tuple[str, str] | None:
 def _auth_required_for_host(host: str) -> bool:
     if _env_flag_enabled("NDA_REQUIRE_AUTH"):
         return True
-    if os.environ.get("NDA_AUTH_USERNAME") or os.environ.get("NDA_AUTH_PASSWORD"):
+    if _basic_auth_configured() or _google_oauth_configured():
         return True
     return not _is_loopback_host(host)
+
+
+def _auth_method_configured() -> bool:
+    return _basic_auth_configured() or _google_oauth_configured()
+
+
+def _basic_auth_configured() -> bool:
+    return bool(os.environ.get("NDA_AUTH_USERNAME", "").strip() and os.environ.get("NDA_AUTH_PASSWORD", ""))
+
+
+def _google_oauth_configured() -> bool:
+    return bool(
+        os.environ.get("NDA_GOOGLE_OAUTH_CLIENT_ID", "").strip()
+        and os.environ.get("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "")
+    )
 
 
 def _is_loopback_host(host: str) -> bool:

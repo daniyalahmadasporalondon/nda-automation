@@ -156,8 +156,11 @@ Common environment variables:
 
 - `NDA_DATA_DIR`: directory for matter records, source uploads, app settings, and Gmail sync state.
 - `NDA_EXPORTS_DIR`: directory for persisted export downloads.
-- `NDA_REQUIRE_AUTH`: set to `true` to require HTTP Basic auth.
-- `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: Basic auth credentials.
+- `NDA_REQUIRE_AUTH`: set to `true` to require login.
+- `NDA_GOOGLE_OAUTH_CLIENT_ID` and `NDA_GOOGLE_OAUTH_CLIENT_SECRET`: Google login credentials for per-user identity.
+- `NDA_GOOGLE_OAUTH_REDIRECT_URI`: optional fixed redirect URI; defaults to the request host plus `/auth/google/callback`.
+- `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: optional HTTP Basic auth fallback credentials.
+- `NDA_USERS_PATH`: optional override for the user/session store; defaults to `NDA_DATA_DIR/users.json`.
 - `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
 - `NDA_GMAIL_INBOUND_TOKEN_PATH`: OAuth token file for inbound Gmail sync.
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
@@ -210,15 +213,16 @@ The production start command is:
 python -m nda_automation.server --host 0.0.0.0 --port $PORT
 ```
 
-Public deployments require HTTP Basic authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. If auth is required but credentials are missing, the server refuses to start.
+Public deployments require authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. Configure Google OAuth for per-user login, or HTTP Basic as a temporary fallback. If auth is required but no login method is configured, the server refuses to start.
 
-The only unauthenticated route is `/healthz` for platform health checks.
+Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, and `/api/auth/logout`.
 
 The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
 Authenticated admins can check:
 
 - `/api/deployment/status`: auth, storage, health-check, and rate-limit shape.
+- `/api/auth/status`: current login state and public auth configuration.
 - `/api/telemetry`: non-sensitive counters such as review requests, export failures, Gmail sync failures, runtime-setting changes, and rate-limit hits.
 - `/api/matters/export`: sensitive JSON backup of matter records plus stored-document manifest. It does not embed uploaded source document bytes.
 

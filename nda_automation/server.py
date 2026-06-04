@@ -13,7 +13,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry
+from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry, user_store
 from .checker import (
     PLAYBOOK_PATH,
     ai_validate_draft_fix,
@@ -36,9 +36,12 @@ from .http_auth import (
     AUTH_REALM,
     AUTH_REQUIRED_MESSAGE,
     HOST_NOT_ALLOWED_MESSAGE,
+    _auth_method_configured,
     _basic_auth_credentials,
+    _basic_auth_configured,
     _auth_required_for_host,
     _basic_auth_matches,
+    _google_oauth_configured,
     _env_flag_enabled as _env_flag_enabled,
     _is_loopback_host as _is_loopback_host,
     host_header_allowed,
@@ -55,6 +58,7 @@ from .rate_limit import (
 from .ingestion_service import create_matter_from_document, extract_document
 from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
+from .routes import auth as auth_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
 from .routes import playbook as playbook_routes
@@ -144,6 +148,13 @@ _GET_EXACT_ROUTES = {
     "/api/telemetry": admin_routes.handle_telemetry,
 }
 
+_PUBLIC_GET_EXACT_ROUTES = {
+    "/login": auth_routes.handle_login_page,
+    "/api/auth/status": auth_routes.handle_auth_status,
+    "/auth/google/start": auth_routes.handle_google_start,
+    "/auth/google/callback": auth_routes.handle_google_callback,
+}
+
 _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
     "/api/review/compare": _handle_text_review_comparison_post,
@@ -159,6 +170,10 @@ _POST_EXACT_ROUTES = {
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
     "/api/playbook": _handle_playbook_save_post,
+}
+
+_PUBLIC_POST_EXACT_ROUTES = {
+    "/api/auth/logout": auth_routes.handle_logout,
 }
 
 _DELETE_EXACT_ROUTES = {
@@ -185,7 +200,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if not self._authorize_host(send_body=send_body):
             return
-        if not self._authorize_request(send_body=send_body):
+        public_handler = _PUBLIC_GET_EXACT_ROUTES.get(path)
+        if public_handler is not None:
+            public_handler(self, send_body=send_body)
+            return
+        if not self._authorize_request(send_body=send_body, path=path):
             return
         if not self._rate_limit_request("GET", path, send_body=send_body):
             return
@@ -226,7 +245,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
-        if not self._authorize_request():
+        public_handler = _PUBLIC_POST_EXACT_ROUTES.get(path)
+        if public_handler is not None:
+            public_handler(self)
+            return
+        if not self._authorize_request(path=path):
             return
         if not self._rate_limit_request("POST", path):
             return
@@ -267,7 +290,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
-        if not self._authorize_request():
+        if not self._authorize_request(path=path):
             return
         try:
             handler = _DELETE_EXACT_ROUTES.get(path)
@@ -409,27 +432,79 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
+    def _send_html(
+        self,
+        html: str,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        *,
+        send_body: bool = True,
+    ) -> None:
+        data = html.encode("utf-8") if send_body else b""
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
+        self.end_headers()
+        if send_body:
+            self.wfile.write(data)
+
+    def _send_redirect(
+        self,
+        location: str,
+        *,
+        status: int = 302,
+        headers: dict[str, str] | None = None,
+        send_body: bool = True,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
+        self.end_headers()
+
     def _send_playbook_template_error(self) -> None:
         self._send_json({"error": PLAYBOOK_TEMPLATE_ERROR_MESSAGE}, status=500)
 
-    def _authorize_request(self, *, send_body: bool = True) -> bool:
+    def _authorize_request(self, *, send_body: bool = True, path: str = "") -> bool:
         self.current_user_id = ""
+        self.current_user = None
         if not _auth_required_for_host(str(self.server.server_address[0])):
             return True
-        username = os.environ.get("NDA_AUTH_USERNAME", "").strip()
-        password = os.environ.get("NDA_AUTH_PASSWORD", "")
-        if not username or not password:
+        session_user = auth_routes.current_session_user(self)
+        if session_user is not None:
+            self.current_user = user_store.public_user(session_user)
+            self.current_user_id = str(session_user.get("id") or "")
+            return True
+        if not _auth_method_configured():
             self._send_json({"error": AUTH_NOT_CONFIGURED_MESSAGE}, status=503, send_body=send_body)
             return False
+        username = os.environ.get("NDA_AUTH_USERNAME", "").strip()
+        password = os.environ.get("NDA_AUTH_PASSWORD", "")
         auth_header = self.headers.get("Authorization", "")
-        if _basic_auth_matches(auth_header, username, password):
+        if username and password and _basic_auth_matches(auth_header, username, password):
             credentials = _basic_auth_credentials(auth_header)
             self.current_user_id = credentials[0] if credentials else username
+            self.current_user = {
+                "id": self.current_user_id,
+                "provider": "basic",
+                "email": self.current_user_id,
+                "name": self.current_user_id,
+                "picture": "",
+            }
             return True
+        if _google_oauth_configured() and not path.startswith("/api/"):
+            self._send_redirect("/login", send_body=send_body)
+            return False
+        headers = {"WWW-Authenticate": f'Basic realm="{AUTH_REALM}", charset="UTF-8"'} if _basic_auth_configured() else {}
         self._send_json(
-            {"error": AUTH_REQUIRED_MESSAGE},
+            {"error": AUTH_REQUIRED_MESSAGE, "login_url": "/login" if _google_oauth_configured() else ""},
             status=401,
-            headers={"WWW-Authenticate": f'Basic realm="{AUTH_REALM}", charset="UTF-8"'},
+            headers=headers,
             send_body=send_body,
         )
         return False
