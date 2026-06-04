@@ -24,6 +24,8 @@ from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..ingestion_service import extract_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
+from ..review_comparison import ReviewComparisonError, compare_nda_reviews
+from ..review_engine import ActiveReviewEngineError
 
 
 def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
@@ -42,7 +44,38 @@ def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
         handler._send_json({"error": str(error)}, status=413)
         return
 
-    handler._send_json(review_nda_func(text))
+    try:
+        result = review_nda_func(text)
+    except ActiveReviewEngineError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+
+    handler._send_json(result)
+
+
+def handle_text_review_comparison(handler, *, comparison_func=None) -> None:
+    telemetry.increment("text_review_comparison_requests")
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    text = payload.get("text", "")
+    if not isinstance(text, str) or not text.strip():
+        handler._send_json({"error": "Provide NDA text to compare."}, status=400)
+        return
+    try:
+        ensure_review_text_size(text)
+    except ReviewTextTooLargeError as error:
+        handler._send_json({"error": str(error)}, status=413)
+        return
+
+    try:
+        comparison = (comparison_func or compare_nda_reviews)(text)
+    except ReviewComparisonError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+
+    handler._send_json({"review_comparison": comparison})
 
 
 def handle_document_review(handler, *, extract_document_func=extract_document, review_nda_func=review_nda) -> None:
@@ -81,6 +114,9 @@ def handle_document_review(handler, *, extract_document_func=extract_document, r
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
     try:
         result = review_nda_func(extracted_text, paragraphs=extracted_paragraphs)
+    except ActiveReviewEngineError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
     except ParagraphAlignmentError:
         handler._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
         return
@@ -179,7 +215,7 @@ def handle_review_docx_export(handler) -> None:
         and reviewed_text.strip()
         and text.strip() != reviewed_text.strip()
     ):
-        handler._send_json({"error": "Export text must match the latest reviewed text. Run Review NDA again."}, status=409)
+        handler._send_json({"error": "Export text must match the latest reviewed text. Reload the matter review before exporting."}, status=409)
         return
 
     title = payload.get("title", "NDA Review")

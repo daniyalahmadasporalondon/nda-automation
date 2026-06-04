@@ -4,9 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260604a">
+    <link rel="stylesheet" href="/static/styles.css?v=20260604f">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260604a">
-    <link rel="stylesheet" href="/static/css/redesign.css?v=20260604d">
   </head>
   <body>
     <div class="app-shell">
@@ -142,9 +141,6 @@
                       <span class="sr-only">Send Redline</span>
                     </button>
                   </div>
-                </div>
-                <div class="studio-toolbar-actions actions" role="group" aria-label="Review actions">
-                  <button id="studioReviewButton" type="button">Review NDA</button>
                 </div>
               </div>
               <div class="studio-page-wrap">
@@ -748,6 +744,25 @@
                     <p data-admin-ai="key-message">Saved keys are stored locally under ignored app data and are never sent to the browser after saving.</p>
                   </form>
 
+                  <form class="runtime-settings-form" id="adminRuntimeForm">
+                    <div class="runtime-field">
+                      <label for="adminActiveReviewEngineSelect">Active review engine</label>
+                      <select id="adminActiveReviewEngineSelect">
+                        <option value="deterministic">Deterministic</option>
+                        <option value="ai_first">AI-first</option>
+                      </select>
+                    </div>
+                    <div class="runtime-field">
+                      <label for="adminAiFirstFallbackSelect">AI-first fallback</label>
+                      <select id="adminAiFirstFallbackSelect">
+                        <option value="deterministic">Deterministic fallback</option>
+                        <option value="fail_closed">Fail closed</option>
+                      </select>
+                    </div>
+                    <button class="secondary" id="adminRuntimeSaveButton" type="submit">Save runtime</button>
+                    <p data-admin-ai="runtime-message">Runtime changes apply to new reviews.</p>
+                  </form>
+
                   <dl class="integration-facts" id="adminAiFacts">
                     <div>
                       <dt>Provider</dt>
@@ -773,6 +788,26 @@
                       <dt>Default source</dt>
                       <dd data-admin-ai="source">Checking</dd>
                     </div>
+                    <div>
+                      <dt>Active engine</dt>
+                      <dd data-admin-ai="active-engine">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Fallback mode</dt>
+                      <dd data-admin-ai="fallback-mode">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Runtime source</dt>
+                      <dd data-admin-ai="runtime-source">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Operational warnings</dt>
+                      <dd data-admin-ai="operational-warnings">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Last settings change</dt>
+                      <dd data-admin-ai="last-settings-change">Checking</dd>
+                    </div>
                   </dl>
                 </article>
 
@@ -780,7 +815,7 @@
                   <header>
                     <div>
                       <p class="eyebrow">ai semantic review</p>
-                      <h2>How AI checks the deterministic result</h2>
+                      <h2>How AI-first and comparison work</h2>
                     </div>
                     <span>Optional layer</span>
                   </header>
@@ -792,11 +827,11 @@
                     </article>
                     <article>
                       <h3>Scope</h3>
-                      <p>Runs after deterministic checkers for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Signatures remain separate.</p>
+                      <p>AI-first is the default active engine for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Deterministic review remains available for comparison and explicit fallback. Signatures remain separate.</p>
                     </article>
                     <article>
                       <h3>Inputs</h3>
-                      <p>Clause requirement, deterministic decision, reason codes, structure context, checker analysis objects, and selected source paragraphs.</p>
+                      <p>AI-first assessment uses clause requirements, playbook rules, structure context, and selected source paragraphs. Comparison views also include deterministic reason codes and checker analysis objects.</p>
                     </article>
                     <article>
                       <h3>Outputs</h3>
@@ -1035,12 +1070,12 @@
     <script src="/static/js/admin-integrations.js"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-view.js"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260604e"></script>
-    <script src="/static/js/review-workstation-source.js"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260604e"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260604f"></script>
+    <script src="/static/js/review-workstation-source.js?v=20260604a"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260604f"></script>
     <script src="/static/js/review-workstation-viewer.js"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260604a"></script>
   </body>
 </html>

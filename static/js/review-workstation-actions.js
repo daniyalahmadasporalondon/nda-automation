@@ -27,10 +27,6 @@ function setupReviewWorkstationActions() {
     clearReview();
   });
 
-  studioReviewButton.addEventListener("click", async () => {
-    await runReview(studioNdaText, studioReviewButton);
-  });
-
   studioSaveDraftButton.addEventListener("click", async () => {
     await saveReviewRedlineDraft();
   });
@@ -66,52 +62,6 @@ function setupReviewWorkstationActions() {
     event.preventDefault();
     closeReviewSendComposer();
   });
-}
-
-async function runReview(sourceInput, button) {
-  cancelViewerReviewRefresh();
-  const text = sourceInput.value.trim();
-  const rerunningLoadedMatter = Boolean(state.selectedMatter?.id && !state.selectedDocument);
-  if (!text && !state.selectedDocument) {
-    emptyState();
-    studioOverallTitle.textContent = "Add NDA text";
-    studioResultMark.textContent = "-";
-    studioResultMeta.textContent = "Paste NDA text or upload a document to run the checklist.";
-    studioMatchSummary.textContent = `0/${getClauseTotal()}`;
-    return;
-  }
-
-  button.disabled = true;
-  button.textContent = "Reviewing";
-
-  try {
-    const response = state.selectedDocument
-      ? await reviewDocument(state.selectedDocument)
-      : await fetch("/api/review", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
-    const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not run");
-    const reviewedText = payload.extracted_text || text;
-    if (rerunningLoadedMatter) {
-      state.selectedMatter = null;
-      setFileMeta("Repository text reviewed as a fresh draft");
-    }
-    if (payload.extracted_text) {
-      setSourceText(payload.extracted_text);
-      resizeSourceEditors();
-      setSourcePlaceholder(SOURCE_PLACEHOLDER);
-      setFileMeta(`${payload.source.filename} reviewed from ${payload.source.type?.toUpperCase() || "document"}`);
-    }
-    renderResult(payload, reviewedText);
-  } catch (error) {
-    renderOperationError(error, "Review could not run.");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Review NDA";
-  }
 }
 
 async function exportReviewDocx() {
@@ -257,6 +207,41 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
     updateExportButtonState();
     renderOperationError(error, "Could not mark this matter reviewed.");
   }
+}
+
+async function runReviewComparison({ text = "", matterId = "" } = {}) {
+  const targetMatterId = matterId || state.selectedMatter?.id || "";
+  const comparisonText = String(text || studioNdaText.value.trim() || state.reviewSourceText.trim()).trim();
+  state.reviewComparisonStatus = "running";
+  state.reviewComparisonError = "";
+  try {
+    const comparison = targetMatterId
+      ? await runMatterReviewComparison(targetMatterId)
+      : await runTextReviewComparison(comparisonText);
+    setReviewComparison(comparison);
+    return comparison;
+  } catch (error) {
+    setReviewComparisonError(error);
+    throw error;
+  }
+}
+
+async function runTextReviewComparison(text) {
+  if (!text) throw new Error("Provide NDA text to compare.");
+  const response = await fetch("/api/review/compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw reviewErrorFromPayload(payload, "Review comparison could not run");
+  return payload.review_comparison || null;
+}
+
+async function runMatterReviewComparison(matterId) {
+  const comparison = await repositoryController.compareMatterReview(matterId);
+  if (!comparison) throw new Error("Matter review comparison did not return a comparison payload.");
+  return comparison;
 }
 
 
@@ -715,18 +700,6 @@ async function writeBlobToSaveHandle(fileHandle, blob) {
   } finally {
     await writable.close();
   }
-}
-
-async function reviewDocument(file) {
-  const contentBase64 = await fileToBase64(file);
-  return fetch("/api/review-document", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filename: file.name,
-      content_base64: contentBase64,
-    }),
-  });
 }
 
 function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported") {

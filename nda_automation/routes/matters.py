@@ -13,13 +13,14 @@ from ..checker import (
     ParagraphAlignmentError,
     PlaybookTemplateError,
     REVIEW_ENGINE_VERSION,
-    review_nda,
 )
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError
 from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
+from ..review_comparison import ReviewComparisonError, compare_nda_reviews
+from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..triage import triage_review_result
 from .common import parse_matter_id
 
@@ -76,8 +77,8 @@ def refresh_stale_matter_review(matter: dict) -> dict:
     if not extracted_text.strip():
         return matter
     try:
-        review_result = review_nda(extracted_text)
-    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
+        review_result = review_nda_with_active_engine(extracted_text)
+    except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
         return matter
     updated_matter = matter_store.update_matter_review(
         str(matter.get("id") or ""),
@@ -188,6 +189,9 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
         return
     except ParagraphAlignmentError:
         handler._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
+        return
+    except ActiveReviewEngineError as error:
+        handler._send_json({"error": str(error)}, status=502)
         return
 
     handler._send_json({"matter": matter_view.public_matter(matter)}, status=201)
@@ -318,6 +322,44 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         "matter": matter_view.public_matter(updated_matter),
         "ai_first_review_metadata": updated_matter.get("ai_first_review_metadata"),
         "ai_first_review_result": ai_first_review_result,
+    })
+
+
+def handle_matter_review_comparison(handler, path: str) -> None:
+    matter_id = parse_matter_id(path, suffix="/review-comparison")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    matter = matter_store.get_matter(matter_id)
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    extracted_text = str(matter.get("extracted_text") or "")
+    if not extracted_text.strip():
+        handler._send_json({"error": "Matter has no extracted text to compare."}, status=400)
+        return
+
+    try:
+        review_comparison = compare_nda_reviews(
+            extracted_text,
+            paragraphs=review_result_paragraphs(matter.get("review_result")),
+        )
+    except ReviewComparisonError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError) as error:
+        handler._send_json({"error": f"Review comparison could not be completed: {error}"}, status=500)
+        return
+
+    updated_matter = matter_store.update_matter_review_comparison(matter_id, review_comparison)
+    if updated_matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    handler._send_json({
+        "matter": matter_view.public_matter(updated_matter),
+        "review_comparison": updated_matter.get("review_comparison"),
     })
 
 

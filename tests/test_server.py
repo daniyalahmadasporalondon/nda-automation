@@ -30,11 +30,15 @@ from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
+from nda_automation import ingestion_service
 from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation import telemetry
+from nda_automation.review_comparison import ReviewComparisonError
+from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, AI_FIRST_FALLBACK_MODE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
+from nda_automation.routes import review as review_routes
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -71,6 +75,10 @@ class ServerTests(unittest.TestCase):
 
     def setUp(self):
         server_module._reset_rate_limits()
+        if hasattr(gmail_integration, "_clear_gmail_profile_cache_for_tests"):
+            gmail_integration._clear_gmail_profile_cache_for_tests()
+        if hasattr(server_module, "_clear_gmail_sync_backoff_for_tests"):
+            server_module._clear_gmail_sync_backoff_for_tests()
         telemetry.reset()
 
     @classmethod
@@ -747,6 +755,65 @@ class ServerTests(unittest.TestCase):
         self.assertIn("redline_edits", payload)
         self.assert_review_payload_contract(payload)
 
+    def test_text_review_uses_active_review_engine_route(self):
+        expected = {
+            "review_mode": "ai_first_compat",
+            "active_review_engine": {"engine": "ai_first"},
+            "clauses": [],
+            "redline_edits": [],
+        }
+
+        with (
+            patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+            patch.object(server_module, "review_nda_with_active_engine", return_value=expected) as active_review,
+        ):
+            status, payload = self.request("POST", "/api/review", {"text": "NDA text"})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        active_review.assert_called_once_with("NDA text")
+
+    def test_text_review_reports_active_ai_first_failure(self):
+        with (
+            patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+            patch.object(
+                server_module,
+                "review_nda_with_active_engine",
+                side_effect=ActiveReviewEngineError("AI-first review failed: no key"),
+            ),
+        ):
+            status, payload = self.request("POST", "/api/review", {"text": "NDA text"})
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"], "AI-first review failed: no key")
+
+    def test_text_review_comparison_route_returns_comparison(self):
+        comparison = {
+            "version": 1,
+            "mode": "deterministic_vs_ai_first",
+            "summary": {"disagreement_count": 1},
+            "clauses": [{"clause_id": "governing_law", "decision_changed": True}],
+        }
+
+        with patch.object(review_routes, "compare_nda_reviews", return_value=comparison) as compare_reviews:
+            status, payload = self.request("POST", "/api/review/compare", {"text": "NDA text"})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["review_comparison"], comparison)
+        compare_reviews.assert_called_once_with("NDA text")
+        self.assertEqual(telemetry.snapshot()["counters"]["text_review_comparison_requests"], 1)
+
+    def test_text_review_comparison_route_reports_comparison_error(self):
+        with patch.object(
+            review_routes,
+            "compare_nda_reviews",
+            side_effect=ReviewComparisonError("AI-first comparison review failed: no key"),
+        ):
+            status, payload = self.request("POST", "/api/review/compare", {"text": "NDA text"})
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"], "AI-first comparison review failed: no key")
+
     def test_ai_second_opinion_route_updates_selected_clause(self):
         expected = {
             "clause": {"id": "mutuality", "decision": "review"},
@@ -1002,6 +1069,304 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("redline_draft", review_payload["matter"])
         self.assertIn("extracted_text", review_payload)
         self.assertIn("review_result", review_payload)
+
+    def test_matter_upload_uses_active_ai_first_review_as_saved_review_result(self):
+        source_docx = make_docx([
+            "Each party may disclose Confidential Information to the other party.",
+        ])
+        ai_first_result = {
+            "review_mode": "ai_first_compat",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "meets_requirements",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": "Each party may disclose Confidential Information to the other party."}],
+            "clauses": [{"id": "mutuality", "decision": "pass", "passes": True}],
+            "redline_edits": [],
+            "ai_first_review": {"status": "completed", "mode": "ai_first_assessor"},
+            "active_review_engine": {"engine": "ai_first"},
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with (
+                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+                    patch.object(
+                        ingestion_service,
+                        "review_nda_with_active_engine",
+                        return_value=deepcopy(ai_first_result),
+                    ) as active_review,
+                ):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/matters",
+                        {
+                            "filename": "Acme NDA.docx",
+                            "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        },
+                    )
+                stored_matter = matter_store.get_matter(payload["matter"]["id"])
+
+        self.assertEqual(status, 201)
+        active_review.assert_called_once()
+        self.assertEqual(stored_matter["review_result"]["review_mode"], "ai_first_compat")
+        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["engine"], "ai_first")
+        self.assertEqual(stored_matter["triage_status"], "ready_to_sign")
+
+    def test_matter_upload_reports_active_ai_first_failure(self):
+        source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with (
+                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+                    patch.object(
+                        ingestion_service,
+                        "review_nda_with_active_engine",
+                        side_effect=ActiveReviewEngineError("AI-first review failed: no key"),
+                    ),
+                ):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/matters",
+                        {
+                            "filename": "Acme NDA.docx",
+                            "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        },
+                    )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"], "AI-first review failed: no key")
+
+    def test_stale_matter_refresh_uses_active_review_engine_result(self):
+        active_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_mode": "ai_first_compat",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "meets_requirements",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": "Mutual NDA text."}],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "mutuality",
+                    "decision": "pass",
+                    "passes": True,
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "active_review_engine": {
+                "selected_engine": "ai_first",
+                "executed_engine": "ai_first",
+                "engine": "ai_first",
+                "fallback_used": False,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="Mutual NDA text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with (
+                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                ):
+                    status, payload = self.request("GET", f"/api/matters/{matter['id']}/review")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertEqual(status, 200)
+        active_review.assert_called_once_with("Mutual NDA text.")
+        self.assertEqual(payload["review_result"]["review_mode"], "ai_first_compat")
+        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
+        self.assertEqual(stored_matter["triage_status"], "ready_to_sign")
+
+    def test_gmail_attachment_import_preserves_active_review_engine_result(self):
+        source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
+        active_result = {
+            "review_mode": "deterministic",
+            "overall_status": "meets_requirements",
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "meets_requirements",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": "Each party may disclose Confidential Information to the other party."}],
+            "clauses": [{"id": "mutuality", "decision": "pass", "passes": True}],
+            "redline_edits": [],
+            "review_warnings": ["AI-first review failed; deterministic fallback was used."],
+            "active_review_engine": {
+                "selected_engine": "ai_first",
+                "executed_engine": "deterministic",
+                "engine": "deterministic",
+                "fallback_mode": "deterministic",
+                "fallback_used": True,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with (
+                    patch.object(gmail_integration, "_gmail_attachment_already_imported", return_value=False),
+                    patch.object(gmail_integration, "_attachment_bytes", return_value=source_docx),
+                    patch.object(ingestion_service, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                ):
+                    matter, skip = gmail_integration._import_inbound_attachment(
+                        object(),
+                        "msg_active_ai",
+                        {"attachment_id": "att_active_ai", "filename": "Active NDA.docx", "part_id": "1"},
+                        {
+                            "gmail_account": "legal@example.com",
+                            "gmail_message_id": "msg_active_ai",
+                            "gmail_thread_id": "thread_active_ai",
+                            "reply_to": "counterparty@example.com",
+                        },
+                    )
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertIsNone(skip)
+        active_review.assert_called_once()
+        self.assertEqual(matter["source_type"], "gmail_inbound")
+        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
+        self.assertTrue(stored_matter["review_result"]["active_review_engine"]["fallback_used"])
+        self.assertIn("deterministic fallback", stored_matter["review_result"]["review_warnings"][0])
+
+    def test_matter_review_comparison_stores_separate_comparison_without_replacing_review(self):
+        active_review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_needs_review": 0,
+            "requirements_failed": 1,
+            "paragraphs": [{"id": "p1", "index": 1, "text": "This Agreement shall be governed by the laws of Delaware."}],
+            "contract_structure": {},
+            "reference_resolver": {},
+            "concept_classifier": {},
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "fail",
+                    "passes": False,
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "review_state": {"state": "check", "overall_status": "does_not_meet_requirements"},
+        }
+        comparison = {
+            "version": 1,
+            "mode": "deterministic_vs_ai_first",
+            "summary": {
+                "disagreement_count": 1,
+                "decision_disagreement_clause_ids": ["governing_law"],
+            },
+            "clauses": [
+                {
+                    "clause_id": "governing_law",
+                    "decision_changed": True,
+                    "final_verdict": {"decision": "fail", "source": "most_conservative"},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text=active_review_result["paragraphs"][0]["text"],
+                    review_result=deepcopy(active_review_result),
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with patch.object(matter_routes, "compare_nda_reviews", return_value=deepcopy(comparison)) as compare_reviews:
+                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-comparison")
+                stored_matter = matter_store.get_matter(matter["id"])
+                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
+
+        compare_reviews.assert_called_once()
+        call_args, call_kwargs = compare_reviews.call_args
+        self.assertEqual(call_args[0], active_review_result["paragraphs"][0]["text"])
+        self.assertEqual(call_kwargs["paragraphs"], active_review_result["paragraphs"])
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["review_comparison"]["mode"], "deterministic_vs_ai_first")
+        self.assertEqual(payload["review_comparison"]["summary"]["disagreement_count"], 1)
+        self.assertIn("stored_at", payload["review_comparison"])
+        self.assertEqual(stored_matter["review_result"], active_review_result)
+        self.assertEqual(stored_matter["review_comparison"]["summary"]["decision_disagreement_clause_ids"], ["governing_law"])
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_payload["review_comparison"]["summary"]["disagreement_count"], 1)
+
+    def test_matter_review_comparison_reports_ai_failure_without_storing(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="This Agreement shall be governed by the laws of Delaware.",
+                    review_result={"paragraphs": [{"id": "p1", "text": "This Agreement shall be governed by the laws of Delaware."}]},
+                    triage={
+                        "triage_status": "needs_redline",
+                        "next_action": "Review redline",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 1,
+                    },
+                )
+                with patch.object(
+                    matter_routes,
+                    "compare_nda_reviews",
+                    side_effect=ReviewComparisonError("AI-first comparison review failed: no key"),
+                ):
+                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-comparison")
+                stored_matter = matter_store.get_matter(matter["id"])
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"], "AI-first comparison review failed: no key")
+        self.assertNotIn("review_comparison", stored_matter)
 
     def test_matter_review_refreshes_stale_clause_decisions(self):
         text = (
@@ -1742,6 +2107,53 @@ class ServerTests(unittest.TestCase):
             "source": "local_data",
         })
 
+    def test_gmail_status_surfaces_and_caches_profile_rate_limit(self):
+        class FakeRateLimitError(Exception):
+            resp = type("Resp", (), {"status": 429})()
+            content = json.dumps({
+                "error": {
+                    "message": "User-rate limit exceeded. Retry after 2099-06-04T14:06:26.379Z",
+                    "errors": [{"reason": "rateLimitExceeded"}],
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            }).encode("utf-8")
+
+        class FakeExecutable:
+            calls = 0
+
+            def execute(self):
+                FakeExecutable.calls += 1
+                raise FakeRateLimitError()
+
+        class FakeUsers:
+            def getProfile(self, userId):
+                return FakeExecutable()
+
+        class FakeGmailService:
+            def users(self):
+                return FakeUsers()
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                token_dir = matter_store.DATA_DIR / "gmail"
+                token_dir.mkdir(parents=True)
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text("{}", encoding="utf-8")
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]).write_text("{}", encoding="utf-8")
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService()):
+                        first_status = gmail_integration.gmail_status()
+                        second_status = gmail_integration.gmail_status()
+
+        self.assertEqual(FakeExecutable.calls, 2)
+        self.assertEqual(first_status["inbound"]["ready"], False)
+        self.assertIn("Gmail API rate limit exceeded", first_status["inbound"]["error"])
+        self.assertIn("2099-06-04T14:06:26.379Z", first_status["inbound"]["error"])
+        self.assertEqual(second_status["inbound"]["error"], first_status["inbound"]["error"])
+
     def test_gmail_status_blocks_outbound_when_accounts_do_not_match(self):
         class FakeExecutable:
             def __init__(self, payload):
@@ -1839,7 +2251,16 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                with patch.dict(os.environ, {"GEMINI_API_KEY": "server-only-secret", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "GEMINI_API_KEY": "server-only-secret",
+                        "NDA_AI_REVIEW_ENABLED": "",
+                        ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+                        AI_FIRST_FALLBACK_MODE_ENV: "fail_closed",
+                    },
+                    clear=False,
+                ):
                     initial_status, initial_payload = self.request("GET", "/api/ai/settings")
                     on_status, on_payload = self.request("POST", "/api/ai/settings", {"enabled": True})
                     off_status, off_payload = self.request("POST", "/api/ai/settings", {"enabled": False})
@@ -1852,6 +2273,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_payload["ai_review"]["stored_enabled"], None)
         self.assertEqual(initial_payload["ai_review"]["environment_enabled"], False)
         self.assertEqual(initial_payload["ai_review"]["api_key_configured"], True)
+        self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
+        self.assertEqual(initial_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
         self.assertNotIn("server-only-secret", json.dumps(initial_payload))
         self.assertEqual(on_status, 200)
         self.assertEqual(on_payload["ai_review"]["enabled"], True)
@@ -1863,7 +2286,99 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(invalid_status, 400)
         self.assertEqual(invalid_payload["error"], "AI enabled setting must be true or false.")
         self.assertEqual(missing_status, 400)
-        self.assertEqual(missing_payload["error"], "Provide an AI setting to update.")
+        self.assertEqual(missing_payload["error"], "Provide an AI or runtime review setting to update.")
+
+    def test_ai_settings_endpoint_updates_runtime_review_engine(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "", AI_FIRST_FALLBACK_MODE_ENV: ""}, clear=False):
+                    initial_status, initial_payload = self.request("GET", "/api/ai/settings")
+                    runtime_status, runtime_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {
+                            "active_review_engine": "ai_first",
+                            "ai_first_fallback_mode": "fail_closed",
+                        },
+                    )
+                    invalid_engine_status, invalid_engine_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {"active_review_engine": "random"},
+                    )
+                    invalid_fallback_status, invalid_fallback_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {"ai_first_fallback_mode": "random"},
+                    )
+                    runtime_settings = app_settings.review_runtime_settings()
+                    telemetry_counters = telemetry.snapshot()["counters"]
+
+        self.assertEqual(initial_status, 200)
+        self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
+        self.assertEqual(initial_payload["active_review_engine"]["engine_source"], "default")
+        self.assertEqual(initial_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
+        self.assertEqual(initial_payload["active_review_engine"]["fallback_source"], "default")
+        self.assertEqual(initial_payload["operational_warnings"][0]["code"], "ai_first_without_key")
+        self.assertEqual(initial_payload["settings_audit"], [])
+        self.assertEqual(runtime_status, 200)
+        self.assertEqual(runtime_payload["active_review_engine"]["active_engine"], "ai_first")
+        self.assertEqual(runtime_payload["active_review_engine"]["engine_source"], "runtime_settings")
+        self.assertEqual(runtime_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
+        self.assertEqual(runtime_payload["active_review_engine"]["fallback_source"], "runtime_settings")
+        self.assertEqual(runtime_payload["operational_warnings"][0]["code"], "ai_first_without_key")
+        self.assertEqual(runtime_payload["settings_audit"][0]["action"], "admin_settings_update")
+        self.assertEqual(
+            [change["setting"] for change in runtime_payload["settings_audit"][0]["changes"]],
+            ["review_runtime.active_review_engine", "review_runtime.ai_first_fallback_mode"],
+        )
+        self.assertEqual(runtime_settings["active_review_engine"], "ai_first")
+        self.assertEqual(runtime_settings["ai_first_fallback_mode"], "fail_closed")
+        self.assertEqual(telemetry_counters["review_runtime_settings_updates"], 1)
+        self.assertEqual(telemetry_counters["settings_audit_events"], 1)
+        self.assertEqual(invalid_engine_status, 400)
+        self.assertEqual(invalid_engine_payload["error"], "Active review engine must be deterministic or ai_first.")
+        self.assertEqual(invalid_fallback_status, 400)
+        self.assertEqual(invalid_fallback_payload["error"], "AI-first fallback mode must be deterministic or fail_closed.")
+
+    def test_ai_settings_endpoint_blocks_environment_pinned_runtime_updates(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(
+                    os.environ,
+                    {
+                        ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+                        AI_FIRST_FALLBACK_MODE_ENV: "fail_closed",
+                    },
+                    clear=False,
+                ):
+                    status, payload = self.request("GET", "/api/ai/settings")
+                    engine_status, engine_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {"active_review_engine": "deterministic"},
+                    )
+                    fallback_status, fallback_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {"ai_first_fallback_mode": "deterministic"},
+                    )
+                    runtime_settings = app_settings.review_runtime_settings()
+                    telemetry_counters = telemetry.snapshot()["counters"]
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["active_review_engine"]["engine_source"], "environment")
+        self.assertEqual(payload["active_review_engine"]["fallback_source"], "environment")
+        self.assertIn("active_engine_environment_pinned", [warning["code"] for warning in payload["operational_warnings"]])
+        self.assertEqual(engine_status, 409)
+        self.assertEqual(engine_payload["error"], "Active review engine is pinned by the backend environment.")
+        self.assertEqual(fallback_status, 409)
+        self.assertEqual(fallback_payload["error"], "AI-first fallback mode is pinned by the backend environment.")
+        self.assertIsNone(runtime_settings["active_review_engine"])
+        self.assertIsNone(runtime_settings["ai_first_fallback_mode"])
+        self.assertEqual(telemetry_counters["review_runtime_update_blocked_environment"], 2)
 
     def test_ai_api_key_endpoint_saves_local_key_and_enables_ai(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1886,6 +2401,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(save_payload["ai_review"]["stored_enabled"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
+        self.assertEqual(save_payload["settings_audit"][0]["action"], "ai_api_key_saved")
+        self.assertIn("ai_review.api_key", [change["setting"] for change in save_payload["settings_audit"][0]["changes"]])
         self.assertNotIn("local-secret-key", json.dumps(save_payload))
         self.assertEqual(saved_key, "local-secret-key")
         self.assertEqual(settings["enabled"], True)
@@ -2048,6 +2565,39 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
         run_sync.assert_called_once_with()
 
+    def test_scheduled_gmail_sync_backs_off_after_gmail_rate_limit(self):
+        error = gmail_integration.GmailRateLimitError(
+            "Gmail API rate limit exceeded. Retry after 2026-06-04T14:06:26.379Z.",
+            retry_after_epoch=1000.0,
+        )
+        with patch.object(server_module.gmail_integration, "import_inbound_matters", side_effect=error):
+            with patch.object(server_module.app_settings, "record_gmail_sync_error") as record_error:
+                with patch.object(server_module, "_log_background_error"):
+                    server_module._run_scheduled_gmail_sync()
+
+        record_error.assert_called_once()
+        self.assertEqual(telemetry.snapshot()["counters"]["gmail_sync_rate_limit_failures"], 1)
+
+        with patch.object(
+            server_module.app_settings,
+            "gmail_settings",
+            return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+        ):
+            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
+                    with patch.object(server_module.time, "time", return_value=500.0):
+                        with patch.object(server_module.time, "monotonic", return_value=500.0):
+                            with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                                    0.0,
+                                    "always_on",
+                                )
+
+        self.assertEqual(last_run, 0.0)
+        self.assertEqual(last_frequency, "always_on")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        run_sync.assert_not_called()
+
     def test_gmail_sync_scheduler_sleep_seconds_is_bounded(self):
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(0), 1)
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(10), 10)
@@ -2176,8 +2726,9 @@ class ServerTests(unittest.TestCase):
                     dedupe_gmail=True,
                 )
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
-                        result = gmail_integration.import_inbound_matters(limit=25)
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
                 stored = matter_store.list_matters()
 
         self.assertEqual(result["account"], "daniyal.ahmad@aspora.com")
@@ -2886,7 +3437,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 409)
-        self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
+        self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Reload the matter review before exporting.")
 
     def test_matter_export_rejects_source_text_change_without_manual_redlines(self):
         source_docx = make_docx([
@@ -3769,7 +4320,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Matter store is not valid JSON.")
 
     def test_text_review_reports_playbook_template_error(self):
-        with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+        with patch.object(server_module, "review_nda_with_active_engine", side_effect=PlaybookTemplateError("bad template")):
             status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
 
         self.assertEqual(status, 500)
@@ -3787,7 +4338,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_text_review_reports_evidence_provenance_drift_as_error(self):
-        with patch.object(server_module, "review_nda", side_effect=EvidenceProvenanceError("drift")):
+        with patch.object(server_module, "review_nda_with_active_engine", side_effect=EvidenceProvenanceError("drift")):
             status, payload = self.request("POST", "/api/review", {"text": "Reviewable NDA text."})
 
         self.assertEqual(status, 500)
@@ -4236,7 +4787,7 @@ class ServerTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 409)
-        self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Run Review NDA again.")
+        self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Reload the matter review before exporting.")
 
     def test_review_docx_export_reports_playbook_template_error(self):
         with patch.object(server_module.redline_export_service, "review_nda", side_effect=PlaybookTemplateError("bad template")):
@@ -4720,7 +5271,7 @@ class ServerTests(unittest.TestCase):
 
     def test_document_review_reports_paragraph_alignment_failure(self):
         with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
-            with patch.object(server_module, "review_nda", side_effect=ParagraphAlignmentError("alignment failed")):
+            with patch.object(server_module, "review_nda_with_active_engine", side_effect=ParagraphAlignmentError("alignment failed")):
                 status, payload = self.request(
                     "POST",
                     "/api/review-document",
@@ -4735,7 +5286,7 @@ class ServerTests(unittest.TestCase):
 
     def test_document_review_reports_playbook_template_error(self):
         with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
-            with patch.object(server_module, "review_nda", side_effect=PlaybookTemplateError("bad template")):
+            with patch.object(server_module, "review_nda_with_active_engine", side_effect=PlaybookTemplateError("bad template")):
                 status, payload = self.request(
                     "POST",
                     "/api/review-document",

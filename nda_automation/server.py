@@ -20,7 +20,6 @@ from .checker import (
     EvidenceProvenanceError,
     PlaybookTemplateError,
     ai_second_opinion_for_clause,
-    review_nda,
 )
 from .deployment import (
     DURABLE_DATA_DIR_REQUIRED_MESSAGE as DURABLE_DATA_DIR_REQUIRED_MESSAGE,
@@ -53,6 +52,7 @@ from .rate_limit import (
     _reset_rate_limits as _reset_rate_limits,
 )
 from .ingestion_service import create_matter_from_document, extract_document
+from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
@@ -72,6 +72,7 @@ MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
 MAX_GMAIL_SYNC_IDLE_SECONDS = 30
 _GMAIL_SYNC_LOCK = threading.Lock()
+_GMAIL_SYNC_BACKOFF_UNTIL = 0.0
 
 
 def _parse_matter_id(path: str, *, suffix: str = "") -> str | None:
@@ -87,14 +88,14 @@ def _handle_playbook_get(handler, *, send_body: bool) -> None:
 
 
 def _handle_text_review_post(handler) -> None:
-    review_routes.handle_text_review(handler, review_nda_func=review_nda)
+    review_routes.handle_text_review(handler, review_nda_func=review_nda_with_active_engine)
 
 
 def _handle_document_review_post(handler) -> None:
     review_routes.handle_document_review(
         handler,
         extract_document_func=extract_document,
-        review_nda_func=review_nda,
+        review_nda_func=review_nda_with_active_engine,
     )
 
 
@@ -110,6 +111,10 @@ def _handle_ai_draft_validation_post(handler) -> None:
         handler,
         validation_func=ai_validate_draft_fix,
     )
+
+
+def _handle_text_review_comparison_post(handler) -> None:
+    review_routes.handle_text_review_comparison(handler)
 
 
 def _handle_matter_upload_post(handler) -> None:
@@ -140,6 +145,7 @@ _GET_EXACT_ROUTES = {
 
 _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
+    "/api/review/compare": _handle_text_review_comparison_post,
     "/api/review/ai-draft-validation": _handle_ai_draft_validation_post,
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review-document": _handle_document_review_post,
@@ -236,6 +242,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/ai-first-review"):
                 matter_routes.handle_matter_ai_first_review(self, path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/review-comparison"):
+                matter_routes.handle_matter_review_comparison(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
                 matter_routes.handle_matter_redline_draft_update(self, path)
@@ -521,6 +530,8 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
     if settings.get("inbound_enabled", True):
         now = time.monotonic()
         if now - last_run >= interval_seconds:
+            if _gmail_sync_backoff_active():
+                return last_run, last_frequency, sleep_seconds
             if not _gmail_inbound_configured_for_scheduled_sync():
                 return now, last_frequency, sleep_seconds
             with _gmail_sync_process_lock() as lock_acquired:
@@ -538,6 +549,26 @@ def _gmail_inbound_configured_for_scheduled_sync() -> bool:
     return not gmail_integration.gmail_role_setup_error("inbound")
 
 
+def _gmail_sync_backoff_active() -> bool:
+    return _GMAIL_SYNC_BACKOFF_UNTIL > time.time()
+
+
+def _set_gmail_sync_backoff(error: Exception) -> None:
+    global _GMAIL_SYNC_BACKOFF_UNTIL
+    if not isinstance(error, gmail_integration.GmailRateLimitError):
+        return
+    retry_after = float(error.retry_after_epoch or 0.0)
+    if retry_after <= time.time():
+        retry_after = time.time() + 10 * 60
+    _GMAIL_SYNC_BACKOFF_UNTIL = max(_GMAIL_SYNC_BACKOFF_UNTIL, retry_after)
+    telemetry.increment("gmail_sync_rate_limit_failures")
+
+
+def _clear_gmail_sync_backoff_for_tests() -> None:
+    global _GMAIL_SYNC_BACKOFF_UNTIL
+    _GMAIL_SYNC_BACKOFF_UNTIL = 0.0
+
+
 def _gmail_sync_scheduler_sleep_seconds(interval_seconds: int) -> int:
     return min(max(1, interval_seconds), MAX_GMAIL_SYNC_IDLE_SECONDS)
 
@@ -553,6 +584,7 @@ def _run_scheduled_gmail_sync() -> None:
         telemetry.increment("gmail_sync_successes")
     except Exception as error:  # pragma: no cover - defensive background logging.
         telemetry.increment("gmail_sync_failures")
+        _set_gmail_sync_backoff(error)
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync_error(
             str(error),

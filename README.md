@@ -1,8 +1,10 @@
 # nda-automation
 
-A focused NDA review and redline workstation for hard-clause review, matter intake, AI-assisted semantic review, and Gmail-based NDA workflows.
+A repository-first NDA review and redline workstation for hard-clause review, matter intake, AI-first legal assessment, and Gmail-based NDA workflows.
 
-The app reviews pasted text, `.docx` files, and text-based PDFs against a configurable playbook. It returns pass / review / fail clause findings with structured evidence, reason codes, audit traces, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
+The app imports `.docx` files and text-based PDFs through manual upload or Gmail, stores them as Repository matters, and reviews them against a configurable playbook. It returns pass / review / fail clause findings with structured evidence, AI assessment metadata, deterministic comparison data, proposed fixes, and exportable Word redlines. Repository matters preserve uploaded source documents so `.docx` matters can be exported with native Word tracked changes.
+
+The primary UI flow is now matter intake -> reviewer workstation -> human confirmation -> DOCX export/send. The old standalone `Review NDA` toolbar action has been removed; reviews are generated during matter import and refreshed when a stored review is stale.
 
 ## Connect APIs First
 
@@ -39,7 +41,10 @@ In `.env`, set the AI provider/model and API key:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=alibaba
-NDA_AI_MODEL=qwen3.5-plus
+NDA_AI_MODEL=qwen3.5-122b-a10b
+# Active review defaults to AI-first + fail-closed. Leave these unset unless pinning runtime.
+NDA_ACTIVE_REVIEW_ENGINE=
+NDA_AI_FIRST_FALLBACK_MODE=
 ALIBABA_API_KEY="your-alibaba-api-key"
 ```
 
@@ -79,10 +84,11 @@ Do not commit real API keys, `.env` files, or Gmail token JSON files. Share thos
 
 ## Features
 
-- Review pasted NDA text, plain text files, `.docx` Word documents, and text-based PDFs.
-- Detect required and prohibited hard clauses with paragraph-level evidence, reason codes, and review-state decisions.
+- Import and review `.docx` Word documents and text-based PDFs through manual upload, Repository, or Gmail intake.
+- Run AI-first hard-clause assessment with paragraph-level evidence, reason codes, citations, confidence metadata, and review-state decisions.
+- Keep deterministic review available for comparison, explicit fallback, audit metadata, and backend validation.
 - Preserve contract structure, resolve clause/section references, and classify legal concepts before checker evaluation.
-- Run optional AI semantic second opinions and AI draft-fix validation from the Review panel.
+- Run AI semantic second opinions and AI draft-fix validation from the Review panel.
 - Generate Word review reports and source `.docx` redlines with tracked changes.
 - Import uploaded matters into a Repository board with review state, source documents, redline drafts, and stage tracking.
 - Sync inbound Gmail NDA attachments into the Repository when Gmail is configured.
@@ -93,23 +99,23 @@ Do not commit real API keys, `.env` files, or Gmail token JSON files. Share thos
 
 ## Product Areas
 
-- **Review Workstation**: one-off text/document review, clause checklist, structure view, AI evidence, evidence navigation, viewer edits, and DOCX export.
+- **Review Workstation**: selected matter review, clause checklist, structure view, AI evidence, evidence navigation, viewer edits, reviewed toggles, DOCX export, and outbound send confirmation.
 - **Repository**: imported matters, board lanes, stored source documents, redline drafts, and matter review views.
-- **Admin**: playbook editor, deterministic engine explainability, AI controls, Email/Gmail connection state/settings, deployment status, telemetry, and matter backup.
+- **Admin**: playbook editor, deterministic engine explainability, AI-first runtime controls, Email/Gmail connection state/settings, deployment status, telemetry, and matter backup.
 - **Gmail workflows**: inbound attachment import and outbound redline reply/send.
 
 ## Review Architecture
 
-The review system is layered:
+The active review path is:
 
-1. **Deterministic Python rules engine** applies the playbook and produces pass / review / fail decisions.
-2. **Contract structure map** identifies headings, sections, articles, clauses, and paragraph ranges.
-3. **Reference resolver** maps references such as "clauses 2, 3, 4 and 5" or hybrid identifiers such as `10b`.
-4. **Concept classifier** tags paragraphs and sections with legal concepts so checks can reason beyond raw keywords.
-5. **AI semantic review** can provide clause-specific second opinions and draft-fix validation with confidence, citations, and suggested fixes.
-6. **Review-state arbiter** escalates disagreement, low confidence, invalid citations, or checker uncertainty to human review.
+1. **Playbook and document structure** define the clause requirements, approved positions, source paragraphs, headings, sections, and references.
+2. **AI-first legal assessment** applies the playbook to the selected source paragraphs and produces the saved clause verdicts, issue types, rationale, citations, confidence, and proposed redlines.
+3. **Deterministic review and comparison** remain available for audit, explicit fallback, reason-code comparison, stale-review refresh guards, and operational validation.
+4. **Reviewer UI** presents the final clause cards, right-panel analysis, insertable redline options, comments, include/ignore choices, and per-clause reviewed toggles for human sign-off.
 
-The deterministic layer remains the primary foundation. AI is optional and must cite source text before its result is used. The next intended hardening step is to make semantic AI review fully blind to Python's deterministic verdict, then compare the two results after the AI response returns.
+The active review engine defaults to **AI-first** with **fail closed** behavior. If AI is unavailable and fallback mode is `fail_closed`, new review creation returns an error instead of silently substituting deterministic results. Admin can change the active engine and AI-first fallback mode at runtime from **Admin -> AI** when those values are not pinned by environment variables. Runtime changes are audit-logged without secrets, and env-pinned values are reported as read-only operational warnings.
+
+Set `NDA_ACTIVE_REVIEW_ENGINE=deterministic` only when deployment configuration should force deterministic review as the saved `review_result` for new reviews. Set `NDA_AI_FIRST_FALLBACK_MODE=deterministic` only when AI-first failures should fall back to deterministic review and record that fallback in metadata. Leave the fallback unset or set `fail_closed` when missing AI output should block review creation. Set `NDA_AI_FIRST_REVIEW_ENABLED=true` to store AI-first shadow/comparison output while a deterministic matter review is created elsewhere.
 
 ## Run Locally
 
@@ -126,6 +132,8 @@ http://127.0.0.1:8787
 ```
 
 Local development can use the default local data directory. Public or non-loopback deployments must use durable storage and authentication.
+
+In the browser, use **Upload** for manual `.docx`/PDF intake, **Repository** to open stored matter reviews, **Review** to inspect and edit the current matter, and **Admin** to manage AI/Gmail/runtime settings. The Review workstation no longer has a standalone `Review NDA` action.
 
 ## Optional Dependencies
 
@@ -153,6 +161,12 @@ Common environment variables:
 - `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
 - `NDA_GMAIL_INBOUND_TOKEN_PATH`: OAuth token file for inbound Gmail sync.
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: OAuth token file for outbound Gmail sends.
+- `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
+- `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
+- `NDA_AI_MODEL`: provider model name. Use `qwen3.5-122b-a10b` for the current Alibaba/Qwen local setup, or another model your key can access.
+- `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
+- `NDA_AI_FIRST_FALLBACK_MODE`: optional environment pin for `fail_closed` or `deterministic`.
+- `NDA_AI_FIRST_REVIEW_ENABLED`: stores AI-first shadow/comparison results when enabled.
 - `NDA_ALLOW_EPHEMERAL_DATA`: set to `true` only for short-lived public demos using ephemeral storage.
 
 Optional semantic fallback:
@@ -167,18 +181,18 @@ The callable is lazy-loaded only when configured and receives keyword arguments 
 {"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}
 ```
 
-The deterministic core remains stdlib-first. External AI review is optional and only runs when configured.
+The deterministic core remains stdlib-first. Provider-backed AI review runs only when configured; if the active engine is AI-first and no provider/key is configured, review creation fails closed unless runtime settings or environment variables switch the active engine/fallback behavior.
 
 Optional AI semantic review:
 
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.5-plus
+export NDA_AI_MODEL=qwen3.5-122b-a10b
 export ALIBABA_API_KEY=sk-...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and currently defaults to `qwen3.5-plus`. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. The code default for Alibaba remains `qwen3.5-plus` when no model is configured, so set `NDA_AI_MODEL` explicitly when using `qwen3.5-122b-a10b` or any other preferred Qwen model. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 
@@ -205,7 +219,7 @@ The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DI
 Authenticated admins can check:
 
 - `/api/deployment/status`: auth, storage, health-check, and rate-limit shape.
-- `/api/telemetry`: non-sensitive counters such as review requests, export failures, Gmail sync failures, and rate-limit hits.
+- `/api/telemetry`: non-sensitive counters such as review requests, export failures, Gmail sync failures, runtime-setting changes, and rate-limit hits.
 - `/api/matters/export`: sensitive JSON backup of matter records plus stored-document manifest. It does not embed uploaded source document bytes.
 
 ## Security and Data Notes
@@ -246,9 +260,9 @@ data/gmail/inbound-token.json
 data/gmail/outbound-token.json
 ```
 
-Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the Repository. Outbound send generates the same Word redline/report used by download/export, then emails it back to the matter sender only after confirmation.
+Inbound sync imports recent `.docx` and text-based `.pdf` attachments with NDA/confidentiality-related subject terms into the Repository. Outbound send generates the same Word redline/report used by download/export, opens a confirmation composer, then emails it back to the matter sender only after confirmation.
 
-Gmail remains disabled until token files are configured and readable by the service.
+Gmail remains disabled until token files are configured and readable by the service. Gmail web access and Gmail API access are separate: the browser can still be logged in while the API token is missing, expired, rate-limited, or blocked by quota. The app records recent Gmail sync/send failures and backs off repeated sync attempts when the Gmail API reports a temporary lockout.
 
 ## Current Checks
 
@@ -262,7 +276,7 @@ Gmail remains disabled until token files are configured and readable by the serv
 
 ## Review Output
 
-The backend splits each uploaded document into numbered paragraphs such as `p1`, `p2`, and `p3`. Clause results include backend-identified paragraph evidence, structured evidence records, reason codes, audit traces, issue labels, fix text, and proposed redlines. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
+The backend splits each uploaded document into numbered paragraphs such as `p1`, `p2`, and `p3`. Clause results include backend-identified paragraph evidence, structured evidence records, AI assessment metadata, deterministic comparison metadata where available, reason codes, audit traces, issue labels, fix text, and proposed redlines. The frontend uses backend paragraph IDs for highlighting and clause navigation instead of guessing locally.
 
 DOCX uploads preserve the source Word paragraph index. PDF uploads preserve extracted page metadata. PDF extraction reports basic quality metadata, including page counts, pages without extractable text, extracted character/paragraph counts, repeated header/footer removal, and sparse-extraction warnings.
 
@@ -290,12 +304,12 @@ PYTHON=/opt/anaconda3/bin/python \
 /Users/daniyalahmad/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node tests/frontend/review-workstation.cjs
 ```
 
-Frontend tests run the real app in Chromium and cover review view modes, viewer editing, redline rendering, Gmail/admin surfaces, and DOCX export behavior.
+Frontend tests run the real app in Chromium and cover repository/matter review loading, review view modes, viewer editing, redline rendering, Gmail/admin surfaces, and DOCX export behavior.
 
 ## Roadmap
 
 - Matter activity timeline for imports, reviews, draft saves, exports, sends, stage changes, and Gmail sync events.
-- Export/send preflight that summarizes selected redlines, manual edits, recipient, filename, and source-text warnings.
+- Counsel-labelled evaluation set for comparing AI-first verdicts, deterministic results, and final human-reviewed outcomes.
 - Matter search and filtering by counterparty, sender, filename, status, issue, date, stage, and source.
 - Review decision memory for recurring counterparty positions.
-- Continued Gmail onboarding polish and recovery guidance.
+- Continued Gmail onboarding polish, visual refinement, and recovery guidance.

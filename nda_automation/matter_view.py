@@ -162,6 +162,9 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
     ai_first_review_result = matter.get("ai_first_review_result")
     if isinstance(ai_first_review_result, dict):
         review_payload["ai_first_review_result"] = review_result_with_structure(ai_first_review_result, extracted_text)
+    review_comparison = matter.get("review_comparison")
+    if isinstance(review_comparison, dict):
+        review_payload["review_comparison"] = review_comparison
     redline_draft = matter.get("redline_draft")
     if isinstance(redline_draft, dict):
         review_payload["redline_draft"] = redline_draft

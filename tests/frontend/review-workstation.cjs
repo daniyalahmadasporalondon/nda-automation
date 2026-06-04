@@ -44,6 +44,7 @@ const tests = [
   ["edits playbook admin drafts with Pass/Check policy framing", testPlaybookAdminEditor],
   ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
+  ["stores review comparison data without rendering controls", testReviewComparisonDataContract],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
@@ -176,7 +177,18 @@ function browserLaunchOptions() {
 async function runReview(page, text) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByPlaceholder("Paste NDA text here").fill(text);
-  await page.getByRole("button", { name: "Review NDA" }).click();
+  await page.evaluate(async (sourceText) => {
+    const response = await fetch("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: sourceText }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Review could not run");
+    }
+    renderResult(payload, payload.extracted_text || sourceText);
+  }, text);
   await page.waitForSelector("#studioDocumentRender:not([hidden])");
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
 }
@@ -241,25 +253,6 @@ async function testAccessibleControlState(page) {
 }
 
 async function testFailureUxDetails(page) {
-  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.route("**/api/review", async (route) => {
-    await route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: "Clause evidence provenance drift.",
-        details: ["governing_law: matched_text does not equal matched source paragraphs."],
-      }),
-    });
-  });
-  await page.getByPlaceholder("Paste NDA text here").fill("This Agreement shall be governed by the laws of California.");
-  await page.getByRole("button", { name: "Review NDA" }).click();
-  await waitForText(page, "#studioOverallTitle", "Clause evidence provenance drift.");
-  await assertTextContains(page.locator("#studioOverallTitle"), "Clause evidence provenance drift.");
-  await assertTextContains(page.locator("#studioResultMeta"), "Review could not run.");
-  await assertTextContains(page.locator("#studioResultMeta"), "governing_law: matched_text");
-  await page.unroute("**/api/review");
-
   await runReview(page, passNda);
   await page.route("**/api/export-review-docx", async (route) => {
     await route.fulfill({
@@ -277,6 +270,45 @@ async function testFailureUxDetails(page) {
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
   await page.unroute("**/api/export-review-docx");
+}
+
+async function testReviewComparisonDataContract(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  let capturedPayload = null;
+  await page.route("**/api/review/compare", async (route) => {
+    capturedPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        review_comparison: {
+          mode: "deterministic_vs_ai_first",
+          status: "completed",
+          summary: { disagreement_count: 1 },
+        },
+      }),
+    });
+  });
+
+  await page.getByPlaceholder("Paste NDA text here").fill("This Agreement shall be governed by the laws of India.");
+  const comparison = await page.evaluate(() => runReviewComparison());
+  assert.deepEqual(capturedPayload, { text: "This Agreement shall be governed by the laws of India." });
+  assert.equal(comparison.mode, "deterministic_vs_ai_first");
+
+  const contractState = await page.evaluate(() => ({
+    error: state.reviewComparisonError,
+    mode: state.reviewComparison?.mode || "",
+    status: state.reviewComparisonStatus,
+    visibleComparisonControls: document.querySelectorAll("[data-review-comparison]").length,
+  }));
+  assert.deepEqual(contractState, {
+    error: "",
+    mode: "deterministic_vs_ai_first",
+    status: "completed",
+    visibleComparisonControls: 0,
+  });
+
+  await page.unroute("**/api/review/compare");
 }
 
 async function testPlaybookAdminEditor(page) {
@@ -516,6 +548,10 @@ async function testContractStructureReviewPanel(page) {
   let aiKeySource = "";
   let aiProvider = "gemini";
   let aiModel = "gemini-3.5-flash";
+  let activeReviewEngine = "ai_first";
+  let aiFirstFallbackMode = "fail_closed";
+  let runtimeSource = "default";
+  let settingsAudit = [];
   const aiSettingsResponse = () => ({
     ai_review: {
       version: 1,
@@ -529,12 +565,51 @@ async function testContractStructureReviewPanel(page) {
       api_key_source: aiKeySource,
       target_clause_ids: ["mutuality", "confidential_information", "governing_law", "term_and_survival", "non_circumvention"],
     },
+    active_review_engine: {
+      active_engine: activeReviewEngine,
+      engine_source: runtimeSource,
+      engine_source_key: runtimeSource === "runtime_settings" ? "review_runtime.active_review_engine" : "",
+      ai_first_fallback_mode: aiFirstFallbackMode,
+      fallback_source: runtimeSource,
+      fallback_source_key: runtimeSource === "runtime_settings" ? "review_runtime.ai_first_fallback_mode" : "",
+      stored_active_engine: runtimeSource === "runtime_settings" ? activeReviewEngine : null,
+      stored_ai_first_fallback_mode: runtimeSource === "runtime_settings" ? aiFirstFallbackMode : null,
+      environment_active_engine: "",
+      environment_ai_first_fallback_mode: "",
+      supported_engines: ["deterministic", "ai_first"],
+      supported_ai_first_fallback_modes: ["deterministic", "fail_closed"],
+    },
+    operational_warnings: activeReviewEngine === "ai_first" && !aiKeyConfigured
+      ? [{ code: "ai_first_without_key", message: "AI-first is active but no AI API key is configured." }]
+      : [],
+    settings_audit: settingsAudit,
   });
   await page.route("**/api/ai/settings", async (route) => {
     if (route.request().method() === "POST") {
       const payload = route.request().postDataJSON();
       aiSettingsPayloads.push(payload);
-      aiEnabled = payload.enabled === true;
+      if (Object.prototype.hasOwnProperty.call(payload, "enabled")) {
+        aiEnabled = payload.enabled === true;
+      }
+      if (payload.active_review_engine) {
+        activeReviewEngine = payload.active_review_engine;
+        runtimeSource = "runtime_settings";
+      }
+      if (payload.ai_first_fallback_mode) {
+        aiFirstFallbackMode = payload.ai_first_fallback_mode;
+        runtimeSource = "runtime_settings";
+      }
+      if (payload.active_review_engine || payload.ai_first_fallback_mode) {
+        settingsAudit = [{
+          recorded_at: "2026-06-04T10:00:00+00:00",
+          actor: "admin",
+          action: "admin_settings_update",
+          changes: [
+            payload.active_review_engine ? { setting: "review_runtime.active_review_engine", before: "deterministic", after: payload.active_review_engine } : null,
+            payload.ai_first_fallback_mode ? { setting: "review_runtime.ai_first_fallback_mode", before: "deterministic", after: payload.ai_first_fallback_mode } : null,
+          ].filter(Boolean),
+        }, ...settingsAudit];
+      }
     }
     await route.fulfill({
       status: 200,
@@ -553,6 +628,12 @@ async function testContractStructureReviewPanel(page) {
         aiProvider = "openrouter";
         aiModel = "openai/gpt-4o-mini";
       }
+      settingsAudit = [{
+        recorded_at: "2026-06-04T09:59:00+00:00",
+        actor: "admin",
+        action: "ai_api_key_saved",
+        changes: [{ setting: "ai_review.api_key", before: "", after: "saved" }],
+      }, ...settingsAudit];
     } else if (route.request().method() === "DELETE") {
       aiKeyConfigured = false;
       aiKeySource = "";
@@ -696,7 +777,7 @@ async function testContractStructureReviewPanel(page) {
   await page.locator('[data-admin-section="ai"]').click();
   const aiPanel = page.locator("#adminAiPanel");
   await assertTextContains(aiPanel, "AI review layer");
-  await assertTextContains(aiPanel, "How AI checks the deterministic result");
+  await assertTextContains(aiPanel, "How AI-first and comparison work");
   await assertTextContains(aiPanel, "GEMINI_API_KEY");
   await assertTextContains(aiPanel, "OPENROUTER_API_KEY");
   await assertTextContains(aiPanel, "ai_review_analysis");
@@ -715,7 +796,22 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "openai/gpt-4o-mini");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
+  assert.equal(await page.locator('[data-admin-ai="active-engine"]').innerText(), "AI-first");
+  assert.equal(await page.locator('[data-admin-ai="fallback-mode"]').innerText(), "Fail closed");
+  assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Default runtime");
+  assert.equal(await page.locator('[data-admin-ai="operational-warnings"]').innerText(), "None");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "ON");
+  await page.locator("#adminActiveReviewEngineSelect").selectOption("ai_first");
+  await page.locator("#adminAiFirstFallbackSelect").selectOption("fail_closed");
+  await page.locator("#adminRuntimeSaveButton").click();
+  await page.waitForFunction(() => document.querySelector('[data-admin-ai="active-engine"]')?.textContent?.trim() === "AI-first");
+  assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], {
+    active_review_engine: "ai_first",
+    ai_first_fallback_mode: "fail_closed",
+  });
+  assert.equal(await page.locator('[data-admin-ai="fallback-mode"]').innerText(), "Fail closed");
+  assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Admin runtime settings");
+  assert.equal(await page.locator('[data-admin-ai="last-settings-change"]').innerText(), "admin_settings_update: review_runtime.active_review_engine, review_runtime.ai_first_fallback_mode");
   await page.locator("#adminAiClearKeyButton").click();
   await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing AI API key");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");
@@ -1369,6 +1465,11 @@ async function testRepositoryOpenReviewRepeatedly(page) {
     buildMatter("matter_alpha_review", "Alpha Review NDA", "Alpha document text for repeated review opening."),
     buildMatter("matter_beta_review", "Beta Review NDA", "Beta document text for the second review opening."),
   ];
+  matters[0].review_comparison = {
+    mode: "deterministic_vs_ai_first",
+    status: "completed",
+    summary: { disagreement_count: 1 },
+  };
   const matterById = new Map(matters.map((matter) => [matter.id, matter]));
   let releaseBetaReview = () => {};
   const betaReviewGate = new Promise((resolve) => {
@@ -1420,6 +1521,7 @@ async function testRepositoryOpenReviewRepeatedly(page) {
         body: JSON.stringify({
           extracted_text: matter.extracted_text,
           matter,
+          review_comparison: matter.review_comparison || null,
           review_result: matter.review_result,
         }),
       });
@@ -1440,6 +1542,16 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "Alpha Review NDA");
   await assertTextContains(page.locator("#studioDocumentRender"), "Alpha document text for repeated review opening.");
+  const alphaComparison = await page.evaluate(() => ({
+    mode: state.reviewComparison?.mode || "",
+    status: state.reviewComparisonStatus,
+    disagreements: state.reviewComparison?.summary?.disagreement_count ?? null,
+  }));
+  assert.deepEqual(alphaComparison, {
+    mode: "deterministic_vs_ai_first",
+    status: "completed",
+    disagreements: 1,
+  });
 
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
@@ -1456,6 +1568,16 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   releaseBetaReview();
   await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
   await assertTextContains(page.locator("#studioDocumentRender"), "Beta document text for the second review opening.");
+  const betaComparison = await page.evaluate(() => ({
+    comparison: state.reviewComparison,
+    error: state.reviewComparisonError,
+    status: state.reviewComparisonStatus,
+  }));
+  assert.deepEqual(betaComparison, {
+    comparison: null,
+    error: "",
+    status: "idle",
+  });
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");

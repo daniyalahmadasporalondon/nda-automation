@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .checker import ParagraphAlignmentError, review_nda
+from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .pdf_text import PdfExtractionError, extract_pdf_document
+from .review_engine import review_nda_with_active_engine
 from .triage import triage_review_result
 
 
@@ -27,7 +28,7 @@ def create_matter_from_document(
     ensure_document_size(document_bytes)
     document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-    review_result = review_nda(extracted_text, paragraphs=extracted_paragraphs)
+    review_result = review_nda_with_active_engine(extracted_text, paragraphs=extracted_paragraphs)
     review_result["source"] = {
         "filename": filename,
         "type": document_type,

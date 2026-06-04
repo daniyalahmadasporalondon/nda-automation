@@ -5,6 +5,13 @@ from datetime import datetime, timezone
 
 from .. import ai_review, app_settings, matter_store, telemetry
 from ..deployment import _deployment_status_for_host
+from ..review_engine import (
+    FALLBACK_MODE_DETERMINISTIC,
+    FALLBACK_MODE_FAIL_CLOSED,
+    REVIEW_ENGINE_AI_FIRST,
+    REVIEW_ENGINE_DETERMINISTIC,
+    active_review_engine_status,
+)
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -19,22 +26,81 @@ def handle_telemetry(handler, *, send_body: bool = True) -> None:
 
 
 def handle_ai_settings(handler, *, send_body: bool = True) -> None:
-    handler._send_json({"ai_review": ai_review.ai_review_status()}, send_body=send_body)
+    handler._send_json(
+        {
+            "ai_review": ai_review.ai_review_status(),
+            "active_review_engine": active_review_engine_status(),
+            "operational_warnings": _operational_warnings(),
+            "settings_audit": app_settings.settings_audit_history(),
+        },
+        send_body=send_body,
+    )
 
 
 def handle_ai_settings_update(handler) -> None:
     payload = handler._read_json_payload()
     if payload is None:
         return
-    if "enabled" not in payload:
-        handler._send_json({"error": "Provide an AI setting to update."}, status=400)
+    ai_updates = {}
+    runtime_updates = {}
+    runtime_noops = set()
+    runtime_status = active_review_engine_status()
+    if "enabled" in payload:
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            handler._send_json({"error": "AI enabled setting must be true or false."}, status=400)
+            return
+        ai_updates["enabled"] = enabled
+    if "active_review_engine" in payload:
+        active_review_engine = _runtime_setting_value(payload.get("active_review_engine"))
+        if active_review_engine not in {REVIEW_ENGINE_DETERMINISTIC, REVIEW_ENGINE_AI_FIRST}:
+            handler._send_json({"error": "Active review engine must be deterministic or ai_first."}, status=400)
+            return
+        pinned_engine = runtime_status.get("environment_active_engine")
+        if pinned_engine:
+            if active_review_engine != pinned_engine:
+                telemetry.increment("review_runtime_update_blocked_environment")
+                handler._send_json({"error": "Active review engine is pinned by the backend environment."}, status=409)
+                return
+            runtime_noops.add("active_review_engine")
+        else:
+            runtime_updates["active_review_engine"] = active_review_engine
+    if "ai_first_fallback_mode" in payload:
+        fallback_mode = _runtime_setting_value(payload.get("ai_first_fallback_mode"))
+        if fallback_mode not in {FALLBACK_MODE_DETERMINISTIC, FALLBACK_MODE_FAIL_CLOSED}:
+            handler._send_json({"error": "AI-first fallback mode must be deterministic or fail_closed."}, status=400)
+            return
+        pinned_fallback = runtime_status.get("environment_ai_first_fallback_mode")
+        if pinned_fallback:
+            if fallback_mode != pinned_fallback:
+                telemetry.increment("review_runtime_update_blocked_environment")
+                handler._send_json({"error": "AI-first fallback mode is pinned by the backend environment."}, status=409)
+                return
+            runtime_noops.add("ai_first_fallback_mode")
+        else:
+            runtime_updates["ai_first_fallback_mode"] = fallback_mode
+    if not ai_updates and not runtime_updates and not runtime_noops:
+        handler._send_json({"error": "Provide an AI or runtime review setting to update."}, status=400)
         return
-    enabled = payload.get("enabled")
-    if not isinstance(enabled, bool):
-        handler._send_json({"error": "AI enabled setting must be true or false."}, status=400)
-        return
-    app_settings.update_ai_settings({"enabled": enabled})
-    handler._send_json({"ai_review": ai_review.ai_review_status()})
+    previous_ai_settings = app_settings.ai_settings()
+    previous_runtime_settings = app_settings.review_runtime_settings()
+    if ai_updates:
+        telemetry.increment("ai_settings_updates")
+        app_settings.update_ai_settings(ai_updates)
+    if runtime_updates:
+        telemetry.increment("review_runtime_settings_updates")
+        app_settings.update_review_runtime_settings(runtime_updates)
+    _record_settings_audit_if_changed(
+        "admin_settings_update",
+        previous_ai_settings=previous_ai_settings,
+        previous_runtime_settings=previous_runtime_settings,
+    )
+    handler._send_json({
+        "ai_review": ai_review.ai_review_status(),
+        "active_review_engine": active_review_engine_status(),
+        "operational_warnings": _operational_warnings(),
+        "settings_audit": app_settings.settings_audit_history(),
+    })
 
 
 def handle_ai_api_key_update(handler) -> None:
@@ -46,6 +112,9 @@ def handle_ai_api_key_update(handler) -> None:
         handler._send_json({"error": "Provide an AI API key to save."}, status=400)
         return
     provider = ai_review.provider_for_api_key(api_key)
+    telemetry.increment("ai_api_key_save_requests")
+    previous_ai_settings = app_settings.ai_settings()
+    previous_runtime_settings = app_settings.review_runtime_settings()
     app_settings.save_ai_api_key(api_key)
     app_settings.update_ai_settings({
         "provider": provider,
@@ -53,12 +122,95 @@ def handle_ai_api_key_update(handler) -> None:
     })
     if payload.get("enabled", True) is not False:
         app_settings.update_ai_settings({"enabled": True})
-    handler._send_json({"ai_review": ai_review.ai_review_status()})
+    _record_settings_audit_if_changed(
+        "ai_api_key_saved",
+        previous_ai_settings=previous_ai_settings,
+        previous_runtime_settings=previous_runtime_settings,
+        extra_changes=[{"setting": "ai_review.api_key", "before": "", "after": "saved"}],
+    )
+    handler._send_json({
+        "ai_review": ai_review.ai_review_status(),
+        "active_review_engine": active_review_engine_status(),
+        "operational_warnings": _operational_warnings(),
+        "settings_audit": app_settings.settings_audit_history(),
+    })
 
 
 def handle_ai_api_key_clear(handler) -> None:
+    telemetry.increment("ai_api_key_clear_requests")
+    previous_ai_settings = app_settings.ai_settings()
+    previous_runtime_settings = app_settings.review_runtime_settings()
+    had_key = bool(app_settings.stored_ai_api_key())
     app_settings.clear_ai_api_key()
-    handler._send_json({"ai_review": ai_review.ai_review_status()})
+    _record_settings_audit_if_changed(
+        "ai_api_key_cleared",
+        previous_ai_settings=previous_ai_settings,
+        previous_runtime_settings=previous_runtime_settings,
+        extra_changes=[{"setting": "ai_review.api_key", "before": "saved", "after": ""}] if had_key else [],
+    )
+    handler._send_json({
+        "ai_review": ai_review.ai_review_status(),
+        "active_review_engine": active_review_engine_status(),
+        "operational_warnings": _operational_warnings(),
+        "settings_audit": app_settings.settings_audit_history(),
+    })
+
+
+def _runtime_setting_value(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def _record_settings_audit_if_changed(
+    action: str,
+    *,
+    previous_ai_settings: dict,
+    previous_runtime_settings: dict,
+    extra_changes: list[dict] | None = None,
+) -> None:
+    changes = list(extra_changes or [])
+    current_ai_settings = app_settings.ai_settings()
+    current_runtime_settings = app_settings.review_runtime_settings()
+    for key in ("enabled", "provider", "model"):
+        before = previous_ai_settings.get(key)
+        after = current_ai_settings.get(key)
+        if before != after:
+            changes.append({"setting": f"ai_review.{key}", "before": before, "after": after})
+    for key in ("active_review_engine", "ai_first_fallback_mode"):
+        before = previous_runtime_settings.get(key)
+        after = current_runtime_settings.get(key)
+        if before != after:
+            changes.append({"setting": f"review_runtime.{key}", "before": before, "after": after})
+    if not changes:
+        return
+    telemetry.increment("settings_audit_events")
+    app_settings.record_settings_audit_event({
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "actor": "admin",
+        "action": action,
+        "changes": changes,
+    })
+
+
+def _operational_warnings() -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    ai_status = ai_review.ai_review_status()
+    runtime_status = active_review_engine_status()
+    if runtime_status.get("active_engine") == REVIEW_ENGINE_AI_FIRST and not ai_status.get("api_key_configured"):
+        warnings.append({
+            "code": "ai_first_without_key",
+            "message": "AI-first is active but no AI API key is configured.",
+        })
+    if runtime_status.get("environment_active_engine"):
+        warnings.append({
+            "code": "active_engine_environment_pinned",
+            "message": "Active review engine is pinned by the backend environment.",
+        })
+    if runtime_status.get("environment_ai_first_fallback_mode"):
+        warnings.append({
+            "code": "fallback_environment_pinned",
+            "message": "AI-first fallback mode is pinned by the backend environment.",
+        })
+    return warnings
 
 
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:

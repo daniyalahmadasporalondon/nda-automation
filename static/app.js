@@ -3,7 +3,6 @@ const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioCounterpartyMeta = document.querySelector("#studioCounterpartyMeta");
-const studioReviewButton = document.querySelector("#studioReviewButton");
 const studioSaveDraftButton = document.querySelector("#studioSaveDraftButton");
 const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButton");
 const studioExportButton = document.querySelector("#studioExportButton");
@@ -82,6 +81,10 @@ adminAiController = createAdminAiController({
   aiApiKeyInput: document.querySelector("#adminAiApiKeyInput"),
   aiClearKeyButton: document.querySelector("#adminAiClearKeyButton"),
   aiEnabledToggle: document.querySelector("#adminAiEnabledToggle"),
+  runtimeForm: document.querySelector("#adminRuntimeForm"),
+  activeReviewEngineSelect: document.querySelector("#adminActiveReviewEngineSelect"),
+  aiFirstFallbackSelect: document.querySelector("#adminAiFirstFallbackSelect"),
+  runtimeSaveButton: document.querySelector("#adminRuntimeSaveButton"),
   aiFacts: document.querySelector("#adminAiFacts"),
   aiOverall: document.querySelector("#adminAiOverall"),
   aiRefreshButton: document.querySelector("#adminAiRefreshButton"),

@@ -73,6 +73,10 @@ class MatterRepository(Protocol):
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any]
     ) -> dict[str, Any] | None: ...
 
+    def update_matter_review_comparison(
+        self, matter_id: str, review_comparison: dict[str, Any]
+    ) -> dict[str, Any] | None: ...
+
     def delete_matter(self, matter_id: str) -> dict[str, Any] | None: ...
 
     def reset_demo_repository(self) -> int: ...
@@ -149,6 +153,11 @@ class DiskMatterRepository:
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any]
     ) -> dict[str, Any] | None:
         return matter_store.update_matter_ai_first_review(matter_id, ai_first_review_result, metadata)
+
+    def update_matter_review_comparison(
+        self, matter_id: str, review_comparison: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        return matter_store.update_matter_review_comparison(matter_id, review_comparison)
 
     def delete_matter(self, matter_id: str) -> dict[str, Any] | None:
         return matter_store.delete_matter(matter_id)
@@ -342,6 +351,26 @@ class InMemoryMatterRepository:
                     "ai_first_review_result": copy.deepcopy(ai_first_review_result),
                     "ai_first_review_metadata": {
                         **copy.deepcopy(metadata),
+                        "stored_at": now,
+                    },
+                    "updated_at": now,
+                }
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def update_matter_review_comparison(
+        self, matter_id: str, review_comparison: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id:
+                    continue
+                updated_matter = {
+                    **matter,
+                    "review_comparison": {
+                        **copy.deepcopy(review_comparison),
                         "stored_at": now,
                     },
                     "updated_at": now,

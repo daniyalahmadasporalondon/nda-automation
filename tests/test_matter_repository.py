@@ -105,8 +105,19 @@ def test_updates_stage_fields_redline_review():
     assert ai_reviewed["review_result"] == {"clauses": []}
     assert ai_reviewed["triage_status"] == "pass"
 
+    compared = repo.update_matter_review_comparison(
+        matter_id,
+        {"mode": "deterministic_vs_ai_first", "summary": {"disagreement_count": 1}},
+    )
+    assert compared["review_comparison"]["mode"] == "deterministic_vs_ai_first"
+    assert compared["review_comparison"]["summary"]["disagreement_count"] == 1
+    assert "stored_at" in compared["review_comparison"]
+    assert compared["review_result"] == {"clauses": []}
+    assert compared["triage_status"] == "pass"
+
     assert repo.update_matter_stage("matter_missing", "intake") is None
     assert repo.update_matter_ai_first_review("matter_missing", {}, {}) is None
+    assert repo.update_matter_review_comparison("matter_missing", {}) is None
 
 
 def test_delete_and_reset():

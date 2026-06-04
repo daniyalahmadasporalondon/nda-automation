@@ -1,5 +1,6 @@
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
+  setReviewComparison(result.review_comparison || null);
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
@@ -54,6 +55,7 @@ function paragraphsAlignWithBaseline(paragraphs, baseline) {
 
 function renderStudioEmpty() {
   state.latestReviewResult = null;
+  setReviewComparison(null);
   showStudioSourceEditor();
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
   studioResultMark.textContent = "-";
@@ -73,12 +75,23 @@ function renderStudioEmpty() {
   renderStudioClauseLane();
 }
 
+function setReviewComparison(comparison, { status = "" } = {}) {
+  state.reviewComparison = comparison && typeof comparison === "object" ? comparison : null;
+  state.reviewComparisonStatus = state.reviewComparison ? (status || "completed") : (status || "idle");
+  state.reviewComparisonError = "";
+}
+
+function setReviewComparisonError(error) {
+  state.reviewComparison = null;
+  state.reviewComparisonStatus = "failed";
+  state.reviewComparisonError = error?.message || String(error || "Review comparison could not run.");
+}
+
 function updateExportButtonState() {
   const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
   if (studioExportButton) {
     studioExportButton.disabled = !canExport;
   }
-  updateReviewButtonState();
   if (!studioSendButton) {
     updateRedlineDraftControls();
     return;
@@ -127,17 +140,6 @@ function setStudioSendButtonLabel(label = "Send Redline", title = label) {
   if (textNode) {
     textNode.textContent = effectiveLabel;
   }
-}
-
-function updateReviewButtonState() {
-  if (!studioReviewButton) return;
-  const hasReviewableSource = Boolean((studioNdaText.value || "").trim() || state.selectedDocument);
-  const hasReviewedDocument = Boolean(
-    state.latestReviewResult
-      || state.reviewClauses.length
-      || state.reviewParagraphs.length
-  );
-  studioReviewButton.hidden = !hasReviewableSource || hasReviewedDocument;
 }
 
 function renderStudioResult(result) {

@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev portabi
 
 _SETTINGS_LOCK = threading.RLock()
 MAX_GMAIL_SYNC_HISTORY = 5
+MAX_SETTINGS_AUDIT_HISTORY = 25
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
     "outbound_enabled": True,
@@ -30,6 +31,12 @@ DEFAULT_AI_SETTINGS = {
     "provider": "",
     "model": "",
 }
+DEFAULT_REVIEW_RUNTIME_SETTINGS = {
+    "active_review_engine": None,
+    "ai_first_fallback_mode": None,
+}
+SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
+SUPPORTED_AI_FIRST_FALLBACK_MODES = {"deterministic", "fail_closed"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
 GMAIL_SYNC_FREQUENCIES = {
@@ -61,6 +68,19 @@ def ai_settings() -> dict[str, Any]:
     return ai_settings_from_payload(ai_review)
 
 
+def review_runtime_settings() -> dict[str, Any]:
+    settings = _load_settings()
+    review_runtime = settings.get("review_runtime")
+    if not isinstance(review_runtime, dict):
+        review_runtime = {}
+    return review_runtime_settings_from_payload(review_runtime)
+
+
+def settings_audit_history() -> list[dict[str, Any]]:
+    settings = _load_settings()
+    return settings_audit_history_from_payload(settings.get("settings_audit"))
+
+
 def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
     cleaned = {
         key: value
@@ -78,6 +98,34 @@ def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
         settings["ai_review"] = {**ai_settings_from_payload(ai_review), **cleaned}
         _save_settings_unlocked(settings)
         return ai_settings_from_payload(settings["ai_review"])
+
+
+def update_review_runtime_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {
+        key: _clean_review_runtime_setting(key, value)
+        for key, value in updates.items()
+        if _valid_review_runtime_setting(key, value)
+    }
+    if not cleaned:
+        return review_runtime_settings()
+
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        review_runtime = settings.get("review_runtime")
+        if not isinstance(review_runtime, dict):
+            review_runtime = {}
+        settings["review_runtime"] = {**review_runtime_settings_from_payload(review_runtime), **cleaned}
+        _save_settings_unlocked(settings)
+        return review_runtime_settings_from_payload(settings["review_runtime"])
+
+
+def record_settings_audit_event(event: dict[str, Any]) -> list[dict[str, Any]]:
+    cleaned_event = settings_audit_event_from_payload(event)
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        settings["settings_audit"] = _prepend_settings_audit_event(settings.get("settings_audit"), cleaned_event)
+        _save_settings_unlocked(settings)
+        return settings_audit_history_from_payload(settings["settings_audit"])
 
 
 def stored_ai_api_key() -> str:
@@ -231,6 +279,46 @@ def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {"enabled": enabled, "provider": provider, "model": model}
 
 
+def review_runtime_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    active_review_engine = _stored_runtime_value(
+        payload.get("active_review_engine", DEFAULT_REVIEW_RUNTIME_SETTINGS["active_review_engine"]),
+        SUPPORTED_ACTIVE_REVIEW_ENGINES,
+    )
+    ai_first_fallback_mode = _stored_runtime_value(
+        payload.get("ai_first_fallback_mode", DEFAULT_REVIEW_RUNTIME_SETTINGS["ai_first_fallback_mode"]),
+        SUPPORTED_AI_FIRST_FALLBACK_MODES,
+    )
+    return {
+        "active_review_engine": active_review_engine,
+        "ai_first_fallback_mode": ai_first_fallback_mode,
+    }
+
+
+def settings_audit_event_from_payload(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "recorded_at": str(payload.get("recorded_at") or ""),
+        "actor": str(payload.get("actor") or "admin")[:80],
+        "action": str(payload.get("action") or "settings_update")[:80],
+        "changes": _settings_audit_changes_from_payload(payload.get("changes")),
+    }
+
+
+def settings_audit_history_from_payload(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    history: list[dict[str, Any]] = []
+    for item in value:
+        event = settings_audit_event_from_payload(item)
+        if not event["recorded_at"] and not event["changes"]:
+            continue
+        history.append(event)
+        if len(history) >= MAX_SETTINGS_AUDIT_HISTORY:
+            break
+    return history
+
+
 def _valid_ai_setting(key: str, value: Any) -> bool:
     if key == "enabled":
         return isinstance(value, bool)
@@ -239,6 +327,34 @@ def _valid_ai_setting(key: str, value: Any) -> bool:
     if key == "model":
         return isinstance(value, str) and len(value.strip()) <= 200
     return False
+
+
+def _valid_review_runtime_setting(key: str, value: Any) -> bool:
+    if key == "active_review_engine":
+        return value is None or _normalized_runtime_value(value) in SUPPORTED_ACTIVE_REVIEW_ENGINES
+    if key == "ai_first_fallback_mode":
+        return value is None or _normalized_runtime_value(value) in SUPPORTED_AI_FIRST_FALLBACK_MODES
+    return False
+
+
+def _clean_review_runtime_setting(key: str, value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = _normalized_runtime_value(value)
+    if key == "active_review_engine" and normalized in SUPPORTED_ACTIVE_REVIEW_ENGINES:
+        return normalized
+    if key == "ai_first_fallback_mode" and normalized in SUPPORTED_AI_FIRST_FALLBACK_MODES:
+        return normalized
+    return None
+
+
+def _stored_runtime_value(value: Any, supported: set[str]) -> str | None:
+    normalized = _normalized_runtime_value(value)
+    return normalized if normalized in supported else None
+
+
+def _normalized_runtime_value(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
 
 
 def _valid_gmail_setting(key: str, value: Any) -> bool:
@@ -310,6 +426,43 @@ def _sync_history_from_payload(value: object) -> list[dict[str, Any]]:
         if len(history) >= MAX_GMAIL_SYNC_HISTORY:
             break
     return history
+
+
+def _settings_audit_changes_from_payload(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    changes: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        setting = str(item.get("setting") or "")[:120]
+        if not setting:
+            continue
+        changes.append({
+            "setting": setting,
+            "before": _safe_audit_value(item.get("before")),
+            "after": _safe_audit_value(item.get("after")),
+        })
+        if len(changes) >= 20:
+            break
+    return changes
+
+
+def _prepend_settings_audit_event(history: object, event: dict[str, Any]) -> list[dict[str, Any]]:
+    if not event.get("changes"):
+        return settings_audit_history_from_payload(history)
+    return [event, *settings_audit_history_from_payload(history)][:MAX_SETTINGS_AUDIT_HISTORY]
+
+
+def _safe_audit_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    text = str(value)
+    if len(text) > 200:
+        return f"{text[:197]}..."
+    return text
 
 
 def _load_settings() -> dict[str, Any]:

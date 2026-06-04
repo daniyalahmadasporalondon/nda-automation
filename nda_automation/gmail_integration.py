@@ -5,9 +5,11 @@ from contextlib import contextmanager
 from html import unescape
 from html.parser import HTMLParser
 import hashlib
+import json
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, parsedate_to_datetime
@@ -29,6 +31,7 @@ from .ingestion_service import (
     is_supported_document_filename,
 )
 from .pdf_text import PdfExtractionError
+from .review_engine import ActiveReviewEngineError
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 NDA_DETECTION_TERMS = (
@@ -47,6 +50,7 @@ DEFAULT_INBOUND_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf
 MAX_GMAIL_IMPORT_LIMIT = 25
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 GMAIL_BODY_PREVIEW_LIMIT = 5000
+GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
 ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
@@ -57,10 +61,18 @@ ROLE_LOCAL_TOKEN_FILENAME = {
     "outbound": "outbound-token.json",
 }
 _TOKEN_LOCK = threading.RLock()
+_PROFILE_CACHE_LOCK = threading.RLock()
+_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class GmailIntegrationError(RuntimeError):
     pass
+
+
+class GmailRateLimitError(GmailIntegrationError):
+    def __init__(self, message: str, *, retry_after_epoch: float = 0.0):
+        super().__init__(message)
+        self.retry_after_epoch = retry_after_epoch
 
 
 def gmail_status() -> dict[str, Any]:
@@ -86,7 +98,7 @@ def gmail_status() -> dict[str, Any]:
             continue
         role_status["configured"] = True
         try:
-            profile = _gmail_profile(_gmail_service(role))
+            profile = _gmail_profile_for_role(role)
         except GmailIntegrationError as error:
             role_status["error"] = str(error)
         else:
@@ -159,7 +171,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
     if not app_settings.gmail_role_enabled("inbound"):
         raise GmailIntegrationError("Gmail inbound is disabled in Admin.")
     service = _gmail_service("inbound")
-    profile = _gmail_profile(service)
+    profile = _gmail_profile_for_role("inbound", service=service)
     inbound_query = query.strip() if isinstance(query, str) and query.strip() else DEFAULT_INBOUND_QUERY
     try:
         requested_limit = int(limit or 10)
@@ -176,7 +188,7 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             maxResults=import_limit,
         ).execute()
     except Exception as exc:
-        raise GmailIntegrationError("Gmail inbound sync could not list messages.") from exc
+        _raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
 
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -186,7 +198,9 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             continue
         try:
             message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
-        except Exception:
+        except Exception as exc:
+            if _gmail_retry_after_epoch(exc):
+                _raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
             skipped.append({"message_id": message_id, "reason": "message_unavailable"})
             continue
 
@@ -274,7 +288,7 @@ def _import_inbound_attachment(
             },
             dedupe_gmail=True,
         )
-    except (DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
+    except (ActiveReviewEngineError, DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
         return None, _gmail_attachment_skip(message_id, attachment_filename, "review_failed")
 
     if matter.get("_existing_gmail_duplicate"):
@@ -339,7 +353,7 @@ def send_redline_email(
     try:
         sent_message = service.users().messages().send(userId="me", body=gmail_payload).execute()
     except Exception as exc:
-        raise GmailIntegrationError("Gmail outbound send failed.") from exc
+        _raise_gmail_api_error(exc, "Gmail outbound send failed.")
 
     return {
         "message_id": str(sent_message.get("id") or ""),
@@ -364,7 +378,7 @@ def _outbound_send_context(matter: dict[str, Any], *, recipient_override: str | 
         raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
     service = _gmail_service("outbound")
-    profile = _gmail_profile(service)
+    profile = _gmail_profile_for_role("outbound", service=service)
     outbound_account = str(profile.get("emailAddress") or "")
     if not _is_valid_email_address(outbound_account):
         raise GmailIntegrationError("Gmail outbound profile did not include a valid email address.")
@@ -434,6 +448,43 @@ def _gmail_service(role: str) -> Any:
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
     except Exception as exc:
         raise GmailIntegrationError(f"Gmail {role} service could not start.") from exc
+
+
+def _gmail_profile_for_role(role: str, *, service: Any | None = None) -> dict[str, Any]:
+    now = time.time()
+    with _PROFILE_CACHE_LOCK:
+        cached = _PROFILE_CACHE.get(role) or {}
+        profile = cached.get("profile")
+        loaded_at = float(cached.get("loaded_at") or 0.0)
+        if isinstance(profile, dict) and now - loaded_at <= GMAIL_PROFILE_CACHE_SECONDS:
+            return dict(profile)
+        retry_until = float(cached.get("rate_limit_until") or 0.0)
+        if retry_until > now:
+            raise GmailRateLimitError(
+                str(cached.get("rate_limit_message") or _gmail_rate_limit_message(retry_until)),
+                retry_after_epoch=retry_until,
+            )
+
+    gmail_service = service or _gmail_service(role)
+    try:
+        profile = _gmail_profile(gmail_service)
+    except GmailRateLimitError as error:
+        with _PROFILE_CACHE_LOCK:
+            _PROFILE_CACHE[role] = {
+                **(_PROFILE_CACHE.get(role) or {}),
+                "rate_limit_message": str(error),
+                "rate_limit_until": error.retry_after_epoch,
+            }
+        raise
+
+    with _PROFILE_CACHE_LOCK:
+        _PROFILE_CACHE[role] = {
+            "loaded_at": now,
+            "profile": dict(profile),
+            "rate_limit_message": "",
+            "rate_limit_until": 0.0,
+        }
+    return dict(profile)
 
 
 def _credentials_for_role(role: str) -> Any:
@@ -520,8 +571,72 @@ def _gmail_profile(service: Any) -> dict[str, Any]:
     try:
         profile = service.users().getProfile(userId="me").execute()
     except Exception as exc:
-        raise GmailIntegrationError("Gmail account profile could not load.") from exc
+        _raise_gmail_api_error(exc, "Gmail account profile could not load.")
     return profile if isinstance(profile, dict) else {}
+
+
+def _raise_gmail_api_error(error: Exception, fallback_message: str) -> None:
+    retry_after_epoch = _gmail_retry_after_epoch(error)
+    if retry_after_epoch:
+        raise GmailRateLimitError(
+            _gmail_rate_limit_message(retry_after_epoch),
+            retry_after_epoch=retry_after_epoch,
+        ) from error
+    raise GmailIntegrationError(fallback_message) from error
+
+
+def _gmail_rate_limit_message(retry_after_epoch: float) -> str:
+    retry_after_datetime = datetime.fromtimestamp(retry_after_epoch, timezone.utc)
+    retry_after = retry_after_datetime.isoformat(
+        timespec="milliseconds" if retry_after_datetime.microsecond else "seconds"
+    ).replace("+00:00", "Z")
+    return f"Gmail API rate limit exceeded. Retry after {retry_after}."
+
+
+def _gmail_retry_after_epoch(error: Exception) -> float:
+    status = getattr(getattr(error, "resp", None), "status", None)
+    content = getattr(error, "content", None)
+    content_text = ""
+    if isinstance(content, bytes):
+        content_text = content.decode("utf-8", errors="replace")
+    elif isinstance(content, str):
+        content_text = content
+    reason = ""
+    message = ""
+    if content_text:
+        try:
+            payload = json.loads(content_text)
+            error_payload = payload.get("error") if isinstance(payload, dict) else {}
+            if isinstance(error_payload, dict):
+                message = str(error_payload.get("message") or "")
+                errors = error_payload.get("errors")
+                if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                    reason = str(errors[0].get("reason") or "")
+        except (TypeError, ValueError):
+            message = content_text
+    if status != 429 and "rateLimitExceeded" not in reason and "rate limit" not in message.lower():
+        return 0.0
+    retry_after_match = re.search(r"Retry after\s+([0-9T:.\-+Z]+)", message, flags=re.IGNORECASE)
+    if retry_after_match:
+        retry_at = _parse_retry_after_timestamp(retry_after_match.group(1))
+        if retry_at:
+            return retry_at
+    return time.time() + 10 * 60
+
+
+def _parse_retry_after_timestamp(value: str) -> float:
+    cleaned = str(value or "").strip().rstrip(".")
+    if not cleaned:
+        return 0.0
+    try:
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _clear_gmail_profile_cache_for_tests() -> None:
+    with _PROFILE_CACHE_LOCK:
+        _PROFILE_CACHE.clear()
 
 
 def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
