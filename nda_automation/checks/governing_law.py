@@ -219,11 +219,6 @@ def _governing_law_paragraph_analysis(
         for reference in reference_analysis.get("references", [])
         if isinstance(reference, dict)
     }
-    governing_paragraph_ids = {
-        str(paragraph.get("id") or "")
-        for paragraph in governing_paragraphs
-        if paragraph.get("id")
-    }
 
     for paragraph in governing_paragraphs:
         text = str(paragraph["text"])
@@ -232,17 +227,9 @@ def _governing_law_paragraph_analysis(
         if reference_record:
             candidate_records.append(_governing_law_reference_candidate_record(reference_record))
             reference_status = str(reference_record.get("status") or "")
-            target_governing_ids = {
-                str(paragraph_id)
-                for target in reference_record.get("targets", [])
-                if isinstance(target, dict)
-                for paragraph_id in target.get("governing_paragraph_ids", [])
-                if str(paragraph_id)
-            }
-            target_is_classified_elsewhere = bool(target_governing_ids.intersection(governing_paragraph_ids))
             if reference_status in {"partial", "unresolved", "unclear", "no_governing_law"}:
                 unclear_paragraphs.append(paragraph)
-            elif reference_status == "unapproved" and not target_is_classified_elsewhere:
+            elif reference_status == "unapproved":
                 unapproved_paragraphs.append(paragraph)
             continue
         candidates = _governing_law_candidates(text)

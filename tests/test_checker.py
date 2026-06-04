@@ -1194,8 +1194,8 @@ class CheckerTests(unittest.TestCase):
         self.assertFalse(governing_law["passes"])
         self.assertEqual(governing_law["decision"], "fail")
         self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
-        self.assertEqual(governing_law["matched_paragraph_ids"], ["p5"])
-        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], ["p5"])
+        self.assertEqual(governing_law["matched_paragraph_ids"], ["p3", "p5"])
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], ["p3", "p5"])
         self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unapproved")
 
     def test_governing_law_needs_review_for_referenced_conditional_choice_of_law(self):
