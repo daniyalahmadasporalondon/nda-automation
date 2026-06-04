@@ -24,8 +24,14 @@
             <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
               <span>Review</span>
             </button>
-            <button class="tab-button" id="clausesTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="clauses">
+            <button class="tab-button" id="playbookTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="playbook">
+              <span>Playbook</span>
+            </button>
+            <button class="tab-button" id="adminTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="admin">
               <span>Admin</span>
+            </button>
+            <button class="tab-button" id="guideTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="guide">
+              <span>Guide</span>
             </button>
           </nav>
         </header>
@@ -284,32 +290,36 @@
           </section>
         </main>
 
-        <main class="admin-view view" id="clausesView" role="tabpanel" aria-labelledby="clausesTab" data-view="clauses" hidden>
+        <main class="admin-view view" id="clausesView" role="tabpanel" aria-labelledby="playbookTab" data-view="admin-workspace" data-admin-surface="playbook" hidden>
           <section class="admin-console">
             <aside class="admin-nav" aria-label="Admin sections">
               <div class="rail-heading">
-                <p class="eyebrow">admin</p>
-                <h2>Settings console</h2>
+                <p class="eyebrow" id="adminRailEyebrow">admin</p>
+                <h2 id="adminRailTitle">Settings console</h2>
               </div>
-              <button class="admin-section-button active" type="button" data-admin-section="playbook" aria-pressed="true">
+              <button class="admin-section-button active" type="button" data-admin-section="playbook" data-admin-surface="playbook" aria-pressed="true">
                 <strong>Playbook</strong>
                 <span>Clause rules and language</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="document" aria-pressed="false">
+              <button class="admin-section-button" type="button" data-admin-section="ai" data-admin-surface="admin" aria-pressed="false">
+                <strong>AI Runtime</strong>
+                <span>Provider, model, fallback</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="email" data-admin-surface="admin" aria-pressed="false">
+                <strong>Gmail</strong>
+                <span>Accounts and sync state</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="document" data-admin-surface="guide" aria-pressed="false">
                 <strong>Document</strong>
                 <span>Structure, references, concepts</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="checkers" aria-pressed="false">
+              <button class="admin-section-button" type="button" data-admin-section="checkers" data-admin-surface="guide" aria-pressed="false">
                 <strong>Checkers</strong>
                 <span>Pass, review, check logic</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="ai" aria-pressed="false">
-                <strong>AI</strong>
-                <span>Semantic review layer</span>
-              </button>
-              <button class="admin-section-button" type="button" data-admin-section="email" aria-pressed="false">
-                <strong>Email</strong>
-                <span>Gmail accounts and sync state</span>
+              <button class="admin-section-button" type="button" data-admin-section="ai_guide" data-admin-surface="guide" aria-pressed="false">
+                <strong>AI Review</strong>
+                <span>Method and audit fields</span>
               </button>
             </aside>
 
@@ -401,12 +411,12 @@
                   <article>
                     <h2>Auditor checkpoints</h2>
                     <dl class="engine-fact-list">
-                      <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Admin.</dd></div>
+                      <div><dt>Playbook source</dt><dd>Clause standards are stored in playbook.json and surfaced in Playbook.</dd></div>
                       <div><dt>Evidence trust</dt><dd>Each clause result is checked against paragraph IDs and source offsets.</dd></div>
                       <div><dt>Reference resolution</dt><dd>Explicit section references are resolved from each document's detected structure.</dd></div>
                       <div><dt>Source structure preservation</dt><dd>DOCX numbering, heading styles, and table locations are preserved before clause checks run.</dd></div>
                       <div><dt>Concept classification</dt><dd>Deterministic concept tags show why referenced sections count as confidentiality, carve-out, survival, or unrelated provisions.</dd></div>
-                      <div><dt>AI boundary</dt><dd>Document structure, references, and concepts are deterministic inputs; AI semantic review runs later as a separate Admin layer.</dd></div>
+                      <div><dt>AI boundary</dt><dd>Document structure, references, and concepts are deterministic inputs; AI semantic review runs later as a separate review layer.</dd></div>
                     </dl>
                   </article>
                 </section>
@@ -693,8 +703,8 @@
             <section class="admin-section-panel" id="adminAiPanel" data-admin-panel="ai" hidden>
               <header class="admin-section-head">
                 <div>
-                  <p class="eyebrow">semantic review</p>
-                  <h1>AI review layer</h1>
+                  <p class="eyebrow">runtime</p>
+                  <h1>AI runtime</h1>
                 </div>
                 <div class="admin-section-actions">
                   <button class="secondary" id="adminAiRefreshButton" type="button">Refresh</button>
@@ -706,7 +716,7 @@
                   <header class="integration-card-head">
                     <div>
                       <p class="eyebrow">provider</p>
-                      <h2>AI Semantic Review</h2>
+                      <h2>AI Runtime</h2>
                     </div>
                     <span class="integration-status" id="adminAiOverall">Checking</span>
                   </header>
@@ -800,6 +810,18 @@
                   </dl>
                 </article>
 
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminAiGuidePanel" data-admin-panel="ai_guide" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">ai semantic review</p>
+                  <h1>AI review methodology</h1>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
                 <section class="engine-resolver-panel" aria-label="AI semantic review logic">
                   <header>
                     <div>
@@ -812,7 +834,7 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Disabled by default. Admin can save a local Gemini, OpenRouter, or Alibaba API key and turn AI on from this tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, GEMINI_API_KEY, OPENROUTER_API_KEY, ALIBABA_API_KEY, or DASHSCOPE_API_KEY in the backend environment.</p>
+                      <p>Admin can save a local Gemini, OpenRouter, or Alibaba API key and turn AI on from the Admin tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, GEMINI_API_KEY, OPENROUTER_API_KEY, ALIBABA_API_KEY, or DASHSCOPE_API_KEY in the backend environment.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>

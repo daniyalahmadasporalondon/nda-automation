@@ -35,8 +35,12 @@ const studioResultMeta = document.querySelector("#studioResultMeta") || {};
 const studioDraftMeta = document.querySelector("#studioDraftMeta");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
+const adminWorkspaceTabs = new Set(["playbook", "admin", "guide"]);
 const adminSectionButtons = document.querySelectorAll("[data-admin-section]");
 const adminPanels = document.querySelectorAll("[data-admin-panel]");
+const adminWorkspaceView = document.querySelector("#clausesView");
+const adminRailEyebrow = document.querySelector("#adminRailEyebrow");
+const adminRailTitle = document.querySelector("#adminRailTitle");
 const playbookList = document.querySelector("#playbookList");
 const clauseDetail = document.querySelector("#clauseDetail");
 const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
@@ -155,7 +159,10 @@ tabButtons.forEach((button) => {
 });
 
 adminSectionButtons.forEach((button) => {
-  button.addEventListener("click", () => activateAdminSection(button.dataset.adminSection));
+  button.addEventListener("click", () => {
+    if (button.dataset.adminSurface) activateAdminSurface(button.dataset.adminSurface);
+    activateAdminSection(button.dataset.adminSection);
+  });
 });
 
 reviewInspectorButtons.forEach((button) => {
@@ -221,7 +228,8 @@ function setActiveTab(tabName) {
     button.tabIndex = active ? 0 : -1;
   });
   views.forEach((view) => {
-    const active = view.dataset.view === tabName;
+    const active = view.dataset.view === tabName
+      || (view.dataset.view === "admin-workspace" && adminWorkspaceTabs.has(tabName));
     view.classList.toggle("active", active);
     view.hidden = !active;
   });
@@ -236,13 +244,44 @@ function activateTab(tabName) {
     repositoryController.loadMatters();
     repositoryController.loadGmailStatus();
   }
-  if (tabName === "clauses") {
-    if (activeAdminSection() === "ai") {
-      adminAiController.load();
+  if (tabName === "playbook") {
+    activateAdminSurface("playbook");
+    activateAdminSection("playbook");
+  }
+  if (tabName === "admin") {
+    activateAdminSurface("admin");
+    if (!["ai", "email"].includes(activeAdminSection())) {
+      activateAdminSection("ai");
+    } else {
+      activateAdminSection(activeAdminSection());
     }
-    if (activeAdminSection() === "email") {
-      adminIntegrationsController.load();
+  }
+  if (tabName === "guide") {
+    activateAdminSurface("guide");
+    if (!["document", "checkers", "ai_guide"].includes(activeAdminSection())) {
+      activateAdminSection("document");
+    } else {
+      activateAdminSection(activeAdminSection());
     }
+  }
+}
+
+function activateAdminSurface(surfaceName) {
+  const surface = adminWorkspaceTabs.has(surfaceName) ? surfaceName : "playbook";
+  if (adminWorkspaceView) {
+    adminWorkspaceView.dataset.adminSurface = surface;
+    const tab = document.querySelector(`[data-tab="${surface}"]`);
+    if (tab?.id) adminWorkspaceView.setAttribute("aria-labelledby", tab.id);
+  }
+  if (adminRailEyebrow && adminRailTitle) {
+    const labels = {
+      admin: ["admin", "Operations"],
+      guide: ["guide", "Methodology"],
+      playbook: ["playbook", "Legal policy"],
+    };
+    const [eyebrow, title] = labels[surface] || labels.playbook;
+    adminRailEyebrow.textContent = eyebrow;
+    adminRailTitle.textContent = title;
   }
 }
 
