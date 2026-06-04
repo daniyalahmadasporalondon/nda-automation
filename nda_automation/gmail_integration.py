@@ -15,13 +15,16 @@ from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
     fcntl = None
 
-from . import app_settings, gmail_attachment_selector, matter_store
+from . import app_settings, gmail_attachment_selector, google_identity, matter_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -131,6 +134,13 @@ ROLE_LOCAL_TOKEN_FILENAME = {
     "inbound": "inbound-token.json",
     "outbound": "outbound-token.json",
 }
+GMAIL_OAUTH_REDIRECT_URI_ENV = "NDA_GMAIL_OAUTH_REDIRECT_URI"
+GMAIL_OAUTH_AUTH_URL = google_identity.GOOGLE_AUTH_URL
+GMAIL_OAUTH_TOKEN_URL = google_identity.GOOGLE_TOKEN_URL
+GMAIL_OAUTH_SCOPES_BY_ROLE = {
+    "inbound": ("https://www.googleapis.com/auth/gmail.readonly",),
+    "outbound": ("https://www.googleapis.com/auth/gmail.send",),
+}
 _TOKEN_LOCK = threading.RLock()
 _PROFILE_CACHE_LOCK = threading.RLock()
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
@@ -146,30 +156,38 @@ class GmailRateLimitError(GmailIntegrationError):
         self.retry_after_epoch = retry_after_epoch
 
 
-def gmail_status() -> dict[str, Any]:
+def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
     settings = app_settings.gmail_settings()
-    status: dict[str, Any] = {"settings": settings, "account_match": True}
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    status: dict[str, Any] = {
+        "connect_url": "/auth/gmail/start" if owner_user_id else "",
+        "disconnect_url": "/api/gmail/disconnect" if owner_user_id else "",
+        "settings": settings,
+        "account_match": True,
+        "user_scoped": bool(owner_user_id),
+    }
     for role in ("inbound", "outbound"):
         enabled = bool(settings.get(f"{role}_enabled", True))
         role_status: dict[str, Any] = {
             "configured": False,
+            "connect_url": f"/auth/gmail/start?role={role}" if owner_user_id else "",
             "email": "",
             "enabled": enabled,
             "ready": False,
             "role": role,
-            "token": gmail_role_token_status(role),
+            "token": gmail_role_token_status(role, owner_user_id=owner_user_id),
         }
         if role == "inbound":
             role_status["query"] = _default_inbound_query()
             role_status["parsing"] = gmail_inbound_parsing_summary()
-        setup_error = gmail_role_setup_error(role)
+        setup_error = gmail_role_setup_error(role, owner_user_id=owner_user_id)
         if setup_error:
             role_status["error"] = setup_error
             status[role] = role_status
             continue
         role_status["configured"] = True
         try:
-            profile = _gmail_profile_for_role(role)
+            profile = _gmail_profile_for_role(role, owner_user_id=owner_user_id)
         except GmailIntegrationError as error:
             role_status["error"] = str(error)
         else:
@@ -214,10 +232,12 @@ def _default_inbound_query() -> str:
     return f"{GMAIL_INBOUND_BASE_QUERY} {_gmail_search_terms_query(app_settings.gmail_inbound_search_terms())}"
 
 
-def gmail_role_setup_error(role: str) -> str:
-    token = gmail_role_token_status(role)
+def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:
+    token = gmail_role_token_status(role, owner_user_id=owner_user_id)
     if token["configured"]:
         return ""
+    if owner_user_id:
+        return f"Connect Gmail for this user to enable the {role} Gmail account."
     if token["source"] == "environment":
         return (
             f"{ROLE_TOKEN_ENV[role]} points to a missing token file. "
@@ -226,9 +246,23 @@ def gmail_role_setup_error(role: str) -> str:
     return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
 
 
-def gmail_role_token_status(role: str) -> dict[str, object]:
+def gmail_role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
     if role not in ROLE_TOKEN_ENV:
         raise GmailIntegrationError("Unsupported Gmail role.")
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    if owner_user_id:
+        local_path = _user_token_path_for_role(role, owner_user_id)
+        if local_path.is_file():
+            return {
+                "configured": True,
+                "label": f"user_gmail/{role}-token.json",
+                "source": "user_data",
+            }
+        return {
+            "configured": False,
+            "label": f"Connect Gmail for {role}",
+            "source": "missing",
+        }
     env_name = ROLE_TOKEN_ENV[role]
     local_label = f"data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]}"
     configured_path = os.environ.get(env_name)
@@ -252,11 +286,12 @@ def gmail_role_token_status(role: str) -> dict[str, object]:
     }
 
 
-def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict[str, Any]:
+def import_inbound_matters(*, limit: int = 10, query: str | None = None, owner_user_id: str = "") -> dict[str, Any]:
     if not app_settings.gmail_role_enabled("inbound"):
         raise GmailIntegrationError("Gmail inbound is disabled in Admin.")
-    service = _gmail_service("inbound")
-    profile = _gmail_profile_for_role("inbound", service=service)
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    service = _gmail_service_for_owner("inbound", owner_user_id)
+    profile = _gmail_profile_for_role("inbound", service=service, owner_user_id=owner_user_id)
     inbound_query = query.strip() if isinstance(query, str) and query.strip() else _default_inbound_query()
     try:
         requested_limit = int(limit or 10)
@@ -314,7 +349,13 @@ def import_inbound_matters(*, limit: int = 10, query: str | None = None) -> dict
             message,
             _message_metadata(message, account_email, detection=detection if detection["matched"] else None),
         )
-        attachment_result = _import_inbound_attachments(service, message_id, attachments, metadata)
+        attachment_result = _import_inbound_attachments(
+            service,
+            message_id,
+            attachments,
+            metadata,
+            owner_user_id=owner_user_id,
+        )
         imported.extend(attachment_result["imported"])
         skipped.extend(attachment_result["skipped"])
 
@@ -331,6 +372,8 @@ def _import_inbound_attachments(
     message_id: str,
     attachments: list[dict[str, Any]],
     metadata: dict[str, str],
+    *,
+    owner_user_id: str = "",
 ) -> dict[str, list[dict[str, Any]]]:
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -341,6 +384,7 @@ def _import_inbound_attachments(
             message_id,
             attachment,
             metadata,
+            owner_user_id=owner_user_id,
             require_deterministic_acceptance=not selector_enabled,
         )
         if skip is not None:
@@ -377,6 +421,7 @@ def _import_inbound_attachments(
             candidate,
             metadata,
             selector_metadata=selector_metadata if selected_ids is not None else None,
+            owner_user_id=owner_user_id,
         )
         if skip is not None:
             skipped.append(skip)
@@ -403,13 +448,14 @@ def _prepare_inbound_attachment(
     attachment: dict[str, Any],
     metadata: dict[str, str],
     *,
+    owner_user_id: str = "",
     require_deterministic_acceptance: bool = True,
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     attachment_id = str(attachment.get("attachment_id") or "")
     attachment_filename = str(attachment.get("filename") or "")
     part_id = str(attachment.get("part_id") or "")
 
-    if _gmail_attachment_already_imported(message_id, attachment_id, part_id=part_id):
+    if _gmail_attachment_already_imported(message_id, attachment_id, part_id=part_id, owner_user_id=owner_user_id):
         return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
 
     try:
@@ -429,6 +475,7 @@ def _prepare_inbound_attachment(
         attachment_filename=attachment_filename,
         attachment_sha256=attachment_sha256,
         part_id=part_id,
+        owner_user_id=owner_user_id,
     ):
         return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
 
@@ -482,6 +529,7 @@ def _create_matter_from_prepared_attachment(
     metadata: dict[str, str],
     *,
     selector_metadata: dict[str, object] | None = None,
+    owner_user_id: str = "",
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     message_id = str(candidate.get("message_id") or "")
     attachment_id = str(candidate.get("attachment_id") or "")
@@ -512,6 +560,7 @@ def _create_matter_from_prepared_attachment(
                 "gmail_part_id": part_id,
             },
             dedupe_gmail=True,
+            owner_user_id=owner_user_id,
         )
     except (ActiveReviewEngineError, DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
         return None, _gmail_attachment_skip(message_id, attachment_filename, "review_failed")
@@ -570,6 +619,7 @@ def _gmail_attachment_already_imported(
     attachment_filename: str = "",
     attachment_sha256: str = "",
     part_id: str = "",
+    owner_user_id: str = "",
 ) -> bool:
     return matter_store.find_gmail_attachment(
         message_id,
@@ -577,6 +627,7 @@ def _gmail_attachment_already_imported(
         attachment_filename=attachment_filename,
         attachment_sha256=attachment_sha256,
         part_id=part_id,
+        owner_user_id=owner_user_id,
     ) is not None
 
 
@@ -601,8 +652,13 @@ def send_redline_email(
     body: str | None = None,
     subject: str | None = None,
     to: str | None = None,
+    owner_user_id: str = "",
 ) -> dict[str, str]:
-    recipient, service, outbound_account = _outbound_send_context(matter, recipient_override=to)
+    recipient, service, outbound_account = _outbound_send_context(
+        matter,
+        recipient_override=to,
+        owner_user_id=owner_user_id,
+    )
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
     message = EmailMessage()
     message["To"] = recipient
@@ -637,20 +693,35 @@ def send_redline_email(
     }
 
 
-def validate_outbound_send_ready(matter: dict[str, Any], *, to: str | None = None) -> dict[str, str]:
-    recipient, _service, outbound_account = _outbound_send_context(matter, recipient_override=to)
+def validate_outbound_send_ready(
+    matter: dict[str, Any],
+    *,
+    to: str | None = None,
+    owner_user_id: str = "",
+) -> dict[str, str]:
+    recipient, _service, outbound_account = _outbound_send_context(
+        matter,
+        recipient_override=to,
+        owner_user_id=owner_user_id,
+    )
     return {"outbound_account": outbound_account, "to": recipient}
 
 
-def _outbound_send_context(matter: dict[str, Any], *, recipient_override: str | None = None) -> tuple[str, Any, str]:
+def _outbound_send_context(
+    matter: dict[str, Any],
+    *,
+    recipient_override: str | None = None,
+    owner_user_id: str = "",
+) -> tuple[str, Any, str]:
     recipient = recipient_email(recipient_override) or matter_reply_recipient(matter)
     if not recipient:
         raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
     if not app_settings.gmail_role_enabled("outbound"):
         raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
-    service = _gmail_service("outbound")
-    profile = _gmail_profile_for_role("outbound", service=service)
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    service = _gmail_service_for_owner("outbound", owner_user_id)
+    profile = _gmail_profile_for_role("outbound", service=service, owner_user_id=owner_user_id)
     outbound_account = str(profile.get("emailAddress") or "")
     if not _is_valid_email_address(outbound_account):
         raise GmailIntegrationError("Gmail outbound profile did not include a valid email address.")
@@ -710,8 +781,8 @@ def _apply_account_consistency(status: dict[str, Any]) -> None:
     outbound["error"] = message
 
 
-def _gmail_service(role: str) -> Any:
-    creds = _credentials_for_role(role)
+def _gmail_service(role: str, owner_user_id: str = "") -> Any:
+    creds = _credentials_for_role(role, owner_user_id=owner_user_id)
     try:
         from googleapiclient.discovery import build
     except ImportError as exc:
@@ -722,10 +793,17 @@ def _gmail_service(role: str) -> Any:
         raise GmailIntegrationError(f"Gmail {role} service could not start.") from exc
 
 
-def _gmail_profile_for_role(role: str, *, service: Any | None = None) -> dict[str, Any]:
+def _gmail_service_for_owner(role: str, owner_user_id: str = "") -> Any:
+    if owner_user_id:
+        return _gmail_service(role, owner_user_id=owner_user_id)
+    return _gmail_service(role)
+
+
+def _gmail_profile_for_role(role: str, *, service: Any | None = None, owner_user_id: str = "") -> dict[str, Any]:
+    cache_key = _profile_cache_key(role, owner_user_id)
     now = time.time()
     with _PROFILE_CACHE_LOCK:
-        cached = _PROFILE_CACHE.get(role) or {}
+        cached = _PROFILE_CACHE.get(cache_key) or {}
         profile = cached.get("profile")
         loaded_at = float(cached.get("loaded_at") or 0.0)
         if isinstance(profile, dict) and now - loaded_at <= GMAIL_PROFILE_CACHE_SECONDS:
@@ -737,20 +815,20 @@ def _gmail_profile_for_role(role: str, *, service: Any | None = None) -> dict[st
                 retry_after_epoch=retry_until,
             )
 
-    gmail_service = service or _gmail_service(role)
+    gmail_service = service or _gmail_service_for_owner(role, owner_user_id)
     try:
         profile = _gmail_profile(gmail_service)
     except GmailRateLimitError as error:
         with _PROFILE_CACHE_LOCK:
-            _PROFILE_CACHE[role] = {
-                **(_PROFILE_CACHE.get(role) or {}),
+            _PROFILE_CACHE[cache_key] = {
+                **(_PROFILE_CACHE.get(cache_key) or {}),
                 "rate_limit_message": str(error),
                 "rate_limit_until": error.retry_after_epoch,
             }
         raise
 
     with _PROFILE_CACHE_LOCK:
-        _PROFILE_CACHE[role] = {
+        _PROFILE_CACHE[cache_key] = {
             "loaded_at": now,
             "profile": dict(profile),
             "rate_limit_message": "",
@@ -759,8 +837,8 @@ def _gmail_profile_for_role(role: str, *, service: Any | None = None) -> dict[st
     return dict(profile)
 
 
-def _credentials_for_role(role: str) -> Any:
-    token_path = _token_path_for_role(role)
+def _credentials_for_role(role: str, owner_user_id: str = "") -> Any:
+    token_path = _token_path_for_role(role, owner_user_id=owner_user_id)
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -816,6 +894,10 @@ def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, token_path)
+        try:
+            os.chmod(token_path, 0o600)
+        except OSError:
+            pass
     except OSError as exc:
         try:
             temporary_path.unlink()
@@ -824,9 +906,12 @@ def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
         raise GmailIntegrationError("Gmail token could not be saved.") from exc
 
 
-def _token_path_for_role(role: str) -> Path:
+def _token_path_for_role(role: str, owner_user_id: str = "") -> Path:
     if role not in ROLE_TOKEN_ENV:
         raise GmailIntegrationError("Unsupported Gmail role.")
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    if owner_user_id:
+        return _user_token_path_for_role(role, owner_user_id)
     configured_path = os.environ.get(ROLE_TOKEN_ENV[role])
     if configured_path:
         return Path(configured_path).expanduser()
@@ -837,6 +922,156 @@ def _token_path_for_role(role: str) -> Path:
         f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} "
         f"for the {role} Gmail account."
     )
+
+
+def build_gmail_authorization_url(*, redirect_uri: str, state: str, role: str = "all") -> str:
+    if not google_identity.google_oauth_configured():
+        raise GmailIntegrationError("Google OAuth is not configured.")
+    query = urllib.parse.urlencode({
+        "access_type": "offline",
+        "client_id": google_identity.google_client_id(),
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(_gmail_oauth_scopes_for_role(role)),
+        "state": state,
+    })
+    return f"{GMAIL_OAUTH_AUTH_URL}?{query}"
+
+
+def exchange_gmail_oauth_code(code: str, *, redirect_uri: str) -> dict[str, Any]:
+    if not google_identity.google_oauth_configured():
+        raise GmailIntegrationError("Google OAuth is not configured.")
+    body = urllib.parse.urlencode({
+        "code": code,
+        "client_id": google_identity.google_client_id(),
+        "client_secret": google_identity.google_client_secret(),
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        GMAIL_OAUTH_TOKEN_URL,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise GmailIntegrationError("Gmail OAuth token exchange failed.") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise GmailIntegrationError("Gmail OAuth token exchange failed.") from exc
+    if not isinstance(payload, dict):
+        raise GmailIntegrationError("Gmail OAuth token exchange failed.")
+    return payload
+
+
+def save_user_gmail_oauth_token(owner_user_id: str, token_response: dict[str, Any], *, role: str = "all") -> list[str]:
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    if not owner_user_id:
+        raise GmailIntegrationError("A signed-in user is required to connect Gmail.")
+    access_token = str(token_response.get("access_token") or "").strip()
+    if not access_token:
+        raise GmailIntegrationError("Gmail OAuth response did not include an access token.")
+    saved_roles = _gmail_oauth_roles_for_role(role)
+    token_payloads: list[tuple[str, Path, dict[str, Any]]] = []
+    for save_role in saved_roles:
+        token_path = _user_token_path_for_role(save_role, owner_user_id)
+        existing = _read_token_json(token_path)
+        refresh_token = str(token_response.get("refresh_token") or existing.get("refresh_token") or "").strip()
+        if not refresh_token:
+            raise GmailIntegrationError("Google did not return a Gmail refresh token. Reconnect Gmail and approve offline access.")
+        token_payloads.append((save_role, token_path, {
+            "client_id": google_identity.google_client_id(),
+            "client_secret": google_identity.google_client_secret(),
+            "refresh_token": refresh_token,
+            "scopes": list(_gmail_oauth_scopes_for_role(save_role)),
+            "token": access_token,
+            "token_uri": GMAIL_OAUTH_TOKEN_URL,
+        }))
+    saved: list[str] = []
+    for save_role, token_path, token_payload in token_payloads:
+        _write_token_atomically(token_path, json.dumps(token_payload, indent=2) + "\n")
+        saved.append(save_role)
+    _clear_profile_cache_for_owner(owner_user_id)
+    return saved
+
+
+def disconnect_user_gmail(owner_user_id: str, *, role: str = "all") -> int:
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    if not owner_user_id:
+        raise GmailIntegrationError("A signed-in user is required to disconnect Gmail.")
+    removed = 0
+    for disconnect_role in _gmail_oauth_roles_for_role(role):
+        token_path = _user_token_path_for_role(disconnect_role, owner_user_id)
+        try:
+            token_path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise GmailIntegrationError("Gmail token could not be removed.") from exc
+    _clear_profile_cache_for_owner(owner_user_id)
+    return removed
+
+
+def configured_gmail_redirect_uri() -> str:
+    return os.environ.get(GMAIL_OAUTH_REDIRECT_URI_ENV, "").strip()
+
+
+def _gmail_oauth_scopes_for_role(role: str) -> tuple[str, ...]:
+    roles = _gmail_oauth_roles_for_role(role)
+    scopes: list[str] = []
+    for role_name in roles:
+        for scope in GMAIL_OAUTH_SCOPES_BY_ROLE[role_name]:
+            if scope not in scopes:
+                scopes.append(scope)
+    return tuple(scopes)
+
+
+def _gmail_oauth_roles_for_role(role: str) -> tuple[str, ...]:
+    normalized_role = str(role or "all").strip().lower()
+    if normalized_role in {"all", "both"}:
+        return ("inbound", "outbound")
+    if normalized_role in GMAIL_OAUTH_SCOPES_BY_ROLE:
+        return (normalized_role,)
+    raise GmailIntegrationError("Unsupported Gmail OAuth role.")
+
+
+def _user_token_path_for_role(role: str, owner_user_id: str) -> Path:
+    return matter_store.DATA_DIR / "users" / "gmail" / owner_user_id / ROLE_LOCAL_TOKEN_FILENAME[role]
+
+
+def _clean_user_token_segment(value: object) -> str:
+    return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
+
+
+def _read_token_json(token_path: Path) -> dict[str, Any]:
+    if not token_path.is_file():
+        return {}
+    try:
+        with token_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _profile_cache_key(role: str, owner_user_id: str = "") -> str:
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    return f"{owner_user_id or 'global'}:{role}"
+
+
+def _clear_profile_cache_for_owner(owner_user_id: str) -> None:
+    owner_user_id = _clean_user_token_segment(owner_user_id)
+    with _PROFILE_CACHE_LOCK:
+        for key in [
+            _profile_cache_key("inbound", owner_user_id),
+            _profile_cache_key("outbound", owner_user_id),
+        ]:
+            _PROFILE_CACHE.pop(key, None)
 
 
 def _gmail_profile(service: Any) -> dict[str, Any]:

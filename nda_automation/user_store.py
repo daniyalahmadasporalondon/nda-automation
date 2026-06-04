@@ -32,6 +32,16 @@ class UserStoreError(RuntimeError):
 
 
 def create_login_state(*, next_path: str = "/") -> str:
+    return create_oauth_state(purpose="login", next_path=next_path)
+
+
+def create_oauth_state(
+    *,
+    purpose: str,
+    user_id: str = "",
+    next_path: str = "/",
+    metadata: dict[str, Any] | None = None,
+) -> str:
     state = secrets.token_urlsafe(32)
     now = _now_epoch()
     with _locked_user_store():
@@ -40,13 +50,20 @@ def create_login_state(*, next_path: str = "/") -> str:
         store.setdefault("login_states", {})[_token_hash(state)] = {
             "created_at": _iso_from_epoch(now),
             "expires_at": _iso_from_epoch(now + LOGIN_STATE_TTL_SECONDS),
+            "metadata": _clean_metadata(metadata),
             "next_path": _clean_next_path(next_path),
+            "purpose": _clean_display_text(purpose, max_length=80),
+            "user_id": str(user_id or "").strip(),
         }
         _save_store_unlocked(store)
     return state
 
 
 def consume_login_state(state: str) -> dict[str, Any] | None:
+    return consume_oauth_state(state, purpose="login")
+
+
+def consume_oauth_state(state: str, *, purpose: str, user_id: str = "") -> dict[str, Any] | None:
     state_hash = _token_hash(state)
     if not state_hash:
         return None
@@ -59,8 +76,15 @@ def consume_login_state(state: str) -> dict[str, Any] | None:
         _save_store_unlocked(store)
     if not isinstance(state_record, dict):
         return None
+    if str(state_record.get("purpose") or "") != _clean_display_text(purpose, max_length=80):
+        return None
+    expected_user_id = str(user_id or "").strip()
+    if expected_user_id and str(state_record.get("user_id") or "") != expected_user_id:
+        return None
     return {
+        "metadata": state_record.get("metadata") if isinstance(state_record.get("metadata"), dict) else {},
         "next_path": _clean_next_path(state_record.get("next_path")),
+        "user_id": str(state_record.get("user_id") or ""),
     }
 
 
@@ -161,6 +185,18 @@ def _clean_next_path(value: object) -> str:
     if "\\" in path or "\r" in path or "\n" in path:
         return "/"
     return path[:500] or "/"
+
+
+def _clean_metadata(value: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, item in list(value.items())[:20]:
+        cleaned_key = _clean_display_text(key, max_length=80)
+        if not cleaned_key:
+            continue
+        cleaned[cleaned_key] = _clean_display_text(item, max_length=500)
+    return cleaned
 
 
 @contextmanager

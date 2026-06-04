@@ -35,7 +35,8 @@ class UserStoreTests(unittest.TestCase):
                 session_user = user_store.user_for_session_token(token)
                 users_payload = json.loads((Path(data_dir) / "users.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(first_state, {"next_path": "/api/matters"})
+        self.assertEqual(first_state["next_path"], "/api/matters")
+        self.assertEqual(first_state["metadata"], {})
         self.assertIsNone(second_state)
         self.assertEqual(user["id"], "google:google-subject")
         self.assertEqual(user["email"], "user@example.com")

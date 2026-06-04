@@ -38,6 +38,7 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_CLIENT_ID\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_CLIENT_SECRET\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_REDIRECT_URI\s+sync:\s+false")
+        self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_OAUTH_REDIRECT_URI\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_DATA_DIR\s+value:\s+/var/data")
         self.assertRegex(blueprint, r"key:\s+NDA_EXPORTS_DIR\s+value:\s+/var/data/exports")
         self.assertRegex(blueprint, r"key:\s+NDA_RATE_LIMIT_PER_MINUTE\s+value:\s+\"120\"")

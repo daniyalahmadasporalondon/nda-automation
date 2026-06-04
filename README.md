@@ -159,6 +159,7 @@ Common environment variables:
 - `NDA_REQUIRE_AUTH`: set to `true` to require login.
 - `NDA_GOOGLE_OAUTH_CLIENT_ID` and `NDA_GOOGLE_OAUTH_CLIENT_SECRET`: Google login credentials for per-user identity.
 - `NDA_GOOGLE_OAUTH_REDIRECT_URI`: optional fixed redirect URI; defaults to the request host plus `/auth/google/callback`.
+- `NDA_GMAIL_OAUTH_REDIRECT_URI`: optional fixed redirect URI for Gmail connection; defaults to the request host plus `/auth/gmail/callback`.
 - `NDA_AUTH_USERNAME` and `NDA_AUTH_PASSWORD`: optional HTTP Basic auth fallback credentials.
 - `NDA_USERS_PATH`: optional override for the user/session store; defaults to `NDA_DATA_DIR/users.json`.
 - `NDA_RATE_LIMIT_PER_MINUTE`: positive integer request limit for expensive endpoints, or `0` for trusted local testing.
@@ -216,6 +217,8 @@ python -m nda_automation.server --host 0.0.0.0 --port $PORT
 Public deployments require authentication. Non-loopback binds such as `0.0.0.0` require auth automatically, and the Render blueprint sets `NDA_REQUIRE_AUTH=true`. Configure Google OAuth for per-user login, or HTTP Basic as a temporary fallback. If auth is required but no login method is configured, the server refuses to start.
 
 Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, and `/api/auth/logout`.
+
+Signed-in Google users can connect Gmail at `/auth/gmail/start`. The Gmail OAuth flow stores per-user tokens under durable data storage, not in the legacy global Gmail token paths. Register both `/auth/google/callback` and `/auth/gmail/callback` as allowed redirect URIs in the Google OAuth client, unless fixed redirect URI env vars are configured.
 
 The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 

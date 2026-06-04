@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
 from .common import request_owner_user_id
+from .. import user_store
 
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
@@ -11,9 +14,90 @@ MAX_OUTBOUND_BODY_CHARS = 10_000
 
 def handle_gmail_status(handler, *, send_body: bool = True) -> None:
     try:
-        handler._send_json({"gmail": gmail_integration.gmail_status()}, send_body=send_body)
+        handler._send_json(
+            {"gmail": gmail_integration.gmail_status(owner_user_id=gmail_owner_user_id(handler))},
+            send_body=send_body,
+        )
     except app_settings.AppSettingsError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+
+
+def handle_gmail_connect_start(handler, *, send_body: bool = True) -> None:
+    owner_user_id = gmail_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json({"error": "Sign in with Google before connecting Gmail."}, status=403, send_body=send_body)
+        return
+    query = parse_qs(urlparse(handler.path).query)
+    role = str(query.get("role", ["all"])[0] or "all").strip().lower()
+    next_path = query.get("next", ["/"])[0]
+    try:
+        state = user_store.create_oauth_state(
+            purpose="gmail",
+            user_id=owner_user_id,
+            next_path=next_path,
+            metadata={"role": role},
+        )
+        authorization_url = gmail_integration.build_gmail_authorization_url(
+            redirect_uri=_gmail_redirect_uri(handler),
+            role=role,
+            state=state,
+        )
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=400, send_body=send_body)
+        return
+    handler._send_redirect(authorization_url, send_body=send_body)
+
+
+def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
+    owner_user_id = gmail_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json({"error": "Sign in with Google before connecting Gmail."}, status=403, send_body=send_body)
+        return
+    query = parse_qs(urlparse(handler.path).query)
+    if query.get("error"):
+        handler._send_json({"error": "Gmail connection was not completed."}, status=400, send_body=send_body)
+        return
+    code = query.get("code", [""])[0]
+    state = query.get("state", [""])[0]
+    state_record = user_store.consume_oauth_state(state, purpose="gmail", user_id=owner_user_id)
+    if not code or state_record is None:
+        handler._send_json({"error": "Gmail connection state is invalid or expired."}, status=400, send_body=send_body)
+        return
+    role = str((state_record.get("metadata") or {}).get("role") or "all")
+    try:
+        token_response = gmail_integration.exchange_gmail_oauth_code(code, redirect_uri=_gmail_redirect_uri(handler))
+        connected_roles = gmail_integration.save_user_gmail_oauth_token(
+            owner_user_id,
+            token_response,
+            role=role,
+        )
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=502, send_body=send_body)
+        return
+    next_path = str(state_record.get("next_path") or "/")
+    handler._send_redirect(
+        next_path,
+        headers={"X-Gmail-Connected-Roles": ",".join(connected_roles)},
+        send_body=send_body,
+    )
+
+
+def handle_gmail_disconnect(handler) -> None:
+    owner_user_id = gmail_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json({"error": "Sign in with Google before disconnecting Gmail."}, status=403)
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    role = str(payload.get("role") or "all").strip().lower()
+    try:
+        removed = gmail_integration.disconnect_user_gmail(owner_user_id, role=role)
+        status = gmail_integration.gmail_status(owner_user_id=owner_user_id)
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    handler._send_json({"disconnected": removed, "gmail": status})
 
 
 def handle_gmail_import(handler) -> None:
@@ -75,6 +159,7 @@ def handle_gmail_send_redline(handler) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
+    gmail_token_owner_user_id = gmail_owner_user_id(handler)
     matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
@@ -93,7 +178,14 @@ def handle_gmail_send_redline(handler) -> None:
     outbound_body = clean_outbound_body(payload.get("body"))
 
     try:
-        gmail_integration.validate_outbound_send_ready(matter, to=outbound_to)
+        if gmail_token_owner_user_id:
+            gmail_integration.validate_outbound_send_ready(
+                matter,
+                to=outbound_to,
+                owner_user_id=gmail_token_owner_user_id,
+            )
+        else:
+            gmail_integration.validate_outbound_send_ready(matter, to=outbound_to)
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
@@ -126,14 +218,25 @@ def handle_gmail_send_redline(handler) -> None:
         return
 
     try:
-        sent = gmail_integration.send_redline_email(
-            send_matter,
-            redline_export.data,
-            redline_export.filename,
-            body=outbound_body,
-            subject=outbound_subject,
-            to=outbound_to,
-        )
+        if gmail_token_owner_user_id:
+            sent = gmail_integration.send_redline_email(
+                send_matter,
+                redline_export.data,
+                redline_export.filename,
+                body=outbound_body,
+                owner_user_id=gmail_token_owner_user_id,
+                subject=outbound_subject,
+                to=outbound_to,
+            )
+        else:
+            sent = gmail_integration.send_redline_email(
+                send_matter,
+                redline_export.data,
+                redline_export.filename,
+                body=outbound_body,
+                subject=outbound_subject,
+                to=outbound_to,
+            )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
@@ -165,6 +268,31 @@ def handle_gmail_send_redline(handler) -> None:
 
 def matter_blocks_redline_send(matter: dict) -> bool:
     return matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed")
+
+
+def gmail_owner_user_id(handler) -> str:
+    current_user = getattr(handler, "current_user", None)
+    if isinstance(current_user, dict) and current_user.get("provider") == "google":
+        return request_owner_user_id(handler)
+    return ""
+
+
+def _gmail_redirect_uri(handler) -> str:
+    configured = gmail_integration.configured_gmail_redirect_uri()
+    if configured:
+        return configured
+    return f"{_request_base_url(handler)}/auth/gmail/callback"
+
+
+def _request_base_url(handler) -> str:
+    scheme = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip() or "http"
+    host = handler.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+    if not host:
+        host = handler.headers.get("Host", "").strip()
+    if not host:
+        server_host, server_port = handler.server.server_address[:2]
+        host = f"{server_host}:{server_port}"
+    return f"{scheme}://{host}"
 
 
 def clean_outbound_subject(value: object) -> str | None:

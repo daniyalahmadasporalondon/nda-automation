@@ -36,6 +36,7 @@ from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation import telemetry
+from nda_automation import user_store
 from nda_automation.review_comparison import ReviewComparisonError
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, AI_FIRST_FALLBACK_MODE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
@@ -137,6 +138,16 @@ class ServerTests(unittest.TestCase):
 
     def cookie_header(self, set_cookie):
         return set_cookie.split(";", 1)[0]
+
+    def google_session_headers(self, *, subject="google-user-123", email="alice@example.com"):
+        user = user_store.upsert_google_user({
+            "sub": subject,
+            "email": email,
+            "name": "Alice Example",
+            "picture": "https://example.com/alice.png",
+        })
+        token = user_store.create_session(user["id"])
+        return {"Cookie": f"{user_store.SESSION_COOKIE_NAME}={token}"}, user
 
     @contextmanager
     def acquired_gmail_sync_lock(self):
@@ -2626,6 +2637,109 @@ class ServerTests(unittest.TestCase):
             "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
             "source": "missing",
         })
+
+    def test_user_gmail_oauth_connect_status_and_disconnect_are_owner_scoped(self):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "alice@example.com"})
+
+        class FakeGmailService:
+            def users(self):
+                return FakeUsers()
+
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_GMAIL_OAUTH_REDIRECT_URI": "https://nda.example.com/auth/gmail/callback",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                session_headers, user = self.google_session_headers()
+                start_status, start_payload, start_headers = self.request_with_headers(
+                    "GET",
+                    "/auth/gmail/start?role=all&next=/api/gmail/status",
+                    headers=session_headers,
+                )
+                start_location = start_headers["Location"]
+                parsed_start = urlparse(start_location)
+                state = parse_qs(parsed_start.query)["state"][0]
+                with patch(
+                    "nda_automation.routes.gmail.gmail_integration.exchange_gmail_oauth_code",
+                    return_value={"access_token": "access-token", "refresh_token": "refresh-token"},
+                ) as exchange_code:
+                    callback_status, callback_payload, callback_headers = self.request_with_headers(
+                        "GET",
+                        f"/auth/gmail/callback?code=gmail-code&state={state}",
+                        headers=session_headers,
+                    )
+                token_root = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                inbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]
+                outbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]
+                self.assertEqual(callback_status, 302, callback_payload)
+                inbound_token_exists_after_connect = inbound_token.is_file()
+                outbound_token_exists_after_connect = outbound_token.is_file()
+                legacy_gmail_dir_exists_after_connect = (matter_store.DATA_DIR / "gmail").exists()
+                token_payload = json.loads(inbound_token.read_text(encoding="utf-8"))
+                with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService()):
+                    status_status, status_payload = self.request(
+                        "GET",
+                        "/api/gmail/status",
+                        headers=session_headers,
+                    )
+                disconnect_status, disconnect_payload = self.request(
+                    "POST",
+                    "/api/gmail/disconnect",
+                    {"role": "inbound"},
+                    headers=session_headers,
+                )
+                inbound_token_exists_after_disconnect = inbound_token.exists()
+                outbound_token_exists_after_disconnect = outbound_token.exists()
+
+        self.assertEqual(start_status, 302)
+        self.assertEqual(start_payload, b"")
+        self.assertEqual(parsed_start.scheme, "https")
+        self.assertEqual(parsed_start.netloc, "accounts.google.com")
+        start_query = parse_qs(parsed_start.query)
+        self.assertEqual(start_query["client_id"], ["google-client"])
+        self.assertEqual(start_query["redirect_uri"], ["https://nda.example.com/auth/gmail/callback"])
+        self.assertIn("https://www.googleapis.com/auth/gmail.readonly", start_query["scope"][0])
+        self.assertIn("https://www.googleapis.com/auth/gmail.send", start_query["scope"][0])
+        self.assertEqual(callback_status, 302)
+        self.assertEqual(callback_payload, b"")
+        self.assertEqual(callback_headers["Location"], "/api/gmail/status")
+        self.assertEqual(callback_headers["X-Gmail-Connected-Roles"], "inbound,outbound")
+        exchange_code.assert_called_once_with(
+            "gmail-code",
+            redirect_uri="https://nda.example.com/auth/gmail/callback",
+        )
+        self.assertTrue(inbound_token_exists_after_connect)
+        self.assertTrue(outbound_token_exists_after_connect)
+        self.assertFalse(legacy_gmail_dir_exists_after_connect)
+        self.assertEqual(token_payload["client_id"], "google-client")
+        self.assertEqual(token_payload["refresh_token"], "refresh-token")
+        self.assertNotIn("access-token", json.dumps(status_payload))
+        self.assertEqual(status_status, 200)
+        self.assertTrue(status_payload["gmail"]["user_scoped"])
+        self.assertEqual(status_payload["gmail"]["inbound"]["token"]["source"], "user_data")
+        self.assertEqual(status_payload["gmail"]["outbound"]["token"]["source"], "user_data")
+        self.assertTrue(status_payload["gmail"]["inbound"]["ready"])
+        self.assertEqual(disconnect_status, 200)
+        self.assertEqual(disconnect_payload["disconnected"], 1)
+        self.assertFalse(inbound_token_exists_after_disconnect)
+        self.assertTrue(outbound_token_exists_after_disconnect)
+        self.assertEqual(disconnect_payload["gmail"]["inbound"]["token"]["source"], "missing")
+        self.assertEqual(disconnect_payload["gmail"]["outbound"]["token"]["source"], "user_data")
 
     def test_gmail_settings_updates_inbound_search_terms(self):
         with tempfile.TemporaryDirectory() as data_dir:

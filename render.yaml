@@ -21,6 +21,8 @@ services:
         sync: false
       - key: NDA_GOOGLE_OAUTH_REDIRECT_URI
         sync: false
+      - key: NDA_GMAIL_OAUTH_REDIRECT_URI
+        sync: false
       - key: NDA_DATA_DIR
         value: /var/data
       - key: NDA_EXPORTS_DIR
