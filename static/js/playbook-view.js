@@ -55,76 +55,14 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       clauseDetail.innerHTML = '<div class="detail-empty">No clause selected</div>';
       return;
     }
-    if (clause.id === "mutuality") {
-      renderMutualityClauseDetail(clause);
-      return;
-    }
-
-    clauseDetail.innerHTML = `
-      <form class="playbook-editor" id="playbookEditor">
-        <div class="admin-head">
-          <div>
-            <p class="eyebrow">clause ${escapeHtml(clause.id)}</p>
-            <h2>Edit Clause: ${escapeHtml(clause.name)}</h2>
-          </div>
-          <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
-        </div>
-
-        <div class="admin-grid">
-          ${textInput("Clause Name", "name", clause.name)}
-        </div>
-
-        <fieldset class="admin-fieldset">
-          <legend>Stance</legend>
-          <label>
-            <input type="radio" name="type" value="required" ${clause.type === "prohibited" ? "" : "checked"}>
-            <span>Required - Check if absent or deficient</span>
-          </label>
-          <label>
-            <input type="radio" name="type" value="prohibited" ${clause.type === "prohibited" ? "checked" : ""}>
-            <span>Prohibited - Check if present</span>
-          </label>
-        </fieldset>
-
-        ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
-        ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
-        ${redlineTemplateEditors(clause)}
-
-        ${specialControls(clause)}
-        ${checkerVisibilityPanel(clause)}
-        ${sharedContextControls(clause)}
-
-        <section class="admin-rules">
-          <h3>Raw Engine Rules</h3>
-          <pre>${escapeHtml(engineRulesForClause(clause))}</pre>
-        </section>
-
-        <section class="admin-rules diff">
-          <h3>Draft Modifications Diff</h3>
-          <pre id="playbookDraftDiff">${escapeHtml(diffForClause(clause.id) || "No unsaved changes.")}</pre>
-        </section>
-
-        ${playbookHistoryPanel()}
-
-        <div class="admin-actions">
-          <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
-          <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Draft</button>
-          <button type="submit" id="savePlaybookButton" ${hasAnyDraft() && !hasTemplateValidationErrors() ? "" : "disabled"}>Commit & Save Playbook</button>
-        </div>
-      </form>
-    `;
-
-    const editor = clauseDetail.querySelector("#playbookEditor");
-    editor.addEventListener("input", handleEditorInput);
-    editor.addEventListener("submit", savePlaybook);
-    clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
-    setupSpecialControls(clause);
-    setupPlaybookHistoryControls();
+    renderTabbedClauseDetail(clause);
   }
 
-  function renderMutualityClauseDetail(clause) {
+  function renderTabbedClauseDetail(clause) {
     const allowedPanels = new Set(["policy", "redline", "decision", "audit"]);
-    const activePanel = allowedPanels.has(state.playbookMutualityPanel) ? state.playbookMutualityPanel : "policy";
+    const panelState = playbookPanelState();
+    const savedPanel = panelState[clause.id] || (clause.id === "mutuality" ? state.playbookMutualityPanel : "");
+    const activePanel = allowedPanels.has(savedPanel) ? savedPanel : "policy";
     const panelActive = (name) => activePanel === name;
     clauseDetail.innerHTML = `
       <form class="playbook-editor playbook-editor-tabbed" id="playbookEditor">
@@ -136,7 +74,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
         </div>
 
-        <nav class="playbook-subpanel-tabs" aria-label="Mutuality editor sections">
+        <nav class="playbook-subpanel-tabs" aria-label="${escapeHtml(clause.name)} editor sections">
           <button class="${panelActive("policy") ? "active" : ""}" type="button" data-playbook-panel-tab="policy" aria-pressed="${panelActive("policy") ? "true" : "false"}">Policy</button>
           <button class="${panelActive("redline") ? "active" : ""}" type="button" data-playbook-panel-tab="redline" aria-pressed="${panelActive("redline") ? "true" : "false"}">Redline</button>
           <button class="${panelActive("decision") ? "active" : ""}" type="button" data-playbook-panel-tab="decision" aria-pressed="${panelActive("decision") ? "true" : "false"}">Decision Logic</button>
@@ -146,7 +84,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         <section class="playbook-subpanel ${panelActive("policy") ? "active" : ""}" data-playbook-panel="policy" ${panelActive("policy") ? "" : "hidden"}>
           <div class="playbook-subpanel-head">
             <h3>Policy</h3>
-            <p>Define the Mutuality rule the review engine should apply.</p>
+            <p>Define the ${escapeHtml(clause.name)} rule the review engine should apply.</p>
           </div>
           <div class="admin-grid">
             ${textInput("Clause Name", "name", clause.name)}
@@ -164,23 +102,23 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           </fieldset>
           ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
           ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+          ${policyPanelControls(clause)}
         </section>
 
         <section class="playbook-subpanel ${panelActive("redline") ? "active" : ""}" data-playbook-panel="redline" ${panelActive("redline") ? "" : "hidden"}>
           <div class="playbook-subpanel-head">
             <h3>Redline</h3>
-            <p>Control the replacement language exported when Mutuality needs a redline.</p>
+            <p>Control the language exported when ${escapeHtml(clause.name)} needs a redline.</p>
           </div>
-          ${redlineTemplateEditors(clause)}
+          ${redlinePanelControls(clause)}
         </section>
 
         <section class="playbook-subpanel ${panelActive("decision") ? "active" : ""}" data-playbook-panel="decision" ${panelActive("decision") ? "" : "hidden"}>
           <div class="playbook-subpanel-head">
             <h3>Decision Logic</h3>
-            <p>Review how Mutuality is assessed and what evidence appears in audit output.</p>
+            <p>Review how ${escapeHtml(clause.name)} is assessed and what evidence appears in audit output.</p>
           </div>
-          ${checkerVisibilityPanel(clause)}
-          ${sharedContextControls(clause)}
+          ${decisionPanelControls(clause)}
         </section>
 
         <section class="playbook-subpanel ${panelActive("audit") ? "active" : ""}" data-playbook-panel="audit" ${panelActive("audit") ? "" : "hidden"}>
@@ -211,6 +149,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     editor.addEventListener("input", handleEditorInput);
     editor.addEventListener("submit", savePlaybook);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
+    setupSpecialControls(clause);
     setupPlaybookSubpanels();
     setupPlaybookHistoryControls();
   }
@@ -336,7 +275,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     tabs.forEach((tab) => {
       tab.addEventListener("click", () => {
         const target = tab.dataset.playbookPanelTab;
-        state.playbookMutualityPanel = target;
+        const clause = selectedClause();
+        if (clause) {
+          playbookPanelState()[clause.id] = target;
+          if (clause.id === "mutuality") state.playbookMutualityPanel = target;
+        }
         tabs.forEach((item) => {
           const active = item === tab;
           item.classList.toggle("active", active);
@@ -349,6 +292,13 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         });
       });
     });
+  }
+
+  function playbookPanelState() {
+    if (!state.playbookClausePanels || typeof state.playbookClausePanels !== "object") {
+      state.playbookClausePanels = {};
+    }
+    return state.playbookClausePanels;
   }
 
   async function savePlaybook(event) {
@@ -470,95 +420,133 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       .join("\n\n");
   }
 
-  function specialControls(clause) {
-    if (clause.id === "confidential_information") {
-      return `
-        ${templateEditorBlock(clause, standardExclusionsTemplateConfig())}
-      `;
-    }
+  function policyPanelControls(clause) {
     if (clause.id === "term_and_survival") {
-      const carveOuts = (clause.longer_survival_carve_out_terms || [])
-        .map((item) => `
-          <button class="admin-chip removable" type="button" data-remove-survival-carveout="${escapeHtml(item)}">
-            ${escapeHtml(item)} <span aria-hidden="true">x</span>
-          </button>
-        `)
-        .join("");
-      const indefiniteTerms = (clause.indefinite_terms || [])
-        .map((item) => `<span class="admin-chip">${escapeHtml(item)}</span>`)
-        .join("");
-      return `
-        <label class="admin-field compact">
-          <span>Ordinary Confidentiality Cap (years)</span>
-          <input name="max_term_years" type="number" min="1" max="25" step="1" value="${escapeHtml(clause.max_term_years || 5)}">
-        </label>
-        <section class="admin-special">
-          <h3>Permitted Perpetual / Longer Survival Carve-outs</h3>
-          <p class="admin-muted">Only these carve-out terms can justify indefinite, perpetual, or above-cap survival. Ordinary confidentiality still has to stay within the cap.</p>
-          <div class="admin-chip-row">${carveOuts || '<span class="admin-muted">No longer-survival carve-outs configured</span>'}</div>
-          <div class="admin-inline-add">
-            <input id="survivalCarveOutInput" type="text" placeholder="Add carve-out term">
-            <button class="secondary" id="addSurvivalCarveOut" type="button">Add</button>
-          </div>
-        </section>
-        <section class="admin-special">
-          <h3>Perpetual / Indefinite Trigger Terms</h3>
-          <p class="admin-muted">When these terms appear outside the permitted carve-out context, the clause is checked.</p>
-          <div class="admin-chip-row">${indefiniteTerms}</div>
-        </section>
-        <section class="admin-special">
-          <h3>Checker Logic Visibility</h3>
-          <p class="admin-muted">The backend now evaluates survival language with document structure, explicit references, and deterministic concepts.</p>
-          <dl class="admin-logic-list">
-            <div><dt>Duration parser</dt><dd>Reads numeric and mixed word durations such as three (3) years and 3 (three) years.</dd></div>
-            <div><dt>Reference resolver</dt><dd>When survival points to clauses or articles, the checker resolves those targets before deciding pass or check.</dd></div>
-            <div><dt>Concept classifier</dt><dd>Referenced targets are tagged for confidentiality, use restriction, permitted disclosure, return/destruction, and carve-out concepts.</dd></div>
-            <div><dt>Checker output</dt><dd>When references are used, the review result includes term_survival_analysis for audit.</dd></div>
-          </dl>
-        </section>
-      `;
+      return termSurvivalPolicyControls(clause);
     }
     if (clause.id === "governing_law") {
-      const approved = clause.approved_laws || [];
-      const preferredLaw = clause.preferred_law || approved[0] || "";
-      const lawPhrases = clause.law_phrases || {};
-      const rows = approved
-        .map((law, index) => `
-          <article class="admin-policy-option" data-governing-law-row="${index}">
-            <label class="admin-policy-default">
-              <input type="radio" name="preferred_law_index" value="${index}" data-preferred-governing-law="true" ${law === preferredLaw ? "checked" : ""}>
-              <span>Preferred</span>
-            </label>
-            <label class="admin-field">
-              <span>Jurisdiction</span>
-              <input name="governing_law_value_${index}" data-governing-law-value="${index}" type="text" value="${escapeHtml(law)}">
-            </label>
-            <label class="admin-field">
-              <span>Draft phrase</span>
-              <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
-            </label>
-            <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
-          </article>
-        `)
-        .join("");
-      return `
-        <section class="admin-special">
-          <h3>Approved Governing Laws</h3>
-          <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, and insertable Governing Law redline choices.</p>
-          <div class="admin-policy-options">${rows}</div>
-          <div class="admin-inline-add">
-            <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
-            <button class="secondary" id="addGoverningLaw" type="button">Add</button>
-          </div>
-        </section>
-        <section class="admin-special">
-          <h3>Generated Governing Law Redlines</h3>
-          <p class="admin-muted">These options are generated from approved jurisdictions and draft phrases. Governing Law does not use a free redline template.</p>
-          <div class="admin-generated-redlines" data-governing-law-redline-preview>${governingLawRedlinePreviewRows(clause)}</div>
-        </section>
-      `;
+      return governingLawPolicyControls(clause);
     }
     return "";
+  }
+
+  function redlinePanelControls(clause) {
+    const controls = [redlineTemplateEditors(clause)];
+    if (clause.id === "confidential_information") {
+      controls.push(templateEditorBlock(clause, standardExclusionsTemplateConfig()));
+    }
+    if (clause.id === "governing_law") {
+      controls.push(governingLawRedlineControls(clause));
+    }
+    const html = controls.filter(Boolean).join("");
+    return html || `
+      <section class="admin-special">
+        <h3>No Editable Redline Settings</h3>
+        <p class="admin-muted">This clause uses generated redline behavior from the review engine.</p>
+      </section>
+    `;
+  }
+
+  function decisionPanelControls(clause) {
+    return `
+      ${checkerVisibilityPanel(clause)}
+      ${clause.id === "term_and_survival" ? termSurvivalDecisionControls() : ""}
+      ${sharedContextControls(clause)}
+    `;
+  }
+
+  function termSurvivalPolicyControls(clause) {
+    const carveOuts = (clause.longer_survival_carve_out_terms || [])
+      .map((item) => `
+        <button class="admin-chip removable" type="button" data-remove-survival-carveout="${escapeHtml(item)}">
+          ${escapeHtml(item)} <span aria-hidden="true">x</span>
+        </button>
+      `)
+      .join("");
+    const indefiniteTerms = (clause.indefinite_terms || [])
+      .map((item) => `<span class="admin-chip">${escapeHtml(item)}</span>`)
+      .join("");
+    return `
+      <label class="admin-field compact">
+        <span>Ordinary Confidentiality Cap (years)</span>
+        <input name="max_term_years" type="number" min="1" max="25" step="1" value="${escapeHtml(clause.max_term_years || 5)}">
+      </label>
+      <section class="admin-special">
+        <h3>Permitted Perpetual / Longer Survival Carve-outs</h3>
+        <p class="admin-muted">Only these carve-out terms can justify indefinite, perpetual, or above-cap survival. Ordinary confidentiality still has to stay within the cap.</p>
+        <div class="admin-chip-row">${carveOuts || '<span class="admin-muted">No longer-survival carve-outs configured</span>'}</div>
+        <div class="admin-inline-add">
+          <input id="survivalCarveOutInput" type="text" placeholder="Add carve-out term">
+          <button class="secondary" id="addSurvivalCarveOut" type="button">Add</button>
+        </div>
+      </section>
+      <section class="admin-special">
+        <h3>Perpetual / Indefinite Trigger Terms</h3>
+        <p class="admin-muted">When these terms appear outside the permitted carve-out context, the clause is checked.</p>
+        <div class="admin-chip-row">${indefiniteTerms}</div>
+      </section>
+    `;
+  }
+
+  function termSurvivalDecisionControls() {
+    return `
+      <section class="admin-special">
+        <h3>Checker Logic Visibility</h3>
+        <p class="admin-muted">The backend evaluates survival language with document structure, explicit references, and deterministic concepts.</p>
+        <dl class="admin-logic-list">
+          <div><dt>Duration parser</dt><dd>Reads numeric and mixed word durations such as three (3) years and 3 (three) years.</dd></div>
+          <div><dt>Reference resolver</dt><dd>When survival points to clauses or articles, the checker resolves those targets before deciding pass or check.</dd></div>
+          <div><dt>Concept classifier</dt><dd>Referenced targets are tagged for confidentiality, use restriction, permitted disclosure, return/destruction, and carve-out concepts.</dd></div>
+          <div><dt>Checker output</dt><dd>When references are used, the review result includes term_survival_analysis for audit.</dd></div>
+        </dl>
+      </section>
+    `;
+  }
+
+  function governingLawPolicyControls(clause) {
+    const approved = clause.approved_laws || [];
+    const preferredLaw = clause.preferred_law || approved[0] || "";
+    const lawPhrases = clause.law_phrases || {};
+    const rows = approved
+      .map((law, index) => `
+        <article class="admin-policy-option" data-governing-law-row="${index}">
+          <label class="admin-policy-default">
+            <input type="radio" name="preferred_law_index" value="${index}" data-preferred-governing-law="true" ${law === preferredLaw ? "checked" : ""}>
+            <span>Preferred</span>
+          </label>
+          <label class="admin-field">
+            <span>Jurisdiction</span>
+            <input name="governing_law_value_${index}" data-governing-law-value="${index}" type="text" value="${escapeHtml(law)}">
+          </label>
+          <label class="admin-field">
+            <span>Draft phrase</span>
+            <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
+          </label>
+          <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
+        </article>
+      `)
+      .join("");
+    return `
+      <section class="admin-special">
+        <h3>Approved Governing Laws</h3>
+        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, and insertable Governing Law redline choices.</p>
+        <div class="admin-policy-options">${rows}</div>
+        <div class="admin-inline-add">
+          <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
+          <button class="secondary" id="addGoverningLaw" type="button">Add</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function governingLawRedlineControls(clause) {
+    return `
+      <section class="admin-special">
+        <h3>Generated Governing Law Redlines</h3>
+        <p class="admin-muted">These options are generated from approved jurisdictions and draft phrases. Governing Law does not use a free redline template.</p>
+        <div class="admin-generated-redlines" data-governing-law-redline-preview>${governingLawRedlinePreviewRows(clause)}</div>
+      </section>
+    `;
   }
 
   function redlineTemplateEditors(clause) {
