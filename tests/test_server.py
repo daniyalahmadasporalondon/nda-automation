@@ -750,6 +750,134 @@ class ServerTests(unittest.TestCase):
         self.assertIn(deployment["status"], {"ok", "needs_attention"})
         self.assertNotIn("secret", json.dumps(deployment).lower())
 
+    def test_state_changing_request_with_cross_site_origin_is_rejected(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, csrf_env):
+            status, payload = self.request(
+                "POST",
+                "/api/demo/reset",
+                headers={
+                    **self.basic_auth_headers(),
+                    "Origin": "https://evil.example.com",
+                },
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.CSRF_REJECTED_MESSAGE)
+
+    def test_state_changing_request_without_origin_or_referer_is_rejected_when_enforced(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, csrf_env):
+            status, payload = self.request(
+                "POST",
+                "/api/demo/reset",
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.CSRF_REJECTED_MESSAGE)
+
+    def test_state_changing_request_with_same_origin_is_allowed_when_enforced(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, csrf_env):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/demo/reset",
+                        headers={
+                            **self.basic_auth_headers(),
+                            "Host": f"{self.host}:{self.port}",
+                            "Origin": f"http://{self.host}:{self.port}",
+                        },
+                    )
+        self.assertEqual(status, 200)
+        self.assertIn("removed", payload)
+
+    def test_same_site_referer_is_accepted_when_origin_absent(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, csrf_env):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/demo/reset",
+                        headers={
+                            **self.basic_auth_headers(),
+                            "Referer": f"http://{self.host}:{self.port}/",
+                        },
+                    )
+        self.assertEqual(status, 200)
+        self.assertIn("removed", payload)
+
+    def test_logout_is_protected_from_cross_site_invocation(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, csrf_env):
+            status, payload = self.request(
+                "POST",
+                "/api/auth/logout",
+                headers={"Origin": "https://evil.example.com"},
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.CSRF_REJECTED_MESSAGE)
+
+    def test_csrf_enforcement_off_by_default_on_loopback(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {
+                    "NDA_REQUIRE_AUTH": "",
+                    "NDA_AUTH_USERNAME": "",
+                    "NDA_AUTH_PASSWORD": "",
+                }):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/demo/reset",
+                        headers={"Origin": "https://evil.example.com"},
+                    )
+        self.assertEqual(status, 200)
+        self.assertIn("removed", payload)
+
+    def test_safe_methods_are_never_csrf_gated(self):
+        csrf_env = {
+            "NDA_ENFORCE_CSRF": "true",
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, csrf_env):
+            status, _payload = self.request(
+                "GET",
+                "/api/auth/status",
+                headers={"Origin": "https://evil.example.com"},
+            )
+        self.assertEqual(status, 200)
+
     def test_public_deployment_status_flags_missing_hardening(self):
         with patch.dict(os.environ, {
             "NDA_REQUIRE_AUTH": "",
