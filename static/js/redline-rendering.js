@@ -127,7 +127,6 @@ function renderRedlineDocumentParagraph(model) {
       status?.fails ? "verify" : "",
       status && !status.requiresAttention ? "match" : "",
     ],
-    verdict: paragraphVerdict(model.primaryClause, status),
   });
 }
 
@@ -135,18 +134,7 @@ function isFailedProhibitedClause(clause) {
   return clause?.type === "prohibited" && clauseStatus(clause).fails;
 }
 
-function paragraphVerdict(clause, status) {
-  if (!clause || !status) return null;
-  const label = status.needsReview ? "Review" : status.fails ? "Fail" : status.passes ? "Pass" : status.resultLabel;
-  if (!label || label === "Pending") return null;
-  return {
-    detail: `${clause.name || clause.id}: ${label}`,
-    label,
-    tone: status.tone,
-  };
-}
-
-function renderParagraphFrame(model, { body, classes = [], verdict = null }) {
+function renderParagraphFrame(model, { body, classes = [] }) {
   return renderStudioParagraphFrame({
     body,
     classes,
@@ -154,24 +142,16 @@ function renderParagraphFrame(model, { body, classes = [], verdict = null }) {
     commentCount: model.commentCount,
     paragraphId: model.paragraph.id,
     selected: model.selected,
-    verdict,
   });
 }
 
-function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", verdict = null }) {
+function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "" }) {
   const frameAttributes = [];
   if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
   if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
   if (attributes) frameAttributes.push(attributes);
   const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount).trim() : "";
-  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${renderParagraphVerdict(verdict)}${body}</div>`;
-}
-
-function renderParagraphVerdict(verdict) {
-  if (!verdict?.label) return "";
-  const label = String(verdict.label);
-  const detail = String(verdict.detail || label);
-  return `<span class="${joinClasses("paragraph-verdict-label", verdict.tone ? `is-${verdict.tone}` : "")}" data-paragraph-verdict="${escapeHtml(label)}" contenteditable="false" aria-label="${escapeHtml(detail)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
+  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${body}</div>`;
 }
 
 function renderParagraphCommentTools(paragraphId, commentCount) {
@@ -236,7 +216,10 @@ function renderRedlineParagraphBody(paragraph, primaryRedline, visibleRedlines) 
       ? renderRedlineReplacement(primaryRedline, "span")
       : "";
     const insertionHtml = visibleRedlines.filter(isInsertionRedline).map(renderParagraphInsertion).join("");
-    return `<div class="paragraph-redline-preview" data-redline-preview contenteditable="false">${renderInlineRedline(paragraph, primaryRedline)}</div><div class="paragraph-source-editor">${editableParagraph}</div><div class="paragraph-redline-note" data-redline-note contenteditable="false"><span class="redline-label" data-redline-label>${escapeHtml(redlineActionLabel(primaryRedline))}</span>${replacement}</div>${insertionHtml}`;
+    const redlineNote = replacement
+      ? `<div class="paragraph-redline-note" data-redline-note contenteditable="false">${replacement}</div>`
+      : "";
+    return `<div class="paragraph-redline-preview" data-redline-preview contenteditable="false">${renderInlineRedline(paragraph, primaryRedline)}</div><div class="paragraph-source-editor">${editableParagraph}</div>${redlineNote}${insertionHtml}`;
   }
   const redlineHtml = visibleRedlines.length ? renderParagraphRedlines(visibleRedlines) : "";
   return `<div class="paragraph-redline-preview" data-redline-preview contenteditable="false" hidden></div>${editableParagraph}${redlineHtml}`;
@@ -252,11 +235,6 @@ function syncRenderedManualRedline(container, { paragraph, manualRedline, backen
   const previewRedline = manualRedline || backendRedline;
   preview.hidden = !previewRedline;
   preview.innerHTML = previewRedline ? renderInlineRedline(paragraph, previewRedline) : "";
-
-  const label = container.querySelector("[data-redline-label]");
-  if (label) {
-    label.textContent = redlineActionLabel(manualRedline || backendRedline || {});
-  }
 
   const backendReplacement = container.querySelector("[data-redline-replacement]");
   if (backendReplacement) {
@@ -367,11 +345,11 @@ function renderParagraphRedlines(edits) {
 
 function renderParagraphRedline(edit) {
   if (isInsertionRedline(edit)) return renderParagraphInsertion(edit);
-  return `<div class="paragraph-redline-note" data-redline-note contenteditable="false"><span class="redline-label" data-redline-label>${escapeHtml(redlineActionLabel(edit))}</span>${renderRedlineReplacement(edit, "span")}</div>`;
+  return `<div class="paragraph-redline-note" data-redline-note contenteditable="false">${renderRedlineReplacement(edit, "span")}</div>`;
 }
 
 function renderParagraphInsertion(edit) {
-  return `<div class="paragraph-insertion" data-redline-edit-id="${escapeHtml(edit.id || "")}" contenteditable="false"><span class="redline-label">${escapeHtml(redlineActionLabel(edit))}</span><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
+  return `<div class="paragraph-insertion" data-redline-edit-id="${escapeHtml(edit.id || "")}" contenteditable="false"><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
 }
 
 function redlineActionLabel(edit) {

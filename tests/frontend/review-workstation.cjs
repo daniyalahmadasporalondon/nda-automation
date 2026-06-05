@@ -46,6 +46,7 @@ const tests = [
   ["surfaces review and export error details", testFailureUxDetails],
   ["stores review comparison data without rendering controls", testReviewComparisonDataContract],
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
+  ["renders page image preview with text fallback", testRenderedPageImagePreview],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
@@ -990,6 +991,138 @@ async function testProgressivePdfPreviewFallback(page) {
   await page.waitForSelector('[data-review-pdf-surface][data-render-status="ready"]');
   assert.equal(await page.locator(".review-pdf-frame").getAttribute("src"), "/api/matters/matter_pdf_source/source");
   await assertTextContains(page.locator("[data-review-pdf-surface]"), "Original PDF");
+}
+
+async function testRenderedPageImagePreview(page) {
+  const renderText = "Rendered page fallback paragraph.";
+  const matterId = "rendered_pages";
+  const pagePng = testPngBuffer(6, 8);
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: pagePng,
+    });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-05T09:15:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "mutuality",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Mutuality",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: {
+      document_overlay: {
+        anchors: [{
+          boxes: [],
+          clause_id: "mutuality",
+          confidence: 0.6,
+          page_number: 1,
+          paragraph_id: "p1",
+          target_type: "evidence",
+        }],
+        fallback_mode: "text_dom_scroll",
+        precision: "page",
+        status: "partial",
+        version: 1,
+      },
+      error: "",
+      error_code: "",
+      pages: [
+        {
+          dpi: 180,
+          height: 2200,
+          image_url: `/api/matters/${matterId}/render-page/1`,
+          page_number: 1,
+          width: 1700,
+        },
+        {
+          dpi: 180,
+          height: 2200,
+          image_url: `/api/matters/${matterId}/render-page/2`,
+          page_number: 2,
+          width: 1700,
+        },
+      ],
+      pdf_url: `/api/matters/${matterId}/render-pdf`,
+      source_label: "Converted DOCX",
+      status: "ready",
+    },
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.evaluate((payload) => {
+    renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+
+  await page.waitForSelector('[data-review-render-page="1"] img');
+  assert.equal(await page.locator(".review-render-page img").count(), 2);
+  assert.equal(await page.locator(".review-pdf-frame").count(), 0);
+  assert.equal(
+    await page.locator('[data-review-render-page="1"] img').getAttribute("src"),
+    `/api/matters/${matterId}/render-page/1`,
+  );
+  await page.waitForFunction(() => Array.from(document.querySelectorAll(".review-render-page img"))
+    .every((image) => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0));
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Converted DOCX");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "2 pages");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Page image preview");
+  await assertTextContains(page.locator('[data-review-render-page="1"]'), "Selected clause evidence");
+  assert.equal(await page.locator('[data-review-render-page="1"]').getAttribute("data-overlay-clause-ids"), "mutuality");
+  await assertTextContains(page.locator("#studioDocumentRender"), renderText);
+
+  const readyState = await page.evaluate(() => state.reviewDocumentRender);
+  assert.deepEqual(readyState, {
+    documentOverlay: {
+      anchors: [{
+        boxes: [],
+        clauseId: "mutuality",
+        confidence: 0.6,
+        pageNumber: 1,
+        paragraphId: "p1",
+        targetType: "evidence",
+      }],
+      fallbackMode: "text_dom_scroll",
+      precision: "page",
+      status: "partial",
+      version: 1,
+    },
+    error: "",
+    pageCount: 2,
+    pages: [
+      {
+        dpi: 180,
+        height: 2200,
+        imageUrl: `/api/matters/${matterId}/render-page/1`,
+        pageNumber: 1,
+        width: 1700,
+      },
+      {
+        dpi: 180,
+        height: 2200,
+        imageUrl: `/api/matters/${matterId}/render-page/2`,
+        pageNumber: 2,
+        width: 1700,
+      },
+    ],
+    pdfUrl: `/api/matters/${matterId}/render-pdf`,
+    sourceLabel: "Converted DOCX",
+    status: "ready",
+  });
+
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
 }
 
 async function testStructuredEvidenceAndRationale(page) {
@@ -3059,9 +3192,8 @@ async function testBackendRedlineModes(page) {
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
   assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
   assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
-  const prohibitedVerdict = page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label');
-  await prohibitedVerdict.waitFor({ state: "visible" });
-  assert.equal(await prohibitedVerdict.innerText(), "FAIL");
+  assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
+  assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
 
   const viewerSpacing = await page.evaluate(() => {
     const pageNode = document.querySelector("#reviewView .studio-page");
@@ -3777,6 +3909,17 @@ async function colorPixelCounts(locator) {
     if (green > 80 && green > red * 1.05 && green > blue * 1.05) greenPixels += 1;
   }
   return { redPixels, greenPixels };
+}
+
+function testPngBuffer(width, height) {
+  const png = new PNG({ width, height });
+  for (let offset = 0; offset < png.data.length; offset += 4) {
+    png.data[offset] = 245;
+    png.data[offset + 1] = 247;
+    png.data[offset + 2] = 250;
+    png.data[offset + 3] = 255;
+  }
+  return PNG.sync.write(png);
 }
 
 async function assertTextContains(locator, expected) {

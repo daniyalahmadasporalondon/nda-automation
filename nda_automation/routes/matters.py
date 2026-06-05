@@ -5,6 +5,7 @@ import binascii
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 from .. import document_rendering, export_service, gmail_integration, matter_store, matter_view, telemetry
 from ..ai_assessor import AIAssessorError, assess_nda_with_ai
@@ -195,9 +196,12 @@ def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -
     render_result = _matter_render_result(handler, matter_id, send_body=send_body)
     if render_result is None:
         return
-    _matter, rendered = render_result
+    matter, rendered = render_result
+    page_manifest = None
+    if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
+        page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
     handler._send_json(
-        {"document_render": _public_document_render(matter_id or "", rendered)},
+        {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
         send_body=send_body,
     )
 
@@ -207,19 +211,65 @@ def handle_matter_render_pdf(handler, path: str, *, send_body: bool = True) -> N
     render_result = _matter_render_result(handler, matter_id, send_body=send_body)
     if render_result is None:
         return
-    _matter, rendered = render_result
+    matter, rendered = render_result
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         error = rendered.error_message or "Rendered PDF is not available for this matter."
         handler._send_json(
             {
                 "error": error,
-                "document_render": _public_document_render(matter_id or "", rendered),
+                "document_render": _public_document_render(matter_id or "", rendered, matter=matter),
             },
             status=409,
             send_body=send_body,
         )
         return
     handler._send_file(rendered.pdf_path, content_type=document_rendering.PDF_CONTENT_TYPE, send_body=send_body)
+
+
+def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> None:
+    parsed = _parse_matter_render_page_path(path)
+    if parsed is None:
+        handler._send_json({"error": "Page image not found."}, status=404, send_body=send_body)
+        return
+    matter_id, page_number = parsed
+    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
+    if render_result is None:
+        return
+    matter, rendered = render_result
+    if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
+        error = rendered.error_message or "Rendered PDF is not available for this matter."
+        handler._send_json(
+            {
+                "error": error,
+                "document_render": _public_document_render(matter_id, rendered, matter=matter),
+            },
+            status=409,
+            send_body=send_body,
+        )
+        return
+    page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+    if page_manifest.status != document_rendering.READY_STATUS:
+        handler._send_json(
+            {
+                "error": page_manifest.error_message or "Rendered page image is not available for this matter.",
+                "document_render": _public_document_render(matter_id, rendered, matter=matter, page_manifest=page_manifest),
+            },
+            status=409,
+            send_body=send_body,
+        )
+        return
+    page = document_rendering.page_image_for_page_number(page_manifest, page_number)
+    if page is None or page.image_path is None:
+        handler._send_json(
+            {
+                "error": "Page image not found.",
+                "document_render": _public_document_render(matter_id, rendered, matter=matter, page_manifest=page_manifest),
+            },
+            status=404,
+            send_body=send_body,
+        )
+        return
+    handler._send_file(page.image_path, content_type=document_rendering.PAGE_IMAGE_CONTENT_TYPE, send_body=send_body)
 
 
 def _matter_render_result(
@@ -259,7 +309,31 @@ def _source_document_content_type(source_path: Path) -> str:
     return ""
 
 
-def _public_document_render(matter_id: str, rendered: document_rendering.RenderedDocument) -> dict:
+def _parse_matter_render_page_path(path: str) -> tuple[str, int] | None:
+    prefix = "/api/matters/"
+    marker = "/render-page/"
+    if not path.startswith(prefix) or marker not in path:
+        return None
+    raw_matter_id, raw_page_number = path.removeprefix(prefix).split(marker, 1)
+    matter_id = unquote(raw_matter_id).strip("/")
+    if not matter_id or "/" in matter_id:
+        return None
+    page_number_value = raw_page_number.strip("/")
+    if not page_number_value.isdigit():
+        return None
+    page_number = int(page_number_value)
+    if page_number < 1:
+        return None
+    return matter_id, page_number
+
+
+def _public_document_render(
+    matter_id: str,
+    rendered: document_rendering.RenderedDocument,
+    *,
+    matter: dict | None = None,
+    page_manifest: document_rendering.RenderedPdfPageImageManifest | None = None,
+) -> dict:
     payload = {
         "status": rendered.status,
         "source_kind": rendered.source_kind,
@@ -269,10 +343,189 @@ def _public_document_render(matter_id: str, rendered: document_rendering.Rendere
     }
     if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
         payload["pdf_url"] = f"/api/matters/{matter_id}/render-pdf"
+        if page_manifest is None:
+            page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+        _attach_public_page_image_manifest(payload, matter_id, page_manifest)
+        if matter is not None:
+            payload["document_overlay"] = _public_document_overlay(matter, matter_id, page_manifest)
     if rendered.error_code:
         payload["error"] = rendered.error_message
         payload["error_code"] = rendered.error_code
     return payload
+
+
+def _attach_public_page_image_manifest(
+    payload: dict,
+    matter_id: str,
+    page_manifest: document_rendering.RenderedPdfPageImageManifest,
+) -> None:
+    public_page_images = _public_page_image_manifest(matter_id, page_manifest)
+    payload["page_images"] = public_page_images
+    payload["page_image_status"] = page_manifest.status
+    payload["pages"] = public_page_images["pages"]
+    if page_manifest.dpi is not None:
+        payload["dpi"] = page_manifest.dpi
+    if page_manifest.scale is not None:
+        payload["scale"] = page_manifest.scale
+    if page_manifest.error_code:
+        payload["page_image_error"] = page_manifest.error_message
+        payload["page_image_error_code"] = page_manifest.error_code
+
+
+def _public_page_image_manifest(
+    matter_id: str,
+    page_manifest: document_rendering.RenderedPdfPageImageManifest,
+) -> dict:
+    payload = {
+        "status": page_manifest.status,
+        "cached": page_manifest.cached,
+        "pages": [_public_page_image(matter_id, page) for page in page_manifest.pages],
+    }
+    if page_manifest.dpi is not None:
+        payload["dpi"] = page_manifest.dpi
+    if page_manifest.scale is not None:
+        payload["scale"] = page_manifest.scale
+    if page_manifest.error_code:
+        payload["error"] = page_manifest.error_message
+        payload["error_code"] = page_manifest.error_code
+    return payload
+
+
+def _public_page_image(matter_id: str, page: document_rendering.RenderedPdfPageImage) -> dict:
+    payload = {
+        "page_number": page.page_number,
+        "image_url": f"/api/matters/{matter_id}/render-page/{page.page_number}",
+    }
+    if page.width is not None:
+        payload["width"] = page.width
+    if page.height is not None:
+        payload["height"] = page.height
+    if page.dpi is not None:
+        payload["dpi"] = page.dpi
+    if page.scale is not None:
+        payload["scale"] = page.scale
+    return payload
+
+
+def _public_document_overlay(
+    matter: dict,
+    matter_id: str,
+    page_manifest: document_rendering.RenderedPdfPageImageManifest,
+) -> dict:
+    public_pages = [_public_page_image(matter_id, page) for page in page_manifest.pages]
+    if page_manifest.status != document_rendering.READY_STATUS:
+        return {
+            "version": 1,
+            "status": "unavailable",
+            "precision": "none",
+            "fallback_mode": "text_dom_scroll",
+            "pages": public_pages,
+            "anchors": [],
+            "warnings": [page_manifest.error_message or "Page image metadata is unavailable."],
+        }
+
+    review_result = matter.get("review_result") if isinstance(matter.get("review_result"), dict) else {}
+    paragraphs = review_result.get("paragraphs", []) if isinstance(review_result, dict) else []
+    clauses = review_result.get("clauses", []) if isinstance(review_result, dict) else []
+    redlines = review_result.get("redline_edits", []) if isinstance(review_result, dict) else []
+    page_numbers = {page.page_number for page in page_manifest.pages}
+    paragraphs_by_id = {
+        str(paragraph.get("id")): paragraph
+        for paragraph in paragraphs
+        if isinstance(paragraph, dict) and paragraph.get("id") is not None
+    }
+    anchors: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for clause in clauses if isinstance(clauses, list) else []:
+        if not isinstance(clause, dict):
+            continue
+        clause_id = str(clause.get("id") or "")
+        matched_paragraph_ids = clause.get("matched_paragraph_ids", [])
+        if not isinstance(matched_paragraph_ids, list):
+            continue
+        for paragraph_id in matched_paragraph_ids:
+            paragraph_id = str(paragraph_id)
+            anchor = _page_level_overlay_anchor(
+                paragraphs_by_id.get(paragraph_id),
+                target_type="evidence",
+                clause_id=clause_id,
+                paragraph_id=paragraph_id,
+                page_numbers=page_numbers,
+            )
+            if anchor is None:
+                continue
+            key = ("evidence", clause_id, paragraph_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            anchors.append(anchor)
+
+    for redline in redlines if isinstance(redlines, list) else []:
+        if not isinstance(redline, dict):
+            continue
+        paragraph_id = str(redline.get("paragraph_id") or "")
+        redline_id = str(redline.get("id") or "")
+        anchor = _page_level_overlay_anchor(
+            paragraphs_by_id.get(paragraph_id),
+            target_type="redline",
+            clause_id=str(redline.get("clause_id") or ""),
+            paragraph_id=paragraph_id,
+            page_numbers=page_numbers,
+            redline_id=redline_id,
+        )
+        if anchor is None:
+            continue
+        key = ("redline", redline_id, paragraph_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        anchors.append(anchor)
+
+    warnings: list[str] = []
+    if not anchors:
+        warnings.append("No page-level evidence anchors were available for this review.")
+    return {
+        "version": 1,
+        "status": "partial" if anchors else "unavailable",
+        "precision": "page" if anchors else "none",
+        "fallback_mode": "text_dom_scroll",
+        "pages": public_pages,
+        "anchors": anchors,
+        "warnings": warnings,
+    }
+
+
+def _page_level_overlay_anchor(
+    paragraph: dict | None,
+    *,
+    target_type: str,
+    clause_id: str,
+    paragraph_id: str,
+    page_numbers: set[int],
+    redline_id: str = "",
+) -> dict | None:
+    if not isinstance(paragraph, dict):
+        return None
+    page_number = paragraph.get("page_number")
+    if not isinstance(page_number, int) or page_number not in page_numbers:
+        return None
+    anchor = {
+        "target_type": target_type,
+        "clause_id": clause_id,
+        "paragraph_id": paragraph_id,
+        "page_number": page_number,
+        "boxes": [],
+        "confidence": 0.6,
+        "confidence_reason": "Page-level match only; no verified text coordinates.",
+        "fallback": {
+            "mode": "text_dom_scroll",
+            "selector": f"[data-paragraph-id=\"{paragraph_id}\"]",
+        },
+    }
+    if redline_id:
+        anchor["redline_id"] = redline_id
+    return anchor
 
 
 def handle_matter_upload(handler, *, create_matter_from_document_func=create_matter_from_document) -> None:

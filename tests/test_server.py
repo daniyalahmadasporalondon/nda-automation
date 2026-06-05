@@ -653,6 +653,16 @@ class ServerTests(unittest.TestCase):
                         f"/api/matters/{matter_id}/review-refresh",
                         headers=self.basic_auth_headers(username="bob@example.com"),
                     )
+                    render_status_status, render_status_payload = self.request(
+                        "GET",
+                        f"/api/matters/{matter_id}/render-status",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
+                    render_page_status, render_page_payload = self.request(
+                        "GET",
+                        f"/api/matters/{matter_id}/render-page/1",
+                        headers=self.basic_auth_headers(username="bob@example.com"),
+                    )
                     stage_status, stage_payload = self.request(
                         "POST",
                         f"/api/matters/{matter_id}/stage",
@@ -698,6 +708,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(detail_payload["error"], "Matter not found.")
         self.assertEqual(review_status, 404)
         self.assertEqual(review_payload["error"], "Matter not found.")
+        self.assertEqual(render_status_status, 404)
+        self.assertEqual(render_status_payload["error"], "Matter not found.")
+        self.assertEqual(render_page_status, 404)
+        self.assertEqual(render_page_payload["error"], "Matter not found.")
         self.assertEqual(stage_status, 404)
         self.assertEqual(stage_payload["error"], "Matter not found.")
         self.assertEqual(export_status, 404)
@@ -1440,7 +1454,15 @@ class ServerTests(unittest.TestCase):
                     source_filename="Acme NDA.pdf",
                     document_bytes=source_pdf,
                     extracted_text="PDF text.",
-                    review_result={"clauses": []},
+                    review_result={
+                        "paragraphs": [{"id": "p1", "index": 1, "page_number": 1, "text": "PDF text."}],
+                        "clauses": [{
+                            "id": "mutuality",
+                            "matched_paragraph_ids": ["p1"],
+                            "name": "Mutuality",
+                        }],
+                        "redline_edits": [],
+                    },
                     triage={
                         "triage_status": "ready_to_sign",
                         "next_action": "Ready to sign",
@@ -1475,6 +1497,145 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(head_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
         self.assertEqual(head_headers["Content-Length"], str(len(source_pdf)))
         self.assertEqual(head_payload, b"")
+
+    def test_matter_render_status_includes_page_manifest_and_streams_page_image(self):
+        class FakePdfPageRenderer:
+            name = "fake-pdf-pages"
+
+            def is_available(self):
+                return True
+
+            def render_pdf_to_page_images(self, pdf_path, output_dir, *, dpi):
+                image_path = output_dir / "page-1.png"
+                image_path.write_bytes(b"\x89PNG\r\nserver fake page\n")
+                return [
+                    document_rendering.RenderedPdfPageImage(
+                        page_number=1,
+                        image_path=image_path,
+                        width=1224,
+                        height=1584,
+                        dpi=dpi,
+                        scale=round(dpi / document_rendering.PDF_POINTS_PER_INCH, 4),
+                    )
+                ]
+
+        source_pdf = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.object(document_rendering, "PyMuPdfPageRenderer", FakePdfPageRenderer):
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text="PDF text.",
+                    review_result={
+                        "paragraphs": [{"id": "p1", "index": 1, "page_number": 1, "text": "PDF text."}],
+                        "clauses": [{
+                            "id": "mutuality",
+                            "matched_paragraph_ids": ["p1"],
+                            "name": "Mutuality",
+                        }],
+                        "redline_edits": [],
+                    },
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                status, payload, _headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-status",
+                )
+                page_status, page_payload, page_headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-page/1",
+                )
+                head_status, head_payload, head_headers = self.request_with_headers(
+                    "HEAD",
+                    f"/api/matters/{matter['id']}/render-page/1",
+                )
+
+        self.assertEqual(status, 200)
+        render_payload = payload["document_render"]
+        self.assertEqual(render_payload["status"], document_rendering.READY_STATUS)
+        self.assertEqual(render_payload["pdf_url"], f"/api/matters/{matter['id']}/render-pdf")
+        self.assertEqual(render_payload["page_image_status"], document_rendering.READY_STATUS)
+        self.assertEqual(render_payload["page_images"]["status"], document_rendering.READY_STATUS)
+        self.assertEqual(render_payload["dpi"], document_rendering.DEFAULT_PAGE_IMAGE_DPI)
+        self.assertEqual(render_payload["scale"], round(document_rendering.DEFAULT_PAGE_IMAGE_DPI / document_rendering.PDF_POINTS_PER_INCH, 4))
+        self.assertEqual(render_payload["pages"], render_payload["page_images"]["pages"])
+        self.assertEqual(render_payload["pages"][0]["page_number"], 1)
+        self.assertEqual(render_payload["pages"][0]["image_url"], f"/api/matters/{matter['id']}/render-page/1")
+        self.assertEqual(render_payload["pages"][0]["width"], 1224)
+        self.assertEqual(render_payload["pages"][0]["height"], 1584)
+        self.assertEqual(render_payload["document_overlay"]["status"], "partial")
+        self.assertEqual(render_payload["document_overlay"]["precision"], "page")
+        self.assertEqual(render_payload["document_overlay"]["fallback_mode"], "text_dom_scroll")
+        self.assertEqual(render_payload["document_overlay"]["anchors"][0]["clause_id"], "mutuality")
+        self.assertEqual(render_payload["document_overlay"]["anchors"][0]["paragraph_id"], "p1")
+        self.assertEqual(render_payload["document_overlay"]["anchors"][0]["page_number"], 1)
+        self.assertEqual(render_payload["document_overlay"]["anchors"][0]["boxes"], [])
+        self.assertEqual(page_status, 200)
+        self.assertEqual(page_headers["Content-Type"], document_rendering.PAGE_IMAGE_CONTENT_TYPE)
+        self.assertEqual(page_payload, b"\x89PNG\r\nserver fake page\n")
+        self.assertEqual(head_status, 200)
+        self.assertEqual(head_headers["Content-Type"], document_rendering.PAGE_IMAGE_CONTENT_TYPE)
+        self.assertEqual(head_headers["Content-Length"], str(len(page_payload)))
+        self.assertEqual(head_payload, b"")
+
+    def test_matter_render_status_reports_page_renderer_unavailable_for_ready_pdf(self):
+        class UnavailablePdfPageRenderer:
+            name = "fake-page-unavailable"
+
+            def is_available(self):
+                return False
+
+            def render_pdf_to_page_images(self, pdf_path, output_dir, *, dpi):
+                raise AssertionError("Unavailable page renderer should not be invoked.")
+
+        source_pdf = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.object(document_rendering, "PyMuPdfPageRenderer", UnavailablePdfPageRenderer):
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text="PDF text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                status, payload, _headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-status",
+                )
+                page_status, page_payload, _page_headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-page/1",
+                )
+
+        self.assertEqual(status, 200)
+        render_payload = payload["document_render"]
+        self.assertEqual(render_payload["status"], document_rendering.READY_STATUS)
+        self.assertEqual(render_payload["pdf_url"], f"/api/matters/{matter['id']}/render-pdf")
+        self.assertEqual(render_payload["pages"], [])
+        self.assertEqual(render_payload["page_image_status"], document_rendering.UNAVAILABLE_STATUS)
+        self.assertEqual(render_payload["page_image_error_code"], "page_renderer_unavailable")
+        self.assertEqual(render_payload["page_images"]["error_code"], "page_renderer_unavailable")
+        self.assertEqual(page_status, 409)
+        self.assertEqual(page_payload["document_render"]["status"], document_rendering.READY_STATUS)
+        self.assertEqual(page_payload["document_render"]["page_image_error_code"], "page_renderer_unavailable")
 
     def test_matter_render_status_reports_docx_converter_unavailable(self):
         class UnavailableConverter:

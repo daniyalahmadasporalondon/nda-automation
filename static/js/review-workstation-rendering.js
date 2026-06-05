@@ -1433,6 +1433,7 @@ function sourcePdfRenderCandidate(matter) {
   return {
     pdf_url: `/api/matters/${encodeURIComponent(matter.id)}/source`,
     source_label: "Original PDF",
+    source_fallback: true,
     status: "ready",
   };
 }
@@ -1440,10 +1441,10 @@ function sourcePdfRenderCandidate(matter) {
 function requestMatterDocumentRenderPreview() {
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
-  if (sourcePdfRenderCandidate(state.selectedMatter)) return;
-  if (state.reviewDocumentRender?.pdfUrl) return;
+  if (hasDocumentRenderPreview(state.reviewDocumentRender)) return;
   const filename = String(state.selectedMatter.source_filename || state.selectedMatter.attachment_filename || "").trim();
   if (!/\.(docx|pdf)$/i.test(filename)) return;
+  if (state.reviewDocumentRender?.sourceFallback && !isRepositoryMatterForRenderPreview(state.selectedMatter)) return;
 
   const sequence = reviewDocumentRenderRequestSequence + 1;
   reviewDocumentRenderRequestSequence = sequence;
@@ -1483,25 +1484,109 @@ function requestMatterDocumentRenderPreview() {
 
 function normalizeReviewDocumentRender(candidate) {
   if (!candidate || typeof candidate !== "object") return null;
+  const pages = normalizeRenderPages(candidate.pages);
   const pdfUrl = stringValue(candidate.pdf_url || candidate.pdfUrl || candidate.url || candidate.href);
   const rawStatus = stringValue(candidate.status || (pdfUrl ? "ready" : ""));
-  const status = normalizedRenderStatus(rawStatus, pdfUrl);
+  const status = normalizedRenderStatus(rawStatus, pdfUrl, pages);
   if (status === "unavailable") return null;
-  return {
+  const pageCount = numericPageCount(
+    candidate.page_count
+      ?? candidate.pageCount
+      ?? (!Array.isArray(candidate.pages) ? candidate.pages : null),
+  ) || (pages.length ? pages.length : null);
+  const renderState = {
     error: renderDocumentErrorMessage(candidate),
-    pageCount: numericPageCount(candidate.page_count ?? candidate.pages),
+    pageCount,
     pdfUrl,
     sourceLabel: stringValue(candidate.source_label || candidate.label || candidate.kind) || "Rendered PDF",
     status,
   };
+  if (pages.length) renderState.pages = pages;
+  if (candidate.source_fallback || candidate.sourceFallback) renderState.sourceFallback = true;
+  const overlay = normalizeDocumentOverlay(candidate.document_overlay || candidate.documentOverlay);
+  if (overlay) renderState.documentOverlay = overlay;
+  const errorCode = stringValue(candidate.error_code || candidate.errorCode);
+  if (errorCode) renderState.errorCode = errorCode;
+  return renderState;
 }
 
-function normalizedRenderStatus(status, pdfUrl) {
+function normalizeDocumentOverlay(overlay) {
+  if (!overlay || typeof overlay !== "object") return null;
+  const anchors = Array.isArray(overlay.anchors)
+    ? overlay.anchors.map(normalizeDocumentOverlayAnchor).filter(Boolean)
+    : [];
+  return {
+    anchors,
+    fallbackMode: stringValue(overlay.fallback_mode || overlay.fallbackMode),
+    precision: stringValue(overlay.precision),
+    status: stringValue(overlay.status),
+    version: positiveInteger(overlay.version) || 1,
+  };
+}
+
+function normalizeDocumentOverlayAnchor(anchor) {
+  if (!anchor || typeof anchor !== "object") return null;
+  const pageNumber = positiveInteger(anchor.page_number ?? anchor.pageNumber);
+  if (!pageNumber) return null;
+  const normalized = {
+    boxes: Array.isArray(anchor.boxes) ? anchor.boxes : [],
+    clauseId: stringValue(anchor.clause_id || anchor.clauseId),
+    confidence: Number.isFinite(Number(anchor.confidence)) ? Number(anchor.confidence) : null,
+    paragraphId: stringValue(anchor.paragraph_id || anchor.paragraphId),
+    pageNumber,
+    targetType: stringValue(anchor.target_type || anchor.targetType),
+  };
+  const redlineId = stringValue(anchor.redline_id || anchor.redlineId);
+  if (redlineId) normalized.redlineId = redlineId;
+  return normalized;
+}
+
+function normalizeRenderPages(pages) {
+  if (!Array.isArray(pages)) return [];
+  return pages
+    .map((page, index) => normalizeRenderPage(page, index))
+    .filter(Boolean);
+}
+
+function normalizeRenderPage(page, index) {
+  if (!page || typeof page !== "object") return null;
+  const imageUrl = stringValue(page.image_url || page.imageUrl || page.url || page.src);
+  if (!imageUrl) return null;
+  const pageNumber = positiveInteger(page.page_number ?? page.pageNumber ?? page.number) || index + 1;
+  const width = positiveInteger(page.width);
+  const height = positiveInteger(page.height);
+  const dpi = positiveInteger(page.dpi);
+  const renderPage = {
+    imageUrl,
+    pageNumber,
+  };
+  if (width) renderPage.width = width;
+  if (height) renderPage.height = height;
+  if (dpi) renderPage.dpi = dpi;
+  return renderPage;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
+}
+
+function hasDocumentRenderPreview(renderState) {
+  return Boolean(renderState?.pages?.length || (renderState?.pdfUrl && !renderState?.sourceFallback));
+}
+
+function isRepositoryMatterForRenderPreview(matter) {
+  return Boolean(matter?.source_type || matter?.board_column || matter?.document_title || matter?.review_refresh);
+}
+
+function normalizedRenderStatus(status, pdfUrl, pages = []) {
   const normalized = String(status || "").trim().toLowerCase();
-  if (["ready", "complete", "completed", "available", "success"].includes(normalized) && pdfUrl) return "ready";
-  if (["failed", "error", "unavailable"].includes(normalized)) return "error";
+  const hasPages = Array.isArray(pages) && pages.length > 0;
+  if (["ready", "complete", "completed", "available", "success"].includes(normalized) && (pdfUrl || hasPages)) return "ready";
+  if (["failed", "error"].includes(normalized)) return "error";
+  if (normalized === "unavailable") return "unavailable";
   if (["queued", "pending", "processing", "running", "loading"].includes(normalized)) return "loading";
-  return pdfUrl ? "ready" : "unavailable";
+  return pdfUrl || hasPages ? "ready" : "unavailable";
 }
 
 function renderDocumentErrorMessage(candidate) {
@@ -1524,10 +1609,26 @@ function stringValue(value) {
 function renderPdfDocumentSurface(renderState) {
   if (!renderState) return "";
   const status = renderState.status || "loading";
+  const pages = Array.isArray(renderState.pages) ? renderState.pages : [];
   const pageLabel = renderState.pageCount
     ? `${renderState.pageCount} ${renderState.pageCount === 1 ? "page" : "pages"}`
     : "";
   const meta = [renderState.sourceLabel, pageLabel].filter(Boolean).join(" · ");
+
+  if (status === "ready" && pages.length) {
+    return `
+      <section class="review-pdf-surface review-page-surface ready" data-review-pdf-surface data-review-render-surface data-render-status="ready" aria-label="Rendered document preview">
+        <div class="review-pdf-status">
+          <strong>${escapeHtml(meta || "Rendered document")}</strong>
+          <span>Page image preview</span>
+        </div>
+        <div class="review-render-pages" data-review-render-pages>
+          ${pages.map((page, index) => renderDocumentPageImage(page, index, pages.length, renderState)).join("")}
+        </div>
+      </section>
+      <div class="review-fallback-divider" aria-hidden="true"><span>Editable text review</span></div>
+    `;
+  }
 
   if (status === "ready" && renderState.pdfUrl) {
     return `
@@ -1553,4 +1654,48 @@ function renderPdfDocumentSurface(renderState) {
       </div>
     </section>
   `;
+}
+
+function renderDocumentPageImage(page, index, totalPages, renderState = null) {
+  const pageNumber = page.pageNumber || index + 1;
+  const dimensions = page.width && page.height ? `${page.width} x ${page.height}` : "";
+  const dpi = page.dpi ? `${page.dpi} DPI` : "";
+  const detail = [dimensions, dpi].filter(Boolean).join(" · ");
+  const widthAttribute = page.width ? ` width="${escapeHtml(page.width)}"` : "";
+  const heightAttribute = page.height ? ` height="${escapeHtml(page.height)}"` : "";
+  const aspectStyle = page.width && page.height ? ` style="aspect-ratio: ${escapeHtml(page.width)} / ${escapeHtml(page.height)};"` : "";
+  const anchors = pageOverlayAnchors(renderState, pageNumber);
+  const clauseIds = uniqueStrings(anchors.map((anchor) => anchor.clauseId)).join(" ");
+  const paragraphIds = uniqueStrings(anchors.map((anchor) => anchor.paragraphId)).join(" ");
+  const anchorAttributes = [
+    clauseIds ? `data-overlay-clause-ids="${escapeHtml(clauseIds)}"` : "",
+    paragraphIds ? `data-overlay-paragraph-ids="${escapeHtml(paragraphIds)}"` : "",
+  ].filter(Boolean).join(" ");
+  const selected = clauseIds.split(" ").includes(state.selectedReviewClauseId);
+  return `
+    <figure class="${joinClasses("review-render-page", selected ? "has-selected-anchor" : "")}" data-review-render-page="${escapeHtml(pageNumber)}"${anchorAttributes ? ` ${anchorAttributes}` : ""}>
+      <div class="review-render-page-image"${aspectStyle}>
+        <img
+          src="${escapeHtml(page.imageUrl)}"
+          alt="${escapeHtml(`Page ${pageNumber} of ${totalPages}`)}"
+          loading="${index === 0 ? "eager" : "lazy"}"
+          decoding="async"${widthAttribute}${heightAttribute}
+        >
+      </div>
+      <figcaption>
+        <span>Page ${escapeHtml(pageNumber)}</span>
+        ${selected ? "<span>Selected clause evidence</span>" : detail ? `<span>${escapeHtml(detail)}</span>` : ""}
+      </figcaption>
+    </figure>
+  `;
+}
+
+function pageOverlayAnchors(renderState, pageNumber) {
+  const anchors = renderState?.documentOverlay?.anchors;
+  if (!Array.isArray(anchors)) return [];
+  return anchors.filter((anchor) => anchor.pageNumber === pageNumber);
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
 }

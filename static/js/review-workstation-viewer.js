@@ -607,6 +607,7 @@ function scrollRenderedClauseToView(clauseId) {
 function renderedClauseTargets(clauseId) {
   const clause = state.reviewClauses.find((item) => item.id === clauseId);
   const targetKeys = [];
+  renderedOverlayPageTargets(clauseId).forEach((target) => targetKeys.push(target));
   (clause?.matched_paragraph_ids || []).forEach((paragraphId) => {
     targetKeys.push({ type: "paragraph", id: paragraphId });
   });
@@ -629,12 +630,24 @@ function renderedClauseTargets(clauseId) {
       return true;
     })
     .map((target) => {
+      if (target.type === "overlay-page") {
+        return studioDocumentRender.querySelector(`[data-review-render-page="${cssEscape(target.id)}"]`);
+      }
       if (target.type === "redline") {
         return studioDocumentRender.querySelector(`[data-redline-edit-id="${cssEscape(target.id)}"]`);
       }
       return studioDocumentRender.querySelector(`[data-paragraph-id="${cssEscape(target.id)}"]`);
     })
     .filter(Boolean);
+}
+
+function renderedOverlayPageTargets(clauseId) {
+  const anchors = state.reviewDocumentRender?.documentOverlay?.anchors;
+  if (!Array.isArray(anchors)) return [];
+  const pageNumbers = anchors
+    .filter((anchor) => anchor?.clauseId === clauseId && anchor.pageNumber)
+    .map((anchor) => String(anchor.pageNumber));
+  return Array.from(new Set(pageNumbers)).map((id) => ({ type: "overlay-page", id }));
 }
 
 function layoutOffsetTop(element) {

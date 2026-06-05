@@ -21,6 +21,18 @@ class ReviewDocumentTests(unittest.TestCase):
         self.assertEqual([paragraph["start"] for paragraph in aligned], [0, 14, 29])
         self.assertEqual([paragraph["end"] for paragraph in aligned], [12, 27, 41])
 
+    def test_align_preserves_pdf_page_number_metadata(self):
+        source_text = "First PDF block.\n\nSecond PDF block."
+        extracted_paragraphs = [
+            {"source_index": 1, "source_part": "pdf", "page_number": 3, "text": "First PDF block."},
+            {"source_index": 2, "source_part": "pdf", "page_number": 4, "text": "Second PDF block."},
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual([paragraph["page_number"] for paragraph in aligned], [3, 4])
+        self.assertEqual([paragraph["source_part"] for paragraph in aligned], ["pdf", "pdf"])
+
 
 if __name__ == "__main__":
     unittest.main()

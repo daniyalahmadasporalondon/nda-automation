@@ -8,6 +8,7 @@ STRUCTURAL_METADATA_KEYS = (
     "heading_level",
     "numbering",
     "outline_level",
+    "page_number",
     "source_kind",
     "source_part",
     "source_index",

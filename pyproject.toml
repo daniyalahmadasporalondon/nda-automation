@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 pdf = [
+  "PyMuPDF>=1.24",
   "pypdf>=6.0",
 ]
 gmail = [

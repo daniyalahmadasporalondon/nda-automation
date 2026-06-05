@@ -1516,6 +1516,10 @@ h3 {
   background: #eef2f6;
 }
 
+.review-page-surface.ready {
+  background: #f2f4f8;
+}
+
 .review-pdf-surface.error {
   background: #fff7ed;
   border-color: rgba(251, 146, 60, 0.45);
@@ -1553,6 +1557,54 @@ h3 {
   width: 100%;
 }
 
+.review-render-pages {
+  display: grid;
+  gap: 14px;
+}
+
+.review-render-page {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+}
+
+.review-render-page-image {
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  border-radius: 6px;
+  min-height: 220px;
+  overflow: hidden;
+}
+
+.review-render-page.has-selected-anchor .review-render-page-image {
+  border-color: rgba(42, 37, 64, 0.78);
+}
+
+.review-render-page-image img {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.review-render-page figcaption {
+  align-items: center;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--text-font);
+  font-size: 10px;
+  font-weight: 700;
+  gap: 8px;
+  justify-content: space-between;
+  line-height: 1.35;
+}
+
+.review-render-page figcaption span + span {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
 .review-fallback-divider {
   align-items: center;
   color: var(--ink-soft);
@@ -1587,48 +1639,6 @@ h3 {
   scroll-margin-top: 20px;
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   white-space: pre-wrap;
-}
-
-.paragraph-verdict-label {
-  align-items: center;
-  background: #ffffff;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--ink-soft);
-  display: flex;
-  font-size: 9px;
-  font-weight: 800;
-  justify-content: center;
-  letter-spacing: 0;
-  line-height: 1;
-  min-height: 20px;
-  min-width: 38px;
-  padding: 4px 7px;
-  position: absolute;
-  right: calc(100% + 8px);
-  text-transform: uppercase;
-  top: 8px;
-  user-select: none;
-  white-space: nowrap;
-  z-index: 4;
-}
-
-.paragraph-verdict-label.is-pass {
-  background: #ecfdf3;
-  border-color: rgba(22, 163, 74, 0.3);
-  color: var(--green-ink);
-}
-
-.paragraph-verdict-label.is-review {
-  background: #fffbeb;
-  border-color: rgba(245, 158, 11, 0.35);
-  color: var(--amber-ink);
-}
-
-.paragraph-verdict-label.is-check {
-  background: #fef2f2;
-  border-color: rgba(239, 68, 68, 0.34);
-  color: var(--red-ink);
 }
 
 .paragraph-comment-tools {
@@ -1948,14 +1958,6 @@ h3 {
 
 .studio-doc-paragraph.paragraph-pulse {
   animation: paragraph-highlight-pulse 950ms ease;
-}
-
-@media (max-width: 760px) {
-  .paragraph-verdict-label {
-    margin: 0 0 6px;
-    position: static;
-    width: max-content;
-  }
 }
 
 @keyframes paragraph-highlight-pulse {

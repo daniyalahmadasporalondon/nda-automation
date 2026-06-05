@@ -9,7 +9,9 @@ from nda_automation.document_rendering import (
     DOCX_CONTENT_TYPE,
     READY_STATUS,
     UNAVAILABLE_STATUS,
+    RenderedPdfPageImage,
     document_render_cache_key,
+    render_pdf_page_image_manifest,
     render_source_document_to_pdf,
 )
 
@@ -38,6 +40,41 @@ class CountingDocxConverter:
         output_path = output_dir / "source.pdf"
         output_path.write_bytes(b"%PDF-1.7\nconverted\n")
         return output_path
+
+
+class CountingPdfPageRenderer:
+    name = "fake-pdf-pages"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def is_available(self) -> bool:
+        return True
+
+    def render_pdf_to_page_images(self, pdf_path: Path, output_dir: Path, *, dpi: int) -> list[RenderedPdfPageImage]:
+        self.calls += 1
+        image_path = output_dir / "page-1.png"
+        image_path.write_bytes(b"\x89PNG\r\nfake page image\n")
+        return [
+            RenderedPdfPageImage(
+                page_number=1,
+                image_path=image_path,
+                width=1224,
+                height=1584,
+                dpi=dpi,
+                scale=2.0,
+            )
+        ]
+
+
+class UnavailablePdfPageRenderer:
+    name = "fake-page-unavailable"
+
+    def is_available(self) -> bool:
+        return False
+
+    def render_pdf_to_page_images(self, pdf_path: Path, output_dir: Path, *, dpi: int) -> list[RenderedPdfPageImage]:
+        raise AssertionError("Unavailable page renderer should not be invoked.")
 
 
 class DocumentRenderingTests(unittest.TestCase):
@@ -117,6 +154,61 @@ class DocumentRenderingTests(unittest.TestCase):
             self.assertEqual(converter.calls, 1)
             self.assertEqual(first.cache_key, document_render_cache_key(docx_bytes, source_kind="docx"))
             self.assertEqual(second.pdf_path.read_bytes(), b"%PDF-1.7\nconverted\n")
+
+    def test_pdf_page_manifest_renders_pages_with_fake_renderer_and_reuses_cache(self):
+        pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+        renderer = CountingPdfPageRenderer()
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            cache_dir = Path(cache_dir_name)
+            rendered = render_source_document_to_pdf(pdf_bytes, source_filename="Source NDA.pdf", cache_dir=cache_dir)
+
+            manifest = render_pdf_page_image_manifest(rendered, renderer=renderer, dpi=144)
+            cached_manifest = render_pdf_page_image_manifest(rendered, renderer=UnavailablePdfPageRenderer(), dpi=144)
+
+            self.assertEqual(manifest.status, READY_STATUS)
+            self.assertFalse(manifest.cached)
+            self.assertEqual(renderer.calls, 1)
+            self.assertEqual(manifest.dpi, 144)
+            self.assertEqual(manifest.scale, 2.0)
+            self.assertEqual(len(manifest.pages), 1)
+            self.assertEqual(manifest.pages[0].page_number, 1)
+            self.assertEqual(manifest.pages[0].width, 1224)
+            self.assertEqual(manifest.pages[0].height, 1584)
+            self.assertTrue(manifest.pages[0].image_path.is_file())
+            self.assertEqual(manifest.pages[0].image_path.read_bytes(), b"\x89PNG\r\nfake page image\n")
+            self.assertTrue(manifest.manifest_path.is_file())
+
+            self.assertEqual(cached_manifest.status, READY_STATUS)
+            self.assertTrue(cached_manifest.cached)
+            self.assertEqual(cached_manifest.pages[0].image_path, manifest.pages[0].image_path)
+
+            metadata = json.loads(manifest.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["status"], READY_STATUS)
+            self.assertEqual(metadata["artifact_kind"], "pdf_page_images")
+            self.assertEqual(metadata["dpi"], 144)
+            self.assertEqual(metadata["scale"], 2.0)
+            self.assertEqual(metadata["renderer"]["name"], "fake-pdf-pages")
+            self.assertEqual(metadata["pages"][0]["page_number"], 1)
+            self.assertEqual(metadata["pages"][0]["image_path"], f"{rendered.cache_key}/pages/page-1.png")
+
+    def test_pdf_page_manifest_reports_renderer_unavailable_without_crashing(self):
+        pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            cache_dir = Path(cache_dir_name)
+            rendered = render_source_document_to_pdf(pdf_bytes, source_filename="Source NDA.pdf", cache_dir=cache_dir)
+
+            manifest = render_pdf_page_image_manifest(rendered, renderer=UnavailablePdfPageRenderer(), dpi=144)
+
+            self.assertEqual(manifest.status, UNAVAILABLE_STATUS)
+            self.assertEqual(manifest.pages, ())
+            self.assertEqual(manifest.error_code, "page_renderer_unavailable")
+            self.assertIn("PyMuPDF/fitz", manifest.error_message)
+            self.assertTrue(manifest.manifest_path.is_file())
+
+            metadata = json.loads(manifest.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["status"], UNAVAILABLE_STATUS)
+            self.assertEqual(metadata["error"]["code"], "page_renderer_unavailable")
+            self.assertEqual(metadata["renderer"]["name"], "fake-page-unavailable")
 
     def test_cache_key_changes_by_source_bytes_kind_and_version(self):
         source_bytes = b"same bytes"

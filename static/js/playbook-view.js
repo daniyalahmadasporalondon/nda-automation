@@ -14,7 +14,9 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
       updatePlaybookStateFromPayload(payload);
       state.selectedClauseId = state.playbookClauses[0]?.id || null;
-      renderStudioEmpty();
+      if (!state.latestReviewResult && !state.reviewClauses.length) {
+        renderStudioEmpty();
+      }
       renderPlaybookList();
       renderClauseDetail();
     } catch (error) {
