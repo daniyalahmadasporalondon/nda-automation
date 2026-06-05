@@ -8,12 +8,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import app_settings
-from .ai_review import _trusted_https_context
+from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
 
-GROQ_CHAT_COMPLETIONS_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_API_KEY_ENV = "GROQ_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
-DEFAULT_GMAIL_TRIAGE_MODEL = "qwen/qwen3-32b"
+DEFAULT_GMAIL_TRIAGE_MODEL = "google/gemini-3.5-flash"
 DEFAULT_GMAIL_TRIAGE_TIMEOUT_SECONDS = 20
 MIN_SELECTOR_CONFIDENCE = 0.70
 MAX_CANDIDATE_TEXT_CHARS = 1800
@@ -39,7 +37,7 @@ def select_nda_attachments(
         return {"status": "not_configured", "selected_attachment_ids": []}
 
     request = urllib.request.Request(
-        GROQ_CHAT_COMPLETIONS_ENDPOINT,
+        OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
         data=json.dumps(_request_body(message_metadata, candidates)).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -57,9 +55,9 @@ def select_nda_attachments(
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         message = error.read().decode("utf-8", errors="replace")[:500]
-        raise GmailAttachmentSelectorError(f"Groq API returned HTTP {error.code}: {message}") from error
+        raise GmailAttachmentSelectorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-        raise GmailAttachmentSelectorError(f"Groq API request failed: {error}") from error
+        raise GmailAttachmentSelectorError(f"OpenRouter API request failed: {error}") from error
 
     parsed = _parse_response(payload)
     candidate_ids = {str(candidate.get("attachment_id") or "") for candidate in candidates}
@@ -83,8 +81,8 @@ def select_nda_attachments(
 
 def _configured_api_key() -> str:
     return (
-        os.environ.get(GROQ_API_KEY_ENV, "").strip()
-        or app_settings.stored_gmail_triage_api_key()
+        os.environ.get(OPENROUTER_API_KEY_ENV, "").strip()
+        or app_settings.stored_ai_api_key()
     )
 
 
@@ -166,13 +164,13 @@ def _parse_response(payload: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(message, Mapping):
             content = str(message.get("content") or "")
     if not content:
-        raise GmailAttachmentSelectorError("Groq API returned no message content.")
+        raise GmailAttachmentSelectorError("OpenRouter API returned no message content.")
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as error:
-        raise GmailAttachmentSelectorError("Groq API returned non-JSON text.") from error
+        raise GmailAttachmentSelectorError("OpenRouter API returned non-JSON text.") from error
     if not isinstance(parsed, Mapping):
-        raise GmailAttachmentSelectorError("Groq API returned a non-object JSON response.")
+        raise GmailAttachmentSelectorError("OpenRouter API returned a non-object JSON response.")
     raw_ids = parsed.get("selected_attachment_ids")
     if isinstance(raw_ids, str):
         selected_ids = [raw_ids]

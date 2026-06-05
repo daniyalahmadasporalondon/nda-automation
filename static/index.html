@@ -15,13 +15,16 @@
             <img class="brand-logo" src="/static/assets/aspora-logo.png" alt="Aspora">
           </div>
           <nav class="tabbar" aria-label="Workspace" role="tablist">
+            <button class="tab-button active" id="dashboardTab" type="button" role="tab" aria-selected="true" aria-controls="dashboardView" data-tab="dashboard">
+              <span>Dashboard</span>
+            </button>
             <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
               <span>Repository</span>
             </button>
             <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
               <span>Upload</span>
             </button>
-            <button class="tab-button active" id="reviewTab" type="button" role="tab" aria-selected="true" aria-controls="reviewView" data-tab="review">
+            <button class="tab-button" id="reviewTab" type="button" role="tab" aria-selected="false" aria-controls="reviewView" data-tab="review">
               <span>Review</span>
             </button>
             <button class="tab-button" id="playbookTab" type="button" role="tab" aria-selected="false" aria-controls="clausesView" data-tab="playbook">
@@ -50,7 +53,35 @@
           </section>
         </header>
 
-        <main class="studio-review view active" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review">
+        <main class="dashboard-view view active" id="dashboardView" role="tabpanel" aria-labelledby="dashboardTab" data-view="dashboard">
+          <section class="dashboard-hero" aria-labelledby="dashboardHeroTitle">
+            <div class="dashboard-hero-copy">
+              <h1 id="dashboardHeroTitle">Welcome back, Counsel</h1>
+            </div>
+            <div class="dashboard-hero-actions">
+              <button class="dashboard-submit-button" type="button" data-dashboard-submit>
+                <span aria-hidden="true">+</span>
+                <span>Submit for Review</span>
+              </button>
+              <div class="dashboard-health-list" aria-label="Pipeline health">
+                <div class="dashboard-health-item checking" data-dashboard-health="ai">
+                  <div class="dashboard-health-head">
+                    <span class="dashboard-health-dot" aria-hidden="true"></span>
+                    <span class="dashboard-health-name">AI Review</span>
+                  </div>
+                </div>
+                <div class="dashboard-health-item checking" data-dashboard-health="email">
+                  <div class="dashboard-health-head">
+                    <span class="dashboard-health-dot" aria-hidden="true"></span>
+                    <span class="dashboard-health-name">Email</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <main class="studio-review view" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review" hidden>
           <header class="studio-matter-card">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
@@ -318,7 +349,7 @@
               </button>
               <button class="admin-section-button" type="button" data-admin-section="ai" data-admin-surface="admin" aria-pressed="false">
                 <strong>AI Runtime</strong>
-                <span>Provider, model, fallback</span>
+                <span>Provider and model</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="email" data-admin-surface="admin" aria-pressed="false">
                 <strong>Gmail</strong>
@@ -751,7 +782,7 @@
                   <form class="ai-key-form" id="adminAiKeyForm">
                     <label for="adminAiApiKeyInput">AI API key</label>
                     <div class="ai-key-row">
-                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste Gemini API key">
+                      <input id="adminAiApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste OpenRouter API key">
                       <button class="primary" id="adminAiSaveKeyButton" type="submit">Save key &amp; turn on</button>
                       <button class="secondary" id="adminAiClearKeyButton" type="button">Clear saved key</button>
                     </div>
@@ -764,13 +795,6 @@
                       <select id="adminActiveReviewEngineSelect">
                         <option value="deterministic">Deterministic</option>
                         <option value="ai_first">AI-first</option>
-                      </select>
-                    </div>
-                    <div class="runtime-field">
-                      <label for="adminAiFirstFallbackSelect">AI-first fallback</label>
-                      <select id="adminAiFirstFallbackSelect">
-                        <option value="deterministic">Deterministic fallback</option>
-                        <option value="fail_closed">Fail closed</option>
                       </select>
                     </div>
                     <button class="secondary" id="adminRuntimeSaveButton" type="submit">Save runtime</button>
@@ -805,10 +829,6 @@
                     <div>
                       <dt>Active engine</dt>
                       <dd data-admin-ai="active-engine">Checking</dd>
-                    </div>
-                    <div>
-                      <dt>Fallback mode</dt>
-                      <dd data-admin-ai="fallback-mode">Checking</dd>
                     </div>
                     <div>
                       <dt>Runtime source</dt>
@@ -849,11 +869,11 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Admin can save a local Gemini API key and turn AI on from the Admin tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, and GEMINI_API_KEY in the backend environment.</p>
+                      <p>Admin can save a local OpenRouter API key and turn AI on from the Admin tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, and OPENROUTER_API_KEY in the backend environment.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>
-                      <p>AI-first is the default active engine for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Deterministic review remains available for comparison and explicit fallback. Signatures remain separate.</p>
+                      <p>AI-first is the default active engine for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Deterministic review remains available only when explicitly selected. Signatures remain separate.</p>
                     </article>
                     <article>
                       <h3>Inputs</h3>
@@ -868,11 +888,11 @@
                   <dl class="resolver-audit-list">
                     <div>
                       <dt>Provider</dt>
-                      <dd>Gemini through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
+                      <dd>OpenRouter through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
                     </div>
                     <div>
                       <dt>Default model</dt>
-                      <dd>gemini-3.5-flash by default; overridable with NDA_AI_MODEL in the backend environment.</dd>
+                      <dd>google/gemini-3.5-flash by default; overridable with NDA_AI_MODEL in the backend environment.</dd>
                     </div>
                     <div>
                       <dt>Confidence gate</dt>

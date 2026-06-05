@@ -110,8 +110,8 @@ function startServer() {
     cwd: ROOT,
     env: {
       ...process.env,
+      NDA_ACTIVE_REVIEW_ENGINE: "deterministic",
       NDA_AI_FIRST_REVIEW_ENABLED: "true",
-      NDA_AI_FIRST_FALLBACK_MODE: "deterministic",
       NDA_DATA_DIR: TEST_DATA_DIR,
       NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
       PYTHONUNBUFFERED: "1",
@@ -182,6 +182,7 @@ function browserLaunchOptions() {
 
 async function runReview(page, text) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
   await page.getByPlaceholder("Paste NDA text here").fill(text);
   await page.evaluate(async (sourceText) => {
     const response = await fetch("/api/review", {
@@ -200,20 +201,69 @@ async function runReview(page, text) {
 }
 
 async function testAccessibleControlState(page) {
+  await page.route("**/api/ai/settings", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ai_review: {
+          api_key_configured: true,
+          enabled: true,
+          model: "google/gemini-3.5-flash",
+          provider: "openrouter",
+        },
+        active_review_engine: {
+          active_engine: "ai_first",
+        },
+        operational_warnings: [],
+        settings_audit: [],
+      }),
+    });
+  });
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true },
+          outbound: { ready: false },
+        },
+      }),
+    });
+  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
 
   assert.equal(await page.locator("#studioResultMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.locator("#studioFileMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.getByRole("tablist", { name: "Workspace" }).count(), 1);
+  assert.equal(await page.locator("#dashboardTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#reviewTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#playbookTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#adminTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#guideTab").getAttribute("role"), "tab");
-  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#adminTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#guideTab").getAttribute("aria-selected"), "false");
+  assert.equal(await page.locator("#dashboardView").isHidden(), false);
+  await assertTextContains(page.locator("#dashboardView"), "Welcome back, Counsel");
+  await assertTextContains(page.locator("#dashboardView"), "Submit for Review");
+  await page.waitForFunction(() => document.querySelector('[data-dashboard-health="ai"]')?.classList.contains("ready"));
+  await page.waitForFunction(() => document.querySelector('[data-dashboard-health="email"]')?.classList.contains("warning"));
+  await assertTextContains(page.locator('[data-dashboard-health="ai"]'), "AI Review");
+  await assertTextContains(page.locator('[data-dashboard-health="email"]'), "Email");
+  const dashboardHealthText = await page.locator(".dashboard-health-list").innerText();
+  assert.doesNotMatch(dashboardHealthText, /Ready|Partial|OpenRouter review available|Gmail receive and send are available|Inbound ready/i);
+  assert.equal(await page.locator('[data-dashboard-health="ai"]').evaluate((node) => node.classList.contains("ready")), true);
+  assert.equal(await page.locator('[data-dashboard-health="email"]').evaluate((node) => node.classList.contains("warning")), true);
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
+  assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
+  assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 0);
+  await page.getByRole("button", { name: "Submit for Review" }).click();
+  assert.equal(await page.locator("#uploadTab").getAttribute("aria-selected"), "true");
+  await page.getByRole("tab", { name: "Review" }).click();
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
     const styles = getComputedStyle(node);
@@ -228,17 +278,17 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
 
-  await page.locator("#reviewTab").focus();
-  await page.locator("#reviewTab").press("ArrowRight");
-  assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator("#playbookTab").getAttribute("tabindex"), "0");
-  assert.equal(await page.locator("#reviewTab").getAttribute("tabindex"), "-1");
-  await page.locator("#playbookTab").press("Home");
+  await page.locator("#dashboardTab").focus();
+  await page.locator("#dashboardTab").press("ArrowRight");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
-  await page.locator("#repositoryTab").press("End");
+  assert.equal(await page.locator("#repositoryTab").getAttribute("tabindex"), "0");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("tabindex"), "-1");
+  await page.locator("#repositoryTab").press("Home");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
+  await page.locator("#dashboardTab").press("End");
   assert.equal(await page.locator("#guideTab").getAttribute("aria-selected"), "true");
   await page.locator("#guideTab").press("Home");
-  assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
 
   await page.getByRole("tab", { name: "Playbook" }).click();
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
@@ -269,6 +319,8 @@ async function testAccessibleControlState(page) {
   await page.getByRole("button", { name: "Clean" }).click();
   assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "false");
   assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
+  await page.unroute("**/api/ai/settings");
+  await page.unroute("**/api/gmail/status");
 }
 
 async function testFailureUxDetails(page) {
@@ -293,6 +345,7 @@ async function testFailureUxDetails(page) {
 
 async function testReviewComparisonDataContract(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
   let capturedPayload = null;
   await page.route("**/api/review/compare", async (route) => {
     capturedPayload = route.request().postDataJSON();
@@ -635,10 +688,9 @@ async function testContractStructureReviewPanel(page) {
   let aiEnabled = false;
   let aiKeyConfigured = false;
   let aiKeySource = "";
-  let aiProvider = "gemini";
-  let aiModel = "gemini-3.5-flash";
+  let aiProvider = "openrouter";
+  let aiModel = "google/gemini-3.5-flash";
   let activeReviewEngine = "ai_first";
-  let aiFirstFallbackMode = "fail_closed";
   let runtimeSource = "default";
   let settingsAudit = [];
   const aiSettingsResponse = () => ({
@@ -658,15 +710,9 @@ async function testContractStructureReviewPanel(page) {
       active_engine: activeReviewEngine,
       engine_source: runtimeSource,
       engine_source_key: runtimeSource === "runtime_settings" ? "review_runtime.active_review_engine" : "",
-      ai_first_fallback_mode: aiFirstFallbackMode,
-      fallback_source: runtimeSource,
-      fallback_source_key: runtimeSource === "runtime_settings" ? "review_runtime.ai_first_fallback_mode" : "",
       stored_active_engine: runtimeSource === "runtime_settings" ? activeReviewEngine : null,
-      stored_ai_first_fallback_mode: runtimeSource === "runtime_settings" ? aiFirstFallbackMode : null,
       environment_active_engine: "",
-      environment_ai_first_fallback_mode: "",
       supported_engines: ["deterministic", "ai_first"],
-      supported_ai_first_fallback_modes: ["deterministic", "fail_closed"],
     },
     operational_warnings: activeReviewEngine === "ai_first" && !aiKeyConfigured
       ? [{ code: "ai_first_without_key", message: "AI-first is active but no AI API key is configured." }]
@@ -684,18 +730,13 @@ async function testContractStructureReviewPanel(page) {
         activeReviewEngine = payload.active_review_engine;
         runtimeSource = "runtime_settings";
       }
-      if (payload.ai_first_fallback_mode) {
-        aiFirstFallbackMode = payload.ai_first_fallback_mode;
-        runtimeSource = "runtime_settings";
-      }
-      if (payload.active_review_engine || payload.ai_first_fallback_mode) {
+      if (payload.active_review_engine) {
         settingsAudit = [{
           recorded_at: "2026-06-04T10:00:00+00:00",
           actor: "admin",
           action: "admin_settings_update",
           changes: [
             payload.active_review_engine ? { setting: "review_runtime.active_review_engine", before: "deterministic", after: payload.active_review_engine } : null,
-            payload.ai_first_fallback_mode ? { setting: "review_runtime.ai_first_fallback_mode", before: "deterministic", after: payload.ai_first_fallback_mode } : null,
           ].filter(Boolean),
         }, ...settingsAudit];
       }
@@ -864,7 +905,7 @@ async function testContractStructureReviewPanel(page) {
   const aiGuidePanel = page.locator("#adminAiGuidePanel");
   await assertTextContains(aiGuidePanel, "AI review methodology");
   await assertTextContains(aiGuidePanel, "How AI-first and comparison work");
-  await assertTextContains(aiGuidePanel, "GEMINI_API_KEY");
+  await assertTextContains(aiGuidePanel, "OPENROUTER_API_KEY");
   await assertTextContains(aiGuidePanel, "ai_review_analysis");
   await assertTextContains(aiGuidePanel, "AI disagreement");
 
@@ -882,26 +923,22 @@ async function testContractStructureReviewPanel(page) {
   assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "browser-gemini-local-key", enabled: true });
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
-  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "gemini");
-  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "gemini-3.5-flash");
-  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local Gemini key");
+  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
+  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "google/gemini-3.5-flash");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   assert.equal(await page.locator('[data-admin-ai="active-engine"]').innerText(), "AI-first");
-  assert.equal(await page.locator('[data-admin-ai="fallback-mode"]').innerText(), "Fail closed");
   assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Default runtime");
   assert.equal(await page.locator('[data-admin-ai="operational-warnings"]').innerText(), "None");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "ON");
   await page.locator("#adminActiveReviewEngineSelect").selectOption("ai_first");
-  await page.locator("#adminAiFirstFallbackSelect").selectOption("fail_closed");
   await page.locator("#adminRuntimeSaveButton").click();
   await page.waitForFunction(() => document.querySelector('[data-admin-ai="runtime-source"]')?.textContent?.trim() === "Admin runtime settings");
   assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], {
     active_review_engine: "ai_first",
-    ai_first_fallback_mode: "fail_closed",
   });
-  assert.equal(await page.locator('[data-admin-ai="fallback-mode"]').innerText(), "Fail closed");
   assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Admin runtime settings");
-  assert.equal(await page.locator('[data-admin-ai="last-settings-change"]').innerText(), "admin_settings_update: review_runtime.active_review_engine, review_runtime.ai_first_fallback_mode");
+  assert.equal(await page.locator('[data-admin-ai="last-settings-change"]').innerText(), "admin_settings_update: review_runtime.active_review_engine");
   await page.locator("#adminAiClearKeyButton").click();
   await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing AI API key");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");
@@ -943,6 +980,7 @@ async function testProgressivePdfPreviewFallback(page) {
   };
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
   await page.evaluate((payload) => {
     renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
   }, reviewResult);
@@ -1063,6 +1101,7 @@ async function testRenderedPageImagePreview(page) {
   };
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
   await page.evaluate((payload) => {
     renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
   }, reviewResult);
@@ -1141,8 +1180,8 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "gemini-3.5-flash",
-      provider: "gemini",
+      model: "google/gemini-3.5-flash",
+      provider: "openrouter",
       status: "completed",
     };
     const governingLaw = state.reviewClauses.find((clause) => clause.id === "governing_law");
@@ -1192,6 +1231,7 @@ async function testAiDraftFixValidationButton(page) {
 
 async function testPerClauseReviewedToggle(page) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
   await page.evaluate(() => {
     const paragraphs = [
       { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },

@@ -31,9 +31,10 @@ def _valid_assessment(**overrides):
         "clause_id": "governing_law",
         "decision": "fail",
         "issue_type": "present_but_wrong",
-        "rationale": "California is not an approved governing law for this playbook.",
-        "why_it_might_be_a_problem": "The clause uses a jurisdiction outside the approved set.",
-        "why_it_may_be_fine": "None.",
+        "rationale": (
+            "The clause selects California law, which is outside the approved governing-law options for this playbook. "
+            "A reviewer should treat it as non-compliant even though the clause is otherwise clearly drafted."
+        ),
         "evidence": [{
             "quote": "laws of california",
             "relevance": "Shows the governing-law jurisdiction.",
@@ -55,8 +56,8 @@ class AIAssessmentContractTests(unittest.TestCase):
     def test_schema_freezes_required_ai_clause_assessment_fields(self):
         self.assertEqual(AI_CLAUSE_ASSESSMENT_SCHEMA["properties"]["schema_version"]["const"], AI_ASSESSMENT_CONTRACT_VERSION)
         self.assertIn("rationale", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
-        self.assertIn("why_it_might_be_a_problem", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
-        self.assertIn("why_it_may_be_fine", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
+        self.assertNotIn("why_it_might_be_a_problem", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertNotIn("why_it_may_be_fine", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertIn("proposed_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
         self.assertEqual(
             AI_CLAUSE_ASSESSMENT_SCHEMA["properties"]["decision"]["enum"],
@@ -103,9 +104,7 @@ class AIAssessmentContractTests(unittest.TestCase):
                 "clause_id": "mutuality",
                 "decision": "pass",
                 "issue_type": "none",
-                "rationale": "Mutual disclosure language is present.",
-                "why_it_might_be_a_problem": "None.",
-                "why_it_may_be_fine": "The clause is reciprocal.",
+                "rationale": "The clause supports a pass because it describes each party disclosing Confidential Information to the other party, which aligns with the reciprocal playbook position.",
                 "evidence": [{
                     "paragraph_id": "p1",
                     "quote": "Each party may disclose Confidential Information",
@@ -127,9 +126,7 @@ class AIAssessmentContractTests(unittest.TestCase):
                 "clause_id": "non_circumvention",
                 "decision": "pass",
                 "issue_type": "none",
-                "rationale": "No non-circumvention or substitute-purpose restriction was found.",
-                "why_it_might_be_a_problem": "None.",
-                "why_it_may_be_fine": "The prohibited restraint appears absent from the supplied text.",
+                "rationale": "No non-circumvention or substitute-purpose restriction appears in the supplied text, so the prohibited-clause check can pass on absence.",
                 "evidence": [],
                 "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
                 "confidence": 0.82,

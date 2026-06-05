@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from copy import deepcopy
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .ai_assessment_contract import (
@@ -21,16 +21,14 @@ from .ai_assessment_prompt import (
 from .ai_first_review import build_ai_first_review_result
 from .ai_review import (
     DEFAULT_AI_TIMEOUT_SECONDS,
-    DEFAULT_GEMINI_MODEL,
-    GEMINI_ENDPOINT_TEMPLATE,
+    DEFAULT_OPENROUTER_MODEL,
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     _ai_review_settings,
     _configured_api_key,
-    _gemini_response_text,
     _sanitize_model_name,
     _trusted_https_context,
 )
 from .checker import load_playbook, validate_playbook
-from .gemini_schema import gemini_compatible_response_schema
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 
 AI_ASSESSOR_VERSION = 1
@@ -47,28 +45,29 @@ class AIAssessmentReviewer(Protocol):
         ...
 
 
-class GeminiAIAssessmentReviewer:
+class OpenRouterAIAssessmentReviewer:
     def __init__(
         self,
         *,
         api_key: str,
-        model: str = DEFAULT_GEMINI_MODEL,
+        model: str = DEFAULT_OPENROUTER_MODEL,
         timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
     ) -> None:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
-            raise AIAssessorError("Gemini API key is not configured.")
+            raise AIAssessorError("OpenRouter API key is not configured.")
         self.api_key = cleaned_key
-        self.model = _sanitize_model_name(model or DEFAULT_GEMINI_MODEL)
+        self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
 
     def __call__(self, packet: dict[str, Any]) -> dict[str, Any] | None:
         request = urllib.request.Request(
-            GEMINI_ENDPOINT_TEMPLATE.format(model=self.model),
-            data=json.dumps(gemini_ai_assessment_request_body(packet)).encode("utf-8"),
+            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+            data=json.dumps(openrouter_ai_assessment_request_body(packet, model=self.model)).encode("utf-8"),
             headers={
+                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key,
+                "User-Agent": "nda-automation/1.0",
             },
             method="POST",
         )
@@ -77,10 +76,10 @@ class GeminiAIAssessmentReviewer:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIAssessorError(f"Gemini API returned HTTP {error.code}: {message}") from error
+            raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIAssessorError(f"Gemini API request failed: {error}") from error
-        return _parse_provider_response_text(_gemini_response_text(payload), provider="Gemini")
+            raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
+        return _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
 
 
 class InMemoryAssessmentReviewer:
@@ -134,6 +133,8 @@ def assess_nda_with_ai(
         playbook=review_playbook,
         packet=packet,
     )
+    used_provider = str(getattr(configured_reviewer, "last_success_provider", "") or settings["provider"])
+    used_model = str(getattr(configured_reviewer, "last_success_model", "") or settings["model"])
     result = build_ai_first_review_result(
         source,
         raw_assessments,
@@ -147,8 +148,8 @@ def assess_nda_with_ai(
         "version": AI_ASSESSOR_VERSION,
         "status": status,
         "mode": AI_FIRST_ASSESSOR_MODE,
-        "provider": str(settings["provider"]),
-        "model": str(settings["model"]),
+        "provider": used_provider,
+        "model": used_model,
         "packet_version": AI_ASSESSMENT_PROMPT_VERSION,
         "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
         "record_count": len(raw_assessments),
@@ -163,31 +164,34 @@ def assess_nda_with_ai(
 
 def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None) -> AIAssessmentReviewer:
     config = dict(settings or _ai_review_settings())
-    provider = str(config.get("provider") or "gemini").strip().lower()
+    provider = str(config.get("provider") or "openrouter").strip().lower()
     timeout_seconds = int(config.get("timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS)
     model = str(config.get("model") or "").strip()
-    if provider == "gemini":
-        return GeminiAIAssessmentReviewer(
+    if provider == "openrouter":
+        return OpenRouterAIAssessmentReviewer(
             api_key=_configured_api_key(provider),
-            model=model or DEFAULT_GEMINI_MODEL,
+            model=model or DEFAULT_OPENROUTER_MODEL,
             timeout_seconds=timeout_seconds,
         )
     raise AIAssessorError(f"Unsupported AI provider: {provider}")
 
 
-def gemini_ai_assessment_request_body(packet: Mapping[str, Any]) -> dict[str, Any]:
+def openrouter_ai_assessment_request_body(packet: Mapping[str, Any], *, model: str) -> dict[str, Any]:
     prompt = build_ai_assessment_prompt(packet)
     return {
-        "systemInstruction": {"parts": [{"text": prompt["system"]}]},
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt["user"]}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-            "responseSchema": gemini_compatible_response_schema(AI_ASSESSMENT_RESPONSE_SCHEMA),
-        },
+        "model": _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL),
+        "messages": [
+            {
+                "role": "system",
+                "content": prompt["system"],
+            },
+            {
+                "role": "user",
+                "content": prompt["user"],
+            },
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
     }
 
 
@@ -254,3 +258,16 @@ def _parse_provider_response_text(response_text: str, *, provider: str) -> dict[
     except json.JSONDecodeError as error:
         raise AIAssessorError(f"{provider} API returned non-JSON text.") from error
     return parsed if isinstance(parsed, dict) else None
+
+
+def _openrouter_response_text(payload: Mapping[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, Mapping):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, Mapping):
+        return ""
+    return str(message.get("content") or "").strip()

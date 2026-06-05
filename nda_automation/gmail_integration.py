@@ -217,12 +217,12 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             "attachment filenames",
             "attachment text content (docx/pdf)",
             "attachment-level deterministic NDA/collateral scoring",
-            "Qwen contextual attachment selection" if selector_enabled else "deterministic attachment selection",
+            "OpenRouter contextual attachment selection" if selector_enabled else "deterministic attachment selection",
         ],
         "terms": search_terms,
         "deterministic_terms": [term for term, _pattern in NDA_DETECTION_TERMS],
         "mode": (
-            "Qwen reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
+            "OpenRouter reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
             "signals before selecting import attachments. Deterministic rules are used as fallback."
             if selector_enabled
             else "Gmail query prefilters inbox attachments; local parsing verifies each message, then validates each attachment before import."
@@ -1485,7 +1485,7 @@ def _attachment_validation_metadata(metadata: dict[str, str], validation: dict[s
 
 def _attachment_selector_metadata(metadata: dict[str, str], selection: dict[str, object]) -> dict[str, str]:
     updated = dict(metadata)
-    updated["gmail_attachment_selector"] = "groq_qwen"
+    updated["gmail_attachment_selector"] = "openrouter_gemini"
     model = str(selection.get("model") or "").strip()
     if model:
         updated["gmail_attachment_selector_model"] = model[:120]

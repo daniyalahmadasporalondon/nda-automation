@@ -11,7 +11,6 @@ from nda_automation.checker import (
     ai_validate_draft_fix,
     review_nda,
 )
-from nda_automation.gemini_schema import GEMINI_UNSUPPORTED_SCHEMA_KEYS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -65,8 +64,8 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_ENABLED": "",
                 "NDA_AI_REVIEW_CLAUSES": "",
                 "NDA_AI_REVIEW_THRESHOLD": "",
-                "NDA_AI_PROVIDER": "gemini",
-                "NDA_AI_MODEL": "gemini-3.5-flash",
+                "NDA_AI_PROVIDER": "openrouter",
+                "NDA_AI_MODEL": "google/gemini-3.5-flash",
             },
             clear=False,
         )
@@ -93,7 +92,7 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured"},
+                    {"NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "OPENROUTER_API_KEY": "configured"},
                     clear=False,
                 ):
                     disabled_status = ai_review.ai_review_status()
@@ -102,7 +101,7 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured"},
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "OPENROUTER_API_KEY": "configured"},
                     clear=False,
                 ):
                     enabled_status = ai_review.ai_review_status()
@@ -111,7 +110,7 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="saved-local-key"):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": ""},
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "OPENROUTER_API_KEY": ""},
                     clear=False,
                 ):
                     local_key_status = ai_review.ai_review_status()
@@ -419,36 +418,28 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(error.exception.status, 409)
         self.assertIn("disabled", str(error.exception))
 
-    def test_gemini_request_body_uses_structured_json_response_format(self):
+    def test_openrouter_request_body_uses_json_response_format(self):
         packet = {
             "task": "semantic_clause_crosscheck",
             "clause": {"id": "mutuality"},
             "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
         }
 
-        body = ai_review._gemini_request_body(packet)
+        body = ai_review._openrouter_request_body(packet, model=ai_review.DEFAULT_OPENROUTER_MODEL)
         encoded = json.dumps(body)
 
-        self.assertEqual(body["generationConfig"]["temperature"], 0)
-        self.assertEqual(
-            body["generationConfig"]["responseMimeType"],
-            "application/json",
-        )
-        self.assertIn("responseSchema", body["generationConfig"])
-        schema_json = json.dumps(body["generationConfig"]["responseSchema"])
-        for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
-            self.assertNotIn(f'"{unsupported_key}"', schema_json)
-        self.assertIn('"minimum"', schema_json)
-        self.assertIn('"maximum"', schema_json)
+        self.assertEqual(body["model"], ai_review.DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual([message["role"] for message in body["messages"]], ["system", "user"])
         self.assertIn("semantic_clause_crosscheck", encoded)
 
     def test_sanitize_model_name_strips_unsafe_characters(self):
-        self.assertEqual(ai_review._sanitize_model_name("models/gemini-3.5-flash"), "gemini-3.5-flash")
+        self.assertEqual(ai_review._sanitize_model_name("google/gemini-3.5-flash"), "google/gemini-3.5-flash")
         sanitized = ai_review._sanitize_model_name("../../etc/passwd?inject=1")
-        self.assertNotIn("/", sanitized)
         self.assertNotIn("?", sanitized)
-        self.assertRegex(sanitized, r"^[A-Za-z0-9._-]*$")
-        self.assertEqual(ai_review._sanitize_model_name("   "), ai_review.DEFAULT_GEMINI_MODEL)
+        self.assertRegex(sanitized, r"^[A-Za-z0-9._/-]*$")
+        self.assertEqual(ai_review._sanitize_model_name("   "), ai_review.DEFAULT_OPENROUTER_MODEL)
 
 
 def _mock_urlopen(response_bytes, captured_requests):
@@ -481,19 +472,22 @@ class AIProviderAdapterTests(unittest.TestCase):
         "suggested_fix": "",
     }
 
-    def test_gemini_adapter_round_trip(self):
+    def test_openrouter_adapter_round_trip(self):
         captured = []
         response = json.dumps(
-            {"candidates": [{"content": {"parts": [{"text": json.dumps(self.VERDICT)}]}}]}
+            {"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}
         ).encode("utf-8")
         with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
-            reviewer = ai_review.GeminiAIReviewer(api_key="k", model="gemini-3.5-flash")
+            reviewer = ai_review.OpenRouterAIReviewer(api_key="k", model=ai_review.DEFAULT_OPENROUTER_MODEL)
             verdict = reviewer(self.PACKET)
 
         self.assertEqual(verdict, self.VERDICT)
         self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer k")
         body = json.loads(captured[0].data.decode("utf-8"))
-        self.assertEqual(body["generationConfig"]["temperature"], 0)
+        self.assertEqual(body["model"], ai_review.DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertIn("semantic_clause_crosscheck", json.dumps(body))
 
     def test_adapters_and_in_memory_reviewer_satisfy_the_public_interface(self):

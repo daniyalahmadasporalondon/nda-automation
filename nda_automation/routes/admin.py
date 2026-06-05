@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from .. import ai_review, app_settings, matter_store, telemetry
 from ..deployment import _deployment_status_for_host
 from ..review_engine import (
-    FALLBACK_MODE_DETERMINISTIC,
-    FALLBACK_MODE_FAIL_CLOSED,
     REVIEW_ENGINE_AI_FIRST,
     REVIEW_ENGINE_DETERMINISTIC,
     active_review_engine_status,
@@ -66,20 +64,6 @@ def handle_ai_settings_update(handler) -> None:
             runtime_noops.add("active_review_engine")
         else:
             runtime_updates["active_review_engine"] = active_review_engine
-    if "ai_first_fallback_mode" in payload:
-        fallback_mode = _runtime_setting_value(payload.get("ai_first_fallback_mode"))
-        if fallback_mode not in {FALLBACK_MODE_DETERMINISTIC, FALLBACK_MODE_FAIL_CLOSED}:
-            handler._send_json({"error": "AI-first fallback mode must be deterministic or fail_closed."}, status=400)
-            return
-        pinned_fallback = runtime_status.get("environment_ai_first_fallback_mode")
-        if pinned_fallback:
-            if fallback_mode != pinned_fallback:
-                telemetry.increment("review_runtime_update_blocked_environment")
-                handler._send_json({"error": "AI-first fallback mode is pinned by the backend environment."}, status=409)
-                return
-            runtime_noops.add("ai_first_fallback_mode")
-        else:
-            runtime_updates["ai_first_fallback_mode"] = fallback_mode
     if not ai_updates and not runtime_updates and not runtime_noops:
         handler._send_json({"error": "Provide an AI or runtime review setting to update."}, status=400)
         return
@@ -176,7 +160,7 @@ def _record_settings_audit_if_changed(
         after = current_ai_settings.get(key)
         if before != after:
             changes.append({"setting": f"ai_review.{key}", "before": before, "after": after})
-    for key in ("active_review_engine", "ai_first_fallback_mode"):
+    for key in ("active_review_engine",):
         before = previous_runtime_settings.get(key)
         after = current_runtime_settings.get(key)
         if before != after:
@@ -205,11 +189,6 @@ def _operational_warnings() -> list[dict[str, str]]:
         warnings.append({
             "code": "active_engine_environment_pinned",
             "message": "Active review engine is pinned by the backend environment.",
-        })
-    if runtime_status.get("environment_ai_first_fallback_mode"):
-        warnings.append({
-            "code": "fallback_environment_pinned",
-            "message": "AI-first fallback mode is pinned by the backend environment.",
         })
     return warnings
 

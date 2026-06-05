@@ -781,6 +781,133 @@ h3 {
   padding: 0;
 }
 
+.dashboard-view {
+  flex: 1;
+  min-height: 0;
+  padding: 72px 24px 18px;
+}
+
+.dashboard-view.view.active {
+  display: block;
+}
+
+.dashboard-hero {
+  align-items: center;
+  background:
+    linear-gradient(100deg, #1d0d45 0%, #311276 56%, #4a24a1 100%);
+  border-radius: 20px;
+  color: #ffffff;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  min-height: 196px;
+  padding: 34px 32px;
+}
+
+.dashboard-hero-copy {
+  max-width: 680px;
+  min-width: 0;
+}
+
+.dashboard-hero h1 {
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 750;
+  line-height: 1.15;
+  margin: 0 0 8px;
+}
+
+.dashboard-hero p {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 14px;
+  font-weight: 520;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 68ch;
+}
+
+.dashboard-hero strong {
+  color: #ffffff;
+  font-weight: 760;
+}
+
+.dashboard-hero-actions {
+  align-items: stretch;
+  display: grid;
+  gap: 14px;
+  justify-items: stretch;
+  min-width: 260px;
+}
+
+.dashboard-submit-button {
+  background: #f09ac6;
+  box-shadow: 0 14px 28px -16px rgba(240, 154, 198, 0.8);
+  color: #1f0b3c;
+  flex: 0 0 auto;
+  gap: 8px;
+  height: 42px;
+  padding: 0 20px;
+}
+
+.dashboard-submit-button:hover:not(:disabled),
+.dashboard-submit-button:focus-visible {
+  background: #f3aad0;
+  color: #160833;
+}
+
+.dashboard-submit-button span:first-child {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.dashboard-health-list {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.dashboard-health-item {
+  padding: 0;
+}
+
+.dashboard-health-head {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 10px minmax(0, 1fr);
+}
+
+.dashboard-health-dot {
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: var(--r-pill);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  height: 8px;
+  width: 8px;
+}
+
+.dashboard-health-item.ready .dashboard-health-dot {
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18);
+}
+
+.dashboard-health-item.warning .dashboard-health-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
+}
+
+.dashboard-health-item.blocked .dashboard-health-dot {
+  background: #fb7185;
+  box-shadow: 0 0 0 3px rgba(251, 113, 133, 0.2);
+}
+
+.dashboard-health-name {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 780;
+  line-height: 1.2;
+}
+
 .send-modal {
   font-family: var(--text-font);
 }
@@ -2239,9 +2366,9 @@ textarea::placeholder {
 }
 
 .export-choice[data-export-decision="ignore"].active {
-  background: var(--red-bg);
-  border-color: var(--red-border);
-  color: var(--red-ink);
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
 }
 
 .studio-clause-list .export-choice.active,
@@ -2811,7 +2938,7 @@ button.active-clause-status:hover {
 }
 
 .proposed-redline-block {
-  background: #fffdf8;
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
 }
 
@@ -2844,7 +2971,7 @@ button.active-clause-status:hover {
 }
 
 .redline-label {
-  color: var(--red-ink);
+  color: var(--ink);
   display: block;
   font-size: 10px;
   font-weight: 800;
@@ -2870,18 +2997,22 @@ button.active-clause-status:hover {
 }
 
 .redline-original {
-  background: #ffe7e7;
-  border-left: 3px solid var(--red);
-  color: #991b1b;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  padding: 0;
   text-decoration: line-through;
   text-decoration-color: var(--red);
   text-decoration-thickness: 2px;
 }
 
 .redline-replacement {
-  background: #e8fbf1;
-  border-left: 3px solid var(--green);
-  color: #065f46;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  padding: 0;
 }
 
 .redline-removal {
@@ -2899,9 +3030,11 @@ button.active-clause-status:hover {
 }
 
 .redline-insertion {
-  background: #e8fbf1;
-  border-left: 3px solid var(--green);
-  color: #065f46;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  padding: 0;
 }
 
 .redline-anchor {
@@ -5679,6 +5812,26 @@ body.modal-open {
     margin-left: 16px;
     margin-bottom: 24px;
     margin-right: 16px;
+  }
+
+  .dashboard-view {
+    padding: 48px 16px 16px;
+  }
+
+  .dashboard-hero {
+    align-items: flex-start;
+    flex-direction: column;
+    min-height: 0;
+    padding: 24px;
+  }
+
+  .dashboard-hero-actions {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .dashboard-submit-button {
+    width: 100%;
   }
 
   .upload-header,

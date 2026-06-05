@@ -42,8 +42,6 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
         "decision": {"type": "string", "enum": list(AI_ASSESSMENT_DECISIONS)},
         "issue_type": {"type": "string", "enum": list(AI_ASSESSMENT_ISSUE_TYPES)},
         "rationale": {"type": "string"},
-        "why_it_might_be_a_problem": {"type": "string"},
-        "why_it_may_be_fine": {"type": "string"},
         "evidence": {
             "type": "array",
             "items": {
@@ -76,8 +74,6 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
         "decision",
         "issue_type",
         "rationale",
-        "why_it_might_be_a_problem",
-        "why_it_may_be_fine",
         "evidence",
         "proposed_redline",
         "confidence",
@@ -164,8 +160,6 @@ def validate_ai_clause_assessment(
     decision = _required_enum(assessment, "decision", AI_ASSESSMENT_DECISIONS, location, errors)
     issue_type = _required_enum(assessment, "issue_type", AI_ASSESSMENT_ISSUE_TYPES, location, errors)
     rationale = _required_text(assessment, "rationale", location, errors)
-    why_problem = _required_text(assessment, "why_it_might_be_a_problem", location, errors)
-    why_fine = _required_text(assessment, "why_it_may_be_fine", location, errors)
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
     evidence = _validated_evidence(assessment, paragraph_by_id, location, errors)
@@ -175,8 +169,6 @@ def validate_ai_clause_assessment(
         errors.append(f"{location}: pass decisions must use issue_type none")
     if decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW} and issue_type == ISSUE_TYPE_NONE:
         errors.append(f"{location}: fail/review decisions must not use issue_type none")
-    if decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW} and not why_problem:
-        errors.append(f"{location}: fail/review decisions require why_it_might_be_a_problem")
     if decision == CLAUSE_DECISION_PASS and proposed_redline.get("action") != AI_REDLINE_NO_CHANGE:
         errors.append(f"{location}: pass decisions must use proposed_redline.action no_change")
     if decision == CLAUSE_DECISION_FAIL and proposed_redline.get("action") == AI_REDLINE_NO_CHANGE:
@@ -194,8 +186,6 @@ def validate_ai_clause_assessment(
         "decision": decision,
         "issue_type": issue_type,
         "rationale": rationale,
-        "why_it_might_be_a_problem": why_problem,
-        "why_it_may_be_fine": why_fine,
         "evidence": evidence,
         "proposed_redline": proposed_redline,
         "confidence": confidence,

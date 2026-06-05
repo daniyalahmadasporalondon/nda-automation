@@ -29,8 +29,6 @@ from nda_automation.ai_review import AI_REVIEW_ENV_ENABLED, _ai_review_settings,
 from nda_automation.checker import review_nda
 from nda_automation.review_engine import (
     ACTIVE_REVIEW_ENGINE_ENV,
-    AI_FIRST_FALLBACK_MODE_ENV,
-    FALLBACK_MODE_FAIL_CLOSED,
     REVIEW_ENGINE_AI_FIRST,
     review_nda_with_active_engine,
 )
@@ -85,9 +83,7 @@ def deterministic_review(text: str) -> dict:
 
 def active_engine_review(text: str, ai_first_review_func) -> dict:
     previous_engine = os.environ.get(ACTIVE_REVIEW_ENGINE_ENV)
-    previous_fallback = os.environ.get(AI_FIRST_FALLBACK_MODE_ENV)
     os.environ[ACTIVE_REVIEW_ENGINE_ENV] = REVIEW_ENGINE_AI_FIRST
-    os.environ[AI_FIRST_FALLBACK_MODE_ENV] = FALLBACK_MODE_FAIL_CLOSED
     try:
         return review_nda_with_active_engine(text, ai_first_review_func=ai_first_review_func)
     finally:
@@ -95,10 +91,6 @@ def active_engine_review(text: str, ai_first_review_func) -> dict:
             os.environ.pop(ACTIVE_REVIEW_ENGINE_ENV, None)
         else:
             os.environ[ACTIVE_REVIEW_ENGINE_ENV] = previous_engine
-        if previous_fallback is None:
-            os.environ.pop(AI_FIRST_FALLBACK_MODE_ENV, None)
-        else:
-            os.environ[AI_FIRST_FALLBACK_MODE_ENV] = previous_fallback
 
 
 def run_case_real(case: dict, ai_first_review_func) -> dict:

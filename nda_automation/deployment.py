@@ -29,9 +29,8 @@ AI_REVIEW_ENABLED_ENV = "NDA_AI_REVIEW_ENABLED"
 AI_PROVIDER_ENV = "NDA_AI_PROVIDER"
 AI_MODEL_ENV = "NDA_AI_MODEL"
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
-GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
-GROQ_API_KEY_ENV = "GROQ_API_KEY"
 
 
 def _validate_public_auth(host: str) -> None:
@@ -259,25 +258,25 @@ def _deployment_ai_env_status() -> dict[str, object]:
 
 def _deployment_gmail_triage_env_status(public_host: bool) -> dict[str, object]:
     key_configured = bool(
-        os.environ.get(GROQ_API_KEY_ENV, "").strip()
-        or _stored_key_configured(app_settings.stored_gmail_triage_api_key)
+        os.environ.get(OPENROUTER_API_KEY_ENV, "").strip()
+        or _stored_key_configured(app_settings.stored_ai_api_key)
     )
     model_configured = bool(os.environ.get(GMAIL_TRIAGE_MODEL_ENV, "").strip())
     configured = key_configured and model_configured
     if configured:
-        return {"ok": True, "configured": True, "message": "Gmail Qwen triage key and model are configured."}
+        return {"ok": True, "configured": True, "message": "Gmail OpenRouter triage key and model are configured."}
     if not public_host:
-        return {"ok": True, "configured": False, "message": "Gmail Qwen triage can be configured later for local development."}
+        return {"ok": True, "configured": False, "message": "Gmail OpenRouter triage can be configured later for local development."}
     return {
         "ok": False,
         "configured": False,
-        "message": "Set GROQ_API_KEY and NDA_GMAIL_TRIAGE_MODEL for AI-assisted Gmail attachment selection.",
+        "message": "Set OPENROUTER_API_KEY and NDA_GMAIL_TRIAGE_MODEL for AI-assisted Gmail attachment selection.",
     }
 
 
 def _ai_provider_key_configured(provider: str) -> bool:
-    if provider == "gemini":
-        return bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip() or _stored_key_configured(app_settings.stored_ai_api_key))
+    if provider == "openrouter":
+        return bool(os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or _stored_key_configured(app_settings.stored_ai_api_key))
     return False
 
 

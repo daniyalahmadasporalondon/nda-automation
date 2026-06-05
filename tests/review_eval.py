@@ -64,7 +64,7 @@ def _ai_disabled() -> ExitStack:
             {
                 "NDA_AI_REVIEW_ENABLED": "",
                 "NDA_AI_PROVIDER": "",
-                "GEMINI_API_KEY": "",
+                "OPENROUTER_API_KEY": "",
             },
             clear=False,
         )

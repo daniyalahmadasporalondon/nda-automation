@@ -104,10 +104,8 @@ DEFAULT_AI_SETTINGS = {
 }
 DEFAULT_REVIEW_RUNTIME_SETTINGS = {
     "active_review_engine": None,
-    "ai_first_fallback_mode": None,
 }
 SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
-SUPPORTED_AI_FIRST_FALLBACK_MODES = {"deterministic", "fail_closed"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
 GMAIL_TRIAGE_API_KEY_FILENAME = "gmail_triage_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
@@ -375,7 +373,7 @@ def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(enabled, bool):
         enabled = None
     provider = str(payload.get("provider") or DEFAULT_AI_SETTINGS["provider"]).strip().lower()
-    if provider not in {"", "gemini"}:
+    if provider not in {"", "openrouter"}:
         provider = ""
     model = str(payload.get("model") or DEFAULT_AI_SETTINGS["model"]).strip()
     if len(model) > 200:
@@ -388,13 +386,8 @@ def review_runtime_settings_from_payload(payload: dict[str, Any]) -> dict[str, A
         payload.get("active_review_engine", DEFAULT_REVIEW_RUNTIME_SETTINGS["active_review_engine"]),
         SUPPORTED_ACTIVE_REVIEW_ENGINES,
     )
-    ai_first_fallback_mode = _stored_runtime_value(
-        payload.get("ai_first_fallback_mode", DEFAULT_REVIEW_RUNTIME_SETTINGS["ai_first_fallback_mode"]),
-        SUPPORTED_AI_FIRST_FALLBACK_MODES,
-    )
     return {
         "active_review_engine": active_review_engine,
-        "ai_first_fallback_mode": ai_first_fallback_mode,
     }
 
 
@@ -427,7 +420,7 @@ def _valid_ai_setting(key: str, value: Any) -> bool:
     if key == "enabled":
         return isinstance(value, bool)
     if key == "provider":
-        return isinstance(value, str) and value.strip().lower() in {"", "gemini"}
+        return isinstance(value, str) and value.strip().lower() in {"", "openrouter"}
     if key == "model":
         return isinstance(value, str) and len(value.strip()) <= 200
     return False
@@ -436,8 +429,6 @@ def _valid_ai_setting(key: str, value: Any) -> bool:
 def _valid_review_runtime_setting(key: str, value: Any) -> bool:
     if key == "active_review_engine":
         return value is None or _normalized_runtime_value(value) in SUPPORTED_ACTIVE_REVIEW_ENGINES
-    if key == "ai_first_fallback_mode":
-        return value is None or _normalized_runtime_value(value) in SUPPORTED_AI_FIRST_FALLBACK_MODES
     return False
 
 
@@ -446,8 +437,6 @@ def _clean_review_runtime_setting(key: str, value: Any) -> str | None:
         return None
     normalized = _normalized_runtime_value(value)
     if key == "active_review_engine" and normalized in SUPPORTED_ACTIVE_REVIEW_ENGINES:
-        return normalized
-    if key == "ai_first_fallback_mode" and normalized in SUPPORTED_AI_FIRST_FALLBACK_MODES:
         return normalized
     return None
 

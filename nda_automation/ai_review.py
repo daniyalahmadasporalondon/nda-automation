@@ -11,7 +11,6 @@ from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
 from .checks.common import ClauseResult, Paragraph
-from .gemini_schema import gemini_compatible_response_schema
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -24,7 +23,7 @@ from .review_state import (
 )
 
 AI_REVIEW_VERSION = 1
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash"
 DEFAULT_AI_REVIEW_THRESHOLD = 0.75
 DEFAULT_AI_TIMEOUT_SECONDS = 20
 MAX_AI_CONTEXT_PARAGRAPHS = 40
@@ -35,8 +34,10 @@ AI_REVIEW_ENV_MODEL = "NDA_AI_MODEL"
 AI_REVIEW_ENV_TIMEOUT = "NDA_AI_TIMEOUT_SECONDS"
 AI_REVIEW_ENV_THRESHOLD = "NDA_AI_REVIEW_THRESHOLD"
 AI_REVIEW_ENV_CLAUSES = "NDA_AI_REVIEW_CLAUSES"
-GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-GEMINI_ENDPOINT_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+AI_REVIEW_ENV_BACKUP_PROVIDER = "NDA_AI_BACKUP_PROVIDER"
+AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 AI_REVIEW_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
@@ -50,7 +51,7 @@ class AIReviewer(Protocol):
 
     A reviewer maps a review packet (from build_ai_review_packet) to a verdict
     dict matching AI_REVIEW_SCHEMA, or None when it has nothing usable to say.
-    GeminiAIReviewer, the prod resolver (_configured_reviewer), and
+    OpenRouterAIReviewer, the prod resolver (_configured_reviewer), and
     InMemoryReviewer all implement this interface; tests inject a reviewer
     through the reviewer=/ai_reviewer= parameter to cross the real seam instead
     of mocking app_settings. Plain functions with the same signature also
@@ -115,28 +116,29 @@ class AIReviewError(RuntimeError):
     pass
 
 
-class GeminiAIReviewer:
+class OpenRouterAIReviewer:
     def __init__(
         self,
         *,
         api_key: str,
-        model: str = DEFAULT_GEMINI_MODEL,
+        model: str = DEFAULT_OPENROUTER_MODEL,
         timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
     ) -> None:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
-            raise AIReviewError("Gemini API key is not configured.")
+            raise AIReviewError("OpenRouter API key is not configured.")
         self.api_key = cleaned_key
-        self.model = _sanitize_model_name(model or DEFAULT_GEMINI_MODEL)
+        self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
         request = urllib.request.Request(
-            GEMINI_ENDPOINT_TEMPLATE.format(model=self.model),
-            data=json.dumps(_gemini_request_body(packet)).encode("utf-8"),
+            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+            data=json.dumps(_openrouter_request_body(packet, model=self.model)).encode("utf-8"),
             headers={
+                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key,
+                "User-Agent": "nda-automation/1.0",
             },
             method="POST",
         )
@@ -145,17 +147,17 @@ class GeminiAIReviewer:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIReviewError(f"Gemini API returned HTTP {error.code}: {message}") from error
+            raise AIReviewError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIReviewError(f"Gemini API request failed: {error}") from error
+            raise AIReviewError(f"OpenRouter API request failed: {error}") from error
 
-        response_text = _gemini_response_text(payload)
+        response_text = _openrouter_response_text(payload)
         if not response_text:
-            raise AIReviewError("Gemini API returned no text candidate.")
+            raise AIReviewError("OpenRouter API returned no message content.")
         try:
             parsed = json.loads(response_text)
         except json.JSONDecodeError as error:
-            raise AIReviewError("Gemini API returned non-JSON text.") from error
+            raise AIReviewError("OpenRouter API returned non-JSON text.") from error
         return parsed if isinstance(parsed, dict) else None
 
 
@@ -755,8 +757,8 @@ def _record_from_analysis(clause: ClauseResult, analysis: Dict[str, object]) -> 
 
 def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
     provider = str(settings["provider"]).strip().lower()
-    if provider == "gemini":
-        return GeminiAIReviewer(
+    if provider == "openrouter":
+        return OpenRouterAIReviewer(
             api_key=_configured_api_key(provider),
             model=str(settings["model"]),
             timeout_seconds=int(settings["timeout_seconds"]),
@@ -765,20 +767,23 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
 
 
 def provider_for_api_key(api_key: str) -> str:
-    return "gemini"
+    return "openrouter"
 
 
 def default_model_for_provider(provider: str) -> str:
-    return DEFAULT_GEMINI_MODEL
+    return DEFAULT_OPENROUTER_MODEL
 
 
 def _configured_api_key(provider: str) -> str:
-    return os.environ.get(GEMINI_API_KEY_ENV, "").strip() or _stored_key_for_provider("gemini")
+    normalized_provider = str(provider).strip().lower()
+    if normalized_provider == "openrouter":
+        return os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or _stored_key_for_provider("openrouter")
+    return ""
 
 
 def _api_key_source(provider: str) -> str:
     normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "gemini" and os.environ.get(GEMINI_API_KEY_ENV, "").strip():
+    if normalized_provider == "openrouter" and os.environ.get(OPENROUTER_API_KEY_ENV, "").strip():
         return "environment"
     if _stored_key_for_provider(normalized_provider):
         return "local_settings"
@@ -786,10 +791,11 @@ def _api_key_source(provider: str) -> str:
 
 
 def _stored_key_for_provider(provider: str) -> str:
+    normalized_provider = str(provider).strip().lower()
     stored_key = app_settings.stored_ai_api_key()
     if not stored_key:
         return ""
-    return stored_key if str(provider).strip().lower() == "gemini" else ""
+    return stored_key if normalized_provider == "openrouter" else ""
 
 
 def _ai_review_settings() -> Dict[str, object]:
@@ -809,12 +815,12 @@ def _ai_review_settings() -> Dict[str, object]:
 
 def _configured_provider(stored: Dict[str, object]) -> str:
     env_provider = os.environ.get(AI_REVIEW_ENV_PROVIDER, "").strip().lower()
-    if env_provider == "gemini":
+    if env_provider == "openrouter":
         return env_provider
     stored_provider = str(stored.get("provider") or "").strip().lower()
-    if stored_provider == "gemini":
+    if stored_provider == "openrouter":
         return stored_provider
-    return "gemini"
+    return "openrouter"
 
 
 def _configured_model(provider: str, stored: Dict[str, object]) -> str:
@@ -822,7 +828,7 @@ def _configured_model(provider: str, stored: Dict[str, object]) -> str:
     if env_model:
         return env_model
     stored_provider = str(stored.get("provider") or "").strip().lower()
-    stored_model = str(stored.get("model") or "").strip() if stored_provider in {"", "gemini"} else ""
+    stored_model = str(stored.get("model") or "").strip() if stored_provider == provider else ""
     if stored_model:
         return stored_model
     return default_model_for_provider(provider)
@@ -848,27 +854,23 @@ def _summary(
     return summary
 
 
-def _gemini_request_body(packet: Dict[str, object]) -> Dict[str, object]:
+def _openrouter_request_body(packet: Dict[str, object], *, model: str) -> Dict[str, object]:
     prompt = json.dumps(packet, ensure_ascii=False, indent=2)
     return {
-        "systemInstruction": {
-            "parts": [{
-                "text": (
+        "model": _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
                     "You are a legal QA semantic reviewer for NDA hard-clause checks. "
                     "Use only supplied paragraph text. Do not invent document terms. "
                     "Return only schema-valid JSON."
-                )
-            }]
-        },
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-            "responseSchema": gemini_compatible_response_schema(AI_REVIEW_SCHEMA),
-        },
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
     }
 
 
@@ -883,21 +885,17 @@ def _trusted_https_context() -> ssl.SSLContext | None:
         return None
 
 
-def _gemini_response_text(payload: Dict[str, object]) -> str:
-    candidates = payload.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+def _openrouter_response_text(payload: Dict[str, object]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
         return ""
-    first = candidates[0]
+    first = choices[0]
     if not isinstance(first, dict):
         return ""
-    content = first.get("content")
-    if not isinstance(content, dict):
+    message = first.get("message")
+    if not isinstance(message, dict):
         return ""
-    parts = content.get("parts")
-    if not isinstance(parts, list):
-        return ""
-    text_parts = [str(part.get("text") or "") for part in parts if isinstance(part, dict)]
-    return "".join(text_parts).strip()
+    return str(message.get("content") or "").strip()
 
 
 def _context_paragraphs(
@@ -1046,9 +1044,6 @@ def _env_float(name: str, fallback: float) -> float:
 
 
 def _sanitize_model_name(model: str) -> str:
-    cleaned = str(model or DEFAULT_GEMINI_MODEL).strip().removeprefix("models/")
-    # The model name is interpolated into the Gemini endpoint URL path, so
-    # restrict it to a safe allowlist to prevent path/query injection if a
-    # set-model route is ever added.
-    cleaned = re.sub(r"[^A-Za-z0-9._-]", "", cleaned)
-    return cleaned or DEFAULT_GEMINI_MODEL
+    cleaned = str(model or DEFAULT_OPENROUTER_MODEL).strip()
+    cleaned = re.sub(r"[^A-Za-z0-9._/-]", "", cleaned)
+    return cleaned or DEFAULT_OPENROUTER_MODEL

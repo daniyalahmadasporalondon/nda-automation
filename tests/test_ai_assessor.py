@@ -1,16 +1,18 @@
 import unittest
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from nda_automation.ai_assessment_prompt import AI_ASSESSMENT_RESPONSE_SCHEMA, AI_ASSESSMENT_TASK
+from nda_automation.ai_assessment_prompt import AI_ASSESSMENT_TASK
 from nda_automation.ai_assessor import (
     AI_FIRST_ASSESSOR_MODE,
     AIAssessorError,
     InMemoryAssessmentReviewer,
+    OpenRouterAIAssessmentReviewer,
     assess_nda_with_ai,
-    gemini_ai_assessment_request_body,
+    configured_ai_assessment_reviewer,
+    openrouter_ai_assessment_request_body,
 )
-from nda_automation.gemini_schema import GEMINI_UNSUPPORTED_SCHEMA_KEYS
+from nda_automation.ai_review import DEFAULT_OPENROUTER_MODEL
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 
 
@@ -38,9 +40,7 @@ def _assessment(clause_id, decision, *, paragraph_id="", quote="", issue_type=No
         "clause_id": clause_id,
         "decision": decision,
         "issue_type": issue_type,
-        "rationale": f"{clause_id} assessed by the AI-first assessor.",
-        "why_it_might_be_a_problem": "None." if decision == "pass" else "This clause may not satisfy the playbook.",
-        "why_it_may_be_fine": "None.",
+        "rationale": f"{clause_id} assessed by the AI-first assessor using the playbook and cited evidence.",
         "evidence": evidence,
         "proposed_redline": proposed_redline or {"action": "no_change"},
         "confidence": 0.91,
@@ -139,8 +139,8 @@ class AIAssessorTests(unittest.TestCase):
     def test_ai_first_assessor_disabled_without_injected_reviewer(self):
         with patch("nda_automation.ai_assessor._ai_review_settings", return_value={
             "enabled": False,
-            "provider": "gemini",
-            "model": "gemini-3.5-flash",
+            "provider": "openrouter",
+            "model": DEFAULT_OPENROUTER_MODEL,
             "timeout_seconds": 20,
         }):
             with self.assertRaisesRegex(AIAssessorError, "disabled"):
@@ -151,16 +151,87 @@ class AIAssessorTests(unittest.TestCase):
         result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
         packet = reviewer.packets[0]
 
-        gemini_body = gemini_ai_assessment_request_body(packet)
-        self.assertNotEqual(gemini_body["generationConfig"]["responseSchema"], AI_ASSESSMENT_RESPONSE_SCHEMA)
-        self.assertEqual(gemini_body["generationConfig"]["responseMimeType"], "application/json")
-        gemini_schema_json = json.dumps(gemini_body["generationConfig"]["responseSchema"])
-        for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
-            self.assertNotIn(f'"{unsupported_key}"', gemini_schema_json)
-        self.assertIn('"minimum"', gemini_schema_json)
-        self.assertIn('"maximum"', gemini_schema_json)
+        body = openrouter_ai_assessment_request_body(packet, model=DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["model"], DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual([message["role"] for message in body["messages"]], ["system", "user"])
+        self.assertIn(AI_ASSESSMENT_TASK, json.dumps(body))
+        self.assertIn("assessments", json.dumps(body))
 
         self.assertEqual(result["ai_first_review"]["mode"], AI_FIRST_ASSESSOR_MODE)
+
+
+class AIAssessorProviderAdapterTests(unittest.TestCase):
+    def test_openrouter_request_body_uses_ai_first_prompt_and_json_mode(self):
+        reviewer = InMemoryAssessmentReviewer(response=_complete_response())
+        assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+        packet = reviewer.packets[0]
+
+        body = openrouter_ai_assessment_request_body(packet, model=DEFAULT_OPENROUTER_MODEL)
+
+        self.assertEqual(body["model"], DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual([message["role"] for message in body["messages"]], ["system", "user"])
+        self.assertIn(AI_ASSESSMENT_TASK, json.dumps(body))
+        self.assertIn("assessments", json.dumps(body))
+
+    def test_openrouter_adapter_round_trip(self):
+        captured = []
+        response = json.dumps({
+            "choices": [{
+                "message": {
+                    "content": json.dumps(_complete_response()),
+                },
+            }],
+        }).encode("utf-8")
+
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            reviewer = OpenRouterAIAssessmentReviewer(api_key="ork")
+            result = reviewer({"task": AI_ASSESSMENT_TASK, "paragraphs": []})
+
+        self.assertEqual(result, _complete_response())
+        self.assertEqual(len(captured), 1)
+        request = captured[0]
+        self.assertEqual(request.headers["Authorization"], "Bearer ork")
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(body["model"], DEFAULT_OPENROUTER_MODEL)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+
+    def test_configured_reviewer_builds_openrouter_gemini(self):
+        with (
+            patch("nda_automation.ai_assessor._configured_api_key", side_effect=lambda provider: f"{provider}-key"),
+        ):
+            reviewer = configured_ai_assessment_reviewer({
+                "enabled": True,
+                "provider": "openrouter",
+                "model": DEFAULT_OPENROUTER_MODEL,
+                "timeout_seconds": 20,
+            })
+
+        self.assertIsInstance(reviewer, OpenRouterAIAssessmentReviewer)
+        self.assertEqual(reviewer.model, DEFAULT_OPENROUTER_MODEL)
+
+    def test_configured_reviewer_rejects_old_provider(self):
+        with self.assertRaisesRegex(AIAssessorError, "Unsupported AI provider: legacy"):
+            configured_ai_assessment_reviewer({
+                "enabled": True,
+                "provider": "legacy",
+                "model": "legacy-model",
+                "timeout_seconds": 20,
+            })
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        context_manager = MagicMock()
+        context_manager.__enter__.return_value.read.return_value = response_bytes
+        context_manager.__exit__.return_value = False
+        return context_manager
+
+    return urlopen
 
 
 if __name__ == "__main__":

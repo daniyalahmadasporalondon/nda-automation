@@ -26,6 +26,8 @@ const studioClauseLane = document.querySelector("#studioClauseLane");
 const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioInspectorTitle = document.querySelector("#studioInspectorTitle");
 const reviewInspectorButtons = document.querySelectorAll("[data-review-inspector]");
+const dashboardSubmitButton = document.querySelector("[data-dashboard-submit]");
+const dashboardHealthItems = document.querySelectorAll("[data-dashboard-health]");
 // Clause-panel summary header was removed; tolerate the absent nodes so the
 // review flow's textContent/className writes become harmless no-ops.
 const studioMatchSummary = document.querySelector("#studioMatchSummary") || {};
@@ -89,7 +91,6 @@ adminAiController = createAdminAiController({
   aiEnabledToggle: document.querySelector("#adminAiEnabledToggle"),
   runtimeForm: document.querySelector("#adminRuntimeForm"),
   activeReviewEngineSelect: document.querySelector("#adminActiveReviewEngineSelect"),
-  aiFirstFallbackSelect: document.querySelector("#adminAiFirstFallbackSelect"),
   runtimeSaveButton: document.querySelector("#adminRuntimeSaveButton"),
   aiFacts: document.querySelector("#adminAiFacts"),
   aiOverall: document.querySelector("#adminAiOverall"),
@@ -127,6 +128,7 @@ authSessionController = createAuthSessionController({
   reviewErrorFromPayload,
   onGmailStatus: (gmailStatus) => {
     state.gmailStatus = gmailStatus;
+    renderDashboardEmailHealth(gmailStatus);
     repositoryController.renderBoard();
     adminIntegrationsController.renderGmailStatus(gmailStatus);
   },
@@ -148,7 +150,7 @@ const reviewStructureController = createContractStructureController({
 
 setupSourceEditors();
 setupReviewWorkstationActions();
-setActiveTab("review");
+setActiveTab("dashboard");
 setupDocumentViewModes();
 setupReviewUndoControls();
 
@@ -162,6 +164,7 @@ repositoryController.loadMatters();
 repositoryController.loadGmailStatus();
 authSessionController.load();
 adminAiController.load();
+loadDashboardAiHealth();
 adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
@@ -192,6 +195,10 @@ adminSectionButtons.forEach((button) => {
 
 reviewInspectorButtons.forEach((button) => {
   button.addEventListener("click", () => setReviewInspectorView(button.dataset.reviewInspector));
+});
+
+dashboardSubmitButton?.addEventListener("click", () => {
+  activateTab("upload");
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {
@@ -268,6 +275,10 @@ function setActiveTab(tabName) {
 
 function activateTab(tabName) {
   setActiveTab(tabName);
+  if (tabName === "dashboard") {
+    loadDashboardAiHealth();
+    renderDashboardEmailHealth(state.gmailStatus);
+  }
   if (tabName === "review") {
     requestAnimationFrame(resizeSourceEditors);
   }
@@ -295,6 +306,90 @@ function activateTab(tabName) {
       activateAdminSection(activeAdminSection());
     }
   }
+}
+
+async function loadDashboardAiHealth() {
+  if (!dashboardHealthItems.length) return;
+  renderDashboardHealth("ai", {
+    tone: "checking",
+  });
+  try {
+    const response = await fetch("/api/ai/settings");
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "AI settings could not load");
+    renderDashboardAiHealth(payload);
+  } catch (error) {
+    renderDashboardHealth("ai", {
+      tone: "blocked",
+    });
+  }
+}
+
+function renderDashboardAiHealth(payload = {}) {
+  const aiStatus = payload.ai_review || {};
+  const runtimeStatus = payload.active_review_engine || {};
+  const activeEngine = String(runtimeStatus.active_engine || "ai_first");
+  const enabled = aiStatus.enabled === true;
+  const keyConfigured = aiStatus.api_key_configured === true;
+
+  if (activeEngine === "deterministic") {
+    renderDashboardHealth("ai", {
+      tone: "warning",
+    });
+    return;
+  }
+  if (!enabled) {
+    renderDashboardHealth("ai", {
+      tone: "warning",
+    });
+    return;
+  }
+  if (!keyConfigured) {
+    renderDashboardHealth("ai", {
+      tone: "blocked",
+    });
+    return;
+  }
+  renderDashboardHealth("ai", {
+    tone: "ready",
+  });
+}
+
+function renderDashboardEmailHealth(gmailStatus = null) {
+  if (!dashboardHealthItems.length) return;
+  if (!gmailStatus) {
+    renderDashboardHealth("email", {
+      tone: "checking",
+    });
+    return;
+  }
+  const inbound = gmailStatus.inbound || {};
+  const outbound = gmailStatus.outbound || {};
+  const inboundReady = inbound.ready === true;
+  const outboundReady = outbound.ready === true;
+  if (inboundReady && outboundReady) {
+    renderDashboardHealth("email", {
+      tone: "ready",
+    });
+    return;
+  }
+  if (inboundReady || outboundReady) {
+    renderDashboardHealth("email", {
+      tone: "warning",
+    });
+    return;
+  }
+  renderDashboardHealth("email", {
+    tone: "blocked",
+  });
+}
+
+function renderDashboardHealth(kind, { tone }) {
+  const item = document.querySelector(`[data-dashboard-health="${kind}"]`);
+  if (!item) return;
+  const effectiveTone = ["ready", "warning", "blocked", "checking"].includes(tone) ? tone : "checking";
+  item.classList.remove("ready", "warning", "blocked", "checking");
+  item.classList.add(effectiveTone);
 }
 
 function activateAdminSurface(surfaceName) {

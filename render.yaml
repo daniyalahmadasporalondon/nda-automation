@@ -38,12 +38,10 @@ services:
       - key: NDA_AI_REVIEW_ENABLED
         value: "true"
       - key: NDA_AI_PROVIDER
-        value: gemini
+        value: openrouter
       - key: NDA_AI_MODEL
-        value: gemini-3.5-flash
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
+        value: google/gemini-3.5-flash
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
-        value: qwen/qwen3-32b
+        value: google/gemini-3.5-flash

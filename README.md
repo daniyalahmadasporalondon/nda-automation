@@ -40,12 +40,11 @@ In `.env`, set the AI provider/model and API key:
 
 ```bash
 NDA_AI_REVIEW_ENABLED=true
-NDA_AI_PROVIDER=gemini
-NDA_AI_MODEL=gemini-3.5-flash
-# Active review defaults to AI-first + fail-closed. Leave these unset unless pinning runtime.
+NDA_AI_PROVIDER=openrouter
+NDA_AI_MODEL=google/gemini-3.5-flash
+# Active review defaults to AI-first + fail-closed. Leave unset unless pinning runtime.
 NDA_ACTIVE_REVIEW_ENGINE=
-NDA_AI_FIRST_FALLBACK_MODE=
-GEMINI_API_KEY="your-gemini-api-key"
+OPENROUTER_API_KEY="your-openrouter-api-key"
 ```
 
 Then start the app:
@@ -116,12 +115,12 @@ The active review path is:
 
 1. **Playbook and document structure** define the clause requirements, approved positions, source paragraphs, headings, sections, and references.
 2. **AI-first legal assessment** applies the playbook to the selected source paragraphs and produces the saved clause verdicts, issue types, rationale, citations, confidence, and proposed redlines.
-3. **Deterministic review and comparison** remain available for audit, explicit fallback, reason-code comparison, stale-review refresh guards, and operational validation.
+3. **Deterministic review and comparison** remain available for audit, explicit engine selection, reason-code comparison, stale-review refresh guards, and operational validation.
 4. **Reviewer UI** presents the final clause cards, right-panel analysis, insertable redline options, comments, include/ignore choices, and per-clause reviewed toggles for human sign-off.
 
-The active review engine defaults to **AI-first** with **fail closed** behavior. If AI is unavailable and fallback mode is `fail_closed`, new review creation returns an error instead of silently substituting deterministic results. Admin can change the active engine and AI-first fallback mode at runtime from **Admin -> AI** when those values are not pinned by environment variables. Runtime changes are audit-logged without secrets, and env-pinned values are reported as read-only operational warnings.
+The active review engine defaults to **AI-first** with **fail closed** behavior. If AI is unavailable, new review creation returns an error instead of silently substituting deterministic results. Admin can change the active engine at runtime from **Admin -> AI** when it is not pinned by environment variables. Runtime changes are audit-logged without secrets, and env-pinned values are reported as read-only operational warnings.
 
-Set `NDA_ACTIVE_REVIEW_ENGINE=deterministic` only when deployment configuration should force deterministic review as the saved `review_result` for new reviews. Set `NDA_AI_FIRST_FALLBACK_MODE=deterministic` only when AI-first failures should fall back to deterministic review and record that fallback in metadata. Leave the fallback unset or set `fail_closed` when missing AI output should block review creation. Set `NDA_AI_FIRST_REVIEW_ENABLED=true` to store AI-first shadow/comparison output while a deterministic matter review is created elsewhere.
+Set `NDA_ACTIVE_REVIEW_ENGINE=deterministic` only when deployment configuration should force deterministic review as the saved `review_result` for new reviews. Set `NDA_AI_FIRST_REVIEW_ENABLED=true` to store AI-first shadow/comparison output while a deterministic matter review is created elsewhere.
 
 ## Playbook, Admin, and Guide
 
@@ -185,13 +184,11 @@ Common environment variables:
 - `NDA_GMAIL_INBOUND_TOKEN_PATH`: legacy shared OAuth token file for local inbound Gmail sync. Leave unset for hosted per-user Gmail.
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: legacy shared OAuth token file for local outbound Gmail sends. Leave unset for hosted per-user Gmail.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
-- `NDA_AI_PROVIDER`: `gemini`.
-- `NDA_AI_MODEL`: provider model name. Use `gemini-3.5-flash` for the current hosted Gemini setup, or another model your key can access.
-- `GEMINI_API_KEY`: server-side Gemini AI review key.
-- `GROQ_API_KEY`: server-side Groq key for Qwen Gmail attachment selection.
-- `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `qwen/qwen3-32b`.
+- `OPENROUTER_API_KEY`: server-side OpenRouter key for NDA review and Gmail attachment selection.
+- `NDA_AI_PROVIDER`: `openrouter`.
+- `NDA_AI_MODEL`: OpenRouter model ID. Use `google/gemini-3.5-flash` by default, or another OpenRouter model your key can access.
+- `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `google/gemini-3.5-flash`.
 - `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
-- `NDA_AI_FIRST_FALLBACK_MODE`: optional environment pin for `fail_closed` or `deterministic`.
 - `NDA_AI_FIRST_REVIEW_ENABLED`: stores AI-first shadow/comparison results when enabled.
 - `NDA_ALLOW_EPHEMERAL_DATA`: set to `true` only for short-lived public demos using ephemeral storage.
 
@@ -207,18 +204,18 @@ The callable is lazy-loaded only when configured and receives keyword arguments 
 {"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}
 ```
 
-The deterministic core remains stdlib-first. Provider-backed AI review runs only when configured; if the active engine is AI-first and no provider/key is configured, review creation fails closed unless runtime settings or environment variables switch the active engine/fallback behavior.
+The deterministic core remains stdlib-first. Provider-backed AI review runs only when configured; if the active engine is AI-first and no provider/key is configured, review creation fails closed unless runtime settings or environment variables switch the active engine.
 
 Optional AI semantic review:
 
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
-export NDA_AI_PROVIDER=gemini
-export NDA_AI_MODEL=gemini-3.5-flash
-export GEMINI_API_KEY=...
+export NDA_AI_PROVIDER=openrouter
+export NDA_AI_MODEL=google/gemini-3.5-flash
+export OPENROUTER_API_KEY=...
 ```
 
-Supported providers are Gemini for NDA review and Groq/Qwen for Gmail triage. Admins can save a local Gemini API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported AI calls use OpenRouter by default with `google/gemini-3.5-flash`. Admins can save a local OpenRouter API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 

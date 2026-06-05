@@ -9,7 +9,7 @@ from .ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_CLAUSE_AS
 from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 
-AI_ASSESSMENT_PROMPT_VERSION = 1
+AI_ASSESSMENT_PROMPT_VERSION = 2
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -36,6 +36,13 @@ AI_ASSESSMENT_SYSTEM_PROMPT = (
 AI_ASSESSMENT_INSTRUCTIONS = [
     "Return exactly one assessment for every playbook clause in the packet.",
     "Each assessment must match the supplied AI clause assessment schema.",
+    (
+        "Write rationale as reviewer-facing assessment commentary, not a terse label: explain the clause text, "
+        "apply the playbook position, state why the outcome follows, and mention any meaningful caveat or "
+        "counterpoint when it would help a legal reviewer."
+    ),
+    "Use 2 to 4 concise sentences for rationale. Avoid one-sentence conclusions unless the clause has no evidence to discuss.",
+    "Keep rationale specific to the cited document text and playbook rule; do not copy the playbook rule back verbatim.",
     "Use pass only when the supplied paragraphs satisfy the clause rules.",
     "Use fail when a required clause is missing, a clause is present but wrong, or a prohibited clause is present.",
     "Use review when evidence is ambiguous, conflicting, incomplete, conditional, or depends on unavailable document text.",

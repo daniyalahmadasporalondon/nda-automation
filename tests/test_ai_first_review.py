@@ -38,9 +38,7 @@ def _assessment(clause_id, decision, *, paragraph_id="p1", issue_type=None, **ov
         "clause_id": clause_id,
         "decision": decision,
         "issue_type": issue_type,
-        "rationale": f"{clause_id} assessed by AI.",
-        "why_it_might_be_a_problem": "None." if decision == "pass" else "This clause may not meet the playbook.",
-        "why_it_may_be_fine": "None.",
+        "rationale": f"{clause_id} assessed by AI against the playbook and cited paragraph text.",
         "evidence": [{"paragraph_id": paragraph_id, "quote": QUOTES_BY_PARAGRAPH_ID[paragraph_id], "relevance": "Supports the AI verdict."}],
         "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
         "confidence": 0.91,
@@ -102,7 +100,8 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["structured_evidence"][0]["match_spans"][0]["text"], "laws of California")
         self.assertEqual(governing_law["ai_first_assessment"]["schema_version"], AI_ASSESSMENT_CONTRACT_VERSION)
         self.assertEqual(governing_law["ai_first_assessment"]["proposed_redline_action"], REDLINE_REPLACE_PARAGRAPH)
-        self.assertEqual(governing_law["why_it_may_be_fine"], "None.")
+        self.assertNotIn("why_it_may_be_fine", governing_law)
+        self.assertNotIn("why_it_might_be_a_problem", governing_law)
         self.assertIn("sections", governing_law["structure_context"])
         self.assertEqual(governing_law["review_state"]["state"], "check")
 

@@ -39,7 +39,7 @@ from nda_automation import server as server_module
 from nda_automation import telemetry
 from nda_automation import user_store
 from nda_automation.review_comparison import ReviewComparisonError
-from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, AI_FIRST_FALLBACK_MODE_ENV, ActiveReviewEngineError
+from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
 from nda_automation.routes import playbook as playbook_routes
 from nda_automation.routes import review as review_routes
@@ -768,7 +768,7 @@ class ServerTests(unittest.TestCase):
             "NDA_AI_REVIEW_ENABLED": "",
             "NDA_AI_PROVIDER": "",
             "NDA_AI_MODEL": "",
-            "GROQ_API_KEY": "",
+            "OPENROUTER_API_KEY": "",
             "NDA_GMAIL_TRIAGE_MODEL": "",
             "NDA_ALLOW_EPHEMERAL_DATA": "",
         }):
@@ -801,11 +801,10 @@ class ServerTests(unittest.TestCase):
             "NDA_GMAIL_INBOUND_TOKEN_PATH": "",
             "NDA_GMAIL_OUTBOUND_TOKEN_PATH": "",
             "NDA_AI_REVIEW_ENABLED": "true",
-            "NDA_AI_PROVIDER": "gemini",
-            "NDA_AI_MODEL": "gemini-3.5-flash",
-            "GEMINI_API_KEY": "configured",
-            "GROQ_API_KEY": "configured",
-            "NDA_GMAIL_TRIAGE_MODEL": "qwen/qwen3-32b",
+            "NDA_AI_PROVIDER": "openrouter",
+            "NDA_AI_MODEL": "google/gemini-3.5-flash",
+            "OPENROUTER_API_KEY": "configured",
+            "NDA_GMAIL_TRIAGE_MODEL": "google/gemini-3.5-flash",
             "NDA_ALLOW_EPHEMERAL_DATA": "",
         }):
             with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
@@ -1787,7 +1786,6 @@ class ServerTests(unittest.TestCase):
                 "selected_engine": "ai_first",
                 "executed_engine": "ai_first",
                 "engine": "ai_first",
-                "fallback_used": False,
             },
         }
         active_result["playbook_runtime"] = self.active_playbook_review_runtime()
@@ -1856,7 +1854,6 @@ class ServerTests(unittest.TestCase):
                 "selected_engine": "ai_first",
                 "executed_engine": "ai_first",
                 "engine": "ai_first",
-                "fallback_used": False,
             },
         }
         active_result["playbook_runtime"] = self.active_playbook_review_runtime()
@@ -1992,7 +1989,6 @@ class ServerTests(unittest.TestCase):
                 "selected_engine": "ai_first",
                 "executed_engine": "ai_first",
                 "engine": "ai_first",
-                "fallback_used": False,
             },
         }
         active_result["playbook_runtime"] = self.active_playbook_review_runtime()
@@ -2057,7 +2053,7 @@ class ServerTests(unittest.TestCase):
     def test_gmail_attachment_import_preserves_active_review_engine_result(self):
         source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
         active_result = {
-            "review_mode": "deterministic",
+            "review_mode": "ai_first_compat",
             "overall_status": "meets_requirements",
             "requirements_passed": 1,
             "requirements_needs_review": 0,
@@ -2070,13 +2066,10 @@ class ServerTests(unittest.TestCase):
             "paragraphs": [{"id": "p1", "index": 1, "text": "Each party may disclose Confidential Information to the other party."}],
             "clauses": [{"id": "mutuality", "decision": "pass", "passes": True}],
             "redline_edits": [],
-            "review_warnings": ["AI-first review failed; deterministic fallback was used."],
             "active_review_engine": {
                 "selected_engine": "ai_first",
-                "executed_engine": "deterministic",
-                "engine": "deterministic",
-                "fallback_mode": "deterministic",
-                "fallback_used": True,
+                "executed_engine": "ai_first",
+                "engine": "ai_first",
             },
         }
 
@@ -2105,8 +2098,6 @@ class ServerTests(unittest.TestCase):
         active_review.assert_called_once()
         self.assertEqual(matter["source_type"], "gmail_inbound")
         self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
-        self.assertTrue(stored_matter["review_result"]["active_review_engine"]["fallback_used"])
-        self.assertIn("deterministic fallback", stored_matter["review_result"]["review_warnings"][0])
 
     def test_matter_review_comparison_stores_separate_comparison_without_replacing_review(self):
         active_review_result = {
@@ -2343,7 +2334,7 @@ class ServerTests(unittest.TestCase):
             "ai_first_review": {
                 "status": "completed",
                 "mode": "ai_first_assessor",
-                "provider": "gemini",
+                "provider": "openrouter",
                 "model": "gemini-test",
             },
         }
@@ -3375,10 +3366,9 @@ class ServerTests(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "GEMINI_API_KEY": "server-only-secret",
+                        "OPENROUTER_API_KEY": "server-only-secret",
                         "NDA_AI_REVIEW_ENABLED": "",
                         ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
-                        AI_FIRST_FALLBACK_MODE_ENV: "fail_closed",
                     },
                     clear=False,
                 ):
@@ -3395,7 +3385,6 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_payload["ai_review"]["environment_enabled"], False)
         self.assertEqual(initial_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
-        self.assertEqual(initial_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
         self.assertNotIn("server-only-secret", json.dumps(initial_payload))
         self.assertEqual(on_status, 200)
         self.assertEqual(on_payload["ai_review"]["enabled"], True)
@@ -3413,14 +3402,13 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "", AI_FIRST_FALLBACK_MODE_ENV: ""}, clear=False):
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: ""}, clear=False):
                     initial_status, initial_payload = self.request("GET", "/api/ai/settings")
                     runtime_status, runtime_payload = self.request(
                         "POST",
                         "/api/ai/settings",
                         {
                             "active_review_engine": "ai_first",
-                            "ai_first_fallback_mode": "fail_closed",
                         },
                     )
                     invalid_engine_status, invalid_engine_payload = self.request(
@@ -3428,40 +3416,28 @@ class ServerTests(unittest.TestCase):
                         "/api/ai/settings",
                         {"active_review_engine": "random"},
                     )
-                    invalid_fallback_status, invalid_fallback_payload = self.request(
-                        "POST",
-                        "/api/ai/settings",
-                        {"ai_first_fallback_mode": "random"},
-                    )
                     runtime_settings = app_settings.review_runtime_settings()
                     telemetry_counters = telemetry.snapshot()["counters"]
 
         self.assertEqual(initial_status, 200)
         self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertEqual(initial_payload["active_review_engine"]["engine_source"], "default")
-        self.assertEqual(initial_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
-        self.assertEqual(initial_payload["active_review_engine"]["fallback_source"], "default")
         self.assertEqual(initial_payload["operational_warnings"][0]["code"], "ai_first_without_key")
         self.assertEqual(initial_payload["settings_audit"], [])
         self.assertEqual(runtime_status, 200)
         self.assertEqual(runtime_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertEqual(runtime_payload["active_review_engine"]["engine_source"], "runtime_settings")
-        self.assertEqual(runtime_payload["active_review_engine"]["ai_first_fallback_mode"], "fail_closed")
-        self.assertEqual(runtime_payload["active_review_engine"]["fallback_source"], "runtime_settings")
         self.assertEqual(runtime_payload["operational_warnings"][0]["code"], "ai_first_without_key")
         self.assertEqual(runtime_payload["settings_audit"][0]["action"], "admin_settings_update")
         self.assertEqual(
             [change["setting"] for change in runtime_payload["settings_audit"][0]["changes"]],
-            ["review_runtime.active_review_engine", "review_runtime.ai_first_fallback_mode"],
+            ["review_runtime.active_review_engine"],
         )
         self.assertEqual(runtime_settings["active_review_engine"], "ai_first")
-        self.assertEqual(runtime_settings["ai_first_fallback_mode"], "fail_closed")
         self.assertEqual(telemetry_counters["review_runtime_settings_updates"], 1)
         self.assertEqual(telemetry_counters["settings_audit_events"], 1)
         self.assertEqual(invalid_engine_status, 400)
         self.assertEqual(invalid_engine_payload["error"], "Active review engine must be deterministic or ai_first.")
-        self.assertEqual(invalid_fallback_status, 400)
-        self.assertEqual(invalid_fallback_payload["error"], "AI-first fallback mode must be deterministic or fail_closed.")
 
     def test_ai_settings_endpoint_blocks_environment_pinned_runtime_updates(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -3471,7 +3447,6 @@ class ServerTests(unittest.TestCase):
                     os.environ,
                     {
                         ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
-                        AI_FIRST_FALLBACK_MODE_ENV: "fail_closed",
                     },
                     clear=False,
                 ):
@@ -3481,31 +3456,22 @@ class ServerTests(unittest.TestCase):
                         "/api/ai/settings",
                         {"active_review_engine": "deterministic"},
                     )
-                    fallback_status, fallback_payload = self.request(
-                        "POST",
-                        "/api/ai/settings",
-                        {"ai_first_fallback_mode": "deterministic"},
-                    )
                     runtime_settings = app_settings.review_runtime_settings()
                     telemetry_counters = telemetry.snapshot()["counters"]
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["active_review_engine"]["engine_source"], "environment")
-        self.assertEqual(payload["active_review_engine"]["fallback_source"], "environment")
         self.assertIn("active_engine_environment_pinned", [warning["code"] for warning in payload["operational_warnings"]])
         self.assertEqual(engine_status, 409)
         self.assertEqual(engine_payload["error"], "Active review engine is pinned by the backend environment.")
-        self.assertEqual(fallback_status, 409)
-        self.assertEqual(fallback_payload["error"], "AI-first fallback mode is pinned by the backend environment.")
         self.assertIsNone(runtime_settings["active_review_engine"])
-        self.assertIsNone(runtime_settings["ai_first_fallback_mode"])
-        self.assertEqual(telemetry_counters["review_runtime_update_blocked_environment"], 2)
+        self.assertEqual(telemetry_counters["review_runtime_update_blocked_environment"], 1)
 
     def test_ai_api_key_endpoint_saves_local_key_and_enables_ai(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                with patch.dict(os.environ, {"GEMINI_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
                     initial_status, initial_payload = self.request("GET", "/api/ai/settings")
                     save_status, save_payload = self.request("POST", "/api/ai/api-key", {"api_key": "local-secret-key"})
                     saved_key = app_settings.stored_ai_api_key()
@@ -3520,8 +3486,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(save_status, 200)
         self.assertEqual(save_payload["ai_review"]["enabled"], True)
         self.assertEqual(save_payload["ai_review"]["stored_enabled"], True)
-        self.assertEqual(save_payload["ai_review"]["provider"], "gemini")
-        self.assertEqual(save_payload["ai_review"]["model"], "gemini-3.5-flash")
+        self.assertEqual(save_payload["ai_review"]["provider"], "openrouter")
+        self.assertEqual(save_payload["ai_review"]["model"], "google/gemini-3.5-flash")
         self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
         self.assertEqual(save_payload["settings_audit"][0]["action"], "ai_api_key_saved")
@@ -4339,7 +4305,7 @@ class ServerTests(unittest.TestCase):
                                     "selected_attachment_ids": ["att_nda"],
                                     "confidence": 0.92,
                                     "reason": "The mutual NDA is the actual legal review document.",
-                                    "model": "qwen/qwen3-32b",
+                                    "model": "google/gemini-3.5-flash",
                                 },
                             ) as select_nda_attachments:
                                 result = gmail_integration._import_inbound_attachments(
@@ -4354,8 +4320,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result["skipped"][0]["attachment_filename"], "Moorwand Project Proposal Form - 2026.docx")
         self.assertEqual(result["skipped"][0]["reason"], "ai_not_selected_attachment")
         imported = result["imported"][0]
-        self.assertEqual(imported["gmail_attachment_selector"], "groq_qwen")
-        self.assertEqual(imported["gmail_attachment_selector_model"], "qwen/qwen3-32b")
+        self.assertEqual(imported["gmail_attachment_selector"], "openrouter_gemini")
+        self.assertEqual(imported["gmail_attachment_selector_model"], "google/gemini-3.5-flash")
         select_nda_attachments.assert_called_once()
 
     def test_gmail_import_lets_qwen_select_generic_attachment_from_nda_adjacent_email(self):
@@ -4446,7 +4412,7 @@ class ServerTests(unittest.TestCase):
                                         "selected_attachment_ids": ["inline:1"],
                                         "confidence": 0.88,
                                         "reason": "The email context asks legal to review this attached agreement.",
-                                        "model": "qwen/qwen3-32b",
+                                        "model": "google/gemini-3.5-flash",
                                     },
                                 ) as select_nda_attachments:
                                     result = gmail_integration.import_inbound_matters(limit=25)
@@ -4455,7 +4421,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result["skipped"], [])
         self.assertEqual([item["source_filename"] for item in result["imported"]], ["Pismo Agreement.docx"])
         imported = result["imported"][0]
-        self.assertEqual(imported["gmail_attachment_selector"], "groq_qwen")
+        self.assertEqual(imported["gmail_attachment_selector"], "openrouter_gemini")
         self.assertEqual(imported["gmail_attachment_selector_confidence"], "0.88")
         self.assertEqual(imported["gmail_attachment_score"], "10")
         selector_call = select_nda_attachments.call_args.kwargs

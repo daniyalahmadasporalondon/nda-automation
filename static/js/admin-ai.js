@@ -8,7 +8,6 @@ const AdminAiView = (() => {
     aiEnabledToggle,
     runtimeForm,
     activeReviewEngineSelect,
-    aiFirstFallbackSelect,
     runtimeSaveButton,
     aiFacts,
     aiOverall,
@@ -38,7 +37,7 @@ const AdminAiView = (() => {
       event.preventDefault();
       const apiKey = aiApiKeyInput?.value.trim() || "";
       if (!apiKey) {
-        setFact("key-message", "Paste a Gemini API key first.");
+        setFact("key-message", "Paste an OpenRouter API key first.");
         aiApiKeyInput?.focus();
         return;
       }
@@ -108,14 +107,10 @@ const AdminAiView = (() => {
     async function saveRuntimeSettings(event) {
       event.preventDefault();
       const activeReviewEngine = activeReviewEngineSelect?.value || "ai_first";
-      const fallbackMode = aiFirstFallbackSelect?.value || "fail_closed";
       const runtimeStatus = state.activeReviewEngineStatus || {};
       const requestPayload = {};
       if (!runtimeStatus.environment_active_engine) {
         requestPayload.active_review_engine = activeReviewEngine;
-      }
-      if (!runtimeStatus.environment_ai_first_fallback_mode) {
-        requestPayload.ai_first_fallback_mode = fallbackMode;
       }
       if (!Object.keys(requestPayload).length) {
         setFact("runtime-message", "Runtime settings are pinned by the backend environment.");
@@ -161,7 +156,7 @@ const AdminAiView = (() => {
       renderRuntime(runtimeStatus, status);
       renderOperationalStatus(warnings, settingsAudit);
       setFact("enabled-copy", enabled ? (keyConfigured ? "On" : "On - missing API key") : "Off");
-      setFact("provider", status.provider || "gemini");
+      setFact("provider", status.provider || "openrouter");
       setFact("model", status.model || "-");
       setFact("api-key", apiKeyLabel(status));
       setFact("confidence-threshold", String(status.confidence_threshold ?? "-"));
@@ -181,7 +176,6 @@ const AdminAiView = (() => {
       setFact("source", "Unknown");
       setFact("key-message", message);
       setFact("active-engine", "Unknown");
-      setFact("fallback-mode", "Unknown");
       setFact("runtime-source", "Unknown");
       setFact("operational-warnings", "Unknown");
       setFact("last-settings-change", "Unknown");
@@ -190,11 +184,8 @@ const AdminAiView = (() => {
 
     function renderRuntime(status, aiStatus = {}) {
       const activeEngine = runtimeValue(status.active_engine, "ai_first");
-      const fallbackMode = runtimeValue(status.ai_first_fallback_mode, "fail_closed");
       if (activeReviewEngineSelect) activeReviewEngineSelect.value = activeEngine;
-      if (aiFirstFallbackSelect) aiFirstFallbackSelect.value = fallbackMode;
       setFact("active-engine", engineLabel(activeEngine));
-      setFact("fallback-mode", fallbackLabel(fallbackMode));
       setFact("runtime-source", runtimeSourceLabel(status));
       const missingAiKey = activeEngine === "ai_first" && aiStatus.api_key_configured !== true;
       setFact("runtime-message", missingAiKey
@@ -215,7 +206,10 @@ const AdminAiView = (() => {
         return;
       }
       const changedSettings = Array.isArray(latest.changes)
-        ? latest.changes.map((change) => change.setting).filter(Boolean).join(", ")
+        ? latest.changes
+            .map((change) => change.setting)
+            .filter((setting) => setting && !String(setting).includes("fallback"))
+            .join(", ")
         : "";
       setFact("last-settings-change", changedSettings ? `${latest.action}: ${changedSettings}` : latest.action || "settings_update");
     }
@@ -244,10 +238,8 @@ const AdminAiView = (() => {
     function setRuntimeControlsDisabled(disabled) {
       const runtimeStatus = state.activeReviewEngineStatus || {};
       const enginePinned = Boolean(runtimeStatus.environment_active_engine);
-      const fallbackPinned = Boolean(runtimeStatus.environment_ai_first_fallback_mode);
       if (activeReviewEngineSelect) activeReviewEngineSelect.disabled = disabled || enginePinned;
-      if (aiFirstFallbackSelect) aiFirstFallbackSelect.disabled = disabled || fallbackPinned;
-      if (runtimeSaveButton) runtimeSaveButton.disabled = disabled || (enginePinned && fallbackPinned);
+      if (runtimeSaveButton) runtimeSaveButton.disabled = disabled || enginePinned;
     }
 
     function setOverall(label, tone) {
@@ -282,9 +274,8 @@ const AdminAiView = (() => {
 
     function runtimeSourceLabel(status) {
       const engineSource = String(status.engine_source || "");
-      const fallbackSource = String(status.fallback_source || "");
-      if (engineSource === "environment" || fallbackSource === "environment") return "Backend environment";
-      if (engineSource === "runtime_settings" || fallbackSource === "runtime_settings") return "Admin runtime settings";
+      if (engineSource === "environment") return "Backend environment";
+      if (engineSource === "runtime_settings") return "Admin runtime settings";
       return "Default runtime";
     }
 
@@ -297,20 +288,16 @@ const AdminAiView = (() => {
       return engine === "ai_first" ? "AI-first" : "Deterministic";
     }
 
-    function fallbackLabel(mode) {
-      return mode === "fail_closed" ? "Fail closed" : "Deterministic fallback";
-    }
-
     function keyMessage(status) {
       if (status.api_key_source === "environment") {
-        return "Using GEMINI_API_KEY from the backend environment.";
+        return "Using OPENROUTER_API_KEY from the backend environment.";
       }
       if (status.api_key_source === "local_settings") return `Using a saved local ${providerName(status.provider)} key under ignored app data.`;
-      return "Paste a Gemini key and click Save key & turn on.";
+      return "Paste an OpenRouter key and click Save key & turn on.";
     }
 
     function providerName(provider) {
-      return "Gemini";
+      return "OpenRouter";
     }
 
     return { load };
