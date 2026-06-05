@@ -257,57 +257,19 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
         self.assertEqual(verifier["version"], AI_VERIFIER_VERSION)
         self.assertIn("records", verifier)
 
-    def test_verify_false_preserves_engine_behavior(self):
-        text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
-        without = review_nda(text, verify=False)
-        nc = next(c for c in without["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["decision"], "fail")  # the engine's false flag, unverified
-        self.assertEqual(without["ai_verifier"]["status"], "disabled")
-
-    def test_regression_freedom_to_deal_carveout_is_corrected(self):
-        # The eval-gate regression: a freedom-to-deal carve-out the keyword checker
-        # false-flags as a non-circumvention restriction. The verifier refutes it.
-        text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
-        result = review_nda(text)  # verify=True by default
-        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["decision"], "pass")
-        self.assertEqual(nc["decision_source"], "ai_verifier")
-        # The corrected finding carries the engine's NATURAL pass reason code, not a
-        # verifier-internal code -- the disproven evidence is cleared and re-derived.
-        self.assertEqual(nc["reason_code"], "no_non_circumvention_restriction")
-        self.assertEqual(nc["ai_verifier"]["verdict"], "refute")
-        self.assertEqual(nc["ai_verifier"]["original_decision"], "fail")
-
-    def test_genuine_restriction_is_not_corrected(self):
-        text = "The Recipient must not circumvent the Company or deal directly with introduced parties."
-        result = review_nda(text)
-        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["decision"], "fail")  # real restriction stays failed
-        self.assertEqual(nc["decision_source"], "deterministic")
-
-    def test_refuted_pass_reads_as_absence_grounding(self):
-        # A verifier-cleared pass sets decision_source="ai_verifier", which the
-        # grounding pass (#16) keys off to classify it as a legitimate absence (so it
-        # is not re-flagged as ungrounded). Pre-merge, the lazy fallback supplies the
-        # same canonical {status:"absence"} shape from that same marker.
-        text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
-        result = review_nda(text)
-        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["decision"], "pass")
-        self.assertEqual(nc["decision_source"], "ai_verifier")
-        self.assertEqual(nc["grounding"]["status"], "absence")
-        self.assertEqual(nc["grounding"]["evidence_count"], 0)
-
-    def test_corrected_clause_passes_evidence_trust(self):
-        # A verifier-changed decision must leave the evidence-trust contract intact:
-        # review_nda raises EvidenceProvenanceError otherwise, so reaching here is the
-        # assertion. We also confirm the audit trace was re-derived to match.
-        text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
-        result = review_nda(text)
-        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["audit_trace"]["decision"], "pass")
-        self.assertEqual(nc["audit_trace"]["reason_code"], nc["reason_code"])
-        self.assertEqual(result["evidence_trust"]["status"], "verified")
+    # The verifier's non_circumvention correction is now exercised end-to-end by
+    # AIFirstPathIntegrationTests below, not through review_nda(). non_circumvention
+    # migrated to a dynamic (engine=="dynamic") clause that only the AI-first path
+    # emits, so the five former integration tests here -- which drove it through the
+    # deterministic review_nda() and asserted a deterministic-only correction path
+    # (decision_source=="deterministic", reason_code "no_non_circumvention_restriction",
+    # etc.) -- tested a pathway that no longer exists. Their behavior (verifier refutes
+    # a false-flag -> pass, affirms a genuine restriction -> stays fail, verify=False
+    # preserves the finding, evidence-trust holds) is covered on the shipping AI-first
+    # path by test_verifier_corrects_ai_first_false_flag,
+    # test_verifier_leaves_correct_ai_first_pass_untouched,
+    # test_verify_false_preserves_ai_first_finding, and
+    # test_ai_first_genuine_restriction_stays_failed.
 
 
 class ResolveVerifierTests(unittest.TestCase):

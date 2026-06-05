@@ -330,7 +330,7 @@
     },
     "expected": {
       "decision": "pass",
-      "reason_code": "no_non_circumvention_restriction"
+      "reason_code": "ai_first_pass"
     }
   },
   {
@@ -348,7 +348,7 @@
     },
     "expected": {
       "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction"
+      "reason_code": "ai_first_fail"
     }
   }
 ]

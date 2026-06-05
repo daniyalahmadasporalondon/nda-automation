@@ -28,17 +28,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import ai_review
-from nda_automation.checker import review_nda
+from nda_automation.ai_assessor import (
+    _validate_ai_assessment_response,
+    build_ai_assessment_packet,
+    stub_ai_assessment_response,
+)
+from nda_automation.ai_first_review import build_ai_first_review_result
+from nda_automation.checker import load_playbook, review_nda, validate_playbook
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_PATH = ROOT / "tests" / "fixtures" / "review_eval_cases.json"
 
+# Native clauses the deterministic engine still emits (and that a scripted AI
+# reviewer can target on the review_nda path). non_circumvention is intentionally
+# absent: it migrated to a dynamic (engine=="dynamic") clause that only the
+# AI-first path produces, so its verifier cases run through _ai_first_verifier_result.
 AI_TARGET_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
     "governing_law",
     "term_and_survival",
-    "non_circumvention",
 }
 
 # Case kinds drive which metric buckets a case contributes to.
@@ -154,6 +163,30 @@ def _scripted_verifier(focus_clause_id: str, focus: dict):
     return verifier
 
 
+def _ai_first_verifier_result(text: str, verifier) -> dict:
+    """Run a verifier case through the AI-first path (key-free stub reviewer).
+
+    non_circumvention is a dynamic (engine=="dynamic") clause now, so the
+    deterministic ``review_nda`` no longer emits it -- only the AI-first pipeline
+    does. We drive that pipeline with the deterministic, network-free stub reviewer
+    (``stub_ai_assessment_response``), which fails a present prohibited restriction
+    and passes otherwise, then layer the scripted ``ai_verifier`` overlay on top so
+    the justify-or-refute decision rewrites are exercised exactly as in the shipping
+    AI-first path. Mirrors ``assess_nda_with_ai`` but threads ``ai_verifier`` through.
+    """
+    playbook = load_playbook()
+    validate_playbook(playbook)
+    packet = build_ai_assessment_packet(text, playbook=playbook)
+    raw = stub_ai_assessment_response(packet)
+    assessments = _validate_ai_assessment_response(raw, playbook=playbook, packet=packet)
+    return build_ai_first_review_result(
+        text,
+        assessments,
+        playbook=playbook,
+        ai_verifier=verifier,
+    )
+
+
 def run_case(case: dict) -> dict:
     text = str(case["text"])
     clause_id = str(case["clause_id"])
@@ -172,7 +205,7 @@ def run_case(case: dict) -> dict:
         result = review_nda(text)
     elif kind == KIND_VERIFIER:
         verifier = _scripted_verifier(clause_id, dict(case.get("verifier") or {}))
-        result = review_nda(text, ai_verifier=verifier)
+        result = _ai_first_verifier_result(text, verifier)
     else:
         focus = dict(case.get("ai") or {})
         reviewer = _scripted_reviewer(clause_id, focus, deterministic_by_clause)
