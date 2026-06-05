@@ -16,6 +16,10 @@ function renderResult(result, reviewedText) {
   state.redlineDraft = null;
   state.redlineDraftDirty = false;
   state.reviewedClauseIds = {};
+  state.reasoningTrailOpen = {};
+  state.reviewerDecisionDraft = {};
+  state.reviewResolution = null;
+  state.approveServerBlocks = [];
   resetReviewEditHistory();
   state.reviewSourceText = reviewedText || studioNdaText.value.trim();
   state.clauseJumpIndexes = {};
@@ -123,6 +127,7 @@ function updateExportButtonState() {
     );
     studioReviewedButton.hidden = !reviewBlocked;
   }
+  updateApproveReviewControl();
   updateRedlineDraftControls();
 }
 
@@ -260,6 +265,167 @@ function renderClauseCommentBlock(clause) {
     <div class="studio-detail-block comment-block">
       <small>Attach comment</small>
       <textarea class="review-comment-input" data-review-comment-clause-id="${escapeHtml(clause.id)}" rows="4" placeholder="Leave a comment for Word export">${escapeHtml(comment?.text || "")}</textarea>
+    </div>
+  `;
+}
+
+// 2.5: per-clause reviewer action controls (Accept / Modify / Reject / Comment).
+// Accept and Reject post immediately; Modify and Comment expand an inline
+// composer (modified_text / comment) with a Save button. The saved
+// reviewer_decision is read back from the clause and reflected as the active
+// action + an actor/decided-at banner, so the card always shows where the human
+// left the clause. Self-gates to "" until a review has run.
+const REVIEWER_DECISION_ACTIONS = [
+  { action: "accept", label: "Accept" },
+  { action: "modify", label: "Modify" },
+  { action: "reject", label: "Reject" },
+  { action: "comment", label: "Comment" },
+];
+
+function clauseReviewerDecision(clause) {
+  const decision = clause && typeof clause.reviewer_decision === "object" ? clause.reviewer_decision : null;
+  if (!decision) return null;
+  const action = String(decision.action || "").trim().toLowerCase();
+  if (!REVIEWER_DECISION_ACTIONS.some((entry) => entry.action === action)) return null;
+  return { ...decision, action };
+}
+
+function reviewerDecisionDraftForClause(clauseId) {
+  const drafts = state.reviewerDecisionDraft;
+  if (!drafts || typeof drafts !== "object") return null;
+  return drafts[clauseId] || null;
+}
+
+function reviewerDecisionStatusLine(decision) {
+  if (!decision) return "";
+  const verbs = { accept: "Accepted", modify: "Modified", reject: "Rejected", comment: "Commented" };
+  const verb = verbs[decision.action] || "Decided";
+  const actor = String(decision.actor || "").trim();
+  const decidedAt = formatReviewerDecisionTimestamp(decision.decided_at);
+  const parts = [verb];
+  if (actor) parts.push(`by ${actor}`);
+  if (decidedAt) parts.push(decidedAt);
+  return parts.join(" · ");
+}
+
+function formatReviewerDecisionTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  try {
+    return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch (error) {
+    return date.toISOString();
+  }
+}
+
+function renderReviewerDecisionBlock(clause) {
+  if (!hasReviewResults() || !clause) return "";
+  const clauseId = clause.id;
+  const decision = clauseReviewerDecision(clause);
+  const draft = reviewerDecisionDraftForClause(clauseId);
+  // Which action's composer is open (modify/comment only): the in-flight draft
+  // wins, else the saved modify/comment decision is shown editable so the
+  // reviewer can revise it. Accept/Reject drafts never open a composer.
+  const draftComposerAction = draft && (draft.action === "modify" || draft.action === "comment") ? draft.action : "";
+  const composerAction = draftComposerAction
+    || (decision && (decision.action === "modify" || decision.action === "comment") ? decision.action : "");
+  // The highlighted action reflects the *saved* decision (or an open composer),
+  // not an in-flight Accept/Reject that has not round-tripped yet.
+  const activeAction = composerAction || decision?.action || "";
+  const saving = Boolean(draft?.saving);
+
+  const buttons = REVIEWER_DECISION_ACTIONS.map((entry) => {
+    const active = activeAction === entry.action;
+    return `
+      <button
+        class="reviewer-action-button ${entry.action} ${active ? "active" : ""}"
+        type="button"
+        data-reviewer-action="${entry.action}"
+        data-reviewer-clause-id="${escapeHtml(clauseId)}"
+        aria-pressed="${active ? "true" : "false"}"
+        ${saving ? "disabled" : ""}
+      >${escapeHtml(entry.label)}</button>
+    `;
+  }).join("");
+
+  const status = decision
+    ? `<p class="reviewer-decision-status" data-reviewer-decision-status>${escapeHtml(reviewerDecisionStatusLine(decision))}</p>`
+    : `<p class="reviewer-decision-status muted" data-reviewer-decision-status>No reviewer decision yet.</p>`;
+
+  const composer = composerAction ? renderReviewerDecisionComposer(clause, composerAction, decision, draft) : "";
+  const errorText = String(draft?.error || "").trim();
+  const error = errorText
+    ? `<p class="reviewer-decision-error" role="alert">${escapeHtml(errorText)}</p>`
+    : "";
+
+  return `
+    <div class="studio-detail-block reviewer-decision-block" data-reviewer-decision-clause-id="${escapeHtml(clauseId)}">
+      <small>Reviewer decision</small>
+      ${status}
+      <div class="reviewer-action-controls" role="group" aria-label="Reviewer decision">
+        ${buttons}
+      </div>
+      ${composer}
+      ${error}
+    </div>
+  `;
+}
+
+function renderReviewerDecisionComposer(clause, action, decision, draft) {
+  const clauseId = clause.id;
+  if (action === "modify") {
+    const fallback = decision?.action === "modify" ? decision.modified_text : "";
+    const value = draft && typeof draft.modifiedText === "string" ? draft.modifiedText : fallback || "";
+    return `
+      <div class="reviewer-decision-composer modify">
+        <label class="reviewer-decision-label" for="reviewer-modify-${escapeHtml(clauseId)}">Modified clause text</label>
+        <textarea
+          id="reviewer-modify-${escapeHtml(clauseId)}"
+          class="reviewer-decision-input"
+          data-reviewer-modified-text="${escapeHtml(clauseId)}"
+          rows="4"
+          placeholder="Enter the revised clause wording"
+        >${escapeHtml(value)}</textarea>
+        ${renderReviewerDecisionComposerActions(clauseId, "modify", draft)}
+      </div>
+    `;
+  }
+  const fallback = decision?.action === "comment" ? decision.comment : "";
+  const value = draft && typeof draft.comment === "string" ? draft.comment : fallback || "";
+  return `
+    <div class="reviewer-decision-composer comment">
+      <label class="reviewer-decision-label" for="reviewer-comment-${escapeHtml(clauseId)}">Reviewer comment</label>
+      <textarea
+        id="reviewer-comment-${escapeHtml(clauseId)}"
+        class="reviewer-decision-input"
+        data-reviewer-comment-text="${escapeHtml(clauseId)}"
+        rows="4"
+        placeholder="Explain the decision for the counterparty or record"
+      >${escapeHtml(value)}</textarea>
+      ${renderReviewerDecisionComposerActions(clauseId, "comment", draft)}
+    </div>
+  `;
+}
+
+function renderReviewerDecisionComposerActions(clauseId, action, draft) {
+  const saving = Boolean(draft?.saving);
+  return `
+    <div class="reviewer-decision-composer-actions">
+      <button
+        class="reviewer-decision-save"
+        type="button"
+        data-reviewer-save="${escapeHtml(clauseId)}"
+        data-reviewer-save-action="${action}"
+        ${saving ? "disabled" : ""}
+      >${saving ? "Saving…" : "Save"}</button>
+      <button
+        class="reviewer-decision-cancel secondary"
+        type="button"
+        data-reviewer-cancel="${escapeHtml(clauseId)}"
+        ${saving ? "disabled" : ""}
+      >Cancel</button>
     </div>
   `;
 }
@@ -599,6 +765,86 @@ function bindReviewAcknowledgementControls(container) {
   });
 }
 
+function bindReviewerDecisionControls(container) {
+  // Accept / Reject post straight away. Modify / Comment open the matching
+  // composer (or close it if already open) and persist the keystrokes into the
+  // per-clause draft so a re-render keeps the in-progress text.
+  container.querySelectorAll("[data-reviewer-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const clauseId = button.dataset.reviewerClauseId;
+      const action = button.dataset.reviewerAction;
+      if (action === "modify" || action === "comment") {
+        toggleReviewerDecisionComposer(clauseId, action);
+      } else {
+        submitReviewerDecision(clauseId, action);
+      }
+    });
+  });
+  container.querySelectorAll("[data-reviewer-modified-text]").forEach((input) => {
+    input.addEventListener("input", () => {
+      updateReviewerDecisionDraft(input.dataset.reviewerModifiedText, { modifiedText: input.value });
+    });
+  });
+  container.querySelectorAll("[data-reviewer-comment-text]").forEach((input) => {
+    input.addEventListener("input", () => {
+      updateReviewerDecisionDraft(input.dataset.reviewerCommentText, { comment: input.value });
+    });
+  });
+  container.querySelectorAll("[data-reviewer-save]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitReviewerDecision(button.dataset.reviewerSave, button.dataset.reviewerSaveAction);
+    });
+  });
+  container.querySelectorAll("[data-reviewer-cancel]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      clearReviewerDecisionDraft(button.dataset.reviewerCancel);
+    });
+  });
+}
+
+function reviewerDecisionDraftMap() {
+  if (!state.reviewerDecisionDraft || typeof state.reviewerDecisionDraft !== "object") {
+    state.reviewerDecisionDraft = {};
+  }
+  return state.reviewerDecisionDraft;
+}
+
+function toggleReviewerDecisionComposer(clauseId, action) {
+  if (!clauseId) return;
+  const drafts = reviewerDecisionDraftMap();
+  const current = drafts[clauseId];
+  if (current && current.action === action && !current.saving) {
+    delete drafts[clauseId];
+  } else {
+    const clause = state.reviewClauses.find((item) => item.id === clauseId);
+    const decision = clause ? clauseReviewerDecision(clause) : null;
+    drafts[clauseId] = {
+      action,
+      comment: decision?.action === "comment" ? String(decision.comment || "") : "",
+      error: "",
+      modifiedText: decision?.action === "modify" ? String(decision.modified_text || "") : "",
+      saving: false,
+    };
+  }
+  renderStudioDetail();
+}
+
+function updateReviewerDecisionDraft(clauseId, patch) {
+  if (!clauseId) return;
+  const drafts = reviewerDecisionDraftMap();
+  drafts[clauseId] = { ...(drafts[clauseId] || {}), ...patch };
+}
+
+function clearReviewerDecisionDraft(clauseId) {
+  if (!clauseId) return;
+  const drafts = reviewerDecisionDraftMap();
+  if (drafts[clauseId]) delete drafts[clauseId];
+  renderStudioDetail();
+}
+
 function setRedlineExportDecision(redlineId, included) {
   if (!redlineId) return;
   const edit = state.reviewRedlines.find((item) => item.id === redlineId);
@@ -879,13 +1125,13 @@ function renderStudioDetail() {
   const citation = renderClauseCitationBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
-  // Audit/context detail beneath the primary finding. Both self-gate to "" when
-  // their result fields are empty, so they only appear when the clause carries
-  // reason codes / an audit trace.
-  const reasonCodes = renderReasonCodeBlock(clause);
-  const auditTrace = renderAuditTraceBlock(clause);
+  // Audit/context detail beneath the primary finding, gathered into a single
+  // collapsible Reasoning trail (#22). Self-gates to "" when the clause carries
+  // no reason codes / evidence signals / audit trace.
+  const reasoningTrail = renderReasoningTrailBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
+  const reviewerDecision = renderReviewerDecisionBlock(clause);
   studioDetailPanel.innerHTML = `
     <div class="studio-detail-heading active-clause-heading">
       <div>
@@ -904,8 +1150,8 @@ function renderStudioDetail() {
       ${citation}
       ${playbookPosition}
       ${proposedRedlines}
-      ${reasonCodes}
-      ${auditTrace}
+      ${reviewerDecision}
+      ${reasoningTrail}
       ${commentBlock}
     </div>
   `;
@@ -913,6 +1159,8 @@ function renderStudioDetail() {
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewAcknowledgementControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
+  bindReasoningTrailControls(studioDetailPanel);
+  bindReviewerDecisionControls(studioDetailPanel);
 }
 
 function renderAiCitation(span) {
@@ -947,6 +1195,7 @@ function renderClauseCitationBlock(clause) {
   if (!clause || typeof clause !== "object") return "";
   const grounding = typeof clause.grounding === "object" && clause.grounding ? clause.grounding : null;
   const status = grounding ? String(grounding.status || "").trim().toLowerCase() : "";
+  const confidence = renderClauseConfidence(clause, grounding);
 
   const citation = typeof clause.citation === "object" && clause.citation ? clause.citation : null;
   const citationQuote = citation ? String(citation.quote || "").trim() : "";
@@ -957,6 +1206,7 @@ function renderClauseCitationBlock(clause) {
       <div class="studio-detail-block clause-citation-block grounded">
         <small>Based on</small>
         ${renderAiCitation(citation)}
+        ${confidence}
       </div>
     `;
   }
@@ -967,6 +1217,7 @@ function renderClauseCitationBlock(clause) {
       <div class="studio-detail-block clause-citation-block absence">
         <small>Based on</small>
         <p>Grounded in the absence of this clause from the document.</p>
+        ${confidence}
       </div>
     `;
   }
@@ -975,11 +1226,43 @@ function renderClauseCitationBlock(clause) {
       <div class="studio-detail-block clause-citation-block ungrounded">
         <small>Based on</small>
         <p>The AI assessment did not ground this finding in any quotable text, so it was escalated for human review.</p>
+        ${confidence}
       </div>
     `;
   }
 
   return "";
+}
+
+// 2.2: a grounding/confidence read-out for the "Based on" surface. Prefers an
+// explicit grounding.confidence (0–1 or 0–100), then the AI assessment's
+// ai_confidence, and degrades to "" when neither is present so existing reviews
+// are unaffected. The level bucket drives the styling so reviewers can scan
+// high/medium/low at a glance.
+function renderClauseConfidence(clause, grounding = null) {
+  const ground = grounding || (clause && typeof clause.grounding === "object" ? clause.grounding : null);
+  const analysis = clause && typeof clause.ai_review_analysis === "object" ? clause.ai_review_analysis : null;
+  const raw = ground && ground.confidence != null
+    ? ground.confidence
+    : analysis && analysis.ai_confidence != null
+      ? analysis.ai_confidence
+      : null;
+  if (raw == null) return "";
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return "";
+  const ratio = numeric > 1 ? numeric / 100 : numeric;
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const percent = Math.round(clamped * 100);
+  const level = clamped >= 0.75 ? "high" : clamped >= 0.5 ? "medium" : "low";
+  return `
+    <div class="clause-confidence ${level}" data-confidence-level="${level}">
+      <small>Confidence</small>
+      <div class="clause-confidence-meter" role="img" aria-label="Confidence ${percent} percent (${level})">
+        <span class="clause-confidence-fill" style="width:${percent}%"></span>
+      </div>
+      <span class="clause-confidence-value">${percent}%</span>
+    </div>
+  `;
 }
 
 function paragraphDisplayLabel(paragraphId) {
@@ -1003,23 +1286,41 @@ function paragraphDisplayLabel(paragraphId) {
 // #10 contract shape. Returns null when there is nothing to show.
 function clauseFallback(clause) {
   if (!clause || typeof clause !== "object") return null;
+  const playbook = clause.playbook && typeof clause.playbook === "object" ? clause.playbook : null;
   const raw = (clause.fallback && typeof clause.fallback === "object" ? clause.fallback : null)
-    || (clause.playbook && typeof clause.playbook === "object" && typeof clause.playbook.fallback === "object"
-      ? clause.playbook.fallback
-      : null);
+    || (playbook && typeof playbook.fallback === "object" ? playbook.fallback : null);
   const wording = String((raw && raw.wording) || clause.fallback_wording || "").trim();
   const approvedSource = (raw && Array.isArray(raw.approved_positions) ? raw.approved_positions : null)
     || (Array.isArray(clause.approved_positions) ? clause.approved_positions : []);
   const approvedPositions = approvedSource
     .map((position) => String(position || "").trim())
     .filter(Boolean);
-  if (!wording && !approvedPositions.length) return null;
-  return { approvedPositions, wording };
+  // 2.1: the Playbook's preferred position. Native clauses express this through
+  // preferred_position / requirement / expected_value rather than a dynamic
+  // fallback block, so surface those too. Tolerant of where the backend hangs it
+  // (clause.playbook.preferred_position or flat) so the block does not depend on
+  // the final contract shape.
+  const preferred = String(
+    (playbook && (playbook.preferred_position || playbook.position))
+      || clause.preferred_position
+      || clause.expected_position
+      || "",
+  ).trim();
+  if (!wording && !approvedPositions.length && !preferred) return null;
+  return { approvedPositions, preferred, wording };
 }
 
 function renderClausePlaybookPositionBlock(clause) {
   const fallback = clauseFallback(clause);
   if (!fallback) return "";
+  const preferred = fallback.preferred
+    ? `
+      <div class="playbook-position-preferred">
+        <small>Preferred position</small>
+        <p>${escapeHtml(fallback.preferred)}</p>
+      </div>
+    `
+    : "";
   const approved = fallback.approvedPositions.length
     ? `
       <div class="playbook-position-approved">
@@ -1034,6 +1335,7 @@ function renderClausePlaybookPositionBlock(clause) {
   return `
     <div class="studio-detail-block playbook-position-block">
       <small>Playbook position</small>
+      ${preferred}
       ${wording}
       ${approved}
     </div>
@@ -1115,6 +1417,53 @@ function renderAuditTraceBlock(clause) {
   `;
 }
 
+// 2.3 (#22): the collapsible Reasoning trail. Composes the existing reason-code,
+// evidence-signal, and audit-trace scaffolding (kept deliberately — they are the
+// valid evidence scaffolding the user wants) into one <details> block so the
+// audit detail is available on demand without crowding the primary finding.
+// Returns "" when none of the three sub-blocks have content, so a clause with no
+// audit data shows no trail. Collapsed by default; the open/closed choice is
+// remembered per clause across re-renders via state.reasoningTrailOpen.
+function renderReasoningTrailBlock(clause) {
+  const reasonCodes = renderReasonCodeBlock(clause);
+  const evidenceSignals = renderEvidenceSignalsBlock(clause);
+  const auditTrace = renderAuditTraceBlock(clause);
+  if (!reasonCodes && !evidenceSignals && !auditTrace) return "";
+  const open = reasoningTrailOpenForClause(clause?.id) ? " open" : "";
+  return `
+    <details class="studio-detail-block reasoning-trail-block" data-reasoning-trail-clause-id="${escapeHtml(clause?.id || "")}"${open}>
+      <summary class="reasoning-trail-summary">
+        <span>Reasoning trail</span>
+        <span class="reasoning-trail-hint">Evidence &amp; audit detail</span>
+      </summary>
+      <div class="reasoning-trail-body">
+        ${reasonCodes}
+        ${evidenceSignals}
+        ${auditTrace}
+      </div>
+    </details>
+  `;
+}
+
+function reasoningTrailOpenForClause(clauseId) {
+  if (!clauseId) return false;
+  const open = state.reasoningTrailOpen;
+  return Boolean(open && typeof open === "object" && open[clauseId] === true);
+}
+
+function bindReasoningTrailControls(container) {
+  container.querySelectorAll("[data-reasoning-trail-clause-id]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const clauseId = details.dataset.reasoningTrailClauseId;
+      if (!clauseId) return;
+      if (!state.reasoningTrailOpen || typeof state.reasoningTrailOpen !== "object") {
+        state.reasoningTrailOpen = {};
+      }
+      state.reasoningTrailOpen[clauseId] = details.open;
+    });
+  });
+}
+
 function renderEvidenceBlock(clause) {
   const evidenceParagraphs = Array.isArray(clause.evidence_paragraphs)
     ? clause.evidence_paragraphs.filter((paragraph) => paragraph && paragraph.text)
@@ -1155,17 +1504,23 @@ function renderProposedRedlinesBlock(clause) {
       `
       : "";
   }
+  // 2.4: the rationale can land on the edit (edit.redline_rationale) or, per the
+  // "per clause" contract, on the clause itself. Resolve the clause-level one
+  // once here and pass it as the per-edit fallback.
+  const clauseRationale = clause && typeof clause.redline_rationale === "object"
+    ? clause.redline_rationale
+    : null;
   return `
     <div class="studio-detail-block proposed-redline-block">
       <small>${redlines.length === 1 ? "Proposed redline" : "Proposed redlines"}</small>
       <div class="detail-redline-list">
-        ${redlines.map(renderDetailRedlineEdit).join("")}
+        ${redlines.map((edit) => renderDetailRedlineEdit(edit, clauseRationale)).join("")}
       </div>
     </div>
   `;
 }
 
-function renderDetailRedlineEdit(edit) {
+function renderDetailRedlineEdit(edit, clauseRationale = null) {
   const included = redlineExportIncluded(edit);
   const selectedEdit = applyTemplateSelectionToRedline(edit);
   const replacement = renderRedlineReplacement(selectedEdit, "p");
@@ -1184,18 +1539,39 @@ function renderDetailRedlineEdit(edit) {
       ${original}
       ${replacement}
       ${renderRedlineTemplateOptions(selectedEdit)}
-      ${renderRedlineRationaleBlock(selectedEdit)}
+      ${renderRedlineRationaleBlock(selectedEdit, clauseRationale)}
     </div>
   `;
 }
 
-function renderRedlineRationaleBlock(edit) {
+// "Why this redline" beside each suggested edit (task 2.4). Prefers the
+// backend's redline_rationale = { explanation, basis: { quote, paragraph_id } }
+// (sourced from the Playbook fallback wording + the clause citation), and falls
+// back to the locally derived sentence when that field has not landed yet, so a
+// rationale line is always present.
+function renderRedlineRationaleBlock(edit, clauseRationale = null) {
+  const rationale = (edit && typeof edit.redline_rationale === "object" ? edit.redline_rationale : null)
+    || (clauseRationale && typeof clauseRationale === "object" ? clauseRationale : null);
+  const explanation = rationale ? String(rationale.explanation || "").trim() : "";
+  const basis = rationale && typeof rationale.basis === "object" ? rationale.basis : null;
+  const basisQuote = basis ? String(basis.quote || "").trim() : "";
+  const basisParagraphId = basis ? String(basis.paragraph_id || "").trim() : "";
+  const basisLabel = basisParagraphId ? paragraphDisplayLabel(basisParagraphId) : "";
+  const basisBlock = basisQuote
+    ? `
+      <figure class="redline-rationale-basis">
+        <figcaption>${escapeHtml(basisLabel ? `Why · ${basisLabel}` : "Why")}</figcaption>
+        <blockquote>${escapeHtml(basisQuote)}</blockquote>
+      </figure>
+    `
+    : "";
   return `
     <div class="redline-rationale">
       <div class="redline-rationale-head">
         <strong>Redline Rationale</strong>
       </div>
-      <p>${escapeHtml(redlineRationaleFallback(edit))}</p>
+      <p>${escapeHtml(explanation || redlineRationaleFallback(edit))}</p>
+      ${basisBlock}
     </div>
   `;
 }
