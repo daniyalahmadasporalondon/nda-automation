@@ -45,6 +45,7 @@ const tests = [
   ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
   ["stores review comparison data without rendering controls", testReviewComparisonDataContract],
+  ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
@@ -915,6 +916,85 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   await page.unroute("**/api/ai/settings");
   await page.unroute("**/api/ai/api-key");
+}
+
+async function testProgressivePdfPreviewFallback(page) {
+  const renderText = "Rendered PDF fallback paragraph.";
+  const reviewResult = {
+    checked_at: "2026-06-05T09:00:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "mutuality",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Mutuality",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: {
+      page_count: 2,
+      pdf_url: "/api/rendered-documents/rendered-preview.pdf",
+      source_label: "Converted DOCX",
+      status: "ready",
+    },
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.evaluate((payload) => {
+    renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+
+  await page.waitForSelector('[data-review-pdf-surface][data-render-status="ready"]');
+  assert.equal(await page.locator(".review-pdf-frame").getAttribute("src"), "/api/rendered-documents/rendered-preview.pdf");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "High-resolution preview");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "2 pages");
+  await assertTextContains(page.locator("#studioDocumentRender"), renderText);
+
+  const readyState = await page.evaluate(() => state.reviewDocumentRender);
+  assert.deepEqual(readyState, {
+    error: "",
+    pageCount: 2,
+    pdfUrl: "/api/rendered-documents/rendered-preview.pdf",
+    sourceLabel: "Converted DOCX",
+    status: "ready",
+  });
+
+  await page.evaluate((payload) => {
+    renderResult({
+      ...payload,
+      document_render: {
+        error: "Conversion service is not available.",
+        status: "failed",
+      },
+    }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+
+  await page.waitForSelector('[data-review-pdf-surface][data-render-status="error"]');
+  assert.equal(await page.locator(".review-pdf-frame").count(), 0);
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Conversion service is not available.");
+  await assertTextContains(page.locator("#studioDocumentRender"), renderText);
+
+  await page.evaluate((payload) => {
+    state.selectedMatter = {
+      id: "matter_pdf_source",
+      source_filename: "Source NDA.pdf",
+    };
+    renderResult({
+      ...payload,
+      document_render: null,
+    }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+
+  await page.waitForSelector('[data-review-pdf-surface][data-render-status="ready"]');
+  assert.equal(await page.locator(".review-pdf-frame").getAttribute("src"), "/api/matters/matter_pdf_source/source");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Original PDF");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

@@ -23,6 +23,7 @@ const AppState = (() => {
       reviewComparison: null,
       reviewComparisonStatus: "idle",
       reviewComparisonError: "",
+      reviewDocumentRender: null,
       latestReviewResult: null,
       reviewSourceText: "",
       selectedReviewClauseId: null,

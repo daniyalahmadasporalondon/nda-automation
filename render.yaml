@@ -2,7 +2,7 @@ services:
   - type: web
     name: nda-automation
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: python -m pip install --upgrade pip && python -m pip install ".[pdf,gmail]"
     startCommand: python -m nda_automation.server --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
@@ -26,11 +26,13 @@ services:
       - key: NDA_GMAIL_OAUTH_REDIRECT_URI
         sync: false
       - key: NDA_DATA_DIR
-        value: /var/data
+        value: /tmp/nda-automation/data
       - key: NDA_USERS_PATH
-        value: /var/data/users.json
+        value: /tmp/nda-automation/data/users.json
       - key: NDA_EXPORTS_DIR
-        value: /var/data/exports
+        value: /tmp/nda-automation/exports
+      - key: NDA_ALLOW_EPHEMERAL_DATA
+        value: "true"
       - key: NDA_RATE_LIMIT_PER_MINUTE
         value: "120"
       - key: NDA_AI_REVIEW_ENABLED
@@ -45,7 +47,3 @@ services:
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
         value: qwen/qwen3-32b
-    disk:
-      name: nda-automation-data
-      mountPath: /var/data
-      sizeGB: 1

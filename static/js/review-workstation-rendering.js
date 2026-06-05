@@ -1,6 +1,9 @@
+let reviewDocumentRenderRequestSequence = 0;
+
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
   setReviewComparison(result.review_comparison || null);
+  state.reviewDocumentRender = reviewDocumentRenderState(result);
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
@@ -21,6 +24,7 @@ function renderResult(result, reviewedText) {
     state.reviewClauses.find((clause) => clauseStatus(clause).requiresAttention)?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
   updateExportButtonState();
+  requestMatterDocumentRenderPreview();
 }
 
 function snapshotReviewParagraphs(paragraphs) {
@@ -51,6 +55,8 @@ function paragraphsAlignWithBaseline(paragraphs, baseline) {
 function renderStudioEmpty() {
   state.latestReviewResult = null;
   setReviewComparison(null);
+  state.reviewDocumentRender = null;
+  reviewDocumentRenderRequestSequence += 1;
   showStudioSourceEditor();
   renderReviewRefreshNotice(null);
   studioMatchSummary.textContent = `0/${getClauseTotal()}`;
@@ -1383,7 +1389,7 @@ function renderStudioDocumentHighlights() {
     return;
   }
   const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
-  studioDocumentRender.innerHTML = renderReviewDocument({
+  const documentHtml = renderReviewDocument({
     clauses: state.reviewClauses,
     comments: currentReviewComments(),
     originalParagraphs: manualRedlineBaselineParagraphs(),
@@ -1392,6 +1398,7 @@ function renderStudioDocumentHighlights() {
     selectedClauseId: state.selectedReviewClauseId,
     viewMode,
   });
+  studioDocumentRender.innerHTML = `${renderPdfDocumentSurface(state.reviewDocumentRender)}${documentHtml}`;
 
   studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
     paragraph.addEventListener("click", (event) => {
@@ -1404,4 +1411,146 @@ function renderStudioDocumentHighlights() {
   bindParagraphCommentControls(studioDocumentRender);
 
   showStudioDocumentRender();
+}
+
+function reviewDocumentRenderState(result) {
+  return normalizeReviewDocumentRender(
+    reviewDocumentRenderCandidate(result)
+      || reviewDocumentRenderCandidate(state.selectedMatter)
+      || sourcePdfRenderCandidate(state.selectedMatter),
+  );
+}
+
+function reviewDocumentRenderCandidate(source) {
+  if (!source || typeof source !== "object") return null;
+  return source.document_render || source.rendered_document || source.pdf_render || source.source_render || null;
+}
+
+function sourcePdfRenderCandidate(matter) {
+  if (!matter?.id) return null;
+  const filename = String(matter.source_filename || matter.attachment_filename || "").trim();
+  if (!/\.pdf$/i.test(filename)) return null;
+  return {
+    pdf_url: `/api/matters/${encodeURIComponent(matter.id)}/source`,
+    source_label: "Original PDF",
+    status: "ready",
+  };
+}
+
+function requestMatterDocumentRenderPreview() {
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  if (sourcePdfRenderCandidate(state.selectedMatter)) return;
+  if (state.reviewDocumentRender?.pdfUrl) return;
+  const filename = String(state.selectedMatter.source_filename || state.selectedMatter.attachment_filename || "").trim();
+  if (!/\.(docx|pdf)$/i.test(filename)) return;
+
+  const sequence = reviewDocumentRenderRequestSequence + 1;
+  reviewDocumentRenderRequestSequence = sequence;
+  state.reviewDocumentRender = normalizeReviewDocumentRender({
+    source_label: /\.docx$/i.test(filename) ? "Converted DOCX" : "Rendered PDF",
+    status: "loading",
+  });
+  renderStudioDocumentHighlights();
+
+  fetch(`/api/matters/${encodeURIComponent(matterId)}/render-status`)
+    .then(async (response) => {
+      const payload = await response.json();
+      if (!response.ok) {
+        const error = reviewErrorFromPayload(payload, "PDF preview could not load.");
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    })
+    .then((payload) => {
+      if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+      state.reviewDocumentRender = normalizeReviewDocumentRender(
+        payload.document_render || payload.rendered_document || payload.pdf_render || null,
+      );
+      renderStudioDocumentHighlights();
+    })
+    .catch((error) => {
+      if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+      state.reviewDocumentRender = normalizeReviewDocumentRender({
+        error: error?.message || "PDF preview could not load.",
+        source_label: "Rendered PDF",
+        status: "error",
+      });
+      renderStudioDocumentHighlights();
+    });
+}
+
+function normalizeReviewDocumentRender(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const pdfUrl = stringValue(candidate.pdf_url || candidate.pdfUrl || candidate.url || candidate.href);
+  const rawStatus = stringValue(candidate.status || (pdfUrl ? "ready" : ""));
+  const status = normalizedRenderStatus(rawStatus, pdfUrl);
+  if (status === "unavailable") return null;
+  return {
+    error: renderDocumentErrorMessage(candidate),
+    pageCount: numericPageCount(candidate.page_count ?? candidate.pages),
+    pdfUrl,
+    sourceLabel: stringValue(candidate.source_label || candidate.label || candidate.kind) || "Rendered PDF",
+    status,
+  };
+}
+
+function normalizedRenderStatus(status, pdfUrl) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (["ready", "complete", "completed", "available", "success"].includes(normalized) && pdfUrl) return "ready";
+  if (["failed", "error", "unavailable"].includes(normalized)) return "error";
+  if (["queued", "pending", "processing", "running", "loading"].includes(normalized)) return "loading";
+  return pdfUrl ? "ready" : "unavailable";
+}
+
+function renderDocumentErrorMessage(candidate) {
+  if (typeof candidate.error === "string") return candidate.error.trim();
+  if (candidate.error && typeof candidate.error === "object") {
+    return stringValue(candidate.error.message);
+  }
+  return stringValue(candidate.message || candidate.status_message);
+}
+
+function numericPageCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : null;
+}
+
+function stringValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function renderPdfDocumentSurface(renderState) {
+  if (!renderState) return "";
+  const status = renderState.status || "loading";
+  const pageLabel = renderState.pageCount
+    ? `${renderState.pageCount} ${renderState.pageCount === 1 ? "page" : "pages"}`
+    : "";
+  const meta = [renderState.sourceLabel, pageLabel].filter(Boolean).join(" · ");
+
+  if (status === "ready" && renderState.pdfUrl) {
+    return `
+      <section class="review-pdf-surface ready" data-review-pdf-surface data-render-status="ready" aria-label="Rendered document preview">
+        <div class="review-pdf-status">
+          <strong>${escapeHtml(meta || "Rendered PDF")}</strong>
+          <span>High-resolution preview</span>
+        </div>
+        <iframe class="review-pdf-frame" src="${escapeHtml(renderState.pdfUrl)}" title="${escapeHtml(renderState.sourceLabel || "Rendered document")}"></iframe>
+      </section>
+      <div class="review-fallback-divider" aria-hidden="true"><span>Editable text review</span></div>
+    `;
+  }
+
+  const message = status === "error"
+    ? renderState.error || "Rendered PDF is unavailable. Showing editable text review."
+    : "Preparing high-resolution document preview. Showing editable text review.";
+  return `
+    <section class="review-pdf-surface ${escapeHtml(status)}" data-review-pdf-surface data-render-status="${escapeHtml(status)}" aria-label="Rendered document preview status">
+      <div class="review-pdf-status">
+        <strong>${escapeHtml(status === "error" ? "PDF preview unavailable" : "PDF preview loading")}</strong>
+        <span>${escapeHtml(message)}</span>
+      </div>
+    </section>
+  `;
 }

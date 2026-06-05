@@ -26,6 +26,7 @@ from nda_automation.checker import (
     load_playbook,
 )
 from nda_automation import app_settings
+from nda_automation import document_rendering
 from nda_automation import document_limits
 from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
@@ -1429,6 +1430,96 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("redline_draft", review_payload["matter"])
         self.assertIn("extracted_text", review_payload)
         self.assertIn("review_result", review_payload)
+
+    def test_matter_render_status_and_pdf_stream_for_source_pdf(self):
+        source_pdf = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text="PDF text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                status, payload, _headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-status",
+                )
+                pdf_status, pdf_payload, pdf_headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-pdf",
+                )
+                head_status, head_payload, head_headers = self.request_with_headers(
+                    "HEAD",
+                    f"/api/matters/{matter['id']}/render-pdf",
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["document_render"]["status"], document_rendering.READY_STATUS)
+        self.assertEqual(payload["document_render"]["source_kind"], "pdf")
+        self.assertEqual(payload["document_render"]["source_label"], "Original PDF")
+        self.assertEqual(payload["document_render"]["pdf_url"], f"/api/matters/{matter['id']}/render-pdf")
+        self.assertEqual(pdf_status, 200)
+        self.assertEqual(pdf_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
+        self.assertEqual(pdf_payload, source_pdf)
+        self.assertEqual(head_status, 200)
+        self.assertEqual(head_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
+        self.assertEqual(head_headers["Content-Length"], str(len(source_pdf)))
+        self.assertEqual(head_payload, b"")
+
+    def test_matter_render_status_reports_docx_converter_unavailable(self):
+        class UnavailableConverter:
+            name = "test-unavailable"
+
+            def is_available(self):
+                return False
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Acme NDA.docx",
+                    document_bytes=b"source docx bytes",
+                    extracted_text="DOCX text.",
+                    review_result={"clauses": []},
+                    triage={
+                        "triage_status": "legal_review",
+                        "next_action": "Needs legal review",
+                        "issue_count": 1,
+                        "requirements_passed": 0,
+                        "requirements_needs_review": 1,
+                        "requirements_failed": 0,
+                    },
+                )
+                with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=UnavailableConverter()):
+                    status, payload, _headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/render-status",
+                    )
+                    pdf_status, pdf_payload, _pdf_headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/render-pdf",
+                    )
+
+        self.assertEqual(status, 200)
+        render_payload = payload["document_render"]
+        self.assertEqual(render_payload["status"], document_rendering.UNAVAILABLE_STATUS)
+        self.assertEqual(render_payload["source_kind"], "docx")
+        self.assertEqual(render_payload["source_label"], "Converted DOCX")
+        self.assertEqual(render_payload["error_code"], "converter_unavailable")
+        self.assertNotIn("pdf_url", render_payload)
+        self.assertEqual(pdf_status, 409)
+        self.assertEqual(pdf_payload["document_render"]["status"], document_rendering.UNAVAILABLE_STATUS)
 
     def test_matter_upload_uses_active_ai_first_review_as_saved_review_result(self):
         source_docx = make_docx([
@@ -4894,17 +4985,18 @@ class ServerTests(unittest.TestCase):
                 )
                 with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
-                        export_status, _export_payload, _headers = self.request_with_headers(
-                            "POST",
-                            "/api/export-review-docx",
-                            {
-                                "matter_id": create_payload["matter"]["id"],
-                                "text": edited_text,
-                                "reviewed_text": edited_text,
-                                "export_redline_edits": [],
-                                "manual_redline_edits": [manual_redline],
-                            },
-                        )
+                        with patch.object(server_module.redline_export_service, "verify_export_content_coverage", return_value=[]):
+                            export_status, _export_payload, _headers = self.request_with_headers(
+                                "POST",
+                                "/api/export-review-docx",
+                                {
+                                    "matter_id": create_payload["matter"]["id"],
+                                    "text": edited_text,
+                                    "reviewed_text": edited_text,
+                                    "export_redline_edits": [],
+                                    "manual_redline_edits": [manual_redline],
+                                },
+                            )
 
         self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 200)

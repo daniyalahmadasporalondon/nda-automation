@@ -55,7 +55,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       refresh ? { method: "POST" } : {},
       "Matter review details could not load",
     );
-    return {
+    const reviewMatter = {
       ...(payload.matter || {}),
       extracted_text: payload.extracted_text || "",
       redline_draft: payload.redline_draft || null,
@@ -63,6 +63,9 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       review_refresh: payload.review_refresh || null,
       review_result: payload.review_result || {},
     };
+    const renderMetadata = payload.document_render || payload.rendered_document || payload.pdf_render || null;
+    if (renderMetadata) reviewMatter.document_render = renderMetadata;
+    return reviewMatter;
   }
 
   async function compareTextReview(text) {

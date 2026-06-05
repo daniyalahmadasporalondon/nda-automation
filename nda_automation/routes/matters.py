@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import export_service, gmail_integration, matter_store, matter_view, telemetry
+from .. import document_rendering, export_service, gmail_integration, matter_store, matter_view, telemetry
 from ..ai_assessor import AIAssessorError, assess_nda_with_ai
 from ..checker import (
     EvidenceProvenanceError,
@@ -188,6 +188,91 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     else:
         mime = "application/octet-stream"
     handler._send_file(source_path, content_type=mime, send_body=send_body)
+
+
+def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -> None:
+    matter_id = parse_matter_id(path, suffix="/render-status")
+    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
+    if render_result is None:
+        return
+    _matter, rendered = render_result
+    handler._send_json(
+        {"document_render": _public_document_render(matter_id or "", rendered)},
+        send_body=send_body,
+    )
+
+
+def handle_matter_render_pdf(handler, path: str, *, send_body: bool = True) -> None:
+    matter_id = parse_matter_id(path, suffix="/render-pdf")
+    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
+    if render_result is None:
+        return
+    _matter, rendered = render_result
+    if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
+        error = rendered.error_message or "Rendered PDF is not available for this matter."
+        handler._send_json(
+            {
+                "error": error,
+                "document_render": _public_document_render(matter_id or "", rendered),
+            },
+            status=409,
+            send_body=send_body,
+        )
+        return
+    handler._send_file(rendered.pdf_path, content_type=document_rendering.PDF_CONTENT_TYPE, send_body=send_body)
+
+
+def _matter_render_result(
+    handler,
+    matter_id: str | None,
+    *,
+    send_body: bool,
+) -> tuple[dict, document_rendering.RenderedDocument] | None:
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return None
+    try:
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_store.MatterStoreError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return None
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return None
+    source_path = matter_store.source_document_path(matter)
+    if source_path is None:
+        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
+        return None
+    rendered = document_rendering.render_source_path_to_pdf(
+        source_path,
+        content_type=_source_document_content_type(source_path),
+    )
+    return matter, rendered
+
+
+def _source_document_content_type(source_path: Path) -> str:
+    suffix = source_path.suffix.lower()
+    if suffix == ".pdf":
+        return document_rendering.PDF_CONTENT_TYPE
+    if suffix == ".docx":
+        return document_rendering.DOCX_CONTENT_TYPE
+    return ""
+
+
+def _public_document_render(matter_id: str, rendered: document_rendering.RenderedDocument) -> dict:
+    payload = {
+        "status": rendered.status,
+        "source_kind": rendered.source_kind,
+        "source_label": "Original PDF" if rendered.source_kind == "pdf" else "Converted DOCX",
+        "cached": rendered.cached,
+        "cache_key": rendered.cache_key,
+    }
+    if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
+        payload["pdf_url"] = f"/api/matters/{matter_id}/render-pdf"
+    if rendered.error_code:
+        payload["error"] = rendered.error_message
+        payload["error_code"] = rendered.error_code
+    return payload
 
 
 def handle_matter_upload(handler, *, create_matter_from_document_func=create_matter_from_document) -> None:

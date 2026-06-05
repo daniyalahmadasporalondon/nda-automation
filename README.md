@@ -230,6 +230,18 @@ This repo includes a Render blueprint:
 render.yaml
 ```
 
+The checked-in blueprint is configured for a short-lived free Render demo: it
+uses the free service plan and ephemeral `/tmp` storage so the app can boot
+without a paid persistent disk. This is suitable for showing AI review,
+redlines, Gmail receive, and Gmail send in a live session. Data, user sessions,
+Gmail tokens, imported matters, drafts, and exports can disappear on restart,
+redeploy, or service sleep.
+
+For a real private beta, switch the service back to a paid plan with a
+persistent disk mounted at `/var/data`, set `NDA_DATA_DIR=/var/data`,
+`NDA_USERS_PATH=/var/data/users.json`, `NDA_EXPORTS_DIR=/var/data/exports`, and
+remove `NDA_ALLOW_EPHEMERAL_DATA=true`.
+
 The production start command is:
 
 ```bash
@@ -247,7 +259,7 @@ For Render, configure these Google OAuth redirect URIs in the Google Cloud OAuth
 - `https://your-service.onrender.com/auth/google/callback`
 - `https://your-service.onrender.com/auth/gmail/callback`
 
-The Render blueprint uses a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
+Production Render deployments should use a persistent disk mounted at `/var/data`. `NDA_DATA_DIR` and `NDA_EXPORTS_DIR` must point at durable storage for public deployments because Repository matters include extracted NDA text, uploaded source documents, review results, redline drafts, app settings, and Gmail sync state. The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage such as `/tmp`, unless `NDA_ALLOW_EPHEMERAL_DATA=true` is set for a short-lived demo.
 
 Authenticated admins can check:
 
