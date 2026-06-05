@@ -12,15 +12,23 @@ REFERENCE_KIND_PATTERN = (
     r"annex|annexes|annexure|annexures|appendix|appendices"
 )
 REFERENCE_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
+REFERENCE_RANGE_SEPARATOR_PATTERN = r"(?:\s+(?:to|through)\s+|\s*[-\u2013\u2014]\s*)"
+REFERENCE_NUMERIC_RANGE_PATTERN = rf"\d+{REFERENCE_RANGE_SEPARATOR_PATTERN}\d+"
+REFERENCE_NUMBER_OR_RANGE_PATTERN = rf"(?:{REFERENCE_NUMERIC_RANGE_PATTERN}|{REFERENCE_NUMBER_PATTERN})"
 REFERENCE_SEPARATOR_PATTERN = r"(?:\s*(?:,|;)\s*(?:(?:and|or)\s+)?|\s+(?:and|or|&)\s+)"
 REFERENCE_EXPRESSION_RE = re.compile(
     rf"\b(?P<kind>{REFERENCE_KIND_PATTERN})\s+"
-    rf"(?P<numbers>{REFERENCE_NUMBER_PATTERN}(?:{REFERENCE_SEPARATOR_PATTERN}{REFERENCE_NUMBER_PATTERN})*)"
+    rf"(?P<numbers>{REFERENCE_NUMBER_OR_RANGE_PATTERN}(?:{REFERENCE_SEPARATOR_PATTERN}{REFERENCE_NUMBER_OR_RANGE_PATTERN})*)"
     r"(?=$|[^A-Za-z0-9])",
     re.IGNORECASE,
 )
 REFERENCE_NUMBER_RE = re.compile(REFERENCE_NUMBER_PATTERN, re.IGNORECASE)
+REFERENCE_NUMERIC_RANGE_RE = re.compile(
+    rf"^(?P<start>\d+){REFERENCE_RANGE_SEPARATOR_PATTERN}(?P<end>\d+)$",
+    re.IGNORECASE,
+)
 REFERENCE_SEPARATOR_RE = re.compile(REFERENCE_SEPARATOR_PATTERN, re.IGNORECASE)
+MAX_REFERENCE_RANGE_SIZE = 50
 
 REFERENCE_KIND_ALIASES = {
     "annex": "annex",
@@ -180,9 +188,22 @@ def _reference_numbers(value: str) -> List[str]:
     numbers: List[str] = []
     for part in REFERENCE_SEPARATOR_RE.split(value or ""):
         number = part.strip()
-        if REFERENCE_NUMBER_RE.fullmatch(number):
-            numbers.append(number)
+        numbers.extend(_reference_number_part_values(number))
     return numbers
+
+
+def _reference_number_part_values(value: str) -> List[str]:
+    number = value.strip()
+    range_match = REFERENCE_NUMERIC_RANGE_RE.fullmatch(number)
+    if range_match:
+        start = int(range_match.group("start"))
+        end = int(range_match.group("end"))
+        if start <= end and end - start < MAX_REFERENCE_RANGE_SIZE:
+            return [str(item) for item in range(start, end + 1)]
+        return []
+    if REFERENCE_NUMBER_RE.fullmatch(number):
+        return [number]
+    return []
 
 
 def _canonical_kind(kind: str) -> str:

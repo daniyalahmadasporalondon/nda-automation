@@ -61,6 +61,33 @@ class ReferenceResolverTests(unittest.TestCase):
         self.assertEqual(reference["resolved_section_ids"], ["section-2", "section-3"])
         self.assertEqual([item["matched_alias"] for item in reference["items"]], ["number:10.1", "number:10.1a"])
 
+    def test_expands_numeric_reference_ranges(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1 Intro",
+            "Introductory text.",
+            "Clause 2 Confidentiality",
+            "Confidentiality text.",
+            "Clause 3 Return",
+            "Return text.",
+            "Clause 4 Non-Circumvention",
+            "Non-circumvention text.",
+            "Clause 5 Governing Law",
+            "Governing law text.",
+            "Clause 6 Survival",
+            "Clauses 2 to 5 survive. Sections 2-5 also apply.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        clause_reference, section_reference = resolver["references"]
+        self.assertEqual(clause_reference["reference_text"], "Clauses 2 to 5")
+        self.assertEqual(clause_reference["numbers"], ["2", "3", "4", "5"])
+        self.assertEqual(clause_reference["resolved_section_ids"], ["section-2", "section-3", "section-4", "section-5"])
+        self.assertEqual(section_reference["reference_text"], "Sections 2-5")
+        self.assertEqual(section_reference["numbers"], ["2", "3", "4", "5"])
+        self.assertEqual(section_reference["resolved_section_ids"], ["section-2", "section-3", "section-4", "section-5"])
+
     def test_resolves_parenthetical_and_outline_references(self):
         paragraphs = split_document_paragraphs("\n\n".join([
             "1. General",
