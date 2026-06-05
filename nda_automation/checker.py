@@ -1097,8 +1097,55 @@ def _redline_edits_for_clause(
     paragraphs_by_id: Dict[str, Paragraph],
     start_number: int,
 ) -> List[RedlineEdit]:
-    builder = REDLINE_BUILDERS_BY_ID[str(clause["id"])]
+    # Native clauses have a registered builder; dynamic clause types are redlined
+    # generically from their own fallback wording so no per-clause Python is needed.
+    builder = REDLINE_BUILDERS_BY_ID.get(str(clause["id"]))
+    if builder is None:
+        return _dynamic_clause_redlines(clause, paragraphs_by_id, start_number)
     return builder(clause, paragraphs_by_id, start_number)
+
+
+def _dynamic_clause_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    """Build redline edits for a dynamic clause from its fallback wording.
+
+    Prohibited clauses that are present-but-wrong get the offending paragraphs
+    deleted. Required clauses get the clause's fallback wording inserted (when
+    missing) or used to replace the offending paragraph (when present-but-wrong).
+    The fallback block names the redline action; an absent or no_change action
+    yields no edit.
+    """
+    fallback = clause.get("fallback")
+    fallback = fallback if isinstance(fallback, dict) else {}
+    action = str(fallback.get("redline_action") or "").strip()
+    wording = str(fallback.get("wording") or "").strip()
+
+    if action == REDLINE_DELETE_PARAGRAPH:
+        if not _is_present_but_wrong_check(clause):
+            return []
+        edits: List[RedlineEdit] = []
+        for paragraph in _matched_redline_paragraphs(clause, paragraphs_by_id):
+            edits.append(_redline_edit(start_number + len(edits), clause, paragraph, REDLINE_DELETE_PARAGRAPH))
+        return edits
+
+    if action == REDLINE_REPLACE_PARAGRAPH and wording:
+        if not _is_present_but_wrong_check(clause):
+            return []
+        paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
+        if not paragraphs:
+            return []
+        return [
+            _redline_edit(start_number, clause, paragraphs[0], REDLINE_REPLACE_PARAGRAPH, replacement_text=wording)
+        ]
+
+    if action == REDLINE_INSERT_AFTER_PARAGRAPH and wording:
+        edit = _template_redline_for_required_clause(clause, paragraphs_by_id, start_number, wording)
+        return [edit] if edit else []
+
+    return []
 
 
 def _is_present_but_wrong_check(clause: ClauseResult) -> bool:

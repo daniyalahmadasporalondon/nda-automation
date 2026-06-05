@@ -252,15 +252,36 @@ def normalize_clause_policy(clause: Mapping[str, Any]) -> dict[str, Any]:
 def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_clause_policy(clause)
     rules = normalized.get("rules")
-    return {
+    packet_clause = {
         "clause_id": str(normalized.get("id") or ""),
         "name": str(normalized.get("name") or ""),
         "type": str(normalized.get("type") or ""),
+        "engine": clause_engine(normalized),
         "requirement": str(normalized.get("requirement") or ""),
         "preferred_position": str(normalized.get("preferred_position") or ""),
         "check_trigger": str(normalized.get("check_trigger") or ""),
         "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
     }
+    # Dynamic clauses carry their fallback/redline wording and clause-specific
+    # instructions in data; surface them so the AI packet is fully self-describing
+    # for clause types the code has never seen.
+    fallback = normalized.get("fallback")
+    if isinstance(fallback, Mapping):
+        packet_clause["fallback"] = deepcopy(dict(fallback))
+    instructions = _clause_instructions(normalized)
+    if instructions:
+        packet_clause["instructions"] = instructions
+    return packet_clause
+
+
+def _clause_instructions(clause: Mapping[str, Any]) -> list[str]:
+    raw = clause.get("instructions")
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, list):
+        return [_text(item) for item in raw if _text(item)]
+    return []
 
 
 def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
@@ -520,7 +541,9 @@ def _validate_dynamic_fallback(clause: Mapping[str, Any], clause_id: str, errors
     redline_action = _text(fallback.get("redline_action"))
     if redline_action not in AI_ASSESSMENT_REDLINE_ACTIONS:
         errors.append(f"Playbook clause {clause_id} fallback.redline_action is unsupported.")
-    if redline_action and redline_action != AI_REDLINE_NO_CHANGE and not _text(fallback.get("wording")):
+    # Only the text-inserting actions need wording; delete_paragraph and no_change do not.
+    wording_required_actions = {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH}
+    if redline_action in wording_required_actions and not _text(fallback.get("wording")):
         errors.append(
             f"Playbook clause {clause_id} fallback.wording must be text when redline_action is {redline_action}."
         )
