@@ -3501,7 +3501,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(last_run, 99.0)
         self.assertEqual(last_frequency, "10_minutes")
-        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(sleep_seconds, 599)
         run_sync.assert_not_called()
 
     def test_gmail_sync_scheduler_step_skips_when_inbound_setup_is_missing(self):
@@ -3521,7 +3521,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(last_run, 120.0)
         self.assertEqual(last_frequency, "always_on")
-        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(sleep_seconds, 60)
         run_sync.assert_not_called()
 
     def test_gmail_sync_scheduler_step_runs_when_inbound_setup_is_ready(self):
@@ -3542,7 +3542,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(last_run, 120.0)
         self.assertEqual(last_frequency, "always_on")
-        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(sleep_seconds, 60)
         run_sync.assert_called_once_with()
 
     def test_scheduled_gmail_sync_backs_off_after_gmail_rate_limit(self):
@@ -3575,16 +3575,13 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(last_run, 0.0)
         self.assertEqual(last_frequency, "always_on")
-        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(sleep_seconds, 60)
         run_sync.assert_not_called()
 
-    def test_gmail_sync_scheduler_sleep_seconds_is_bounded(self):
+    def test_gmail_sync_scheduler_sleep_seconds_uses_configured_interval(self):
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(0), 1)
         self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(10), 10)
-        self.assertEqual(
-            server_module._gmail_sync_scheduler_sleep_seconds(600),
-            server_module.MAX_GMAIL_SYNC_IDLE_SECONDS,
-        )
+        self.assertEqual(server_module._gmail_sync_scheduler_sleep_seconds(600), 600)
 
     def test_gmail_sync_scheduler_loop_sleeps_after_step_errors(self):
         with patch.object(server_module, "_gmail_sync_scheduler_step", side_effect=RuntimeError("settings failed")):

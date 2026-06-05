@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import threading
@@ -662,19 +663,24 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
         last_frequency = frequency
     if settings.get("inbound_enabled", True):
         now = time.monotonic()
-        if now - last_run >= interval_seconds:
-            if _gmail_sync_backoff_active():
-                return last_run, last_frequency, sleep_seconds
-            if not _gmail_inbound_configured_for_scheduled_sync():
-                return now, last_frequency, sleep_seconds
-            with _gmail_sync_process_lock() as lock_acquired:
-                if lock_acquired:
-                    try:
-                        _run_scheduled_gmail_sync()
-                    finally:
-                        last_run = now
-                else:
+        if last_run and now - last_run < interval_seconds:
+            return last_run, last_frequency, _gmail_sync_scheduler_remaining_sleep_seconds(
+                last_run,
+                now,
+                interval_seconds,
+            )
+        if _gmail_sync_backoff_active():
+            return last_run, last_frequency, sleep_seconds
+        if not _gmail_inbound_configured_for_scheduled_sync():
+            return now, last_frequency, sleep_seconds
+        with _gmail_sync_process_lock() as lock_acquired:
+            if lock_acquired:
+                try:
+                    _run_scheduled_gmail_sync()
+                finally:
                     last_run = now
+            else:
+                last_run = now
     return last_run, last_frequency, sleep_seconds
 
 
@@ -704,8 +710,14 @@ def _clear_gmail_sync_backoff_for_tests() -> None:
     _GMAIL_SYNC_BACKOFF_UNTIL = 0.0
 
 
-def _gmail_sync_scheduler_sleep_seconds(interval_seconds: int) -> int:
-    return min(max(1, interval_seconds), MAX_GMAIL_SYNC_IDLE_SECONDS)
+def _gmail_sync_scheduler_sleep_seconds(interval_seconds: float) -> int:
+    return max(1, math.ceil(interval_seconds))
+
+
+def _gmail_sync_scheduler_remaining_sleep_seconds(last_run: float, now: float, interval_seconds: int) -> int:
+    elapsed = max(0.0, now - last_run)
+    remaining = max(1.0, interval_seconds - elapsed)
+    return _gmail_sync_scheduler_sleep_seconds(remaining)
 
 
 def _run_scheduled_gmail_sync() -> None:
