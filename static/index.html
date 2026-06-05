@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260605l">
+    <link rel="stylesheet" href="/static/styles.css?v=20260605m">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260605b">
   </head>
   <body>
@@ -59,7 +59,7 @@
               <button class="dashboard-submit-button" type="button" data-dashboard-submit>
                 <span>Submit for Review</span>
               </button>
-              <button class="dashboard-send-document-button" type="button" disabled aria-disabled="true" title="Send Document flow is coming next">
+              <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
                 <span>Send Document</span>
               </button>
               <div class="dashboard-health-list" aria-label="Pipeline health">
@@ -1082,6 +1082,81 @@
       </div>
     </div>
 
+    <div class="upload-modal" id="sendDocumentModal" role="dialog" aria-modal="true" aria-labelledby="sendDocumentModalTitle" hidden>
+      <div class="upload-modal-dialog">
+        <section class="upload-shell">
+          <header class="upload-header">
+            <div class="repository-title">
+              <span class="upload-icon" aria-hidden="true"></span>
+              <h1 id="sendDocumentModalTitle">Send document</h1>
+            </div>
+            <button class="send-modal-close" id="sendDocumentModalClose" type="button" aria-label="Close send document dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <section class="upload-workspace">
+            <form class="upload-panel" id="sendDocumentForm">
+              <label class="upload-dropzone" id="sendDocumentDropzone" for="sendDocumentFileInput">
+                <input id="sendDocumentFileInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                <span class="upload-dropzone-mark" aria-hidden="true"></span>
+                <strong>Select document</strong>
+                <span>.docx Word document</span>
+              </label>
+
+              <div class="upload-selected-file empty" id="sendDocumentSelectedFile" aria-live="polite">
+                No file selected
+              </div>
+
+              <div class="upload-field-grid">
+                <label class="upload-field" for="sendDocumentRecipientInput">
+                  <span>Recipient email</span>
+                  <input id="sendDocumentRecipientInput" type="email" autocomplete="email" placeholder="counterparty@example.com" required>
+                </label>
+                <label class="upload-field" for="sendDocumentSubjectInput">
+                  <span>Subject</span>
+                  <input id="sendDocumentSubjectInput" type="text" autocomplete="off" placeholder="Defaults to file name">
+                </label>
+                <label class="upload-field upload-field-wide" for="sendDocumentBodyInput">
+                  <span>Message</span>
+                  <textarea id="sendDocumentBodyInput" rows="4" placeholder="Optional email message"></textarea>
+                </label>
+              </div>
+
+              <footer class="upload-actions">
+                <p class="upload-status" id="sendDocumentStatus" aria-live="polite"></p>
+                <div>
+                  <button class="secondary" id="sendDocumentClearButton" type="button">Clear</button>
+                  <button id="sendDocumentSubmitButton" type="submit" disabled>Send document</button>
+                </div>
+              </footer>
+            </form>
+
+            <aside class="upload-side-panel" aria-label="Send document details">
+              <p class="eyebrow">outbound route</p>
+              <h2>Send via Gmail</h2>
+              <dl>
+                <div>
+                  <dt>Channel</dt>
+                  <dd>Connected Gmail</dd>
+                </div>
+                <div>
+                  <dt>Repository stage</dt>
+                  <dd>Sent</dd>
+                </div>
+                <div>
+                  <dt>Pipeline</dt>
+                  <dd>Document sent as-is</dd>
+                </div>
+              </dl>
+            </aside>
+          </section>
+        </section>
+      </div>
+    </div>
+
     <div class="send-modal" id="studioSendModal" role="dialog" aria-modal="true" aria-labelledby="studioSendModalTitle" hidden>
       <div class="send-modal-dialog">
         <form class="send-modal-form" id="studioSendForm">
@@ -1151,6 +1226,7 @@
     <script src="/static/js/repository-actions.js?v=20260605b"></script>
     <script src="/static/js/repository.js?v=20260605a"></script>
     <script src="/static/js/manual-upload.js"></script>
+    <script src="/static/js/send-document.js"></script>
     <script src="/static/js/auth-session.js?v=20260604a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>

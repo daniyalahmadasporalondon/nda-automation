@@ -92,6 +92,24 @@ const manualUploadController = createManualUploadController({
   activateTab,
   reviewErrorFromPayload,
 });
+const sendDocumentController = createSendDocumentController({
+  modalNode: document.querySelector("#sendDocumentModal"),
+  closeButton: document.querySelector("#sendDocumentModalClose"),
+  fileInput: document.querySelector("#sendDocumentFileInput"),
+  form: document.querySelector("#sendDocumentForm"),
+  selectedFileNode: document.querySelector("#sendDocumentSelectedFile"),
+  statusNode: document.querySelector("#sendDocumentStatus"),
+  recipientInput: document.querySelector("#sendDocumentRecipientInput"),
+  subjectInput: document.querySelector("#sendDocumentSubjectInput"),
+  bodyInput: document.querySelector("#sendDocumentBodyInput"),
+  submitButton: document.querySelector("#sendDocumentSubmitButton"),
+  clearButton: document.querySelector("#sendDocumentClearButton"),
+  dropzone: document.querySelector("#sendDocumentDropzone"),
+  fileToBase64,
+  repositoryController,
+  activateTab,
+  reviewErrorFromPayload,
+});
 adminAiController = createAdminAiController({
   state,
   aiCard: document.querySelector("#adminAiCard"),
@@ -209,6 +227,10 @@ reviewInspectorButtons.forEach((button) => {
 
 dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
+});
+
+document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {
+  sendDocumentController.openModal();
 });
 
 document.querySelectorAll("[data-repository-add-column]").forEach((button) => {

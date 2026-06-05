@@ -39,6 +39,12 @@ import {
   versionTimestamp,
 } from "../../static/js/modules/playbook-draft.mjs";
 import { createPlaybookApi } from "../../static/js/modules/playbook-api.mjs";
+import {
+  buildSendDocumentPayload,
+  isSupportedSendFilename,
+  isValidRecipientEmail,
+  validateSendDocument,
+} from "../../static/js/modules/send-document.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -392,6 +398,52 @@ assert.deepEqual(JSON.parse(playbookCalls[5].options.body), { history_id: "hist-
 await assert.rejects(
   createPlaybookApi({ fetchImpl: async () => jsonResponse({ error: "boom" }, { ok: false }) }).saveDraft({}),
   /boom/,
+);
+
+// --- Send Document module ---
+assert.equal(isSupportedSendFilename("Engagement Letter.docx"), true);
+assert.equal(isSupportedSendFilename("Engagement Letter.DOCX"), true);
+assert.equal(isSupportedSendFilename("contract.pdf"), false);
+assert.equal(isSupportedSendFilename(""), false);
+
+assert.equal(isValidRecipientEmail("counterparty@example.com"), true);
+assert.equal(isValidRecipientEmail("  counterparty@example.com  "), true);
+assert.equal(isValidRecipientEmail("not-an-email"), false);
+assert.equal(isValidRecipientEmail(""), false);
+
+assert.deepEqual(
+  validateSendDocument({ filename: "Doc.docx", hasFile: true, recipient: "to@example.com" }),
+  { ok: true, error: "" },
+);
+assert.equal(validateSendDocument({ filename: "Doc.docx", hasFile: false, recipient: "to@example.com" }).ok, false);
+assert.equal(validateSendDocument({ filename: "Doc.pdf", hasFile: true, recipient: "to@example.com" }).ok, false);
+assert.equal(validateSendDocument({ filename: "Doc.docx", hasFile: true, recipient: "bad" }).ok, false);
+
+assert.deepEqual(
+  buildSendDocumentPayload({
+    filename: "Engagement Letter.docx",
+    contentBase64: "QUJD",
+    recipient: "  to@example.com  ",
+    subject: "  Custom subject  ",
+    body: "  Please review.  ",
+  }),
+  {
+    filename: "Engagement Letter.docx",
+    content_base64: "QUJD",
+    to: "to@example.com",
+    subject: "Custom subject",
+    body: "Please review.",
+  },
+);
+// Empty subject falls back to the file stem; empty body is omitted.
+assert.deepEqual(
+  buildSendDocumentPayload({ filename: "Engagement Letter.docx", contentBase64: "QUJD", recipient: "to@example.com" }),
+  {
+    filename: "Engagement Letter.docx",
+    content_base64: "QUJD",
+    to: "to@example.com",
+    subject: "Engagement Letter",
+  },
 );
 
 function jsonResponse(payload, { ok = true } = {}) {

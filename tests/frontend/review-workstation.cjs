@@ -252,7 +252,11 @@ async function testAccessibleControlState(page) {
   await assertTextContains(page.locator("#dashboardView"), "Welcome back, Counsel");
   await assertTextContains(page.locator("#dashboardView"), "Submit for Review");
   await assertTextContains(page.locator("#dashboardView"), "Send Document");
-  assert.equal(await page.getByRole("button", { name: "Send Document" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Send Document" }).isDisabled(), false);
+  assert.equal(
+    await page.locator(".dashboard-send-document-button").getAttribute("data-dashboard-send-document"),
+    "",
+  );
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="ai"]')?.classList.contains("ready"));
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="email"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="ai"]'), "AI Review");
