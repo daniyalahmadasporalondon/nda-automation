@@ -56,6 +56,7 @@ from .rate_limit import (
     DEFAULT_RATE_LIMIT_PER_MINUTE as DEFAULT_RATE_LIMIT_PER_MINUTE,
     RATE_LIMITED_MESSAGE,
     _rate_limit_bucket_name as _rate_limit_bucket_name,
+    _rate_limit_client_key,
     _rate_limit_per_window as _rate_limit_per_window,
     _rate_limit_retry_after,
     _rate_limit_window_seconds as _rate_limit_window_seconds,
@@ -602,11 +603,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         return False
 
     def _rate_limit_request(self, method: str, path: str, *, send_body: bool = True) -> bool:
-        retry_after = _rate_limit_retry_after(
-            method,
-            path,
+        client_key = _rate_limit_client_key(
             self.client_address[0] if self.client_address else "unknown",
+            self.headers.get("X-Forwarded-For", ""),
+            getattr(self, "current_user_id", ""),
         )
+        retry_after = _rate_limit_retry_after(method, path, client_key)
         if retry_after <= 0:
             return True
         telemetry.increment("rate_limit_hits")

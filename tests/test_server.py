@@ -1132,6 +1132,38 @@ class ServerTests(unittest.TestCase):
         self.assertGreaterEqual(int(third_headers["Retry-After"]), 1)
         self.assertEqual(telemetry.snapshot()["counters"]["rate_limit_hits"], 1)
 
+    def test_rate_limit_buckets_are_keyed_per_authenticated_user(self):
+        # Behind a proxy every caller shares one TCP peer, so the rate limiter
+        # must isolate buckets by authenticated identity: one user exhausting
+        # the limit must not throttle a different signed-in user.
+        rate_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_PASSWORD": "secret",
+            "NDA_RATE_LIMIT_PER_MINUTE": "1",
+            "NDA_RATE_LIMIT_WINDOW_SECONDS": "60",
+        }
+        body = {"text": "This Agreement shall be governed by the laws of California."}
+        with patch.dict(os.environ, {**rate_env, "NDA_AUTH_USERNAME": "alice@example.com"}):
+            alice_first, _ = self.request(
+                "POST", "/api/review", body,
+                headers=self.basic_auth_headers(username="alice@example.com"),
+            )
+            alice_second, _ = self.request(
+                "POST", "/api/review", body,
+                headers=self.basic_auth_headers(username="alice@example.com"),
+            )
+        with patch.dict(os.environ, {**rate_env, "NDA_AUTH_USERNAME": "bob@example.com"}):
+            bob_first, _ = self.request(
+                "POST", "/api/review", body,
+                headers=self.basic_auth_headers(username="bob@example.com"),
+            )
+
+        self.assertEqual(alice_first, 200)
+        self.assertEqual(alice_second, 429)
+        # Bob shares Alice's TCP peer (127.0.0.1) but is a distinct identity, so
+        # he gets his own bucket and is not throttled by Alice's traffic.
+        self.assertEqual(bob_first, 200)
+
     def test_background_error_logging_omits_exception_message(self):
         with patch("builtins.print") as mocked_print:
             server_module._log_background_error(
@@ -7217,6 +7249,53 @@ def revision_text_for_state(node, accepted):
     if tag == "br":
         return "\n"
     return "".join(revision_text_for_state(child, accepted) for child in list(node))
+
+
+class RateLimitClientKeyTests(unittest.TestCase):
+    def test_authenticated_identity_takes_priority_over_ip(self):
+        key = server_module._rate_limit_client_key(
+            "10.0.0.5", "203.0.113.9", "alice@example.com"
+        )
+        self.assertEqual(key, "user:alice@example.com")
+
+    def test_tcp_peer_is_used_when_no_trusted_proxy_configured(self):
+        # Without a declared proxy chain, X-Forwarded-For is attacker-controlled
+        # and must be ignored so it cannot be used to dodge the limit.
+        with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "0"}):
+            key = server_module._rate_limit_client_key(
+                "10.0.0.5", "1.2.3.4, 5.6.7.8", ""
+            )
+        self.assertEqual(key, "ip:10.0.0.5")
+
+    def test_trusted_proxy_count_selects_real_client_from_forwarded_for(self):
+        # One proxy (Render) in front: peer is the proxy, and the rightmost XFF
+        # entry it appended is the real client. Skip the trusted hop.
+        with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "1"}):
+            key = server_module._rate_limit_client_key(
+                "10.0.0.1", "203.0.113.9", ""
+            )
+        self.assertEqual(key, "ip:203.0.113.9")
+
+    def test_spoofed_extra_forwarded_for_hops_do_not_change_real_client(self):
+        # An attacker prepends fake hops; with one trusted proxy we still take
+        # the single rightmost untrusted hop, ignoring the spoofed prefix.
+        with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "1"}):
+            key = server_module._rate_limit_client_key(
+                "10.0.0.1", "9.9.9.9, 8.8.8.8, 203.0.113.9", ""
+            )
+        self.assertEqual(key, "ip:203.0.113.9")
+
+    def test_forwarded_for_shorter_than_proxy_count_falls_back_to_leftmost(self):
+        with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "3"}):
+            key = server_module._rate_limit_client_key(
+                "10.0.0.1", "203.0.113.9", ""
+            )
+        self.assertEqual(key, "ip:203.0.113.9")
+
+    def test_missing_forwarded_for_with_trusted_proxy_falls_back_to_peer(self):
+        with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "1"}):
+            key = server_module._rate_limit_client_key("10.0.0.1", "", "")
+        self.assertEqual(key, "ip:10.0.0.1")
 
 
 if __name__ == "__main__":
