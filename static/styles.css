@@ -856,11 +856,19 @@ h3 {
   color: #160833;
 }
 
+/* Send Document is the secondary sibling of the pink Submit pill: same pink
+   hue family and the same soft glow, but a lighter tint so Submit stays the
+   clear primary action instead of a flat white outlier. */
 .dashboard-send-document-button {
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  box-shadow: none;
+  background: #f8cde4;
+  box-shadow: 0 14px 28px -16px rgba(240, 154, 198, 0.55);
   color: #1f0b3c;
+}
+
+.dashboard-send-document-button:hover:not(:disabled),
+.dashboard-send-document-button:focus-visible {
+  background: #fbd9ea;
+  color: #160833;
 }
 
 /* Keep the (disabled) Send Document pill clearly legible — the base
@@ -877,14 +885,7 @@ h3 {
   font-size: 18px;
   font-weight: 400;
   line-height: 1;
-}
-
-.dashboard-submit-button span:first-child {
   text-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 2px rgba(255, 255, 255, 0.6);
-}
-
-.dashboard-send-document-button span:first-child {
-  text-shadow: 0 0 6px rgba(79, 27, 179, 0.32), 0 0 2px rgba(79, 27, 179, 0.22);
 }
 
 .dashboard-health-list {
