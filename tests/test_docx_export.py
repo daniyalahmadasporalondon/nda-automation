@@ -1126,6 +1126,79 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(sum(1 for rejected, _accepted in states if rejected == original), 2)
         assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
 
+    def test_source_docx_export_redlines_split_blocks_sharing_source_index_distinctly(self):
+        # Two review paragraphs (p2, p3) split one extracted block on an internal
+        # blank line, so they share provenance source_index=2 but are distinct
+        # review paragraphs targeting distinct physical source <w:p>s. Each redline
+        # must land on its own physical paragraph -- not collide onto one, leaving
+        # the other source paragraph un-redlined.
+        source_docx = make_source_docx(["Alpha clause.", "Beta one.", "Beta two."])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "requirements_passed": 0,
+            "requirements_failed": 2,
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": "Alpha clause."},
+                {"id": "p2", "index": 2, "source_index": 2, "text": "Beta one."},
+                {"id": "p3", "index": 3, "source_index": 2, "text": "Beta two."},
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r2",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p2",
+                    "paragraph_index": 2,
+                    "source_index": 2,
+                    "original_text": "Beta one.",
+                    "replacement_text": "First requirement satisfied.",
+                },
+                {
+                    "id": "r3",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p3",
+                    "paragraph_index": 3,
+                    "source_index": 2,
+                    "original_text": "Beta two.",
+                    "replacement_text": "Second requirement satisfied.",
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        accepted_texts = [accepted for _rejected, accepted in states]
+        # Both split blocks are redlined on their own physical paragraph...
+        self.assertIn(("Beta one.", "First requirement satisfied."), states)
+        self.assertIn(("Beta two.", "Second requirement satisfied."), states)
+        # ...and neither original block survives un-redlined (the collision symptom).
+        self.assertNotIn("Beta one.", accepted_texts)
+        self.assertNotIn("Beta two.", accepted_texts)
+        # Exactly the three source paragraphs remain: no spurious duplicate inserted
+        # because both redlines piled onto one paragraph.
+        self.assertEqual(len(paragraphs), 3)
+        # The export and the content-coverage health check agree on the sequence.
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                "Alpha clause.\n\nBeta one.\n\nBeta two.",
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+        assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
+
     def test_source_docx_export_rejects_suspicious_compression_ratio(self):
         source_docx = make_source_docx(["A" * 4096])
 

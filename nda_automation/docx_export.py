@@ -327,23 +327,65 @@ def _redlines_by_source_paragraph(
         return grouped, unresolved
 
     review_paragraphs_by_id = _review_paragraphs_by_id(review_paragraphs)
-    for redline in redlines:
-        if not isinstance(redline, dict):
-            continue
-        source_paragraph = _resolve_source_paragraph(redline, source_paragraphs, review_paragraphs_by_id)
+    # Resolve one source paragraph per *distinct review paragraph*, claiming each
+    # physical <w:p> at most once. Two review paragraphs that split one extracted
+    # block on an internal blank line share a provenance source_index but are
+    # distinct review paragraphs; their redlines must land on distinct source
+    # paragraphs instead of colliding on the single physical paragraph whose ordinal
+    # happens to equal source_index. Multiple redlines for the *same* review
+    # paragraph still resolve to (and reuse) that paragraph's one source <w:p>.
+    claimed_indexes: set[int] = set()
+    resolved_by_review_key: Dict[Tuple, SourceParagraph] = {}
+    for redline in sorted(
+        (redline for redline in redlines if isinstance(redline, dict)),
+        key=_redline_resolution_order,
+    ):
+        review_key = _redline_review_paragraph_key(redline)
+        source_paragraph = resolved_by_review_key.get(review_key) if review_key is not None else None
         if source_paragraph is None:
-            if not _redline_source_part(redline, review_paragraphs_by_id):
-                unresolved.append(redline)
-                continue
-            LOGGER.warning(
-                "Skipping source redline with unresolved or ambiguous anchor: id=%s action=%s paragraph_id=%s",
-                redline.get("id"),
-                redline.get("action"),
-                redline.get("paragraph_id"),
+            source_paragraph = _resolve_source_paragraph(
+                redline, source_paragraphs, review_paragraphs_by_id, claimed_indexes=claimed_indexes
             )
-            continue
+            if source_paragraph is None:
+                if not _redline_source_part(redline, review_paragraphs_by_id):
+                    unresolved.append(redline)
+                    continue
+                LOGGER.warning(
+                    "Skipping source redline with unresolved or ambiguous anchor: id=%s action=%s paragraph_id=%s",
+                    redline.get("id"),
+                    redline.get("action"),
+                    redline.get("paragraph_id"),
+                )
+                continue
+            claimed_indexes.add(source_paragraph.source_index)
+            if review_key is not None:
+                resolved_by_review_key[review_key] = source_paragraph
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
     return grouped, unresolved
+
+
+def _redline_review_paragraph_key(redline: RedlineEdit) -> Tuple | None:
+    """Identity of the review paragraph a redline targets, so multiple edits on one
+    paragraph share its resolved source paragraph. Falls back to the provenance
+    source_index when no paragraph_id is present."""
+    paragraph_id = str(redline.get("paragraph_id") or "").strip()
+    if paragraph_id:
+        return ("paragraph_id", paragraph_id)
+    source_index = _redline_source_index(redline)
+    if source_index is not None:
+        return ("source_index", source_index)
+    return None
+
+
+def _redline_resolution_order(redline: RedlineEdit) -> Tuple[int, int]:
+    """Document order for one-to-one anchor claiming: the unique review paragraph
+    index (then source_index) so earlier review paragraphs claim earlier matches."""
+    paragraph_index = redline.get("paragraph_index")
+    source_index = _redline_source_index(redline)
+    return (
+        paragraph_index if isinstance(paragraph_index, int) else 1_000_000,
+        source_index if isinstance(source_index, int) else 1_000_000,
+    )
 
 
 def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, Paragraph]:
@@ -360,9 +402,12 @@ def _resolve_source_paragraph(
     redline: RedlineEdit,
     source_paragraphs: List[SourceParagraph],
     review_paragraphs_by_id: Dict[str, Paragraph],
+    *,
+    claimed_indexes: set[int] | None = None,
 ) -> SourceParagraph | None:
     if _redline_source_part(redline, review_paragraphs_by_id):
         return None
+    claimed_indexes = claimed_indexes if claimed_indexes is not None else set()
     source_index = _redline_source_index(redline)
     anchor_texts = _redline_anchor_texts(redline, review_paragraphs_by_id)
     for anchor_text in anchor_texts:
@@ -372,17 +417,39 @@ def _resolve_source_paragraph(
             if paragraph.normalized_text == _normalize_paragraph_text(anchor_text)
         ]
         if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1 and source_index is not None:
-            indexed_match = next((paragraph for paragraph in matches if paragraph.source_index == source_index), None)
-            if indexed_match is not None:
-                return indexed_match
-        if matches and source_index is None:
-            return None
+            # Unambiguous text match. Only decline it if a *different* review
+            # paragraph already claimed it (the split-on-blank-line collision);
+            # otherwise behave exactly as before.
+            return matches[0] if matches[0].source_index not in claimed_indexes else None
+        if len(matches) > 1:
+            unclaimed = [paragraph for paragraph in matches if paragraph.source_index not in claimed_indexes]
+            if source_index is not None:
+                indexed_match = next(
+                    (paragraph for paragraph in unclaimed if paragraph.source_index == source_index),
+                    None,
+                )
+                if indexed_match is not None:
+                    return indexed_match
+                # source_index points at an already-claimed (or absent) match: take
+                # the earliest still-unclaimed same-text paragraph in document order
+                # so split/duplicate blocks resolve one-to-one.
+                if unclaimed:
+                    return unclaimed[0]
+            else:
+                # No source_index hint: an ambiguous text anchor is unresolvable,
+                # preserving the prior reject-ambiguous-without-index contract.
+                return None
 
     if source_index is None:
         return None
-    return next((paragraph for paragraph in source_paragraphs if paragraph.source_index == source_index), None)
+    return next(
+        (
+            paragraph
+            for paragraph in source_paragraphs
+            if paragraph.source_index == source_index and paragraph.source_index not in claimed_indexes
+        ),
+        None,
+    )
 
 
 def _redline_source_index(redline: RedlineEdit) -> int | None:
