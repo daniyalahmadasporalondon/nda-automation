@@ -123,6 +123,7 @@ def _with_active_engine_metadata(
             metadata["missing_clause_ids"] = [str(clause_id) for clause_id in missing_clause_ids]
     updated["active_review_engine"] = metadata
     updated["playbook_runtime"] = _public_review_playbook_runtime(playbook_runtime)
+    updated["playbook_version"] = _review_playbook_version(playbook_runtime)
     return updated
 
 
@@ -157,6 +158,31 @@ def _public_review_playbook_runtime(runtime: Mapping[str, Any]) -> dict[str, Any
         "source": "active",
         "active_source": str(runtime.get("source") or ""),
     }
+
+
+def _review_playbook_version(runtime: Mapping[str, Any]) -> dict[str, str]:
+    """Compact, stable provenance stamp recorded on every review result.
+
+    ``hash`` is the same stable content hash carried by
+    ``playbook_runtime.active_hash`` (``playbook_snapshot_hash`` over the active
+    published Playbook): no timestamps or ordering, so it is identical across
+    re-reads and changes only when the published Playbook changes. The approval
+    gate compares this ``hash`` to the current published hash to detect staleness,
+    so the field name/shape is a shared contract — keep ``id``/``hash``/``label``.
+    """
+    return {
+        "id": str(runtime.get("active_version_id") or ""),
+        "hash": str(runtime.get("active_hash") or ""),
+        "label": _playbook_version_label(runtime),
+    }
+
+
+def _playbook_version_label(runtime: Mapping[str, Any]) -> str:
+    name = str(runtime.get("playbook_name") or "").strip()
+    version = str(runtime.get("playbook_version") or "").strip()
+    if name and version:
+        return f"{name} v{version}"
+    return name or (f"v{version}" if version else "")
 
 
 def _ai_first_status(result: dict[str, Any]) -> str:
