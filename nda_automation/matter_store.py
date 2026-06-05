@@ -247,6 +247,130 @@ def update_matter_review(
     return None
 
 
+def set_clause_reviewer_decision(
+    matter_id: str,
+    clause_id: str,
+    reviewer_decision: dict[str, Any] | None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Persist (or clear when None) a single clause's reviewer_decision.
+
+    Decisions live in a matter-level ``reviewer_decisions`` map keyed by clause
+    id; the review_result payload is never mutated here.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        decisions = dict(matter.get("reviewer_decisions") or {})
+        if reviewer_decision is None:
+            decisions.pop(clause_id, None)
+        else:
+            decisions[clause_id] = reviewer_decision
+        updated_matter = {
+            **matter,
+            "reviewer_decisions": decisions,
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
+def record_matter_approval(
+    matter_id: str,
+    *,
+    approver: str,
+    approved_at: str,
+    timeline_event: dict[str, Any],
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Stamp a matter as approved and append an immutable timeline event."""
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        timeline = list(matter.get("matter_timeline") or [])
+        timeline.append(timeline_event)
+        updated_matter = {
+            **matter,
+            "status": "approved",
+            "approver": approver,
+            "approved_at": approved_at,
+            "matter_timeline": timeline,
+            "updated_at": approved_at,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
+def migrate_ownerless_matter_ownership(
+    *,
+    user_email_to_id: dict[str, str],
+    admin_user_id: str = "",
+) -> dict[str, Any]:
+    """Assign an owner to every ownerless matter (idempotent, one-time backfill).
+
+    Ownerless matters (``owner_user_id`` empty/missing — legacy imports, global
+    Gmail shared-sync before per-user ownership) are invisible to authenticated
+    users after the fail-closed access fix. This backfills a real owner so the
+    data is reachable again:
+
+    * PRIMARY — map the matter's ``gmail_account`` (the connected mailbox email)
+      to the user who owns that mailbox, via ``user_email_to_id`` (case-folded
+      ``email -> user_id`` built by the caller from ``user_store``).
+    * FALLBACK — ``admin_user_id`` (the sole/admin user) when no mapping resolves.
+
+    NEVER assigns a wildcard. Only ownerless matters are touched; already-owned
+    matters are left exactly as-is, so re-running is a no-op. Returns a summary
+    ``{scanned, already_owned, assigned_by_gmail, assigned_to_admin, skipped_unresolved}``.
+    """
+    email_to_id = {
+        _clean_email_key(email): _clean_owner_user_id(user_id)
+        for email, user_id in (user_email_to_id or {}).items()
+        if _clean_email_key(email) and _clean_owner_user_id(user_id)
+    }
+    admin_user_id = _clean_owner_user_id(admin_user_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    summary = {
+        "scanned": 0,
+        "already_owned": 0,
+        "assigned_by_gmail": 0,
+        "assigned_to_admin": 0,
+        "skipped_unresolved": 0,
+    }
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        for matter in _load_matters():
+            summary["scanned"] += 1
+            if _clean_owner_user_id(matter.get("owner_user_id")):
+                summary["already_owned"] += 1
+                continue
+            resolved_user_id = email_to_id.get(_clean_email_key(matter.get("gmail_account")))
+            assignment = "assigned_by_gmail"
+            if not resolved_user_id:
+                resolved_user_id = admin_user_id
+                assignment = "assigned_to_admin"
+            if not resolved_user_id:
+                # No gmail mapping and no admin fallback configured: leave the
+                # matter ownerless rather than guess. Still single-tenant-visible.
+                summary["skipped_unresolved"] += 1
+                continue
+            updated_matter = {
+                **matter,
+                "owner_user_id": resolved_user_id,
+                "updated_at": now,
+            }
+            _save_matter_record(updated_matter)
+            summary[assignment] += 1
+    return summary
+
+
 def update_matter_ai_first_review(
     matter_id: str,
     ai_first_review_result: dict[str, Any],
@@ -850,15 +974,29 @@ def _gmail_attachment_filename_key(filename: str) -> str:
 
 
 def _matter_owner_matches(matter: dict[str, Any], owner_user_id: str = "") -> bool:
+    # Access scoping is fail-closed for authenticated requests. An empty
+    # owner_user_id is the single-tenant / auth-disabled path: there is no
+    # caller identity to scope against, so every matter is in scope (this is
+    # how local/no-auth deployments work). A NON-empty owner_user_id means an
+    # authenticated multi-tenant request, and it must only match matters owned
+    # by exactly that user. A matter with NO owner (legacy import, Gmail
+    # shared-sync before ownership assignment, etc.) is NOT a wildcard — it must
+    # never be served to an arbitrary authenticated user, or one tenant could
+    # read/edit/delete/export another's data.
     owner_user_id = _clean_owner_user_id(owner_user_id)
     if not owner_user_id:
         return True
     matter_owner_user_id = _clean_owner_user_id(matter.get("owner_user_id"))
-    return not matter_owner_user_id or matter_owner_user_id == owner_user_id
+    return matter_owner_user_id == owner_user_id
 
 
 def _clean_owner_user_id(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
+
+
+def _clean_email_key(value: object) -> str:
+    """Case-folded, whitespace-stripped email for ownership-backfill matching."""
+    return str(value or "").strip().casefold()
 
 
 def _stored_document_manifest(matter: dict[str, Any]) -> dict[str, Any] | None:
