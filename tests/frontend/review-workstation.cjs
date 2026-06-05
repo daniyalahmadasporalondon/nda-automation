@@ -261,8 +261,18 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 0);
+  const dashboardDocxPath = path.join(TEST_DATA_DIR, `dashboard-submit-${Date.now()}.docx`);
+  const dashboardFilename = path.basename(dashboardDocxPath);
+  makeDocxFixture(dashboardDocxPath, [
+    "This Agreement shall be governed by the laws of California.",
+  ]);
+  const fileChooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Submit for Review" }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(dashboardDocxPath);
+  await page.waitForSelector("#uploadView:not([hidden])");
   assert.equal(await page.locator("#uploadTab").getAttribute("aria-selected"), "true");
+  await assertTextContains(page.locator("#manualUploadSelectedFile"), dashboardFilename);
   await page.getByRole("tab", { name: "Review" }).click();
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {

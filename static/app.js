@@ -66,7 +66,7 @@ const repositoryController = createRepositoryController({
   showMatterReviewLoadError,
   reviewErrorFromPayload,
 });
-createManualUploadController({
+const manualUploadController = createManualUploadController({
   fileInput: document.querySelector("#manualUploadFileInput"),
   form: document.querySelector("#manualUploadForm"),
   selectedFileNode: document.querySelector("#manualUploadSelectedFile"),
@@ -81,6 +81,7 @@ createManualUploadController({
   repositoryController,
   activateTab,
   reviewErrorFromPayload,
+  onFileSelected: () => activateTab("upload"),
 });
 adminAiController = createAdminAiController({
   state,
@@ -198,7 +199,7 @@ reviewInspectorButtons.forEach((button) => {
 });
 
 dashboardSubmitButton?.addEventListener("click", () => {
-  activateTab("upload");
+  manualUploadController.openFilePicker();
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {

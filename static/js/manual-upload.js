@@ -13,6 +13,7 @@ function createManualUploadController({
   repositoryController,
   activateTab,
   reviewErrorFromPayload,
+  onFileSelected,
 }) {
   let selectedFile = null;
   let busy = false;
@@ -55,6 +56,9 @@ function createManualUploadController({
     }
     setStatus("");
     renderSelectedFile();
+    if (selectedFile && typeof onFileSelected === "function") {
+      onFileSelected(selectedFile);
+    }
   }
 
   function renderSelectedFile() {
@@ -131,6 +135,11 @@ function createManualUploadController({
     renderSelectedFile();
   }
 
+  function openFilePicker() {
+    if (busy) return;
+    fileInput?.click();
+  }
+
   function setStatus(message, tone = "") {
     if (!statusNode) return;
     statusNode.textContent = message;
@@ -139,7 +148,7 @@ function createManualUploadController({
   }
 
   renderSelectedFile();
-  return { resetForm, uploadSelectedFile };
+  return { openFilePicker, resetForm, uploadSelectedFile };
 }
 
 function isSupportedUpload(filename) {
