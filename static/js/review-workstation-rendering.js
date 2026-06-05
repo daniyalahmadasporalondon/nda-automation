@@ -861,7 +861,6 @@ function renderStudioDetail() {
   }
   const status = clauseStatus(clause);
   const explanation = renderClauseExplanation(clause);
-  const citation = renderClauseCitationBlock(clause);
   const rationale = clause.rationale || clause.requirement || "";
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
@@ -881,7 +880,6 @@ function renderStudioDetail() {
       </div>
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${explanation}
-      ${citation}
       ${proposedRedlines}
       ${commentBlock}
     </div>
@@ -991,52 +989,6 @@ function renderAuditTraceBlock(clause) {
       </ol>
     </div>
   `;
-}
-
-// Surface the exact source text a finding is grounded in, so a reviewer reads
-// "based on: '<quoted text>'" rather than trusting an unsourced verdict. When
-// the finding could not be grounded, say so explicitly instead of going quiet.
-function renderClauseCitationBlock(clause) {
-  const grounding = clause && typeof clause.grounding === "object" ? clause.grounding : null;
-  const status = grounding ? String(grounding.status || "").trim() : "";
-
-  const citation = clause && typeof clause.citation === "object" ? clause.citation : null;
-  const quote = citation ? String(citation.quote || "").trim() : "";
-  if (quote) {
-    const paragraphId = String(citation.paragraph_id || "").trim();
-    const paragraphLabel = paragraphId ? paragraphDisplayLabel(paragraphId) : "";
-    const relevance = String(citation.relevance || "").trim();
-    const caption = [paragraphLabel, relevance].filter(Boolean).join(" · ");
-    return `
-      <div class="studio-detail-block clause-citation-block grounded">
-        <small>Based on</small>
-        <figure class="ai-citation-item">
-          ${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}
-          <blockquote>${escapeHtml(quote)}</blockquote>
-        </figure>
-      </div>
-    `;
-  }
-
-  if (status === "absence") {
-    return `
-      <div class="studio-detail-block clause-citation-block absence">
-        <small>Based on</small>
-        <p>Grounded in the absence of this clause from the document.</p>
-      </div>
-    `;
-  }
-
-  if (status === "ungrounded") {
-    return `
-      <div class="studio-detail-block clause-citation-block ungrounded">
-        <small>Based on</small>
-        <p>The AI assessment did not ground this finding in any quotable text, so it was escalated for human review.</p>
-      </div>
-    `;
-  }
-
-  return "";
 }
 
 function renderEvidenceBlock(clause) {
