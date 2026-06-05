@@ -69,7 +69,7 @@ function createSendDocumentController({
       fileInput.value = "";
     }
     if (selectedFile && subjectInput && !subjectInput.value.trim()) {
-      subjectInput.value = sendFileStem(selectedFile.name);
+      subjectInput.value = fileStem(selectedFile.name);
     }
     setStatus("");
     renderSelectedFile();
@@ -92,7 +92,7 @@ function createSendDocumentController({
   function updateSubmitState() {
     if (!submitButton) return;
     const recipient = recipientInput?.value || "";
-    const ready = Boolean(selectedFile) && isValidSendRecipient(recipient) && isSupportedSendUpload(selectedFile?.name);
+    const ready = Boolean(selectedFile) && isValidRecipientEmail(recipient) && isSupportedSendFilename(selectedFile?.name);
     submitButton.disabled = busy || !ready;
   }
 
@@ -107,12 +107,12 @@ function createSendDocumentController({
       setStatus("Attach a .docx document first.", "error");
       return;
     }
-    if (!isSupportedSendUpload(selectedFile.name)) {
+    if (!isSupportedSendFilename(selectedFile.name)) {
       setStatus("Attach a .docx Word document to send.", "error");
       return;
     }
     const recipient = (recipientInput?.value || "").trim();
-    if (!isValidSendRecipient(recipient)) {
+    if (!isValidRecipientEmail(recipient)) {
       setStatus("Enter a valid recipient email address.", "error");
       return;
     }
@@ -124,7 +124,7 @@ function createSendDocumentController({
 
     try {
       const contentBase64 = await fileToBase64(selectedFile);
-      const subject = (subjectInput?.value || "").trim() || sendFileStem(selectedFile.name);
+      const subject = (subjectInput?.value || "").trim() || fileStem(selectedFile.name);
       const requestBody = {
         filename: selectedFile.name,
         content_base64: contentBase64,
@@ -206,14 +206,8 @@ function createSendDocumentController({
   return { closeModal, openFilePicker, openModal, resetForm, sendSelectedDocument };
 }
 
-function isSupportedSendUpload(filename) {
-  return /\.docx$/i.test(String(filename || ""));
-}
-
-function isValidSendRecipient(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
-}
-
-function sendFileStem(filename) {
-  return String(filename || "Document").split(/[\\/]/).pop().replace(/\.[^.]+$/, "") || "Document";
-}
+// isSupportedSendFilename / isValidRecipientEmail / fileStem come from the shared
+// static/js/modules/send-document.mjs (the module the frontend tests exercise),
+// surfaced as globals by static/js/modules/global-bridge.mjs. The controller no
+// longer carries its own copies, so the form's validation rules can never drift
+// from the tested ones.

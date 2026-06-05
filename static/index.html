@@ -1215,10 +1215,15 @@
     </div>
 
     <script src="/static/js/config.js?v=20260605b"></script>
-    <script src="/static/js/html-utils.js"></script>
-    <script src="/static/js/clause-status.js?v=20260605h"></script>
-    <script src="/static/js/inline-diff.js"></script>
-    <script src="/static/js/matter-utils.js?v=20260605a"></script>
+    <!--
+      Single-source utility bridge. html-utils / clause-status / inline-diff /
+      matter-utils now live ONLY as static/js/modules/*.mjs (the modules the
+      frontend tests import). This module exposes their exports as the globals
+      the classic scripts below expect, so the shipped path IS the tested path —
+      no divergent untested .js duplicate. Module scripts are deferred, so this
+      runs before any user interaction; all consumers call these at runtime.
+    -->
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260605a"></script>
     <script src="/static/js/redline-rendering.js?v=20260604a"></script>
     <script src="/static/js/repository-api.js?v=20260604a"></script>
     <script src="/static/js/repository-model.js"></script>
