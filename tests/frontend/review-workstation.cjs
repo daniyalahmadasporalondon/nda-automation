@@ -44,7 +44,6 @@ const tests = [
   ["edits playbook admin drafts with Pass/Check policy framing", testPlaybookAdminEditor],
   ["renders contract structure map in review and engine logic in admin", testContractStructureReviewPanel],
   ["surfaces review and export error details", testFailureUxDetails],
-  ["stores review comparison data without rendering controls", testReviewComparisonDataContract],
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["renders page image preview with text fallback", testRenderedPageImagePreview],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
@@ -352,46 +351,6 @@ async function testFailureUxDetails(page) {
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
   await page.unroute("**/api/export-review-docx");
-}
-
-async function testReviewComparisonDataContract(page) {
-  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("tab", { name: "Review" }).click();
-  let capturedPayload = null;
-  await page.route("**/api/review/compare", async (route) => {
-    capturedPayload = route.request().postDataJSON();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        review_comparison: {
-          mode: "deterministic_vs_ai_first",
-          status: "completed",
-          summary: { disagreement_count: 1 },
-        },
-      }),
-    });
-  });
-
-  await page.getByPlaceholder("Paste NDA text here").fill("This Agreement shall be governed by the laws of India.");
-  const comparison = await page.evaluate(() => runReviewComparison());
-  assert.deepEqual(capturedPayload, { text: "This Agreement shall be governed by the laws of India." });
-  assert.equal(comparison.mode, "deterministic_vs_ai_first");
-
-  const contractState = await page.evaluate(() => ({
-    error: state.reviewComparisonError,
-    mode: state.reviewComparison?.mode || "",
-    status: state.reviewComparisonStatus,
-    visibleComparisonControls: document.querySelectorAll("[data-review-comparison]").length,
-  }));
-  assert.deepEqual(contractState, {
-    error: "",
-    mode: "deterministic_vs_ai_first",
-    status: "completed",
-    visibleComparisonControls: 0,
-  });
-
-  await page.unroute("**/api/review/compare");
 }
 
 async function testPlaybookAdminEditor(page) {
@@ -915,10 +874,10 @@ async function testContractStructureReviewPanel(page) {
   await page.locator('[data-admin-section="ai_guide"]').click();
   const aiGuidePanel = page.locator("#adminAiGuidePanel");
   await assertTextContains(aiGuidePanel, "AI review methodology");
-  await assertTextContains(aiGuidePanel, "How AI-first and comparison work");
+  await assertTextContains(aiGuidePanel, "How AI-first review works");
   await assertTextContains(aiGuidePanel, "OPENROUTER_API_KEY");
-  await assertTextContains(aiGuidePanel, "ai_review_analysis");
-  await assertTextContains(aiGuidePanel, "AI disagreement");
+  await assertTextContains(aiGuidePanel, "ai_first_assessment");
+  await assertTextContains(aiGuidePanel, "fail closed");
 
   await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
@@ -1835,11 +1794,6 @@ async function testRepositoryOpenReviewRepeatedly(page) {
     buildMatter("matter_alpha_review", "Alpha Review NDA", "Alpha document text for repeated review opening."),
     buildMatter("matter_beta_review", "Beta Review NDA", "Beta document text for the second review opening."),
   ];
-  matters[0].review_comparison = {
-    mode: "deterministic_vs_ai_first",
-    status: "completed",
-    summary: { disagreement_count: 1 },
-  };
   const matterById = new Map(matters.map((matter) => [matter.id, matter]));
   let releaseBetaReview = () => {};
   const betaReviewGate = new Promise((resolve) => {
@@ -1891,7 +1845,6 @@ async function testRepositoryOpenReviewRepeatedly(page) {
         body: JSON.stringify({
           extracted_text: matter.extracted_text,
           matter,
-          review_comparison: matter.review_comparison || null,
           review_refresh: { refreshed: true, stale: false },
           review_result: matter.review_result,
         }),
@@ -1905,7 +1858,6 @@ async function testRepositoryOpenReviewRepeatedly(page) {
         body: JSON.stringify({
           extracted_text: matter.extracted_text,
           matter,
-          review_comparison: matter.review_comparison || null,
           review_refresh: { stale: true },
           review_result: matter.review_result,
         }),
@@ -1927,17 +1879,6 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "Alpha Review NDA");
   await assertTextContains(page.locator("#studioDocumentRender"), "Alpha document text for repeated review opening.");
-  const alphaComparison = await page.evaluate(() => ({
-    mode: state.reviewComparison?.mode || "",
-    status: state.reviewComparisonStatus,
-    disagreements: state.reviewComparison?.summary?.disagreement_count ?? null,
-  }));
-  assert.deepEqual(alphaComparison, {
-    mode: "deterministic_vs_ai_first",
-    status: "completed",
-    disagreements: 1,
-  });
-
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   await page.locator(".repository-card").filter({ hasText: "Beta Review NDA" }).click();
@@ -1955,18 +1896,8 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   releaseBetaReview();
   await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
   await waitForText(page, "#studioDocumentRender", "Beta document text for the second review opening.");
-  const betaComparison = await page.evaluate(() => ({
-    comparison: state.reviewComparison,
-    error: state.reviewComparisonError,
-    reviewRefresh: state.selectedMatter?.review_refresh || null,
-    status: state.reviewComparisonStatus,
-  }));
-  assert.deepEqual(betaComparison, {
-    comparison: null,
-    error: "",
-    reviewRefresh: { refreshed: true, stale: false },
-    status: "idle",
-  });
+  const betaRefresh = await page.evaluate(() => state.selectedMatter?.review_refresh || null);
+  assert.deepEqual(betaRefresh, { refreshed: true, stale: false });
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");

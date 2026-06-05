@@ -1,8 +1,6 @@
 const RepositoryApi = (() => {
   const repositoryApiModule = import("./modules/repository-api.mjs");
   const methodNames = [
-    "compareMatterReview",
-    "compareTextReview",
     "deleteMatter",
     "exportReviewDocx",
     "getMatter",

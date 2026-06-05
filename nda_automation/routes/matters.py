@@ -19,7 +19,6 @@ from ..docx_text import DocxExtractionError
 from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
-from ..review_comparison import ReviewComparisonError, compare_nda_reviews
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..triage import triage_review_result
@@ -718,45 +717,6 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         "matter": matter_view.public_matter(updated_matter),
         "ai_first_review_metadata": updated_matter.get("ai_first_review_metadata"),
         "ai_first_review_result": ai_first_review_result,
-    })
-
-
-def handle_matter_review_comparison(handler, path: str) -> None:
-    matter_id = parse_matter_id(path, suffix="/review-comparison")
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
-    matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
-    extracted_text = str(matter.get("extracted_text") or "")
-    if not extracted_text.strip():
-        handler._send_json({"error": "Matter has no extracted text to compare."}, status=400)
-        return
-
-    try:
-        review_comparison = compare_nda_reviews(
-            extracted_text,
-            paragraphs=review_result_paragraphs(matter.get("review_result")),
-        )
-    except ReviewComparisonError as error:
-        handler._send_json({"error": str(error)}, status=502)
-        return
-
-    updated_matter = matter_store.update_matter_review_comparison(
-        matter_id,
-        review_comparison,
-        owner_user_id=request_owner_user_id(handler),
-    )
-    if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    handler._send_json({
-        "matter": matter_view.public_matter(updated_matter),
-        "review_comparison": updated_matter.get("review_comparison"),
     })
 
 

@@ -99,7 +99,6 @@ const RepositoryView = (() => {
     });
 
     return {
-      compareMatterReview: actions.compareMatterReview,
       loadGmailStatus: actions.loadGmailStatus,
       loadMatters: actions.loadMatters,
       markMatterRedlineReady: actions.markMatterRedlineReady,

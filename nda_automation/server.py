@@ -128,10 +128,6 @@ def _handle_ai_draft_validation_post(handler) -> None:
     )
 
 
-def _handle_text_review_comparison_post(handler) -> None:
-    review_routes.handle_text_review_comparison(handler)
-
-
 def _handle_matter_upload_post(handler) -> None:
     matter_routes.handle_matter_upload(
         handler,
@@ -203,7 +199,6 @@ _PUBLIC_GET_EXACT_ROUTES = {
 
 _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
-    "/api/review/compare": _handle_text_review_comparison_post,
     "/api/review/ai-draft-validation": _handle_ai_draft_validation_post,
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review-document": _handle_document_review_post,
@@ -216,6 +211,7 @@ _POST_EXACT_ROUTES = {
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
+    "/api/export-annotated-pdf": review_routes.handle_annotated_pdf_export,
     "/api/playbook": _handle_playbook_save_post,
     "/api/playbook/draft": _handle_playbook_draft_save_post,
     "/api/playbook/discard-draft": _handle_playbook_draft_discard_post,
@@ -329,9 +325,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/ai-first-review"):
                 matter_routes.handle_matter_ai_first_review(self, path)
-                return
-            if path.startswith("/api/matters/") and path.endswith("/review-comparison"):
-                matter_routes.handle_matter_review_comparison(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
                 matter_routes.handle_matter_redline_draft_update(self, path)

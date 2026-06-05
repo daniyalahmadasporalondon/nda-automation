@@ -4,7 +4,7 @@ import base64
 import binascii
 from urllib.parse import quote
 
-from .. import redline_export_service, telemetry
+from .. import annotated_pdf_export, redline_export_service, telemetry
 from ..checker import (
     AIDraftValidationError,
     AISecondOpinionError,
@@ -24,7 +24,6 @@ from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..ingestion_service import extract_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
-from ..review_comparison import ReviewComparisonError, compare_nda_reviews
 from ..review_engine import ActiveReviewEngineError
 from .common import request_owner_user_id
 
@@ -52,31 +51,6 @@ def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
         return
 
     handler._send_json(result)
-
-
-def handle_text_review_comparison(handler, *, comparison_func=None) -> None:
-    telemetry.increment("text_review_comparison_requests")
-    payload = handler._read_json_payload()
-    if payload is None:
-        return
-
-    text = payload.get("text", "")
-    if not isinstance(text, str) or not text.strip():
-        handler._send_json({"error": "Provide NDA text to compare."}, status=400)
-        return
-    try:
-        ensure_review_text_size(text)
-    except ReviewTextTooLargeError as error:
-        handler._send_json({"error": str(error)}, status=413)
-        return
-
-    try:
-        comparison = (comparison_func or compare_nda_reviews)(text)
-    except ReviewComparisonError as error:
-        handler._send_json({"error": str(error)}, status=502)
-        return
-
-    handler._send_json({"review_comparison": comparison})
 
 
 def handle_document_review(handler, *, extract_document_func=extract_document, review_nda_func=review_nda) -> None:
@@ -275,4 +249,52 @@ def handle_review_docx_export(handler) -> None:
         redline_export.filename,
         DOCX_MIME,
         headers=headers,
+    )
+
+
+def handle_annotated_pdf_export(handler) -> None:
+    telemetry.increment("annotated_pdf_export_requests")
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    matter_id = payload.get("matter_id", "")
+    if not isinstance(matter_id, str) or not matter_id.strip():
+        handler._send_json({"error": "Provide a PDF matter id to export."}, status=400)
+        return
+
+    try:
+        annotated_export = annotated_pdf_export.build_matter_annotated_pdf(
+            matter_id.strip(),
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except annotated_pdf_export.StaleAnnotatedPdfReviewError as error:
+        handler._send_json({
+            "error": str(error),
+            "stale_reasons": error.reasons,
+            "review_refresh": error.summary,
+        }, status=409)
+        return
+    except annotated_pdf_export.AnnotatedPdfMatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404)
+        return
+    except annotated_pdf_export.AnnotatedPdfUnsupportedSourceError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    except annotated_pdf_export.AnnotatedPdfDependencyError as error:
+        handler._send_json({"error": str(error)}, status=500)
+        return
+    except annotated_pdf_export.AnnotatedPdfExportError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+
+    handler._send_download(
+        annotated_export.data,
+        annotated_export.filename,
+        annotated_pdf_export.ANNOTATED_PDF_MIME,
+        headers={
+            "X-Export-Verified": annotated_pdf_export.ANNOTATED_PDF_VERIFICATION_HEADER,
+            "X-PDF-Annotation-Count": str(annotated_export.annotation_count),
+            "X-PDF-Unmatched-Evidence-Count": str(annotated_export.unmatched_evidence_count),
+        },
     )

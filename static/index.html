@@ -155,6 +155,9 @@
                     <button class="vc-btn vc-solo" id="studioExportButton" type="button" disabled aria-label="Export DOCX" title="Export DOCX">
                       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
                     </button>
+                    <button class="vc-btn vc-solo" id="studioExportPdfButton" type="button" disabled hidden aria-label="Export annotated PDF" title="Export annotated PDF">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m9 15 2 2 4-5"/></svg>
+                    </button>
                   </div>
                   <div class="studio-toolbar-send actions" role="group" aria-label="Send actions">
                     <button id="studioSendButton" class="secondary icon-only" type="button" disabled aria-label="Send Redline" title="Send Redline">
@@ -797,7 +800,7 @@
                   <header>
                     <div>
                       <p class="eyebrow">ai semantic review</p>
-                      <h2>How AI-first and comparison work</h2>
+                      <h2>How AI-first review works</h2>
                     </div>
                     <span>Optional layer</span>
                   </header>
@@ -813,7 +816,7 @@
                     </article>
                     <article>
                       <h3>Inputs</h3>
-                      <p>AI-first assessment uses clause requirements, playbook rules, structure context, and selected source paragraphs. Comparison views also include deterministic reason codes and checker analysis objects.</p>
+                      <p>AI-first assessment uses clause requirements, playbook rules, structure context, and selected source paragraphs.</p>
                     </article>
                     <article>
                       <h3>Outputs</h3>
@@ -840,11 +843,11 @@
                     </div>
                     <div>
                       <dt>Merge policy</dt>
-                      <dd>AI disagreement, low confidence, invalid citation, provider errors, or configuration errors escalate to review and block auto-send.</dd>
+                      <dd>Missing assessments, invalid citations, provider errors, or configuration errors fail closed or escalate to review and block auto-send.</dd>
                     </div>
                     <div>
                       <dt>Audit fields</dt>
-                      <dd>Review payloads expose ai_review, ai_review_analysis, ai_decision, ai_confidence, cited_spans, validation_errors, and disagreement.</dd>
+                      <dd>Review payloads expose ai_first_review, ai_review, ai_first_assessment, structured_evidence, proposed_redline, and evidence_trust.</dd>
                     </div>
                   </dl>
                 </section>
@@ -1120,7 +1123,7 @@
       </div>
     </div>
 
-    <script src="/static/js/config.js"></script>
+    <script src="/static/js/config.js?v=20260605b"></script>
     <script src="/static/js/html-utils.js"></script>
     <script src="/static/js/clause-status.js?v=20260604a"></script>
     <script src="/static/js/inline-diff.js"></script>
@@ -1139,12 +1142,12 @@
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-view.js"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260605a"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260605b"></script>
     <script src="/static/js/review-workstation-source.js?v=20260604a"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260605a"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260605b"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260605a"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js?v=20260605a"></script>
+    <script src="/static/app.js?v=20260605c"></script>
   </body>
 </html>

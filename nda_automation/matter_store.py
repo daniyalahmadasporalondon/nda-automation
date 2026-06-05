@@ -273,30 +273,6 @@ def update_matter_ai_first_review(
     return None
 
 
-def update_matter_review_comparison(
-    matter_id: str,
-    review_comparison: dict[str, Any],
-    owner_user_id: str = "",
-) -> dict[str, Any] | None:
-    now = datetime.now(timezone.utc).isoformat()
-    with _locked_store():
-        _ensure_matter_records_from_legacy()
-        matter = _load_matter_record_by_id(matter_id)
-        if matter is None or not _matter_owner_matches(matter, owner_user_id):
-            return None
-        updated_matter = {
-            **matter,
-            "review_comparison": {
-                **copy.deepcopy(review_comparison),
-                "stored_at": now,
-            },
-            "updated_at": now,
-        }
-        _save_matter_record(updated_matter)
-        return updated_matter
-    return None
-
-
 def reset_demo_repository(owner_user_id: str = "") -> int:
     with _locked_store():
         _ensure_matter_records_from_legacy()

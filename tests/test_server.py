@@ -38,7 +38,6 @@ from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation import telemetry
 from nda_automation import user_store
-from nda_automation.review_comparison import ReviewComparisonError
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
 from nda_automation.routes import playbook as playbook_routes
@@ -1160,33 +1159,6 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["error"], "AI-first review failed: no key")
 
-    def test_text_review_comparison_route_returns_comparison(self):
-        comparison = {
-            "version": 1,
-            "mode": "deterministic_vs_ai_first",
-            "summary": {"disagreement_count": 1},
-            "clauses": [{"clause_id": "governing_law", "decision_changed": True}],
-        }
-
-        with patch.object(review_routes, "compare_nda_reviews", return_value=comparison) as compare_reviews:
-            status, payload = self.request("POST", "/api/review/compare", {"text": "NDA text"})
-
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["review_comparison"], comparison)
-        compare_reviews.assert_called_once_with("NDA text")
-        self.assertEqual(telemetry.snapshot()["counters"]["text_review_comparison_requests"], 1)
-
-    def test_text_review_comparison_route_reports_comparison_error(self):
-        with patch.object(
-            review_routes,
-            "compare_nda_reviews",
-            side_effect=ReviewComparisonError("AI-first comparison review failed: no key"),
-        ):
-            status, payload = self.request("POST", "/api/review/compare", {"text": "NDA text"})
-
-        self.assertEqual(status, 502)
-        self.assertEqual(payload["error"], "AI-first comparison review failed: no key")
-
     def test_ai_second_opinion_route_updates_selected_clause(self):
         expected = {
             "clause": {"id": "mutuality", "decision": "review"},
@@ -2098,110 +2070,6 @@ class ServerTests(unittest.TestCase):
         active_review.assert_called_once()
         self.assertEqual(matter["source_type"], "gmail_inbound")
         self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
-
-    def test_matter_review_comparison_stores_separate_comparison_without_replacing_review(self):
-        active_review_result = {
-            "review_engine_version": REVIEW_ENGINE_VERSION,
-            "overall_status": "does_not_meet_requirements",
-            "requirements_passed": 0,
-            "requirements_needs_review": 0,
-            "requirements_failed": 1,
-            "paragraphs": [{"id": "p1", "index": 1, "text": "This Agreement shall be governed by the laws of Delaware."}],
-            "contract_structure": {},
-            "reference_resolver": {},
-            "concept_classifier": {},
-            "clauses": [
-                {
-                    "id": "governing_law",
-                    "decision": "fail",
-                    "passes": False,
-                    "structure_context": {},
-                    "review_state": {},
-                }
-            ],
-            "redline_edits": [],
-            "review_state": {"state": "check", "overall_status": "does_not_meet_requirements"},
-        }
-        comparison = {
-            "version": 1,
-            "mode": "deterministic_vs_ai_first",
-            "summary": {
-                "disagreement_count": 1,
-                "decision_disagreement_clause_ids": ["governing_law"],
-            },
-            "clauses": [
-                {
-                    "clause_id": "governing_law",
-                    "decision_changed": True,
-                    "final_verdict": {"decision": "fail", "source": "most_conservative"},
-                }
-            ],
-        }
-
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                matter = matter_store.create_matter(
-                    source_filename="Acme NDA.docx",
-                    document_bytes=b"source docx bytes",
-                    extracted_text=active_review_result["paragraphs"][0]["text"],
-                    review_result=deepcopy(active_review_result),
-                    triage={
-                        "triage_status": "needs_redline",
-                        "next_action": "Review redline",
-                        "issue_count": 1,
-                        "requirements_passed": 0,
-                        "requirements_needs_review": 0,
-                        "requirements_failed": 1,
-                    },
-                )
-                with patch.object(matter_routes, "compare_nda_reviews", return_value=deepcopy(comparison)) as compare_reviews:
-                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-comparison")
-                stored_matter = matter_store.get_matter(matter["id"])
-                review_status, review_payload = self.request("GET", f"/api/matters/{matter['id']}/review")
-
-        compare_reviews.assert_called_once()
-        call_args, call_kwargs = compare_reviews.call_args
-        self.assertEqual(call_args[0], active_review_result["paragraphs"][0]["text"])
-        self.assertEqual(call_kwargs["paragraphs"], active_review_result["paragraphs"])
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["review_comparison"]["mode"], "deterministic_vs_ai_first")
-        self.assertEqual(payload["review_comparison"]["summary"]["disagreement_count"], 1)
-        self.assertIn("stored_at", payload["review_comparison"])
-        self.assertEqual(stored_matter["review_result"], active_review_result)
-        self.assertEqual(stored_matter["review_comparison"]["summary"]["decision_disagreement_clause_ids"], ["governing_law"])
-        self.assertEqual(review_status, 200)
-        self.assertEqual(review_payload["review_comparison"]["summary"]["disagreement_count"], 1)
-
-    def test_matter_review_comparison_reports_ai_failure_without_storing(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                matter = matter_store.create_matter(
-                    source_filename="Acme NDA.docx",
-                    document_bytes=b"source docx bytes",
-                    extracted_text="This Agreement shall be governed by the laws of Delaware.",
-                    review_result={"paragraphs": [{"id": "p1", "text": "This Agreement shall be governed by the laws of Delaware."}]},
-                    triage={
-                        "triage_status": "needs_redline",
-                        "next_action": "Review redline",
-                        "issue_count": 1,
-                        "requirements_passed": 0,
-                        "requirements_needs_review": 0,
-                        "requirements_failed": 1,
-                    },
-                )
-                with patch.object(
-                    matter_routes,
-                    "compare_nda_reviews",
-                    side_effect=ReviewComparisonError("AI-first comparison review failed: no key"),
-                ):
-                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-comparison")
-                stored_matter = matter_store.get_matter(matter["id"])
-
-        self.assertEqual(status, 502)
-        self.assertEqual(payload["error"], "AI-first comparison review failed: no key")
-        self.assertNotIn("review_comparison", stored_matter)
 
     def test_matter_review_refreshes_stale_clause_decisions(self):
         text = (

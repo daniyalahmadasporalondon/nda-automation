@@ -123,19 +123,8 @@ def test_updates_stage_fields_redline_review():
     assert ai_reviewed["review_result"] == {"clauses": []}
     assert ai_reviewed["triage_status"] == "pass"
 
-    compared = repo.update_matter_review_comparison(
-        matter_id,
-        {"mode": "deterministic_vs_ai_first", "summary": {"disagreement_count": 1}},
-    )
-    assert compared["review_comparison"]["mode"] == "deterministic_vs_ai_first"
-    assert compared["review_comparison"]["summary"]["disagreement_count"] == 1
-    assert "stored_at" in compared["review_comparison"]
-    assert compared["review_result"] == {"clauses": []}
-    assert compared["triage_status"] == "pass"
-
     assert repo.update_matter_stage("matter_missing", "intake") is None
     assert repo.update_matter_ai_first_review("matter_missing", {}, {}) is None
-    assert repo.update_matter_review_comparison("matter_missing", {}) is None
 
 
 def test_delete_and_reset():
@@ -347,44 +336,6 @@ def test_disk_create_update_delete_do_not_use_monolithic_save(tmp_path, monkeypa
     assert matter["id"] == updated["id"] == deleted["id"]
     assert not matter_store.MATTERS_PATH.exists()
     assert list((tmp_path / "matters").glob("*.json")) == []
-
-
-def test_review_comparison_update_isolates_nested_payload_for_both_adapters(tmp_path, monkeypatch):
-    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
-    monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
-
-    for repo in [DiskMatterRepository(), InMemoryMatterRepository()]:
-        matter = repo.create_matter(**_create_kwargs())
-        comparison = {
-            "mode": "deterministic_vs_ai_first",
-            "summary": {
-                "disagreement_count": 1,
-                "decision_disagreement_clause_ids": ["governing_law"],
-            },
-            "clauses": [
-                {
-                    "clause_id": "governing_law",
-                    "deterministic": {"decision": "fail"},
-                    "ai_first": {"decision": "pass"},
-                }
-            ],
-        }
-
-        updated = repo.update_matter_review_comparison(matter["id"], comparison)
-        comparison["summary"]["decision_disagreement_clause_ids"].append("mutuality")
-        comparison["clauses"][0]["deterministic"]["decision"] = "mutated"
-        updated["review_comparison"]["summary"]["decision_disagreement_clause_ids"].append("term_and_survival")
-
-        assert updated["review_comparison"]["clauses"][0]["deterministic"]["decision"] == "fail"
-        assert updated["review_comparison"]["summary"]["decision_disagreement_clause_ids"] == [
-            "governing_law",
-            "term_and_survival",
-        ]
-
-        stored = repo.get_matter(matter["id"])["review_comparison"]
-        assert stored["summary"]["decision_disagreement_clause_ids"] == ["governing_law"]
-        assert stored["clauses"][0]["deterministic"]["decision"] == "fail"
 
 
 def test_disk_create_does_not_hold_store_lock_while_writing_upload(tmp_path, monkeypatch):

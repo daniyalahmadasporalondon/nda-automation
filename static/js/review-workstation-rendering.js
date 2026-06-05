@@ -2,7 +2,6 @@ let reviewDocumentRenderRequestSequence = 0;
 
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
-  setReviewComparison(result.review_comparison || null);
   state.reviewDocumentRender = reviewDocumentRenderState(result);
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
@@ -54,7 +53,6 @@ function paragraphsAlignWithBaseline(paragraphs, baseline) {
 
 function renderStudioEmpty() {
   state.latestReviewResult = null;
-  setReviewComparison(null);
   state.reviewDocumentRender = null;
   reviewDocumentRenderRequestSequence += 1;
   showStudioSourceEditor();
@@ -75,24 +73,18 @@ function renderStudioEmpty() {
   renderStudioClauseLane();
 }
 
-function setReviewComparison(comparison, { status = "" } = {}) {
-  state.reviewComparison = comparison && typeof comparison === "object" ? comparison : null;
-  state.reviewComparisonStatus = state.reviewComparison ? (status || "completed") : (status || "idle");
-  state.reviewComparisonError = "";
-}
-
-function setReviewComparisonError(error) {
-  state.reviewComparison = null;
-  state.reviewComparisonStatus = "failed";
-  state.reviewComparisonError = error?.message || String(error || "Review comparison could not run.");
-}
-
 function updateExportButtonState() {
   const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
   const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale);
+  const canExportAnnotatedPdf = Boolean(canExport && selectedMatterIsPdf());
   if (studioExportButton) {
     studioExportButton.disabled = !canExport || staleReview;
     studioExportButton.title = staleReview ? "Refresh review before exporting" : "Export DOCX";
+  }
+  if (studioExportPdfButton) {
+    studioExportPdfButton.hidden = !selectedMatterIsPdf();
+    studioExportPdfButton.disabled = !canExportAnnotatedPdf || staleReview;
+    studioExportPdfButton.title = staleReview ? "Refresh review before exporting" : "Export annotated PDF";
   }
   if (!studioSendButton) {
     updateRedlineDraftControls();
@@ -132,6 +124,10 @@ function updateExportButtonState() {
     studioReviewedButton.hidden = !reviewBlocked;
   }
   updateRedlineDraftControls();
+}
+
+function selectedMatterIsPdf() {
+  return Boolean(state.selectedMatter?.id && String(state.selectedMatter?.source_filename || "").toLowerCase().endsWith(".pdf"));
 }
 
 function setStudioSendButtonLabel(label = "Send Redline", title = label) {

@@ -59,41 +59,12 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       ...(payload.matter || {}),
       extracted_text: payload.extracted_text || "",
       redline_draft: payload.redline_draft || null,
-      review_comparison: payload.review_comparison || null,
       review_refresh: payload.review_refresh || null,
       review_result: payload.review_result || {},
     };
     const renderMetadata = payload.document_render || payload.rendered_document || payload.pdf_render || null;
     if (renderMetadata) reviewMatter.document_render = renderMetadata;
     return reviewMatter;
-  }
-
-  async function compareTextReview(text) {
-    const payload = await jsonRequest(
-      "/api/review/compare",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      },
-      "Review comparison could not run",
-    );
-    return payload.review_comparison || null;
-  }
-
-  async function compareMatterReview(matterId) {
-    const payload = await jsonRequest(
-      `/api/matters/${encodeURIComponent(matterId)}/review-comparison`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      },
-      "Matter review comparison could not run",
-    );
-    return {
-      matter: payload.matter || null,
-      review_comparison: payload.review_comparison || null,
-    };
   }
 
   async function moveMatterToColumn(matterId, boardColumn) {
@@ -136,8 +107,6 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
   }
 
   return {
-    compareMatterReview,
-    compareTextReview,
     deleteMatter,
     exportReviewDocx,
     getMatter,

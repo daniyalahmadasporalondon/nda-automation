@@ -268,7 +268,6 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
     state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   }
   state.reviewRedlines = result.redline_edits || [];
-  setReviewComparison(null);
   state.reviewSourceText = reviewedText;
   state.clauseJumpIndexes = {};
   state.selectedReviewClauseId = state.reviewClauses.some((clause) => clause.id === previousSelectedClauseId)
@@ -684,7 +683,6 @@ function loadMatterIntoReview(matter) {
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
   setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
-  setReviewComparison(matter.review_comparison || null);
   applyMatterRedlineDraft(matter.redline_draft);
   renderReviewRefreshNotice(matter.review_refresh);
   const refreshMessage = matter.review_refresh?.redline_draft_cleared
@@ -705,7 +703,6 @@ function loadMatterIntoReview(matter) {
 function prepareMatterReviewLoad(matter) {
   state.selectedMatter = matter;
   state.selectedDocument = null;
-  setReviewComparison(null);
   setSourceText(matter.extracted_text || "");
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);

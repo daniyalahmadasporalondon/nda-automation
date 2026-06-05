@@ -259,26 +259,6 @@ const RepositoryActions = (() => {
       return moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
     }
 
-    async function compareMatterReview(matterId) {
-      const targetMatterId = matterId || state.selectedMatter?.id || getSelectedMatter()?.id;
-      if (!targetMatterId) return null;
-      const previousReviewMatter = state.selectedMatter?.id === targetMatterId ? state.selectedMatter : null;
-      const payload = await api.compareMatterReview(targetMatterId);
-      const comparison = payload.review_comparison || null;
-      if (payload.matter?.id) {
-        replaceMatter(payload.matter);
-      }
-      if (previousReviewMatter) {
-        state.selectedMatter = {
-          ...previousReviewMatter,
-          ...(payload.matter || {}),
-          review_comparison: comparison,
-        };
-        setReviewComparison(comparison);
-      }
-      return comparison;
-    }
-
     async function moveMatterToColumn(matterId, boardColumn, options = {}) {
       try {
         const updatedMatter = await api.moveMatterToColumn(matterId, boardColumn);
@@ -324,7 +304,6 @@ const RepositoryActions = (() => {
       cancelDeleteMatter,
       closeMatterWorkflow,
       closePanel,
-      compareMatterReview,
       deleteMatter,
       exportMatter,
       loadGmailStatus,

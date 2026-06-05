@@ -39,6 +39,10 @@ function setupReviewWorkstationActions() {
     await exportReviewDocx();
   });
 
+  studioExportPdfButton?.addEventListener("click", async () => {
+    await exportAnnotatedPdf();
+  });
+
   studioRefreshReviewButton?.addEventListener("click", async () => {
     await refreshSelectedMatterReview();
   });
@@ -66,6 +70,57 @@ function setupReviewWorkstationActions() {
     event.preventDefault();
     closeReviewSendComposer();
   });
+}
+
+async function exportAnnotatedPdf() {
+  const matter = state.selectedMatter?.id ? state.selectedMatter : null;
+  if (!matter || !String(matter.source_filename || "").toLowerCase().endsWith(".pdf")) return;
+  if (reviewIsStale()) {
+    handleStaleReviewOperationError({ reviewRefresh: state.selectedMatter?.review_refresh }, "Annotated PDF export could not run.");
+    return;
+  }
+  studioExportPdfButton.disabled = true;
+  studioExportPdfButton.title = "Choosing file…";
+  try {
+    const saveHandle = await chooseExportSaveHandle(suggestedAnnotatedPdfFilenameForContext(matter), {
+      types: PDF_EXPORT_FILE_PICKER_TYPES,
+    });
+    if (saveHandle === null) {
+      studioFileMeta.textContent = "Export cancelled";
+      return;
+    }
+    studioExportPdfButton.title = "Exporting…";
+    const response = await fetch("/api/export-annotated-pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ matter_id: matter.id }),
+    });
+    if (!response.ok) {
+      const payload = await response.json();
+      throw reviewErrorFromPayload(payload, "Annotated PDF export could not run");
+    }
+    const filename = downloadFilename(response) || suggestedAnnotatedPdfFilenameForContext(matter);
+    const exportVerified = response.headers.get("X-Export-Verified");
+    const annotationCount = response.headers.get("X-PDF-Annotation-Count");
+    const unmatchedCount = response.headers.get("X-PDF-Unmatched-Evidence-Count");
+    const blob = await response.blob();
+    if (saveHandle) {
+      await writeBlobToSaveHandle(saveHandle, blob);
+      renderAnnotatedPdfExportSuccess(filename, annotationCount, unmatchedCount, exportVerified, "saved");
+    } else {
+      downloadBlob(blob, filename);
+      renderAnnotatedPdfExportSuccess(filename, annotationCount, unmatchedCount, exportVerified, "downloading");
+    }
+  } catch (error) {
+    if (isStaleReviewError(error)) {
+      handleStaleReviewOperationError(error, "Annotated PDF export could not run.");
+    } else {
+      renderOperationError(error, "Annotated PDF export could not run.");
+    }
+  } finally {
+    studioExportPdfButton.title = "Export annotated PDF";
+    updateExportButtonState();
+  }
 }
 
 async function exportReviewDocx() {
@@ -220,42 +275,6 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
     renderOperationError(error, "Could not mark this matter reviewed.");
   }
 }
-
-async function runReviewComparison({ text = "", matterId = "" } = {}) {
-  const targetMatterId = matterId || state.selectedMatter?.id || "";
-  const comparisonText = String(text || studioNdaText.value.trim() || state.reviewSourceText.trim()).trim();
-  state.reviewComparisonStatus = "running";
-  state.reviewComparisonError = "";
-  try {
-    const comparison = targetMatterId
-      ? await runMatterReviewComparison(targetMatterId)
-      : await runTextReviewComparison(comparisonText);
-    setReviewComparison(comparison);
-    return comparison;
-  } catch (error) {
-    setReviewComparisonError(error);
-    throw error;
-  }
-}
-
-async function runTextReviewComparison(text) {
-  if (!text) throw new Error("Provide NDA text to compare.");
-  const response = await fetch("/api/review/compare", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw reviewErrorFromPayload(payload, "Review comparison could not run");
-  return payload.review_comparison || null;
-}
-
-async function runMatterReviewComparison(matterId) {
-  const comparison = await repositoryController.compareMatterReview(matterId);
-  if (!comparison) throw new Error("Matter review comparison did not return a comparison payload.");
-  return comparison;
-}
-
 
 function openReviewSendComposer() {
   if (!state.selectedMatter?.id) return;
@@ -641,7 +660,6 @@ function matterReviewPayloadToMatter(payload) {
     ...(payload?.matter || {}),
     extracted_text: payload?.extracted_text || "",
     redline_draft: payload?.redline_draft || null,
-    review_comparison: payload?.review_comparison || null,
     review_refresh: payload?.review_refresh || null,
     review_result: payload?.review_result || {},
   };
@@ -808,7 +826,7 @@ async function chooseExportSaveHandle(suggestedName, options = {}) {
   try {
     return await window.showSaveFilePicker({
       suggestedName,
-      types: EXPORT_FILE_PICKER_TYPES,
+      types: options.types || EXPORT_FILE_PICKER_TYPES,
     });
   } catch (error) {
     if (error?.name === "AbortError") return null;
@@ -832,6 +850,18 @@ async function writeBlobToSaveHandle(fileHandle, blob) {
   } finally {
     await writable.close();
   }
+}
+
+function renderAnnotatedPdfExportSuccess(filename, annotationCount, unmatchedCount, verification, fallbackVerb = "exported") {
+  studioFileMeta.textContent = "";
+  const summary = document.createElement("span");
+  summary.className = "export-success";
+  const verified = verification ? " · PDF annotations generated" : "";
+  const countText = annotationCount ? ` · ${annotationCount} highlight${String(annotationCount) === "1" ? "" : "s"}` : "";
+  const unmatched = Number(unmatchedCount || 0);
+  const unmatchedText = unmatched > 0 ? ` · ${unmatched} evidence item${unmatched === 1 ? "" : "s"} not located` : "";
+  summary.textContent = `${filename} ${fallbackVerb}${verified}${countText}${unmatchedText}`;
+  studioFileMeta.append(summary);
 }
 
 function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported") {
@@ -862,4 +892,12 @@ function suggestedExportFilenameForContext(matter, document) {
   if (matter?.source_filename) return redlineDownloadFilename(matter.source_filename);
   if (document?.name) return redlineDownloadFilename(document.name);
   return "nda-review-report.docx";
+}
+
+function suggestedAnnotatedPdfFilenameForContext(matter) {
+  const sourceName = String(matter?.source_filename || "nda").replace(/\.[^.]+$/, "");
+  const safeName = sourceName
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "nda";
+  return `${safeName}-annotated-review.pdf`;
 }

@@ -20,6 +20,14 @@ const EXPORT_FILE_PICKER_TYPES = [
     },
   },
 ];
+const PDF_EXPORT_FILE_PICKER_TYPES = [
+  {
+    description: "PDF document",
+    accept: {
+      "application/pdf": [".pdf"],
+    },
+  },
+];
 const REVIEWABLE_DOCUMENT_ACCEPT = ".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf";
 const DEFAULT_FONT_SIZE_PX = 16;
 const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.7;
