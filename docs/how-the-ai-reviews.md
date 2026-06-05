@@ -51,10 +51,12 @@ the method is legible and repeatable.
 The most common way an automated reviewer goes wrong is reading a keyword without
 reading the words around it. "Restricted from dealing" sounds like a restriction
 — but "shall **not** be restricted from dealing with introduced contacts"
-*preserves* freedom and is **not** a restriction at all. The AI is instructed to
-read these negations and inversions literally and to honour carve-outs before
-deciding, so a freedom-preserving carve-out is not mistaken for a prohibition,
-and a real prohibition hiding next to freedom language is still caught.
+*preserves* freedom and is **not** a restriction at all. The same goes for
+"**Nothing** in this Agreement restricts either party from contacting introduced
+parties". The AI is instructed to read these negations and inversions literally
+and to honour carve-outs before deciding, so a freedom-preserving carve-out is
+not mistaken for a prohibition, and a real prohibition hiding next to freedom
+language is still caught.
 
 ## When in doubt, escalate
 

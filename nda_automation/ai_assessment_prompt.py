@@ -9,7 +9,7 @@ from .ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_CLAUSE_AS
 from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 
-AI_ASSESSMENT_PROMPT_VERSION = 4
+AI_ASSESSMENT_PROMPT_VERSION = 5
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -76,8 +76,9 @@ AI_ASSESSMENT_INSTRUCTIONS = [
     "Use review when evidence is ambiguous, conflicting, incomplete, conditional, or depends on unavailable document text.",
     (
         "Read negations and inversions literally before deciding: 'not', 'no', 'nor', 'shall not be restricted from', "
-        "'is free to', and similar phrasing can REVERSE the meaning of a clause. A sentence that says a party is not "
-        "restricted from, or is free to, take an action is freedom-preserving and is NOT a prohibition on that action."
+        "'is free to', 'nothing in this agreement restricts ... from', and similar phrasing can REVERSE the meaning of "
+        "a clause. A sentence that says a party is not restricted from, is free to, or that nothing restricts a party "
+        "from taking an action is freedom-preserving and is NOT a prohibition on that action."
     ),
     (
         "Honour carve-outs, exceptions, and conditions ('except', 'other than', 'provided that', 'unless', 'to the "
