@@ -10,7 +10,7 @@ from ..review_engine import (
     REVIEW_ENGINE_DETERMINISTIC,
     active_review_engine_status,
 )
-from .common import request_owner_user_id
+from .common import request_owner_user_id, require_admin
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -200,6 +200,10 @@ def _operational_warnings() -> list[dict[str, str]]:
 
 
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:
+    # The backup dumps full extracted NDA text and matter metadata, so it is an
+    # admin-only endpoint on top of the per-owner scoping applied below.
+    if not require_admin(handler, send_body=send_body):
+        return
     telemetry.increment("matter_backup_requests")
     try:
         backup = matter_store.export_matters_backup(owner_user_id=request_owner_user_id(handler))

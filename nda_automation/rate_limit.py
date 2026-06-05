@@ -6,9 +6,51 @@ import time
 
 DEFAULT_RATE_LIMIT_PER_MINUTE = 300
 RATE_LIMITED_MESSAGE = "Too many requests. Try again shortly."
+TRUSTED_PROXY_COUNT_ENV = "NDA_TRUSTED_PROXY_COUNT"
 
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
+
+
+def _rate_limit_client_key(peer_host: str, forwarded_for: str, user_id: str) -> str:
+    """Resolve the per-caller key the rate limiter buckets on.
+
+    Behind a reverse proxy (Render), every connection's TCP peer is the proxy,
+    so keying on the peer collapses all callers into one shared bucket. We key
+    on the authenticated identity when present, then on the real client IP
+    derived from a trusted ``X-Forwarded-For``, and only fall back to the TCP
+    peer. ``X-Forwarded-For`` is client-spoofable, so we trust it solely when an
+    operator declares how many proxies sit in front via NDA_TRUSTED_PROXY_COUNT;
+    otherwise an attacker could rotate the header to dodge the limit.
+    """
+    identity = str(user_id or "").strip()
+    if identity:
+        return f"user:{identity}"
+    return f"ip:{_real_client_ip(peer_host, forwarded_for)}"
+
+
+def _real_client_ip(peer_host: str, forwarded_for: str) -> str:
+    peer = str(peer_host or "").strip() or "unknown"
+    proxy_count = _trusted_proxy_count()
+    if proxy_count <= 0:
+        return peer
+    hops = [hop.strip() for hop in str(forwarded_for or "").split(",") if hop.strip()]
+    if not hops:
+        return peer
+    # Each proxy appends the address that connected to it, so the rightmost
+    # entry was written by the proxy nearest us. With N trusted proxies in
+    # front, the real client is the Nth entry from the right; anything further
+    # left is client-supplied and untrusted. Clamp so a short chain falls back
+    # to the leftmost (client-most) value instead of indexing out of range.
+    index = max(0, len(hops) - proxy_count)
+    return hops[min(index, len(hops) - 1)] or peer
+
+
+def _trusted_proxy_count() -> int:
+    try:
+        return max(0, int(os.environ.get(TRUSTED_PROXY_COUNT_ENV, "0")))
+    except ValueError:
+        return 0
 
 
 def _rate_limit_retry_after(method: str, path: str, client_host: str) -> int:

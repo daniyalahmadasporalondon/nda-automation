@@ -32,8 +32,13 @@ from .deployment import (
     _validate_public_auth,
     _validate_public_storage,
 )
+from .csrf import (
+    CSRF_REJECTED_MESSAGE,
+    origin_allowed_for_request,
+)
 from .docx_export import DOCX_MIME
 from .http_auth import (
+    ADMIN_REQUIRED_MESSAGE as ADMIN_REQUIRED_MESSAGE,
     AUTH_NOT_CONFIGURED_MESSAGE,
     AUTH_REALM,
     AUTH_REQUIRED_MESSAGE,
@@ -52,6 +57,7 @@ from .rate_limit import (
     DEFAULT_RATE_LIMIT_PER_MINUTE as DEFAULT_RATE_LIMIT_PER_MINUTE,
     RATE_LIMITED_MESSAGE,
     _rate_limit_bucket_name as _rate_limit_bucket_name,
+    _rate_limit_client_key,
     _rate_limit_per_window as _rate_limit_per_window,
     _rate_limit_retry_after,
     _rate_limit_window_seconds as _rate_limit_window_seconds,
@@ -316,6 +322,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
+        if not self._authorize_csrf("POST"):
+            return
         public_handler = _PUBLIC_POST_EXACT_ROUTES.get(path)
         if public_handler is not None:
             public_handler(self)
@@ -363,6 +371,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
         if not self._authorize_host():
+            return
+        if not self._authorize_csrf("DELETE"):
             return
         if not self._authorize_request(path=path):
             return
@@ -590,12 +600,26 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": HOST_NOT_ALLOWED_MESSAGE}, status=403, send_body=send_body)
         return False
 
+    def _authorize_csrf(self, method: str, *, send_body: bool = True) -> bool:
+        if origin_allowed_for_request(
+            method=method,
+            origin_header=self.headers.get("Origin", ""),
+            referer_header=self.headers.get("Referer", ""),
+            host_header=self.headers.get("Host", ""),
+            bind_host=str(self.server.server_address[0]),
+        ):
+            return True
+        telemetry.increment("csrf_rejections")
+        self._send_json({"error": CSRF_REJECTED_MESSAGE}, status=403, send_body=send_body)
+        return False
+
     def _rate_limit_request(self, method: str, path: str, *, send_body: bool = True) -> bool:
-        retry_after = _rate_limit_retry_after(
-            method,
-            path,
+        client_key = _rate_limit_client_key(
             self.client_address[0] if self.client_address else "unknown",
+            self.headers.get("X-Forwarded-For", ""),
+            getattr(self, "current_user_id", ""),
         )
+        retry_after = _rate_limit_retry_after(method, path, client_key)
         if retry_after <= 0:
             return True
         telemetry.increment("rate_limit_hits")
