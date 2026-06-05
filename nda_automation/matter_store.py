@@ -308,6 +308,69 @@ def record_matter_approval(
     return None
 
 
+def migrate_ownerless_matter_ownership(
+    *,
+    user_email_to_id: dict[str, str],
+    admin_user_id: str = "",
+) -> dict[str, Any]:
+    """Assign an owner to every ownerless matter (idempotent, one-time backfill).
+
+    Ownerless matters (``owner_user_id`` empty/missing — legacy imports, global
+    Gmail shared-sync before per-user ownership) are invisible to authenticated
+    users after the fail-closed access fix. This backfills a real owner so the
+    data is reachable again:
+
+    * PRIMARY — map the matter's ``gmail_account`` (the connected mailbox email)
+      to the user who owns that mailbox, via ``user_email_to_id`` (case-folded
+      ``email -> user_id`` built by the caller from ``user_store``).
+    * FALLBACK — ``admin_user_id`` (the sole/admin user) when no mapping resolves.
+
+    NEVER assigns a wildcard. Only ownerless matters are touched; already-owned
+    matters are left exactly as-is, so re-running is a no-op. Returns a summary
+    ``{scanned, already_owned, assigned_by_gmail, assigned_to_admin, skipped_unresolved}``.
+    """
+    email_to_id = {
+        _clean_email_key(email): _clean_owner_user_id(user_id)
+        for email, user_id in (user_email_to_id or {}).items()
+        if _clean_email_key(email) and _clean_owner_user_id(user_id)
+    }
+    admin_user_id = _clean_owner_user_id(admin_user_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    summary = {
+        "scanned": 0,
+        "already_owned": 0,
+        "assigned_by_gmail": 0,
+        "assigned_to_admin": 0,
+        "skipped_unresolved": 0,
+    }
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        for matter in _load_matters():
+            summary["scanned"] += 1
+            if _clean_owner_user_id(matter.get("owner_user_id")):
+                summary["already_owned"] += 1
+                continue
+            resolved_user_id = email_to_id.get(_clean_email_key(matter.get("gmail_account")))
+            assignment = "assigned_by_gmail"
+            if not resolved_user_id:
+                resolved_user_id = admin_user_id
+                assignment = "assigned_to_admin"
+            if not resolved_user_id:
+                # No gmail mapping and no admin fallback configured: leave the
+                # matter ownerless rather than guess. Still single-tenant-visible.
+                summary["skipped_unresolved"] += 1
+                continue
+            updated_matter = {
+                **matter,
+                "owner_user_id": resolved_user_id,
+                "updated_at": now,
+            }
+            _save_matter_record(updated_matter)
+            summary[assignment] += 1
+    return summary
+
+
 def update_matter_ai_first_review(
     matter_id: str,
     ai_first_review_result: dict[str, Any],
@@ -929,6 +992,11 @@ def _matter_owner_matches(matter: dict[str, Any], owner_user_id: str = "") -> bo
 
 def _clean_owner_user_id(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
+
+
+def _clean_email_key(value: object) -> str:
+    """Case-folded, whitespace-stripped email for ownership-backfill matching."""
+    return str(value or "").strip().casefold()
 
 
 def _stored_document_manifest(matter: dict[str, Any]) -> dict[str, Any] | None:
