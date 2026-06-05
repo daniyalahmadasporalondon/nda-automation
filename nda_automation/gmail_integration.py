@@ -151,6 +151,16 @@ class GmailIntegrationError(RuntimeError):
     pass
 
 
+class RecipientConfirmationError(GmailIntegrationError):
+    """Raised when the outbound recipient was not explicitly confirmed by a human.
+
+    The inbound ``Reply-To``/``From`` headers are attacker-controlled, so the
+    outbound recipient must never be sent on the strength of those headers alone:
+    a human must confirm the exact address the document is going to. This guards
+    against a spoofed ``Reply-To`` silently redirecting a redline to an attacker.
+    """
+
+
 class GmailRateLimitError(GmailIntegrationError):
     def __init__(self, message: str, *, retry_after_epoch: float = 0.0):
         super().__init__(message)
@@ -679,11 +689,13 @@ def send_redline_email(
     body: str | None = None,
     subject: str | None = None,
     to: str | None = None,
+    confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
     recipient, service, outbound_account = _outbound_send_context(
         matter,
         recipient_override=to,
+        confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
     outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
@@ -724,11 +736,13 @@ def validate_outbound_send_ready(
     matter: dict[str, Any],
     *,
     to: str | None = None,
+    confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
     recipient, _service, outbound_account = _outbound_send_context(
         matter,
         recipient_override=to,
+        confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
     return {"outbound_account": outbound_account, "to": recipient}
@@ -738,11 +752,18 @@ def _outbound_send_context(
     matter: dict[str, Any],
     *,
     recipient_override: str | None = None,
+    confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> tuple[str, Any, str]:
     recipient = recipient_email(recipient_override) or matter_reply_recipient(matter)
     if not recipient:
         raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
+    # The resolved recipient can come from attacker-controlled inbound headers
+    # (Reply-To / From), so a human must confirm the exact destination address
+    # before we transmit. A spoofed Reply-To therefore cannot silently redirect
+    # the outbound document — the send is refused unless the confirmed address
+    # matches the address we are about to send to.
+    _require_confirmed_recipient(recipient, confirmed_recipient)
     if not app_settings.gmail_role_enabled("outbound"):
         raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
@@ -755,6 +776,25 @@ def _outbound_send_context(
     _ensure_recipient_is_not_own_account(matter, recipient, outbound_account)
     _ensure_outbound_matches_inbound(matter, outbound_account)
     return recipient, service, outbound_account
+
+
+def _require_confirmed_recipient(recipient: str, confirmed_recipient: str | None) -> None:
+    # ``confirmed_recipient is None`` means the caller opted out of recipient
+    # confirmation (e.g. internal callers that already resolved a trusted
+    # recipient); callers that face untrusted headers MUST pass it. An empty or
+    # non-matching confirmation is always rejected.
+    if confirmed_recipient is None:
+        return
+    confirmed = recipient_email(confirmed_recipient)
+    if not confirmed:
+        raise RecipientConfirmationError(
+            "Confirm the outbound recipient email address before sending."
+        )
+    if not _email_addresses_match(confirmed, recipient):
+        raise RecipientConfirmationError(
+            "The confirmed recipient does not match the matter recipient; refusing to send. "
+            f"Confirm sending to {recipient}."
+        )
 
 
 def matter_reply_recipient(matter: dict[str, Any]) -> str:

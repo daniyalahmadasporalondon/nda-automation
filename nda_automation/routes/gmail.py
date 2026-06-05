@@ -230,6 +230,17 @@ def handle_gmail_send_redline(handler) -> None:
     if not outbound_to and not gmail_integration.matter_reply_recipient(matter):
         handler._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
         return
+    # The recipient can originate from an attacker-controlled inbound header
+    # (Reply-To/From), so require the operator to confirm the exact destination
+    # address; the integration layer rejects the send if it does not match the
+    # address the redline is actually going to.
+    confirmed_recipient = clean_outbound_recipient(payload.get("confirm_recipient"))
+    if not confirmed_recipient:
+        handler._send_json(
+            {"error": "Confirm the outbound recipient email address before sending."},
+            status=400,
+        )
+        return
     if matter_blocks_redline_send(matter):
         handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
         return
@@ -244,10 +255,15 @@ def handle_gmail_send_redline(handler) -> None:
             gmail_integration.validate_outbound_send_ready(
                 matter,
                 to=outbound_to,
+                confirmed_recipient=confirmed_recipient,
                 owner_user_id=gmail_token_owner_user_id,
             )
         else:
-            gmail_integration.validate_outbound_send_ready(matter, to=outbound_to)
+            gmail_integration.validate_outbound_send_ready(
+                matter,
+                to=outbound_to,
+                confirmed_recipient=confirmed_recipient,
+            )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
@@ -293,6 +309,7 @@ def handle_gmail_send_redline(handler) -> None:
                 redline_export.data,
                 redline_export.filename,
                 body=outbound_body,
+                confirmed_recipient=confirmed_recipient,
                 owner_user_id=gmail_token_owner_user_id,
                 subject=outbound_subject,
                 to=outbound_to,
@@ -303,6 +320,7 @@ def handle_gmail_send_redline(handler) -> None:
                 redline_export.data,
                 redline_export.filename,
                 body=outbound_body,
+                confirmed_recipient=confirmed_recipient,
                 subject=outbound_subject,
                 to=outbound_to,
             )
@@ -388,6 +406,8 @@ def clean_outbound_body(value: object) -> str | None:
 
 
 def gmail_send_error_status(error: Exception) -> int:
+    if isinstance(error, gmail_integration.RecipientConfirmationError):
+        return 400
     message = str(error).lower()
     if "valid reply recipient" in message:
         return 400

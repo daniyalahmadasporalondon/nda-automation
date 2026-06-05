@@ -2562,6 +2562,7 @@ async function testRepositoryOutboundSendComposer(page) {
   assert.deepEqual(capturedSendPayload, {
     matter_id: "matter_send",
     confirm_send: true,
+    confirm_recipient: "legal@example.com",
     subject: "Re: Please review NDA - Aspora redline",
     body: "Please see attached redline.",
   });
@@ -2802,6 +2803,7 @@ async function testReviewOutboundSendModal(page) {
 
   assert.equal(capturedSendPayload.matter_id, "matter_review_send");
   assert.equal(capturedSendPayload.confirm_send, true);
+  assert.equal(capturedSendPayload.confirm_recipient, "legal@example.com");
   assert.equal(capturedSendPayload.to, "legal@example.com");
   assert.equal(capturedSendPayload.subject, "Edited redline subject");
   assert.equal(capturedSendPayload.body, "Edited body before sending.");
