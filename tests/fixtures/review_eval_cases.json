@@ -314,5 +314,41 @@
       "decision": "fail",
       "reason_code": "unapproved_governing_law"
     }
+  },
+  {
+    "name": "verifier_refutes_false_flag_carveout",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Adversarial verifier refutes the engine false-flag and clears the carve-out to pass.",
+    "text": "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.92,
+      "rationale": "Freedom-to-deal carve-out, not a restriction; engine inverted the polarity."
+    },
+    "expected": {
+      "decision": "pass",
+      "reason_code": "no_non_circumvention_restriction"
+    }
+  },
+  {
+    "name": "verifier_affirm_keeps_genuine_restriction_failed",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "An affirming verifier must leave a genuine restriction failed (no over-correction).",
+    "text": "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+    "verifier": {
+      "verdict": "affirm",
+      "confidence": 0.9,
+      "rationale": "Genuine non-circumvention restriction; the engine finding stands."
+    },
+    "expected": {
+      "decision": "fail",
+      "reason_code": "prohibited_non_circumvention_restriction"
+    }
   }
 ]
