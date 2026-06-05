@@ -809,7 +809,7 @@ class CheckerTests(unittest.TestCase):
         })
 
         with patch("nda_automation.checker.load_playbook", return_value=playbook):
-            with self.assertRaisesRegex(PlaybookTemplateError, "unknown clauses: extra_clause"):
+            with self.assertRaisesRegex(PlaybookTemplateError, "native clauses without checks: extra_clause"):
                 review_nda("This Agreement shall be governed by the laws of the DIFC.")
 
     def test_governing_law_preferred_law_must_be_approved(self):
