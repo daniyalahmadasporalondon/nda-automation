@@ -62,3 +62,11 @@ function clauseDisplayName(clause) {
   const id = String(clause.id || "").trim();
   return id || "Clause";
 }
+
+// True for a data-defined Playbook clause (engine === "dynamic"). Native clauses
+// carry engine "native" or omit the field, so this is false for them — the
+// Dynamic badge is purely additive and never appears on the original clauses.
+function clauseIsDynamic(clause) {
+  return Boolean(clause) && typeof clause === "object"
+    && String(clause.engine || "").trim().toLowerCase() === "dynamic";
+}

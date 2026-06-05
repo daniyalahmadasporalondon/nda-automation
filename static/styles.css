@@ -1312,6 +1312,29 @@ h3 {
   text-transform: uppercase;
 }
 
+.clause-engine-badge {
+  background: var(--violet-bg);
+  border: 1px solid var(--violet-border);
+  border-radius: var(--r-pill);
+  color: var(--violet-ink);
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.studio-clause-select .clause-engine-badge {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.active-clause-heading h3 .clause-engine-badge {
+  margin-left: 8px;
+}
+
 .studio-clause-item > .studio-export-controls {
   padding-left: 39px;
 }

@@ -668,6 +668,14 @@ function selectedRedlineTemplateOptionId(edit) {
     || "";
 }
 
+// Small additive badge marking a data-defined Playbook clause (engine
+// "dynamic") so reviewers can tell it from the native clauses. Returns "" for
+// native clauses, so their markup is unchanged.
+function clauseEngineBadge(clause) {
+  if (!clauseIsDynamic(clause)) return "";
+  return '<span class="clause-engine-badge" title="Data-defined Playbook clause">Dynamic</span>';
+}
+
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -700,6 +708,7 @@ function renderStudioClauseLane() {
           <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${displayName}: ${stateLabel}`)}" title="${escapeHtml(`${displayName}: ${stateLabel}`)}">
             <span class="studio-clause-dot ${status.dotTone}"></span>
             <span class="studio-clause-title">${escapeHtml(displayName)}</span>
+            ${clauseEngineBadge(clause)}
             ${comment ? '<span class="studio-comment-state">Comment</span>' : ""}
           </button>
         `
@@ -707,6 +716,7 @@ function renderStudioClauseLane() {
           <div class="studio-clause-select">
             <span class="studio-clause-dot ${status.dotTone}"></span>
             <span class="studio-clause-title">${escapeHtml(displayName)}</span>
+            ${clauseEngineBadge(clause)}
           </div>
         `;
       return `
@@ -880,7 +890,7 @@ function renderStudioDetail() {
     <div class="studio-detail-heading active-clause-heading">
       <div>
         <small>Active clause</small>
-        <h3>${escapeHtml(clauseDisplayName(clause))}</h3>
+        <h3>${escapeHtml(clauseDisplayName(clause))}${clauseEngineBadge(clause)}</h3>
       </div>
       ${activeStatus}
     </div>
