@@ -13,9 +13,16 @@ MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
 MAX_DOCX_ZIP_ENTRIES = 4096
 MAX_DOCX_TABLE_NESTING_DEPTH = 64
+ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
+ZIP_CENTRAL_DIRECTORY_SIGNATURE = b"PK\x01\x02"
+ZIP_EOCD_MIN_SIZE = 22
+ZIP_MAX_COMMENT_BYTES = 65_535
+ZIP64_16BIT_SENTINEL = 0xFFFF
+ZIP64_32BIT_SENTINEL = 0xFFFFFFFF
 DOCX_TOO_LARGE_MESSAGE = "The Word document is too large after decompression."
 DOCX_SUSPICIOUS_COMPRESSION_MESSAGE = "The Word document uses a suspicious compression ratio."
 DOCX_TOO_MANY_ENTRIES_MESSAGE = "The Word document contains too many archive entries."
+DOCX_UNSUPPORTED_ZIP64_MESSAGE = "The Word document uses unsupported ZIP64 archive metadata."
 DOCX_TABLE_NESTING_MESSAGE = "The Word document contains tables nested too deeply."
 DOCX_XML_NESTING_MESSAGE = "The Word document XML is too deeply nested."
 SUPPLEMENTAL_PART_PREFIXES = (
@@ -41,6 +48,7 @@ def extract_docx_text(data: bytes) -> str:
 
 def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
     try:
+        validate_docx_bytes_before_open(data)
         with ZipFile(BytesIO(data)) as document:
             validate_docx_archive(document)
             paragraphs = _extract_main_document_paragraphs(document)
@@ -55,27 +63,161 @@ def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
     return paragraphs
 
 
+def validate_docx_bytes_before_open(docx_bytes: bytes) -> None:
+    """Reject hostile DOCX archives before ZipFile builds in-memory metadata."""
+    entries = _scan_zip_central_directory(docx_bytes)
+    _validate_docx_entry_metadata(entries)
+
+
 def validate_docx_archive(document: ZipFile) -> None:
     entries = document.infolist()
-    if len(entries) > MAX_DOCX_ZIP_ENTRIES:
-        raise DocxExtractionError(DOCX_TOO_MANY_ENTRIES_MESSAGE)
-
-    total_uncompressed = 0
+    _validate_docx_entry_metadata(entries)
     for item in entries:
         if item.is_dir():
             continue
-        total_uncompressed += item.file_size
-        if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
-            raise DocxExtractionError(DOCX_TOO_LARGE_MESSAGE)
-        if item.file_size and item.compress_size == 0:
-            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
-        if item.compress_size and item.file_size / item.compress_size > MAX_DOCX_ENTRY_COMPRESSION_RATIO:
-            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
         if is_docx_xml_part(item.filename):
             try:
                 reject_unsafe_docx_xml(document.read(item.filename), part_name=item.filename)
             except UnsafeDocxXmlError as exc:
                 raise DocxExtractionError(str(exc)) from exc
+
+
+def _scan_zip_central_directory(docx_bytes: bytes) -> List[Dict[str, object]]:
+    eocd_index = _find_zip_eocd(docx_bytes)
+    if eocd_index < 0:
+        raise BadZipFile("File is not a zip file")
+
+    disk_number = _zip_uint16(docx_bytes, eocd_index + 4)
+    central_directory_disk = _zip_uint16(docx_bytes, eocd_index + 6)
+    disk_entries = _zip_uint16(docx_bytes, eocd_index + 8)
+    total_entries = _zip_uint16(docx_bytes, eocd_index + 10)
+    central_directory_size = _zip_uint32(docx_bytes, eocd_index + 12)
+    central_directory_offset = _zip_uint32(docx_bytes, eocd_index + 16)
+
+    if disk_number or central_directory_disk or disk_entries != total_entries:
+        raise BadZipFile("Multi-disk zip files are not supported")
+    if (
+        total_entries == ZIP64_16BIT_SENTINEL
+        or central_directory_size == ZIP64_32BIT_SENTINEL
+        or central_directory_offset == ZIP64_32BIT_SENTINEL
+    ):
+        raise DocxExtractionError(DOCX_UNSUPPORTED_ZIP64_MESSAGE)
+    if total_entries > MAX_DOCX_ZIP_ENTRIES:
+        raise DocxExtractionError(DOCX_TOO_MANY_ENTRIES_MESSAGE)
+
+    central_directory_end = central_directory_offset + central_directory_size
+    if central_directory_offset < 0 or central_directory_end > eocd_index:
+        raise BadZipFile("Central directory is invalid")
+
+    entries: List[Dict[str, object]] = []
+    cursor = central_directory_offset
+    for _entry_index in range(total_entries):
+        if cursor + 46 > central_directory_end:
+            raise BadZipFile("Central directory entry is truncated")
+        if docx_bytes[cursor:cursor + 4] != ZIP_CENTRAL_DIRECTORY_SIGNATURE:
+            raise BadZipFile("Central directory entry has an invalid signature")
+        flags = _zip_uint16(docx_bytes, cursor + 8)
+        compressed_size = _zip_uint32(docx_bytes, cursor + 20)
+        uncompressed_size = _zip_uint32(docx_bytes, cursor + 24)
+        filename_length = _zip_uint16(docx_bytes, cursor + 28)
+        extra_length = _zip_uint16(docx_bytes, cursor + 30)
+        comment_length = _zip_uint16(docx_bytes, cursor + 32)
+        filename_start = cursor + 46
+        filename_end = filename_start + filename_length
+        next_cursor = filename_end + extra_length + comment_length
+        if filename_end > central_directory_end or next_cursor > central_directory_end:
+            raise BadZipFile("Central directory entry is truncated")
+        if compressed_size == ZIP64_32BIT_SENTINEL or uncompressed_size == ZIP64_32BIT_SENTINEL:
+            raise DocxExtractionError(DOCX_UNSUPPORTED_ZIP64_MESSAGE)
+        entries.append({
+            "filename": _decode_zip_filename(docx_bytes[filename_start:filename_end], flags),
+            "compress_size": compressed_size,
+            "file_size": uncompressed_size,
+        })
+        cursor = next_cursor
+
+    if cursor != central_directory_end:
+        raise BadZipFile("Central directory has trailing metadata")
+    return entries
+
+
+def _find_zip_eocd(docx_bytes: bytes) -> int:
+    if len(docx_bytes) < ZIP_EOCD_MIN_SIZE:
+        return -1
+    search_start = max(0, len(docx_bytes) - ZIP_EOCD_MIN_SIZE - ZIP_MAX_COMMENT_BYTES)
+    search_end = len(docx_bytes)
+    while True:
+        index = docx_bytes.rfind(ZIP_EOCD_SIGNATURE, search_start, search_end)
+        if index < 0:
+            return -1
+        if index + ZIP_EOCD_MIN_SIZE <= len(docx_bytes):
+            comment_length = _zip_uint16(docx_bytes, index + 20)
+            if index + ZIP_EOCD_MIN_SIZE + comment_length == len(docx_bytes):
+                return index
+        search_end = index
+
+
+def _validate_docx_entry_metadata(entries: Iterable[object]) -> None:
+    entry_list = list(entries)
+    if len(entry_list) > MAX_DOCX_ZIP_ENTRIES:
+        raise DocxExtractionError(DOCX_TOO_MANY_ENTRIES_MESSAGE)
+
+    total_uncompressed = 0
+    for item in entry_list:
+        filename = _zip_entry_filename(item)
+        if _zip_entry_is_dir(item, filename):
+            continue
+        file_size = _zip_entry_file_size(item)
+        compress_size = _zip_entry_compress_size(item)
+        total_uncompressed += file_size
+        if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+            raise DocxExtractionError(DOCX_TOO_LARGE_MESSAGE)
+        if file_size and compress_size == 0:
+            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
+        if compress_size and file_size / compress_size > MAX_DOCX_ENTRY_COMPRESSION_RATIO:
+            raise DocxExtractionError(DOCX_SUSPICIOUS_COMPRESSION_MESSAGE)
+
+
+def _zip_entry_filename(item: object) -> str:
+    if isinstance(item, dict):
+        return str(item.get("filename") or "")
+    return str(getattr(item, "filename", ""))
+
+
+def _zip_entry_file_size(item: object) -> int:
+    if isinstance(item, dict):
+        return int(item.get("file_size") or 0)
+    return int(getattr(item, "file_size", 0) or 0)
+
+
+def _zip_entry_compress_size(item: object) -> int:
+    if isinstance(item, dict):
+        return int(item.get("compress_size") or 0)
+    return int(getattr(item, "compress_size", 0) or 0)
+
+
+def _zip_entry_is_dir(item: object, filename: str) -> bool:
+    is_dir = getattr(item, "is_dir", None)
+    if callable(is_dir):
+        return bool(is_dir())
+    return filename.endswith("/")
+
+
+def _zip_uint16(data: bytes, offset: int) -> int:
+    if offset + 2 > len(data):
+        raise BadZipFile("Zip metadata is truncated")
+    return int.from_bytes(data[offset:offset + 2], "little")
+
+
+def _zip_uint32(data: bytes, offset: int) -> int:
+    if offset + 4 > len(data):
+        raise BadZipFile("Zip metadata is truncated")
+    return int.from_bytes(data[offset:offset + 4], "little")
+
+
+def _decode_zip_filename(filename: bytes, flags: int) -> str:
+    encoding = "utf-8" if flags & 0x800 else "cp437"
+    return filename.decode(encoding, errors="replace")
 
 
 def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:

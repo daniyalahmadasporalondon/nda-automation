@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 from zipfile import BadZipFile, ZipFile
 
 from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
-from .docx_text import DocxExtractionError, validate_docx_archive
+from .docx_text import DocxExtractionError, validate_docx_archive, validate_docx_bytes_before_open
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -47,6 +47,7 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
         required_parts.add("word/styles.xml")
 
     try:
+        validate_docx_bytes_before_open(docx_bytes)
         with ZipFile(BytesIO(docx_bytes)) as archive:
             try:
                 validate_docx_archive(archive)
@@ -136,6 +137,8 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
                 errors.append("document.xml contains insertion revision markup inside paragraph properties.")
             if document_root.findall(f".//{_w_tag('pPr')}/{_w_tag('rPr')}/{_w_tag('del')}"):
                 errors.append("document.xml contains deletion revision markup inside paragraph properties.")
+    except DocxExtractionError as exc:
+        errors.append(str(exc))
     except BadZipFile:
         errors.append("Export is not a readable DOCX zip package.")
     return errors
@@ -144,6 +147,7 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
 def exported_document_text(docx_bytes: bytes) -> str:
     """Visible + tracked-deleted text of the export (w:t and w:delText nodes)."""
     try:
+        validate_docx_bytes_before_open(docx_bytes)
         with ZipFile(BytesIO(docx_bytes)) as archive:
             validate_docx_archive(archive)
             document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
@@ -198,6 +202,7 @@ def verify_export_content_coverage(
 
 def _export_revision_paragraphs(docx_bytes: bytes) -> List[Dict[str, str]]:
     try:
+        validate_docx_bytes_before_open(docx_bytes)
         with ZipFile(BytesIO(docx_bytes)) as archive:
             validate_docx_archive(archive)
             document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")

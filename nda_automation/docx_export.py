@@ -14,7 +14,7 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .docx_health import validate_docx_open_health as validate_docx_open_health
-from .docx_text import DocxExtractionError, validate_docx_archive
+from .docx_text import DocxExtractionError, validate_docx_archive, validate_docx_bytes_before_open
 from .docx_comments import _apply_comment_anchor, _comments_xml_with_appended_comments
 from .redline_xml import (
     _run,
@@ -126,6 +126,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
 
 def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -> bytes:
     try:
+        validate_docx_bytes_before_open(source_docx)
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
             validate_docx_archive(source_archive)
             source_names = set(source_archive.namelist())

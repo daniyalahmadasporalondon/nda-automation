@@ -22,7 +22,7 @@ from nda_automation.redline_xml import (
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
 )
-from nda_automation import docx_health
+from nda_automation import docx_export, docx_health
 from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
@@ -1082,6 +1082,16 @@ class DocxExportTests(unittest.TestCase):
             with self.assertRaises(DocxExportError):
                 build_source_redline_docx(source_docx, {"paragraphs": [], "redline_edits": []})
 
+    def test_source_docx_export_rejects_suspicious_compression_ratio_before_zipfile_open(self):
+        source_docx = make_source_docx(["A" * 4096])
+
+        with (
+            patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2),
+            patch.object(docx_export, "ZipFile", side_effect=AssertionError("ZipFile should not open")),
+        ):
+            with self.assertRaises(DocxExportError):
+                build_source_redline_docx(source_docx, {"paragraphs": [], "redline_edits": []})
+
     def test_source_docx_export_rejects_xml_dtd_entity_declarations(self):
         source_docx = replace_docx_parts(
             make_source_docx(["Safe body text."]),
@@ -1488,6 +1498,17 @@ class DocxExportTests(unittest.TestCase):
             errors = validate_docx_open_health(oversized_docx)
 
         self.assertEqual(errors, ["The Word document is too large after decompression."])
+
+    def test_docx_open_health_rejects_suspicious_compression_ratio_before_zipfile_open(self):
+        suspicious_docx = make_source_docx(["A" * 4096])
+
+        with (
+            patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2),
+            patch.object(docx_health, "ZipFile", side_effect=AssertionError("ZipFile should not open")),
+        ):
+            errors = validate_docx_open_health(suspicious_docx)
+
+        self.assertEqual(errors, ["The Word document uses a suspicious compression ratio."])
 
     def test_review_report_docx_preserves_track_changes_contract_by_redline_action(self):
         result = track_changes_contract_review_result()
