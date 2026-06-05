@@ -1284,9 +1284,13 @@ async function testStructuredEvidenceAndRationale(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   await page.getByRole("button", { name: /Governing Law/ }).click();
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "ISSUE TYPE");
+  // The Decision is folded into a first-class Assessment headline (issue type +
+  // PASS/REVIEW/FAIL pill), not a separate "Issue type" tile or audit step.
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-headline"), "ASSESSMENT");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-decision-pill"), "FAIL");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Fail");
+  assert.equal((await page.locator("#studioDetailPanel").innerText()).includes("ISSUE TYPE"), false);
   await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "ASSESSMENT");
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
@@ -4403,17 +4407,22 @@ async function testReasoningTrailCollapse(page) {
       {
         audit_trace: {
           steps: [
+            // Plumbing + the decision step the backend emits — must NOT appear in the trail.
+            { details: "AI-first assessment was normalized into the review result contract.", name: "AI assessment normalization", outcome: "normalized" },
+            { details: "Governing law is outside the approved set.", name: "Decision", outcome: "review" },
+            // Deeper reasoning steps — these are what the trail is for.
             { details: "Located the governing-law value.", name: "Locate clause", outcome: "found" },
             { name: "Compare to approved set", outcome: "outside_approved" },
           ],
         },
         decision: "review",
+        decision_reason: "Governing law is outside the approved set.",
         evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
         id: "governing_law",
         issue_label: "Needs review",
         name: "Governing Law",
         needs_review: true,
-        reason_codes: ["unapproved_governing_law"],
+        reason_codes: ["unapproved_governing_law", "ai_first_fail"],
         reason: "Governing law is outside the approved set.",
         review_state: { state: "review" },
         status: "review",
@@ -4425,15 +4434,29 @@ async function testReasoningTrailCollapse(page) {
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
 
-  // 2.3 (#22) — the trail exists, is collapsed by default, and the reason-code +
-  // audit-trace scaffolding lives inside it.
+  // The Decision is the first-class Assessment headline, not an audit step.
+  await assertTextContains(detailPanel.locator(".assessment-decision-pill"), "REVIEW");
+  await assertTextContains(detailPanel.locator(".assessment-issue-type"), "Needs review");
+
+  // 2.3 (#22) — the trail exists, is collapsed by default, and holds the DEEPER
+  // audit steps only.
   const trail = detailPanel.locator(".reasoning-trail-block");
   assert.equal(await trail.count(), 1);
   assert.equal(await trail.evaluate((node) => node.open), false);
   // Summary label is uppercased by CSS text-transform.
   await assertTextContains(detailPanel.locator(".reasoning-trail-summary"), "REASONING TRAIL");
-  assert.equal(await trail.locator(".reason-code-block").count(), 1);
   assert.equal(await trail.locator(".audit-trace-block").count(), 1);
+
+  // Reason codes are never rendered; the normalization + Decision audit steps are
+  // filtered out; the deeper steps remain. Read textContent (not innerText) since
+  // the trail body is hidden while the <details> is collapsed.
+  assert.equal(await detailPanel.locator(".reason-code-block").count(), 0);
+  const trailText = await trail.evaluate((node) => node.textContent);
+  assert.equal(trailText.includes("ai_first_fail"), false);
+  assert.equal(trailText.includes("unapproved_governing_law"), false);
+  assert.equal(/normaliz/i.test(trailText), false);
+  assert.match(trailText, /Locate clause/);
+  assert.match(trailText, /Compare to approved set/);
 
   // Opening it persists across a re-render of the same clause.
   await detailPanel.locator(".reasoning-trail-summary").click();

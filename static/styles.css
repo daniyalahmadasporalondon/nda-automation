@@ -2552,7 +2552,9 @@ button.active-clause-status:hover {
   border-color: var(--border-strong);
 }
 
-.studio-detail-block.issue-block {
+/* Folded Decision: the first-class Assessment headline (issue type + the
+   PASS/REVIEW/FAIL decision pill). Tone-coded so the verdict reads at a glance. */
+.studio-detail-block.assessment-headline {
   background: var(--bg-panel);
   border: 0;
   border-bottom: 1px solid var(--border);
@@ -2560,16 +2562,67 @@ button.active-clause-status:hover {
   padding: 16px 18px;
 }
 
-.studio-detail-block.issue-block.pass {
-  background: var(--bg-panel);
+.assessment-headline-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.studio-detail-block.issue-block.check {
-  background: var(--bg-panel);
+.assessment-headline-row small {
+  margin-bottom: 0;
 }
 
-.studio-detail-block.issue-block.review {
-  background: var(--bg-panel);
+.assessment-issue-type {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+  margin: 8px 0 0;
+}
+
+.assessment-decision-pill {
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+
+.assessment-decision-pill.pass {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.assessment-decision-pill.review {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+.assessment-decision-pill.check {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
+.assessment-decision-pill.pending {
+  background: var(--bg-soft);
+  color: var(--ink-muted);
+}
+
+.assessment-headline.check {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.assessment-headline.review {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.assessment-headline.pass {
+  box-shadow: inset 3px 0 0 var(--green);
 }
 
 .studio-detail-block.fix-block {
@@ -2687,22 +2740,6 @@ button.active-clause-status:hover {
 .evidence-signals-block {
   background: var(--bg-panel);
   border-left: 0;
-}
-
-.reason-code-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.reason-code-list span {
-  background: #f4f0ff;
-  border: 1px solid #ded3ff;
-  border-radius: var(--r-pill);
-  color: var(--violet-dark);
-  font-size: 10px;
-  font-weight: 800;
-  padding: 3px 7px;
 }
 
 .audit-trace-block {

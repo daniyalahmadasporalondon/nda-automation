@@ -1105,6 +1105,23 @@ function renderClauseExplanation(clause) {
   });
 }
 
+// First-class Assessment headline (the folded Decision). The clause's decision
+// state (PASS/REVIEW/FAIL) and the issue type ARE the finding, so they lead the
+// panel as a tone-coded headline rather than sitting in a numbered audit step.
+// The reasoning prose follows from renderClauseExplanation directly beneath.
+function renderClauseFindingHeadline(clause, status) {
+  const decisionLabel = (status.pillLabel || status.issueLabel || "").toUpperCase();
+  return `
+    <div class="studio-detail-block assessment-headline ${escapeHtml(status.tone)}">
+      <div class="assessment-headline-row">
+        <small>Assessment</small>
+        <span class="assessment-decision-pill ${escapeHtml(status.tone)}">${escapeHtml(decisionLabel)}</span>
+      </div>
+      <p class="assessment-issue-type">${escapeHtml(status.issueLabel)}</p>
+    </div>
+  `;
+}
+
 function renderStudioDetail() {
   updateReviewInspectorTabs();
   if (state.reviewInspectorView === "structure") {
@@ -1117,6 +1134,7 @@ function renderStudioDetail() {
     return;
   }
   const status = clauseStatus(clause);
+  const findingHeadline = renderClauseFindingHeadline(clause, status);
   const explanation = renderClauseExplanation(clause);
   const rationale = clause.rationale || clause.requirement || "";
   // The "Based on" grounding surface (citation / absence / ungrounded) sits
@@ -1141,12 +1159,9 @@ function renderStudioDetail() {
       ${activeStatus}
     </div>
     <div class="studio-detail-stack">
-      <div class="studio-detail-block issue-block ${escapeHtml(status.tone)}">
-        <small>Issue type</small>
-        <p>${escapeHtml(status.issueLabel)}</p>
-      </div>
-      <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
+      ${findingHeadline}
       ${explanation}
+      <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${citation}
       ${playbookPosition}
       ${proposedRedlines}
@@ -1342,26 +1357,12 @@ function renderClausePlaybookPositionBlock(clause) {
   `;
 }
 
-// Scaffolding for the evidence-grounded-findings work (task #16): these render
-// reason codes / structured evidence signals / audit trace / evidence
-// paragraphs off the clause result. Currently unwired (disconnected when the
-// deterministic-comparison path was removed) but retained intentionally to be
-// repurposed by that feature — do not remove.
-function renderReasonCodeBlock(clause) {
-  const codes = Array.isArray(clause?.reason_codes)
-    ? clause.reason_codes.filter(Boolean)
-    : [clause?.reason_code].filter(Boolean);
-  if (!codes.length) return "";
-  return `
-    <div class="studio-detail-block reason-code-block">
-      <small>Reason codes</small>
-      <div class="reason-code-list">
-        ${codes.map((code) => `<span>${escapeHtml(code)}</span>`).join("")}
-      </div>
-    </div>
-  `;
-}
-
+// Structured-evidence + audit-trace scaffolding for the evidence-grounded
+// findings work (task #16): they render structured evidence signals and the
+// audit trace off the clause result, now surfaced inside the collapsible
+// Reasoning trail. The former reason-code block was removed — reason_codes is an
+// internal engine token (e.g. ai_first_fail) the backend still emits for
+// telemetry, but it is meaningless to a reviewer so the panel never renders it.
 function renderEvidenceSignalsBlock(clause) {
   const records = Array.isArray(clause?.structured_evidence)
     ? clause.structured_evidence.filter((record) => record && record.paragraph_id)
@@ -1397,10 +1398,25 @@ function renderEvidenceSignalsBlock(clause) {
   `;
 }
 
-function renderAuditTraceBlock(clause) {
+// Steps shown in the Reasoning trail: DEEPER reasoning only. The "Decision"
+// step is excluded because the decision + its reasoning are folded into the
+// first-class Assessment headline, and the "AI assessment normalization" step is
+// excluded as pure contract plumbing that means nothing to a reviewer.
+function auditTraceTrailSteps(clause) {
   const trace = clause?.audit_trace && typeof clause.audit_trace === "object" ? clause.audit_trace : null;
   const steps = Array.isArray(trace?.steps) ? trace.steps.filter((step) => step && step.name) : [];
-  if (!trace || !steps.length) return "";
+  return steps.filter((step) => {
+    const name = String(step.name || "").trim().toLowerCase();
+    const outcome = String(step.outcome || "").trim().toLowerCase();
+    if (name === "decision") return false;
+    if (name === "ai assessment normalization" || outcome === "normalized") return false;
+    return true;
+  });
+}
+
+function renderAuditTraceBlock(clause) {
+  const steps = auditTraceTrailSteps(clause);
+  if (!steps.length) return "";
   return `
     <div class="studio-detail-block audit-trace-block">
       <small>Audit trace</small>
@@ -1417,18 +1433,17 @@ function renderAuditTraceBlock(clause) {
   `;
 }
 
-// 2.3 (#22): the collapsible Reasoning trail. Composes the existing reason-code,
-// evidence-signal, and audit-trace scaffolding (kept deliberately — they are the
-// valid evidence scaffolding the user wants) into one <details> block so the
-// audit detail is available on demand without crowding the primary finding.
-// Returns "" when none of the three sub-blocks have content, so a clause with no
-// audit data shows no trail. Collapsed by default; the open/closed choice is
-// remembered per clause across re-renders via state.reasoningTrailOpen.
+// 2.3 (#22): the collapsible Reasoning trail. Holds the DEEPER reasoning detail
+// only — structured evidence signals + the remaining audit-trace steps. It does
+// NOT render reason codes (an internal engine token, meaningless to a reviewer),
+// the Decision step (folded into the Assessment headline), or the normalization
+// step (contract plumbing). Returns "" when nothing is left to show, so a clause
+// with no deeper detail shows no trail. Collapsed by default; the open/closed
+// choice is remembered per clause across re-renders via state.reasoningTrailOpen.
 function renderReasoningTrailBlock(clause) {
-  const reasonCodes = renderReasonCodeBlock(clause);
   const evidenceSignals = renderEvidenceSignalsBlock(clause);
   const auditTrace = renderAuditTraceBlock(clause);
-  if (!reasonCodes && !evidenceSignals && !auditTrace) return "";
+  if (!evidenceSignals && !auditTrace) return "";
   const open = reasoningTrailOpenForClause(clause?.id) ? " open" : "";
   return `
     <details class="studio-detail-block reasoning-trail-block" data-reasoning-trail-clause-id="${escapeHtml(clause?.id || "")}"${open}>
@@ -1437,7 +1452,6 @@ function renderReasoningTrailBlock(clause) {
         <span class="reasoning-trail-hint">Evidence &amp; audit detail</span>
       </summary>
       <div class="reasoning-trail-body">
-        ${reasonCodes}
         ${evidenceSignals}
         ${auditTrace}
       </div>
