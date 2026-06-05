@@ -712,10 +712,6 @@ async function testContractStructureReviewPanel(page) {
       aiEnabled = payload.enabled !== false;
       aiKeyConfigured = true;
       aiKeySource = "local_settings";
-      if (String(payload.api_key || "").startsWith("sk-or-")) {
-        aiProvider = "openrouter";
-        aiModel = "openai/gpt-4o-mini";
-      }
       settingsAudit = [{
         recorded_at: "2026-06-04T09:59:00+00:00",
         actor: "admin",
@@ -868,7 +864,6 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(aiGuidePanel, "AI review methodology");
   await assertTextContains(aiGuidePanel, "How AI-first and comparison work");
   await assertTextContains(aiGuidePanel, "GEMINI_API_KEY");
-  await assertTextContains(aiGuidePanel, "OPENROUTER_API_KEY");
   await assertTextContains(aiGuidePanel, "ai_review_analysis");
   await assertTextContains(aiGuidePanel, "AI disagreement");
 
@@ -880,15 +875,15 @@ async function testContractStructureReviewPanel(page) {
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing AI API key");
-  await page.locator("#adminAiApiKeyInput").fill("sk-or-v1-browser-local-key");
+  await page.locator("#adminAiApiKeyInput").fill("browser-gemini-local-key");
   await page.locator("#adminAiSaveKeyButton").click();
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "true");
-  assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "sk-or-v1-browser-local-key", enabled: true });
+  assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "browser-gemini-local-key", enabled: true });
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
-  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
-  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "openai/gpt-4o-mini");
-  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
+  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "gemini");
+  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "gemini-3.5-flash");
+  assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local Gemini key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   assert.equal(await page.locator('[data-admin-ai="active-engine"]').innerText(), "AI-first");
   assert.equal(await page.locator('[data-admin-ai="fallback-mode"]').innerText(), "Fail closed");
@@ -1013,8 +1008,8 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "qwen3.5-plus",
-      provider: "alibaba",
+      model: "gemini-3.5-flash",
+      provider: "gemini",
       status: "completed",
     };
     const governingLaw = state.reviewClauses.find((clause) => clause.id === "governing_law");

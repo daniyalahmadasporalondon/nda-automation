@@ -7,10 +7,8 @@ from nda_automation.ai_assessor import (
     AI_FIRST_ASSESSOR_MODE,
     AIAssessorError,
     InMemoryAssessmentReviewer,
-    alibaba_ai_assessment_request_body,
     assess_nda_with_ai,
     gemini_ai_assessment_request_body,
-    openrouter_ai_assessment_request_body,
 )
 from nda_automation.gemini_schema import GEMINI_UNSUPPORTED_SCHEMA_KEYS
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
@@ -162,13 +160,6 @@ class AIAssessorTests(unittest.TestCase):
         self.assertIn('"minimum"', gemini_schema_json)
         self.assertIn('"maximum"', gemini_schema_json)
 
-        openrouter_body = openrouter_ai_assessment_request_body(packet, "openai/gpt-4o-mini")
-        self.assertEqual(openrouter_body["response_format"]["json_schema"]["schema"], AI_ASSESSMENT_RESPONSE_SCHEMA)
-        self.assertEqual(openrouter_body["response_format"]["json_schema"]["name"], "nda_ai_first_clause_assessment")
-
-        alibaba_body = alibaba_ai_assessment_request_body(packet, "qwen3.5-plus")
-        self.assertIn("Schema:", alibaba_body["messages"][0]["content"])
-        self.assertIn("assessments", alibaba_body["messages"][0]["content"])
         self.assertEqual(result["ai_first_review"]["mode"], AI_FIRST_ASSESSOR_MODE)
 
 

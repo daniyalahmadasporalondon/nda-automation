@@ -43,7 +43,7 @@ services:
         value: gemini-3.5-flash
       - key: GEMINI_API_KEY
         sync: false
-      - key: NDA_GMAIL_TRIAGE_API_KEY
+      - key: GROQ_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
         value: qwen/qwen3-32b

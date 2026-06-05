@@ -25,8 +25,6 @@ from .review_state import (
 
 AI_REVIEW_VERSION = 1
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini"
-DEFAULT_ALIBABA_MODEL = "qwen3.5-plus"
 DEFAULT_AI_REVIEW_THRESHOLD = 0.75
 DEFAULT_AI_TIMEOUT_SECONDS = 20
 MAX_AI_CONTEXT_PARAGRAPHS = 40
@@ -38,12 +36,7 @@ AI_REVIEW_ENV_TIMEOUT = "NDA_AI_TIMEOUT_SECONDS"
 AI_REVIEW_ENV_THRESHOLD = "NDA_AI_REVIEW_THRESHOLD"
 AI_REVIEW_ENV_CLAUSES = "NDA_AI_REVIEW_CLAUSES"
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
-ALIBABA_API_KEY_ENV = "ALIBABA_API_KEY"
-DASHSCOPE_API_KEY_ENV = "DASHSCOPE_API_KEY"
 GEMINI_ENDPOINT_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-ALIBABA_CHAT_COMPLETIONS_ENDPOINT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 AI_REVIEW_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
@@ -57,11 +50,11 @@ class AIReviewer(Protocol):
 
     A reviewer maps a review packet (from build_ai_review_packet) to a verdict
     dict matching AI_REVIEW_SCHEMA, or None when it has nothing usable to say.
-    The provider adapters (Gemini / OpenRouter / Alibaba), the prod resolver
-    (_configured_reviewer), and InMemoryReviewer all implement this interface;
-    tests inject a reviewer through the reviewer=/ai_reviewer= parameter to cross
-    the real seam instead of mocking app_settings. Plain functions with the same
-    signature also satisfy it.
+    GeminiAIReviewer, the prod resolver (_configured_reviewer), and
+    InMemoryReviewer all implement this interface; tests inject a reviewer
+    through the reviewer=/ai_reviewer= parameter to cross the real seam instead
+    of mocking app_settings. Plain functions with the same signature also
+    satisfy it.
     """
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
@@ -163,95 +156,6 @@ class GeminiAIReviewer:
             parsed = json.loads(response_text)
         except json.JSONDecodeError as error:
             raise AIReviewError("Gemini API returned non-JSON text.") from error
-        return parsed if isinstance(parsed, dict) else None
-
-
-class OpenRouterAIReviewer:
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str = DEFAULT_OPENROUTER_MODEL,
-        timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
-    ) -> None:
-        cleaned_key = str(api_key or "").strip()
-        if not cleaned_key:
-            raise AIReviewError("OpenRouter API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = str(model or DEFAULT_OPENROUTER_MODEL).strip() or DEFAULT_OPENROUTER_MODEL
-        self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
-
-    def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(_openrouter_request_body(packet, self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "X-Title": "nda-automation",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIReviewError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIReviewError(f"OpenRouter API request failed: {error}") from error
-
-        response_text = _openrouter_response_text(payload)
-        if not response_text:
-            raise AIReviewError("OpenRouter API returned no message content.")
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError as error:
-            raise AIReviewError("OpenRouter API returned non-JSON text.") from error
-        return parsed if isinstance(parsed, dict) else None
-
-
-class AlibabaAIReviewer:
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str = DEFAULT_ALIBABA_MODEL,
-        timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
-    ) -> None:
-        cleaned_key = str(api_key or "").strip()
-        if not cleaned_key:
-            raise AIReviewError("Alibaba API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = str(model or DEFAULT_ALIBABA_MODEL).strip() or DEFAULT_ALIBABA_MODEL
-        self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
-
-    def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
-        request = urllib.request.Request(
-            ALIBABA_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(_alibaba_request_body(packet, self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIReviewError(f"Alibaba API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIReviewError(f"Alibaba API request failed: {error}") from error
-
-        response_text = _chat_completion_response_text(payload)
-        if not response_text:
-            raise AIReviewError("Alibaba API returned no message content.")
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError as error:
-            raise AIReviewError("Alibaba API returned non-JSON text.") from error
         return parsed if isinstance(parsed, dict) else None
 
 
@@ -857,60 +761,23 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
             model=str(settings["model"]),
             timeout_seconds=int(settings["timeout_seconds"]),
         )
-    if provider == "openrouter":
-        return OpenRouterAIReviewer(
-            api_key=_configured_api_key(provider),
-            model=str(settings["model"]),
-            timeout_seconds=int(settings["timeout_seconds"]),
-        )
-    if provider == "alibaba":
-        return AlibabaAIReviewer(
-            api_key=_configured_api_key(provider),
-            model=str(settings["model"]),
-            timeout_seconds=int(settings["timeout_seconds"]),
-        )
     raise AIReviewError(f"Unsupported AI provider: {provider}")
 
 
 def provider_for_api_key(api_key: str) -> str:
-    cleaned_key = str(api_key or "").strip()
-    if _looks_like_openrouter_key(cleaned_key):
-        return "openrouter"
-    if _looks_like_alibaba_key(cleaned_key):
-        return "alibaba"
     return "gemini"
 
 
 def default_model_for_provider(provider: str) -> str:
-    normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "openrouter":
-        return DEFAULT_OPENROUTER_MODEL
-    if normalized_provider == "alibaba":
-        return DEFAULT_ALIBABA_MODEL
     return DEFAULT_GEMINI_MODEL
 
 
 def _configured_api_key(provider: str) -> str:
-    normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "openrouter":
-        return os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or _stored_key_for_provider("openrouter")
-    if normalized_provider == "alibaba":
-        return (
-            os.environ.get(ALIBABA_API_KEY_ENV, "").strip()
-            or os.environ.get(DASHSCOPE_API_KEY_ENV, "").strip()
-            or _stored_key_for_provider("alibaba")
-        )
     return os.environ.get(GEMINI_API_KEY_ENV, "").strip() or _stored_key_for_provider("gemini")
 
 
 def _api_key_source(provider: str) -> str:
     normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "openrouter" and os.environ.get(OPENROUTER_API_KEY_ENV, "").strip():
-        return "environment"
-    if normalized_provider == "alibaba" and (
-        os.environ.get(ALIBABA_API_KEY_ENV, "").strip() or os.environ.get(DASHSCOPE_API_KEY_ENV, "").strip()
-    ):
-        return "environment"
     if normalized_provider == "gemini" and os.environ.get(GEMINI_API_KEY_ENV, "").strip():
         return "environment"
     if _stored_key_for_provider(normalized_provider):
@@ -922,8 +789,7 @@ def _stored_key_for_provider(provider: str) -> str:
     stored_key = app_settings.stored_ai_api_key()
     if not stored_key:
         return ""
-    stored_provider = provider_for_api_key(stored_key)
-    return stored_key if stored_provider == str(provider).strip().lower() else ""
+    return stored_key if str(provider).strip().lower() == "gemini" else ""
 
 
 def _ai_review_settings() -> Dict[str, object]:
@@ -943,19 +809,11 @@ def _ai_review_settings() -> Dict[str, object]:
 
 def _configured_provider(stored: Dict[str, object]) -> str:
     env_provider = os.environ.get(AI_REVIEW_ENV_PROVIDER, "").strip().lower()
-    if env_provider in {"gemini", "openrouter", "alibaba"}:
+    if env_provider == "gemini":
         return env_provider
     stored_provider = str(stored.get("provider") or "").strip().lower()
-    if stored_provider in {"gemini", "openrouter", "alibaba"}:
+    if stored_provider == "gemini":
         return stored_provider
-    if os.environ.get(ALIBABA_API_KEY_ENV, "").strip() or os.environ.get(DASHSCOPE_API_KEY_ENV, "").strip():
-        return "alibaba"
-    if os.environ.get(OPENROUTER_API_KEY_ENV, "").strip():
-        return "openrouter"
-    if _looks_like_alibaba_key(app_settings.stored_ai_api_key()):
-        return "alibaba"
-    if _looks_like_openrouter_key(app_settings.stored_ai_api_key()):
-        return "openrouter"
     return "gemini"
 
 
@@ -963,19 +821,11 @@ def _configured_model(provider: str, stored: Dict[str, object]) -> str:
     env_model = os.environ.get(AI_REVIEW_ENV_MODEL, "").strip()
     if env_model:
         return env_model
-    stored_model = str(stored.get("model") or "").strip()
+    stored_provider = str(stored.get("provider") or "").strip().lower()
+    stored_model = str(stored.get("model") or "").strip() if stored_provider in {"", "gemini"} else ""
     if stored_model:
         return stored_model
     return default_model_for_provider(provider)
-
-
-def _looks_like_openrouter_key(api_key: str) -> bool:
-    return str(api_key or "").strip().startswith("sk-or-")
-
-
-def _looks_like_alibaba_key(api_key: str) -> bool:
-    cleaned = str(api_key or "").strip()
-    return cleaned.startswith("sk-ws-") or (cleaned.startswith("sk-") and not cleaned.startswith("sk-or-"))
 
 
 def _summary(
@@ -1020,82 +870,6 @@ def _gemini_request_body(packet: Dict[str, object]) -> Dict[str, object]:
             "responseSchema": gemini_compatible_response_schema(AI_REVIEW_SCHEMA),
         },
     }
-
-
-def _openrouter_request_body(packet: Dict[str, object], model: str) -> Dict[str, object]:
-    prompt = json.dumps(packet, ensure_ascii=False, indent=2)
-    return {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a legal QA semantic reviewer for NDA hard-clause checks. "
-                    "Use only supplied paragraph text. Do not invent document terms. "
-                    "Return only schema-valid JSON."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "nda_clause_semantic_review",
-                "strict": True,
-                "schema": AI_REVIEW_SCHEMA,
-            },
-        },
-    }
-
-
-def _alibaba_request_body(packet: Dict[str, object], model: str) -> Dict[str, object]:
-    prompt = json.dumps(packet, ensure_ascii=False, indent=2)
-    return {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a legal QA semantic reviewer for NDA hard-clause checks. "
-                    "Use only supplied paragraph text. Do not invent document terms. "
-                    "Return only JSON matching this schema: "
-                    + json.dumps(AI_REVIEW_SCHEMA, ensure_ascii=False)
-                ),
-            },
-            {"role": "user", "content": "Return schema-valid JSON for this review packet:\n" + prompt},
-        ],
-        "temperature": 0,
-        "enable_thinking": False,
-        "response_format": {"type": "json_object"},
-    }
-
-
-def _openrouter_response_text(payload: Dict[str, object]) -> str:
-    return _chat_completion_response_text(payload)
-
-
-def _chat_completion_response_text(payload: Dict[str, object]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") in {None, "text"}
-        ]
-        return "".join(parts).strip()
-    return ""
 
 
 def _trusted_https_context() -> ssl.SSLContext | None:

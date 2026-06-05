@@ -20,15 +20,10 @@ from .ai_assessment_prompt import (
 )
 from .ai_first_review import build_ai_first_review_result
 from .ai_review import (
-    ALIBABA_CHAT_COMPLETIONS_ENDPOINT,
     DEFAULT_AI_TIMEOUT_SECONDS,
-    DEFAULT_ALIBABA_MODEL,
     DEFAULT_GEMINI_MODEL,
-    DEFAULT_OPENROUTER_MODEL,
     GEMINI_ENDPOINT_TEMPLATE,
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     _ai_review_settings,
-    _chat_completion_response_text,
     _configured_api_key,
     _gemini_response_text,
     _sanitize_model_name,
@@ -86,79 +81,6 @@ class GeminiAIAssessmentReviewer:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise AIAssessorError(f"Gemini API request failed: {error}") from error
         return _parse_provider_response_text(_gemini_response_text(payload), provider="Gemini")
-
-
-class OpenRouterAIAssessmentReviewer:
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str = DEFAULT_OPENROUTER_MODEL,
-        timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
-    ) -> None:
-        cleaned_key = str(api_key or "").strip()
-        if not cleaned_key:
-            raise AIAssessorError("OpenRouter API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = str(model or DEFAULT_OPENROUTER_MODEL).strip() or DEFAULT_OPENROUTER_MODEL
-        self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
-
-    def __call__(self, packet: dict[str, Any]) -> dict[str, Any] | None:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(openrouter_ai_assessment_request_body(packet, self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "X-Title": "nda-automation",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
-        return _parse_provider_response_text(_chat_completion_response_text(payload), provider="OpenRouter")
-
-
-class AlibabaAIAssessmentReviewer:
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str = DEFAULT_ALIBABA_MODEL,
-        timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
-    ) -> None:
-        cleaned_key = str(api_key or "").strip()
-        if not cleaned_key:
-            raise AIAssessorError("Alibaba API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = str(model or DEFAULT_ALIBABA_MODEL).strip() or DEFAULT_ALIBABA_MODEL
-        self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
-
-    def __call__(self, packet: dict[str, Any]) -> dict[str, Any] | None:
-        request = urllib.request.Request(
-            ALIBABA_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(alibaba_ai_assessment_request_body(packet, self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIAssessorError(f"Alibaba API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIAssessorError(f"Alibaba API request failed: {error}") from error
-        return _parse_provider_response_text(_chat_completion_response_text(payload), provider="Alibaba")
 
 
 class InMemoryAssessmentReviewer:
@@ -250,18 +172,6 @@ def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None)
             model=model or DEFAULT_GEMINI_MODEL,
             timeout_seconds=timeout_seconds,
         )
-    if provider == "openrouter":
-        return OpenRouterAIAssessmentReviewer(
-            api_key=_configured_api_key(provider),
-            model=model or DEFAULT_OPENROUTER_MODEL,
-            timeout_seconds=timeout_seconds,
-        )
-    if provider == "alibaba":
-        return AlibabaAIAssessmentReviewer(
-            api_key=_configured_api_key(provider),
-            model=model or DEFAULT_ALIBABA_MODEL,
-            timeout_seconds=timeout_seconds,
-        )
     raise AIAssessorError(f"Unsupported AI provider: {provider}")
 
 
@@ -278,43 +188,6 @@ def gemini_ai_assessment_request_body(packet: Mapping[str, Any]) -> dict[str, An
             "responseMimeType": "application/json",
             "responseSchema": gemini_compatible_response_schema(AI_ASSESSMENT_RESPONSE_SCHEMA),
         },
-    }
-
-
-def openrouter_ai_assessment_request_body(packet: Mapping[str, Any], model: str) -> dict[str, Any]:
-    prompt = build_ai_assessment_prompt(packet)
-    return {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": prompt["system"]},
-            {"role": "user", "content": prompt["user"]},
-        ],
-        "temperature": 0,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "nda_ai_first_clause_assessment",
-                "strict": True,
-                "schema": AI_ASSESSMENT_RESPONSE_SCHEMA,
-            },
-        },
-    }
-
-
-def alibaba_ai_assessment_request_body(packet: Mapping[str, Any], model: str) -> dict[str, Any]:
-    prompt = build_ai_assessment_prompt(packet)
-    return {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": prompt["system"] + " Schema: " + json.dumps(AI_ASSESSMENT_RESPONSE_SCHEMA, ensure_ascii=False),
-            },
-            {"role": "user", "content": prompt["user"]},
-        ],
-        "temperature": 0,
-        "enable_thinking": False,
-        "response_format": {"type": "json_object"},
     }
 
 

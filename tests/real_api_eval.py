@@ -2,8 +2,8 @@
 
 This is deliberately SEPARATE from CI. The deterministic gate
 (``tests/test_review_eval.py``) is reproducible and provider-free; this harness
-makes real network calls to the configured provider (Alibaba / OpenRouter /
-Gemini) and reports how the active AI-first review engine changes outcomes on
+makes real network calls to the configured Gemini provider and reports how the
+active AI-first review engine changes outcomes on
 the same authored fixtures.
 
 It compares, per clause fixture:

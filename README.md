@@ -185,10 +185,10 @@ Common environment variables:
 - `NDA_GMAIL_INBOUND_TOKEN_PATH`: legacy shared OAuth token file for local inbound Gmail sync. Leave unset for hosted per-user Gmail.
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: legacy shared OAuth token file for local outbound Gmail sends. Leave unset for hosted per-user Gmail.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
-- `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
+- `NDA_AI_PROVIDER`: `gemini`.
 - `NDA_AI_MODEL`: provider model name. Use `gemini-3.5-flash` for the current hosted Gemini setup, or another model your key can access.
-- `ALIBABA_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`: server-side AI review key for the selected provider.
-- `NDA_GMAIL_TRIAGE_API_KEY`: server-side key for Qwen/Groq Gmail attachment selection.
+- `GEMINI_API_KEY`: server-side Gemini AI review key.
+- `GROQ_API_KEY`: server-side Groq key for Qwen Gmail attachment selection.
 - `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `qwen/qwen3-32b`.
 - `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
 - `NDA_AI_FIRST_FALLBACK_MODE`: optional environment pin for `fail_closed` or `deterministic`.
@@ -218,7 +218,7 @@ export NDA_AI_MODEL=gemini-3.5-flash
 export GEMINI_API_KEY=...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. The hosted demo uses Gemini for NDA review and Groq/Qwen for Gmail triage. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` if you switch providers later. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are Gemini for NDA review and Groq/Qwen for Gmail triage. Admins can save a local Gemini API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 

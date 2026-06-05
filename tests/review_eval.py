@@ -4,7 +4,7 @@ This is a *regression* eval, not a measure of real-world legal accuracy. It runs
 authored NDA/clause snippets through the real ``review_nda`` and scores the final
 clause decision against an expected outcome. Cases may script the AI reviewer
 (through ``review_nda``'s ``ai_reviewer`` parameter) so the blind-AI arbiter,
-review-state, and reason codes are exercised deterministically -- no Qwen/Alibaba
+review-state, and reason codes are exercised deterministically -- no provider
 call, no network, no quota.
 
 What it measures (all fixture-relative, i.e. against the labels we authored):
@@ -65,9 +65,6 @@ def _ai_disabled() -> ExitStack:
                 "NDA_AI_REVIEW_ENABLED": "",
                 "NDA_AI_PROVIDER": "",
                 "GEMINI_API_KEY": "",
-                "OPENROUTER_API_KEY": "",
-                "ALIBABA_API_KEY": "",
-                "DASHSCOPE_API_KEY": "",
             },
             clear=False,
         )

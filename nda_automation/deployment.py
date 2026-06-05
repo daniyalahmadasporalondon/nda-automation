@@ -30,10 +30,6 @@ AI_PROVIDER_ENV = "NDA_AI_PROVIDER"
 AI_MODEL_ENV = "NDA_AI_MODEL"
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
-ALIBABA_API_KEY_ENV = "ALIBABA_API_KEY"
-DASHSCOPE_API_KEY_ENV = "DASHSCOPE_API_KEY"
-GMAIL_TRIAGE_API_KEY_ENV = "NDA_GMAIL_TRIAGE_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 
@@ -263,8 +259,7 @@ def _deployment_ai_env_status() -> dict[str, object]:
 
 def _deployment_gmail_triage_env_status(public_host: bool) -> dict[str, object]:
     key_configured = bool(
-        os.environ.get(GMAIL_TRIAGE_API_KEY_ENV, "").strip()
-        or os.environ.get(GROQ_API_KEY_ENV, "").strip()
+        os.environ.get(GROQ_API_KEY_ENV, "").strip()
         or _stored_key_configured(app_settings.stored_gmail_triage_api_key)
     )
     model_configured = bool(os.environ.get(GMAIL_TRIAGE_MODEL_ENV, "").strip())
@@ -276,21 +271,13 @@ def _deployment_gmail_triage_env_status(public_host: bool) -> dict[str, object]:
     return {
         "ok": False,
         "configured": False,
-        "message": "Set NDA_GMAIL_TRIAGE_API_KEY and NDA_GMAIL_TRIAGE_MODEL for AI-assisted Gmail attachment selection.",
+        "message": "Set GROQ_API_KEY and NDA_GMAIL_TRIAGE_MODEL for AI-assisted Gmail attachment selection.",
     }
 
 
 def _ai_provider_key_configured(provider: str) -> bool:
     if provider == "gemini":
         return bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip() or _stored_key_configured(app_settings.stored_ai_api_key))
-    if provider == "openrouter":
-        return bool(os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or _stored_key_configured(app_settings.stored_ai_api_key))
-    if provider == "alibaba":
-        return bool(
-            os.environ.get(ALIBABA_API_KEY_ENV, "").strip()
-            or os.environ.get(DASHSCOPE_API_KEY_ENV, "").strip()
-            or _stored_key_configured(app_settings.stored_ai_api_key)
-        )
     return False
 
 

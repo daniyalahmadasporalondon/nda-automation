@@ -11,7 +11,6 @@ from . import app_settings
 from .ai_review import _trusted_https_context
 
 GROQ_CHAT_COMPLETIONS_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GMAIL_TRIAGE_API_KEY_ENV = "NDA_GMAIL_TRIAGE_API_KEY"
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
 DEFAULT_GMAIL_TRIAGE_MODEL = "qwen/qwen3-32b"
@@ -84,8 +83,7 @@ def select_nda_attachments(
 
 def _configured_api_key() -> str:
     return (
-        os.environ.get(GMAIL_TRIAGE_API_KEY_ENV, "").strip()
-        or os.environ.get(GROQ_API_KEY_ENV, "").strip()
+        os.environ.get(GROQ_API_KEY_ENV, "").strip()
         or app_settings.stored_gmail_triage_api_key()
     )
 

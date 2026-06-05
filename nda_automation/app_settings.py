@@ -375,7 +375,7 @@ def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(enabled, bool):
         enabled = None
     provider = str(payload.get("provider") or DEFAULT_AI_SETTINGS["provider"]).strip().lower()
-    if provider not in {"", "gemini", "openrouter", "alibaba"}:
+    if provider not in {"", "gemini"}:
         provider = ""
     model = str(payload.get("model") or DEFAULT_AI_SETTINGS["model"]).strip()
     if len(model) > 200:
@@ -427,7 +427,7 @@ def _valid_ai_setting(key: str, value: Any) -> bool:
     if key == "enabled":
         return isinstance(value, bool)
     if key == "provider":
-        return isinstance(value, str) and value.strip().lower() in {"", "gemini", "openrouter", "alibaba"}
+        return isinstance(value, str) and value.strip().lower() in {"", "gemini"}
     if key == "model":
         return isinstance(value, str) and len(value.strip()) <= 200
     return False

@@ -67,8 +67,6 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_THRESHOLD": "",
                 "NDA_AI_PROVIDER": "gemini",
                 "NDA_AI_MODEL": "gemini-3.5-flash",
-                "ALIBABA_API_KEY": "",
-                "DASHSCOPE_API_KEY": "",
             },
             clear=False,
         )
@@ -95,7 +93,7 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured", "OPENROUTER_API_KEY": ""},
+                    {"NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured"},
                     clear=False,
                 ):
                     disabled_status = ai_review.ai_review_status()
@@ -104,7 +102,7 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured", "OPENROUTER_API_KEY": ""},
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "configured"},
                     clear=False,
                 ):
                     enabled_status = ai_review.ai_review_status()
@@ -113,28 +111,10 @@ class AIReviewTests(unittest.TestCase):
             with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="saved-local-key"):
                 with patch.dict(
                     os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": ""},
+                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": ""},
                     clear=False,
                 ):
                     local_key_status = ai_review.ai_review_status()
-
-        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
-            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="sk-or-v1-test"):
-                with patch.dict(
-                    os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": ""},
-                    clear=False,
-                ):
-                    openrouter_status = ai_review.ai_review_status()
-
-        with patch.object(ai_review.app_settings, "ai_settings", return_value={"enabled": True}):
-            with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="sk-ws-local-secret"):
-                with patch.dict(
-                    os.environ,
-                    {"NDA_AI_REVIEW_ENABLED": "", "NDA_AI_PROVIDER": "", "NDA_AI_MODEL": "", "GEMINI_API_KEY": "", "OPENROUTER_API_KEY": "", "ALIBABA_API_KEY": ""},
-                    clear=False,
-                ):
-                    alibaba_status = ai_review.ai_review_status()
 
         self.assertEqual(disabled_status["enabled"], False)
         self.assertEqual(disabled_status["stored_enabled"], False)
@@ -148,14 +128,6 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(local_key_status["enabled"], True)
         self.assertEqual(local_key_status["api_key_configured"], True)
         self.assertEqual(local_key_status["api_key_source"], "local_settings")
-        self.assertEqual(openrouter_status["provider"], "openrouter")
-        self.assertEqual(openrouter_status["model"], "openai/gpt-4o-mini")
-        self.assertEqual(openrouter_status["api_key_configured"], True)
-        self.assertEqual(openrouter_status["api_key_source"], "local_settings")
-        self.assertEqual(alibaba_status["provider"], "alibaba")
-        self.assertEqual(alibaba_status["model"], "qwen3.5-plus")
-        self.assertEqual(alibaba_status["api_key_configured"], True)
-        self.assertEqual(alibaba_status["api_key_source"], "local_settings")
 
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)
@@ -470,37 +442,6 @@ class AIReviewTests(unittest.TestCase):
         self.assertIn('"maximum"', schema_json)
         self.assertIn("semantic_clause_crosscheck", encoded)
 
-    def test_openrouter_request_body_uses_chat_completion_structured_output(self):
-        packet = {
-            "task": "semantic_clause_crosscheck",
-            "clause": {"id": "mutuality"},
-            "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
-        }
-
-        body = ai_review._openrouter_request_body(packet, "openai/gpt-4o-mini")
-
-        self.assertEqual(body["model"], "openai/gpt-4o-mini")
-        self.assertEqual(body["temperature"], 0)
-        self.assertEqual(body["response_format"]["type"], "json_schema")
-        self.assertEqual(body["response_format"]["json_schema"]["strict"], True)
-        self.assertIn("schema", body["response_format"]["json_schema"])
-        self.assertIn("semantic_clause_crosscheck", json.dumps(body))
-
-    def test_alibaba_request_body_uses_singapore_json_chat_completion(self):
-        packet = {
-            "task": "semantic_clause_crosscheck",
-            "clause": {"id": "mutuality"},
-            "paragraphs": [{"id": "p1", "text": "Each party is bound."}],
-        }
-
-        body = ai_review._alibaba_request_body(packet, "qwen3.5-plus")
-
-        self.assertEqual(body["model"], "qwen3.5-plus")
-        self.assertEqual(body["temperature"], 0)
-        self.assertEqual(body["enable_thinking"], False)
-        self.assertEqual(body["response_format"]["type"], "json_object")
-        self.assertIn("semantic_clause_crosscheck", json.dumps(body))
-
     def test_sanitize_model_name_strips_unsafe_characters(self):
         self.assertEqual(ai_review._sanitize_model_name("models/gemini-3.5-flash"), "gemini-3.5-flash")
         sanitized = ai_review._sanitize_model_name("../../etc/passwd?inject=1")
@@ -554,29 +495,6 @@ class AIProviderAdapterTests(unittest.TestCase):
         body = json.loads(captured[0].data.decode("utf-8"))
         self.assertEqual(body["generationConfig"]["temperature"], 0)
         self.assertIn("semantic_clause_crosscheck", json.dumps(body))
-
-    def test_alibaba_adapter_round_trip(self):
-        captured = []
-        response = json.dumps({"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}).encode("utf-8")
-        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
-            reviewer = ai_review.AlibabaAIReviewer(api_key="sk-ws-x", model="qwen3.5-plus")
-            verdict = reviewer(self.PACKET)
-
-        self.assertEqual(verdict, self.VERDICT)
-        body = json.loads(captured[0].data.decode("utf-8"))
-        self.assertEqual(body["model"], "qwen3.5-plus")
-        self.assertEqual(body["response_format"]["type"], "json_object")
-
-    def test_openrouter_adapter_round_trip(self):
-        captured = []
-        response = json.dumps({"choices": [{"message": {"content": json.dumps(self.VERDICT)}}]}).encode("utf-8")
-        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
-            reviewer = ai_review.OpenRouterAIReviewer(api_key="sk-or-x", model="openai/gpt-4o-mini")
-            verdict = reviewer(self.PACKET)
-
-        self.assertEqual(verdict, self.VERDICT)
-        body = json.loads(captured[0].data.decode("utf-8"))
-        self.assertEqual(body["response_format"]["type"], "json_schema")
 
     def test_adapters_and_in_memory_reviewer_satisfy_the_public_interface(self):
         self.assertIsInstance(ai_review.InMemoryReviewer(), ai_review.AIReviewer)

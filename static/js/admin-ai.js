@@ -38,7 +38,7 @@ const AdminAiView = (() => {
       event.preventDefault();
       const apiKey = aiApiKeyInput?.value.trim() || "";
       if (!apiKey) {
-        setFact("key-message", "Paste a Gemini, OpenRouter, or Alibaba API key first.");
+        setFact("key-message", "Paste a Gemini API key first.");
         aiApiKeyInput?.focus();
         return;
       }
@@ -303,17 +303,13 @@ const AdminAiView = (() => {
 
     function keyMessage(status) {
       if (status.api_key_source === "environment") {
-        if (status.provider === "openrouter") return "Using OPENROUTER_API_KEY from the backend environment.";
-        if (status.provider === "alibaba") return "Using ALIBABA_API_KEY or DASHSCOPE_API_KEY from the backend environment.";
         return "Using GEMINI_API_KEY from the backend environment.";
       }
       if (status.api_key_source === "local_settings") return `Using a saved local ${providerName(status.provider)} key under ignored app data.`;
-      return "Paste a Gemini, OpenRouter, or Alibaba key and click Save key & turn on.";
+      return "Paste a Gemini key and click Save key & turn on.";
     }
 
     function providerName(provider) {
-      if (provider === "openrouter") return "OpenRouter";
-      if (provider === "alibaba") return "Alibaba/Qwen";
       return "Gemini";
     }
 

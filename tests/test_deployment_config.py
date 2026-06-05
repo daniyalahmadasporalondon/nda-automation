@@ -72,6 +72,6 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_AI_PROVIDER\s+value:\s+gemini")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_MODEL\s+value:\s+gemini-3\.5-flash")
         self.assertRegex(blueprint, r"key:\s+GEMINI_API_KEY\s+sync:\s+false")
-        self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_API_KEY\s+sync:\s+false")
+        self.assertRegex(blueprint, r"key:\s+GROQ_API_KEY\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+qwen/qwen3-32b")
         self.assertNotRegex(blueprint, r"disk:\s+name:\s+nda-automation-data\s+mountPath:\s+/var/data")
