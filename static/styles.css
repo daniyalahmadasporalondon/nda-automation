@@ -869,6 +869,13 @@ h3 {
   opacity: 0.92;
 }
 
+/* Submit for Review keeps its leading "+" icon at its original size. */
+.dashboard-submit-button span:first-child {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .dashboard-health-list {
   align-items: center;
   display: flex;
