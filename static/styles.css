@@ -876,6 +876,10 @@ h3 {
   gap: 18px;
   justify-content: space-between;
   margin-top: 10px;
+  /* Inset to match the pills' content padding above (padding: 0 20px) so the
+     AI Review dot lines up with the pills' left content edge and Email with the
+     right, instead of sitting flush in the pills' rounded-corner gutters. */
+  padding: 0 20px;
 }
 
 .dashboard-health-item {
