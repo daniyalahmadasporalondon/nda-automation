@@ -869,11 +869,22 @@ h3 {
   opacity: 0.92;
 }
 
-/* Submit for Review keeps its leading "+" icon at its original size. */
-.dashboard-submit-button span:first-child {
-  font-size: 17px;
-  font-weight: 800;
+/* Leading icons on both hero buttons: the "+" on Submit and the "↗" send glyph
+   on Send Document. Matched size, a lighter (thinner) stroke than the bold label,
+   and a soft glow so they read as crafted marks rather than flat characters. */
+.dashboard-submit-button span:first-child,
+.dashboard-send-document-button span:first-child {
+  font-size: 18px;
+  font-weight: 400;
   line-height: 1;
+}
+
+.dashboard-submit-button span:first-child {
+  text-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+.dashboard-send-document-button span:first-child {
+  text-shadow: 0 0 6px rgba(79, 27, 179, 0.32), 0 0 2px rgba(79, 27, 179, 0.22);
 }
 
 .dashboard-health-list {
