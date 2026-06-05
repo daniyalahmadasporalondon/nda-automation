@@ -2564,6 +2564,18 @@ button.active-clause-status:hover {
   line-height: 1.45;
 }
 
+.clause-citation-block.ungrounded {
+  border-left: 2px solid var(--warning, #c47f17);
+}
+
+.clause-citation-block.absence p,
+.clause-citation-block.ungrounded p {
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .studio-detail-block.redline-block {
   background: var(--bg-panel);
   border-color: var(--border);

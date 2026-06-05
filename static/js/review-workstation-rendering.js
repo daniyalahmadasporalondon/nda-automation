@@ -863,12 +863,15 @@ function renderStudioDetail() {
   const status = clauseStatus(clause);
   const explanation = renderClauseExplanation(clause);
   const rationale = clause.rationale || clause.requirement || "";
+  // The "Based on" grounding surface (citation / absence / ungrounded) sits
+  // right under the explanation; it self-gates to "" until citation/grounding
+  // data is present.
+  const citation = renderClauseCitationBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   // Audit/context detail beneath the primary finding. Both self-gate to "" when
   // their result fields are empty, so they only appear when the clause carries
-  // reason codes / an audit trace. The evidence-grounding surface (citations,
-  // evidence paragraphs/signals) is owned separately by renderClauseCitationBlock.
+  // reason codes / an audit trace.
   const reasonCodes = renderReasonCodeBlock(clause);
   const auditTrace = renderAuditTraceBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
@@ -888,6 +891,7 @@ function renderStudioDetail() {
       </div>
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${explanation}
+      ${citation}
       ${playbookPosition}
       ${proposedRedlines}
       ${reasonCodes}
@@ -919,6 +923,53 @@ function renderAiCitation(span) {
       <blockquote>${escapeHtml(quote || "Citation recorded without quote text.")}</blockquote>
     </figure>
   `;
+}
+
+// Single "Based on" grounding surface for a clause, driven by the AI-first
+// review path's clause.citation (the first grounded structured-evidence quote)
+// and clause.grounding.status. The older crosscheck path's cited_spans are
+// already shown in the explanation's Evidence block (renderClauseExplanation),
+// so this block deliberately does NOT fall back to them — that would double the
+// same quotes. Returns "" when no citation/grounding data is present (a no-op
+// until those fields land), so existing reviews are unaffected and there is
+// never a second citation surface.
+function renderClauseCitationBlock(clause) {
+  if (!clause || typeof clause !== "object") return "";
+  const grounding = typeof clause.grounding === "object" && clause.grounding ? clause.grounding : null;
+  const status = grounding ? String(grounding.status || "").trim().toLowerCase() : "";
+
+  const citation = typeof clause.citation === "object" && clause.citation ? clause.citation : null;
+  const citationQuote = citation ? String(citation.quote || "").trim() : "";
+
+  // Grounded: the AI-first single citation.
+  if (citationQuote) {
+    return `
+      <div class="studio-detail-block clause-citation-block grounded">
+        <small>Based on</small>
+        ${renderAiCitation(citation)}
+      </div>
+    `;
+  }
+
+  // Non-quote grounding states only the AI-first path reports.
+  if (status === "absence") {
+    return `
+      <div class="studio-detail-block clause-citation-block absence">
+        <small>Based on</small>
+        <p>Grounded in the absence of this clause from the document.</p>
+      </div>
+    `;
+  }
+  if (status === "ungrounded") {
+    return `
+      <div class="studio-detail-block clause-citation-block ungrounded">
+        <small>Based on</small>
+        <p>The AI assessment did not ground this finding in any quotable text, so it was escalated for human review.</p>
+      </div>
+    `;
+  }
+
+  return "";
 }
 
 function paragraphDisplayLabel(paragraphId) {
