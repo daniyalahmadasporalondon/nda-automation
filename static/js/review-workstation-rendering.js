@@ -682,6 +682,7 @@ function renderStudioClauseLane() {
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseStatus(clause);
+      const displayName = clauseDisplayName(clause);
       const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
       const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
       const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !redlineExportIncluded(edit));
@@ -696,16 +697,16 @@ function renderStudioClauseLane() {
             : status.issueLabel;
       const selectable = hasReviewResults()
         ? `
-          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${clause.name}: ${stateLabel}`)}" title="${escapeHtml(`${clause.name}: ${stateLabel}`)}">
+          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${displayName}: ${stateLabel}`)}" title="${escapeHtml(`${displayName}: ${stateLabel}`)}">
             <span class="studio-clause-dot ${status.dotTone}"></span>
-            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+            <span class="studio-clause-title">${escapeHtml(displayName)}</span>
             ${comment ? '<span class="studio-comment-state">Comment</span>' : ""}
           </button>
         `
         : `
           <div class="studio-clause-select">
             <span class="studio-clause-dot ${status.dotTone}"></span>
-            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+            <span class="studio-clause-title">${escapeHtml(displayName)}</span>
           </div>
         `;
       return `
@@ -869,7 +870,7 @@ function renderStudioDetail() {
     <div class="studio-detail-heading active-clause-heading">
       <div>
         <small>Active clause</small>
-        <h3>${escapeHtml(clause.name)}</h3>
+        <h3>${escapeHtml(clauseDisplayName(clause))}</h3>
       </div>
       ${activeStatus}
     </div>
