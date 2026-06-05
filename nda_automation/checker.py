@@ -16,6 +16,7 @@ from .redline_actions import (
 )
 from .inline_diff import diff_text_operation_dicts
 from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
+from .ai_verifier import VerifierFn, apply_ai_verifier
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .semantic import SemanticEvaluateFn, apply_semantic_fallback
@@ -140,6 +141,8 @@ def review_nda(
     *,
     semantic_evaluator: SemanticEvaluateFn | None = None,
     ai_reviewer: AIReviewFn | None = None,
+    ai_verifier: VerifierFn | None = None,
+    verify: bool = True,
 ) -> Dict[str, object]:
     source_text = text or ""
     if paragraphs is None:
@@ -197,6 +200,19 @@ def review_nda(
     )
     for clause in clause_results:
         _apply_clause_decision(clause)
+    # Adversarial verifier pass: a focused second look that justifies-or-refutes each
+    # escalated finding against the clause text/evidence. Refuted findings are
+    # downgraded; unsubstantiated ones are flagged for human review. Additive overlay
+    # over already-finalized findings -- it never re-runs the checkers.
+    clause_results, ai_verifier_review = apply_ai_verifier(
+        clause_results,
+        source_text=source_text,
+        verifier=ai_verifier,
+        enabled=verify,
+    )
+    # Re-finalize the derived structures (structured evidence + audit trace) for any
+    # clause the verifier rewrote, so the evidence-trust contract still holds.
+    _refinalize_verifier_changes(clause_results, ai_verifier_review)
     failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
     review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
     passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
@@ -222,6 +238,7 @@ def review_nda(
         "concept_classifier": concept_classifier,
         "semantic_crosscheck": semantic_crosscheck,
         "ai_review": ai_review,
+        "ai_verifier": ai_verifier_review,
         "clauses": clause_results,
         "redline_edits": redline_edits,
     }
@@ -535,6 +552,41 @@ def _attach_audit_trace(clause: ClauseResult, decision: str) -> None:
         "analysis_signals": analysis_signals,
         "steps": _audit_steps(clause, decision, evidence_summary, analysis_outputs),
     }
+
+
+def _refinalize_verifier_changes(
+    clause_results: List[ClauseResult],
+    verifier_review: Dict[str, object],
+) -> None:
+    """Re-derive structured evidence + audit trace for verifier-changed clauses.
+
+    The verifier owns the new decision/reason on a clause it rewrote, but the
+    structured-evidence records and audit trace are derived data the checker owns.
+    Re-running the same finalizers the decision step uses keeps the evidence-trust
+    contract intact without the verifier reaching into checker internals.
+    """
+    changed_ids = {
+        str(record.get("clause_id") or "")
+        for record in verifier_review.get("records", [])
+        if isinstance(record, dict) and record.get("changed")
+    }
+    if not changed_ids:
+        return
+    for clause in clause_results:
+        if str(clause.get("id") or "") not in changed_ids:
+            continue
+        decision = str(clause.get("decision") or "")
+        # When the verifier cleared a disproven finding it dropped the stale reason
+        # code so the clause re-derives its natural one (e.g. a refuted prohibited
+        # restriction becomes "no_<clause>_restriction"). Re-derive only when absent
+        # so a verifier-owned escalation code is preserved.
+        if not clause.get("reason_code") and not clause.get("reason_codes"):
+            reason_codes = reason_codes_for_clause(clause, decision)
+            clause["reason_code"] = reason_codes[0]
+            clause["reason_codes"] = reason_codes
+        clause["review_state"] = clause_review_state(clause, decision)
+        _finalize_structured_evidence(clause, decision)
+        _attach_audit_trace(clause, decision)
 
 
 def _audit_evidence_summary(
