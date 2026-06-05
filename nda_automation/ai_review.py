@@ -38,6 +38,18 @@ AI_REVIEW_ENV_BACKUP_PROVIDER = "NDA_AI_BACKUP_PROVIDER"
 AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+# OpenRouter API keys are prefixed "sk-or-"; legacy Google/Gemini-direct keys are
+# prefixed "AIza". OpenRouter is the sole provider now (google/gemini-3.5-flash is
+# served THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
+# and must be replaced with an OpenRouter key.
+OPENROUTER_API_KEY_PREFIX = "sk-or-"
+GEMINI_DIRECT_API_KEY_PREFIX = "AIza"
+STORED_KEY_MIGRATION_CODE = "gemini_direct_stored_key"
+STORED_KEY_MIGRATION_MESSAGE = (
+    "The stored AI API key looks like a Google/Gemini API key, but AI review now "
+    "runs through OpenRouter (model google/gemini-3.5-flash). Replace it with an "
+    "OpenRouter API key (it starts with \"sk-or-\") from openrouter.ai to re-enable AI review."
+)
 AI_REVIEW_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
@@ -459,8 +471,40 @@ def ai_review_status() -> Dict[str, object]:
         "confidence_threshold": _confidence_threshold(settings),
         "api_key_configured": bool(_configured_api_key(provider)),
         "api_key_source": api_key_source,
+        "stored_key_migration": stored_ai_key_migration(),
         "target_clause_ids": sorted(_targeted_clause_ids(settings)),
     }
+
+
+def stored_ai_key_migration() -> Dict[str, str] | None:
+    """Flag a stored AI key that predates the OpenRouter-only provider.
+
+    OpenRouter is the sole provider now (it serves google/gemini-3.5-flash), so a
+    locally stored Google/Gemini-direct key ("AIza...") can no longer authenticate.
+    When such a key is the configured source — and no OpenRouter env key overrides
+    it — return a migration hint guiding the operator to a "sk-or-" OpenRouter key.
+    Returns None when nothing needs migrating (no stored key, an env key is set, or
+    the stored key already looks like an OpenRouter key).
+    """
+    # An env OPENROUTER_API_KEY wins over the stored key, so a legacy stored key is
+    # moot in that case — nothing to migrate.
+    if os.environ.get(OPENROUTER_API_KEY_ENV, "").strip():
+        return None
+    stored_key = app_settings.stored_ai_api_key().strip()
+    if not stored_key or not _looks_like_gemini_direct_key(stored_key):
+        return None
+    return {
+        "code": STORED_KEY_MIGRATION_CODE,
+        "message": STORED_KEY_MIGRATION_MESSAGE,
+        "expected_key_prefix": OPENROUTER_API_KEY_PREFIX,
+    }
+
+
+def _looks_like_gemini_direct_key(api_key: str) -> bool:
+    cleaned = str(api_key or "").strip()
+    if not cleaned or cleaned.startswith(OPENROUTER_API_KEY_PREFIX):
+        return False
+    return cleaned.startswith(GEMINI_DIRECT_API_KEY_PREFIX)
 
 
 def _evaluate_clause_with_ai(

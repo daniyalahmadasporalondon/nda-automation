@@ -190,6 +190,12 @@ def _operational_warnings() -> list[dict[str, str]]:
             "code": "active_engine_environment_pinned",
             "message": "Active review engine is pinned by the backend environment.",
         })
+    stored_key_migration = ai_status.get("stored_key_migration")
+    if isinstance(stored_key_migration, dict) and stored_key_migration.get("message"):
+        warnings.append({
+            "code": str(stored_key_migration.get("code") or "stored_key_migration"),
+            "message": str(stored_key_migration["message"]),
+        })
     return warnings
 
 
