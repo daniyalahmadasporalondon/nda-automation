@@ -285,16 +285,18 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
         self.assertEqual(nc["decision"], "fail")  # real restriction stays failed
         self.assertEqual(nc["decision_source"], "deterministic")
 
-    def test_refuted_pass_carries_absence_grounding_stamp(self):
-        # A verifier-cleared pass is stamped grounded-in-absence so the grounding
-        # pass (#16), running after, doesn't re-flag it as an ungrounded finding.
+    def test_refuted_pass_reads_as_absence_grounding(self):
+        # A verifier-cleared pass sets decision_source="ai_verifier", which the
+        # grounding pass (#16) keys off to classify it as a legitimate absence (so it
+        # is not re-flagged as ungrounded). Pre-merge, the lazy fallback supplies the
+        # same canonical {status:"absence"} shape from that same marker.
         text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
         result = review_nda(text)
         nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
         self.assertEqual(nc["decision"], "pass")
-        self.assertEqual(nc["grounding"]["status"], "verified_absence")
+        self.assertEqual(nc["decision_source"], "ai_verifier")
+        self.assertEqual(nc["grounding"]["status"], "absence")
         self.assertEqual(nc["grounding"]["evidence_count"], 0)
-        self.assertEqual(nc["grounding"]["source"], "ai_verifier")
 
     def test_corrected_clause_passes_evidence_trust(self):
         # A verifier-changed decision must leave the evidence-trust contract intact:

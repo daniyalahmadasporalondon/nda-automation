@@ -72,12 +72,10 @@ HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
 # to overturn the engine -- a hesitant refutation should escalate, not flip.
 VERIFIER_MIN_CONFIDENCE = 0.6
 
-# Grounding status stamped on a clause whose evidence the verifier disproved and
-# cleared. The evidence-grounding pass (#16) treats this as deliberately grounded in
-# absence, not an ungrounded finding to re-flag. Coordinate the exact string with the
-# evidence pass so both agree (checkers -> grounding -> verifier is the agreed order;
-# this marker covers the case where a refuted pass is the verifier's own output).
-GROUNDING_STATUS_VERIFIED_ABSENCE = "verified_absence"
+# A verifier-cleared clause (refute->pass) sets decision_source="ai_verifier"; the
+# evidence-grounding pass (#16) keys off THAT to classify it as a legitimate absence
+# and emit the canonical grounding {status: "absence", ...}. The verifier does not own
+# a grounding-status string -- evidence's module is the single source of truth.
 
 
 class VerifierFn(Protocol):
@@ -321,15 +319,12 @@ def _clear_disproven_evidence(clause: dict) -> None:
         _empty_analysis_id_lists(clause[key])
     for key in ("reason_code", "reason_codes", "review_state"):
         clause.pop(key, None)
-    # Stamp an explicit ABSENCE marker so the evidence-grounding pass (#16), running
-    # after the verifier, treats this evidence-free pass as deliberately grounded in
-    # absence (the verifier disproved the flagged evidence) rather than re-flagging it
-    # as an ungrounded finding. The verifier owns this grounding state for the clause.
-    clause["grounding"] = {
-        "status": GROUNDING_STATUS_VERIFIED_ABSENCE,
-        "evidence_count": 0,
-        "source": "ai_verifier",
-    }
+    # NOTE: grounding/citation are owned by the evidence pass (#16), which keys off
+    # decision_source=="ai_verifier" (set in _rewrite_decision) to classify this
+    # evidence-free clause as a legitimate absence. We do NOT hand-write a grounding
+    # block here -- refinalize_clause_grounding (called from the re-finalizers)
+    # produces the canonical value. The lazy wrapper supplies a minimal fallback when
+    # the evidence module is not yet on the branch.
 
 
 def _empty_analysis_id_lists(analysis: dict) -> None:
@@ -587,16 +582,32 @@ def refinalize_clause_grounding(clause: dict) -> dict:
     citation, and is not re-downgraded.
 
     The evidence module lives on its own branch until consolidation, so the import is
-    lazy and optional: if it is not present yet, this is a no-op and the verifier's
-    own interim absence stamp (set in ``_clear_disproven_evidence``) stands in. Once
-    merged, the evidence helper owns the grounding field and the interim stamp is
-    overwritten by the authoritative value.
+    lazy and optional. When present, it OWNS the grounding field (this returns its
+    authoritative value). When absent (pre-merge), this supplies a minimal absence
+    fallback for a verifier-cleared clause so the field is still present and sensible;
+    evidence's helper overwrites it post-merge.
     """
     try:
         from .evidence_grounding import refinalize_clause_grounding as _evidence_refinalize
     except ImportError:
-        return clause
+        return _fallback_grounding(clause)
     return _evidence_refinalize(clause)
+
+
+def _fallback_grounding(clause: dict) -> dict:
+    """Pre-merge stand-in for evidence's grounding when its module is absent.
+
+    Only stamps the verifier-cleared case (decision_source=="ai_verifier" with no
+    structured evidence) as an absence; otherwise leaves grounding untouched. Once
+    evidence_grounding is on the branch, that module is the single source of truth.
+    """
+    cleared = (
+        str(clause.get("decision_source") or "") == "ai_verifier"
+        and not (clause.get("structured_evidence") or [])
+    )
+    if cleared:
+        clause["grounding"] = {"status": "absence", "evidence_count": 0, "source": "ai_verifier"}
+    return clause
 
 
 # --- Production resolver + Claude-backed verifier --------------------------
