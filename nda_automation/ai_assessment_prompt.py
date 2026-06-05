@@ -9,7 +9,7 @@ from .ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_CLAUSE_AS
 from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 
-AI_ASSESSMENT_PROMPT_VERSION = 2
+AI_ASSESSMENT_PROMPT_VERSION = 3
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -49,6 +49,11 @@ AI_ASSESSMENT_INSTRUCTIONS = [
     "For missing required clauses, return decision fail with issue_type missing and evidence as an empty list.",
     "For absent prohibited clauses, return decision pass with issue_type none; evidence may be empty when no direct quote can prove absence.",
     "For pass and fail decisions supported by text, cite exact quote text from supplied paragraph ids.",
+    (
+        "Ground every present-clause verdict in a quote: a pass on a required clause, and any present_but_wrong "
+        "finding, must cite at least one exact quote from the document. The only quote-less verdicts are a missing "
+        "required clause and an absent prohibited clause. An ungrounded pass will be downgraded to review."
+    ),
     "Never cite a quote unless the exact quote appears in the cited paragraph.",
     "For Governing Law, choose proposed_redline.jurisdiction only from the rule approved_options list.",
     "Set blocks_send true only for review decisions; set it false for pass and fail decisions.",

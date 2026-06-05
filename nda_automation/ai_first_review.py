@@ -22,6 +22,12 @@ from .checks.common import (
 )
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
+from .evidence_grounding import (
+    GROUNDING_UNGROUNDED,
+    build_citation,
+    build_grounding,
+    downgrade_ungrounded_finding,
+)
 from .reference_resolver import resolve_document_references
 from .review_document import (
     EvidenceProvenanceError,
@@ -191,7 +197,6 @@ def _clause_result_from_assessment(
         }
     decision = _normalized_decision(assessment.get("decision"))
     issue_type = _normalized_issue_type(assessment.get("issue_type"), decision)
-    status = _normalized_status(assessment.get("status"), decision, issue_type, playbook_clause)
     reason = _assessment_text(
         assessment,
         "rationale",
@@ -205,6 +210,43 @@ def _clause_result_from_assessment(
     proposed_redline = assessment.get("proposed_redline")
     if not isinstance(proposed_redline, Mapping):
         proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
+    blocks_send = bool(assessment.get("blocks_send"))
+
+    # Ground every finding in the exact source text it cites. A pass/fail the
+    # model could not back with a quotable span (and that is not a legitimate
+    # absence verdict) is not trustworthy: downgrade it to review so it blocks
+    # an automatic send and a human resolves it.
+    structured_evidence = _structured_evidence_records(
+        {"id": str(playbook_clause["id"]), "decision": decision, "issue_type": issue_type},
+        matched_paragraphs,
+        assessment,
+    )
+    clause_type = str(playbook_clause.get("type") or "")
+    grounding = build_grounding(
+        decision=decision,
+        issue_type=issue_type,
+        clause_type=clause_type,
+        structured_evidence=structured_evidence,
+    )
+    if grounding["status"] == GROUNDING_UNGROUNDED:
+        downgrade = downgrade_ungrounded_finding(
+            decision=decision,
+            issue_type=issue_type,
+            blocks_send=blocks_send,
+            reason_codes=reason_codes,
+        )
+        decision = downgrade["decision"]
+        issue_type = downgrade["issue_type"]
+        blocks_send = downgrade["blocks_send"]
+        reason_codes = downgrade["reason_codes"]
+        if downgrade.get("downgraded"):
+            reason = downgrade["reason"]
+            what_to_fix = _default_fix(decision)
+        # The model's original status reflected its (rejected) verdict; recompute.
+        status = _normalized_status(None, decision, issue_type, playbook_clause)
+    else:
+        status = _normalized_status(assessment.get("status"), decision, issue_type, playbook_clause)
+    citation = build_citation(structured_evidence)
     result: ClauseResult = {
         "id": str(playbook_clause["id"]),
         "name": str(playbook_clause.get("name") or playbook_clause["id"]),
@@ -215,13 +257,13 @@ def _clause_result_from_assessment(
         "decision_source": "ai",
         "needs_review": decision == CLAUSE_DECISION_REVIEW,
         "issue_type": issue_type,
-        "issue_label": str(assessment.get("issue_label") or ISSUE_TYPE_LABELS.get(issue_type, "Needs review")),
+        "issue_label": _issue_label(assessment, issue_type, grounding["status"]),
         "what_to_fix": what_to_fix,
         "reason": reason,
         "finding": reason,
         "decision_reason": reason,
         "confidence": assessment.get("confidence"),
-        "blocks_send": bool(assessment.get("blocks_send")),
+        "blocks_send": blocks_send,
         "proposed_redline": deepcopy(proposed_redline),
         "reason_code": reason_codes[0],
         "reason_codes": reason_codes,
@@ -239,16 +281,22 @@ def _clause_result_from_assessment(
     for field in _PLAYBOOK_RESULT_FIELDS:
         if field in playbook_clause:
             result[field] = deepcopy(playbook_clause[field])
+    # Re-derive structured evidence against the final clause (its decision/status
+    # may have changed in the grounding downgrade above) so signal types align.
     result["structured_evidence"] = _structured_evidence_records(result, matched_paragraphs, assessment)
+    result["grounding"] = grounding
+    if citation is not None:
+        result["citation"] = citation
     result["review_state"] = clause_review_state(result, decision)
     result["audit_trace"] = _audit_trace(result)
     result["ai_first_assessment"] = {
         "status": str(assessment.get("validation_status") or "normalized"),
         "schema_version": int(assessment.get("schema_version") or AI_ASSESSMENT_CONTRACT_VERSION),
         "confidence": assessment.get("confidence"),
-        "blocks_send": bool(assessment.get("blocks_send")),
+        "blocks_send": blocks_send,
         "proposed_redline_action": str(proposed_redline.get("action") or ""),
         "evidence_count": len(result["matched_paragraph_ids"]),
+        "grounding_status": grounding["status"],
     }
     if isinstance(review_context.get("contract_structure"), dict):
         result["structure_context"] = _structure_context_for_clause(str(result["id"]), review_context)
@@ -269,6 +317,16 @@ def _normalized_issue_type(value: object, decision: str) -> str:
     if decision == CLAUSE_DECISION_FAIL:
         return ISSUE_TYPE_PRESENT_BUT_WRONG
     return ISSUE_TYPE_UNCLEAR
+
+
+def _issue_label(assessment: Mapping[str, Any], issue_type: str, grounding_status: str) -> str:
+    # A downgraded (ungrounded) finding discards the model's own label, which
+    # described the verdict we just rejected.
+    if grounding_status != GROUNDING_UNGROUNDED:
+        model_label = str(assessment.get("issue_label") or "").strip()
+        if model_label:
+            return model_label
+    return ISSUE_TYPE_LABELS.get(issue_type, "Needs review")
 
 
 def _normalized_status(
