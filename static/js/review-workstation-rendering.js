@@ -863,6 +863,7 @@ function renderStudioDetail() {
   const status = clauseStatus(clause);
   const explanation = renderClauseExplanation(clause);
   const rationale = clause.rationale || clause.requirement || "";
+  const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
@@ -881,6 +882,7 @@ function renderStudioDetail() {
       </div>
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${explanation}
+      ${playbookPosition}
       ${proposedRedlines}
       ${commentBlock}
     </div>
@@ -920,6 +922,53 @@ function paragraphDisplayLabel(paragraphId) {
   const paragraph = state.reviewParagraphs.find((item) => String(item.id || "") === String(paragraphId || ""));
   const index = paragraph?.index || paragraph?.source_index;
   return index ? `Paragraph ${index}` : paragraphId;
+}
+
+// Resolve a dynamic clause's fallback/standard-position block from the result,
+// independent of exactly where the backend hangs it. A dynamic clause type is
+// self-describing in the Playbook (fallback: { wording, approved_positions,
+// redline_action }); the review result passes that through so the Review tab
+// can show the playbook position for a clause the code has never seen. Tolerant
+// of the block living at clause.fallback, clause.playbook.fallback, or a
+// flattened clause.fallback_wording so rendering does not depend on the final
+// #10 contract shape. Returns null when there is nothing to show.
+function clauseFallback(clause) {
+  if (!clause || typeof clause !== "object") return null;
+  const raw = (clause.fallback && typeof clause.fallback === "object" ? clause.fallback : null)
+    || (clause.playbook && typeof clause.playbook === "object" && typeof clause.playbook.fallback === "object"
+      ? clause.playbook.fallback
+      : null);
+  const wording = String((raw && raw.wording) || clause.fallback_wording || "").trim();
+  const approvedSource = (raw && Array.isArray(raw.approved_positions) ? raw.approved_positions : null)
+    || (Array.isArray(clause.approved_positions) ? clause.approved_positions : []);
+  const approvedPositions = approvedSource
+    .map((position) => String(position || "").trim())
+    .filter(Boolean);
+  if (!wording && !approvedPositions.length) return null;
+  return { approvedPositions, wording };
+}
+
+function renderClausePlaybookPositionBlock(clause) {
+  const fallback = clauseFallback(clause);
+  if (!fallback) return "";
+  const approved = fallback.approvedPositions.length
+    ? `
+      <div class="playbook-position-approved">
+        <small>Approved positions</small>
+        <ul>${fallback.approvedPositions.map((position) => `<li>${escapeHtml(position)}</li>`).join("")}</ul>
+      </div>
+    `
+    : "";
+  const wording = fallback.wording
+    ? `<p class="playbook-position-wording">${escapeHtml(fallback.wording)}</p>`
+    : "";
+  return `
+    <div class="studio-detail-block playbook-position-block">
+      <small>Playbook position</small>
+      ${wording}
+      ${approved}
+    </div>
+  `;
 }
 
 function renderProposedRedlinesBlock(clause) {

@@ -2536,9 +2536,32 @@ button.active-clause-status:hover {
 .studio-detail-block.rationale-block,
 .studio-detail-block.assessment-block,
 .studio-detail-block.review-note-block,
-.studio-detail-block.evidence-guidance-block {
+.studio-detail-block.evidence-guidance-block,
+.studio-detail-block.playbook-position-block {
   background: #ffffff;
   border-color: var(--border);
+}
+
+.playbook-position-block .playbook-position-wording {
+  margin: 0;
+}
+
+.playbook-position-block .playbook-position-approved {
+  margin-top: 8px;
+}
+
+.playbook-position-block .playbook-position-approved ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.playbook-position-block .playbook-position-approved li {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .studio-detail-block.redline-block {
