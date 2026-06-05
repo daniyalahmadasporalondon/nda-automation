@@ -88,6 +88,7 @@ const tests = [
   ["gates Approve Review on staleness and unresolved clauses", testApproveReviewGate],
   ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
   ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
+  ["honours the reduced-motion preference", testReducedMotionPreference],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -4744,6 +4745,32 @@ async function testRefreshUnsavedEditsGuard(page) {
   assert.match(confirmMessage, /unsaved/i, "the confirm dialog should mention unsaved edits");
   assert.equal(refreshCount, 2, "accepting the unsaved-edits confirm should let the refresh run");
   page.off("dialog", acceptHandler);
+}
+
+// Accessibility: with the OS "reduce motion" preference on, transitions and
+// animations are clamped to ~0 so the UI does not animate for users who asked
+// not to see motion.
+async function testReducedMotionPreference(page) {
+  const buttonTransition = '#studioDetailPanel .reviewer-action-button.accept';
+
+  // Baseline (no preference): the reviewer-action button has a real transition.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await loadReviewWithMatter(page);
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const baselineTransition = await page.locator(buttonTransition).evaluate((node) => getComputedStyle(node).transitionDuration);
+  assert.ok(parseFloat(baselineTransition) > 0.05, `transition should animate when motion is allowed, got ${baselineTransition}`);
+
+  // With reduced motion requested, the same transition collapses to ~0.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loadReviewWithMatter(page);
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const reduced = await page.locator(buttonTransition).evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return { animation: styles.animationDuration, transition: styles.transitionDuration };
+  });
+  // 0.001ms rounds toward "0s" in computed style; assert it is effectively instant.
+  assert.ok(parseFloat(reduced.transition) < 0.01, `reduced-motion transition should be ~0, got ${reduced.transition}`);
+  assert.ok(parseFloat(reduced.animation) < 0.01, `reduced-motion animation should be ~0, got ${reduced.animation}`);
 }
 
 function testPngBuffer(width, height) {

@@ -6668,3 +6668,19 @@ body.modal-open {
     width: 100%;
   }
 }
+
+/* Accessibility: honour the OS "reduce motion" preference. Neutralise
+   animations, transitions and smooth scrolling for users who have asked for
+   reduced motion. Durations are clamped to ~0 rather than 0 so animationend /
+   transitionend listeners still fire and any JS that waits on them does not
+   hang (e.g. the clause-jump and paragraph-highlight pulses). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
