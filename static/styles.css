@@ -4605,6 +4605,14 @@ body.modal-open {
   font-variant-numeric: tabular-nums;
 }
 
+.playbook-version-card .playbook-version-fingerprint {
+  color: var(--ink-muted);
+  cursor: default;
+  font-family: ui-monospace, "SF Mono", "Roboto Mono", Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
 .playbook-version-card small {
   color: var(--ink-muted);
 }

@@ -274,8 +274,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const helpers = draftHelpers();
     const active = state.activePlaybook || null;
     const draft = state.draftMeta || null;
-    const activeLabel = helpers ? helpers.versionLabel(active) : "";
-    const draftLabel = helpers ? helpers.versionLabel(draft) : "";
+    // Human-readable headline (e.g. "Published Jun 4, 2026, 11:09 PM") with a
+    // subtle short fingerprint and the full raw id tucked into a hover tooltip.
+    const activeLabel = helpers ? helpers.friendlyVersionLabel(active, "active") : "";
+    const draftLabel = helpers ? helpers.friendlyVersionLabel(draft, "draft") : "";
     const dirty = hasAnyDraft();
     const draftAhead = helpers ? helpers.draftDiffersFromActive(draft, active) : false;
     let draftNote = "Matches the active published version.";
@@ -291,16 +293,42 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       <section class="playbook-version-banner" data-draft-state="${escapeHtml(draftStateClass)}" aria-label="Playbook version status">
         <article class="playbook-version-card active">
           <p class="eyebrow">Active published</p>
-          <strong>${escapeHtml(activeLabel || "Unversioned")}</strong>
+          <strong${versionTooltipAttr(active)}>${escapeHtml(activeLabel || "Not yet published")}</strong>
+          ${versionFingerprint(active)}
           <small>Used by the review engine right now.</small>
         </article>
         <article class="playbook-version-card draft">
           <p class="eyebrow">Working draft${dirty ? " <span class=\"playbook-dirty-dot\" aria-hidden=\"true\"></span>" : ""}</p>
-          <strong>${escapeHtml(draftLabel || "Unversioned")}</strong>
+          <strong${versionTooltipAttr(draft)}>${escapeHtml(draftLabel || "No saved draft yet")}</strong>
+          ${versionFingerprint(draft)}
           <small>${escapeHtml(draftNote)}</small>
         </article>
       </section>
     `;
+  }
+
+  // Subtle short-hash fingerprint line under a version headline (omitted when no
+  // hash is known), so power users still get a stable identifier at a glance.
+  function versionFingerprint(block) {
+    const helpers = draftHelpers();
+    if (!helpers) return "";
+    const fingerprint = helpers.shortHash(helpers.hashOf(block));
+    if (!fingerprint) return "";
+    return `<span class="playbook-version-fingerprint">#${escapeHtml(fingerprint)}</span>`;
+  }
+
+  // title="" tooltip carrying the full raw id + hash for power users, without
+  // cluttering the visible label. Returns "" (no attribute) when nothing to show.
+  function versionTooltipAttr(block) {
+    const helpers = draftHelpers();
+    if (!helpers) return "";
+    const rawId = helpers.rawVersionId(block);
+    const hash = helpers.hashOf(block);
+    const parts = [];
+    if (rawId) parts.push(rawId);
+    if (hash) parts.push(String(hash));
+    if (!parts.length) return "";
+    return ` title="${escapeHtml(parts.join("\n"))}"`;
   }
 
   // Publish is allowed only when the draft is saved (no unsaved edits), the draft

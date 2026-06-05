@@ -684,9 +684,12 @@ async function testPlaybookAdminEditor(page) {
   await page.getByRole("button", { name: "Publish Playbook" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookSaveStatus")?.textContent.includes("Playbook published."));
   assert.equal(publishedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
-  // Active now shows the published version and the draft is back in sync.
-  await assertTextContains(page.locator(".playbook-version-card.active"), "pbv_8");
+  // Active now shows a human-readable "Published ..." headline (not the raw id)
+  // and the short hash fingerprint; the raw id is preserved in the hover tooltip.
+  await assertTextContains(page.locator(".playbook-version-card.active"), "Published");
   await assertTextContains(page.locator(".playbook-version-card.active"), "draft888");
+  assert.equal(await page.locator(".playbook-version-card.active strong").innerText().then((t) => t.includes("pbv_8")), false);
+  assert.equal(await page.locator(".playbook-version-card.active strong").getAttribute("title").then((t) => (t || "").includes("pbv_8")), true);
   await assertTextContains(page.locator(".playbook-version-card.draft"), "Matches the active published version.");
   // Publishing with no further changes is a no-op, so Publish disables again.
   assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), false);

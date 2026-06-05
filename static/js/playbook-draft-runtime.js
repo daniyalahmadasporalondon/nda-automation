@@ -5,7 +5,7 @@
 // Because the modules load asynchronously, callers await `PlaybookRuntime.ready`
 // before using `PlaybookRuntime.draft` / `PlaybookRuntime.api`.
 const PlaybookRuntime = (() => {
-  const draftModule = import("./modules/playbook-draft.mjs?v=20260605a");
+  const draftModule = import("./modules/playbook-draft.mjs?v=20260605b");
   const apiModule = import("./modules/playbook-api.mjs?v=20260605a");
 
   const runtime = {

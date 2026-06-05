@@ -25,14 +25,18 @@ import { createRepositoryApi } from "../../static/js/modules/repository-api.mjs"
 import {
   clausesOf,
   draftDiffersFromActive,
+  formatVersionDateTime,
+  friendlyVersionLabel,
   hashOf,
   isWorkingDirty,
   normalizePlaybookResponse,
   normalizeValidation,
+  rawVersionId,
   shortHash,
   validationSummary,
   versionLabel,
   versionOf,
+  versionTimestamp,
 } from "../../static/js/modules/playbook-draft.mjs";
 import { createPlaybookApi } from "../../static/js/modules/playbook-api.mjs";
 
@@ -202,6 +206,41 @@ assert.equal(versionLabel({ metadata: { active_version_id: "12", active_hash: "a
 assert.equal(versionLabel({ metadata: { draft_hash: "deadbeefcafe" } }), "deadbeef");
 assert.equal(versionLabel({ metadata: {} }), "");
 assert.equal(versionLabel(null), "");
+
+// --- Human-readable version labels (task #17) ---
+// versionTimestamp prefers the backend ISO field, falls back to the id timestamp.
+const publishedIso = "2026-06-04T23:09:58.581923+00:00";
+const activeBlockWithDate = { metadata: { active_version_id: "pbv_20260604T230958581923Z_e2e59c8ed770", active_hash: "sha256:e2e59c8ed770aa", published_at: publishedIso } };
+assert.equal(versionTimestamp(activeBlockWithDate).toISOString(), new Date(publishedIso).toISOString());
+// Falls back to the timestamp embedded in a pbv_ id when no ISO field is present.
+const idOnlyBlock = { metadata: { active_version_id: "pbv_20260604T230958581923Z_e2e59c8ed770" } };
+assert.equal(versionTimestamp(idOnlyBlock).toISOString(), "2026-06-04T23:09:58.581Z");
+// No timestamp anywhere → null.
+assert.equal(versionTimestamp({ metadata: { active_version_id: "pbv_legacy" } }), null);
+assert.equal(versionTimestamp(null), null);
+
+// formatVersionDateTime produces a friendly absolute date; "" for bad input.
+// Compare against the same locale call so the test is timezone-independent.
+const expectedFriendly = new Date(publishedIso).toLocaleString(undefined, {
+  year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+});
+assert.equal(formatVersionDateTime(publishedIso), expectedFriendly);
+assert.equal(formatVersionDateTime("not a date"), "");
+assert.equal(formatVersionDateTime(null), "");
+
+// friendlyVersionLabel: "Published <date>" / "Draft saved <date>".
+assert.equal(friendlyVersionLabel(activeBlockWithDate, "active"), `Published ${expectedFriendly}`);
+const draftBlockWithDate = { metadata: { draft_id: "pbd_x", draft_updated_at: publishedIso } };
+assert.equal(friendlyVersionLabel(draftBlockWithDate, "draft"), `Draft saved ${expectedFriendly}`);
+// No timestamp but a semver → "Version <semver>" / "Draft (v<semver>)".
+assert.equal(friendlyVersionLabel({ metadata: { playbook_version: "0.1.0" } }, "active"), "Version 0.1.0");
+assert.equal(friendlyVersionLabel({ metadata: { playbook_version: "0.1.0" } }, "draft"), "Draft (v0.1.0)");
+// Empty block → friendly empty-state copy, never the raw id.
+assert.equal(friendlyVersionLabel({ metadata: {} }, "active"), "Not yet published");
+assert.equal(friendlyVersionLabel({ metadata: {} }, "draft"), "No saved draft yet");
+// The raw id is available for tooltips but not the headline.
+assert.equal(rawVersionId(activeBlockWithDate), "pbv_20260604T230958581923Z_e2e59c8ed770");
+assert.equal(rawVersionId({ metadata: {} }), "");
 
 // normalizePlaybookResponse: {active, draft, history} with nested metadata.
 const normNew = normalizePlaybookResponse({

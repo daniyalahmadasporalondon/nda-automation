@@ -80,6 +80,78 @@ function versionLabel(block) {
   return parts.join(" · ");
 }
 
+// The raw developer version id (e.g. "pbv_20260604T...Z_e2e5..."), for tooltips.
+function rawVersionId(block) {
+  const version = versionOf(block);
+  return version == null ? "" : String(version);
+}
+
+// Best timestamp for a block: the backend's ISO published_at / draft_updated_at
+// when present, otherwise the timestamp embedded in a pbv_/pbd_ id like
+// "pbv_20260604T230958581923Z_<hash>". Returns a Date or null.
+function versionTimestamp(block) {
+  if (!block || typeof block !== "object") return null;
+  const meta = block.metadata && typeof block.metadata === "object" ? block.metadata : {};
+  const iso = meta.published_at ?? meta.draft_updated_at ?? block.published_at ?? block.updated_at;
+  if (iso) {
+    const date = new Date(iso);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return timestampFromVersionId(versionOf(block));
+}
+
+// Parse the compact timestamp embedded in a version id: the segment between the
+// first and last underscore, shaped "YYYYMMDDTHHMMSS<fraction>Z". Returns a Date
+// or null when the id has no parseable timestamp.
+function timestampFromVersionId(versionId) {
+  const text = versionId == null ? "" : String(versionId);
+  const match = text.match(/(\d{8}T\d{6})(\d*)(Z)?/);
+  if (!match) return null;
+  const [, ymdhms, fraction = ""] = match;
+  const y = ymdhms.slice(0, 4);
+  const mo = ymdhms.slice(4, 6);
+  const d = ymdhms.slice(6, 8);
+  const h = ymdhms.slice(9, 11);
+  const mi = ymdhms.slice(11, 13);
+  const s = ymdhms.slice(13, 15);
+  // Use milliseconds (first 3 digits of the fractional part) for a valid ISO.
+  const ms = fraction.slice(0, 3).padEnd(3, "0");
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${s}.${ms}Z`;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Friendly absolute date/time, e.g. "Jun 4, 2026, 11:09 PM". Accepts a Date,
+// ISO string, or epoch ms; returns "" for anything unparseable.
+function formatVersionDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+// Human-readable headline for a version card: "Published <date>" for the active
+// version, "Draft saved <date>" for a draft. Falls back to a semver/label when
+// no timestamp is available, and to "Not yet published" / "No saved draft" when
+// the block is empty.
+function friendlyVersionLabel(block, kind = "active") {
+  const date = versionTimestamp(block);
+  const friendlyDate = date ? formatVersionDateTime(date) : "";
+  if (friendlyDate) {
+    return kind === "draft" ? `Draft saved ${friendlyDate}` : `Published ${friendlyDate}`;
+  }
+  // No timestamp: fall back to a human version number if the backend exposes one.
+  const meta = block && typeof block.metadata === "object" ? block.metadata : {};
+  const semver = meta.playbook_version;
+  if (semver) return kind === "draft" ? `Draft (v${semver})` : `Version ${semver}`;
+  return kind === "draft" ? "No saved draft yet" : "Not yet published";
+}
+
 // Normalize the GET response into a stable internal shape. Accepts the
 // `{ active, draft, history }` contract where active/draft are
 // `{ playbook, metadata }` blocks (draft may be null when none exists). Falls
@@ -173,13 +245,17 @@ export {
   HASH_DISPLAY_LENGTH,
   clausesOf,
   draftDiffersFromActive,
+  formatVersionDateTime,
+  friendlyVersionLabel,
   hashOf,
   isWorkingDirty,
   normalizePlaybookResponse,
   normalizeValidation,
   playbookOf,
+  rawVersionId,
   shortHash,
   validationSummary,
   versionLabel,
   versionOf,
+  versionTimestamp,
 };
