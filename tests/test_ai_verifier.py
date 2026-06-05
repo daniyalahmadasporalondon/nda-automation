@@ -263,13 +263,19 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
     # emits, so the five former integration tests here -- which drove it through the
     # deterministic review_nda() and asserted a deterministic-only correction path
     # (decision_source=="deterministic", reason_code "no_non_circumvention_restriction",
-    # etc.) -- tested a pathway that no longer exists. Their behavior (verifier refutes
-    # a false-flag -> pass, affirms a genuine restriction -> stays fail, verify=False
-    # preserves the finding, evidence-trust holds) is covered on the shipping AI-first
-    # path by test_verifier_corrects_ai_first_false_flag,
-    # test_verifier_leaves_correct_ai_first_pass_untouched,
-    # test_verify_false_preserves_ai_first_finding, and
-    # test_ai_first_genuine_restriction_stays_failed.
+    # etc.) -- tested a pathway that no longer exists. Every behavior they covered now
+    # lives elsewhere, on the shipping path:
+    #   - refute false-flag -> pass, evidence-trust + audit-trace intact:
+    #       AIFirstPathIntegrationTests.test_verifier_corrects_ai_first_false_flag
+    #   - a correct AI pass left untouched:
+    #       AIFirstPathIntegrationTests.test_verifier_leaves_correct_ai_first_pass_untouched
+    #   - affirm a genuine restriction -> stays fail (no over-correction):
+    #       AIFirstPathIntegrationTests.test_ai_first_genuine_restriction_stays_failed
+    #   - verify=False preserves the AI finding (verifier disabled):
+    #       AIFirstPathIntegrationTests.test_verify_false_preserves_ai_first_finding
+    #   - a verifier-refuted pass reads as absence grounding (decision_source==ai_verifier):
+    #       tests/test_evidence_grounding.py::test_verifier_cleared_pass_on_required_clause_is_absence
+    #       and ::test_verifier_cleared_pass_becomes_absence_and_drops_citation
 
 
 class ResolveVerifierTests(unittest.TestCase):
