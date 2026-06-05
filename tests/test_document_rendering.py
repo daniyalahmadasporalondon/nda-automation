@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from nda_automation import document_rendering
 from nda_automation.document_rendering import (
     DOCX_CONTENT_TYPE,
+    MAX_PAGE_PIXMAP_BYTES,
+    MAX_RASTERIZED_PAGES,
+    MIN_PAGE_IMAGE_DPI,
     READY_STATUS,
     UNAVAILABLE_STATUS,
+    DocumentRenderingError,
+    DocxConverterBusy,
+    LibreOfficeDocxConverter,
+    PdfPageTooLargeToRasterize,
+    PyMuPdfPageRenderer,
     RenderedPdfPageImage,
+    _budgeted_page_dpi,
+    _run_soffice_command,
     document_render_cache_key,
     render_pdf_page_image_manifest,
     render_source_document_to_pdf,
@@ -223,6 +237,270 @@ class DocumentRenderingTests(unittest.TestCase):
         self.assertNotEqual(pdf_key, docx_key)
         self.assertNotEqual(pdf_key, changed_bytes_key)
         self.assertNotEqual(pdf_key, changed_version_key)
+
+
+class _FakeRect:
+    def __init__(self, width: float, height: float) -> None:
+        self.width = width
+        self.height = height
+
+
+class _FakePixmap:
+    """Pixmap stand-in whose dimensions follow the requested scale.
+
+    It records the largest pixel area it was ever asked to materialize so a
+    test can assert the renderer never demanded an out-of-budget pixmap.
+    """
+
+    max_area_seen = 0
+
+    def __init__(self, width_pts: float, height_pts: float, scale: float) -> None:
+        self.width = max(1, int(round(width_pts * scale)))
+        self.height = max(1, int(round(height_pts * scale)))
+        type(self).max_area_seen = max(type(self).max_area_seen, self.width * self.height)
+
+    def tobytes(self, _fmt: str) -> bytes:
+        return b"\x89PNG\r\nfake\n"
+
+
+class _FakePage:
+    def __init__(self, width_pts: float, height_pts: float) -> None:
+        self.rect = _FakeRect(width_pts, height_pts)
+
+    def get_pixmap(self, *, matrix, alpha=False):  # noqa: ANN001 - mirrors fitz signature
+        return _FakePixmap(self.rect.width, self.rect.height, matrix.scale)
+
+
+class _FakeMatrix:
+    def __init__(self, sx: float, sy: float) -> None:
+        self.scale = sx
+
+
+class _FakeDocument:
+    def __init__(self, pages: list[_FakePage]) -> None:
+        self._pages = pages
+        self.page_count = len(pages)
+
+    def load_page(self, index: int) -> _FakePage:
+        return self._pages[index]
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeFitzModule:
+    def __init__(self, pages: list[_FakePage]) -> None:
+        self._pages = pages
+        self.Matrix = _FakeMatrix
+
+    def open(self, _path: str) -> _FakeDocument:
+        return _FakeDocument(self._pages)
+
+
+class BudgetedPageDpiTests(unittest.TestCase):
+    def test_returns_requested_dpi_when_page_fits_budget(self):
+        # US Letter (612x792 pts) at 192 DPI is ~10 MB, well under budget.
+        self.assertEqual(_budgeted_page_dpi(612, 792, requested_dpi=192), 192)
+
+    def test_zero_or_unknown_rect_renders_at_requested_dpi(self):
+        self.assertEqual(_budgeted_page_dpi(0, 0, requested_dpi=192), 192)
+
+    def test_clamps_dpi_down_so_pixmap_stays_within_budget(self):
+        # A ~49x49 inch (3528 pt) MediaBox is ~265 MB at 192 DPI but fits the
+        # budget at a reduced DPI; the clamp must cut DPI without rejecting, and
+        # the resulting pixmap must respect the byte budget.
+        clamped = _budgeted_page_dpi(3528, 3528, requested_dpi=192)
+        self.assertLess(clamped, 192)
+        self.assertGreaterEqual(clamped, MIN_PAGE_IMAGE_DPI)
+        area_inches = (3528 / 72) * (3528 / 72)
+        pixmap_bytes = area_inches * (clamped**2) * 3
+        self.assertLessEqual(pixmap_bytes, MAX_PAGE_PIXMAP_BYTES)
+
+    def test_rejects_page_that_cannot_fit_even_at_floor_dpi(self):
+        # Pathological MediaBox: even MIN_PAGE_IMAGE_DPI overflows the budget.
+        with self.assertRaises(PdfPageTooLargeToRasterize):
+            _budgeted_page_dpi(200000, 200000, requested_dpi=192)
+
+    def test_never_returns_more_than_requested_even_for_tiny_page(self):
+        self.assertEqual(_budgeted_page_dpi(10, 10, requested_dpi=72), 72)
+
+
+class PyMuPdfRasterizationBoundsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _FakePixmap.max_area_seen = 0
+
+    def test_attacker_mediabox_is_downscaled_not_rasterized_at_full_dpi(self):
+        page = _FakePage(3528, 3528)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
+        self.assertEqual(len(pages), 1)
+        self.assertLess(pages[0].dpi, 192)
+        # The realized pixmap must respect the per-page byte budget (RGB = 3B/px).
+        self.assertLessEqual(_FakePixmap.max_area_seen * 3, MAX_PAGE_PIXMAP_BYTES)
+
+    def test_normal_page_renders_at_requested_dpi(self):
+        page = _FakePage(612, 792)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
+        self.assertEqual(pages[0].dpi, 192)
+
+    def test_page_count_over_cap_is_rejected(self):
+        pages = [_FakePage(612, 792) for _ in range(MAX_RASTERIZED_PAGES + 1)]
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule(pages))
+        with tempfile.TemporaryDirectory() as out_name:
+            with self.assertRaises(PdfPageTooLargeToRasterize):
+                renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
+
+    def test_manifest_reports_page_too_large_without_crashing(self):
+        pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+        page = _FakePage(200000, 200000)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            cache_dir = Path(cache_dir_name)
+            rendered = render_source_document_to_pdf(pdf_bytes, source_filename="Source NDA.pdf", cache_dir=cache_dir)
+            manifest = render_pdf_page_image_manifest(rendered, renderer=renderer, dpi=192)
+        self.assertEqual(manifest.error_code, "page_too_large_to_rasterize")
+        self.assertEqual(manifest.pages, ())
+
+
+class SofficeConcurrencyAndTimeoutTests(unittest.TestCase):
+    def test_busy_when_no_conversion_slot_is_available(self):
+        # Drain every conversion slot so the next acquire cannot succeed, then
+        # assert the converter sheds load with DocxConverterBusy within the
+        # (shrunk) queue wait rather than blocking indefinitely.
+        semaphore = document_rendering._SOFFICE_CONVERSION_SEMAPHORE
+        acquired = [semaphore.acquire(blocking=False) for _ in range(document_rendering.MAX_CONCURRENT_SOFFICE_CONVERSIONS)]
+        original_wait = document_rendering.CONVERSION_QUEUE_WAIT_SECONDS
+        document_rendering.CONVERSION_QUEUE_WAIT_SECONDS = 0.05
+        try:
+            self.assertTrue(all(acquired))
+            converter = LibreOfficeDocxConverter(executable="/nonexistent/soffice")
+            with tempfile.TemporaryDirectory() as work_name:
+                work = Path(work_name)
+                (work / "source.docx").write_bytes(b"PK\x03\x04")
+                start = time.monotonic()
+                with self.assertRaises(DocxConverterBusy):
+                    converter.convert_docx_to_pdf(work / "source.docx", work, timeout_seconds=5)
+                # Did not block on a full slot for anywhere near a real timeout.
+                self.assertLess(time.monotonic() - start, 2.0)
+        finally:
+            document_rendering.CONVERSION_QUEUE_WAIT_SECONDS = original_wait
+            for ok in acquired:
+                if ok:
+                    semaphore.release()
+
+    def test_slot_is_released_after_conversion_error(self):
+        # A failing conversion must not leak its semaphore slot.
+        converter = LibreOfficeDocxConverter(executable="/nonexistent/soffice")
+        with tempfile.TemporaryDirectory() as work_name:
+            work = Path(work_name)
+            (work / "source.docx").write_bytes(b"PK\x03\x04")
+            with self.assertRaises(DocumentRenderingError):
+                converter.convert_docx_to_pdf(work / "source.docx", work, timeout_seconds=5)
+        # All slots free again: we can acquire the full count without blocking.
+        semaphore = document_rendering._SOFFICE_CONVERSION_SEMAPHORE
+        grabbed = [semaphore.acquire(blocking=False) for _ in range(document_rendering.MAX_CONCURRENT_SOFFICE_CONVERSIONS)]
+        try:
+            self.assertTrue(all(grabbed))
+        finally:
+            for ok in grabbed:
+                if ok:
+                    semaphore.release()
+
+    def test_busy_propagates_and_is_not_persisted_as_a_render_failure(self):
+        # Busy is transient backpressure: it must reach the caller and must NOT
+        # poison the cache with a permanent failure metadata file.
+        semaphore = document_rendering._SOFFICE_CONVERSION_SEMAPHORE
+        acquired = [semaphore.acquire(blocking=False) for _ in range(document_rendering.MAX_CONCURRENT_SOFFICE_CONVERSIONS)]
+        original_wait = document_rendering.CONVERSION_QUEUE_WAIT_SECONDS
+        document_rendering.CONVERSION_QUEUE_WAIT_SECONDS = 0.05
+        try:
+            converter = LibreOfficeDocxConverter(executable="/nonexistent/soffice")
+            with tempfile.TemporaryDirectory() as cache_name:
+                cache_dir = Path(cache_name)
+                with self.assertRaises(DocxConverterBusy):
+                    render_source_document_to_pdf(
+                        b"PK\x03\x04docx-ish",
+                        source_filename="Source NDA.docx",
+                        content_type=DOCX_CONTENT_TYPE,
+                        cache_dir=cache_dir,
+                        converter=converter,
+                    )
+                # No failure metadata persisted anywhere under the cache root.
+                self.assertEqual(list(cache_dir.rglob("metadata.json")), [])
+        finally:
+            document_rendering.CONVERSION_QUEUE_WAIT_SECONDS = original_wait
+            for ok in acquired:
+                if ok:
+                    semaphore.release()
+
+    @unittest.skipUnless(os.name == "posix", "process-group kill is POSIX-only")
+    def test_timeout_kills_the_whole_process_group(self):
+        # A hung conversion forks a child that outlives the parent; the timeout
+        # must SIGKILL the entire process group, not just the direct child.
+        marker_dir = tempfile.mkdtemp()
+        child_pid_file = Path(marker_dir) / "child.pid"
+        # Parent spawns a long-lived background child, records its PID, then
+        # sleeps far past the timeout. If only the parent were killed, the child
+        # would survive and we could still signal it.
+        script = (
+            f"import os, sys, time, subprocess\n"
+            f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+            f"open({str(child_pid_file)!r}, 'w').write(str(child.pid))\n"
+            f"time.sleep(30)\n"
+        )
+        start = time.monotonic()
+        with self.assertRaises(DocumentRenderingError) as ctx:
+            _run_soffice_command([sys.executable, "-c", script], cwd=marker_dir, timeout_seconds=1)
+        self.assertEqual(ctx.exception.code, "conversion_timeout")
+        # Killed promptly, well under the 30s sleeps.
+        self.assertLess(time.monotonic() - start, 10.0)
+        # Give the SIGKILL a moment to reap the group, then confirm the forked
+        # child is gone (kill(pid, 0) raises ProcessLookupError when reaped).
+        deadline = time.monotonic() + 5.0
+        child_pid = None
+        while time.monotonic() < deadline:
+            if child_pid_file.is_file():
+                try:
+                    child_pid = int(child_pid_file.read_text().strip())
+                    break
+                except ValueError:
+                    pass
+            time.sleep(0.05)
+        self.assertIsNotNone(child_pid, "child PID was never recorded")
+        child_alive = True
+        for _ in range(100):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                child_alive = False
+                break
+            time.sleep(0.05)
+        if child_alive:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
+        self.assertFalse(child_alive, "forked child survived the process-group kill")
+
+    @unittest.skipUnless(os.name == "posix", "RLIMIT preexec is POSIX-only")
+    def test_preexec_applies_address_space_rlimit_in_child(self):
+        # The child must come up with RLIMIT_AS reduced to our cap (where the
+        # platform honors it). Run a probe through the same launch path and read
+        # back its own soft limit.
+        import resource as _resource
+
+        probe = "import resource,sys; print(resource.getrlimit(resource.RLIMIT_AS)[0])"
+        returncode, stdout_bytes, _stderr = _run_soffice_command(
+            [sys.executable, "-c", probe], cwd=os.getcwd(), timeout_seconds=10
+        )
+        self.assertEqual(returncode, 0)
+        child_soft = int(stdout_bytes.decode().strip())
+        if child_soft == _resource.RLIM_INFINITY:
+            self.skipTest("platform does not honor RLIMIT_AS (e.g. macOS)")
+        self.assertLessEqual(child_soft, document_rendering.CONVERSION_MEMORY_LIMIT_BYTES)
 
 
 if __name__ == "__main__":

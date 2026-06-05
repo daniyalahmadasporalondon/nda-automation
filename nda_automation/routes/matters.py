@@ -293,10 +293,21 @@ def _matter_render_result(
     if source_path is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return None
-    rendered = document_rendering.render_source_path_to_pdf(
-        source_path,
-        content_type=_source_document_content_type(source_path),
-    )
+    try:
+        rendered = document_rendering.render_source_path_to_pdf(
+            source_path,
+            content_type=_source_document_content_type(source_path),
+        )
+    except document_rendering.DocxConverterBusy as error:
+        # Conversion capacity is saturated; shed load with retryable backpressure
+        # instead of queueing another heavyweight soffice process.
+        handler._send_json(
+            {"error": error.message},
+            status=503,
+            headers={"Retry-After": "5"},
+            send_body=send_body,
+        )
+        return None
     return matter, rendered
 
 

@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+
+try:  # POSIX-only; absent on Windows. Guards the per-child RLIMIT preexec_fn.
+    import resource
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    resource = None  # type: ignore[assignment]
 
 from . import matter_store
 from .durable_io import fsync_parent_directory
@@ -28,6 +36,34 @@ PAGE_IMAGE_MANIFEST_FILENAME = "manifest.json"
 PAGE_IMAGE_METADATA_VERSION = 1
 DEFAULT_PAGE_IMAGE_DPI = 192
 PDF_POINTS_PER_INCH = 72
+
+# Rasterization resource bounds. A pixmap costs width_px * height_px * channels
+# bytes, and width_px = mediabox_pts / 72 * dpi. An attacker-controlled MediaBox
+# rendered at a fixed DPI can therefore demand multi-gigabyte pixmaps and OOM a
+# small instance, so every page is bounded two ways before it is rasterized:
+#   * MAX_RASTERIZED_PAGES caps how many pages we will ever rasterize.
+#   * MAX_PAGE_PIXMAP_BYTES caps a single page's pixmap; the DPI is clamped down
+#     to whatever fits the budget, and a page whose budget cannot be met even at
+#     MIN_PAGE_IMAGE_DPI is rejected rather than rasterized.
+MAX_RASTERIZED_PAGES = 200
+MAX_PAGE_PIXMAP_BYTES = 64 * 1024 * 1024
+MIN_PAGE_IMAGE_DPI = 36
+RASTERIZED_PIXMAP_CHANNELS = 3  # RGB, alpha=False
+
+# LibreOffice/soffice conversion bounds. soffice runs inline on the request
+# thread, so N concurrent viewers would otherwise spawn N heavyweight processes
+# and OOM a small instance. Conversions are gated three ways:
+#   * MAX_CONCURRENT_SOFFICE_CONVERSIONS bounds how many run at once; callers
+#     that cannot acquire a slot within CONVERSION_QUEUE_WAIT_SECONDS get a
+#     DocxConverterBusy (the route maps this to 503 backpressure).
+#   * Each child is launched in its own process group with RLIMIT_AS/RLIMIT_CPU
+#     so a runaway conversion cannot exhaust memory or CPU.
+#   * A hard wall-clock timeout kills the whole process group (soffice forks
+#     children that outlive a plain Popen.kill()).
+MAX_CONCURRENT_SOFFICE_CONVERSIONS = 2
+CONVERSION_QUEUE_WAIT_SECONDS = 5.0
+CONVERSION_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB address space per child
+CONVERSION_CPU_LIMIT_SECONDS = 60  # CPU-seconds; backstops the wall-clock timeout
 
 READY_STATUS = "ready"
 UNAVAILABLE_STATUS = "unavailable"
@@ -50,12 +86,31 @@ class DocxConverterUnavailable(DocumentRenderingError):
         )
 
 
+class DocxConverterBusy(DocumentRenderingError):
+    """Raised when no conversion slot is free within the queue wait window.
+
+    The route layer maps this to HTTP 503 with Retry-After so a burst of viewers
+    sheds load instead of spawning an unbounded number of soffice processes.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "converter_busy",
+            "DOCX conversion is at capacity; please retry shortly.",
+        )
+
+
 class PdfPageRendererUnavailable(DocumentRenderingError):
     def __init__(self) -> None:
         super().__init__(
             "page_renderer_unavailable",
             "PDF page image rendering requires PyMuPDF/fitz, but it is not installed.",
         )
+
+
+class PdfPageTooLargeToRasterize(DocumentRenderingError):
+    def __init__(self, message: str) -> None:
+        super().__init__("page_too_large_to_rasterize", message)
 
 
 class DocxConverter(Protocol):
@@ -168,6 +223,42 @@ class PdfPageRenderer(Protocol):
     def render_pdf_to_page_images(self, pdf_path: Path, output_dir: Path, *, dpi: int) -> list[RenderedPdfPageImage]: ...
 
 
+# Bounds concurrent soffice processes process-wide. BoundedSemaphore so an
+# over-release is a programming error rather than silently widening the cap.
+_SOFFICE_CONVERSION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_SOFFICE_CONVERSIONS)
+
+
+def _soffice_resource_preexec() -> None:  # pragma: no cover - runs in the child
+    """Constrain the soffice child before exec: own session + RLIMIT_AS/CPU.
+
+    Runs between fork and exec in the child only. os.setsid() puts the child in
+    a fresh process group so a timeout can signal the whole group (soffice forks
+    helpers). RLIMIT_AS caps address space; RLIMIT_CPU caps CPU-seconds as a
+    backstop to the wall-clock timeout. Failures here must not crash the parent.
+    """
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    if resource is None:
+        return
+    for limit_name, limit_value in (
+        ("RLIMIT_AS", CONVERSION_MEMORY_LIMIT_BYTES),
+        ("RLIMIT_CPU", CONVERSION_CPU_LIMIT_SECONDS),
+    ):
+        limit = getattr(resource, limit_name, None)
+        if limit is None:
+            continue
+        try:
+            soft, hard = resource.getrlimit(limit)
+            new_hard = limit_value if hard == resource.RLIM_INFINITY else min(limit_value, hard)
+            resource.setrlimit(limit, (min(limit_value, new_hard), new_hard))
+        except (ValueError, OSError):
+            # Some platforms (notably macOS RLIMIT_AS) reject the limit; the
+            # wall-clock timeout + semaphore still bound the blast radius.
+            pass
+
+
 class LibreOfficeDocxConverter:
     name = "libreoffice"
 
@@ -181,6 +272,17 @@ class LibreOfficeDocxConverter:
         if not self.executable:
             raise DocxConverterUnavailable()
 
+        # Backpressure: shed load rather than spawn an unbounded number of
+        # processes. A short queue absorbs transient overlap; past that the
+        # caller gets a busy signal the route turns into a 503.
+        if not _SOFFICE_CONVERSION_SEMAPHORE.acquire(timeout=CONVERSION_QUEUE_WAIT_SECONDS):
+            raise DocxConverterBusy()
+        try:
+            return self._convert_within_slot(source_path, output_dir, timeout_seconds=timeout_seconds)
+        finally:
+            _SOFFICE_CONVERSION_SEMAPHORE.release()
+
+    def _convert_within_slot(self, source_path: Path, output_dir: Path, *, timeout_seconds: int) -> Path:
         command = [
             self.executable,
             "--headless",
@@ -190,27 +292,16 @@ class LibreOfficeDocxConverter:
             str(output_dir),
             str(source_path),
         ]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(output_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise DocxConverterUnavailable() from exc
-        except subprocess.TimeoutExpired as exc:
-            raise DocumentRenderingError(
-                "conversion_timeout",
-                f"DOCX to PDF conversion timed out after {timeout_seconds} seconds.",
-            ) from exc
+        returncode, stdout_bytes, stderr_bytes = _run_soffice_command(
+            command,
+            cwd=str(output_dir),
+            timeout_seconds=timeout_seconds,
+        )
 
-        if completed.returncode != 0:
-            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
-            stdout = completed.stdout.decode("utf-8", errors="replace").strip()
-            detail = stderr or stdout or f"LibreOffice exited with status {completed.returncode}."
+        if returncode != 0:
+            stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+            stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+            detail = stderr or stdout or f"LibreOffice exited with status {returncode}."
             raise DocumentRenderingError("conversion_failed", _truncate_error_detail(detail))
 
         expected_output = output_dir / f"{source_path.stem}.pdf"
@@ -220,6 +311,59 @@ class LibreOfficeDocxConverter:
         if pdf_outputs:
             return pdf_outputs[0]
         raise DocumentRenderingError("conversion_missing_output", "DOCX conversion finished but did not produce a PDF.")
+
+
+def _run_soffice_command(
+    command: list[str],
+    *,
+    cwd: str,
+    timeout_seconds: int,
+) -> tuple[int, bytes, bytes]:
+    """Run soffice in its own process group; kill the whole group on timeout.
+
+    soffice forks helper processes that survive a plain Popen.kill(), so a hung
+    conversion is killed via the process group. Returns (returncode, stdout,
+    stderr). Raises DocxConverterUnavailable if the executable is missing and
+    DocumentRenderingError("conversion_timeout") if the wall-clock budget is hit.
+    """
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            preexec_fn=_soffice_resource_preexec,
+        )
+    except FileNotFoundError as exc:
+        raise DocxConverterUnavailable() from exc
+
+    try:
+        stdout_bytes, stderr_bytes = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_group(process)
+        # Drain pipes so the killed child does not leak file descriptors.
+        try:
+            process.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+        raise DocumentRenderingError(
+            "conversion_timeout",
+            f"DOCX to PDF conversion timed out after {timeout_seconds} seconds.",
+        ) from exc
+
+    return process.returncode, stdout_bytes, stderr_bytes
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    """SIGKILL the child's process group, falling back to the child itself."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 
 class PyMuPdfPageRenderer:
@@ -236,16 +380,27 @@ class PyMuPdfPageRenderer:
             raise PdfPageRendererUnavailable()
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        scale = _page_image_scale(dpi)
         document = self._fitz.open(str(pdf_path))
         try:
             page_count = getattr(document, "page_count", None)
             if page_count is None:
                 page_count = len(document)
-            matrix = self._fitz.Matrix(scale, scale)
+            page_count = int(page_count)
+            if page_count > MAX_RASTERIZED_PAGES:
+                raise PdfPageTooLargeToRasterize(
+                    f"PDF has {page_count} pages, exceeding the {MAX_RASTERIZED_PAGES}-page rasterization cap."
+                )
             pages: list[RenderedPdfPageImage] = []
-            for page_index in range(int(page_count)):
+            for page_index in range(page_count):
                 page = document.load_page(page_index)
+                # Clamp the DPI per page so the pixmap stays within the byte
+                # budget; an attacker-sized MediaBox is rendered at a reduced DPI
+                # rather than blowing up the pixmap, and is rejected outright if
+                # even MIN_PAGE_IMAGE_DPI would not fit.
+                width_pts, height_pts = _page_rect_points(page)
+                effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
+                scale = _page_image_scale(effective_dpi)
+                matrix = self._fitz.Matrix(scale, scale)
                 pixmap = page.get_pixmap(matrix=matrix, alpha=False)
                 image_path = output_dir / _page_image_filename(page_index + 1)
                 _write_bytes_atomic(image_path, pixmap.tobytes("png"))
@@ -255,7 +410,7 @@ class PyMuPdfPageRenderer:
                         image_path=image_path,
                         width=int(pixmap.width),
                         height=int(pixmap.height),
-                        dpi=dpi,
+                        dpi=effective_dpi,
                         scale=scale,
                     )
                 )
@@ -404,6 +559,11 @@ def render_source_document_to_pdf(
                 converter_name=getattr(active_converter, "name", "unknown"),
             ),
         )
+    except DocxConverterBusy:
+        # Transient backpressure, not a render failure: propagate to the route
+        # (-> 503) and do NOT persist it, so the document can still render once
+        # capacity frees up rather than being cached as permanently broken.
+        raise
     except DocumentRenderingError as exc:
         result = _error_result(
             cache_key=cache_key,
@@ -833,6 +993,65 @@ def _page_image_filename(page_number: int) -> str:
 
 def _page_image_scale(dpi: int) -> float:
     return round(float(dpi) / PDF_POINTS_PER_INCH, 4)
+
+
+def _page_rect_points(page: Any) -> tuple[float, float]:
+    """Return a fitz page's (width, height) in PDF points.
+
+    The rect width/height already account for the page's MediaBox/CropBox and
+    rotation, which is exactly the geometry that drives pixmap size.
+    """
+    rect = getattr(page, "rect", None)
+    width = getattr(rect, "width", None)
+    height = getattr(rect, "height", None)
+    try:
+        width_pts = float(width)
+        height_pts = float(height)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    if width_pts < 0 or height_pts < 0:
+        return 0.0, 0.0
+    return width_pts, height_pts
+
+
+def _budgeted_page_dpi(
+    width_pts: float,
+    height_pts: float,
+    *,
+    requested_dpi: int,
+    byte_budget: int = MAX_PAGE_PIXMAP_BYTES,
+    channels: int = RASTERIZED_PIXMAP_CHANNELS,
+    min_dpi: int = MIN_PAGE_IMAGE_DPI,
+) -> int:
+    """Largest DPI <= requested whose pixmap fits the per-page byte budget.
+
+    The pixmap costs ``(width_pts/72*dpi) * (height_pts/72*dpi) * channels``
+    bytes. We solve that inequality for DPI, never returning more than the
+    requested DPI. If the page cannot fit the budget even at ``min_dpi`` the
+    MediaBox is pathological and rasterizing it would threaten the instance, so
+    we reject rather than rasterize.
+    """
+    if requested_dpi <= 0:
+        raise ValueError("Page image DPI must be a positive integer.")
+    # A zero/unknown page rect cannot overflow the budget; render as requested.
+    if width_pts <= 0 or height_pts <= 0:
+        return requested_dpi
+
+    area_inches = (width_pts / PDF_POINTS_PER_INCH) * (height_pts / PDF_POINTS_PER_INCH)
+    requested_bytes = area_inches * (requested_dpi**2) * channels
+    if requested_bytes <= byte_budget:
+        return requested_dpi
+
+    # bytes(dpi) = area_inches * dpi^2 * channels <= budget  ->  dpi <= sqrt(...)
+    max_dpi = int(math.isqrt(int(byte_budget // (area_inches * channels))))
+    if max_dpi < min_dpi:
+        page_bytes_at_floor = int(area_inches * (min_dpi**2) * channels)
+        raise PdfPageTooLargeToRasterize(
+            "PDF page is too large to rasterize within the "
+            f"{byte_budget} byte pixmap budget; even {min_dpi} DPI would need "
+            f"~{page_bytes_at_floor} bytes."
+        )
+    return min(requested_dpi, max_dpi)
 
 
 def _file_sha256(path: Path) -> str:
