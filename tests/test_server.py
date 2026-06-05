@@ -2626,6 +2626,60 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(matters), 1)
         self.assertIn(matters[0]["id"], {legacy["id"], hashed["id"]})
 
+    def test_gmail_attachment_dedupe_uses_key_index_without_pairwise_matching(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                for attachment_id in ["unstable_att_1", "unstable_att_2"]:
+                    matter_store.create_matter(
+                        source_filename="Counterparty NDA.docx",
+                        document_bytes=attachment_id.encode("utf-8"),
+                        extracted_text=attachment_id,
+                        review_result={"clauses": []},
+                        triage={},
+                        source_type="gmail_inbound",
+                        intake_metadata={
+                            "attachment_filename": "Counterparty NDA.docx",
+                            "gmail_attachment_id": attachment_id,
+                            "gmail_message_id": "msg_123",
+                        },
+                    )
+                with patch.object(
+                    matter_store,
+                    "_gmail_attachments_match",
+                    side_effect=AssertionError("pairwise matcher called"),
+                ):
+                    removed = matter_store.deduplicate_gmail_matters()
+                matters = matter_store.list_matters()
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(len(matters), 1)
+
+    def test_gmail_attachment_dedupe_keeps_same_filename_when_hashes_conflict(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                for attachment_id, attachment_sha256 in [("unstable_att_1", "hash_a"), ("unstable_att_2", "hash_b")]:
+                    matter_store.create_matter(
+                        source_filename="Counterparty NDA.docx",
+                        document_bytes=attachment_id.encode("utf-8"),
+                        extracted_text=attachment_id,
+                        review_result={"clauses": []},
+                        triage={},
+                        source_type="gmail_inbound",
+                        intake_metadata={
+                            "attachment_filename": "Counterparty NDA.docx",
+                            "gmail_attachment_id": attachment_id,
+                            "gmail_attachment_sha256": attachment_sha256,
+                            "gmail_message_id": "msg_123",
+                        },
+                    )
+                removed = matter_store.deduplicate_gmail_matters()
+                matters = matter_store.list_matters()
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(matters), 2)
+
     def test_gmail_matter_create_is_idempotent_by_attachment_hash(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

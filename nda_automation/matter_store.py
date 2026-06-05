@@ -326,48 +326,89 @@ def delete_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | N
     return deleted_matter
 
 
+def _gmail_duplicate_removal_ids(matters: list[dict[str, Any]], owner_user_id: str = "") -> set[int]:
+    parent: dict[int, int] = {}
+    matters_by_id: dict[int, dict[str, Any]] = {}
+    keyed_matters: list[tuple[dict[str, Any], tuple[tuple[str, str], ...]]] = []
+
+    def root(object_id: int) -> int:
+        while parent[object_id] != object_id:
+            parent[object_id] = parent[parent[object_id]]
+            object_id = parent[object_id]
+        return object_id
+
+    def union(left_id: int, right_id: int) -> None:
+        left_root = root(left_id)
+        right_root = root(right_id)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for matter in matters:
+        if not _matter_owner_matches(matter, owner_user_id):
+            continue
+        keys = _gmail_attachment_keys_for_metadata(matter)
+        if not keys:
+            continue
+        object_id = id(matter)
+        parent[object_id] = object_id
+        matters_by_id[object_id] = matter
+        keyed_matters.append((matter, keys))
+
+    non_filename_index: dict[tuple[str, str], int] = {}
+    filename_index: dict[tuple[str, str], list[int]] = {}
+    for matter, keys in keyed_matters:
+        object_id = id(matter)
+        for key in keys:
+            if key[1].startswith("filename:"):
+                filename_index.setdefault(key, []).append(object_id)
+                continue
+            existing_id = non_filename_index.get(key)
+            if existing_id is None:
+                non_filename_index[key] = object_id
+            else:
+                union(existing_id, object_id)
+
+    for object_ids in filename_index.values():
+        no_hash_ids = [
+            object_id
+            for object_id in object_ids
+            if not str(matters_by_id[object_id].get("gmail_attachment_sha256") or "")
+        ]
+        if no_hash_ids:
+            for object_id in object_ids[1:]:
+                union(object_ids[0], object_id)
+            continue
+        hash_index: dict[str, list[int]] = {}
+        for object_id in object_ids:
+            attachment_sha256 = str(matters_by_id[object_id].get("gmail_attachment_sha256") or "")
+            if attachment_sha256:
+                hash_index.setdefault(attachment_sha256, []).append(object_id)
+        for matching_hash_ids in hash_index.values():
+            for object_id in matching_hash_ids[1:]:
+                union(matching_hash_ids[0], object_id)
+
+    duplicate_groups: dict[int, list[dict[str, Any]]] = {}
+    for object_id, matter in matters_by_id.items():
+        duplicate_groups.setdefault(root(object_id), []).append(matter)
+
+    removal_ids: set[int] = set()
+    for group in duplicate_groups.values():
+        if len(group) <= 1:
+            continue
+        winner_id = id(max(group, key=_matter_duplicate_rank))
+        removal_ids.update(id(matter) for matter in group if id(matter) != winner_id)
+    return removal_ids
+
+
 def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
     with _locked_store():
         _ensure_matter_records_from_legacy()
         matters = _load_matters()
-        dedupe_candidates = [
-            matter
-            for matter in matters
-            if _matter_owner_matches(matter, owner_user_id)
-        ]
-        duplicate_groups: list[list[dict[str, Any]]] = []
-        for matter in dedupe_candidates:
-            if not _gmail_attachment_keys_for_metadata(matter):
-                continue
-            matching_groups = [
-                group
-                for group in duplicate_groups
-                if any(_gmail_attachments_match(matter, existing_matter) for existing_matter in group)
-            ]
-            if not matching_groups:
-                duplicate_groups.append([matter])
-                continue
-            primary_group = matching_groups[0]
-            primary_group.append(matter)
-            for extra_group in matching_groups[1:]:
-                primary_group.extend(extra_group)
-                duplicate_groups.remove(extra_group)
-
-        duplicate_member_ids = {
-            id(matter)
-            for group in duplicate_groups
-            if len(group) > 1
-            for matter in group
-        }
-        winner_ids = {
-            id(max(group, key=_matter_duplicate_rank))
-            for group in duplicate_groups
-            if len(group) > 1
-        }
+        removal_ids = _gmail_duplicate_removal_ids(matters, owner_user_id=owner_user_id)
 
         removed: list[dict[str, Any]] = []
         for matter in matters:
-            if id(matter) in duplicate_member_ids and id(matter) not in winner_ids:
+            if id(matter) in removal_ids:
                 removed.append(matter)
 
         if not removed:

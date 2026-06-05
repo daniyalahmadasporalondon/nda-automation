@@ -5,6 +5,7 @@ from pathlib import Path
 import threading
 from unittest.mock import patch
 
+from nda_automation import matter_repository as matter_repository_module
 from nda_automation import matter_store
 from nda_automation.matter_repository import (
     DiskMatterRepository,
@@ -188,6 +189,50 @@ def test_find_gmail_attachment_and_dedupe():
     # The survivor is rank-determined; assert one valid duplicate remains.
     assert remaining[0]["id"] in {first["id"], second["id"]}
     assert remaining[0]["gmail_message_id"] == "msg_1"
+
+
+def test_gmail_dedupe_uses_key_index_without_pairwise_matching():
+    repo = InMemoryMatterRepository()
+    gmail_meta = {
+        "gmail_message_id": "msg_1",
+        "gmail_attachment_id": "att_1",
+        "gmail_account": "ops@example.com",
+    }
+    repo.create_matter(**_create_kwargs(source_type="gmail", board_column="gmail_demo", intake_metadata=gmail_meta))
+    repo.create_matter(**_create_kwargs(source_type="gmail", board_column="gmail_demo", intake_metadata=gmail_meta))
+
+    patch_target = (
+        matter_repository_module
+        if hasattr(matter_repository_module, "_gmail_attachments_match")
+        else matter_store
+    )
+    with patch.object(patch_target, "_gmail_attachments_match", side_effect=AssertionError("pairwise matcher called")):
+        removed = repo.deduplicate_gmail_matters()
+
+    assert removed == 1
+    assert len(repo.list_matters()) == 1
+
+
+def test_gmail_dedupe_keeps_same_filename_when_hashes_conflict():
+    repo = InMemoryMatterRepository()
+    for attachment_id, attachment_sha256 in [("att_1", "hash_a"), ("att_2", "hash_b")]:
+        repo.create_matter(
+            **_create_kwargs(
+                source_type="gmail",
+                board_column="gmail_demo",
+                intake_metadata={
+                    "attachment_filename": "Counterparty NDA.docx",
+                    "gmail_attachment_id": attachment_id,
+                    "gmail_attachment_sha256": attachment_sha256,
+                    "gmail_message_id": "msg_1",
+                },
+            )
+        )
+
+    removed = repo.deduplicate_gmail_matters()
+
+    assert removed == 0
+    assert len(repo.list_matters()) == 2
 
 
 def test_export_backup_shape():

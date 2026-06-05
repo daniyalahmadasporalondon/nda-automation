@@ -25,10 +25,8 @@ from .matter_store import (
     _clean_source_filename,
     _clean_owner_user_id,
     _find_gmail_duplicate_unlocked,
-    _gmail_attachments_match,
-    _gmail_attachment_keys_for_metadata,
+    _gmail_duplicate_removal_ids,
     _intake_metadata,
-    _matter_duplicate_rank,
     _matter_owner_matches,
     _prune_stored_matters,
     _safe_filename,
@@ -448,42 +446,12 @@ class InMemoryMatterRepository:
     def deduplicate_gmail_matters(self, owner_user_id: str = "") -> int:
         with self._lock:
             matters = self._matters
-            dedupe_candidates = [
-                matter
-                for matter in matters
-                if _matter_owner_matches(matter, owner_user_id)
-            ]
-            duplicate_groups: list[list[dict[str, Any]]] = []
-            for matter in dedupe_candidates:
-                if not _gmail_attachment_keys_for_metadata(matter):
-                    continue
-                matching_groups = [
-                    group
-                    for group in duplicate_groups
-                    if any(_gmail_attachments_match(matter, existing) for existing in group)
-                ]
-                if not matching_groups:
-                    duplicate_groups.append([matter])
-                    continue
-                primary_group = matching_groups[0]
-                primary_group.append(matter)
-                for extra_group in matching_groups[1:]:
-                    primary_group.extend(extra_group)
-                    duplicate_groups.remove(extra_group)
-
-            duplicate_member_ids = {
-                id(matter) for group in duplicate_groups if len(group) > 1 for matter in group
-            }
-            winner_ids = {
-                id(max(group, key=_matter_duplicate_rank))
-                for group in duplicate_groups
-                if len(group) > 1
-            }
+            removal_ids = _gmail_duplicate_removal_ids(matters, owner_user_id=owner_user_id)
 
             removed: list[dict[str, Any]] = []
             kept: list[dict[str, Any]] = []
             for matter in matters:
-                if id(matter) in duplicate_member_ids and id(matter) not in winner_ids:
+                if id(matter) in removal_ids:
                     removed.append(matter)
                     continue
                 kept.append(matter)
