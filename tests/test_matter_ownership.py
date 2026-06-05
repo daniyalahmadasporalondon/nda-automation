@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import matter_store
+from nda_automation.matter_repository import InMemoryMatterRepository
 
 
 def _matter_kwargs(**overrides):
@@ -25,6 +26,19 @@ def _matter_kwargs(**overrides):
     }
     kwargs.update(overrides)
     return kwargs
+
+
+class _MatterStoreBackend:
+    """Adapts the module-level matter_store functions to the repository call
+    shape so one assertion body can drive both the shipped store and the
+    in-memory double."""
+
+    create_matter = staticmethod(matter_store.create_matter)
+    list_matters = staticmethod(matter_store.list_matters)
+    get_matter = staticmethod(matter_store.get_matter)
+    update_matter_stage = staticmethod(matter_store.update_matter_stage)
+    delete_matter = staticmethod(matter_store.delete_matter)
+    export_matters_backup = staticmethod(matter_store.export_matters_backup)
 
 
 class MatterOwnershipTest(unittest.TestCase):
@@ -133,6 +147,31 @@ class MatterOwnershipTest(unittest.TestCase):
                 self.assertEqual(survivor["id"], ownerless["id"])
                 self.assertEqual(survivor["board_column"], "gmail_demo")
                 self.assertFalse(survivor.get("human_reviewed"))
+
+    def _assert_ownerless_denied_cross_tenant(self, backend):
+        # Shared assertion body so the SHIPPED matter_store and the in-memory
+        # double are proven to agree — a fix that only held in the double would
+        # be a false green (prod ships matter_store).
+        ownerless = backend.create_matter(**_matter_kwargs())
+        attacker = "user_attacker"
+        self.assertEqual(backend.list_matters(attacker), [])
+        self.assertIsNone(backend.get_matter(ownerless["id"], owner_user_id=attacker))
+        self.assertIsNone(backend.update_matter_stage(ownerless["id"], "in_review", owner_user_id=attacker))
+        self.assertIsNone(backend.delete_matter(ownerless["id"], owner_user_id=attacker))
+        self.assertEqual(backend.export_matters_backup(owner_user_id=attacker)["matters"], [])
+        # Data is not orphaned: the single-tenant (no-auth) path still reaches it.
+        self.assertEqual(backend.get_matter(ownerless["id"])["id"], ownerless["id"])
+
+    def test_ownerless_leak_fix_holds_on_shipped_and_in_memory_backends(self):
+        # SHIPPED disk-backed matter_store (the production path).
+        with self.subTest(backend="matter_store"):
+            with tempfile.TemporaryDirectory() as data_dir:
+                patches = self.matter_store_patches(data_dir)
+                with patches[0], patches[1], patches[2]:
+                    self._assert_ownerless_denied_cross_tenant(_MatterStoreBackend())
+        # In-memory double used elsewhere in the suite — must match shipped.
+        with self.subTest(backend="InMemoryMatterRepository"):
+            self._assert_ownerless_denied_cross_tenant(InMemoryMatterRepository())
 
     def test_gmail_duplicate_lookup_is_owner_scoped(self):
         with tempfile.TemporaryDirectory() as data_dir:
