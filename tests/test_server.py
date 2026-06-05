@@ -41,7 +41,6 @@ from nda_automation import user_store
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
 from nda_automation.routes import playbook as playbook_routes
-from nda_automation.routes import review as review_routes
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract

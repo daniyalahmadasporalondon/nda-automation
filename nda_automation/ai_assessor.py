@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from copy import deepcopy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from .ai_assessment_contract import (
@@ -14,7 +14,6 @@ from .ai_assessment_contract import (
 )
 from .ai_assessment_prompt import (
     AI_ASSESSMENT_PROMPT_VERSION,
-    AI_ASSESSMENT_RESPONSE_SCHEMA,
     build_ai_assessment_packet,
     build_ai_assessment_prompt,
 )
