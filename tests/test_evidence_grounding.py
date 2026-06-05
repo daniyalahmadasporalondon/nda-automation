@@ -9,6 +9,7 @@ from nda_automation.evidence_grounding import (
     build_grounding,
     classify_grounding,
     downgrade_ungrounded_finding,
+    refinalize_clause_grounding,
 )
 
 
@@ -154,6 +155,57 @@ class DowngradeUngroundedFindingTests(unittest.TestCase):
             reason_codes=[UNGROUNDED_REASON_CODE, "ai_first_fail"],
         )
         self.assertEqual(downgrade["reason_codes"].count(UNGROUNDED_REASON_CODE), 1)
+
+
+class RefinalizeClauseGroundingTests(unittest.TestCase):
+    def test_verifier_cleared_pass_becomes_absence_and_drops_citation(self):
+        # The verifier refuted a fail to a pass and cleared the disproven
+        # evidence; the stale grounded citation must not survive.
+        clause = {
+            "decision": "pass",
+            "issue_type": "none",
+            "type": "required",
+            "decision_source": "ai_verifier",
+            "structured_evidence": [],
+            "grounding": {"status": GROUNDING_GROUNDED, "evidence_count": 1},
+            "citation": {"quote": "old disproven text", "paragraph_id": "p1"},
+        }
+        refinalize_clause_grounding(clause)
+        self.assertEqual(clause["grounding"]["status"], GROUNDING_ABSENCE)
+        self.assertEqual(clause["grounding"]["evidence_count"], 0)
+        self.assertNotIn("citation", clause)
+
+    def test_rederives_fresh_citation_from_current_evidence(self):
+        clause = {
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "type": "required",
+            "decision_source": "ai",
+            "structured_evidence": [_quoted_record(quote="laws of California", start=5, end=23)],
+            "grounding": {"status": GROUNDING_UNGROUNDED, "evidence_count": 0},
+        }
+        refinalize_clause_grounding(clause)
+        self.assertEqual(clause["grounding"]["status"], GROUNDING_GROUNDED)
+        self.assertEqual(clause["citation"]["quote"], "laws of California")
+        self.assertEqual(clause["citation"]["start"], 5)
+
+    def test_lost_quote_drops_stale_citation_without_verifier_marker(self):
+        # A non-verifier clause that lost its quote is genuinely ungrounded;
+        # its old citation must be removed.
+        clause = {
+            "decision": "pass",
+            "issue_type": "none",
+            "type": "required",
+            "decision_source": "ai",
+            "structured_evidence": [_unquoted_record()],
+            "citation": {"quote": "stale", "paragraph_id": "p1"},
+        }
+        refinalize_clause_grounding(clause)
+        self.assertEqual(clause["grounding"]["status"], GROUNDING_UNGROUNDED)
+        self.assertNotIn("citation", clause)
+
+    def test_non_mapping_clause_is_returned_unchanged(self):
+        self.assertEqual(refinalize_clause_grounding(None), None)
 
 
 if __name__ == "__main__":

@@ -130,6 +130,68 @@ def build_citation(structured_evidence: Sequence[Mapping[str, Any]]) -> dict[str
     return None
 
 
+# A clause whose decision was rewritten by the AI verifier owns its evidence
+# state intentionally: a verifier refute-to-pass deliberately CLEARS the
+# disproven evidence, so an empty-evidence verifier pass is legitimate, not
+# ungrounded. Grounding treats such a pass as an absence rather than re-flagging
+# it. See [[ai-verifier-pass-design]] for the composition contract.
+VERIFIER_DECISION_SOURCE = "ai_verifier"
+
+
+def refinalize_clause_grounding(clause: dict[str, Any]) -> dict[str, Any]:
+    """Recompute ``grounding`` + ``citation`` on a clause edited after grounding.
+
+    The AI verifier runs after grounding and may rewrite a clause's decision and
+    clear its evidence. That leaves the clause carrying a stale ``grounding`` /
+    ``citation`` from the first pass, describing evidence that no longer exists.
+    Call this on each verifier-changed clause (right after its
+    ``structured_evidence`` is rebuilt, before aggregation) to re-derive a
+    consistent grounding surface from the clause's CURRENT state.
+
+    Mutates and returns ``clause``. A clause that is no longer grounded loses its
+    ``citation`` so nothing dangles a quote the finding no longer relies on.
+    """
+
+    if not isinstance(clause, Mapping):
+        return clause
+
+    decision = str(clause.get("decision") or "").strip().lower()
+    issue_type = str(clause.get("issue_type") or "").strip().lower()
+    clause_type = str(clause.get("type") or "").strip().lower()
+    structured_evidence = clause.get("structured_evidence")
+    if not isinstance(structured_evidence, Sequence) or isinstance(structured_evidence, (str, bytes)):
+        structured_evidence = []
+
+    # A verifier-owned verdict that cleared its evidence is a legitimate absence,
+    # not an ungrounded finding to re-downgrade.
+    if (
+        str(clause.get("decision_source") or "") == VERIFIER_DECISION_SOURCE
+        and not _has_groundable_quote(structured_evidence)
+    ):
+        clause["grounding"] = {
+            "version": GROUNDING_VERSION,
+            "status": GROUNDING_ABSENCE,
+            "evidence_count": 0,
+            "requires_quote": False,
+            "grounded": False,
+        }
+        clause.pop("citation", None)
+        return clause
+
+    clause["grounding"] = build_grounding(
+        decision=decision,
+        issue_type=issue_type,
+        clause_type=clause_type,
+        structured_evidence=structured_evidence,
+    )
+    citation = build_citation(structured_evidence)
+    if citation is not None:
+        clause["citation"] = citation
+    else:
+        clause.pop("citation", None)
+    return clause
+
+
 def downgrade_ungrounded_finding(
     *,
     decision: str,
