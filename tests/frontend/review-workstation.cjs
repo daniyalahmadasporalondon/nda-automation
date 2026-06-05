@@ -81,6 +81,14 @@ const tests = [
   ["guards source-redline export regression", testSourceRedlineExportRegression],
   ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
+  ["renders the playbook preferred position and confidence on a clause", testPlaybookPositionAndConfidence],
+  ["renders backend redline rationale beside the suggested edit", testRedlineRationaleBlock],
+  ["collapses the reasoning trail and remembers its open state", testReasoningTrailCollapse],
+  ["records reviewer Accept/Reject/Modify/Comment decisions", testReviewerDecisionControls],
+  ["gates Approve Review on staleness and unresolved clauses", testApproveReviewGate],
+  ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
+  ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
+  ["honours the reduced-motion preference", testReducedMotionPreference],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -1279,9 +1287,13 @@ async function testStructuredEvidenceAndRationale(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   await page.getByRole("button", { name: /Governing Law/ }).click();
 
-  await assertTextContains(page.locator("#studioDetailPanel"), "ISSUE TYPE");
+  // The Decision is folded into a first-class Assessment headline (issue type +
+  // PASS/REVIEW/FAIL pill), not a separate "Issue type" tile or audit step.
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-headline"), "ASSESSMENT");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-decision-pill"), "FAIL");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Fail");
+  assert.equal((await page.locator("#studioDetailPanel").innerText()).includes("ISSUE TYPE"), false);
   await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "ASSESSMENT");
   await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
   await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
@@ -3453,7 +3465,10 @@ async function testBackendRedlineModes(page) {
   assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
   assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
-  assert.equal(await page.getByText("Comment", { exact: true }).count(), 0);
+  // No stray "Comment" affordance in the document viewer. (Scoped to the page
+  // surface so it does not pick up the intended per-clause reviewer-decision
+  // "Comment" action in the inspector — that control is covered separately.)
+  assert.equal(await page.locator("#reviewView .studio-page").getByText("Comment", { exact: true }).count(), 0);
 
   const viewerSpacing = await page.evaluate(() => {
     const pageNode = document.querySelector("#reviewView .studio-page");
@@ -4240,6 +4255,522 @@ async function colorPixelCounts(locator) {
     if (green > 80 && green > red * 1.05 && green > blue * 1.05) greenPixels += 1;
   }
   return { redPixels, greenPixels };
+}
+
+// Load a review with a persisted selected matter so the per-clause decision and
+// approve endpoints have a matter id to POST to. The clauses default to one
+// "review" clause that requires attention (so the reviewer-decision block and
+// approve gate engage) plus one passing clause.
+async function loadReviewWithMatter(page, { matter = {}, clauses, paragraphs, result = {} } = {}) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  const defaultParagraphs = [
+    { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+    { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+  ];
+  const defaultClauses = [
+    {
+      decision: "review",
+      evidence_paragraphs: [defaultParagraphs[0]],
+      id: "confidential_information",
+      issue_label: "Needs review",
+      name: "Confidential Information",
+      needs_review: true,
+      reason: "Broad confidential information definition needs human review.",
+      review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+      status: "review",
+    },
+    {
+      decision: "pass",
+      evidence_paragraphs: [defaultParagraphs[1]],
+      id: "mutuality",
+      issue_label: "Pass",
+      name: "Mutuality",
+      passes: true,
+      reason: "Mutual obligations present.",
+      review_state: { state: "pass" },
+      status: "pass",
+    },
+  ];
+  await page.evaluate((payload) => {
+    state.selectedMatter = {
+      id: "matter_review_panel",
+      source_filename: "Counterparty NDA.docx",
+      status: "in_review",
+      ...payload.matter,
+    };
+    renderResult(
+      {
+        checked_at: "2026-06-05T09:00:00+00:00",
+        clauses: payload.clauses,
+        overall_status: "needs_review",
+        paragraphs: payload.paragraphs,
+        redline_edits: payload.redlineEdits || [],
+        requirements_failed: 0,
+        requirements_needs_review: 1,
+        requirements_passed: 1,
+        ...payload.result,
+      },
+      payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"),
+    );
+  }, {
+    clauses: clauses || defaultClauses,
+    matter,
+    paragraphs: paragraphs || defaultParagraphs,
+    redlineEdits: result.redline_edits,
+    result,
+  });
+}
+
+async function testPlaybookPositionAndConfidence(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        citation: { paragraph_id: "p2", quote: "governed by the laws of California.", relevance: "Unapproved governing law." },
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        grounding: { status: "grounded", confidence: 0.92 },
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        playbook: { preferred_position: "Delaware governing law, with India and DIFC as approved fallbacks." },
+        reason: "Governing law is outside the approved set.",
+        review_state: { state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [{ id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." }],
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // 2.1 — playbook preferred position.
+  await assertTextContains(detailPanel.locator(".playbook-position-block"), "Delaware governing law");
+  // The label is uppercased by CSS text-transform, so innerText reads "PREFERRED POSITION".
+  await assertTextContains(detailPanel.locator(".playbook-position-preferred"), "PREFERRED POSITION");
+
+  // 2.2 — grounded citation + confidence meter.
+  await assertTextContains(detailPanel.locator(".clause-citation-block.grounded"), "governed by the laws of California");
+  await assertTextContains(detailPanel.locator(".clause-confidence"), "92%");
+  assert.equal(await detailPanel.locator(".clause-confidence.high").count(), 1);
+  assert.equal(
+    await detailPanel.locator(".clause-confidence-fill").evaluate((node) => node.style.width),
+    "92%",
+  );
+}
+
+async function testRedlineRationaleBlock(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "fail",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Fail",
+        name: "Governing Law",
+        reason: "Governing law is outside the approved set.",
+        review_state: { state: "check" },
+        status: "check",
+      },
+    ],
+    paragraphs: [{ id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." }],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_governing_law",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          redline_rationale: {
+            basis: { paragraph_id: "p2", quote: "governed by the laws of California." },
+            explanation: "California is outside the playbook's approved governing-law set; Delaware is preferred.",
+          },
+          replacement_text: "This Agreement shall be governed by the laws of Delaware.",
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // 2.4 — backend explanation + basis quote ("why this redline").
+  await assertTextContains(detailPanel.locator(".redline-rationale"), "California is outside the playbook");
+  await assertTextContains(detailPanel.locator(".redline-rationale-basis"), "governed by the laws of California");
+  // figcaption is uppercased by CSS text-transform.
+  await assertTextContains(detailPanel.locator(".redline-rationale-basis figcaption"), "WHY");
+}
+
+async function testReasoningTrailCollapse(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        audit_trace: {
+          steps: [
+            // Plumbing + the decision step the backend emits — must NOT appear in the trail.
+            { details: "AI-first assessment was normalized into the review result contract.", name: "AI assessment normalization", outcome: "normalized" },
+            { details: "Governing law is outside the approved set.", name: "Decision", outcome: "review" },
+            // Deeper reasoning steps — these are what the trail is for.
+            { details: "Located the governing-law value.", name: "Locate clause", outcome: "found" },
+            { name: "Compare to approved set", outcome: "outside_approved" },
+          ],
+        },
+        decision: "review",
+        decision_reason: "Governing law is outside the approved set.",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason_codes: ["unapproved_governing_law", "ai_first_fail"],
+        reason: "Governing law is outside the approved set.",
+        review_state: { state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [{ id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." }],
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // The Decision is the first-class Assessment headline, not an audit step.
+  await assertTextContains(detailPanel.locator(".assessment-decision-pill"), "REVIEW");
+  await assertTextContains(detailPanel.locator(".assessment-issue-type"), "Needs review");
+
+  // 2.3 (#22) — the trail exists, is collapsed by default, and holds the DEEPER
+  // audit steps only.
+  const trail = detailPanel.locator(".reasoning-trail-block");
+  assert.equal(await trail.count(), 1);
+  assert.equal(await trail.evaluate((node) => node.open), false);
+  // Summary label is uppercased by CSS text-transform.
+  await assertTextContains(detailPanel.locator(".reasoning-trail-summary"), "REASONING TRAIL");
+  assert.equal(await trail.locator(".audit-trace-block").count(), 1);
+
+  // Reason codes are never rendered; the normalization + Decision audit steps are
+  // filtered out; the deeper steps remain. Read textContent (not innerText) since
+  // the trail body is hidden while the <details> is collapsed.
+  assert.equal(await detailPanel.locator(".reason-code-block").count(), 0);
+  const trailText = await trail.evaluate((node) => node.textContent);
+  assert.equal(trailText.includes("ai_first_fail"), false);
+  assert.equal(trailText.includes("unapproved_governing_law"), false);
+  assert.equal(/normaliz/i.test(trailText), false);
+  assert.match(trailText, /Locate clause/);
+  assert.match(trailText, /Compare to approved set/);
+
+  // Opening it persists across a re-render of the same clause.
+  await detailPanel.locator(".reasoning-trail-summary").click();
+  await page.waitForFunction(() => Boolean(state.reasoningTrailOpen.governing_law));
+  await page.evaluate(() => renderStudioDetail());
+  assert.equal(await detailPanel.locator(".reasoning-trail-block").evaluate((node) => node.open), true);
+}
+
+async function testReviewerDecisionControls(page) {
+  await loadReviewWithMatter(page);
+
+  const requests = [];
+  await page.route("**/api/matters/matter_review_panel/clauses/*/decision", async (route) => {
+    const request = route.request();
+    const body = JSON.parse(request.postData() || "{}");
+    const clauseId = request.url().split("/clauses/")[1].split("/decision")[0];
+    requests.push({ body, clauseId });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        clause: {
+          id: clauseId,
+          reviewer_decision: {
+            action: body.action,
+            actor: "Test Reviewer",
+            comment: body.comment,
+            decided_at: "2026-06-05T10:00:00+00:00",
+            modified_text: body.modified_text,
+          },
+        },
+        resolution: { resolved: 1, total: 1, unresolved: [] },
+      }),
+    });
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+
+  // The decision block renders with all four actions and no decision yet.
+  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "No reviewer decision yet.");
+  assert.deepEqual(
+    await detailPanel.locator(".reviewer-action-button").evaluateAll((nodes) => nodes.map((node) => node.textContent.trim())),
+    ["Accept", "Modify", "Reject", "Comment"],
+  );
+
+  // Accept posts immediately and reflects the saved decision.
+  await detailPanel.locator('[data-reviewer-action="accept"]').click();
+  await page.waitForFunction(() => document.querySelector('#studioDetailPanel .reviewer-action-button.accept')?.classList.contains("active"));
+  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "Accepted");
+  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "Test Reviewer");
+  assert.deepEqual(requests.at(-1), { body: { action: "accept" }, clauseId: "confidential_information" });
+
+  // Modify opens a composer; Save posts modified_text.
+  await detailPanel.locator('[data-reviewer-action="modify"]').click();
+  await page.waitForSelector('#studioDetailPanel [data-reviewer-modified-text]');
+  await detailPanel.locator("[data-reviewer-modified-text]").fill("Narrowed confidential information definition.");
+  await detailPanel.locator("[data-reviewer-save]").click();
+  // Wait for the saved decision to merge back (status flips Accepted -> Modified).
+  await waitForText(page, "#studioDetailPanel .reviewer-decision-status", "Modified");
+  assert.deepEqual(requests.at(-1), {
+    body: { action: "modify", modified_text: "Narrowed confidential information definition." },
+    clauseId: "confidential_information",
+  });
+
+  // Modify with an empty composer surfaces a validation error and does not post.
+  const requestCountBeforeEmpty = requests.length;
+  await detailPanel.locator('[data-reviewer-action="modify"]').click();
+  await detailPanel.locator("[data-reviewer-modified-text]").fill("   ");
+  await detailPanel.locator("[data-reviewer-save]").click();
+  await assertTextContains(detailPanel.locator(".reviewer-decision-error"), "Enter the revised clause text");
+  assert.equal(requests.length, requestCountBeforeEmpty);
+}
+
+async function testApproveReviewGate(page) {
+  // Start blocked: one unresolved review clause, fresh playbook.
+  await loadReviewWithMatter(page);
+
+  const approveButton = page.locator("#studioApproveReviewButton");
+  const blockReasons = page.locator("#studioApproveBlockReasons");
+  await page.waitForFunction(() => !document.querySelector("#studioApproveReviewButton")?.hidden);
+  assert.equal(await approveButton.isDisabled(), true);
+  await assertTextContains(approveButton, "Approve Review");
+  await assertTextContains(blockReasons, "still needs a reviewer decision");
+
+  // Resolving the clause (server returns no unresolved) unblocks the button.
+  await page.route("**/api/matters/matter_review_panel/clauses/*/decision", async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    const clauseId = route.request().url().split("/clauses/")[1].split("/decision")[0];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        clause: { id: clauseId, reviewer_decision: { action: body.action, actor: "QA", decided_at: "2026-06-05T10:00:00+00:00" } },
+        resolution: { resolved: 1, total: 1, unresolved: [] },
+      }),
+    });
+  });
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  await page.locator('#studioDetailPanel [data-reviewer-action="accept"]').click();
+  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false);
+  assert.equal(await blockReasons.isHidden(), true);
+
+  // 409 from the server re-blocks the button and lists both reason kinds.
+  await page.route("**/api/matters/matter_review_panel/approve", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        blocks_approval: ["stale_playbook", "unresolved_clause:confidential_information"],
+        error: "Approval blocked",
+      }),
+    });
+  });
+  await approveButton.click();
+  await page.waitForFunction(() => !document.querySelector("#studioApproveBlockReasons")?.hidden);
+  await assertTextContains(blockReasons, "refresh it against the active Playbook");
+  await assertTextContains(blockReasons, "still needs a reviewer decision");
+  assert.equal(await approveButton.isDisabled(), true);
+
+  // A successful approve flips to the approved state and offers the reviewed DOCX.
+  await page.unroute("**/api/matters/matter_review_panel/approve");
+  await page.evaluate(() => {
+    // Clear the server-induced staleness + stashed 409 blocks so the success path runs.
+    state.selectedMatter = { ...state.selectedMatter, review_refresh: null };
+    state.reviewResolution = { resolved: 1, total: 1, unresolved: [] };
+    state.approveServerBlocks = [];
+    updateApproveReviewControl();
+  });
+  await page.route("**/api/matters/matter_review_panel/approve", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter: { approved_at: "2026-06-05T11:00:00+00:00", approver: "QA", id: "matter_review_panel", status: "approved" },
+        resolution: { resolved: 1, total: 1, unresolved: [] },
+      }),
+    });
+  });
+  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false);
+  await approveButton.click();
+  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.classList.contains("approved"));
+  await assertTextContains(approveButton, "Approved");
+
+  const reviewedDocxButton = page.locator("#studioReviewedDocxButton");
+  await page.waitForFunction(() => !document.querySelector("#studioReviewedDocxButton")?.hidden);
+  const docxBytes = Buffer.from("PK reviewed docx");
+  await page.route("**/api/matters/matter_review_panel/reviewed-docx", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      headers: { "Content-Disposition": "attachment; filename=reviewed.docx" },
+      body: docxBytes,
+    });
+  });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    reviewedDocxButton.click(),
+  ]);
+  assert.ok(await download.path(), "reviewed DOCX download path should be available");
+  assert.match(download.suggestedFilename(), /reviewed\.docx$/);
+}
+
+// WCAG 1.4.1: the document paragraph verdict must not be conveyed by colour
+// alone — a flagged paragraph carries a text+icon verdict badge.
+async function testDocumentVerdictLabel(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate(() => {
+    const paragraphs = [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ];
+    renderResult({
+      checked_at: "2026-06-05T09:00:00+00:00",
+      clauses: [
+        {
+          decision: "pass",
+          evidence_paragraphs: [paragraphs[0]],
+          id: "confidential_information",
+          issue_label: "Pass",
+          matched_paragraph_ids: ["p1"],
+          name: "Confidential Information",
+          passes: true,
+          reason: "Definition is acceptable.",
+          review_state: { state: "pass" },
+          status: "pass",
+        },
+        {
+          decision: "fail",
+          evidence_paragraphs: [paragraphs[1]],
+          id: "governing_law",
+          issue_label: "Fail",
+          matched_paragraph_ids: ["p2"],
+          name: "Governing Law",
+          reason: "Governing law is outside the approved set.",
+          review_state: { state: "check" },
+          status: "check",
+        },
+      ],
+      overall_status: "needs_review",
+      paragraphs,
+      redline_edits: [],
+      requirements_failed: 1,
+      requirements_needs_review: 0,
+      requirements_passed: 1,
+    }, paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  });
+
+  const passBadge = page.locator('[data-paragraph-id="p1"] .paragraph-verdict-badge');
+  const failBadge = page.locator('[data-paragraph-id="p2"] .paragraph-verdict-badge');
+  assert.equal(await passBadge.count(), 1, "passing paragraph should carry a verdict badge");
+  assert.equal(await failBadge.count(), 1, "failing paragraph should carry a verdict badge");
+
+  // The verdict is conveyed by TEXT (not colour alone): the badge has a label.
+  await assertTextContains(passBadge, "PASS");
+  await assertTextContains(failBadge, "FAIL");
+  // ...and a non-color icon accompanies it.
+  assert.equal(await failBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
+  assert.equal(await passBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
+
+  // The badge sits outside the editable flow so it cannot be typed into.
+  assert.equal(
+    await failBadge.evaluate((node) => node.getAttribute("contenteditable")),
+    "false",
+    "verdict badge must not be editable",
+  );
+}
+
+// A dirty redline draft must not be silently discarded by Refresh Review — the
+// reviewer is asked to confirm, and cancelling aborts the refresh.
+async function testRefreshUnsavedEditsGuard(page) {
+  await loadReviewWithMatter(page);
+
+  let refreshCount = 0;
+  await page.route("**/api/matters/matter_review_panel/review-refresh", async (route) => {
+    refreshCount += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter: { id: "matter_review_panel", review_result: { clauses: [] } },
+        extracted_text: "Refreshed.",
+        review_refresh: { stale: false },
+      }),
+    });
+  });
+  // Loading the matter list is a side effect of a successful refresh.
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [] }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  // Clean draft: refresh runs with no confirm dialog.
+  let dialogs = 0;
+  const countingHandler = (dialog) => { dialogs += 1; dialog.accept(); };
+  page.on("dialog", countingHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.equal(dialogs, 0, "a clean draft should not prompt a confirm dialog");
+  assert.equal(refreshCount, 1, "a clean draft should refresh immediately");
+  page.off("dialog", countingHandler);
+
+  // Dirty the redline draft, then cancel the confirm: refresh must NOT run.
+  await page.evaluate(() => {
+    state.reviewClauses = [{ id: "confidential_information", name: "Confidential Information", decision: "review", status: "review", review_state: { state: "review" } }];
+    markRedlineDraftDirty();
+  });
+  assert.equal(await page.evaluate(() => state.redlineDraftDirty), true);
+  const cancelHandler = (dialog) => dialog.dismiss();
+  page.on("dialog", cancelHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.equal(refreshCount, 1, "cancelling the unsaved-edits confirm must abort the refresh");
+  page.off("dialog", cancelHandler);
+
+  // Accept the confirm: refresh proceeds.
+  let confirmMessage = "";
+  const acceptHandler = (dialog) => { confirmMessage = dialog.message(); dialog.accept(); };
+  page.on("dialog", acceptHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.match(confirmMessage, /unsaved/i, "the confirm dialog should mention unsaved edits");
+  assert.equal(refreshCount, 2, "accepting the unsaved-edits confirm should let the refresh run");
+  page.off("dialog", acceptHandler);
+}
+
+// Accessibility: with the OS "reduce motion" preference on, transitions and
+// animations are clamped to ~0 so the UI does not animate for users who asked
+// not to see motion.
+async function testReducedMotionPreference(page) {
+  const buttonTransition = '#studioDetailPanel .reviewer-action-button.accept';
+
+  // Baseline (no preference): the reviewer-action button has a real transition.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await loadReviewWithMatter(page);
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const baselineTransition = await page.locator(buttonTransition).evaluate((node) => getComputedStyle(node).transitionDuration);
+  assert.ok(parseFloat(baselineTransition) > 0.05, `transition should animate when motion is allowed, got ${baselineTransition}`);
+
+  // With reduced motion requested, the same transition collapses to ~0.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loadReviewWithMatter(page);
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const reduced = await page.locator(buttonTransition).evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return { animation: styles.animationDuration, transition: styles.transitionDuration };
+  });
+  // 0.001ms rounds toward "0s" in computed style; assert it is effectively instant.
+  assert.ok(parseFloat(reduced.transition) < 0.01, `reduced-motion transition should be ~0, got ${reduced.transition}`);
+  assert.ok(parseFloat(reduced.animation) < 0.01, `reduced-motion animation should be ~0, got ${reduced.animation}`);
 }
 
 function testPngBuffer(width, height) {

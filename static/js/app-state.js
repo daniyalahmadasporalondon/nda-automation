@@ -31,6 +31,10 @@ const AppState = (() => {
       redlineDraft: null,
       redlineDraftDirty: false,
       reviewedClauseIds: {},
+      reasoningTrailOpen: {},
+      reviewerDecisionDraft: {},
+      reviewResolution: null,
+      approveServerBlocks: [],
       reviewInspectorView: "clause",
       documentViewMode,
     };

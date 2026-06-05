@@ -2067,6 +2067,59 @@ h3 {
   background: var(--amber-bg);
 }
 
+/* WCAG 1.4.1: text + icon verdict badge so the paragraph verdict is not
+   conveyed by background colour alone. */
+.studio-doc-paragraph {
+  position: relative;
+}
+
+.paragraph-verdict-badge {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  display: inline-flex;
+  font-size: 9.5px;
+  font-weight: 800;
+  gap: 3px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px 2px 5px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  text-transform: uppercase;
+  top: 6px;
+  user-select: none;
+  z-index: 4;
+}
+
+.paragraph-verdict-badge-ico {
+  fill: none;
+  height: 11px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  width: 11px;
+}
+
+.paragraph-verdict-badge.match {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.paragraph-verdict-badge.review {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+.paragraph-verdict-badge.verify {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
 .studio-doc-paragraph.has-redline {
   background: var(--red-bg);
 }
@@ -2553,7 +2606,9 @@ button.active-clause-status:hover {
   border-color: var(--border-strong);
 }
 
-.studio-detail-block.issue-block {
+/* Folded Decision: the first-class Assessment headline (issue type + the
+   PASS/REVIEW/FAIL decision pill). Tone-coded so the verdict reads at a glance. */
+.studio-detail-block.assessment-headline {
   background: var(--bg-panel);
   border: 0;
   border-bottom: 1px solid var(--border);
@@ -2561,16 +2616,67 @@ button.active-clause-status:hover {
   padding: 16px 18px;
 }
 
-.studio-detail-block.issue-block.pass {
-  background: var(--bg-panel);
+.assessment-headline-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.studio-detail-block.issue-block.check {
-  background: var(--bg-panel);
+.assessment-headline-row small {
+  margin-bottom: 0;
 }
 
-.studio-detail-block.issue-block.review {
-  background: var(--bg-panel);
+.assessment-issue-type {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+  margin: 8px 0 0;
+}
+
+.assessment-decision-pill {
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+
+.assessment-decision-pill.pass {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.assessment-decision-pill.review {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+.assessment-decision-pill.check {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
+.assessment-decision-pill.pending {
+  background: var(--bg-soft);
+  color: var(--ink-muted);
+}
+
+.assessment-headline.check {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.assessment-headline.review {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.assessment-headline.pass {
+  box-shadow: inset 3px 0 0 var(--green);
 }
 
 .studio-detail-block.fix-block {
@@ -2688,22 +2794,6 @@ button.active-clause-status:hover {
 .evidence-signals-block {
   background: var(--bg-panel);
   border-left: 0;
-}
-
-.reason-code-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.reason-code-list span {
-  background: #f4f0ff;
-  border: 1px solid #ded3ff;
-  border-radius: var(--r-pill);
-  color: var(--violet-dark);
-  font-size: 10px;
-  font-weight: 800;
-  padding: 3px 7px;
 }
 
 .audit-trace-block {
@@ -2886,6 +2976,333 @@ button.active-clause-status:hover {
   font-size: 12px;
   line-height: 1.42;
   margin: 0;
+}
+
+/* 2.4 — "why this redline" basis quote sourced from the Playbook + citation. */
+.redline-rationale-basis {
+  border-left: 2px solid var(--border-strong);
+  margin: 0;
+  padding-left: 10px;
+}
+
+.redline-rationale-basis figcaption {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.redline-rationale-basis blockquote {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.4;
+  margin: 4px 0 0;
+}
+
+/* 2.1 — Playbook preferred position, distinct from the dynamic fallback wording. */
+.playbook-position-block .playbook-position-preferred {
+  margin-bottom: 8px;
+}
+
+.playbook-position-block .playbook-position-preferred small {
+  margin-bottom: 4px;
+}
+
+.playbook-position-block .playbook-position-preferred p {
+  margin: 0;
+}
+
+/* 2.2 — grounding/confidence read-out on the "Based on" surface. */
+.clause-confidence {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto 1fr auto;
+  margin-top: 10px;
+}
+
+.clause-confidence small {
+  margin: 0;
+}
+
+.clause-confidence-meter {
+  background: var(--bg-soft);
+  border-radius: var(--r-pill);
+  height: 6px;
+  overflow: hidden;
+}
+
+.clause-confidence-fill {
+  display: block;
+  height: 100%;
+}
+
+.clause-confidence.high .clause-confidence-fill {
+  background: var(--green);
+}
+
+.clause-confidence.medium .clause-confidence-fill {
+  background: var(--amber);
+}
+
+.clause-confidence.low .clause-confidence-fill {
+  background: var(--red);
+}
+
+.clause-confidence-value {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+/* 2.3 (#22) — collapsible Reasoning trail wrapping the audit scaffolding. */
+.reasoning-trail-block {
+  background: #ffffff;
+  border-color: var(--border);
+}
+
+.reasoning-trail-summary {
+  align-items: baseline;
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  font-weight: 850;
+  gap: 8px;
+  letter-spacing: 0.06em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.reasoning-trail-summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-trail-summary::before {
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  display: inline-block;
+  height: 6px;
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease;
+  width: 6px;
+}
+
+.reasoning-trail-block[open] > .reasoning-trail-summary::before {
+  transform: rotate(45deg);
+}
+
+.reasoning-trail-hint {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.reasoning-trail-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* 2.5 — per-clause reviewer action controls (Accept / Modify / Reject / Comment). */
+.reviewer-decision-block {
+  background: #ffffff;
+  border-color: var(--border);
+}
+
+.reviewer-decision-status {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
+.reviewer-decision-status.muted {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.reviewer-action-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reviewer-action-button {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 750;
+  height: 28px;
+  padding: 0 14px;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.reviewer-action-button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.reviewer-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.reviewer-action-button.accept.active {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.reviewer-action-button.reject.active {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
+.reviewer-action-button.modify.active,
+.reviewer-action-button.comment.active {
+  background: var(--bg-soft);
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.reviewer-decision-composer {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.reviewer-decision-label {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.reviewer-decision-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 76px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.reviewer-decision-composer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.reviewer-decision-save {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-pill);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  height: 28px;
+  padding: 0 16px;
+}
+
+.reviewer-decision-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.reviewer-decision-cancel {
+  height: 28px;
+  padding: 0 14px;
+}
+
+.reviewer-decision-error {
+  color: var(--red-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+/* Approve Review button + its block-reason list, in the matter actions row. */
+.studio-approve-review {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-pill);
+  color: #ffffff;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-weight: 750;
+  height: 28px;
+  padding: 0 14px;
+}
+
+.studio-approve-review:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.studio-approve-review.blocked {
+  background: #ffffff;
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+  cursor: not-allowed;
+}
+
+.studio-approve-review.approved {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+  cursor: default;
+}
+
+.studio-approve-review:disabled:not(.approved):not(.blocked) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.studio-reviewed-docx {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 14px;
+}
+
+.studio-approve-block-reasons {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--r-sm);
+  color: var(--amber-ink);
+  margin-top: 10px;
+  padding: 10px 12px;
+}
+
+.studio-approve-block-reasons .approve-block-title {
+  font-size: 11px;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+
+.studio-approve-block-reasons ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.studio-approve-block-reasons li {
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .evidence-signal-list {
@@ -6250,5 +6667,21 @@ body.modal-open {
 
   .send-modal-actions button {
     width: 100%;
+  }
+}
+
+/* Accessibility: honour the OS "reduce motion" preference. Neutralise
+   animations, transitions and smooth scrolling for users who have asked for
+   reduced motion. Durations are clamped to ~0 rather than 0 so animationend /
+   transitionend listeners still fire and any JS that waits on them does not
+   hang (e.g. the clause-jump and paragraph-highlight pulses). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
