@@ -69,5 +69,56 @@ class TrackedReplaceTests(unittest.TestCase):
         self.assertIn("old", deleted)
 
 
+class InlineSpacingTests(unittest.TestCase):
+    """The diff-driven inline spacing must not pad quotes/brackets with spurious
+    spaces. Regression for the baseline DOCX-export red where
+    '"Confidential Information"' exported as '" Confidential Information "' and
+    failed docx_health's content-coverage check."""
+
+    def _rendered_insert_text(self, text):
+        # A pure insertion exercises the token-join spacing on every token.
+        paragraph_xml, _ = redline_xml._tracked_replace_paragraph("", text, 1)
+        paragraph = _parse(paragraph_xml)
+        return _text(paragraph, "t")
+
+    def test_replace_does_not_pad_quotes_with_spurious_spaces(self):
+        self.assertEqual(
+            self._rendered_insert_text('"Confidential Information" means data.'),
+            '"Confidential Information" means data.',
+        )
+
+    def test_replace_preserves_spacing_around_a_mid_sentence_quote(self):
+        # The opening quote still gets its real leading space; the closing quote
+        # still hugs the quoted word -- inter-word quoting is not over-corrected.
+        self.assertEqual(
+            self._rendered_insert_text('she said "hello" to me'),
+            'she said "hello" to me',
+        )
+
+    def test_replace_does_not_pad_curly_quotes(self):
+        self.assertEqual(
+            self._rendered_insert_text("the term “Discloser” applies"),
+            "the term “Discloser” applies",
+        )
+
+    def test_existing_bracket_currency_and_punctuation_spacing_unchanged(self):
+        for text in (
+            "governed by laws (England and Wales) here",
+            "the cost is $5 today",
+            "word, next; more: stuff.",
+            "Each party's Confidential Information",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self._rendered_insert_text(text), text)
+
+    def test_needs_inline_space_hugs_opening_and_closing_quotes(self):
+        # Closing quote: no space before it.
+        self.assertFalse(redline_xml._needs_inline_space("Information", '"'))
+        # Opening quote: no space after it.
+        self.assertFalse(redline_xml._needs_inline_space('"', "Confidential"))
+        # Two separate words still get a space.
+        self.assertTrue(redline_xml._needs_inline_space("Confidential", "Information"))
+
+
 if __name__ == "__main__":
     unittest.main()

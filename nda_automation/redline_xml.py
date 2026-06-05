@@ -198,6 +198,17 @@ def _deleted_run(text: str) -> str:
         parts.append(f'<w:delText xml:space="preserve">{_escape_xml(line)}</w:delText>')
     return f"<w:r>{''.join(parts)}</w:r>"
 
+# Quote characters hug the content they wrap: a closing quote follows its word
+# with no leading space, and an opening quote precedes its word with no trailing
+# space. The tokenizer already carries each token's original leading whitespace
+# (an opening quote arrives as ' "', a closing quote as '"'), so suppressing the
+# heuristic space here just stops a spurious one from being ADDED -- it never
+# removes a real space. Covers straight (" ') and curly (“ ” ‘ ’) quotes.
+_QUOTE_CHARS = "\"'“”‘’"
+_CLOSING_PUNCT_RE = re.compile(rf"^[,.;:!?%)\]{_QUOTE_CHARS}]$")
+_OPENING_BEFORE_RE = re.compile(rf"^[(\[{_QUOTE_CHARS}]$")
+
+
 def _needs_inline_space(previous_token: str, token: str) -> bool:
     if not previous_token:
         return False
@@ -205,9 +216,11 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
         return False
     token_core = re.sub(r"^\s+", "", token)
     previous_core = re.sub(r"^\s+", "", previous_token)
-    if re.match(r"^[,.;:!?%)]$", token_core):
+    # A closing quote/bracket/punctuation hugs the preceding token (no space before it).
+    if _CLOSING_PUNCT_RE.match(token_core):
         return False
-    if re.match(r"^[(]$", previous_core):
+    # An opening quote/bracket hugs the following token (no space after it).
+    if _OPENING_BEFORE_RE.match(previous_core):
         return False
     if re.match(r"^[$£€#@]$", previous_core) and re.match(r"^\d", token_core):
         return False
