@@ -38,10 +38,10 @@ services:
       - key: NDA_AI_REVIEW_ENABLED
         value: "true"
       - key: NDA_AI_PROVIDER
-        value: alibaba
+        value: gemini
       - key: NDA_AI_MODEL
-        value: qwen3.5-122b-a10b
-      - key: ALIBABA_API_KEY
+        value: gemini-1.5-flash
+      - key: GEMINI_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_API_KEY
         sync: false

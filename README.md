@@ -40,12 +40,12 @@ In `.env`, set the AI provider/model and API key:
 
 ```bash
 NDA_AI_REVIEW_ENABLED=true
-NDA_AI_PROVIDER=alibaba
-NDA_AI_MODEL=qwen3.5-122b-a10b
+NDA_AI_PROVIDER=gemini
+NDA_AI_MODEL=gemini-1.5-flash
 # Active review defaults to AI-first + fail-closed. Leave these unset unless pinning runtime.
 NDA_ACTIVE_REVIEW_ENGINE=
 NDA_AI_FIRST_FALLBACK_MODE=
-ALIBABA_API_KEY="your-alibaba-api-key"
+GEMINI_API_KEY="your-gemini-api-key"
 ```
 
 Then start the app:
@@ -186,7 +186,7 @@ Common environment variables:
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: legacy shared OAuth token file for local outbound Gmail sends. Leave unset for hosted per-user Gmail.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
-- `NDA_AI_MODEL`: provider model name. Use `qwen3.5-122b-a10b` for the current Alibaba/Qwen local setup, or another model your key can access.
+- `NDA_AI_MODEL`: provider model name. Use `gemini-1.5-flash` or `gemini-1.5-pro` for the current hosted Gemini setup, or another model your key can access.
 - `ALIBABA_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`: server-side AI review key for the selected provider.
 - `NDA_GMAIL_TRIAGE_API_KEY`: server-side key for Qwen/Groq Gmail attachment selection.
 - `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `qwen/qwen3-32b`.
@@ -213,12 +213,12 @@ Optional AI semantic review:
 
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
-export NDA_AI_PROVIDER=alibaba
-export NDA_AI_MODEL=qwen3.5-122b-a10b
-export ALIBABA_API_KEY=sk-...
+export NDA_AI_PROVIDER=gemini
+export NDA_AI_MODEL=gemini-1.5-flash
+export GEMINI_API_KEY=...
 ```
 
-Supported providers are `gemini`, `openrouter`, and `alibaba`. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. The code default for Alibaba remains `qwen3.5-plus` when no model is configured, so set `NDA_AI_MODEL` explicitly when using `qwen3.5-122b-a10b` or any other preferred Qwen model. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported providers are `gemini`, `openrouter`, and `alibaba`. The hosted demo uses Gemini for NDA review and Groq/Qwen for Gmail triage. Alibaba/Qwen uses the Singapore OpenAI-compatible endpoint at `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` if you switch providers later. Admins can save a local API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 
