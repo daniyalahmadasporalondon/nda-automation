@@ -967,6 +967,9 @@ async function testAiSecondOpinionButton(page) {
 
   await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
   assert.equal(await page.locator('[data-ai-second-opinion-clause-id]').count(), 0);
+  assert.equal(await page.locator(".ai-second-opinion-button").count(), 0);
+  assert.equal(await page.locator(".ai-actions-block").count(), 0);
+  assert.equal(await page.locator(".ai-summary-block").count(), 0);
   assert.equal(await page.getByRole("button", { name: /second opinion/i }).count(), 0);
 }
 
