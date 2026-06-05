@@ -1697,6 +1697,16 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
+  await page.getByRole("searchbox", { name: "Search repository cards" }).fill(deleteStem);
+  assert.equal(await page.locator(".repository-card").count(), 1);
+  await assertTextContains(page.locator(".repository-card"), deleteStem);
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "1");
+  await page.getByRole("searchbox", { name: "Search repository cards" }).fill("no matching nda");
+  assert.equal(await page.locator(".repository-card").count(), 0);
+  await assertTextContains(page.locator('[data-repository-list="in_review"]'), "No matching documents");
+  await page.getByRole("searchbox", { name: "Search repository cards" }).fill("");
+  assert.equal(await page.locator(".repository-card").count(), 2);
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
@@ -1739,6 +1749,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");
+  await waitForText(page, "#studioFileMeta", "Manual Upload matter loaded");
   await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
   await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "redline_ready", "0");

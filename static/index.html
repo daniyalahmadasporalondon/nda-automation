@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260605c">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260604a">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260605a">
   </head>
   <body>
     <div class="app-shell">
@@ -209,6 +209,14 @@
               <div class="repository-title">
                 <h1>Contract Repository</h1>
               </div>
+              <label class="repository-search" for="repositorySearchInput">
+                <span class="sr-only">Search repository cards</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="m21 21-4.3-4.3"/>
+                  <circle cx="11" cy="11" r="7"/>
+                </svg>
+                <input id="repositorySearchInput" type="search" autocomplete="off" placeholder="Search cards">
+              </label>
               <div class="repository-header-actions">
                 <span class="repository-sync-status" data-repository-sync-status>Sync status loading</span>
               </div>
@@ -1120,11 +1128,11 @@
     <script src="/static/js/redline-rendering.js?v=20260604a"></script>
     <script src="/static/js/repository-api.js?v=20260604a"></script>
     <script src="/static/js/repository-model.js"></script>
-    <script src="/static/js/repository-board.js?v=20260604a"></script>
+    <script src="/static/js/repository-board.js?v=20260605a"></script>
     <script src="/static/js/repository-send.js"></script>
     <script src="/static/js/repository-detail.js"></script>
     <script src="/static/js/repository-actions.js?v=20260605a"></script>
-    <script src="/static/js/repository.js"></script>
+    <script src="/static/js/repository.js?v=20260605a"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/auth-session.js?v=20260604a"></script>
     <script src="/static/js/admin-ai.js"></script>

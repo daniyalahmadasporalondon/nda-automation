@@ -4,12 +4,14 @@ const RepositoryBoard = (() => {
     gmailDemoMatterList,
     handlers,
     pendingDeleteMatterId,
+    searchQuery = "",
     selectedMatter,
     state,
   }) {
     if (!gmailDemoMatterList) return;
     const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, []]));
-    state.matters.forEach((matter) => {
+    const query = normalizeSearchText(searchQuery);
+    state.matters.filter((matter) => matterMatchesSearch(matter, query)).forEach((matter) => {
       mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
     });
     mattersByColumn.forEach((matters) => matters.sort(RepositoryModel.compareMatterRecency));
@@ -23,9 +25,32 @@ const RepositoryBoard = (() => {
         ? `<div class="repository-dropzone">${escapeHtml(errorMessage)}</div>`
         : matters.length
         ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
-        : '<div class="repository-dropzone">No documents</div>';
+        : `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
       bindBoardEvents(list, { handlers, selectedMatter });
     });
+  }
+
+  function matterMatchesSearch(matter, query) {
+    if (!query) return true;
+    return searchableMatterText(matter).includes(query);
+  }
+
+  function searchableMatterText(matter) {
+    return normalizeSearchText([
+      RepositoryModel.matterSubject(matter),
+      RepositoryModel.matterSender(matter),
+      matter?.message_snippet,
+      matter?.attachment_filename,
+      matter?.source_filename,
+      matter?.document_title,
+      matter?.received_at,
+      RepositoryModel.sourceTypeLabel(matter?.source_type),
+      RepositoryModel.boardColumnLabel(matter?.board_column),
+    ].filter(Boolean).join(" "));
+  }
+
+  function normalizeSearchText(value) {
+    return String(value || "").trim().toLowerCase();
   }
 
   function bindBoardEvents(list, { handlers, selectedMatter }) {

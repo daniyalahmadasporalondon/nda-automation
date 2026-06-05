@@ -59,6 +59,7 @@ let adminIntegrationsController;
 const repositoryController = createRepositoryController({
   state,
   gmailDemoMatterList: document.querySelector("#gmailDemoMatterList"),
+  repositorySearchInput: document.querySelector("#repositorySearchInput"),
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
   downloadBlob,
   downloadFilename,

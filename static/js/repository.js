@@ -2,6 +2,7 @@ const RepositoryView = (() => {
   function createController({
     state,
     gmailDemoMatterList,
+    repositorySearchInput,
     repositoryMatterPanel,
     downloadBlob,
     downloadFilename,
@@ -14,6 +15,7 @@ const RepositoryView = (() => {
     let selectedMatter = null;
     let pendingSendMatterId = null;
     let pendingDeleteMatterId = null;
+    let searchQuery = "";
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const api = RepositoryApi.create({ reviewErrorFromPayload });
     let actions;
@@ -24,6 +26,18 @@ const RepositoryView = (() => {
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && repositoryMatterPanel && !repositoryMatterPanel.hidden) actions.closePanel();
     });
+    repositorySearchInput?.addEventListener("input", () => {
+      searchQuery = repositorySearchInput.value;
+      renderBoard();
+    });
+    repositorySearchInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !repositorySearchInput.value) return;
+      event.preventDefault();
+      event.stopPropagation();
+      repositorySearchInput.value = "";
+      searchQuery = "";
+      renderBoard();
+    });
 
     function renderBoard({ errorMessage = "" } = {}) {
       RepositoryBoard.renderBoard({
@@ -31,6 +45,7 @@ const RepositoryView = (() => {
         gmailDemoMatterList,
         handlers: actions,
         pendingDeleteMatterId,
+        searchQuery,
         selectedMatter,
         state,
       });
