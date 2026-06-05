@@ -4037,6 +4037,199 @@ body.modal-open {
   grid-column: 2;
 }
 
+#clausesView[data-admin-surface="admin"],
+#clausesView[data-admin-surface="guide"] {
+  --admin-boundary: #d8cdee;
+  --admin-boundary-strong: #c7b9e4;
+  --admin-muted: #8f87a1;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-nav,
+#clausesView[data-admin-surface="admin"] .admin-section-panel,
+#clausesView[data-admin-surface="guide"] .admin-nav,
+#clausesView[data-admin-surface="guide"] .admin-section-panel {
+  background: #fff;
+  border-color: var(--admin-boundary);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-nav,
+#clausesView[data-admin-surface="guide"] .admin-nav {
+  gap: 0;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-nav .rail-heading,
+#clausesView[data-admin-surface="guide"] .admin-nav .rail-heading,
+#clausesView[data-admin-surface="admin"] .admin-section-head,
+#clausesView[data-admin-surface="guide"] .admin-section-head {
+  border-bottom-color: var(--admin-boundary);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button,
+#clausesView[data-admin-surface="guide"] .admin-section-button {
+  background: #fff;
+  border-bottom: 1px solid var(--admin-boundary);
+  border-left: 0;
+  color: var(--ink);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button:hover,
+#clausesView[data-admin-surface="admin"] .admin-section-button.active,
+#clausesView[data-admin-surface="guide"] .admin-section-button:hover,
+#clausesView[data-admin-surface="guide"] .admin-section-button.active {
+  background: #fff;
+  border-left: 0;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button.active strong,
+#clausesView[data-admin-surface="guide"] .admin-section-button.active strong {
+  font-weight: 850;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button span,
+#clausesView[data-admin-surface="guide"] .admin-section-button span,
+#clausesView[data-admin-surface="admin"] .admin-section-head .eyebrow,
+#clausesView[data-admin-surface="guide"] .admin-section-head .eyebrow {
+  color: var(--admin-muted);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-engine-shell,
+#clausesView[data-admin-surface="admin"] .integrations-grid,
+#clausesView[data-admin-surface="guide"] .admin-engine-shell,
+#clausesView[data-admin-surface="guide"] .integrations-grid {
+  background: #fff;
+}
+
+#clausesView[data-admin-surface="admin"] .engine-card,
+#clausesView[data-admin-surface="admin"] .engine-module-grid article,
+#clausesView[data-admin-surface="admin"] .engine-resolver-panel,
+#clausesView[data-admin-surface="admin"] .resolver-logic-grid article,
+#clausesView[data-admin-surface="admin"] .resolver-audit-list,
+#clausesView[data-admin-surface="admin"] .engine-checker-grid article,
+#clausesView[data-admin-surface="admin"] .admin-explainability-card,
+#clausesView[data-admin-surface="admin"] .admin-code-group,
+#clausesView[data-admin-surface="admin"] .admin-hardening-list article,
+#clausesView[data-admin-surface="admin"] .admin-logic-list,
+#clausesView[data-admin-surface="admin"] .integration-card,
+#clausesView[data-admin-surface="admin"] .integration-toggle-row,
+#clausesView[data-admin-surface="admin"] .ai-key-form,
+#clausesView[data-admin-surface="admin"] .runtime-settings-form,
+#clausesView[data-admin-surface="admin"] .integration-search-form,
+#clausesView[data-admin-surface="admin"] .integration-connection-row,
+#clausesView[data-admin-surface="admin"] .integration-connection-empty,
+#clausesView[data-admin-surface="admin"] .integration-facts div,
+#clausesView[data-admin-surface="admin"] .integration-sync-history-item,
+#clausesView[data-admin-surface="admin"] .integration-sync-history-empty,
+#clausesView[data-admin-surface="guide"] .engine-card,
+#clausesView[data-admin-surface="guide"] .engine-module-grid article,
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel,
+#clausesView[data-admin-surface="guide"] .resolver-logic-grid article,
+#clausesView[data-admin-surface="guide"] .resolver-audit-list,
+#clausesView[data-admin-surface="guide"] .engine-checker-grid article,
+#clausesView[data-admin-surface="guide"] .admin-explainability-card,
+#clausesView[data-admin-surface="guide"] .admin-code-group,
+#clausesView[data-admin-surface="guide"] .admin-hardening-list article,
+#clausesView[data-admin-surface="guide"] .admin-logic-list,
+#clausesView[data-admin-surface="guide"] .integration-card,
+#clausesView[data-admin-surface="guide"] .integration-toggle-row,
+#clausesView[data-admin-surface="guide"] .ai-key-form,
+#clausesView[data-admin-surface="guide"] .runtime-settings-form,
+#clausesView[data-admin-surface="guide"] .integration-search-form,
+#clausesView[data-admin-surface="guide"] .integration-connection-row,
+#clausesView[data-admin-surface="guide"] .integration-connection-empty,
+#clausesView[data-admin-surface="guide"] .integration-facts div,
+#clausesView[data-admin-surface="guide"] .integration-sync-history-item,
+#clausesView[data-admin-surface="guide"] .integration-sync-history-empty {
+  background: #fff;
+  border-color: var(--admin-boundary);
+  box-shadow: none;
+}
+
+#clausesView[data-admin-surface="admin"] .engine-card span,
+#clausesView[data-admin-surface="admin"] .engine-resolver-panel > header span,
+#clausesView[data-admin-surface="admin"] .integration-status,
+#clausesView[data-admin-surface="guide"] .engine-card span,
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel > header span,
+#clausesView[data-admin-surface="guide"] .integration-status {
+  background: #fff;
+  border: 1px solid var(--admin-boundary);
+  color: var(--ink);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-reading-order,
+#clausesView[data-admin-surface="guide"] .admin-reading-order {
+  border-top: 1px solid var(--admin-boundary);
+  gap: 0;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-reading-order li,
+#clausesView[data-admin-surface="guide"] .admin-reading-order li {
+  border-bottom: 1px solid var(--admin-boundary);
+  gap: 4px 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 10px 0;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-reading-order li span,
+#clausesView[data-admin-surface="guide"] .admin-reading-order li span {
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  height: auto;
+  justify-content: start;
+  width: auto;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-reading-order p,
+#clausesView[data-admin-surface="guide"] .admin-reading-order p {
+  grid-column: 2;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-code-group.pass,
+#clausesView[data-admin-surface="admin"] .admin-code-group.review,
+#clausesView[data-admin-surface="admin"] .admin-code-group.check,
+#clausesView[data-admin-surface="guide"] .admin-code-group.pass,
+#clausesView[data-admin-surface="guide"] .admin-code-group.review,
+#clausesView[data-admin-surface="guide"] .admin-code-group.check {
+  border-left: 1px solid var(--admin-boundary);
+}
+
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button,
+#clausesView[data-admin-surface="guide"] .integration-frequency-control button {
+  background: #fff;
+  border-color: var(--admin-boundary);
+  color: var(--ink);
+}
+
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button.active,
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button[aria-pressed="true"],
+#clausesView[data-admin-surface="guide"] .integration-frequency-control button.active,
+#clausesView[data-admin-surface="guide"] .integration-frequency-control button[aria-pressed="true"] {
+  background: #fff;
+  border-color: var(--admin-boundary-strong);
+  color: var(--ink);
+}
+
+#clausesView[data-admin-surface="admin"] .ai-key-row input,
+#clausesView[data-admin-surface="admin"] .runtime-field select,
+#clausesView[data-admin-surface="admin"] .integration-search-form textarea,
+#clausesView[data-admin-surface="guide"] .ai-key-row input,
+#clausesView[data-admin-surface="guide"] .runtime-field select,
+#clausesView[data-admin-surface="guide"] .integration-search-form textarea {
+  border-color: var(--admin-boundary-strong);
+}
+
+#clausesView[data-admin-surface="admin"] .integration-connection-row.ready,
+#clausesView[data-admin-surface="admin"] .integration-connection-row.blocked,
+#clausesView[data-admin-surface="admin"] .integration-sync-history-item.error,
+#clausesView[data-admin-surface="guide"] .integration-connection-row.ready,
+#clausesView[data-admin-surface="guide"] .integration-connection-row.blocked,
+#clausesView[data-admin-surface="guide"] .integration-sync-history-item.error {
+  border-color: var(--admin-boundary);
+}
+
 .admin-inline-add {
   display: grid;
   gap: 8px;
