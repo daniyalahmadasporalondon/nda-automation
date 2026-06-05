@@ -290,7 +290,14 @@ def _expected_accepted_source_paragraphs(
 
 
 def _expected_redline_source_index(redline: Dict[str, object]) -> int | None:
-    for key in ("source_index", "paragraph_index"):
+    # The expected sequence is built over the blank-line-split source blocks
+    # (_source_paragraphs_from_text), whose 1-based ordinal is the review
+    # paragraph_index. Prefer paragraph_index over source_index: source_index is
+    # provenance and is shared by the parts of one extracted block that split on an
+    # internal blank line, so keying on it would map two redlines to one block and
+    # spuriously fail the content-coverage check. paragraph_index is unique per
+    # block. source_index remains the fallback for redlines that carry no index.
+    for key in ("paragraph_index", "source_index"):
         value = redline.get(key)
         if isinstance(value, int):
             return value
