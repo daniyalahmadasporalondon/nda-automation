@@ -421,12 +421,14 @@ def create_matter(
     if dedupe_gmail and not metadata.get("gmail_attachment_sha256"):
         metadata["gmail_attachment_sha256"] = hashlib.sha256(document_bytes).hexdigest()
 
-    if dedupe_gmail:
-        with _locked_store():
-            existing_matter = _find_gmail_duplicate_unlocked(_load_matters(), metadata, owner_user_id=owner_user_id)
-            if existing_matter is not None:
-                return {**existing_matter, "_existing_gmail_duplicate": True}
-
+    # The dedupe check + record write happen together under a single _locked_store()
+    # below (the authoritative critical section). An earlier, separate pre-check used
+    # to run here outside that lock; it re-read the whole store (read amplification)
+    # and opened a TOCTOU window between the check and the write, so a concurrent
+    # gmail-sync and HTTP create could both pass it and persist the same attachment
+    # twice. We instead always stage the bytes and let the locked check below reject
+    # a duplicate (unlinking the staged bytes), keeping dedupe/write a lost-update-free
+    # atomic step.
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     stored_path = UPLOADS_DIR / stored_filename
     stored_path.write_bytes(document_bytes)
@@ -818,15 +820,43 @@ def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
     return (board_rank, str(matter.get("updated_at") or matter.get("created_at") or ""))
 
 
+def _gmail_attachment_key_index(matters: list[dict[str, Any]]) -> dict[tuple[str, str], list[int]]:
+    """Map each gmail-attachment key to the positions of the matters that carry it.
+
+    Built once per store load so a dedupe lookup is O(candidate keys) instead of an
+    O(N) scan over every matter for every create/dedupe — the read/compare cost that
+    otherwise grows with the store on each gmail import.
+    """
+    index: dict[tuple[str, str], list[int]] = {}
+    for position, matter in enumerate(matters):
+        for key in _gmail_attachment_keys_for_metadata(matter):
+            index.setdefault(key, []).append(position)
+    return index
+
+
 def _find_gmail_duplicate_unlocked(
     matters: list[dict[str, Any]],
     metadata: dict[str, Any],
     owner_user_id: str = "",
+    *,
+    key_index: dict[tuple[str, str], list[int]] | None = None,
 ) -> dict[str, Any] | None:
-    if not _gmail_attachment_keys_for_metadata(metadata):
+    metadata_keys = _gmail_attachment_keys_for_metadata(metadata)
+    if not metadata_keys:
         return None
     owner_user_id = _clean_owner_user_id(owner_user_id or metadata.get("owner_user_id"))
-    for matter in matters:
+    if key_index is None:
+        key_index = _gmail_attachment_key_index(matters)
+    # Gather only the matters that share at least one key, then return the earliest
+    # in store order (preserving the prior first-match-wins behaviour) that also
+    # satisfies owner + sha256-on-filename matching.
+    candidate_positions = sorted({
+        position
+        for key in metadata_keys
+        for position in key_index.get(key, ())
+    })
+    for position in candidate_positions:
+        matter = matters[position]
         if not _matter_owner_matches(matter, owner_user_id):
             continue
         if _gmail_attachments_match(metadata, matter):

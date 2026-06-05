@@ -3,12 +3,35 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from nda_automation import matter_store
 from nda_automation.matter_repository import DiskMatterRepository
+
+
+def _gmail_create_kwargs(**overrides):
+    """create_matter kwargs for an inbound gmail attachment that should dedupe."""
+    kwargs = {
+        "source_filename": "Inbound NDA.docx",
+        "document_bytes": b"identical attachment bytes",
+        "extracted_text": "This Agreement is mutual.",
+        "review_result": {"clauses": []},
+        "triage": {"triage_status": "review"},
+        "source_type": "gmail_inbound",
+        "board_column": "gmail_demo",
+        "dedupe_gmail": True,
+        "intake_metadata": {
+            "gmail_message_id": "msg-1",
+            "gmail_attachment_id": "att-1",
+            "gmail_part_id": "1",
+            "attachment_filename": "Inbound NDA.docx",
+        },
+    }
+    kwargs.update(overrides)
+    return kwargs
 
 
 def _create_kwargs(**overrides):
@@ -190,6 +213,178 @@ class MatterStorePersistenceTests(unittest.TestCase):
 
         self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"]})
         self.assertTrue(first_live_exists)
+
+
+class MatterStoreConcurrencyTests(unittest.TestCase):
+    """Concurrency + read-cost guarantees on the SHIPPED disk store.
+
+    These assert against matter_store / DiskMatterRepository directly (not the
+    in-memory test double) so they fail if the real dedupe/write path regresses.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_concurrent_gmail_dedupe_persists_exactly_one_matter(self):
+        # Several threads import the same attachment at once. The dedupe + write
+        # is one locked critical section, so exactly one matter must persist and
+        # the rest must come back as duplicates — no lost update, no double-store.
+        thread_count = 8
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                barrier = threading.Barrier(thread_count)
+                results: list[dict] = []
+                errors: list[BaseException] = []
+                lock = threading.Lock()
+
+                def worker():
+                    try:
+                        barrier.wait()
+                        created = repo.create_matter(**_gmail_create_kwargs())
+                        with lock:
+                            results.append(created)
+                    except BaseException as error:  # noqa: BLE001 - surfaced via assert below
+                        with lock:
+                            errors.append(error)
+
+                threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+                stored = repo.list_matters()
+                fresh = [matter for matter in results if not matter.get("_existing_gmail_duplicate")]
+                duplicates = [matter for matter in results if matter.get("_existing_gmail_duplicate")]
+
+                self.assertEqual(errors, [])
+                self.assertEqual(len(stored), 1, "the same attachment must persist exactly once")
+                self.assertEqual(len(fresh), 1)
+                self.assertEqual(len(duplicates), thread_count - 1)
+                # Every duplicate response points at the one stored matter.
+                self.assertEqual({matter["id"] for matter in duplicates}, {stored[0]["id"]})
+                # And only one source document was written to disk.
+                upload_files = list((matter_store.UPLOADS_DIR).glob("*"))
+                self.assertEqual(len(upload_files), 1)
+
+    def test_concurrent_field_update_not_lost_under_dedupe_sweeps(self):
+        # An HTTP-style field writer runs while a gmail-style dedupe sweep runs.
+        # Because both take _locked_store() for their whole read-modify-write, the
+        # last field write must survive and the matter must never vanish.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                base = repo.create_matter(**_create_kwargs())
+                matter_id = base["id"]
+                stop = threading.Event()
+                anomalies: list[str] = []
+
+                def sweeper():
+                    while not stop.is_set():
+                        repo.deduplicate_gmail_matters()
+
+                sweep = threading.Thread(target=sweeper)
+                sweep.start()
+                try:
+                    for round_index in range(50):
+                        expected = f"subject-{round_index}"
+                        repo.update_matter_fields(matter_id, {"last_outbound_subject": expected})
+                        observed = repo.get_matter(matter_id)
+                        if observed is None:
+                            anomalies.append("matter disappeared under a concurrent dedupe sweep")
+                            break
+                        if observed.get("last_outbound_subject") != expected:
+                            anomalies.append(
+                                f"lost update: wrote {expected!r}, read {observed.get('last_outbound_subject')!r}"
+                            )
+                finally:
+                    stop.set()
+                    sweep.join()
+
+                self.assertEqual(anomalies, [])
+                final = repo.get_matter(matter_id)
+                self.assertIsNotNone(final)
+                self.assertEqual(final["last_outbound_subject"], "subject-49")
+
+    def test_dedupe_create_reads_store_once(self):
+        # Read-amplification bound: a dedupe create must load the store exactly
+        # once (the single locked check), not twice (an unlocked pre-check plus the
+        # locked check). Asserting the call count keeps create/dedupe off the O(2N)
+        # double-read path.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                for index in range(5):
+                    repo.create_matter(**_create_kwargs(
+                        source_filename=f"Existing {index}.docx",
+                        document_bytes=f"bytes-{index}".encode(),
+                    ))
+
+                load_calls = {"count": 0}
+                real_load = matter_store._load_matters
+
+                def counting_load():
+                    load_calls["count"] += 1
+                    return real_load()
+
+                with patch.object(matter_store, "_load_matters", side_effect=counting_load):
+                    repo.create_matter(**_gmail_create_kwargs())
+
+                self.assertEqual(load_calls["count"], 1, "dedupe create must not re-read the whole store")
+
+    def test_dedupe_lookup_does_not_scan_every_matter(self):
+        # The dedupe lookup is keyed, not a linear scan: with many stored matters,
+        # _gmail_attachments_match must be consulted far fewer than O(N) times for
+        # a single create (only the key-colliding candidates).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                stored_count = 40
+                for index in range(stored_count):
+                    repo.create_matter(**_gmail_create_kwargs(
+                        document_bytes=f"bytes-{index}".encode(),
+                        intake_metadata={
+                            "gmail_message_id": f"msg-{index}",
+                            "gmail_attachment_id": f"att-{index}",
+                            "gmail_part_id": "1",
+                            "attachment_filename": f"Inbound {index}.docx",
+                        },
+                    ))
+
+                match_calls = {"count": 0}
+                real_match = matter_store._gmail_attachments_match
+
+                def counting_match(left, right):
+                    match_calls["count"] += 1
+                    return real_match(left, right)
+
+                with patch.object(matter_store, "_gmail_attachments_match", side_effect=counting_match):
+                    # A brand-new attachment shares no keys with any stored matter.
+                    repo.create_matter(**_gmail_create_kwargs(
+                        document_bytes=b"brand-new-bytes",
+                        intake_metadata={
+                            "gmail_message_id": "msg-new",
+                            "gmail_attachment_id": "att-new",
+                            "gmail_part_id": "1",
+                            "attachment_filename": "Brand New.docx",
+                        },
+                    ))
+
+                self.assertLess(
+                    match_calls["count"],
+                    stored_count,
+                    "dedupe must consult only key-colliding candidates, not every stored matter",
+                )
 
 
 if __name__ == "__main__":
