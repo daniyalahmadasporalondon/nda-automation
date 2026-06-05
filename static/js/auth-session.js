@@ -10,6 +10,7 @@ const AuthSessionView = (() => {
     connectButton,
     syncButton,
     disconnectButton,
+    greetingNode,
     reviewErrorFromPayload,
     onGmailStatus,
     onSyncComplete,
@@ -17,7 +18,25 @@ const AuthSessionView = (() => {
     let authStatus = null;
     let gmailStatus = null;
     let deploymentStatus = null;
+    let greetingHelper = null;
     const api = RepositoryApi.create({ reviewErrorFromPayload });
+
+    // Load the greeting name-resolution helper once; re-render the greeting when
+    // it arrives so the hero updates as soon as identity data is available.
+    if (greetingNode) {
+      import("./modules/greeting.mjs?v=20260605a")
+        .then((module) => { greetingHelper = module; renderGreeting(); })
+        .catch(() => {});
+    }
+
+    // Set the dashboard hero greeting from the best available name source.
+    function renderGreeting() {
+      if (!greetingNode || !greetingHelper) return;
+      greetingNode.textContent = greetingHelper.dashboardGreeting({
+        user: authStatus?.user || null,
+        gmailStatus,
+      });
+    }
 
     loginLink?.addEventListener("click", () => {
       const href = authStatus?.login_url || "/auth/google/start";
@@ -162,6 +181,7 @@ const AuthSessionView = (() => {
       toggleHidden(disconnectButton, !canUseUserGmail || (!inbound.token?.configured && !outbound.token?.configured));
       toggleHidden(syncButton, !canUseUserGmail || !inboundOnlyReady);
       setWarning(deploymentWarning() || authStatus?.error || "");
+      renderGreeting();
     }
 
     function deploymentWarning() {

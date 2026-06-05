@@ -147,6 +147,7 @@ authSessionController = createAuthSessionController({
   root: document.querySelector("#sessionStrip"),
   userNode: document.querySelector("[data-session-user]"),
   gmailNode: document.querySelector("[data-session-gmail]"),
+  greetingNode: document.querySelector("#dashboardHeroTitle"),
   warningNode: document.querySelector("[data-session-warning]"),
   loginLink: document.querySelector("[data-session-login]"),
   logoutButton: document.querySelector("[data-session-logout]"),

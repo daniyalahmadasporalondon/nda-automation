@@ -40,6 +40,12 @@ import {
 } from "../../static/js/modules/playbook-draft.mjs";
 import { createPlaybookApi } from "../../static/js/modules/playbook-api.mjs";
 import {
+  dashboardGreeting,
+  firstNameFromDisplayName,
+  firstNameFromEmail,
+  resolveFirstName,
+} from "../../static/js/modules/greeting.mjs";
+import {
   buildSendDocumentPayload,
   isSupportedSendFilename,
   isValidRecipientEmail,
@@ -445,6 +451,37 @@ assert.deepEqual(
     subject: "Engagement Letter",
   },
 );
+
+// --- Dashboard greeting name resolution ---
+// firstNameFromEmail derives a title-cased first name from the local-part.
+assert.equal(firstNameFromEmail("daniyal.ahmad@aspora.com"), "Daniyal");
+assert.equal(firstNameFromEmail("john_smith@x.io"), "John");
+assert.equal(firstNameFromEmail("jane-doe+newsletter@x.io"), "Jane");
+assert.equal(firstNameFromEmail("o'brien@x.io"), "O'Brien");
+assert.equal(firstNameFromEmail("jdoe@x.io"), "Jdoe");
+assert.equal(firstNameFromEmail("12345@x.io"), "");
+assert.equal(firstNameFromEmail("not-an-email"), "");
+assert.equal(firstNameFromEmail(""), "");
+
+// firstNameFromDisplayName ignores names that just echo the email/id.
+assert.equal(firstNameFromDisplayName("Daniyal Ahmad"), "Daniyal");
+assert.equal(firstNameFromDisplayName("daniyal.ahmad@aspora.com"), "");
+assert.equal(firstNameFromDisplayName("user-123", { id: "user-123" }), "");
+assert.equal(firstNameFromDisplayName("me@x.io", { email: "me@x.io" }), "");
+assert.equal(firstNameFromDisplayName(""), "");
+
+// resolveFirstName priority: real display name > user email > gmail email.
+assert.equal(resolveFirstName({ user: { name: "Alex Park", email: "alex@x.io" } }), "Alex");
+assert.equal(resolveFirstName({ user: { name: "u@x.io", email: "u@x.io" }, gmailStatus: { inbound: { email: "priya.nair@x.io" } } }), "Priya");
+assert.equal(resolveFirstName({ gmailStatus: { outbound: { email: "daniyal.ahmad@aspora.com" } } }), "Daniyal");
+assert.equal(resolveFirstName({}), "");
+
+// dashboardGreeting: "Welcome back, <Name>" or a placeholder-free fallback (never "Counsel").
+assert.equal(dashboardGreeting({ gmailStatus: { inbound: { email: "daniyal.ahmad@aspora.com" } } }), "Welcome back, Daniyal");
+assert.equal(dashboardGreeting({ user: { name: "Sam Lee" } }), "Welcome back, Sam");
+assert.equal(dashboardGreeting({}), "Welcome back");
+assert.equal(dashboardGreeting({ user: null, gmailStatus: null }), "Welcome back");
+assert.ok(!dashboardGreeting({}).includes("Counsel"));
 
 function jsonResponse(payload, { ok = true } = {}) {
   return {

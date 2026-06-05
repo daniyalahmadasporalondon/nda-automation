@@ -249,7 +249,10 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#adminTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#guideTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#dashboardView").isHidden(), false);
-  await assertTextContains(page.locator("#dashboardView"), "Welcome back, Counsel");
+  // Greeting uses the person's name when identity is available, else a plain
+  // placeholder-free "Welcome back" — never the old "Counsel" stand-in.
+  await assertTextContains(page.locator("#dashboardHeroTitle"), "Welcome back");
+  assert.equal((await page.locator("#dashboardHeroTitle").innerText()).includes("Counsel"), false);
   await assertTextContains(page.locator("#dashboardView"), "Submit for Review");
   await assertTextContains(page.locator("#dashboardView"), "Send Document");
   assert.equal(await page.getByRole("button", { name: "Send Document" }).isDisabled(), false);
