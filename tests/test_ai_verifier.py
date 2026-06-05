@@ -25,7 +25,10 @@ from nda_automation.ai_verifier import (
     resolve_verifier,
     verifier_enabled,
 )
+from nda_automation.ai_assessment_contract import AI_REDLINE_NO_CHANGE
+from nda_automation.ai_first_review import build_ai_first_review_result
 from nda_automation.checker import review_nda
+from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 
 
 def _clause(clause_id, decision, *, name=None, requirement="", clause_type="", **overrides):
@@ -282,6 +285,17 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
         self.assertEqual(nc["decision"], "fail")  # real restriction stays failed
         self.assertEqual(nc["decision_source"], "deterministic")
 
+    def test_refuted_pass_carries_absence_grounding_stamp(self):
+        # A verifier-cleared pass is stamped grounded-in-absence so the grounding
+        # pass (#16), running after, doesn't re-flag it as an ungrounded finding.
+        text = "Each party shall not be restricted from dealing with any contact introduced by the other party."
+        result = review_nda(text)
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "pass")
+        self.assertEqual(nc["grounding"]["status"], "verified_absence")
+        self.assertEqual(nc["grounding"]["evidence_count"], 0)
+        self.assertEqual(nc["grounding"]["source"], "ai_verifier")
+
     def test_corrected_clause_passes_evidence_trust(self):
         # A verifier-changed decision must leave the evidence-trust contract intact:
         # review_nda raises EvidenceProvenanceError otherwise, so reaching here is the
@@ -329,6 +343,114 @@ class ResolveVerifierTests(unittest.TestCase):
             clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_AFFIRM)
         )
         self.assertEqual(summary["verifier_kind"], "injected")
+
+
+class AIFirstPathIntegrationTests(unittest.TestCase):
+    """The SHIPPING path: the verifier must protect real AI-first reviews, not just
+    the deterministic review_nda path the eval gate exercises."""
+
+    SOURCE_TEXT = "\n\n".join([
+        "Each party may disclose Confidential Information and both act as Disclosing and Receiving Party.",
+        '"Confidential Information" means non-public business, financial, technical, customer, supplier, '
+        "pricing, market, product, proprietary and trade secret information disclosed by either party.",
+        "This Agreement shall be governed by the laws of England and Wales.",
+        "The confidentiality obligations survive for a fixed period of three years.",
+        "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+        "For Aspora Limited\nBy:\nName:\nTitle:\nDate:\nFor Counterparty Ltd\nBy:\nName:\nTitle:\nDate:",
+    ])
+    QUOTES = {
+        "mutuality": ("p1", "Each party may disclose Confidential Information"),
+        "confidential_information": ("p2", '"Confidential Information" means non-public business'),
+        "governing_law": ("p3", "laws of England and Wales"),
+        "term_and_survival": ("p4", "fixed period of three years"),
+        "non_circumvention": ("p5", "shall not be restricted from dealing with any contact introduced"),
+        "signatures": ("p6", "For Aspora Limited"),
+    }
+
+    def _assessment(self, clause_id, decision, *, issue_type=None, rationale=None):
+        paragraph_id, quote = self.QUOTES[clause_id]
+        if issue_type is None:
+            issue_type = "none" if decision == "pass" else "present_but_wrong"
+        # Contract: a fail needs a real redline action; blocks_send is review-only.
+        if decision == "fail":
+            proposed_redline = {
+                "action": REDLINE_REPLACE_PARAGRAPH,
+                "paragraph_id": paragraph_id,
+                "text": "Each party remains free to deal with any party introduced by the other.",
+            }
+        else:
+            proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
+        return {
+            "clause_id": clause_id,
+            "decision": decision,
+            "issue_type": issue_type,
+            "rationale": rationale or f"{clause_id} assessed against the playbook with cited text.",
+            "evidence": [{"paragraph_id": paragraph_id, "quote": quote, "relevance": "Cited."}],
+            "proposed_redline": proposed_redline,
+            "confidence": 0.92,
+            "blocks_send": decision == "review",
+        }
+
+    def _all_assessments(self, non_circ_decision):
+        return [
+            self._assessment("mutuality", "pass"),
+            self._assessment("confidential_information", "pass"),
+            self._assessment("governing_law", "pass"),
+            self._assessment("term_and_survival", "pass"),
+            self._assessment(
+                "non_circumvention",
+                non_circ_decision,
+                issue_type="present_but_wrong" if non_circ_decision == "fail" else "none",
+                rationale="AI wrongly read the freedom-to-deal carve-out as a restriction."
+                if non_circ_decision == "fail"
+                else "No restriction present.",
+            ),
+            self._assessment("signatures", "pass"),
+        ]
+
+    def test_verifier_corrects_ai_first_false_flag(self):
+        # The AI got it wrong: it FAILED a freedom-to-deal carve-out. The verifier,
+        # running on the shipping path, must refute that fail to pass.
+        result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("fail"))
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "pass")
+        self.assertEqual(nc["decision_source"], "ai_verifier")
+        self.assertEqual(nc["ai_verifier"]["verdict"], "refute")
+        self.assertEqual(nc["ai_verifier"]["original_decision"], "fail")
+        # Evidence-trust holds (build raises EvidenceProvenanceError otherwise).
+        self.assertEqual(result["evidence_trust"]["status"], "verified")
+        self.assertEqual(result["audit_trace"]["decision"] if "audit_trace" in result else nc["audit_trace"]["decision"], "pass")
+        self.assertEqual(result["ai_verifier"]["changed_count"], 1)
+
+    def test_verifier_leaves_correct_ai_first_pass_untouched(self):
+        # The AI got it right (pass). The verifier must not disturb a confident pass.
+        result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("pass"))
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "pass")
+        self.assertEqual(nc["decision_source"], "ai")  # untouched by the verifier
+        self.assertEqual(result["ai_verifier"]["changed_count"], 0)
+
+    def test_verify_false_preserves_ai_first_finding(self):
+        result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("fail"), verify=False)
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "fail")  # the AI's false flag, unverified
+        self.assertEqual(result["ai_verifier"]["status"], "disabled")
+
+    def test_ai_first_genuine_restriction_stays_failed(self):
+        # Swap in a genuine restriction text; an AI fail there must NOT be refuted.
+        source = self.SOURCE_TEXT.replace(
+            "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+            "The Recipient must not circumvent the Company or deal directly with introduced parties.",
+        )
+        assessments = self._all_assessments("fail")
+        # Re-point the non_circ citation at the new p5 text.
+        for assessment in assessments:
+            if assessment["clause_id"] == "non_circumvention":
+                assessment["evidence"] = [{"paragraph_id": "p5", "quote": "must not circumvent the Company", "relevance": "Cited."}]
+        result = build_ai_first_review_result(source, assessments)
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "fail")
+        self.assertEqual(nc["decision_source"], "ai")
 
 
 if __name__ == "__main__":

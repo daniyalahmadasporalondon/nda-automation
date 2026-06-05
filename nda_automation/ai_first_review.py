@@ -37,7 +37,9 @@ from .review_state import (
     CLAUSE_DECISION_REVIEW,
     aggregate_review_state,
     clause_review_state,
+    reason_codes_for_clause,
 )
+from .ai_verifier import apply_ai_verifier
 
 AI_FIRST_REVIEW_MODE = "ai_first_compat"
 
@@ -73,11 +75,18 @@ def build_ai_first_review_result(
     paragraphs: Sequence[Paragraph] | None = None,
     checked_at: str | None = None,
     playbook: Mapping[str, Any] | None = None,
+    ai_verifier: Any | None = None,
+    verify: bool = True,
 ) -> dict[str, Any]:
     """Build the existing review_result contract from AI-first clause assessments.
 
     Phase 1 only normalizes already-produced assessments. It intentionally does
     not call an AI model or decide legal outcomes itself.
+
+    After the assessments are normalized into clause results, an adversarial
+    verifier pass (additive) justifies-or-refutes each escalated finding; refuted
+    findings are downgraded and unsubstantiated ones flagged for human review. This
+    is the SHIPPING path, so the verifier protects real product reviews here.
     """
     text = source_text or ""
     document_paragraphs = _review_paragraphs(text, paragraphs)
@@ -112,6 +121,17 @@ def build_ai_first_review_result(
         )
         for playbook_clause in playbook_clauses
     ]
+    # Adversarial verifier pass over the AI-first findings (the SHIPPING path).
+    # Additive overlay: justify-or-refute each escalated finding, then re-finalize
+    # the derived structures (reason codes, structured evidence, audit trace) for any
+    # clause it rewrote so the evidence-trust contract still holds.
+    clause_results, ai_verifier_review = apply_ai_verifier(
+        clause_results,
+        source_text=text,
+        verifier=ai_verifier,
+        enabled=verify,
+    )
+    _refinalize_ai_first_verifier_changes(clause_results, ai_verifier_review, document_paragraphs)
     failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
     review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
     passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
@@ -152,6 +172,7 @@ def build_ai_first_review_result(
             "assessment_count": len(assessment_by_clause_id),
             "playbook_clause_count": len(playbook_clauses),
         },
+        "ai_verifier": ai_verifier_review,
         "clauses": clause_results,
         "redline_edits": _build_redline_edits(clause_results, document_paragraphs),
     }
@@ -253,6 +274,49 @@ def _clause_result_from_assessment(
     if isinstance(review_context.get("contract_structure"), dict):
         result["structure_context"] = _structure_context_for_clause(str(result["id"]), review_context)
     return result
+
+
+def _refinalize_ai_first_verifier_changes(
+    clause_results: list[ClauseResult],
+    verifier_review: Mapping[str, Any],
+    document_paragraphs: list[Paragraph],
+) -> None:
+    """Re-derive the derived structures for any clause the verifier rewrote.
+
+    Mirrors the AI-first finalization in ``_clause_result_from_assessment`` (not the
+    checker's helpers): the verifier owns the new decision/reason on a clause it
+    changed, but reason codes, structured evidence, and the audit trace are derived
+    data this module owns. Re-running them keeps the evidence-trust contract intact.
+    A refute-to-pass clears the disproven evidence, so structured evidence collapses
+    to empty and the clause re-derives its natural "no violation" reason code.
+    """
+    changed_ids = {
+        str(record.get("clause_id") or "")
+        for record in verifier_review.get("records", [])
+        if isinstance(record, Mapping) and record.get("changed")
+    }
+    if not changed_ids:
+        return
+    paragraphs_by_id = {str(paragraph.get("id") or ""): paragraph for paragraph in document_paragraphs}
+    for clause in clause_results:
+        if str(clause.get("id") or "") not in changed_ids:
+            continue
+        decision = str(clause.get("decision") or "")
+        # The verifier drops the stale reason code when it clears a disproven finding;
+        # re-derive the natural one only when absent so a verifier-owned escalation
+        # code (e.g. ai_verifier_refute on a fail->review) is preserved.
+        if not clause.get("reason_code") and not clause.get("reason_codes"):
+            reason_codes = reason_codes_for_clause(clause, decision)
+            clause["reason_code"] = reason_codes[0]
+            clause["reason_codes"] = reason_codes
+        matched_paragraphs = [
+            paragraphs_by_id[paragraph_id]
+            for paragraph_id in (str(pid) for pid in clause.get("matched_paragraph_ids") or [])
+            if paragraph_id in paragraphs_by_id
+        ]
+        clause["structured_evidence"] = _structured_evidence_records(clause, matched_paragraphs, {})
+        clause["review_state"] = clause_review_state(clause, decision)
+        clause["audit_trace"] = _audit_trace(clause)
 
 
 def _normalized_decision(value: object) -> str:

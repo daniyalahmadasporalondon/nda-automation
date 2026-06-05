@@ -72,6 +72,13 @@ HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
 # to overturn the engine -- a hesitant refutation should escalate, not flip.
 VERIFIER_MIN_CONFIDENCE = 0.6
 
+# Grounding status stamped on a clause whose evidence the verifier disproved and
+# cleared. The evidence-grounding pass (#16) treats this as deliberately grounded in
+# absence, not an ungrounded finding to re-flag. Coordinate the exact string with the
+# evidence pass so both agree (checkers -> grounding -> verifier is the agreed order;
+# this marker covers the case where a refuted pass is the verifier's own output).
+GROUNDING_STATUS_VERIFIED_ABSENCE = "verified_absence"
+
 
 class VerifierFn(Protocol):
     """Seam for an adversarial verifier.
@@ -314,6 +321,15 @@ def _clear_disproven_evidence(clause: dict) -> None:
         _empty_analysis_id_lists(clause[key])
     for key in ("reason_code", "reason_codes", "review_state"):
         clause.pop(key, None)
+    # Stamp an explicit ABSENCE marker so the evidence-grounding pass (#16), running
+    # after the verifier, treats this evidence-free pass as deliberately grounded in
+    # absence (the verifier disproved the flagged evidence) rather than re-flagging it
+    # as an ungrounded finding. The verifier owns this grounding state for the clause.
+    clause["grounding"] = {
+        "status": GROUNDING_STATUS_VERIFIED_ABSENCE,
+        "evidence_count": 0,
+        "source": "ai_verifier",
+    }
 
 
 def _empty_analysis_id_lists(analysis: dict) -> None:
