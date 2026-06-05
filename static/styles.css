@@ -2705,6 +2705,18 @@ button.active-clause-status:hover {
   margin: 0;
 }
 
+.clause-citation-block.ungrounded {
+  border-left: 2px solid var(--warning, #c47f17);
+}
+
+.clause-citation-block.absence p,
+.clause-citation-block.ungrounded p {
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .ai-summary-chips,
 .ai-validation-list {
   display: flex;
