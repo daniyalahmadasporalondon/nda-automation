@@ -131,7 +131,15 @@ function renderRedlineDocumentParagraph(model) {
 }
 
 function isFailedProhibitedClause(clause) {
-  return clause?.type === "prohibited" && clauseStatus(clause).fails;
+  if (!clause || !clauseStatus(clause).fails) return false;
+  // Native prohibited clauses are tagged type === "prohibited". A dynamic
+  // Playbook clause (engine === "dynamic") that was migrated off a native
+  // check may arrive without that tag, so recognize it from the fields it does
+  // carry: a delete_paragraph fallback redline action marks it as prohibited
+  // (its remedy is to remove the paragraph, never replace it).
+  if (clause.type === "prohibited") return true;
+  return clauseIsDynamic(clause)
+    && String(clause.fallback?.redline_action || "").trim() === REDLINE_DELETE_PARAGRAPH;
 }
 
 function renderParagraphFrame(model, { body, classes = [] }) {

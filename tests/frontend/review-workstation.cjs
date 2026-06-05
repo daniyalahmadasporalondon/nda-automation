@@ -199,6 +199,96 @@ async function runReview(page, text) {
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
 }
 
+// non_circumvention was migrated to a pure dynamic (engine=="dynamic") Playbook
+// clause reviewed only by the AI-first engine, so the deterministic /api/review
+// the suite drives no longer emits it (that path intentionally dropped it in #12).
+// To keep genuine prohibited-clause coverage on the path the clause now lives on,
+// these helpers pass the real backend review through and graft on the dynamic
+// non_circumvention result + its delete redline exactly as the AI-first engine
+// (build_ai_first_review_result) would produce them. Test-only: the production
+// review pipeline is untouched.
+const NON_CIRCUMVENTION_PROHIBITED_PATTERN = /\bcircumvent|introduced part|deal directly\b/i;
+
+function dynamicNonCircumventionClause(prohibitedParagraphIds) {
+  return {
+    id: "non_circumvention",
+    name: "Non-Circumvention",
+    type: "prohibited",
+    engine: "dynamic",
+    decision: "fail",
+    status: "check",
+    passes: false,
+    needs_review: false,
+    issue_type: "present_but_wrong",
+    issue_label: "Present but wrong",
+    reason: "Prohibited non-circumvention restriction present.",
+    finding: "Prohibited non-circumvention restriction present.",
+    what_to_fix: "Remove the prohibited non-circumvention restriction.",
+    matched_paragraph_ids: [...prohibitedParagraphIds],
+    fallback: { redline_action: "delete_paragraph" },
+    review_state: {
+      version: 1,
+      state: "check",
+      decision: "fail",
+      label: "CHECK",
+      tone: "check",
+      requires_attention: true,
+      requires_human_review: false,
+      requires_redline: true,
+      blocks_send: false,
+      blocks_auto_send: true,
+      reason: "Prohibited non-circumvention restriction present.",
+      reason_code: "ai_first_fail",
+      reason_codes: ["ai_first_fail"],
+    },
+  };
+}
+
+function dynamicNonCircumventionRedlines(prohibitedParagraphs, startNumber) {
+  return prohibitedParagraphs.map((paragraph, index) => ({
+    id: `ncr${startNumber + index}`,
+    clause_id: "non_circumvention",
+    clause_name: "Non-Circumvention",
+    paragraph_id: paragraph.id,
+    paragraph_index: paragraph.index,
+    action: "delete_paragraph",
+    action_label: "Remove paragraph",
+    status: "proposed",
+    original_text: String(paragraph.text || ""),
+    replacement_text: "",
+    reason: "Remove the prohibited non-circumvention restriction.",
+  }));
+}
+
+// Graft the dynamic non_circumvention result onto a real deterministic review
+// payload, anchored to whichever paragraphs carry prohibited restriction text.
+function injectDynamicNonCircumvention(payload) {
+  const paragraphs = Array.isArray(payload.paragraphs) ? payload.paragraphs : [];
+  const prohibited = paragraphs.filter((paragraph) => NON_CIRCUMVENTION_PROHIBITED_PATTERN.test(String(paragraph.text || "")));
+  if (!prohibited.length) return payload;
+  const clauses = Array.isArray(payload.clauses) ? payload.clauses : [];
+  const redlines = Array.isArray(payload.redline_edits) ? payload.redline_edits : [];
+  if (clauses.some((clause) => clause && clause.id === "non_circumvention")) return payload;
+  payload.clauses = [...clauses, dynamicNonCircumventionClause(prohibited.map((paragraph) => paragraph.id))];
+  payload.redline_edits = [...redlines, ...dynamicNonCircumventionRedlines(prohibited, redlines.length + 1)];
+  return payload;
+}
+
+// runReview, but with /api/review passed through to the real backend and the
+// dynamic non_circumvention result grafted on (see injectDynamicNonCircumvention).
+async function runReviewWithDynamicNonCircumvention(page, text) {
+  await page.route("**/api/review", async (route) => {
+    const response = await route.fetch();
+    const payload = injectDynamicNonCircumvention(await response.json());
+    await route.fulfill({ response, json: payload });
+  });
+  try {
+    await runReview(page, text);
+  } finally {
+    await page.unroute("**/api/review");
+  }
+}
+
 async function testAccessibleControlState(page) {
   await page.route("**/api/ai/settings", async (route) => {
     await route.fulfill({
@@ -3195,7 +3285,7 @@ async function testInlineDiffOperationRendering(page) {
 }
 
 async function testBackendRedlineModes(page) {
-  await runReview(page, redlineNda);
+  await runReviewWithDynamicNonCircumvention(page, redlineNda);
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-clause-item .studio-issue-pill").count(), 0);
   const checkRowStyles = await page.locator(".studio-clause-item.check").first().evaluate((node) => {
@@ -3381,7 +3471,7 @@ async function testBackendRedlineModes(page) {
 }
 
 async function testClauseAnchorCycling(page) {
-  await runReview(page, multiAnchorNda);
+  await runReviewWithDynamicNonCircumvention(page, multiAnchorNda);
   const nonCircumventionCard = page.locator('[data-studio-lane-id="non_circumvention"]');
 
   await nonCircumventionCard.click();
@@ -3700,7 +3790,11 @@ async function testPreviewMatchesExportedDocx(page) {
   const exportedChanges = readDocxTrackChanges(exportedPath);
   assert.ok(preview.some(({ edit }) => edit.action === "replace_paragraph"), "fixture should include replace redlines");
   assert.ok(preview.some(({ edit }) => edit.action === "insert_after_paragraph"), "fixture should include insert redlines");
-  assert.ok(preview.some(({ edit }) => edit.action === "delete_paragraph"), "fixture should include delete redlines");
+  // delete_paragraph redlines now come only from dynamic (engine=="dynamic")
+  // clauses via the AI-first engine (non_circumvention was migrated off the
+  // deterministic path in #12), so this deterministic export no longer carries
+  // one. The delete -> native DOCX deletion mechanism stays covered directly,
+  // engine-independently, by tests/test_docx_export.py (_delete_and_insert_review_result).
 
   for (const { edit, preview: previewParagraph } of preview) {
     const expectedOriginal = edit.action === "insert_after_paragraph" ? "" : edit.original_text;
@@ -3804,13 +3898,11 @@ async function testSourceRedlineExportRegression(page) {
     )),
     "clause redline must still map to and revise the exact source paragraph",
   );
-  assert.ok(
-    exportedDocx.revisionParagraphs.some((paragraph) => (
-      normalizeWhitespace(paragraph.original) === "The Recipient must not circumvent the Company."
-      && normalizeWhitespace(paragraph.accepted) === ""
-    )),
-    "delete redline must remain a native deletion against the source paragraph",
-  );
+  // The non_circumvention delete that used to fire here came from the deterministic
+  // engine, which no longer reviews that clause (it is dynamic / AI-first now, #12).
+  // The circumvent paragraph therefore survives untouched (asserted above). The
+  // delete -> native source DOCX deletion mechanism stays covered, engine-independently,
+  // by tests/test_docx_export.py (_delete_and_insert_review_result).
 }
 
 async function testExportMarksCapturedMatterReady(page) {
