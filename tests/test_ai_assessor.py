@@ -72,6 +72,30 @@ def _complete_response():
     }
 
 
+def _all_pass_response():
+    # Every clause passes, each present-clause verdict grounded in a quote that
+    # appears in SOURCE_TEXT so nothing is downgraded to review. Used to prove a
+    # would-be clean clear is still escalated when the document is truncated.
+    return {
+        "assessments": [
+            _assessment("mutuality", "pass", paragraph_id="p1", quote="Each party may disclose Confidential Information"),
+            _assessment("confidential_information", "pass", paragraph_id="p2", quote='"Confidential Information" means non-public business'),
+            _assessment("governing_law", "pass", paragraph_id="p3", quote="laws of California"),
+            _assessment("term_and_survival", "pass", paragraph_id="p4", quote="fixed period of five years"),
+            _assessment("non_circumvention", "pass"),
+            _assessment("signatures", "pass", paragraph_id="p6", quote="For Aspora Limited"),
+        ],
+    }
+
+
+def _padded_source(source_text, *, filler_paragraphs):
+    # Keep the real clause paragraphs at the front (so they fit the packet and
+    # ground), then append enough filler paragraphs to push the document past
+    # the packet budget and force truncation.
+    filler = [f"Filler paragraph {index} with neutral boilerplate text." for index in range(filler_paragraphs)]
+    return source_text + "\n\n" + "\n\n".join(filler)
+
+
 class AIAssessorTests(unittest.TestCase):
     def test_ai_first_assessor_builds_existing_review_result_contract(self):
         reviewer = InMemoryAssessmentReviewer(response=_complete_response())
@@ -119,6 +143,61 @@ class AIAssessorTests(unittest.TestCase):
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
         self.assertEqual(governing_law["decision"], "review")
         self.assertEqual(governing_law["reason_code"], "ai_first_missing_assessment")
+
+    def test_truncated_document_forces_manual_review_no_silent_clear(self):
+        # A long document whose paragraphs exceed the packet budget is only
+        # partially seen by the AI. Even when every assessed clause passes, the
+        # unseen tail must force the whole document to manual review rather than
+        # silently clear (the long-doc false-clear).
+        long_source = _padded_source(SOURCE_TEXT, filler_paragraphs=200)
+        reviewer = InMemoryAssessmentReviewer(response=_all_pass_response())
+
+        result = assess_nda_with_ai(long_source, reviewer=reviewer)
+
+        packet_document = reviewer.packets[0]["document"]
+        self.assertTrue(packet_document["truncated"])
+        self.assertGreater(packet_document["omitted_paragraph_count"], 0)
+
+        self.assertTrue(result["truncation"]["truncated"])
+        self.assertEqual(
+            result["truncation"]["omitted_paragraph_count"],
+            packet_document["omitted_paragraph_count"],
+        )
+        self.assertIn("manual review required", result["truncation"]["message"])
+        self.assertIn("unreviewed", result["truncation"]["message"])
+
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertEqual(result["review_state"]["state"], "review")
+        self.assertTrue(result["review_state"]["blocks_send"])
+        self.assertTrue(result["review_state"]["truncation_forced_review"])
+        self.assertEqual(result["ai_first_review"]["status"], "partial")
+        self.assertTrue(result["ai_first_review"]["truncated"])
+
+    def test_untruncated_document_is_not_escalated_by_truncation_guard(self):
+        # The same all-pass response on a document that fits the budget keeps its
+        # natural verdict -- the guard only fires on truncation.
+        reviewer = InMemoryAssessmentReviewer(response=_all_pass_response())
+
+        result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        self.assertFalse(reviewer.packets[0]["document"]["truncated"])
+        self.assertFalse(result["truncation"]["truncated"])
+        self.assertEqual(result["truncation"]["message"], "")
+        self.assertNotIn("truncation_forced_review", result["review_state"])
+        self.assertEqual(result["overall_status"], "meets_requirements")
+
+    def test_truncation_does_not_soften_a_failing_document(self):
+        # A truncated document that already fails must stay a fail (check), not be
+        # softened to review; the guard only escalates a pass.
+        long_source = _padded_source(SOURCE_TEXT, filler_paragraphs=200)
+        reviewer = InMemoryAssessmentReviewer(response=_complete_response())
+
+        result = assess_nda_with_ai(long_source, reviewer=reviewer)
+
+        self.assertTrue(result["truncation"]["truncated"])
+        self.assertEqual(result["review_state"]["state"], "check")
+        self.assertEqual(result["overall_status"], "does_not_meet_requirements")
+        self.assertTrue(result.get("truncation_blocks_send"))
 
     def test_ai_first_assessor_rejects_invalid_ai_response(self):
         reviewer = InMemoryAssessmentReviewer(response={
