@@ -8,17 +8,35 @@ export function clauseStatus(clause) {
     ? clause.passes
     : rawStatus === "pass" || rawStatus === "match";
   const hasReviewState = ["pass", "review", "check", "pending"].includes(rawReviewState);
-  const review = rawReviewState === "review" || rawDecision === "review" || clause?.needs_review === true;
-  const fail = rawReviewState === "check" || rawDecision === "fail" || (!hasReviewState && !hasDecision && !review && !rawPasses);
-  const passes = rawReviewState === "pass" || rawDecision === "pass" || (!hasReviewState && !hasDecision && rawPasses && !review && !fail);
-  // A dynamic clause result may key everything off review_state/decision and
-  // omit the top-level `status` field, which defaults to "idle". Only treat a
-  // clause as idle (pre-review "Pending") when no real result signal is
-  // present, so a reviewed dynamic clause never renders as Pending.
-  const hasExplicitPasses = typeof clause?.passes === "boolean";
-  const hasResultSignal = hasReviewState || hasDecision || hasExplicitPasses
-    || rawStatus === "pass" || rawStatus === "match";
-  const idle = rawStatus === "idle" && !hasResultSignal;
+
+  // Single source of truth: the backend already ran the canonical verdict
+  // (decision_arbiter -> review_state, including the confidence < 0.75 rule and
+  // the unknown -> review fail-safe) and attaches it as clause.review_state.state
+  // / clause.decision. CONSUME that verdict here instead of re-deriving a second,
+  // drifting opinion from the raw fields. The legacy raw-field derivation below
+  // is the fallback only for clauses that predate the canonical verdict (old
+  // fixtures, or a dynamic result that carries neither review_state nor decision).
+  const canonicalState = hasReviewState ? rawReviewState : (hasDecision ? _decisionState(rawDecision) : "");
+  let review;
+  let fail;
+  let passes;
+  let idle;
+  if (canonicalState) {
+    review = canonicalState === "review";
+    fail = canonicalState === "check";
+    passes = canonicalState === "pass";
+    idle = canonicalState === "pending";
+  } else {
+    // No canonical verdict present -> fall back to the legacy raw-field
+    // derivation. needs_review still escalates; a clause with no result signal
+    // at all stays pre-review "Pending" (idle), matching prior behavior.
+    review = clause?.needs_review === true;
+    fail = !review && !rawPasses && (rawStatus === "check" || rawStatus === "not_present" || rawStatus === "fail");
+    passes = rawPasses && !review && !fail;
+    const hasResultSignal = typeof clause?.passes === "boolean"
+      || rawStatus === "pass" || rawStatus === "match";
+    idle = !review && !fail && !passes && !hasResultSignal;
+  }
   const tone = idle ? "pending" : review ? "review" : fail ? "check" : "pass";
   const dotTone = idle ? "pending" : review ? "review" : fail ? "verify" : "match";
   const resultLabels = {
@@ -45,6 +63,17 @@ export function clauseStatus(clause) {
     resultLabel: resultLabels[rawReviewState] || resultLabels[rawDecision] || resultLabels[rawStatus] || "Pending",
     tone,
   };
+}
+
+// Map a canonical clause decision (the backend verdict) onto the review_state
+// `state` vocabulary, so a clause that carries only `decision` (no nested
+// review_state) is read through the same single source of truth. A `fail`
+// decision is the "check" state (needs a redline), mirroring review_state.py.
+function _decisionState(decision) {
+  if (decision === "fail") return "check";
+  if (decision === "review") return "review";
+  if (decision === "pass") return "pass";
+  return "";
 }
 
 export function clausePasses(clause) {
