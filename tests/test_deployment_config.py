@@ -58,6 +58,13 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertIn("healthCheckPath: /healthz", blueprint)
         self.assertRegex(blueprint, r"key:\s+NDA_REQUIRE_AUTH\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AUTH_PASSWORD\s+sync:\s+false")
+        # HTTP Basic is a break-glass operator credential, not a shared baked-in
+        # identity; the username is operator-set so it never collapses tenants.
+        self.assertRegex(blueprint, r"key:\s+NDA_AUTH_USERNAME\s+sync:\s+false")
+        self.assertNotRegex(blueprint, r"key:\s+NDA_AUTH_USERNAME\s+value:\s+nda-admin")
+        self.assertRegex(blueprint, r"key:\s+NDA_ADMIN_USERS\s+sync:\s+false")
+        self.assertRegex(blueprint, r"key:\s+NDA_TRUSTED_PROXY_COUNT\s+value:\s+\"1\"")
+        self.assertRegex(blueprint, r"key:\s+NDA_ENFORCE_CSRF\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_ALLOWED_HOSTS\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_CLIENT_ID\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_CLIENT_SECRET\s+sync:\s+false")

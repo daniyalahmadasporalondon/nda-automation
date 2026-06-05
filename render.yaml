@@ -11,9 +11,18 @@ services:
         value: 3.11.9
       - key: NDA_REQUIRE_AUTH
         value: "true"
+      # Per-user Google OAuth (below) is the tenant boundary: each signed-in
+      # account owns and only sees its own matters. HTTP Basic auth is a single
+      # break-glass operator credential, NOT a shared multi-user login, so its
+      # username is operator-set (sync: false) rather than a baked-in shared
+      # "nda-admin" that would collapse every operator into one authz identity.
       - key: NDA_AUTH_USERNAME
-        value: nda-admin
+        sync: false
       - key: NDA_AUTH_PASSWORD
+        sync: false
+      # Identities (Google account id or Basic username) allowed to use
+      # admin-only endpoints such as the full matter backup export.
+      - key: NDA_ADMIN_USERS
         sync: false
       - key: NDA_ALLOWED_HOSTS
         sync: false
@@ -32,6 +41,14 @@ services:
       - key: NDA_EXPORTS_DIR
         value: /tmp/nda-automation/exports
       - key: NDA_ALLOW_EPHEMERAL_DATA
+        value: "true"
+      # Render terminates TLS at one proxy in front of the app, so trust a
+      # single X-Forwarded-For hop to rate-limit by real client IP instead of
+      # the shared proxy peer. Enforce same-site Origin/Referer on state-changing
+      # requests to block cross-site (CSRF) calls including forced logout.
+      - key: NDA_TRUSTED_PROXY_COUNT
+        value: "1"
+      - key: NDA_ENFORCE_CSRF
         value: "true"
       - key: NDA_RATE_LIMIT_PER_MINUTE
         value: "120"
