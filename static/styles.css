@@ -3188,11 +3188,13 @@ body.modal-open {
   overflow: hidden;
 }
 
-.send-modal[hidden] {
+.send-modal[hidden],
+.upload-modal[hidden] {
   display: none;
 }
 
-.send-modal {
+.send-modal,
+.upload-modal {
   align-items: center;
   background: rgba(17, 17, 26, 0.32);
   display: flex;
@@ -3201,6 +3203,24 @@ body.modal-open {
   padding: 22px;
   position: fixed;
   z-index: 1000;
+}
+
+.upload-modal-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: 0 24px 80px -34px rgba(17, 17, 26, 0.55);
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  width: min(1040px, calc(100vw - 32px));
+}
+
+.upload-modal .upload-shell {
+  padding: 20px;
+}
+
+.upload-modal .upload-header {
+  align-items: flex-start;
 }
 
 .send-modal-dialog {
@@ -5917,12 +5937,14 @@ body.modal-open {
     align-items: flex-start;
   }
 
-  .send-modal {
+  .send-modal,
+  .upload-modal {
     align-items: stretch;
     padding: 12px;
   }
 
-  .send-modal-dialog {
+  .send-modal-dialog,
+  .upload-modal-dialog {
     height: auto;
     max-height: calc(100vh - 24px);
     width: 100%;

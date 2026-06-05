@@ -1,4 +1,6 @@
 function createManualUploadController({
+  modalNode,
+  closeButton,
   fileInput,
   form,
   selectedFileNode,
@@ -13,20 +15,31 @@ function createManualUploadController({
   repositoryController,
   activateTab,
   reviewErrorFromPayload,
-  onFileSelected,
 }) {
   let selectedFile = null;
   let busy = false;
+  let previousFocus = null;
 
   fileInput?.addEventListener("change", () => {
     setSelectedFile(fileInput.files?.[0] || null);
   });
 
   clearButton?.addEventListener("click", () => resetForm());
+  closeButton?.addEventListener("click", () => closeModal({ reset: true }));
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await uploadSelectedFile();
+  });
+
+  modalNode?.addEventListener("click", (event) => {
+    if (event.target === modalNode && !busy) closeModal({ reset: true });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !isModalOpen() || busy) return;
+    event.preventDefault();
+    closeModal({ reset: true });
   });
 
   dropzone?.addEventListener("dragover", (event) => {
@@ -56,9 +69,6 @@ function createManualUploadController({
     }
     setStatus("");
     renderSelectedFile();
-    if (selectedFile && typeof onFileSelected === "function") {
-      onFileSelected(selectedFile);
-    }
   }
 
   function renderSelectedFile() {
@@ -114,6 +124,7 @@ function createManualUploadController({
 
       const matter = payload.matter || {};
       resetForm({ status: `Uploaded ${matter.source_filename || selectedFile.name}.` });
+      closeModal({ restoreFocus: false });
       await repositoryController.loadMatters();
       activateTab("repository");
       if (matter.id) {
@@ -140,6 +151,35 @@ function createManualUploadController({
     fileInput?.click();
   }
 
+  function openModal() {
+    if (!modalNode) {
+      openFilePicker();
+      return;
+    }
+    previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    modalNode.hidden = false;
+    document.body.classList.add("modal-open");
+    window.setTimeout(() => closeButton?.focus?.(), 0);
+  }
+
+  function closeModal({ reset = false, restoreFocus = true } = {}) {
+    if (!modalNode) return;
+    modalNode.hidden = true;
+    document.body.classList.remove("modal-open");
+    if (reset) resetForm();
+    if (restoreFocus) {
+      const focusTarget = previousFocus?.isConnected ? previousFocus : null;
+      focusTarget?.focus?.();
+    }
+    previousFocus = null;
+  }
+
+  function isModalOpen() {
+    return Boolean(modalNode && !modalNode.hidden);
+  }
+
   function setStatus(message, tone = "") {
     if (!statusNode) return;
     statusNode.textContent = message;
@@ -148,7 +188,7 @@ function createManualUploadController({
   }
 
   renderSelectedFile();
-  return { openFilePicker, resetForm, uploadSelectedFile };
+  return { closeModal, openFilePicker, openModal, resetForm, uploadSelectedFile };
 }
 
 function isSupportedUpload(filename) {

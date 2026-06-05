@@ -60,7 +60,7 @@ const tests = [
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["wires stale review refresh controls", testStaleReviewRefreshWiring],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
-  ["uploads local NDAs through the Upload tab", testManualUploadTab],
+  ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
   ["sends review redline email from editable composer", testReviewOutboundSendModal],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
@@ -242,6 +242,7 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#playbookTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#adminTab").getAttribute("role"), "tab");
   assert.equal(await page.locator("#guideTab").getAttribute("role"), "tab");
+  assert.equal(await page.getByRole("tab", { name: "Upload" }).count(), 0);
   assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "false");
   assert.equal(await page.locator("#playbookTab").getAttribute("aria-selected"), "false");
@@ -266,13 +267,13 @@ async function testAccessibleControlState(page) {
   makeDocxFixture(dashboardDocxPath, [
     "This Agreement shall be governed by the laws of California.",
   ]);
-  const fileChooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Submit for Review" }).click();
-  const fileChooser = await fileChooserPromise;
-  await fileChooser.setFiles(dashboardDocxPath);
-  await page.waitForSelector("#uploadView:not([hidden])");
-  assert.equal(await page.locator("#uploadTab").getAttribute("aria-selected"), "true");
+  await page.waitForSelector("#manualUploadModal:not([hidden])");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
+  await page.locator("#manualUploadFileInput").setInputFiles(dashboardDocxPath);
   await assertTextContains(page.locator("#manualUploadSelectedFile"), dashboardFilename);
+  await page.getByRole("button", { name: "Close upload dialog" }).click();
+  await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
   await page.getByRole("tab", { name: "Review" }).click();
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
@@ -2154,7 +2155,7 @@ async function testRepositoryLoadErrorClearsBoard(page) {
   await page.unroute("**/api/matters");
 }
 
-async function testManualUploadTab(page) {
+async function testManualUploadModal(page) {
   const docxPath = path.join(os.tmpdir(), `manual-upload-${Date.now()}.docx`);
   const filename = path.basename(docxPath);
   const stem = path.basename(docxPath, ".docx");
@@ -2164,9 +2165,9 @@ async function testManualUploadTab(page) {
   ]);
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("tab", { name: "Upload" }).click();
-  assert.equal(await page.locator("#uploadTab").getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator("#uploadView").isHidden(), false);
+  await page.getByRole("button", { name: "Submit for Review" }).click();
+  await page.waitForSelector("#manualUploadModal:not([hidden])");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#manualUploadSubmitButton").isEnabled(), false);
 
   await page.locator("#manualUploadFileInput").setInputFiles(docxPath);
@@ -2177,6 +2178,7 @@ async function testManualUploadTab(page) {
   assert.equal(await page.locator("#manualUploadSubmitButton").isEnabled(), true);
 
   await page.getByRole("button", { name: "Upload NDA" }).click();
+  await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
   await page.waitForSelector("#repositoryView:not([hidden])");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");

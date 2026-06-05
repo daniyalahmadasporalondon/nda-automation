@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260605b">
+    <link rel="stylesheet" href="/static/styles.css?v=20260605c">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260604a">
   </head>
   <body>
@@ -20,9 +20,6 @@
             </button>
             <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
               <span>Repository</span>
-            </button>
-            <button class="tab-button" id="uploadTab" type="button" role="tab" aria-selected="false" aria-controls="uploadView" data-tab="upload">
-              <span>Upload</span>
             </button>
             <button class="tab-button" id="reviewTab" type="button" role="tab" aria-selected="false" aria-controls="reviewView" data-tab="review">
               <span>Review</span>
@@ -203,75 +200,6 @@
               <section class="studio-card" id="studioDetailPanel">
               </section>
             </aside>
-          </section>
-        </main>
-
-        <main class="manual-upload-view view" id="uploadView" role="tabpanel" aria-labelledby="uploadTab" data-view="upload" hidden>
-          <section class="upload-shell">
-            <header class="upload-header">
-              <div class="repository-title">
-                <span class="upload-icon" aria-hidden="true"></span>
-                <h1>Manual Upload</h1>
-              </div>
-              <p class="upload-header-copy">Create a repository matter from a local NDA.</p>
-            </header>
-
-            <section class="upload-workspace">
-              <form class="upload-panel" id="manualUploadForm">
-                <label class="upload-dropzone" id="manualUploadDropzone" for="manualUploadFileInput">
-                  <input id="manualUploadFileInput" type="file" accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf">
-                  <span class="upload-dropzone-mark" aria-hidden="true"></span>
-                  <strong>Select NDA document</strong>
-                  <span>.docx or text-based .pdf</span>
-                </label>
-
-                <div class="upload-selected-file empty" id="manualUploadSelectedFile" aria-live="polite">
-                  No file selected
-                </div>
-
-                <div class="upload-field-grid">
-                  <label class="upload-field" for="manualUploadSubjectInput">
-                    <span>Subject</span>
-                    <input id="manualUploadSubjectInput" type="text" autocomplete="off" placeholder="Defaults to file name">
-                  </label>
-                  <label class="upload-field" for="manualUploadSenderInput">
-                    <span>Counterparty email</span>
-                    <input id="manualUploadSenderInput" type="email" autocomplete="email" placeholder="Optional">
-                  </label>
-                  <label class="upload-field upload-field-wide" for="manualUploadNoteInput">
-                    <span>Intake note</span>
-                    <textarea id="manualUploadNoteInput" rows="3" placeholder="Optional repository note"></textarea>
-                  </label>
-                </div>
-
-                <footer class="upload-actions">
-                  <p class="upload-status" id="manualUploadStatus" aria-live="polite"></p>
-                  <div>
-                    <button class="secondary" id="manualUploadClearButton" type="button">Clear</button>
-                    <button id="manualUploadSubmitButton" type="submit" disabled>Upload NDA</button>
-                  </div>
-                </footer>
-              </form>
-
-              <aside class="upload-side-panel" aria-label="Manual intake details">
-                <p class="eyebrow">intake route</p>
-                <h2>Review queue</h2>
-                <dl>
-                  <div>
-                    <dt>Source</dt>
-                    <dd>Manual Upload</dd>
-                  </div>
-                  <div>
-                    <dt>Repository stage</dt>
-                    <dd>In Review</dd>
-                  </div>
-                  <div>
-                    <dt>Pipeline</dt>
-                    <dd>Pass checks and redline draft</dd>
-                  </div>
-                </dl>
-              </aside>
-            </section>
           </section>
         </main>
 
@@ -1052,6 +980,81 @@
           </section>
         </main>
       </section>
+    </div>
+
+    <div class="upload-modal" id="manualUploadModal" role="dialog" aria-modal="true" aria-labelledby="manualUploadModalTitle" hidden>
+      <div class="upload-modal-dialog">
+        <section class="upload-shell">
+          <header class="upload-header">
+            <div class="repository-title">
+              <span class="upload-icon" aria-hidden="true"></span>
+              <h1 id="manualUploadModalTitle">Submit NDA for review</h1>
+            </div>
+            <button class="send-modal-close" id="manualUploadModalClose" type="button" aria-label="Close upload dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <section class="upload-workspace">
+            <form class="upload-panel" id="manualUploadForm">
+              <label class="upload-dropzone" id="manualUploadDropzone" for="manualUploadFileInput">
+                <input id="manualUploadFileInput" type="file" accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf">
+                <span class="upload-dropzone-mark" aria-hidden="true"></span>
+                <strong>Select NDA document</strong>
+                <span>.docx or text-based .pdf</span>
+              </label>
+
+              <div class="upload-selected-file empty" id="manualUploadSelectedFile" aria-live="polite">
+                No file selected
+              </div>
+
+              <div class="upload-field-grid">
+                <label class="upload-field" for="manualUploadSubjectInput">
+                  <span>Subject</span>
+                  <input id="manualUploadSubjectInput" type="text" autocomplete="off" placeholder="Defaults to file name">
+                </label>
+                <label class="upload-field" for="manualUploadSenderInput">
+                  <span>Counterparty email</span>
+                  <input id="manualUploadSenderInput" type="email" autocomplete="email" placeholder="Optional">
+                </label>
+                <label class="upload-field upload-field-wide" for="manualUploadNoteInput">
+                  <span>Intake note</span>
+                  <textarea id="manualUploadNoteInput" rows="3" placeholder="Optional repository note"></textarea>
+                </label>
+              </div>
+
+              <footer class="upload-actions">
+                <p class="upload-status" id="manualUploadStatus" aria-live="polite"></p>
+                <div>
+                  <button class="secondary" id="manualUploadClearButton" type="button">Clear</button>
+                  <button id="manualUploadSubmitButton" type="submit" disabled>Upload NDA</button>
+                </div>
+              </footer>
+            </form>
+
+            <aside class="upload-side-panel" aria-label="Manual intake details">
+              <p class="eyebrow">intake route</p>
+              <h2>Review queue</h2>
+              <dl>
+                <div>
+                  <dt>Source</dt>
+                  <dd>Manual Upload</dd>
+                </div>
+                <div>
+                  <dt>Repository stage</dt>
+                  <dd>In Review</dd>
+                </div>
+                <div>
+                  <dt>Pipeline</dt>
+                  <dd>Pass checks and redline draft</dd>
+                </div>
+              </dl>
+            </aside>
+          </section>
+        </section>
+      </div>
     </div>
 
     <div class="send-modal" id="studioSendModal" role="dialog" aria-modal="true" aria-labelledby="studioSendModalTitle" hidden>

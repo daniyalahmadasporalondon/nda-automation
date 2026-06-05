@@ -27,6 +27,8 @@ const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioInspectorTitle = document.querySelector("#studioInspectorTitle");
 const reviewInspectorButtons = document.querySelectorAll("[data-review-inspector]");
 const dashboardSubmitButton = document.querySelector("[data-dashboard-submit]");
+const manualUploadModal = document.querySelector("#manualUploadModal");
+const manualUploadModalClose = document.querySelector("#manualUploadModalClose");
 const dashboardHealthItems = document.querySelectorAll("[data-dashboard-health]");
 // Clause-panel summary header was removed; tolerate the absent nodes so the
 // review flow's textContent/className writes become harmless no-ops.
@@ -67,6 +69,8 @@ const repositoryController = createRepositoryController({
   reviewErrorFromPayload,
 });
 const manualUploadController = createManualUploadController({
+  modalNode: manualUploadModal,
+  closeButton: manualUploadModalClose,
   fileInput: document.querySelector("#manualUploadFileInput"),
   form: document.querySelector("#manualUploadForm"),
   selectedFileNode: document.querySelector("#manualUploadSelectedFile"),
@@ -81,7 +85,6 @@ const manualUploadController = createManualUploadController({
   repositoryController,
   activateTab,
   reviewErrorFromPayload,
-  onFileSelected: () => activateTab("upload"),
 });
 adminAiController = createAdminAiController({
   state,
@@ -199,7 +202,7 @@ reviewInspectorButtons.forEach((button) => {
 });
 
 dashboardSubmitButton?.addEventListener("click", () => {
-  manualUploadController.openFilePicker();
+  manualUploadController.openModal();
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {
