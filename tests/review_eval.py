@@ -46,6 +46,7 @@ KIND_DETERMINISTIC = "deterministic"  # AI off; tests checkers + crosscheck
 KIND_AI_AGREEMENT = "ai_agreement"  # scripted AI agrees -> must not escalate
 KIND_AI_DISAGREEMENT = "ai_disagreement"  # scripted AI dissents -> must escalate
 KIND_AI_INVALID = "ai_invalid"  # scripted AI cites badly / low conf -> must escalate
+KIND_VERIFIER = "verifier"  # scripted adversarial verifier -> justify-or-refute a finding
 
 
 def _ai_disabled() -> ExitStack:
@@ -131,18 +132,47 @@ def _scripted_reviewer(focus_clause_id: str, focus: dict, deterministic_by_claus
     return reviewer
 
 
+def _scripted_verifier(focus_clause_id: str, focus: dict):
+    """A deterministic stand-in for the adversarial verifier.
+
+    The focus clause gets the case's scripted verdict (affirm/refute/uncertain);
+    every other clause is affirmed so it adds no noise. This crosses the real
+    ai_verifier seam (review_nda's ``ai_verifier`` parameter) so the justify-or-
+    refute overlay and its decision rewrites are exercised without a provider call.
+    """
+
+    def verifier(packet: dict) -> dict:
+        clause_id = str((packet.get("clause_id") or ""))
+        if clause_id == focus_clause_id:
+            return {
+                "verdict": str(focus.get("verdict") or "affirm"),
+                "confidence": float(focus.get("confidence", 0.95)),
+                "rationale": str(focus.get("rationale") or "Scripted verifier verdict for the eval."),
+            }
+        return {"verdict": "affirm", "confidence": 0.95, "rationale": "Confirms the engine finding (non-focus clause)."}
+
+    return verifier
+
+
 def run_case(case: dict) -> dict:
     text = str(case["text"])
     clause_id = str(case["clause_id"])
     kind = str(case.get("kind") or KIND_DETERMINISTIC)
 
-    baseline = review_nda(text)
+    # The baseline is the pure-deterministic verdict (checkers + crosscheck), so the
+    # non-focus echo map a scripted reviewer confirms is the AI-untouched, verifier-
+    # untouched decision. The verifier overlay is exercised through the real review
+    # path below, not baked into this map.
+    baseline = review_nda(text, verify=False)
     deterministic_by_clause = {
         str(clause.get("id")): str(clause.get("decision")) for clause in baseline["clauses"]
     }
 
     if kind == KIND_DETERMINISTIC:
-        result = baseline
+        result = review_nda(text)
+    elif kind == KIND_VERIFIER:
+        verifier = _scripted_verifier(clause_id, dict(case.get("verifier") or {}))
+        result = review_nda(text, ai_verifier=verifier)
     else:
         focus = dict(case.get("ai") or {})
         reviewer = _scripted_reviewer(clause_id, focus, deterministic_by_clause)
