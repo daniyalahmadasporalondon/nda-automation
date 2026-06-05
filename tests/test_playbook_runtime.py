@@ -390,8 +390,116 @@ class PlaybookRuntimeTests(unittest.TestCase):
     def test_playbook_draft_routes_are_registered(self):
         self.assertIn("/api/playbook/draft", server_module._GET_EXACT_ROUTES)
         self.assertIn("/api/playbook/draft", server_module._POST_EXACT_ROUTES)
+        self.assertIn("/api/playbook/validate-draft", server_module._POST_EXACT_ROUTES)
         self.assertIn("/api/playbook/discard-draft", server_module._POST_EXACT_ROUTES)
         self.assertIn("/api/playbook/publish", server_module._POST_EXACT_ROUTES)
+
+    def test_playbook_validate_draft_accepts_valid_playbook_without_persisting(self):
+        original_playbook = deepcopy(load_playbook())
+        candidate_playbook = deepcopy(original_playbook)
+        mutuality = next(clause for clause in candidate_playbook["clauses"] if clause["id"] == "mutuality")
+        mutuality["preferred_position"] = "Validate-only Mutuality policy."
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            handler = _JsonHandler({"playbook": candidate_playbook})
+
+            playbook_routes.handle_playbook_validate_draft(handler, playbook_path=playbook_path)
+
+            active_after_validate = json.loads(playbook_path.read_text(encoding="utf-8"))
+            draft_exists = playbook_routes.draft_path_for(playbook_path).exists()
+
+        self.assertEqual(handler.status, 200)
+        self.assertTrue(handler.response["valid"])
+        self.assertEqual(handler.response["errors"], [])
+        # Validation must never touch the active Playbook or create a draft sidecar.
+        self.assertEqual(active_after_validate, original_playbook)
+        self.assertFalse(draft_exists)
+
+    def test_playbook_validate_draft_returns_structured_errors_for_invalid_playbook(self):
+        original_playbook = deepcopy(load_playbook())
+        invalid_playbook = deepcopy(original_playbook)
+        governing_law = next(clause for clause in invalid_playbook["clauses"] if clause["id"] == "governing_law")
+        # An unapproved preferred_law is a rule-level error the editor should see before publish.
+        governing_law["preferred_law"] = "Atlantis"
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            handler = _JsonHandler({"playbook": invalid_playbook})
+
+            playbook_routes.handle_playbook_validate_draft(handler, playbook_path=playbook_path)
+
+        self.assertEqual(handler.status, 200)
+        self.assertFalse(handler.response["valid"])
+        errors = handler.response["errors"]
+        self.assertTrue(errors)
+        # Every error is a structured record the editor can render per clause/field.
+        for error in errors:
+            self.assertEqual(set(error.keys()), {"location", "clause", "field", "message", "severity"})
+            self.assertIsInstance(error["message"], str)
+            self.assertTrue(error["message"])
+            self.assertEqual(error["severity"], "error")
+        # The preferred_law error is attributed to the governing_law clause + field.
+        preferred_law_error = next(
+            (error for error in errors if "preferred_law must be approved" in error["message"]),
+            None,
+        )
+        self.assertIsNotNone(preferred_law_error, errors)
+        self.assertEqual(preferred_law_error["clause"], "governing_law")
+        self.assertEqual(preferred_law_error["field"], "preferred_law")
+        self.assertEqual(preferred_law_error["location"], "governing_law.preferred_law")
+
+    def test_playbook_validate_draft_deduplicates_and_locates_errors_across_clauses(self):
+        original_playbook = deepcopy(load_playbook())
+        invalid_playbook = deepcopy(original_playbook)
+        # Two independent problems in two clauses, plus a missing top-level field.
+        next(clause for clause in invalid_playbook["clauses"] if clause["id"] == "term_and_survival")[
+            "max_term_years"
+        ] = 99
+        next(clause for clause in invalid_playbook["clauses"] if clause["id"] == "mutuality")["requirement"] = ""
+        invalid_playbook.pop("version")
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
+            handler = _JsonHandler({"playbook": invalid_playbook})
+
+            playbook_routes.handle_playbook_validate_draft(handler, playbook_path=playbook_path)
+
+        self.assertEqual(handler.status, 200)
+        self.assertFalse(handler.response["valid"])
+        errors = handler.response["errors"]
+        # No duplicate messages even though contract + rule validators both fire.
+        messages = [error["message"] for error in errors]
+        self.assertEqual(len(messages), len(set(messages)))
+
+        by_message = {error["message"]: error for error in errors}
+        term_error = next(error for message, error in by_message.items() if "max_term_years" in message)
+        self.assertEqual(term_error["clause"], "term_and_survival")
+        self.assertEqual(term_error["field"], "max_term_years")
+        mutuality_error = next(
+            error for message, error in by_message.items()
+            if "mutuality must include requirement" in message
+        )
+        self.assertEqual(mutuality_error["clause"], "mutuality")
+        self.assertEqual(mutuality_error["field"], "requirement")
+        version_error = next(error for message, error in by_message.items() if message.startswith("Playbook version"))
+        self.assertIsNone(version_error["clause"])
+        self.assertEqual(version_error["field"], "version")
+        self.assertEqual(version_error["location"], "version")
+
+    def test_playbook_validate_draft_requires_playbook_object(self):
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(load_playbook()), encoding="utf-8")
+            handler = _JsonHandler({"summary": "no playbook"})
+
+            playbook_routes.handle_playbook_validate_draft(handler, playbook_path=playbook_path)
+
+        self.assertEqual(handler.status, 400)
+        self.assertIn("playbook object", handler.response["error"])
 
 
 if __name__ == "__main__":

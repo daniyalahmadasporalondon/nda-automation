@@ -159,6 +159,10 @@ def _handle_playbook_draft_save_post(handler) -> None:
     )
 
 
+def _handle_playbook_validate_draft_post(handler) -> None:
+    playbook_routes.handle_playbook_validate_draft(handler, playbook_path=PLAYBOOK_PATH)
+
+
 def _handle_playbook_draft_discard_post(handler) -> None:
     playbook_routes.handle_playbook_draft_discard(
         handler,
@@ -214,6 +218,7 @@ _POST_EXACT_ROUTES = {
     "/api/export-annotated-pdf": review_routes.handle_annotated_pdf_export,
     "/api/playbook": _handle_playbook_save_post,
     "/api/playbook/draft": _handle_playbook_draft_save_post,
+    "/api/playbook/validate-draft": _handle_playbook_validate_draft_post,
     "/api/playbook/discard-draft": _handle_playbook_draft_discard_post,
     "/api/playbook/publish": _handle_playbook_publish_post,
     "/api/playbook/restore": _handle_playbook_restore_post,
