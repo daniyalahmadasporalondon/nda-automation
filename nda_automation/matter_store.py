@@ -911,11 +911,20 @@ def _gmail_attachment_filename_key(filename: str) -> str:
 
 
 def _matter_owner_matches(matter: dict[str, Any], owner_user_id: str = "") -> bool:
+    # Access scoping is fail-closed for authenticated requests. An empty
+    # owner_user_id is the single-tenant / auth-disabled path: there is no
+    # caller identity to scope against, so every matter is in scope (this is
+    # how local/no-auth deployments work). A NON-empty owner_user_id means an
+    # authenticated multi-tenant request, and it must only match matters owned
+    # by exactly that user. A matter with NO owner (legacy import, Gmail
+    # shared-sync before ownership assignment, etc.) is NOT a wildcard — it must
+    # never be served to an arbitrary authenticated user, or one tenant could
+    # read/edit/delete/export another's data.
     owner_user_id = _clean_owner_user_id(owner_user_id)
     if not owner_user_id:
         return True
     matter_owner_user_id = _clean_owner_user_id(matter.get("owner_user_id"))
-    return not matter_owner_user_id or matter_owner_user_id == owner_user_id
+    return matter_owner_user_id == owner_user_id
 
 
 def _clean_owner_user_id(value: object) -> str:

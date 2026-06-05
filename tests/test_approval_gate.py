@@ -429,5 +429,85 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+class _FakeHandler:
+    """Minimal stand-in for NdaAutomationHandler to drive route handlers with a
+    chosen authenticated identity and capture their responses."""
+
+    def __init__(self, *, current_user_id: str, body: dict | None = None):
+        self.current_user_id = current_user_id
+        self.current_user = {"id": current_user_id, "email": current_user_id} if current_user_id else None
+        self._body = body
+        self.status = None
+        self.json = None
+        self.download = None
+
+    def _read_json_payload(self):
+        return self._body
+
+    def _send_json(self, payload, status=200, headers=None, *, send_body=True):
+        self.status = status
+        self.json = payload
+
+    def _send_download(self, data, filename, content_type, headers=None, *, send_body=True):
+        self.status = 200
+        self.download = {"data": data, "filename": filename, "content_type": content_type}
+
+
+class ApprovalEndpointOwnershipTests(unittest.TestCase):
+    """The cross-tenant leak (task #6) must not survive on the new endpoints.
+
+    An ownerless matter must be denied to an authenticated user across the
+    decision, approve, and reviewed-docx endpoints.
+    """
+
+    def _seed_ownerless_matter(self):
+        review_result = _review_result_with_runtime()
+        matter = matter_store.create_matter(
+            source_filename="ownerless-nda.docx",
+            document_bytes=_docx(NDA_PARAGRAPHS),
+            extracted_text="\n\n".join(NDA_PARAGRAPHS),
+            review_result=review_result,
+            triage=triage_review_result(review_result),
+            source_type="manual_upload",
+            board_column="in_review",
+        )  # no owner_user_id -> ownerless
+        clause_id = next(
+            str(clause.get("id"))
+            for clause in review_result["clauses"]
+            if clause.get("decision") in ("fail", "review")
+        )
+        return matter["id"], clause_id
+
+    def test_decision_endpoint_denies_ownerless_matter_to_other_user(self):
+        from nda_automation.routes import approval as approval_routes
+
+        matter_id, clause_id = self._seed_ownerless_matter()
+        handler = _FakeHandler(current_user_id="attacker@example.com", body={"action": "accept"})
+        approval_routes.handle_clause_decision(
+            handler, f"/api/matters/{matter_id}/clauses/{clause_id}/decision"
+        )
+        self.assertEqual(handler.status, 404)
+        # No decision was written.
+        self.assertEqual(matter_store.get_matter(matter_id).get("reviewer_decisions", {}), {})
+
+    def test_approve_endpoint_denies_ownerless_matter_to_other_user(self):
+        from nda_automation.routes import approval as approval_routes
+
+        matter_id, _ = self._seed_ownerless_matter()
+        handler = _FakeHandler(current_user_id="attacker@example.com")
+        approval_routes.handle_matter_approve(handler, f"/api/matters/{matter_id}/approve")
+        self.assertEqual(handler.status, 404)
+        self.assertEqual(matter_store.get_matter(matter_id).get("status"), "active")
+
+    def test_reviewed_docx_endpoint_denies_ownerless_matter_to_other_user(self):
+        from nda_automation.routes import approval as approval_routes
+
+        matter_id, _ = self._seed_ownerless_matter()
+        handler = _FakeHandler(current_user_id="attacker@example.com")
+        approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+        self.assertEqual(handler.status, 404)
+        self.assertIsNone(handler.download)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

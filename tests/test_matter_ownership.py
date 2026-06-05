@@ -63,7 +63,12 @@ class MatterOwnershipTest(unittest.TestCase):
                 self.assertEqual(deleted["id"], user_b["id"])
                 self.assertEqual([matter["id"] for matter in matter_store.list_matters()], [user_a["id"]])
 
-    def test_ownerless_legacy_matters_remain_visible_to_authenticated_users(self):
+    def test_ownerless_legacy_matters_are_not_served_to_authenticated_users(self):
+        # SECURITY (fail-closed): a matter with no owner_user_id (legacy import,
+        # Gmail shared-sync before ownership assignment) must NOT leak to an
+        # arbitrary authenticated user. It is only reachable in the single-tenant
+        # / auth-disabled path (empty requester id), so the data is preserved but
+        # never served cross-tenant.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -79,15 +84,55 @@ class MatterOwnershipTest(unittest.TestCase):
 
                 user_a_matters = matter_store.list_matters("user_a")
                 user_b_matters = matter_store.list_matters("user_b")
+                single_tenant_matters = matter_store.list_matters()
                 fetched_legacy = matter_store.get_matter(legacy["id"], owner_user_id="user_a")
                 fetched_owned = matter_store.get_matter(owned["id"], owner_user_id="user_a")
                 updated_legacy = matter_store.update_matter_stage(legacy["id"], "in_review", owner_user_id="user_a")
+                deleted_legacy = matter_store.delete_matter(legacy["id"], owner_user_id="user_a")
+                # The single-tenant (no-auth) path still reaches the legacy matter.
+                fetched_single_tenant = matter_store.get_matter(legacy["id"])
 
-        self.assertEqual([matter["id"] for matter in user_a_matters], [legacy["id"]])
-        self.assertEqual({matter["id"] for matter in user_b_matters}, {legacy["id"], owned["id"]})
-        self.assertEqual(fetched_legacy["id"], legacy["id"])
+        # Authenticated users see ONLY their own matters; the ownerless legacy
+        # matter is invisible to both of them.
+        self.assertEqual([matter["id"] for matter in user_a_matters], [])
+        self.assertEqual([matter["id"] for matter in user_b_matters], [owned["id"]])
+        self.assertIsNone(fetched_legacy)
         self.assertIsNone(fetched_owned)
-        self.assertEqual(updated_legacy["board_column"], "in_review")
+        self.assertIsNone(updated_legacy)
+        self.assertIsNone(deleted_legacy)
+        # Data is not orphaned: still present and reachable single-tenant.
+        self.assertEqual({matter["id"] for matter in single_tenant_matters}, {legacy["id"], owned["id"]})
+        self.assertEqual(fetched_single_tenant["id"], legacy["id"])
+
+    def test_ownerless_matter_is_not_readable_editable_deletable_or_exportable_cross_tenant(self):
+        # Regression for the cross-tenant leak: an ownerless matter must be
+        # denied to an authenticated user across EVERY access path.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                ownerless = matter_store.create_matter(**_matter_kwargs())
+                attacker = "user_attacker"
+
+                # read
+                self.assertEqual(matter_store.list_matters(attacker), [])
+                self.assertIsNone(matter_store.get_matter(ownerless["id"], owner_user_id=attacker))
+                # edit (stage + arbitrary fields + redline draft + review)
+                self.assertIsNone(matter_store.update_matter_stage(ownerless["id"], "in_review", owner_user_id=attacker))
+                self.assertIsNone(matter_store.update_matter_fields(ownerless["id"], {"human_reviewed": True}, owner_user_id=attacker))
+                self.assertIsNone(matter_store.update_redline_draft(ownerless["id"], {"manual_redline_edits": []}, owner_user_id=attacker))
+                self.assertIsNone(matter_store.update_matter_review(ownerless["id"], {"clauses": []}, {"triage_status": "pass"}, owner_user_id=attacker))
+                # export
+                backup = matter_store.export_matters_backup(owner_user_id=attacker)
+                self.assertEqual(backup["matters"], [])
+                self.assertEqual(backup["matter_count"], 0)
+                # delete
+                self.assertIsNone(matter_store.delete_matter(ownerless["id"], owner_user_id=attacker))
+
+                # The matter survives every denied attempt and is unchanged.
+                survivor = matter_store.get_matter(ownerless["id"])
+                self.assertEqual(survivor["id"], ownerless["id"])
+                self.assertEqual(survivor["board_column"], "gmail_demo")
+                self.assertFalse(survivor.get("human_reviewed"))
 
     def test_gmail_duplicate_lookup_is_owner_scoped(self):
         with tempfile.TemporaryDirectory() as data_dir:
