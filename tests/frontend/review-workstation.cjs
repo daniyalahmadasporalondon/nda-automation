@@ -3186,11 +3186,13 @@ async function testBackendRedlineModes(page) {
       backgroundColor: styles.backgroundColor,
       borderLeftColor: styles.borderLeftColor,
       borderLeftWidth: styles.borderLeftWidth,
+      borderRightColor: styles.borderRightColor,
+      borderRightWidth: styles.borderRightWidth,
     };
   });
   assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
-  assert.equal(prohibitedParagraphStyles.borderLeftWidth, "4px");
-  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
+  assert.equal(prohibitedParagraphStyles.borderLeftWidth, prohibitedParagraphStyles.borderRightWidth);
+  assert.equal(prohibitedParagraphStyles.borderLeftColor, prohibitedParagraphStyles.borderRightColor);
   assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
   assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
   assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
@@ -3212,6 +3214,7 @@ async function testBackendRedlineModes(page) {
     return {
       borderToPageLeft: Math.round(paragraphBox.left - pageBox.left),
       commentRightToPageLeft: Math.round(commentToolsBox.right - pageBox.left),
+      paragraphWidth: Math.round(paragraphBox.width),
       textToPageLeft: Math.round(contentBox.left - pageBox.left),
       textWidth: Math.round(contentBox.width),
       pageWidth: Math.round(pageBox.width),
@@ -3220,7 +3223,8 @@ async function testBackendRedlineModes(page) {
   assert.ok(viewerSpacing.borderToPageLeft >= 24, `paragraph should sit inside the page margin: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.commentRightToPageLeft <= -8, `comment controls should sit in the gray gutter: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.textToPageLeft > viewerSpacing.borderToPageLeft, `paragraph text should be inset from the paragraph frame: ${JSON.stringify(viewerSpacing)}`);
-  assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 160, `paragraph text should use the page body width: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.paragraphWidth >= viewerSpacing.pageWidth - 90, `paragraph card should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
+  assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 120, `paragraph text should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
 
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
@@ -3230,10 +3234,12 @@ async function testBackendRedlineModes(page) {
     return {
       backgroundColor: styles.backgroundColor,
       borderLeftColor: styles.borderLeftColor,
+      boxShadow: styles.boxShadow,
     };
   });
   assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
-  assert.equal(termParagraphStyles.borderLeftColor, "rgb(239, 68, 68)");
+  assert.equal(termParagraphStyles.borderLeftColor, "rgba(0, 0, 0, 0)");
+  assert.match(termParagraphStyles.boxShadow, /252, 165, 165/);
   await assertRedlinePreview(termParagraph, {
     originalText: "seven",
     insertedText: "fixed period of up to five",
