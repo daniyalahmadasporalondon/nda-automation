@@ -137,13 +137,39 @@ class OwnershipBackfillOrchestrationTests(unittest.TestCase):
         self.assertNotIn("shared@example.com", mapping)
         self.assertNotIn("noid@example.com", mapping)
 
-    def test_resolve_admin_prefers_env_then_sole_user(self):
-        with patch.dict("os.environ", {ownership_backfill.ADMIN_USERNAME_ENV: "admin@corp.com"}):
+    def test_resolve_admin_prefers_auth_username_over_admin_users(self):
+        env = {
+            ownership_backfill.ADMIN_USERNAME_ENV: "admin@corp.com",
+            ownership_backfill.ADMIN_USERS_ENV: "google:other,google:another",
+        }
+        with patch.dict("os.environ", env, clear=False):
             self.assertEqual(ownership_backfill.resolve_admin_user_id(), "admin@corp.com")
-        with patch.dict("os.environ", {ownership_backfill.ADMIN_USERNAME_ENV: ""}, clear=False):
+
+    def test_resolve_admin_uses_single_admin_users_entry(self):
+        env = {
+            ownership_backfill.ADMIN_USERNAME_ENV: "",
+            ownership_backfill.ADMIN_USERS_ENV: "  google:soleadmin  ",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            # Stripped, case-sensitive (no casefold) — matches security-web's parse.
+            self.assertEqual(ownership_backfill.resolve_admin_user_id(), "google:soleadmin")
+
+    def test_resolve_admin_refuses_when_admin_users_ambiguous(self):
+        env = {
+            ownership_backfill.ADMIN_USERNAME_ENV: "",
+            ownership_backfill.ADMIN_USERS_ENV: "google:a,google:b",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            # >1 admin and no NDA_AUTH_USERNAME -> refuse to guess -> "".
+            with patch.object(ownership_backfill.user_store, "list_users", return_value=[{"id": "google:a"}]):
+                self.assertEqual(ownership_backfill.resolve_admin_user_id(), "")
+
+    def test_resolve_admin_falls_back_to_sole_user(self):
+        env = {ownership_backfill.ADMIN_USERNAME_ENV: "", ownership_backfill.ADMIN_USERS_ENV: ""}
+        with patch.dict("os.environ", env, clear=False):
             with patch.object(ownership_backfill.user_store, "list_users", return_value=[{"id": "google:solo", "email": "solo@x.com"}]):
                 self.assertEqual(ownership_backfill.resolve_admin_user_id(), "google:solo")
-            # Multiple users, no env admin -> ambiguous -> empty (caller leaves ownerless).
+            # Multiple users, nothing configured -> ambiguous -> empty.
             with patch.object(ownership_backfill.user_store, "list_users", return_value=[{"id": "a"}, {"id": "b"}]):
                 self.assertEqual(ownership_backfill.resolve_admin_user_id(), "")
 

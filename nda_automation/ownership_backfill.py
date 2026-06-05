@@ -19,6 +19,15 @@ from typing import Any
 from . import matter_store, user_store
 
 ADMIN_USERNAME_ENV = "NDA_AUTH_USERNAME"
+# Shared with security-web's request_is_admin (http_auth._admin_user_ids): the
+# canonical admin set. Same parse rule (comma-split, strip, case-SENSITIVE).
+ADMIN_USERS_ENV = "NDA_ADMIN_USERS"
+
+
+def _admin_user_id_entries() -> list[str]:
+    """Ordered, stripped, non-empty NDA_ADMIN_USERS entries (case-sensitive)."""
+    raw = os.environ.get(ADMIN_USERS_ENV, "")
+    return [value.strip() for value in raw.split(",") if value.strip()]
 
 
 def build_user_email_to_id() -> dict[str, str]:
@@ -51,13 +60,27 @@ def build_user_email_to_id() -> dict[str, str]:
 def resolve_admin_user_id() -> str:
     """The fallback owner for matters with no resolvable gmail mapping.
 
-    Prefers the configured basic-auth admin (``NDA_AUTH_USERNAME``); otherwise,
-    on a single-user box, the sole user. Returns "" when neither is unambiguous,
-    in which case the backfill leaves those matters ownerless rather than guess.
+    Resolution order (aligned with security-web's admin definition; never guesses
+    when ambiguous, so an unresolvable matter is left ownerless rather than
+    mis-assigned cross-tenant):
+
+    1. ``NDA_AUTH_USERNAME`` — the basic-auth break-glass admin. A single
+       unambiguous value, and for basic-auth requests it IS ``current_user_id``,
+       so a matter stamped with it is immediately reachable by the operator.
+    2. else ``NDA_ADMIN_USERS`` when it names EXACTLY ONE admin. With more than
+       one, "which admin owns legacy data" is ambiguous, so refuse and leave it
+       ownerless rather than pick arbitrarily.
+    3. else the sole user on a single-user box.
+    4. else "" — leave ownerless.
     """
     admin_username = os.environ.get(ADMIN_USERNAME_ENV, "").strip()
     if admin_username:
         return admin_username
+    admin_entries = _admin_user_id_entries()
+    if len(admin_entries) == 1:
+        return admin_entries[0]
+    if len(admin_entries) > 1:
+        return ""
     users = user_store.list_users()
     if len(users) == 1 and isinstance(users[0], dict):
         return str(users[0].get("id") or "").strip()
