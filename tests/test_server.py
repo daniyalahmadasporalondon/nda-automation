@@ -5545,6 +5545,22 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("recipient_redirected_from_reply_to", public)
         self.assertNotIn("recipient_warning", public)
 
+    def test_public_matter_warns_when_reply_to_present_but_sender_unparseable(self):
+        # Fail toward warning: a spoofed Reply-To paired with a malformed/absent
+        # From must still surface the redirect warning -- we cannot confirm the
+        # Reply-To matches a verified sender, so we treat it as a divergence.
+        public = matter_view.public_matter({
+            "id": "matter_malformed_from",
+            "sender": "not a parseable address",
+            "reply_to": "Counsel <attacker@evil.com>",
+            "subject": "NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "attacker@evil.com")
+        self.assertTrue(public["recipient_redirected_from_reply_to"])
+        self.assertIn("attacker@evil.com", public["recipient_warning"])
+        self.assertIn("unverified sender", public["recipient_warning"])
+
     def test_send_redline_route_refuses_spoofed_reply_to_without_matching_confirmation(self):
         # End-to-end: a matter whose recipient silently resolves to a spoofed
         # Reply-To must not send the redline to that address when the operator
@@ -5603,6 +5619,39 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Confirm the outbound recipient email address before sending.")
         send_redline_email.assert_not_called()
         build_matter_redline.assert_not_called()
+
+    def test_outbound_context_rejects_none_confirmation_for_header_derived_recipient(self):
+        # The confirmed_recipient=None opt-out is reserved for trusted,
+        # operator-supplied recipients. A future caller must NOT be able to
+        # inherit it for a recipient resolved from inbound headers: with no
+        # operator `to`, the None opt-out is refused before any Gmail call.
+        matter = {
+            "id": "matter_header_recipient",
+            "sender": "Counterparty <legit@realco.com>",
+            "subject": "NDA",
+        }
+        with patch.object(gmail_integration, "_gmail_service_for_owner") as gmail_service_for_owner:
+            with self.assertRaises(gmail_integration.RecipientConfirmationError):
+                gmail_integration._outbound_send_context(matter)
+        gmail_service_for_owner.assert_not_called()
+
+    def test_outbound_context_allows_none_confirmation_for_operator_supplied_recipient(self):
+        # Send Document supplies an operator-typed recipient via `to`; that is a
+        # trusted source, so the None opt-out is allowed and the send proceeds.
+        matter = {"id": "matter_operator_to", "subject": "NDA"}
+        with patch.object(server_module.app_settings, "gmail_role_enabled", return_value=True):
+            with patch.object(gmail_integration, "_gmail_service_for_owner", return_value=object()):
+                with patch.object(
+                    gmail_integration,
+                    "_gmail_profile_for_role",
+                    return_value={"emailAddress": "legal@aspora.com"},
+                ):
+                    recipient, _service, outbound_account = gmail_integration._outbound_send_context(
+                        matter,
+                        recipient_override="Counterparty <legit@realco.com>",
+                    )
+        self.assertEqual(recipient, "legit@realco.com")
+        self.assertEqual(outbound_account, "legal@aspora.com")
 
     def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
         with tempfile.TemporaryDirectory() as token_dir:
@@ -5677,7 +5726,9 @@ class ServerTests(unittest.TestCase):
 
         with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
             with patch.object(server_module.gmail_integration, "_gmail_service", return_value=same_account_service):
-                same_result = server_module.gmail_integration.send_redline_email(base_matter, b"docx", "redline.docx")
+                same_result = server_module.gmail_integration.send_redline_email(
+                    base_matter, b"docx", "redline.docx", confirmed_recipient="legal@example.com"
+                )
 
         self.assertEqual(same_account_service.users_api.sent_body["threadId"], "thread_inbound")
         self.assertEqual(same_result["thread_id"], "thread_inbound")
@@ -5726,7 +5777,9 @@ class ServerTests(unittest.TestCase):
         with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
             with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
                 with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "does not match inbound Gmail account"):
-                    server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+                    server_module.gmail_integration.send_redline_email(
+                        matter, b"docx", "redline.docx", confirmed_recipient="legal@example.com"
+                    )
 
         self.assertIsNone(service.users_api.sent_body)
 
@@ -5768,7 +5821,9 @@ class ServerTests(unittest.TestCase):
         with patch.object(server_module.gmail_integration.app_settings, "gmail_role_enabled", return_value=True):
             with patch.object(server_module.gmail_integration, "_gmail_service", return_value=service):
                 with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "self-sent Gmail message"):
-                    server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+                    server_module.gmail_integration.send_redline_email(
+                        matter, b"docx", "redline.docx", confirmed_recipient="daniyal.ahmad@aspora.com"
+                    )
 
         self.assertIsNone(service.users_api.sent_body)
 
@@ -5784,7 +5839,9 @@ class ServerTests(unittest.TestCase):
                 app_settings.update_gmail_settings({"outbound_enabled": False})
                 with patch.object(server_module.gmail_integration, "_gmail_service") as gmail_service:
                     with self.assertRaisesRegex(server_module.gmail_integration.GmailIntegrationError, "Gmail outbound is disabled"):
-                        server_module.gmail_integration.send_redline_email(matter, b"docx", "redline.docx")
+                        server_module.gmail_integration.send_redline_email(
+                            matter, b"docx", "redline.docx", confirmed_recipient="legal@example.com"
+                        )
 
         gmail_service.assert_not_called()
 

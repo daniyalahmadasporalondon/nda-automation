@@ -755,15 +755,22 @@ def _outbound_send_context(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> tuple[str, Any, str]:
-    recipient = recipient_email(recipient_override) or matter_reply_recipient(matter)
+    operator_recipient = recipient_email(recipient_override)
+    recipient = operator_recipient or matter_reply_recipient(matter)
     if not recipient:
         raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
     # The resolved recipient can come from attacker-controlled inbound headers
     # (Reply-To / From), so a human must confirm the exact destination address
     # before we transmit. A spoofed Reply-To therefore cannot silently redirect
     # the outbound document — the send is refused unless the confirmed address
-    # matches the address we are about to send to.
-    _require_confirmed_recipient(recipient, confirmed_recipient)
+    # matches the address we are about to send to. ``recipient_from_inbound_header``
+    # is True only when the recipient was derived from the matter's inbound
+    # headers rather than an operator-supplied ``to``.
+    _require_confirmed_recipient(
+        recipient,
+        confirmed_recipient,
+        recipient_from_inbound_header=not operator_recipient,
+    )
     if not app_settings.gmail_role_enabled("outbound"):
         raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
@@ -778,12 +785,24 @@ def _outbound_send_context(
     return recipient, service, outbound_account
 
 
-def _require_confirmed_recipient(recipient: str, confirmed_recipient: str | None) -> None:
-    # ``confirmed_recipient is None`` means the caller opted out of recipient
-    # confirmation (e.g. internal callers that already resolved a trusted
-    # recipient); callers that face untrusted headers MUST pass it. An empty or
-    # non-matching confirmation is always rejected.
+def _require_confirmed_recipient(
+    recipient: str,
+    confirmed_recipient: str | None,
+    *,
+    recipient_from_inbound_header: bool = True,
+) -> None:
+    # CONTRACT: any send whose recipient was derived from inbound email headers
+    # (Reply-To / From) MUST pass ``confirmed_recipient`` — a human-confirmed
+    # destination address. ``confirmed_recipient is None`` is an opt-out reserved
+    # for callers that resolved the recipient from a TRUSTED source (e.g. an
+    # operator typed the ``to`` directly, as in Send Document). To stop a future
+    # caller from silently inheriting that opt-out for a header-fed recipient, the
+    # opt-out is refused here whenever the recipient came from an inbound header.
     if confirmed_recipient is None:
+        if recipient_from_inbound_header:
+            raise RecipientConfirmationError(
+                "Confirm the outbound recipient email address before sending."
+            )
         return
     confirmed = recipient_email(confirmed_recipient)
     if not confirmed:
