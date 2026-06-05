@@ -38,7 +38,12 @@ from .checks.common import (
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .reference_resolver import resolve_document_references
-from .playbook_rules import PlaybookRulesError, normalize_playbook_policy, validate_playbook_rules
+from .playbook_rules import (
+    PlaybookRulesError,
+    is_dynamic_clause,
+    normalize_playbook_policy,
+    validate_playbook_rules,
+)
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
@@ -901,8 +906,11 @@ def _validate_check_registry() -> None:
     if missing_search_terms:
         raise RuntimeError(f"Playbook clauses missing search_terms: {', '.join(missing_search_terms)}")
 
-    missing_checks = sorted(set(playbook_ids) - set(check_ids))
-    extra_checks = sorted(set(check_ids) - set(playbook_ids))
+    # Only native clauses are backed by checks; dynamic clauses are reviewed
+    # generically and intentionally have no Python check.
+    native_ids = {str(clause["id"]) for clause in playbook_clauses if not is_dynamic_clause(clause)}
+    missing_checks = sorted(set(check_ids) - native_ids)
+    extra_checks = sorted(native_ids - set(check_ids))
     if missing_checks or extra_checks:
         detail = []
         if missing_checks:
@@ -961,27 +969,47 @@ def _validate_playbook_contract(playbook: Dict[str, object]) -> None:
         raise PlaybookTemplateError(f"Duplicate playbook IDs: {', '.join(duplicate_ids)}")
 
     check_ids = [clause_id for clause_id, _check in CLAUSE_CHECKS]
-    missing_playbook_ids = sorted(set(check_ids) - set(playbook_ids))
-    extra_playbook_ids = sorted(set(playbook_ids) - set(check_ids))
-    if missing_playbook_ids or extra_playbook_ids:
-        detail = []
-        if missing_playbook_ids:
-            detail.append(f"missing clauses: {', '.join(missing_playbook_ids)}")
-        if extra_playbook_ids:
-            detail.append(f"unknown clauses: {', '.join(extra_playbook_ids)}")
+    # Native clauses are backed by a Python check and must match the checker
+    # registry exactly. Dynamic clauses are reviewed generically from their data
+    # by the AI-first engine and must NOT have a Python check.
+    native_ids = {str(clause["id"]) for clause in clauses if not is_dynamic_clause(clause)}
+    dynamic_ids = {str(clause["id"]) for clause in clauses if is_dynamic_clause(clause)}
+
+    missing_native_ids = sorted(set(check_ids) - native_ids)
+    dynamic_with_check = sorted(dynamic_ids & set(check_ids))
+    unknown_native_ids = sorted(native_ids - set(check_ids))
+    detail = []
+    if missing_native_ids:
+        detail.append(f"missing native clauses: {', '.join(missing_native_ids)}")
+    if unknown_native_ids:
+        detail.append(
+            "native clauses without checks: "
+            + ", ".join(unknown_native_ids)
+            + " (mark them engine=dynamic to define as data)"
+        )
+    if dynamic_with_check:
+        detail.append(f"dynamic clauses shadow a native check: {', '.join(dynamic_with_check)}")
+    if detail:
         raise PlaybookTemplateError("Playbook clause IDs do not match checker IDs (" + "; ".join(detail) + ")")
 
     clauses_by_id = {str(clause["id"]): clause for clause in clauses}
-    _validate_governing_law_playbook(clauses_by_id["governing_law"])
-    _require_template(clauses_by_id["mutuality"], "redline_template")
-    _require_template(clauses_by_id["confidential_information"], "redline_template")
-    _require_template(clauses_by_id["confidential_information"], "standard_exclusions_template")
-    _require_template(
-        clauses_by_id["term_and_survival"],
-        "redline_template",
-        allowed_placeholders={"max_term_years", "max_term_years_label"},
-    )
-    _require_template(clauses_by_id["signatures"], "redline_template")
+    # Per-clause template requirements apply only to the native clauses that are
+    # present. Dynamic clauses carry their fallback wording in their own schema.
+    if "governing_law" in clauses_by_id:
+        _validate_governing_law_playbook(clauses_by_id["governing_law"])
+    if "mutuality" in clauses_by_id:
+        _require_template(clauses_by_id["mutuality"], "redline_template")
+    if "confidential_information" in clauses_by_id:
+        _require_template(clauses_by_id["confidential_information"], "redline_template")
+        _require_template(clauses_by_id["confidential_information"], "standard_exclusions_template")
+    if "term_and_survival" in clauses_by_id:
+        _require_template(
+            clauses_by_id["term_and_survival"],
+            "redline_template",
+            allowed_placeholders={"max_term_years", "max_term_years_label"},
+        )
+    if "signatures" in clauses_by_id:
+        _require_template(clauses_by_id["signatures"], "redline_template")
     try:
         validate_playbook_rules(playbook)
     except PlaybookRulesError as error:
@@ -1069,8 +1097,55 @@ def _redline_edits_for_clause(
     paragraphs_by_id: Dict[str, Paragraph],
     start_number: int,
 ) -> List[RedlineEdit]:
-    builder = REDLINE_BUILDERS_BY_ID[str(clause["id"])]
+    # Native clauses have a registered builder; dynamic clause types are redlined
+    # generically from their own fallback wording so no per-clause Python is needed.
+    builder = REDLINE_BUILDERS_BY_ID.get(str(clause["id"]))
+    if builder is None:
+        return _dynamic_clause_redlines(clause, paragraphs_by_id, start_number)
     return builder(clause, paragraphs_by_id, start_number)
+
+
+def _dynamic_clause_redlines(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    """Build redline edits for a dynamic clause from its fallback wording.
+
+    Prohibited clauses that are present-but-wrong get the offending paragraphs
+    deleted. Required clauses get the clause's fallback wording inserted (when
+    missing) or used to replace the offending paragraph (when present-but-wrong).
+    The fallback block names the redline action; an absent or no_change action
+    yields no edit.
+    """
+    fallback = clause.get("fallback")
+    fallback = fallback if isinstance(fallback, dict) else {}
+    action = str(fallback.get("redline_action") or "").strip()
+    wording = str(fallback.get("wording") or "").strip()
+
+    if action == REDLINE_DELETE_PARAGRAPH:
+        if not _is_present_but_wrong_check(clause):
+            return []
+        edits: List[RedlineEdit] = []
+        for paragraph in _matched_redline_paragraphs(clause, paragraphs_by_id):
+            edits.append(_redline_edit(start_number + len(edits), clause, paragraph, REDLINE_DELETE_PARAGRAPH))
+        return edits
+
+    if action == REDLINE_REPLACE_PARAGRAPH and wording:
+        if not _is_present_but_wrong_check(clause):
+            return []
+        paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
+        if not paragraphs:
+            return []
+        return [
+            _redline_edit(start_number, clause, paragraphs[0], REDLINE_REPLACE_PARAGRAPH, replacement_text=wording)
+        ]
+
+    if action == REDLINE_INSERT_AFTER_PARAGRAPH and wording:
+        edit = _template_redline_for_required_clause(clause, paragraphs_by_id, start_number, wording)
+        return [edit] if edit else []
+
+    return []
 
 
 def _is_present_but_wrong_check(clause: ClauseResult) -> bool:
@@ -1406,27 +1481,6 @@ def _term_and_survival_redlines(
     return [edit] if edit else []
 
 
-def _non_circumvention_redlines(
-    clause: ClauseResult,
-    paragraphs_by_id: Dict[str, Paragraph],
-    start_number: int,
-) -> List[RedlineEdit]:
-    if not _is_present_but_wrong_check(clause):
-        return []
-
-    edits: List[RedlineEdit] = []
-    for paragraph in _matched_redline_paragraphs(clause, paragraphs_by_id):
-        edits.append(
-            _redline_edit(
-                start_number + len(edits),
-                clause,
-                paragraph,
-                REDLINE_DELETE_PARAGRAPH,
-            )
-        )
-    return edits
-
-
 def _signatures_redline(
     clause: ClauseResult,
     paragraphs_by_id: Dict[str, Paragraph],
@@ -1499,7 +1553,6 @@ REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
     ("confidential_information", _confidential_information_redlines),
     ("governing_law", _governing_law_redlines),
     ("term_and_survival", _term_and_survival_redlines),
-    ("non_circumvention", _non_circumvention_redlines),
     ("signatures", _signatures_redlines),
 ]
 REDLINE_BUILDERS_BY_ID: Dict[str, RedlineBuildFn] = dict(REDLINE_BUILDERS)

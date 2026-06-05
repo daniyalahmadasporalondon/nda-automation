@@ -69,18 +69,6 @@ CLAUSE_FIXTURES = [
         "The confidentiality obligations survive for seven (7) years.",
     ),
     (
-        "non_circumvention_pass_absent",
-        "non_circumvention",
-        "not_present",
-        "The parties will use Confidential Information solely to evaluate a potential commercial relationship.",
-    ),
-    (
-        "non_circumvention_check_present",
-        "non_circumvention",
-        "check",
-        "The Recipient must not circumvent the Company or deal directly with introduced parties.",
-    ),
-    (
         "signatures_pass_two_party_execution_blocks",
         "signatures",
         "match",

@@ -1333,6 +1333,29 @@ h3 {
   text-transform: uppercase;
 }
 
+.clause-engine-badge {
+  background: var(--violet-bg);
+  border: 1px solid var(--violet-border);
+  border-radius: var(--r-pill);
+  color: var(--violet-ink);
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.studio-clause-select .clause-engine-badge {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.active-clause-heading h3 .clause-engine-badge {
+  margin-left: 8px;
+}
+
 .studio-clause-item > .studio-export-controls {
   padding-left: 39px;
 }
@@ -2557,9 +2580,44 @@ button.active-clause-status:hover {
 .studio-detail-block.rationale-block,
 .studio-detail-block.assessment-block,
 .studio-detail-block.review-note-block,
-.studio-detail-block.evidence-guidance-block {
+.studio-detail-block.evidence-guidance-block,
+.studio-detail-block.playbook-position-block {
   background: #ffffff;
   border-color: var(--border);
+}
+
+.playbook-position-block .playbook-position-wording {
+  margin: 0;
+}
+
+.playbook-position-block .playbook-position-approved {
+  margin-top: 8px;
+}
+
+.playbook-position-block .playbook-position-approved ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.playbook-position-block .playbook-position-approved li {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.clause-citation-block.ungrounded {
+  border-left: 2px solid var(--warning, #c47f17);
+}
+
+.clause-citation-block.absence p,
+.clause-citation-block.ungrounded p {
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  margin: 0;
 }
 
 .studio-detail-block.redline-block {

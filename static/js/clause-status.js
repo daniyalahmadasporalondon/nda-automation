@@ -11,7 +11,14 @@ function clauseStatus(clause) {
   const review = rawReviewState === "review" || rawDecision === "review" || clause?.needs_review === true;
   const fail = rawReviewState === "check" || rawDecision === "fail" || (!hasReviewState && !hasDecision && !review && !rawPasses);
   const passes = rawReviewState === "pass" || rawDecision === "pass" || (!hasReviewState && !hasDecision && rawPasses && !review && !fail);
-  const idle = rawStatus === "idle";
+  // A dynamic clause result may key everything off review_state/decision and
+  // omit the top-level `status` field, which defaults to "idle". Only treat a
+  // clause as idle (pre-review "Pending") when no real result signal is
+  // present, so a reviewed dynamic clause never renders as Pending.
+  const hasExplicitPasses = typeof clause?.passes === "boolean";
+  const hasResultSignal = hasReviewState || hasDecision || hasExplicitPasses
+    || rawStatus === "pass" || rawStatus === "match";
+  const idle = rawStatus === "idle" && !hasResultSignal;
   const tone = idle ? "pending" : review ? "review" : fail ? "check" : "pass";
   const dotTone = idle ? "pending" : review ? "review" : fail ? "verify" : "match";
   const resultLabels = {
@@ -42,4 +49,24 @@ function clauseStatus(clause) {
 
 function clausePasses(clause) {
   return clauseStatus(clause).passes;
+}
+
+// Dynamic clause types may arrive with only an id (no curated display name),
+// so every rendering path resolves a label off the result data rather than
+// assume a name is present. Falls back name -> id -> "Clause" so the UI never
+// shows "undefined" for a clause type the code has never seen.
+function clauseDisplayName(clause) {
+  if (!clause || typeof clause !== "object") return "Clause";
+  const name = String(clause.name || clause.title || clause.label || "").trim();
+  if (name) return name;
+  const id = String(clause.id || "").trim();
+  return id || "Clause";
+}
+
+// True for a data-defined Playbook clause (engine === "dynamic"). Native clauses
+// carry engine "native" or omit the field, so this is false for them — the
+// Dynamic badge is purely additive and never appears on the original clauses.
+function clauseIsDynamic(clause) {
+  return Boolean(clause) && typeof clause === "object"
+    && String(clause.engine || "").trim().toLowerCase() === "dynamic";
 }

@@ -29,6 +29,24 @@ PLAYBOOK_POLICY_SCHEMA_VERSION = 1
 
 CORE_REQUIRED_TEXT_FIELDS = ["id", "name", "requirement", "type", "preferred_position", "check_trigger"]
 
+# A clause is reviewed either by native Python checks (the original six) or
+# generically from its data definition by the AI-first engine. The marker is
+# optional and defaults to "native" so existing playbooks are unaffected.
+CLAUSE_ENGINE_NATIVE = "native"
+CLAUSE_ENGINE_DYNAMIC = "dynamic"
+CLAUSE_ENGINES = {CLAUSE_ENGINE_NATIVE, CLAUSE_ENGINE_DYNAMIC}
+
+# The clause ids backed by Python checks. Dynamic clauses must NOT use these.
+# non_circumvention was migrated to a pure dynamic Playbook clause (tracer), so
+# it is intentionally absent even though its id remains well-known.
+NATIVE_CLAUSE_IDS = {
+    "mutuality",
+    "confidential_information",
+    "governing_law",
+    "term_and_survival",
+    "signatures",
+}
+
 CORE_CLAUSE_FIELDS = {
     "id",
     "name",
@@ -43,6 +61,23 @@ CORE_CLAUSE_FIELDS = {
     "taxonomy_groups",
     "semantic_signals",
     "rules",
+    "engine",
+}
+
+# Fields a dynamic clause may carry beyond the core set. A dynamic clause type
+# is fully self-describing in data: detection cues (core search_terms etc.),
+# pass/review/fail criteria (rules), and the fallback/redline wording +
+# clause-specific instructions below.
+DYNAMIC_CLAUSE_EXTRA_FIELDS = {
+    "fallback",
+    "instructions",
+}
+
+# Allowed shape for a dynamic clause's fallback/redline wording block.
+DYNAMIC_FALLBACK_FIELDS = {
+    "redline_action",
+    "wording",
+    "approved_positions",
 }
 
 CLAUSE_POLICY_FIELDS: dict[str, set[str]] = {
@@ -218,15 +253,36 @@ def normalize_clause_policy(clause: Mapping[str, Any]) -> dict[str, Any]:
 def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_clause_policy(clause)
     rules = normalized.get("rules")
-    return {
+    packet_clause = {
         "clause_id": str(normalized.get("id") or ""),
         "name": str(normalized.get("name") or ""),
         "type": str(normalized.get("type") or ""),
+        "engine": clause_engine(normalized),
         "requirement": str(normalized.get("requirement") or ""),
         "preferred_position": str(normalized.get("preferred_position") or ""),
         "check_trigger": str(normalized.get("check_trigger") or ""),
         "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
     }
+    # Dynamic clauses carry their fallback/redline wording and clause-specific
+    # instructions in data; surface them so the AI packet is fully self-describing
+    # for clause types the code has never seen.
+    fallback = normalized.get("fallback")
+    if isinstance(fallback, Mapping):
+        packet_clause["fallback"] = deepcopy(dict(fallback))
+    instructions = _clause_instructions(normalized)
+    if instructions:
+        packet_clause["instructions"] = instructions
+    return packet_clause
+
+
+def _clause_instructions(clause: Mapping[str, Any]) -> list[str]:
+    raw = clause.get("instructions")
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, list):
+        return [_text(item) for item in raw if _text(item)]
+    return []
 
 
 def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
@@ -404,13 +460,63 @@ def _validate_playbook_policy_schema(playbook: Mapping[str, Any], errors: list[s
         seen_clause_ids.add(normalized)
 
 
+def clause_engine(clause: Mapping[str, Any]) -> str:
+    # Returns the declared engine verbatim (default native). Callers validate it
+    # against CLAUSE_ENGINES; an unknown value is surfaced as an error there.
+    return _text(clause.get("engine")) or CLAUSE_ENGINE_NATIVE
+
+
+def is_dynamic_clause(clause: Mapping[str, Any]) -> bool:
+    return clause_engine(clause) == CLAUSE_ENGINE_DYNAMIC
+
+
 def _validate_clause_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:
     clause_id = _text(clause.get("id")) or "unknown"
+    engine = clause_engine(clause)
+    if engine not in CLAUSE_ENGINES:
+        errors.append(f"Playbook clause {clause_id} engine must be one of {', '.join(sorted(CLAUSE_ENGINES))}.")
+
+    if engine == CLAUSE_ENGINE_DYNAMIC:
+        _validate_dynamic_clause_schema(clause, clause_id, errors)
+    else:
+        _validate_native_clause_schema(clause, clause_id, errors)
+
+
+def _validate_native_clause_schema(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
+    if clause_id not in NATIVE_CLAUSE_IDS:
+        errors.append(
+            f"Playbook clause {clause_id} is not a known native clause; set engine to {CLAUSE_ENGINE_DYNAMIC} "
+            "to define it as data."
+        )
     allowed_fields = CORE_CLAUSE_FIELDS | CLAUSE_POLICY_FIELDS.get(clause_id, set())
     unknown_fields = sorted(str(field) for field in clause.keys() if str(field) not in allowed_fields)
     if clause_id in CLAUSE_POLICY_FIELDS and unknown_fields:
         errors.append(f"Playbook clause {clause_id} has unsupported field(s): {', '.join(unknown_fields)}.")
 
+    _validate_clause_common_fields(clause, clause_id, errors)
+
+    if clause_id == "governing_law":
+        _validate_governing_law_policy_schema(clause, errors)
+    elif clause_id == "term_and_survival":
+        _validate_term_survival_policy_schema(clause, errors)
+
+
+def _validate_dynamic_clause_schema(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
+    if clause_id in NATIVE_CLAUSE_IDS:
+        errors.append(
+            f"Playbook clause {clause_id} is a native clause id and cannot be redefined as a dynamic clause."
+        )
+    allowed_fields = CORE_CLAUSE_FIELDS | DYNAMIC_CLAUSE_EXTRA_FIELDS
+    unknown_fields = sorted(str(field) for field in clause.keys() if str(field) not in allowed_fields)
+    if unknown_fields:
+        errors.append(f"Playbook clause {clause_id} has unsupported field(s): {', '.join(unknown_fields)}.")
+
+    _validate_clause_common_fields(clause, clause_id, errors)
+    _validate_dynamic_fallback(clause, clause_id, errors)
+    _validate_dynamic_instructions(clause, clause_id, errors)
+
+
+def _validate_clause_common_fields(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
     for field in CORE_REQUIRED_TEXT_FIELDS:
         if not _text(clause.get(field)):
             errors.append(f"Playbook clause {clause_id} must include {field}.")
@@ -421,10 +527,45 @@ def _validate_clause_policy_schema(clause: Mapping[str, Any], errors: list[str])
         if field in clause:
             _validate_text_list_field(clause, field, clause_id, errors, required=False)
 
-    if clause_id == "governing_law":
-        _validate_governing_law_policy_schema(clause, errors)
-    elif clause_id == "term_and_survival":
-        _validate_term_survival_policy_schema(clause, errors)
+
+def _validate_dynamic_fallback(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
+    fallback = clause.get("fallback")
+    if fallback is None:
+        errors.append(f"Playbook clause {clause_id} must include fallback wording for dynamic findings.")
+        return
+    if not isinstance(fallback, Mapping):
+        errors.append(f"Playbook clause {clause_id} fallback must be an object.")
+        return
+    unknown = sorted(str(key) for key in fallback.keys() if str(key) not in DYNAMIC_FALLBACK_FIELDS)
+    if unknown:
+        errors.append(f"Playbook clause {clause_id} fallback has unsupported field(s): {', '.join(unknown)}.")
+    redline_action = _text(fallback.get("redline_action"))
+    if redline_action not in AI_ASSESSMENT_REDLINE_ACTIONS:
+        errors.append(f"Playbook clause {clause_id} fallback.redline_action is unsupported.")
+    # Only the text-inserting actions need wording; delete_paragraph and no_change do not.
+    wording_required_actions = {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH}
+    if redline_action in wording_required_actions and not _text(fallback.get("wording")):
+        errors.append(
+            f"Playbook clause {clause_id} fallback.wording must be text when redline_action is {redline_action}."
+        )
+    if "approved_positions" in fallback:
+        _validate_text_list_field(fallback, "approved_positions", clause_id, errors, required=False)
+
+
+def _validate_dynamic_instructions(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
+    instructions = clause.get("instructions")
+    if instructions is None:
+        return
+    if isinstance(instructions, str):
+        if not instructions.strip():
+            errors.append(f"Playbook clause {clause_id} instructions must not be blank.")
+        return
+    if isinstance(instructions, list):
+        for index, item in enumerate(instructions):
+            if not _text(item):
+                errors.append(f"Playbook clause {clause_id} instructions[{index}] must be text.")
+        return
+    errors.append(f"Playbook clause {clause_id} instructions must be text or a list of text.")
 
 
 def _validate_governing_law_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:

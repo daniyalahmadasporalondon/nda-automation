@@ -668,6 +668,14 @@ function selectedRedlineTemplateOptionId(edit) {
     || "";
 }
 
+// Small additive badge marking a data-defined Playbook clause (engine
+// "dynamic") so reviewers can tell it from the native clauses. Returns "" for
+// native clauses, so their markup is unchanged.
+function clauseEngineBadge(clause) {
+  if (!clauseIsDynamic(clause)) return "";
+  return '<span class="clause-engine-badge" title="Data-defined Playbook clause">Dynamic</span>';
+}
+
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -682,6 +690,7 @@ function renderStudioClauseLane() {
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseStatus(clause);
+      const displayName = clauseDisplayName(clause);
       const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
       const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
       const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !redlineExportIncluded(edit));
@@ -696,16 +705,18 @@ function renderStudioClauseLane() {
             : status.issueLabel;
       const selectable = hasReviewResults()
         ? `
-          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${clause.name}: ${stateLabel}`)}" title="${escapeHtml(`${clause.name}: ${stateLabel}`)}">
+          <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${displayName}: ${stateLabel}`)}" title="${escapeHtml(`${displayName}: ${stateLabel}`)}">
             <span class="studio-clause-dot ${status.dotTone}"></span>
-            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+            <span class="studio-clause-title">${escapeHtml(displayName)}</span>
+            ${clauseEngineBadge(clause)}
             ${comment ? '<span class="studio-comment-state">Comment</span>' : ""}
           </button>
         `
         : `
           <div class="studio-clause-select">
             <span class="studio-clause-dot ${status.dotTone}"></span>
-            <span class="studio-clause-title">${escapeHtml(clause.name)}</span>
+            <span class="studio-clause-title">${escapeHtml(displayName)}</span>
+            ${clauseEngineBadge(clause)}
           </div>
         `;
       return `
@@ -862,14 +873,24 @@ function renderStudioDetail() {
   const status = clauseStatus(clause);
   const explanation = renderClauseExplanation(clause);
   const rationale = clause.rationale || clause.requirement || "";
+  // The "Based on" grounding surface (citation / absence / ungrounded) sits
+  // right under the explanation; it self-gates to "" until citation/grounding
+  // data is present.
+  const citation = renderClauseCitationBlock(clause);
+  const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
+  // Audit/context detail beneath the primary finding. Both self-gate to "" when
+  // their result fields are empty, so they only appear when the clause carries
+  // reason codes / an audit trace.
+  const reasonCodes = renderReasonCodeBlock(clause);
+  const auditTrace = renderAuditTraceBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
     <div class="studio-detail-heading active-clause-heading">
       <div>
         <small>Active clause</small>
-        <h3>${escapeHtml(clause.name)}</h3>
+        <h3>${escapeHtml(clauseDisplayName(clause))}${clauseEngineBadge(clause)}</h3>
       </div>
       ${activeStatus}
     </div>
@@ -880,7 +901,11 @@ function renderStudioDetail() {
       </div>
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${explanation}
+      ${citation}
+      ${playbookPosition}
       ${proposedRedlines}
+      ${reasonCodes}
+      ${auditTrace}
       ${commentBlock}
     </div>
   `;
@@ -910,6 +935,53 @@ function renderAiCitation(span) {
   `;
 }
 
+// Single "Based on" grounding surface for a clause, driven by the AI-first
+// review path's clause.citation (the first grounded structured-evidence quote)
+// and clause.grounding.status. The older crosscheck path's cited_spans are
+// already shown in the explanation's Evidence block (renderClauseExplanation),
+// so this block deliberately does NOT fall back to them — that would double the
+// same quotes. Returns "" when no citation/grounding data is present (a no-op
+// until those fields land), so existing reviews are unaffected and there is
+// never a second citation surface.
+function renderClauseCitationBlock(clause) {
+  if (!clause || typeof clause !== "object") return "";
+  const grounding = typeof clause.grounding === "object" && clause.grounding ? clause.grounding : null;
+  const status = grounding ? String(grounding.status || "").trim().toLowerCase() : "";
+
+  const citation = typeof clause.citation === "object" && clause.citation ? clause.citation : null;
+  const citationQuote = citation ? String(citation.quote || "").trim() : "";
+
+  // Grounded: the AI-first single citation.
+  if (citationQuote) {
+    return `
+      <div class="studio-detail-block clause-citation-block grounded">
+        <small>Based on</small>
+        ${renderAiCitation(citation)}
+      </div>
+    `;
+  }
+
+  // Non-quote grounding states only the AI-first path reports.
+  if (status === "absence") {
+    return `
+      <div class="studio-detail-block clause-citation-block absence">
+        <small>Based on</small>
+        <p>Grounded in the absence of this clause from the document.</p>
+      </div>
+    `;
+  }
+  if (status === "ungrounded") {
+    return `
+      <div class="studio-detail-block clause-citation-block ungrounded">
+        <small>Based on</small>
+        <p>The AI assessment did not ground this finding in any quotable text, so it was escalated for human review.</p>
+      </div>
+    `;
+  }
+
+  return "";
+}
+
 function paragraphDisplayLabel(paragraphId) {
   const normalizedId = String(paragraphId || "");
   if (normalizedId.startsWith("draft-proposed-")) return "Proposed draft";
@@ -921,6 +993,58 @@ function paragraphDisplayLabel(paragraphId) {
   return index ? `Paragraph ${index}` : paragraphId;
 }
 
+// Resolve a dynamic clause's fallback/standard-position block from the result,
+// independent of exactly where the backend hangs it. A dynamic clause type is
+// self-describing in the Playbook (fallback: { wording, approved_positions,
+// redline_action }); the review result passes that through so the Review tab
+// can show the playbook position for a clause the code has never seen. Tolerant
+// of the block living at clause.fallback, clause.playbook.fallback, or a
+// flattened clause.fallback_wording so rendering does not depend on the final
+// #10 contract shape. Returns null when there is nothing to show.
+function clauseFallback(clause) {
+  if (!clause || typeof clause !== "object") return null;
+  const raw = (clause.fallback && typeof clause.fallback === "object" ? clause.fallback : null)
+    || (clause.playbook && typeof clause.playbook === "object" && typeof clause.playbook.fallback === "object"
+      ? clause.playbook.fallback
+      : null);
+  const wording = String((raw && raw.wording) || clause.fallback_wording || "").trim();
+  const approvedSource = (raw && Array.isArray(raw.approved_positions) ? raw.approved_positions : null)
+    || (Array.isArray(clause.approved_positions) ? clause.approved_positions : []);
+  const approvedPositions = approvedSource
+    .map((position) => String(position || "").trim())
+    .filter(Boolean);
+  if (!wording && !approvedPositions.length) return null;
+  return { approvedPositions, wording };
+}
+
+function renderClausePlaybookPositionBlock(clause) {
+  const fallback = clauseFallback(clause);
+  if (!fallback) return "";
+  const approved = fallback.approvedPositions.length
+    ? `
+      <div class="playbook-position-approved">
+        <small>Approved positions</small>
+        <ul>${fallback.approvedPositions.map((position) => `<li>${escapeHtml(position)}</li>`).join("")}</ul>
+      </div>
+    `
+    : "";
+  const wording = fallback.wording
+    ? `<p class="playbook-position-wording">${escapeHtml(fallback.wording)}</p>`
+    : "";
+  return `
+    <div class="studio-detail-block playbook-position-block">
+      <small>Playbook position</small>
+      ${wording}
+      ${approved}
+    </div>
+  `;
+}
+
+// Scaffolding for the evidence-grounded-findings work (task #16): these render
+// reason codes / structured evidence signals / audit trace / evidence
+// paragraphs off the clause result. Currently unwired (disconnected when the
+// deterministic-comparison path was removed) but retained intentionally to be
+// repurposed by that feature — do not remove.
 function renderReasonCodeBlock(clause) {
   const codes = Array.isArray(clause?.reason_codes)
     ? clause.reason_codes.filter(Boolean)

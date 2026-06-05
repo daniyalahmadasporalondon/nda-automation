@@ -5,7 +5,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "Each party may disclose Confidential Information and each party acts as both a Disclosing Party and Receiving Party.",
-    "expected": {"decision": "pass", "reason_code": "mutuality_obligation_found"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "mutuality_obligation_found"
+    }
   },
   {
     "name": "mutuality_reciprocal_destruction_obligation_pass",
@@ -14,7 +17,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "Each party may disclose Confidential Information, and each party acts as both a Disclosing Party and a Receiving Party.\n\nThe Receiving Party has a unilateral obligation to destroy or return all copies of Confidential Information on request.",
-    "expected": {"decision": "pass", "reason_code": "mutuality_obligation_found"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "mutuality_obligation_found"
+    }
   },
   {
     "name": "mutuality_one_way_fail",
@@ -23,7 +29,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "This one-way NDA requires only the Receiving Party to protect the Company's information.",
-    "expected": {"decision": "fail", "reason_code": "one_way_mutuality_language"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "one_way_mutuality_language"
+    }
   },
   {
     "name": "governing_law_difc_pass",
@@ -31,7 +40,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of the DIFC.",
-    "expected": {"decision": "pass", "reason_code": "approved_governing_law"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "approved_governing_law"
+    }
   },
   {
     "name": "governing_law_california_fail",
@@ -40,7 +52,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of California.",
-    "expected": {"decision": "fail", "reason_code": "unapproved_governing_law"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "unapproved_governing_law"
+    }
   },
   {
     "name": "governing_law_conditional_override_review",
@@ -50,7 +65,10 @@
     "label_source": "product_review",
     "label_note": "Product judgment (not counsel-final): an approved law with an 'unless otherwise agreed' escape hatch is not a fail, but the governing-law position can move later without review, so surface it. Gate as review only.",
     "text": "This Agreement shall be governed by the laws of England and Wales, unless otherwise agreed in writing by the parties.",
-    "expected": {"decision": "review", "reason_code": "governing_law_conditional_override"}
+    "expected": {
+      "decision": "review",
+      "reason_code": "governing_law_conditional_override"
+    }
   },
   {
     "name": "governing_law_approved_with_unapproved_choice_carveout_review",
@@ -59,7 +77,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of England and Wales except that intellectual property disputes shall be governed by the laws of France.",
-    "expected": {"decision": "review", "reason_code": "unclear_governing_law"}
+    "expected": {
+      "decision": "review",
+      "reason_code": "unclear_governing_law"
+    }
   },
   {
     "name": "governing_law_missing_fail",
@@ -67,7 +88,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "The parties agree to keep all shared information confidential and to use it only for the purpose of the discussions.",
-    "expected": {"decision": "fail", "reason_code": "missing_governing_law"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "missing_governing_law"
+    }
   },
   {
     "name": "governing_law_heading_only_review",
@@ -75,7 +99,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "Governing Law",
-    "expected": {"decision": "review", "reason_code": "governing_law_heading_only"}
+    "expected": {
+      "decision": "review",
+      "reason_code": "governing_law_heading_only"
+    }
   },
   {
     "name": "term_three_years_pass",
@@ -83,7 +110,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "The confidentiality obligations survive for three (3) years.",
-    "expected": {"decision": "pass", "reason_code": "term_survival_within_cap"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap"
+    }
   },
   {
     "name": "term_five_years_boundary_pass",
@@ -91,7 +121,10 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "The confidentiality obligations survive for five (5) years after disclosure.",
-    "expected": {"decision": "pass", "reason_code": "term_survival_within_cap"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap"
+    }
   },
   {
     "name": "term_seven_years_fail",
@@ -100,7 +133,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "The confidentiality obligations survive for seven (7) years.",
-    "expected": {"decision": "fail", "reason_code": "term_survival_over_cap"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "term_survival_over_cap"
+    }
   },
   {
     "name": "term_perpetual_survival_fail",
@@ -109,7 +145,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "The confidentiality obligations survive indefinitely and in perpetuity.",
-    "expected": {"decision": "fail", "reason_code": "indefinite_survival"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "indefinite_survival"
+    }
   },
   {
     "name": "term_survival_decoy_duration_trap",
@@ -118,7 +157,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "The term of this Agreement is two (2) years. The confidentiality obligations survive for seven (7) years after disclosure.",
-    "expected": {"decision": "fail", "reason_code": "term_survival_over_cap"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "term_survival_over_cap"
+    }
   },
   {
     "name": "term_survival_unresolved_by_reference_trap",
@@ -127,7 +169,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "The confidentiality obligations survive in accordance with Section 7.2 of this Agreement.",
-    "expected": {"decision": "fail", "reason_code": "unresolved_survival_reference"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "unresolved_survival_reference"
+    }
   },
   {
     "name": "confidential_information_broad_with_standard_exclusions_pass",
@@ -135,7 +180,9 @@
     "kind": "deterministic",
     "label_source": "engineering",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that is public, already known, received from a lawful third party, or independently developed without use of the Confidential Information.",
-    "expected": {"decision": "pass"}
+    "expected": {
+      "decision": "pass"
+    }
   },
   {
     "name": "confidential_information_unqualified_independent_development_review",
@@ -145,7 +192,10 @@
     "label_source": "product_review",
     "label_note": "Unqualified short-form independent-development exclusion is near-universal NDA language; product decision to review rather than auto-fail (counsel may upgrade).",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information that is independently developed by the Receiving Party.",
-    "expected": {"decision": "review", "reason_code": "unqualified_independent_development_exclusion"}
+    "expected": {
+      "decision": "review",
+      "reason_code": "unqualified_independent_development_exclusion"
+    }
   },
   {
     "name": "confidential_information_reverse_engineering_exclusion_trap",
@@ -154,7 +204,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information does not include information obtained by reverse engineering of disclosed materials.",
-    "expected": {"decision": "fail", "reason_code": "problematic_confidential_information_exclusion"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "problematic_confidential_information_exclusion"
+    }
   },
   {
     "name": "confidential_information_residual_knowledge_exclusion_trap",
@@ -163,78 +216,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nConfidential Information excludes residual knowledge retained in unaided memory.",
-    "expected": {"decision": "fail", "reason_code": "problematic_confidential_information_exclusion"}
-  },
-  {
-    "name": "non_circumvention_absent_pass",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "label_source": "engineering",
-    "text": "The parties will use Confidential Information solely to evaluate a potential commercial relationship.",
-    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_explicit_fail",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "The Recipient must not circumvent the Company or deal directly with introduced parties.",
-    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_introduced_contact_paraphrase_trap",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "The Receiving Party shall not solicit, approach, or contact any customers or business relationships introduced or made known to it by the Disclosing Party.",
-    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_exclusive_dealing_trap",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "The Receiving Party agrees to deal exclusively with the Company for the duration of the engagement.",
-    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_enter_into_persons_trap",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "The Receiving Party shall not enter into any arrangement with persons introduced by the Discloser.",
-    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_steer_clear_opportunity_trap",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "Each party agrees to steer clear of any opportunity surfaced by the other party.",
-    "expected": {"decision": "fail", "reason_code": "prohibited_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_freedom_to_deal_carveout_pass",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "Each party shall not be restricted from dealing with any contact introduced by the other party.",
-    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
-  },
-  {
-    "name": "non_circumvention_nothing_restricts_carveout_pass",
-    "clause_id": "non_circumvention",
-    "kind": "deterministic",
-    "high_risk": true,
-    "label_source": "engineering",
-    "text": "Nothing in this Agreement restricts either party from contacting parties introduced by the other party.",
-    "expected": {"decision": "pass", "reason_code": "no_non_circumvention_restriction"}
+    "expected": {
+      "decision": "fail",
+      "reason_code": "problematic_confidential_information_exclusion"
+    }
   },
   {
     "name": "confidential_information_independent_dev_no_access_qualified_pass",
@@ -243,7 +228,10 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "Confidential Information means all non-public business, technical, and financial information disclosed by either party, whether orally or in writing. Confidential Information does not include information that was independently developed by personnel who had no access to the Confidential Information.",
-    "expected": {"decision": "pass", "reason_code": "broad_confidential_information_definition"}
+    "expected": {
+      "decision": "pass",
+      "reason_code": "broad_confidential_information_definition"
+    }
   },
   {
     "name": "ai_agreement_confirms_pass_no_escalation",
@@ -251,8 +239,15 @@
     "kind": "ai_agreement",
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of the DIFC.",
-    "ai": {"decision": "pass", "confidence": 0.93, "reason": "The cited paragraph names an approved jurisdiction."},
-    "expected": {"decision": "pass", "reason_code": "approved_governing_law"}
+    "ai": {
+      "decision": "pass",
+      "confidence": 0.93,
+      "reason": "The cited paragraph names an approved jurisdiction."
+    },
+    "expected": {
+      "decision": "pass",
+      "reason_code": "approved_governing_law"
+    }
   },
   {
     "name": "ai_disagreement_escalates_to_review",
@@ -260,8 +255,15 @@
     "kind": "ai_disagreement",
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of the DIFC.",
-    "ai": {"decision": "fail", "confidence": 0.91, "reason": "Scripted dissent: the governing-law provision is deficient."},
-    "expected": {"decision": "review", "reason_code": "ai_semantic_disagreement"}
+    "ai": {
+      "decision": "fail",
+      "confidence": 0.91,
+      "reason": "Scripted dissent: the governing-law provision is deficient."
+    },
+    "expected": {
+      "decision": "review",
+      "reason_code": "ai_semantic_disagreement"
+    }
   },
   {
     "name": "ai_invalid_citation_escalates_to_review",
@@ -269,8 +271,16 @@
     "kind": "ai_invalid",
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of the DIFC.",
-    "ai": {"decision": "pass", "confidence": 0.9, "invalid_citation": true, "reason": "Scripted pass with a fabricated citation."},
-    "expected": {"decision": "review", "reason_code": "ai_citation_validation_failed"}
+    "ai": {
+      "decision": "pass",
+      "confidence": 0.9,
+      "invalid_citation": true,
+      "reason": "Scripted pass with a fabricated citation."
+    },
+    "expected": {
+      "decision": "review",
+      "reason_code": "ai_citation_validation_failed"
+    }
   },
   {
     "name": "ai_low_confidence_escalates_to_review",
@@ -278,8 +288,15 @@
     "kind": "ai_invalid",
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of the DIFC.",
-    "ai": {"decision": "pass", "confidence": 0.4, "reason": "Scripted low-confidence pass."},
-    "expected": {"decision": "review", "reason_code": "ai_confidence_below_threshold"}
+    "ai": {
+      "decision": "pass",
+      "confidence": 0.4,
+      "reason": "Scripted low-confidence pass."
+    },
+    "expected": {
+      "decision": "review",
+      "reason_code": "ai_confidence_below_threshold"
+    }
   },
   {
     "name": "ai_cannot_soften_deterministic_fail_floor",
@@ -288,7 +305,14 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "This Agreement shall be governed by the laws of California.",
-    "ai": {"decision": "pass", "confidence": 0.95, "reason": "Scripted AI calls the failing clause acceptable."},
-    "expected": {"decision": "fail", "reason_code": "unapproved_governing_law"}
+    "ai": {
+      "decision": "pass",
+      "confidence": 0.95,
+      "reason": "Scripted AI calls the failing clause acceptable."
+    },
+    "expected": {
+      "decision": "fail",
+      "reason_code": "unapproved_governing_law"
+    }
   }
 ]
