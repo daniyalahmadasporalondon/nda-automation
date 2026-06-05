@@ -5220,7 +5220,11 @@ class ServerTests(unittest.TestCase):
                                 send_status, _send_payload = self.request(
                                     "POST",
                                     "/api/gmail/send-redline",
-                                    {"matter_id": matter["id"], "confirm_send": True},
+                                    {
+                                        "matter_id": matter["id"],
+                                        "confirm_send": True,
+                                        "confirm_recipient": "legal@example.com",
+                                    },
                                 )
 
         self.assertEqual(create_status, 201)
@@ -5261,7 +5265,11 @@ class ServerTests(unittest.TestCase):
                             send_status, send_payload = self.request(
                                 "POST",
                                 "/api/gmail/send-redline",
-                                {"matter_id": matter_id, "confirm_send": True},
+                                {
+                                    "matter_id": matter_id,
+                                    "confirm_send": True,
+                                    "confirm_recipient": "legal@example.com",
+                                },
                             )
 
         self.assertEqual(export_status, 200)
@@ -5360,12 +5368,16 @@ class ServerTests(unittest.TestCase):
                         status, payload = self.request(
                             "POST",
                             "/api/gmail/send-redline",
-                            {"matter_id": "matter_mismatch", "confirm_send": True},
+                            {
+                                "matter_id": "matter_mismatch",
+                                "confirm_send": True,
+                                "confirm_recipient": "legal@example.com",
+                            },
                         )
 
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "Outbound Gmail account mismatch.")
-        validate_ready.assert_called_once_with(matter, to=None)
+        validate_ready.assert_called_once_with(matter, to=None, confirmed_recipient="legal@example.com")
         build_matter_redline.assert_not_called()
 
     def test_gmail_send_error_status_does_not_treat_generic_mismatch_as_conflict(self):
@@ -5443,6 +5455,7 @@ class ServerTests(unittest.TestCase):
                                     {
                                         "matter_id": "matter_manual_reply",
                                         "confirm_send": True,
+                                        "confirm_recipient": "counterparty@example.com",
                                         "to": "Counterparty <counterparty@example.com>",
                                     },
                                 )
@@ -5453,11 +5466,143 @@ class ServerTests(unittest.TestCase):
         validate_ready.assert_called_once_with(
             matter,
             to="counterparty@example.com",
+            confirmed_recipient="counterparty@example.com",
         )
         send_redline_email.assert_called_once()
         self.assertEqual(send_redline_email.call_args.kwargs["to"], "counterparty@example.com")
+        self.assertEqual(send_redline_email.call_args.kwargs["confirmed_recipient"], "counterparty@example.com")
         update_matter_fields.assert_called_once()
         self.assertEqual(update_matter_fields.call_args.args[1]["last_outbound_to"], "counterparty@example.com")
+
+    def test_outbound_context_refuses_when_confirmation_does_not_match_spoofed_reply_to(self):
+        # A spoofed Reply-To must not be able to silently redirect the redline.
+        # The verified sender is the real counterparty; the attacker controls the
+        # Reply-To header. If the operator confirms the verified sender but the
+        # matter silently resolves to the spoofed Reply-To, the send is refused
+        # rather than quietly exfiltrating the document to the attacker.
+        matter = {
+            "id": "matter_spoof",
+            "sender": "Counterparty <legit@realco.com>",
+            "reply_to": "Counsel <attacker@evil.com>",
+            "subject": "NDA",
+        }
+        with patch.object(gmail_integration, "_gmail_service_for_owner") as gmail_service_for_owner:
+            with patch.object(gmail_integration, "_gmail_profile_for_role") as gmail_profile_for_role:
+                with self.assertRaises(gmail_integration.RecipientConfirmationError):
+                    gmail_integration._outbound_send_context(
+                        matter,
+                        confirmed_recipient="legit@realco.com",
+                    )
+        # The guard fires before we ever build a Gmail service / send anything.
+        gmail_service_for_owner.assert_not_called()
+        gmail_profile_for_role.assert_not_called()
+
+    def test_outbound_context_allows_send_when_confirmation_matches_resolved_recipient(self):
+        matter = {
+            "id": "matter_ok",
+            "sender": "Counterparty <legit@realco.com>",
+            "subject": "NDA",
+        }
+        with patch.object(server_module.app_settings, "gmail_role_enabled", return_value=True):
+            with patch.object(gmail_integration, "_gmail_service_for_owner", return_value=object()):
+                with patch.object(
+                    gmail_integration,
+                    "_gmail_profile_for_role",
+                    return_value={"emailAddress": "legal@aspora.com"},
+                ):
+                    recipient, _service, outbound_account = gmail_integration._outbound_send_context(
+                        matter,
+                        confirmed_recipient="legit@realco.com",
+                    )
+        self.assertEqual(recipient, "legit@realco.com")
+        self.assertEqual(outbound_account, "legal@aspora.com")
+
+    def test_public_matter_warns_when_recipient_came_from_diverging_reply_to(self):
+        public = matter_view.public_matter({
+            "id": "matter_warn",
+            "sender": "Counterparty <legit@realco.com>",
+            "reply_to": "Counsel <attacker@evil.com>",
+            "subject": "NDA",
+        })
+
+        # The resolved recipient still defaults to the (attacker-controlled)
+        # Reply-To for the no-reply use case, but the divergence from the verified
+        # sender is surfaced so the operator confirms the destination deliberately.
+        self.assertEqual(public["recipient_email"], "attacker@evil.com")
+        self.assertTrue(public["recipient_redirected_from_reply_to"])
+        self.assertIn("attacker@evil.com", public["recipient_warning"])
+        self.assertIn("legit@realco.com", public["recipient_warning"])
+
+    def test_public_matter_does_not_warn_when_reply_to_matches_sender(self):
+        public = matter_view.public_matter({
+            "id": "matter_no_warn",
+            "sender": "Counterparty <legit@realco.com>",
+            "reply_to": "Counterparty Desk <legit@realco.com>",
+            "subject": "NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "legit@realco.com")
+        self.assertNotIn("recipient_redirected_from_reply_to", public)
+        self.assertNotIn("recipient_warning", public)
+
+    def test_send_redline_route_refuses_spoofed_reply_to_without_matching_confirmation(self):
+        # End-to-end: a matter whose recipient silently resolves to a spoofed
+        # Reply-To must not send the redline to that address when the operator
+        # confirms the verified sender instead. No outbound send is attempted.
+        matter = {
+            "id": "matter_spoof_route",
+            "human_reviewed": True,
+            "sender": "Counterparty <legit@realco.com>",
+            "reply_to": "Counsel <attacker@evil.com>",
+            "subject": "NDA",
+            "review_result": {
+                "overall_status": "needs_redline",
+                "requirements_needs_review": 0,
+            },
+        }
+        with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+            with patch.object(server_module.app_settings, "gmail_role_enabled", return_value=True):
+                with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
+                    with patch.object(server_module.redline_export_service, "build_matter_redline") as build_matter_redline:
+                        status, payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {
+                                "matter_id": "matter_spoof_route",
+                                "confirm_send": True,
+                                "confirm_recipient": "legit@realco.com",
+                            },
+                        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("attacker@evil.com", payload["error"])
+        send_redline_email.assert_not_called()
+        build_matter_redline.assert_not_called()
+
+    def test_send_redline_route_rejects_missing_recipient_confirmation(self):
+        matter = {
+            "id": "matter_unconfirmed",
+            "human_reviewed": True,
+            "sender": "Counterparty <legit@realco.com>",
+            "subject": "NDA",
+            "review_result": {
+                "overall_status": "needs_redline",
+                "requirements_needs_review": 0,
+            },
+        }
+        with patch.object(server_module.matter_store, "get_matter", return_value=matter):
+            with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
+                with patch.object(server_module.redline_export_service, "build_matter_redline") as build_matter_redline:
+                    status, payload = self.request(
+                        "POST",
+                        "/api/gmail/send-redline",
+                        {"matter_id": "matter_unconfirmed", "confirm_send": True},
+                    )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Confirm the outbound recipient email address before sending.")
+        send_redline_email.assert_not_called()
+        build_matter_redline.assert_not_called()
 
     def test_gmail_token_write_is_atomic_and_preserves_existing_token_on_replace_failure(self):
         with tempfile.TemporaryDirectory() as token_dir:
@@ -5690,12 +5835,18 @@ class ServerTests(unittest.TestCase):
                             "/api/gmail/send-redline",
                             {"matter_id": matter_id},
                         )
+                        unconfirmed_recipient_status, unconfirmed_recipient_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {"matter_id": matter_id, "confirm_send": True},
+                        )
                         confirmed_status, confirmed_payload = self.request(
                             "POST",
                             "/api/gmail/send-redline",
                             {
                                 "matter_id": matter_id,
                                 "confirm_send": True,
+                                "confirm_recipient": "legal@example.com",
                                 "subject": " Aspora redline\r\nUpdate ",
                                 "body": "\r\nAttached redline.\r\nThanks.\r\n",
                             },
@@ -5704,6 +5855,11 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(unconfirmed_status, 400)
         self.assertEqual(unconfirmed_payload["error"], "Confirm send is required before emailing a redline.")
+        self.assertEqual(unconfirmed_recipient_status, 400)
+        self.assertEqual(
+            unconfirmed_recipient_payload["error"],
+            "Confirm the outbound recipient email address before sending.",
+        )
         self.assertEqual(confirmed_status, 200)
         self.assertEqual(confirmed_payload["filename"], "Email-NDA-redlined.docx")
         self.assertEqual(confirmed_payload["matter"]["board_column"], "sent")
@@ -5771,7 +5927,11 @@ class ServerTests(unittest.TestCase):
                             send_status, send_payload = self.request(
                                 "POST",
                                 "/api/gmail/send-redline",
-                                {"matter_id": matter_id, "confirm_send": True},
+                                {
+                                    "matter_id": matter_id,
+                                    "confirm_send": True,
+                                    "confirm_recipient": "legal@example.com",
+                                },
                             )
                 stored_matter = matter_store.get_matter(matter_id)
 
@@ -5823,6 +5983,7 @@ class ServerTests(unittest.TestCase):
                                     {
                                         "matter_id": matter["id"],
                                         "confirm_send": True,
+                                        "confirm_recipient": "legal@example.com",
                                         "export_redline_edits": [],
                                     },
                                 )
@@ -5857,6 +6018,7 @@ class ServerTests(unittest.TestCase):
                             {
                                 "matter_id": create_payload["matter"]["id"],
                                 "confirm_send": True,
+                                "confirm_recipient": "legal@example.com",
                                 "text": "This Agreement shall be governed by the laws of New York.",
                                 "reviewed_text": "This Agreement shall be governed by the laws of New York.",
                                 "export_redline_edits": [],

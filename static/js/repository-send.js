@@ -50,6 +50,10 @@ const RepositorySend = (() => {
     const sendPayload = {
       matter_id: matter.id,
       confirm_send: true,
+      // Confirm the exact destination shown in the composer "To" field so a
+      // spoofed inbound Reply-To cannot silently redirect the redline; the
+      // server refuses to send when this does not match the resolved recipient.
+      confirm_recipient: String(matter.recipient_email || ""),
     };
     if (subject.trim()) sendPayload.subject = subject;
     if (body.trim()) sendPayload.body = body;

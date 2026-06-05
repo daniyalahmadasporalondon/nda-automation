@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
-from .gmail_integration import matter_reply_recipient
+from .gmail_integration import matter_reply_recipient, recipient_email
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
@@ -37,6 +37,8 @@ class PublicMatter(TypedDict, total=False):
     next_action: str
     recipient_email: str
     received_at: str
+    recipient_redirected_from_reply_to: bool
+    recipient_warning: str
     requirements_failed: int
     requirements_needs_review: int
     requirements_passed: int
@@ -114,6 +116,10 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
         "has_redline_draft": isinstance(matter.get("redline_draft"), dict),
         "human_reviewed": bool(matter.get("human_reviewed")),
     })
+    recipient_warning = _recipient_redirect_warning(matter, recipient)
+    if recipient_warning:
+        public["recipient_redirected_from_reply_to"] = True
+        public["recipient_warning"] = recipient_warning
     review_state = matter_review_state(matter)
     if review_state:
         public["review_state"] = review_state
@@ -218,3 +224,26 @@ def public_matters(matters: list[dict[str, Any]]) -> list[PublicMatter]:
 
 def _same_email_address(left: str, right: str) -> bool:
     return bool(left and right and left.strip().casefold() == right.strip().casefold())
+
+
+def _recipient_redirect_warning(matter: dict[str, Any], recipient: str) -> str:
+    """Warn when the resolved recipient came from an untrusted ``Reply-To``.
+
+    The inbound ``Reply-To`` header is attacker-controlled. When it points at a
+    different address than the verified ``From`` sender, honouring it silently
+    would let a spoofed ``Reply-To`` redirect the outbound document. We still
+    surface the matter so a human can decide, but we flag the divergence so the
+    operator confirms the destination deliberately rather than by default.
+    """
+    if not recipient:
+        return ""
+    reply_to_recipient = recipient_email(matter.get("reply_to"))
+    if not reply_to_recipient or not _same_email_address(recipient, reply_to_recipient):
+        return ""
+    sender_recipient = recipient_email(matter.get("sender"))
+    if not sender_recipient or _same_email_address(reply_to_recipient, sender_recipient):
+        return ""
+    return (
+        f"Reply-To ({reply_to_recipient}) differs from the sender ({sender_recipient}). "
+        "Confirm the recipient before sending."
+    )

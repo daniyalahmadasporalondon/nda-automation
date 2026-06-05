@@ -371,6 +371,9 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
     const payload = {
       matter_id: state.selectedMatter.id,
       confirm_send: true,
+      // Confirm the exact destination so a spoofed inbound Reply-To cannot
+      // silently redirect the outbound redline; the server rejects a mismatch.
+      confirm_recipient: recipient,
       text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
       reviewed_text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
       export_redline_edits: effectiveReviewRedlines(),
