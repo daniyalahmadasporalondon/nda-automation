@@ -26,7 +26,11 @@ fail, and the finding is corrected to ``pass``.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import urllib.error
+import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
@@ -38,6 +42,17 @@ from .review_state import (
 )
 
 AI_VERIFIER_VERSION = 1
+
+# The adversarial judgement is the accuracy lever, so the prod path defaults to a
+# strong Claude model (routed via OpenRouter, the existing transport). Overridable
+# with NDA_AI_VERIFIER_MODEL. Verification is opt-in via NDA_AI_VERIFIER so it never
+# spends tokens unless explicitly enabled; the offline polarity adversary still runs
+# as the always-on fallback.
+DEFAULT_VERIFIER_MODEL = "anthropic/claude-opus-4.1"
+VERIFIER_ENV_ENABLED = "NDA_AI_VERIFIER"
+VERIFIER_ENV_MODEL = "NDA_AI_VERIFIER_MODEL"
+VERIFIER_ENV_TIMEOUT = "NDA_AI_VERIFIER_TIMEOUT_SECONDS"
+DEFAULT_VERIFIER_TIMEOUT_SECONDS = 30
 
 # Verdict verbs the verifier may return for a finding.
 VERIFIER_VERDICT_AFFIRM = "affirm"  # finding substantiated by the clause text/evidence
@@ -94,7 +109,15 @@ def apply_ai_verifier(
     if not enabled:
         return updated, _summary(status="disabled", records=[])
 
-    active_verifier = verifier if verifier is not None else default_verifier
+    # Injected verifier crosses the seam as-is (tests, callers). Otherwise resolve
+    # the active one: a Claude-backed pass when explicitly enabled + keyed, else the
+    # always-available offline polarity adversary.
+    if verifier is not None:
+        active_verifier = verifier
+        verifier_kind = "injected"
+    else:
+        active_verifier = resolve_verifier()
+        verifier_kind = "ai" if isinstance(active_verifier, OpenRouterVerifier) else "offline"
     records: List[Dict[str, object]] = []
     for clause in updated:
         if not _should_verify(clause):
@@ -113,6 +136,7 @@ def apply_ai_verifier(
     return updated, _summary(
         status="completed" if records else "no_op",
         records=records,
+        verifier_kind=verifier_kind,
         changed=changed,
     )
 
@@ -364,10 +388,17 @@ def _confidence(clause: Mapping[str, object]) -> float | None:
     return None
 
 
-def _summary(*, status: str, records: List[Dict[str, object]], changed: int = 0) -> Dict[str, object]:
+def _summary(
+    *,
+    status: str,
+    records: List[Dict[str, object]],
+    changed: int = 0,
+    verifier_kind: str = "",
+) -> Dict[str, object]:
     return {
         "version": AI_VERIFIER_VERSION,
         "status": status,
+        "verifier_kind": verifier_kind,
         "verified_count": len(records),
         "changed_count": changed,
         "records": records,
@@ -527,3 +558,140 @@ def _verifier_text(packet: Mapping[str, object]) -> str:
     if isinstance(evidence, Iterable) and not isinstance(evidence, (str, bytes)):
         parts.extend(str(item) for item in evidence)
     return "\n".join(part for part in parts if part.strip())
+
+
+# --- Production resolver + Claude-backed verifier --------------------------
+
+_VERIFIER_SYSTEM_PROMPT = (
+    "You are an adversarial QA reviewer auditing an automated NDA clause finding. "
+    "You are given the engine's decision and the clause's own text/evidence. Your job "
+    "is to either SUBSTANTIATE the finding from that text or REFUTE it. Reason ONLY "
+    "from the supplied clause text and evidence -- never invent document terms. Be "
+    "especially alert to polarity inversions: a carve-out that GUARANTEES freedom to "
+    "deal (e.g. 'shall not be restricted from dealing with introduced parties') is the "
+    "opposite of a restriction and REFUTES a non-circumvention fail; but a genuine "
+    "prohibition co-located with freedom language must still be AFFIRMED. If you cannot "
+    "substantiate or refute from the text, answer 'uncertain'. "
+    'Return ONLY JSON: {"verdict": "affirm|refute|uncertain", "confidence": 0..1, '
+    '"rationale": "<one sentence tied to the cited text>"}.'
+)
+
+
+class VerifierError(RuntimeError):
+    pass
+
+
+class OpenRouterVerifier:
+    """Adversarial verifier backed by a strong Claude model via OpenRouter.
+
+    Reuses ai_review's HTTPS transport (trusted SSL context, response parsing) so
+    the verifier shares the project's single network seam rather than forking it.
+    """
+
+    def __init__(self, *, api_key: str, model: str = DEFAULT_VERIFIER_MODEL, timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS) -> None:
+        cleaned_key = str(api_key or "").strip()
+        if not cleaned_key:
+            raise VerifierError("OpenRouter API key is not configured for the verifier.")
+        self.api_key = cleaned_key
+        self.model = str(model or DEFAULT_VERIFIER_MODEL).strip() or DEFAULT_VERIFIER_MODEL
+        self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_VERIFIER_TIMEOUT_SECONDS))
+
+    def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
+        # Import here to keep the network transport a single source of truth and to
+        # avoid a hard import cycle at module load.
+        from .ai_review import (
+            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+            _openrouter_response_text,
+            _trusted_https_context,
+        )
+
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": _VERIFIER_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(packet, ensure_ascii=False, indent=2)},
+            ],
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+        }
+        request = urllib.request.Request(
+            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "nda-automation-verifier/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            message = error.read().decode("utf-8", errors="replace")[:300]
+            raise VerifierError(f"Verifier API returned HTTP {error.code}: {message}") from error
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            raise VerifierError(f"Verifier API request failed: {error}") from error
+
+        response_text = _openrouter_response_text(payload)
+        if not response_text:
+            raise VerifierError("Verifier API returned no message content.")
+        try:
+            parsed = json.loads(response_text)
+        except json.JSONDecodeError as error:
+            raise VerifierError("Verifier API returned non-JSON text.") from error
+        return parsed if isinstance(parsed, dict) else None
+
+
+def verifier_enabled() -> bool:
+    """True when the AI-backed verifier is explicitly enabled via env.
+
+    The offline polarity adversary always runs; only the *paid* Claude pass is gated,
+    so verification stays free-by-default and a deploy opts in deliberately.
+    """
+    return str(os.environ.get(VERIFIER_ENV_ENABLED, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_verifier() -> VerifierFn:
+    """Resolve the active verifier: a Claude-backed pass when enabled + keyed,
+    else the always-available offline polarity adversary.
+
+    Never raises: a misconfigured AI verifier degrades to the offline one rather
+    than breaking review. The accuracy lever should fail safe, not fail closed.
+    """
+    if not verifier_enabled():
+        return default_verifier
+    api_key = _verifier_api_key()
+    if not api_key:
+        return default_verifier
+    try:
+        return OpenRouterVerifier(
+            api_key=api_key,
+            model=str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL,
+            timeout_seconds=_verifier_timeout(),
+        )
+    except VerifierError:
+        return default_verifier
+
+
+def _verifier_api_key() -> str:
+    from .ai_review import OPENROUTER_API_KEY_ENV
+    from . import app_settings
+
+    env_key = str(os.environ.get(OPENROUTER_API_KEY_ENV, "")).strip()
+    if env_key:
+        return env_key
+    try:
+        return str(app_settings.stored_ai_api_key() or "").strip()
+    except Exception:  # noqa: BLE001 - settings access must never break review
+        return ""
+
+
+def _verifier_timeout() -> int:
+    raw = str(os.environ.get(VERIFIER_ENV_TIMEOUT, "")).strip()
+    if not raw:
+        return DEFAULT_VERIFIER_TIMEOUT_SECONDS
+    try:
+        return max(1, int(float(raw)))
+    except (TypeError, ValueError):
+        return DEFAULT_VERIFIER_TIMEOUT_SECONDS

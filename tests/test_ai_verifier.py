@@ -7,16 +7,23 @@ Two layers:
   that pins the eval gate (the non_circumvention freedom-to-deal carve-out the
   keyword checker false-flags as a restriction).
 """
+import os
 import unittest
+from unittest.mock import patch
 
+from nda_automation import ai_verifier
 from nda_automation.ai_verifier import (
     AI_VERIFIER_VERSION,
+    VERIFIER_ENV_ENABLED,
     VERIFIER_VERDICT_AFFIRM,
     VERIFIER_VERDICT_REFUTE,
     VERIFIER_VERDICT_UNCERTAIN,
+    OpenRouterVerifier,
     apply_ai_verifier,
     build_verifier_packet,
     default_verifier,
+    resolve_verifier,
+    verifier_enabled,
 )
 from nda_automation.checker import review_nda
 
@@ -285,6 +292,43 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
         self.assertEqual(nc["audit_trace"]["decision"], "pass")
         self.assertEqual(nc["audit_trace"]["reason_code"], nc["reason_code"])
         self.assertEqual(result["evidence_trust"]["status"], "verified")
+
+
+class ResolveVerifierTests(unittest.TestCase):
+    """The prod resolver gates the paid Claude pass and fails safe to offline."""
+
+    def test_disabled_resolves_to_offline_adversary(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
+            self.assertFalse(verifier_enabled())
+            self.assertIs(resolve_verifier(), default_verifier)
+
+    def test_enabled_without_key_falls_back_to_offline(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "1", "OPENROUTER_API_KEY": ""}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value=""):
+                self.assertTrue(verifier_enabled())
+                self.assertIs(resolve_verifier(), default_verifier)
+
+    def test_enabled_with_key_resolves_claude_backed_verifier(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "true"}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                resolved = resolve_verifier()
+                self.assertIsInstance(resolved, OpenRouterVerifier)
+                # Defaults to a strong Claude model.
+                self.assertIn("claude", resolved.model.lower())
+
+    def test_summary_reports_offline_kind_by_default(self):
+        # No env opt-in -> offline adversary, surfaced for observability.
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
+            clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
+            _, summary = apply_ai_verifier(clauses, source_text="x")
+            self.assertEqual(summary["verifier_kind"], "offline")
+
+    def test_summary_reports_injected_kind(self):
+        clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
+        _, summary = apply_ai_verifier(
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_AFFIRM)
+        )
+        self.assertEqual(summary["verifier_kind"], "injected")
 
 
 if __name__ == "__main__":
