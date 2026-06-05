@@ -3420,22 +3420,26 @@ body.modal-open {
 
 .playbook-editor-tabbed {
   gap: 14px;
+  --playbook-boundary: #d8cdee;
+  --playbook-boundary-strong: #c7b9e4;
+  --playbook-muted: #8f87a1;
 }
 
 .playbook-subpanel-tabs {
   align-items: center;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--playbook-boundary);
+  border-top: 1px solid var(--playbook-boundary);
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 10px;
+  padding: 10px 0;
 }
 
 .playbook-subpanel-tabs button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 8px;
-  color: var(--ink-muted);
+  color: var(--playbook-muted);
   flex: 0 0 auto;
   font-size: 12px;
   font-weight: 800;
@@ -3444,14 +3448,15 @@ body.modal-open {
 }
 
 .playbook-subpanel-tabs button:hover {
-  background: rgba(26, 19, 51, 0.035);
+  background: #fff;
+  border-color: var(--playbook-boundary);
   color: var(--ink);
 }
 
 .playbook-subpanel-tabs button.active,
 .playbook-subpanel-tabs button[aria-pressed="true"] {
-  background: var(--bg-panel);
-  border-color: var(--border-strong);
+  background: #fff;
+  border-color: var(--playbook-boundary-strong);
   color: var(--ink);
 }
 
@@ -3477,10 +3482,27 @@ body.modal-open {
 }
 
 .playbook-subpanel-head p {
-  color: var(--ink-muted);
+  color: var(--playbook-muted);
   font-size: 12px;
   line-height: 1.35;
   margin: 0;
+}
+
+.playbook-editor-tabbed .admin-head {
+  border-bottom-color: var(--playbook-boundary);
+}
+
+.playbook-editor-tabbed .admin-field input,
+.playbook-editor-tabbed .admin-field textarea {
+  background: #fff;
+  border-color: var(--playbook-boundary-strong);
+}
+
+.playbook-editor-tabbed .admin-field input:focus,
+.playbook-editor-tabbed .admin-field textarea:focus {
+  border-color: var(--playbook-boundary-strong);
+  box-shadow: 0 0 0 2px rgba(199, 185, 228, 0.32);
+  outline: none;
 }
 
 .admin-head {
@@ -3966,8 +3988,8 @@ body.modal-open {
 .playbook-editor-tabbed .admin-history,
 .playbook-editor-tabbed .admin-hardening-list code {
   background: #fff;
-  border-color: #111;
-  border-radius: 0;
+  border-color: var(--playbook-boundary);
+  border-radius: 8px;
   box-shadow: none;
 }
 
@@ -3978,23 +4000,23 @@ body.modal-open {
 .playbook-editor-tabbed .admin-code-group.pass,
 .playbook-editor-tabbed .admin-code-group.review,
 .playbook-editor-tabbed .admin-code-group.check {
-  border-left: 1px solid #111;
+  border-left: 1px solid var(--playbook-boundary);
 }
 
 .playbook-editor-tabbed .admin-chip {
   background: #fff;
-  border-color: #111;
-  border-radius: 0;
+  border-color: var(--playbook-boundary);
+  border-radius: 8px;
   color: var(--ink);
 }
 
 .playbook-editor-tabbed .admin-reading-order {
-  border-top: 1px solid #111;
+  border-top: 1px solid var(--playbook-boundary);
   gap: 0;
 }
 
 .playbook-editor-tabbed .admin-reading-order li {
-  border-bottom: 1px solid #111;
+  border-bottom: 1px solid var(--playbook-boundary);
   display: grid;
   gap: 4px 10px;
   grid-template-columns: auto minmax(0, 1fr);
