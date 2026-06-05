@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -97,6 +99,68 @@ class InMemoryAssessmentReviewer:
         return deepcopy(self.response) if isinstance(self.response, dict) else self.response
 
 
+# Env var that swaps the real AI provider for the deterministic stub reviewer
+# below. STRICTLY a test seam: unset in production (and in every code path that
+# does not export it), so the real OpenRouter reviewer is always used unless a
+# test explicitly opts in. Lets AI-first integration tests exercise the dynamic
+# (engine=="dynamic") clause pipeline end to end without a live API key.
+AI_ASSESSMENT_STUB_ENV = "NDA_AI_ASSESSMENT_STUB"
+
+# Paragraph language that marks a prohibited non-circumvention / introduced-party
+# / exclusive-dealing restriction — the same kinds the dynamic non_circumvention
+# clause exists to remove. Mirrors the prohibited intent, not the engine's matcher.
+_STUB_PROHIBITED_PATTERN = re.compile(r"circumvent|introduced part|deal directly|non-?solicit|exclusiv", re.IGNORECASE)
+
+
+def stub_ai_assessment_response(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Deterministic, key-free AI assessment used only under AI_ASSESSMENT_STUB_ENV.
+
+    Passes every native clause (no change) and, for any dynamic prohibited clause
+    (fallback.redline_action == "delete_paragraph"), fails it against the first
+    paragraph carrying prohibited restriction text, proposing a delete_paragraph
+    redline — exactly the assessment shape a real reviewer would return for a
+    present prohibited restriction. Clauses without a prohibited paragraph pass.
+    """
+    clauses = packet.get("playbook", {}).get("clauses", []) if isinstance(packet, Mapping) else []
+    paragraphs = packet.get("paragraphs", []) if isinstance(packet, Mapping) else []
+    prohibited = [p for p in paragraphs if _STUB_PROHIBITED_PATTERN.search(str(p.get("text") or ""))]
+    assessments: list[dict[str, Any]] = []
+    for clause in clauses:
+        clause_id = str(clause.get("clause_id") or "")
+        fallback = clause.get("fallback") if isinstance(clause.get("fallback"), Mapping) else {}
+        is_prohibited_delete = str(fallback.get("redline_action") or "") == "delete_paragraph"
+        if is_prohibited_delete and prohibited:
+            assessments.append({
+                "clause_id": clause_id,
+                "decision": "fail",
+                "issue_type": "present_but_wrong",
+                "rationale": "Prohibited restriction present; remove the offending paragraph(s).",
+                "evidence": [
+                    {
+                        "paragraph_id": str(p.get("id") or ""),
+                        "quote": str(p.get("text") or ""),
+                        "relevance": "States the prohibited restriction.",
+                    }
+                    for p in prohibited
+                ],
+                "proposed_redline": {"action": "delete_paragraph", "paragraph_id": str(prohibited[0].get("id") or "")},
+                "confidence": 0.95,
+                "blocks_send": False,
+            })
+        else:
+            assessments.append({
+                "clause_id": clause_id,
+                "decision": "pass",
+                "issue_type": "none",
+                "rationale": "Stub reviewer: no issue.",
+                "evidence": [],
+                "proposed_redline": {"action": "no_change"},
+                "confidence": 0.95,
+                "blocks_send": False,
+            })
+    return {"assessments": assessments}
+
+
 def assess_nda_with_ai(
     source_text: str,
     *,
@@ -163,6 +227,10 @@ def assess_nda_with_ai(
 
 
 def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None) -> AIAssessmentReviewer:
+    # Test seam only: when AI_ASSESSMENT_STUB_ENV is exported, run the deterministic
+    # key-free stub instead of any real provider. Off by default in production.
+    if os.environ.get(AI_ASSESSMENT_STUB_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return InMemoryAssessmentReviewer(response=stub_ai_assessment_response)
     config = dict(settings or _ai_review_settings())
     provider = str(config.get("provider") or "openrouter").strip().lower()
     timeout_seconds = int(config.get("timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS)

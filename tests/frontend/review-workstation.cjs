@@ -11,9 +11,16 @@ const { PNG } = require("pngjs");
 const ROOT = path.resolve(__dirname, "../..");
 const PORT = Number(process.env.FRONTEND_TEST_PORT || 19000 + Math.floor(Math.random() * 1000));
 const BASE_URL = `http://127.0.0.1:${PORT}`;
+// Second server: AI-first engine + the deterministic, key-free AI assessment stub
+// (NDA_AI_ASSESSMENT_STUB). Used only by the AI-first tests so the dynamic
+// (engine=="dynamic") non_circumvention clause is exercised end to end on the
+// path it now lives on, without flipping the deterministic suite's engine.
+const AI_FIRST_PORT = PORT + 1;
+const AI_FIRST_BASE_URL = `http://127.0.0.1:${AI_FIRST_PORT}`;
 const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nda-automation-data-"));
+const AI_FIRST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nda-automation-aifirst-"));
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
 const redlineNda = [
@@ -66,7 +73,6 @@ const tests = [
   ["shows Gmail setup required instead of stale sync errors", testGmailSetupRequiredStatus],
   ["renders user Gmail session controls and sync history", testUserGmailSessionControls],
   ["persists matter redline drafts", testMatterRedlineDraftPersistence],
-  ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
   ["exports selected clause decisions and template options", testClauseDecisionControls],
   ["renders manual viewer edits as local redlines", testManualViewerEditRedline],
   ["preserves viewer caret through auto-refresh", testViewerAutoRefreshSelection],
@@ -76,6 +82,13 @@ const tests = [
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
 ];
 
+// Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
+// where the dynamic non_circumvention clause is actually produced.
+const aiFirstTests = [
+  ["renders the dynamic prohibited clause with prohibited styling and a delete redline", testDynamicProhibitedClauseRendering],
+  ["cycles clause-to-paragraph anchors", testClauseAnchorCycling],
+];
+
 main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
@@ -83,9 +96,19 @@ main().catch((error) => {
 
 async function main() {
   const server = startServer();
+  const aiFirstServer = startServer({
+    port: AI_FIRST_PORT,
+    dataDir: AI_FIRST_DATA_DIR,
+    env: {
+      NDA_ACTIVE_REVIEW_ENGINE: "ai_first",
+      NDA_AI_REVIEW_ENABLED: "true",
+      NDA_AI_ASSESSMENT_STUB: "1",
+    },
+  });
   let browser;
   try {
     await waitForServer();
+    await waitForServer(AI_FIRST_BASE_URL);
     browser = await chromium.launch(browserLaunchOptions());
 
     for (const [name, test] of tests) {
@@ -98,25 +121,39 @@ async function main() {
         await context.close();
       }
     }
+
+    for (const [name, test] of aiFirstTests) {
+      const context = await browser.newContext({ acceptDownloads: true, viewport: VIEWPORT });
+      const page = await context.newPage();
+      try {
+        await test(page);
+        console.log(`ok - ${name}`);
+      } finally {
+        await context.close();
+      }
+    }
   } finally {
     if (browser) await browser.close();
     await stopServer(server);
+    await stopServer(aiFirstServer);
   }
 }
 
-function startServer() {
-  const server = spawn(PYTHON, ["-m", "nda_automation.server", "--port", String(PORT)], {
+function startServer({ port = PORT, dataDir = TEST_DATA_DIR, env = {} } = {}) {
+  const server = spawn(PYTHON, ["-m", "nda_automation.server", "--port", String(port)], {
     cwd: ROOT,
     env: {
       ...process.env,
       NDA_ACTIVE_REVIEW_ENGINE: "deterministic",
       NDA_AI_FIRST_REVIEW_ENABLED: "true",
-      NDA_DATA_DIR: TEST_DATA_DIR,
+      NDA_DATA_DIR: dataDir,
       NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
       PYTHONUNBUFFERED: "1",
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  server.dataDir = dataDir;
   server.stdout.on("data", (chunk) => process.stdout.write(`[server] ${chunk}`));
   server.stderr.on("data", (chunk) => process.stderr.write(`[server] ${chunk}`));
   server.on("exit", (code, signal) => {
@@ -141,21 +178,21 @@ async function stopServer(server) {
       resolve();
     });
   });
-  fs.rmSync(TEST_DATA_DIR, { force: true, recursive: true });
+  if (server.dataDir) fs.rmSync(server.dataDir, { force: true, recursive: true });
 }
 
-async function waitForServer() {
+async function waitForServer(baseUrl = BASE_URL) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 10000) {
-    if (await healthCheck()) return;
+    if (await healthCheck(baseUrl)) return;
     await wait(120);
   }
-  throw new Error(`Server did not start at ${BASE_URL}`);
+  throw new Error(`Server did not start at ${baseUrl}`);
 }
 
-function healthCheck() {
+function healthCheck(baseUrl = BASE_URL) {
   return new Promise((resolve) => {
-    const request = http.get(`${BASE_URL}/`, (response) => {
+    const request = http.get(`${baseUrl}/`, (response) => {
       response.resume();
       resolve(response.statusCode === 200);
     });
@@ -179,8 +216,8 @@ function browserLaunchOptions() {
   return options;
 }
 
-async function runReview(page, text) {
-  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+async function runReview(page, text, { baseUrl = BASE_URL } = {}) {
+  await page.goto(`${baseUrl}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Review" }).click();
   await page.getByPlaceholder("Paste NDA text here").fill(text);
   await page.evaluate(async (sourceText) => {
@@ -197,96 +234,6 @@ async function runReview(page, text) {
   }, text);
   await page.waitForSelector("#studioDocumentRender:not([hidden])");
   await page.waitForSelector(".studio-clause-item.pass, .studio-clause-item.check");
-}
-
-// non_circumvention was migrated to a pure dynamic (engine=="dynamic") Playbook
-// clause reviewed only by the AI-first engine, so the deterministic /api/review
-// the suite drives no longer emits it (that path intentionally dropped it in #12).
-// To keep genuine prohibited-clause coverage on the path the clause now lives on,
-// these helpers pass the real backend review through and graft on the dynamic
-// non_circumvention result + its delete redline exactly as the AI-first engine
-// (build_ai_first_review_result) would produce them. Test-only: the production
-// review pipeline is untouched.
-const NON_CIRCUMVENTION_PROHIBITED_PATTERN = /\bcircumvent|introduced part|deal directly\b/i;
-
-function dynamicNonCircumventionClause(prohibitedParagraphIds) {
-  return {
-    id: "non_circumvention",
-    name: "Non-Circumvention",
-    type: "prohibited",
-    engine: "dynamic",
-    decision: "fail",
-    status: "check",
-    passes: false,
-    needs_review: false,
-    issue_type: "present_but_wrong",
-    issue_label: "Present but wrong",
-    reason: "Prohibited non-circumvention restriction present.",
-    finding: "Prohibited non-circumvention restriction present.",
-    what_to_fix: "Remove the prohibited non-circumvention restriction.",
-    matched_paragraph_ids: [...prohibitedParagraphIds],
-    fallback: { redline_action: "delete_paragraph" },
-    review_state: {
-      version: 1,
-      state: "check",
-      decision: "fail",
-      label: "CHECK",
-      tone: "check",
-      requires_attention: true,
-      requires_human_review: false,
-      requires_redline: true,
-      blocks_send: false,
-      blocks_auto_send: true,
-      reason: "Prohibited non-circumvention restriction present.",
-      reason_code: "ai_first_fail",
-      reason_codes: ["ai_first_fail"],
-    },
-  };
-}
-
-function dynamicNonCircumventionRedlines(prohibitedParagraphs, startNumber) {
-  return prohibitedParagraphs.map((paragraph, index) => ({
-    id: `ncr${startNumber + index}`,
-    clause_id: "non_circumvention",
-    clause_name: "Non-Circumvention",
-    paragraph_id: paragraph.id,
-    paragraph_index: paragraph.index,
-    action: "delete_paragraph",
-    action_label: "Remove paragraph",
-    status: "proposed",
-    original_text: String(paragraph.text || ""),
-    replacement_text: "",
-    reason: "Remove the prohibited non-circumvention restriction.",
-  }));
-}
-
-// Graft the dynamic non_circumvention result onto a real deterministic review
-// payload, anchored to whichever paragraphs carry prohibited restriction text.
-function injectDynamicNonCircumvention(payload) {
-  const paragraphs = Array.isArray(payload.paragraphs) ? payload.paragraphs : [];
-  const prohibited = paragraphs.filter((paragraph) => NON_CIRCUMVENTION_PROHIBITED_PATTERN.test(String(paragraph.text || "")));
-  if (!prohibited.length) return payload;
-  const clauses = Array.isArray(payload.clauses) ? payload.clauses : [];
-  const redlines = Array.isArray(payload.redline_edits) ? payload.redline_edits : [];
-  if (clauses.some((clause) => clause && clause.id === "non_circumvention")) return payload;
-  payload.clauses = [...clauses, dynamicNonCircumventionClause(prohibited.map((paragraph) => paragraph.id))];
-  payload.redline_edits = [...redlines, ...dynamicNonCircumventionRedlines(prohibited, redlines.length + 1)];
-  return payload;
-}
-
-// runReview, but with /api/review passed through to the real backend and the
-// dynamic non_circumvention result grafted on (see injectDynamicNonCircumvention).
-async function runReviewWithDynamicNonCircumvention(page, text) {
-  await page.route("**/api/review", async (route) => {
-    const response = await route.fetch();
-    const payload = injectDynamicNonCircumvention(await response.json());
-    await route.fulfill({ response, json: payload });
-  });
-  try {
-    await runReview(page, text);
-  } finally {
-    await page.unroute("**/api/review");
-  }
 }
 
 async function testAccessibleControlState(page) {
@@ -3285,7 +3232,7 @@ async function testInlineDiffOperationRendering(page) {
 }
 
 async function testBackendRedlineModes(page) {
-  await runReviewWithDynamicNonCircumvention(page, redlineNda);
+  await runReview(page, redlineNda);
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-clause-item .studio-issue-pill").count(), 0);
   const checkRowStyles = await page.locator(".studio-clause-item.check").first().evaluate((node) => {
@@ -3308,24 +3255,10 @@ async function testBackendRedlineModes(page) {
   assert.equal(checkDotStyles.backgroundColor, "rgb(239, 68, 68)");
   assert.match(checkDotStyles.boxShadow, /252, 165, 165/);
 
-  const prohibitedParagraphStyles = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => {
-    const styles = getComputedStyle(node);
-    return {
-      hasProhibitedClass: node.classList.contains("prohibited"),
-      backgroundColor: styles.backgroundColor,
-      borderLeftColor: styles.borderLeftColor,
-      borderLeftWidth: styles.borderLeftWidth,
-      borderRightColor: styles.borderRightColor,
-      borderRightWidth: styles.borderRightWidth,
-      boxShadow: styles.boxShadow,
-    };
-  });
-  assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
-  assert.equal(prohibitedParagraphStyles.borderLeftWidth, prohibitedParagraphStyles.borderRightWidth);
-  assert.equal(prohibitedParagraphStyles.borderLeftColor, prohibitedParagraphStyles.borderRightColor);
-  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgba(0, 0, 0, 0)");
-  assert.equal(prohibitedParagraphStyles.boxShadow, "none");
-  assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
+  // Prohibited-clause styling + delete-redline rendering on p2 used to come from
+  // the deterministic non_circumvention check, which #12 moved to the dynamic
+  // AI-first path. That rendering is now covered against the real AI-first
+  // pipeline by testDynamicProhibitedClauseRendering (aiFirstTests).
   assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
   assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
@@ -3356,9 +3289,12 @@ async function testBackendRedlineModes(page) {
   assert.ok(viewerSpacing.paragraphWidth >= viewerSpacing.pageWidth - 90, `paragraph card should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 120, `paragraph text should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
 
+  // Select text on a paragraph that carries a visible editable body (p2 is the
+  // confidential_information/signatures insert anchor under the deterministic
+  // engine) and exercise the selection comment composer.
   await page.evaluate(() => {
     const paragraph = document.querySelector('[data-paragraph-id="p2"]');
-    const target = paragraph.querySelector('[data-editable-paragraph-id="p2"], .paragraph-redline-preview') || paragraph;
+    const target = paragraph.querySelector('[data-editable-paragraph-id="p2"]') || paragraph;
     const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) => node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
     });
@@ -3419,15 +3355,9 @@ async function testBackendRedlineModes(page) {
   const cleanText = await page.locator("#studioDocumentRender").innerText();
   assert.match(cleanText, /fixed period of up to five years/);
   assert.doesNotMatch(cleanText, /seven years/);
-  assert.doesNotMatch(cleanText, /must not circumvent/);
-  assert.equal(await page.locator('[data-paragraph-id="p2"]').count(), 1);
-  const cleanDeleteAnchor = page.locator('[data-paragraph-id="p2"]');
-  assert.equal(await cleanDeleteAnchor.evaluate((node) => node.classList.contains("doc-clean-removed-anchor")), true);
-  assert.equal(await cleanDeleteAnchor.evaluate((node) => (
-    node.querySelector(".paragraph-redline-preview, .paragraph-editable, .paragraph-redline-note, .paragraph-insertion")?.textContent || ""
-  ).trim()), "");
-  await page.locator('[data-studio-lane-id="non_circumvention"]').click();
-  await page.waitForSelector('[data-paragraph-id="p2"].paragraph-pulse');
+  // The clean-view removed-anchor for a deleted prohibited paragraph is covered
+  // on the AI-first path by testDynamicProhibitedClauseRendering (the deterministic
+  // engine no longer deletes the non_circumvention paragraph, #12).
 
   await page.getByRole("button", { name: "Side by Side" }).click();
   const sideBySide = await page.locator('[data-paragraph-id="p1"]').evaluate((node) => ({
@@ -3445,16 +3375,8 @@ async function testBackendRedlineModes(page) {
   await assertRedPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.original'));
   await assertGreenPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.latest'));
 
-  const deletedSideBySide = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => ({
-    original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
-    proposed: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
-    originalDeleted: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
-    proposedEmpty: node.querySelector(".clause-sxs-col.latest .sxs-empty")?.textContent || "",
-  }));
-  assert.match(deletedSideBySide.original, /must not circumvent/);
-  assert.equal(deletedSideBySide.originalDeleted, 1);
-  assert.equal(deletedSideBySide.proposed, "Removed in proposed text");
-  assert.equal(deletedSideBySide.proposedEmpty, "Removed in proposed text");
+  // The side-by-side rendering of a deleted prohibited paragraph is covered on the
+  // AI-first path by testDynamicProhibitedClauseRendering (see #12 note above).
 
   const insertedBlocks = await page.locator('[data-redline-edit-id]').evaluateAll((nodes) => (
     nodes.map((node) => ({
@@ -3470,8 +3392,50 @@ async function testBackendRedlineModes(page) {
   assert.equal(insertedSideBySide.proposedInserted, 1);
 }
 
+// Runs on the AI-first + stub server, where non_circumvention (a dynamic,
+// engine=="dynamic" prohibited clause) is actually reviewed. Covers the
+// prohibited-clause rendering that #12 moved off the deterministic engine:
+// the paragraph gets the "prohibited" class, a delete redline, a clean-view
+// removed anchor, and a side-by-side deletion — the live generic delete-render
+// behavior, exercised through the real AI-first pipeline.
+async function testDynamicProhibitedClauseRendering(page) {
+  await runReview(page, redlineNda, { baseUrl: AI_FIRST_BASE_URL });
+
+  const nonCircCard = page.locator('[data-studio-lane-id="non_circumvention"]');
+  assert.equal(await nonCircCard.count(), 1, "dynamic non_circumvention clause should appear as a lane");
+  assert.equal(await page.locator('.studio-clause-dot.verify').count() >= 1, true);
+
+  const prohibited = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => ({
+    hasProhibitedClass: node.classList.contains("prohibited"),
+    hasRedlineDelete: node.classList.contains("redline-delete"),
+    backgroundColor: getComputedStyle(node).backgroundColor,
+  }));
+  assert.equal(prohibited.hasProhibitedClass, true, "prohibited paragraph should carry the prohibited class");
+  assert.equal(prohibited.hasRedlineDelete, true, "prohibited paragraph should carry the delete redline class");
+  assert.notEqual(prohibited.backgroundColor, "rgba(0, 0, 0, 0)", "prohibited paragraph should be tinted");
+
+  await page.getByRole("button", { name: "Clean" }).click();
+  const cleanText = await page.locator("#studioDocumentRender").innerText();
+  assert.doesNotMatch(cleanText, /must not circumvent/, "clean view should drop the deleted prohibited paragraph text");
+  const cleanDeleteAnchor = page.locator('[data-paragraph-id="p2"]');
+  assert.equal(await cleanDeleteAnchor.evaluate((node) => node.classList.contains("doc-clean-removed-anchor")), true);
+  assert.equal(await cleanDeleteAnchor.evaluate((node) => (
+    node.querySelector(".paragraph-redline-preview, .paragraph-editable, .paragraph-redline-note, .paragraph-insertion")?.textContent || ""
+  ).trim()), "");
+
+  await page.getByRole("button", { name: "Side by Side" }).click();
+  const deletedSideBySide = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => ({
+    original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
+    originalDeleted: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
+    proposedEmpty: node.querySelector(".clause-sxs-col.latest .sxs-empty")?.textContent || "",
+  }));
+  assert.match(deletedSideBySide.original, /must not circumvent/);
+  assert.equal(deletedSideBySide.originalDeleted, 1);
+  assert.equal(deletedSideBySide.proposedEmpty, "Removed in proposed text");
+}
+
 async function testClauseAnchorCycling(page) {
-  await runReviewWithDynamicNonCircumvention(page, multiAnchorNda);
+  await runReview(page, multiAnchorNda, { baseUrl: AI_FIRST_BASE_URL });
   const nonCircumventionCard = page.locator('[data-studio-lane-id="non_circumvention"]');
 
   await nonCircumventionCard.click();
