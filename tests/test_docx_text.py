@@ -116,6 +116,12 @@ class DocxTextTests(unittest.TestCase):
             with self.assertRaisesRegex(DocxExtractionError, "suspicious compression ratio"):
                 extract_docx_paragraphs(data)
 
+    def test_rejects_deeply_nested_tables_without_recursion_error(self):
+        data = make_zip({"word/document.xml": deeply_nested_table_document_xml(1200)}, compression=ZIP_STORED)
+
+        with self.assertRaisesRegex(DocxExtractionError, "tables nested too deeply"):
+            extract_docx_paragraphs(data)
+
     def test_rejects_docx_xml_dtd_entity_declarations_before_parsing(self):
         data = make_docx(["Safe body text."], extra_parts={"word/header1.xml": unsafe_xml_part()})
 
@@ -201,6 +207,16 @@ def unsafe_xml_part(encoding="UTF-8"):
 ]>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body>
+</w:document>"""
+
+
+def deeply_nested_table_document_xml(depth):
+    inner = "<w:p><w:r><w:t>Nested table text.</w:t></w:r></w:p>"
+    for _ in range(depth):
+        inner = f"<w:tbl><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>"
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{inner}</w:body>
 </w:document>"""
 
 

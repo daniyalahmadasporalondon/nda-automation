@@ -12,9 +12,12 @@ WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
 MAX_DOCX_ZIP_ENTRIES = 4096
+MAX_DOCX_TABLE_NESTING_DEPTH = 64
 DOCX_TOO_LARGE_MESSAGE = "The Word document is too large after decompression."
 DOCX_SUSPICIOUS_COMPRESSION_MESSAGE = "The Word document uses a suspicious compression ratio."
 DOCX_TOO_MANY_ENTRIES_MESSAGE = "The Word document contains too many archive entries."
+DOCX_TABLE_NESTING_MESSAGE = "The Word document contains tables nested too deeply."
+DOCX_XML_NESTING_MESSAGE = "The Word document XML is too deeply nested."
 SUPPLEMENTAL_PART_PREFIXES = (
     "word/header",
     "word/footer",
@@ -44,6 +47,8 @@ def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
             paragraphs.extend(_extract_supplemental_paragraphs(document))
     except BadZipFile as exc:
         raise DocxExtractionError("The uploaded file is not a valid .docx document.") from exc
+    except RecursionError as exc:
+        raise DocxExtractionError(DOCX_XML_NESTING_MESSAGE) from exc
 
     if not paragraphs:
         raise DocxExtractionError("No readable text was found in the Word document.")
@@ -119,12 +124,15 @@ def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Di
     container = body if body is not None else root
     table_counter = 0
 
-    def walk(parent: ET.Element, table_context: Dict[str, int] | None = None):
+    def walk(parent: ET.Element, table_context: Dict[str, int] | None = None, table_depth: int = 0):
         nonlocal table_counter
         for child in list(parent):
             if child.tag == f"{WORD_NS}p":
                 yield child, table_context
             elif child.tag == f"{WORD_NS}tbl":
+                nested_table_depth = table_depth + 1
+                if nested_table_depth > MAX_DOCX_TABLE_NESTING_DEPTH:
+                    raise DocxExtractionError(DOCX_TABLE_NESTING_MESSAGE)
                 table_counter += 1
                 table_index = table_counter
                 row_index = 0
@@ -137,9 +145,9 @@ def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Di
                             "table_index": table_index,
                             "row_index": row_index,
                             "cell_index": cell_index,
-                        })
+                        }, nested_table_depth)
             else:
-                yield from walk(child, table_context)
+                yield from walk(child, table_context, table_depth)
 
     yield from walk(container)
 
