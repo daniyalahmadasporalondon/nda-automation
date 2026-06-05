@@ -319,6 +319,13 @@ function activateTab(tabName) {
     renderDashboardEmailHealth(state.gmailStatus);
   }
   if (tabName === "review") {
+    // The playbook clause list loads asynchronously after bootstrap, so the
+    // initial empty-studio render can show a stale "0/0" total. Re-render the
+    // empty state when the Review tab is shown (before any review has run) so the
+    // clause total reflects the now-loaded playbook.
+    if (!state.latestReviewResult && !state.reviewClauses.length) {
+      renderStudioEmpty();
+    }
     requestAnimationFrame(resizeSourceEditors);
   }
   if (tabName === "repository") {
