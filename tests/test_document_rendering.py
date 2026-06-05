@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -637,6 +638,113 @@ class RenderCachePartitionEvictionPurgeTests(unittest.TestCase):
             # Alice's entry gone; Bob's untouched (no cross-tenant purge).
             self.assertFalse(cache_entry_dir(cache_dir, alice.cache_key).is_dir())
             self.assertTrue(cache_entry_dir(cache_dir, bob.cache_key).is_dir())
+
+
+class MatterRenderCoordinatorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from nda_automation.document_rendering import MatterRenderCoordinator
+
+        self.coordinator = MatterRenderCoordinator()
+
+    def test_concurrent_pollers_share_one_in_flight_render(self):
+        # Many simultaneous pollers for the same matter must trigger exactly ONE
+        # render (in-flight de-dup), not one per poller.
+        calls = []
+        calls_lock = threading.Lock()
+        release = threading.Event()
+
+        def slow_render():
+            with calls_lock:
+                calls.append(1)
+            release.wait(timeout=5)
+            return "done"
+
+        jobs = []
+        barrier = threading.Barrier(8)
+
+        def poll():
+            barrier.wait()
+            jobs.append(self.coordinator.ensure_in_flight("matter_1", slow_render))
+
+        pollers = [threading.Thread(target=poll) for _ in range(8)]
+        for t in pollers:
+            t.start()
+        # Let all pollers attach, then release the single render.
+        time.sleep(0.1)
+        self.assertEqual(sum(calls), 1, "render ran more than once for one matter")
+        release.set()
+        for t in pollers:
+            t.join(timeout=5)
+        # All pollers observed the same job object.
+        self.assertEqual(len({id(j) for j in jobs}), 1)
+        jobs[0].thread.join(timeout=5)
+        self.assertTrue(jobs[0].is_finished())
+        self.assertEqual(jobs[0].result, "done")
+
+    def test_different_matters_render_independently(self):
+        release = threading.Event()
+
+        def render():
+            release.wait(timeout=5)
+            return "ok"
+
+        job_a = self.coordinator.ensure_in_flight("matter_a", render)
+        job_b = self.coordinator.ensure_in_flight("matter_b", render)
+        self.assertIsNot(job_a, job_b)
+        self.assertIsNotNone(self.coordinator.in_flight("matter_a"))
+        self.assertIsNotNone(self.coordinator.in_flight("matter_b"))
+        release.set()
+        job_a.thread.join(timeout=5)
+        job_b.thread.join(timeout=5)
+
+    def test_finished_job_is_dropped_so_a_later_render_can_start(self):
+        first = self.coordinator.ensure_in_flight("matter_1", lambda: "first")
+        first.thread.join(timeout=5)
+        self.assertTrue(first.is_finished())
+        # Registry cleared after completion -> next call starts a NEW job.
+        self.assertIsNone(self.coordinator.in_flight("matter_1"))
+        second = self.coordinator.ensure_in_flight("matter_1", lambda: "second")
+        second.thread.join(timeout=5)
+        self.assertIsNot(first, second)
+        self.assertEqual(second.result, "second")
+
+    def test_render_error_is_captured_not_raised(self):
+        def boom():
+            raise RuntimeError("render blew up")
+
+        job = self.coordinator.ensure_in_flight("matter_1", boom)
+        job.thread.join(timeout=5)
+        self.assertTrue(job.is_finished())
+        self.assertIsInstance(job.error, RuntimeError)
+
+    def test_peek_returns_none_until_rendered_then_the_cached_doc(self):
+        pdf_bytes = b"%PDF-1.7\npeek\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as cache_name:
+            cache_dir = Path(cache_name)
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+                handle.write(pdf_bytes)
+                source_path = Path(handle.name)
+            try:
+                # Nothing rendered yet -> peek is None (no side effects).
+                self.assertIsNone(
+                    document_rendering.peek_rendered_document(source_path, cache_dir=cache_dir, owner_user_id="alice")
+                )
+                # Render, then peek finds the cached doc without re-rendering.
+                render_source_document_to_pdf(
+                    pdf_bytes, source_filename="peek.pdf", cache_dir=cache_dir, owner_user_id="alice"
+                )
+                peeked = document_rendering.peek_rendered_document(
+                    source_path, cache_dir=cache_dir, owner_user_id="alice"
+                )
+                self.assertIsNotNone(peeked)
+                self.assertEqual(peeked.status, READY_STATUS)
+                self.assertTrue(peeked.cached)
+                # A different tenant still peeks None (per-user partition holds).
+                self.assertIsNone(
+                    document_rendering.peek_rendered_document(source_path, cache_dir=cache_dir, owner_user_id="bob")
+                )
+            finally:
+                source_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

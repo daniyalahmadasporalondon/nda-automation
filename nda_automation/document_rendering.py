@@ -10,7 +10,8 @@ import signal
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -77,6 +78,7 @@ READY_STATUS = "ready"
 UNAVAILABLE_STATUS = "unavailable"
 UNSUPPORTED_STATUS = "unsupported"
 ERROR_STATUS = "error"
+RENDERING_STATUS = "rendering"  # background render in flight; poller should retry
 
 
 class DocumentRenderingError(RuntimeError):
@@ -450,6 +452,76 @@ def render_source_path_to_pdf(
     )
 
 
+def peek_rendered_document(
+    source_path: Path,
+    *,
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    owner_user_id: str = "",
+) -> RenderedDocument | None:
+    """Return a ready RenderedDocument from cache WITHOUT rendering, else None.
+
+    Read-only: never converts DOCX or writes the cache, so it is safe to call on
+    a polled endpoint. ``None`` means "not yet rendered" — the caller should
+    schedule a background render rather than block.
+    """
+    source_path = Path(source_path)
+    try:
+        source_bytes = source_path.read_bytes()
+    except OSError:
+        return None
+    source_kind = detect_source_kind(source_bytes, source_filename=source_path.name, content_type=content_type)
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    cache_key = document_render_cache_key(source_bytes, source_kind=source_kind, owner_user_id=owner_user_id)
+    cache_root = document_render_cache_dir(cache_dir)
+    entry_dir = cache_entry_dir(cache_root, cache_key)
+    pdf_path = entry_dir / "document.pdf"
+    metadata_path = entry_dir / "metadata.json"
+    cached_metadata = _read_metadata(metadata_path)
+    if not _is_ready_cache_hit(
+        cached_metadata, pdf_path, source_sha256=source_sha256, source_kind=source_kind, cache_key=cache_key
+    ):
+        return None
+    _touch_cache_entry(entry_dir)
+    return RenderedDocument(
+        status=READY_STATUS,
+        cache_key=cache_key,
+        source_sha256=source_sha256,
+        source_kind=source_kind,
+        cache_dir=cache_root,
+        pdf_path=pdf_path,
+        metadata_path=metadata_path,
+        cached=True,
+    )
+
+
+def peek_page_image_manifest(
+    rendered: RenderedDocument,
+    *,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> RenderedPdfPageImageManifest | None:
+    """Return a ready page-image manifest from cache WITHOUT rasterizing, else None."""
+    if rendered.status != READY_STATUS or rendered.pdf_path is None:
+        return None
+    cache_root = Path(rendered.cache_dir).expanduser().resolve()
+    entry_dir = cache_entry_dir(cache_root, rendered.cache_key)
+    page_dir = entry_dir / PAGE_IMAGE_DIRNAME
+    manifest_path = page_dir / PAGE_IMAGE_MANIFEST_FILENAME
+    try:
+        pdf_sha256 = _file_sha256(rendered.pdf_path)
+    except OSError:
+        return None
+    return _page_image_manifest_from_metadata(
+        _read_metadata(manifest_path),
+        cache_key=rendered.cache_key,
+        cache_dir=cache_root,
+        pdf_path=rendered.pdf_path,
+        manifest_path=manifest_path,
+        pdf_sha256=pdf_sha256,
+        dpi=dpi,
+    )
+
+
 def render_source_document_to_pdf(
     source_bytes: bytes,
     *,
@@ -769,6 +841,99 @@ def page_image_for_page_number(manifest: RenderedPdfPageImageManifest, page_numb
         if page.page_number == page_number:
             return page
     return None
+
+
+@dataclass
+class RenderJob:
+    """A single in-flight background render for one matter.
+
+    ``done`` is set when the worker finishes; ``result``/``error`` hold the
+    outcome. Pollers attach to an existing job instead of starting their own, so
+    one matter never has more than one render running at a time.
+    """
+
+    matter_id: str
+    thread: threading.Thread | None = None
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Any = None
+    error: BaseException | None = None
+    started_at: float = field(default_factory=time.monotonic)
+
+    def is_finished(self) -> bool:
+        return self.done.is_set()
+
+
+class MatterRenderCoordinator:
+    """Runs the expensive render pipeline off the polled status endpoint.
+
+    Invariant: at most one render thread per matter_id is in flight. Concurrent
+    pollers for the same matter attach to the existing job (in-flight de-dup)
+    rather than each kicking off a duplicate convert+rasterize. The polled
+    endpoint never blocks on rasterization — it observes job state and returns.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs: dict[str, RenderJob] = {}
+
+    def in_flight(self, matter_id: str) -> RenderJob | None:
+        with self._lock:
+            job = self._jobs.get(matter_id)
+            if job is not None and not job.is_finished():
+                return job
+            return None
+
+    def ensure_in_flight(self, matter_id: str, render_fn: Any) -> RenderJob:
+        """Return the running job for matter_id, starting one if none is live.
+
+        ``render_fn`` is a zero-arg callable performing the full convert +
+        rasterize; it runs in a worker thread. If a render is already running
+        for this matter the caller attaches to it (de-dup) and no new thread is
+        started.
+        """
+        with self._lock:
+            existing = self._jobs.get(matter_id)
+            if existing is not None and not existing.is_finished():
+                return existing
+            job = RenderJob(matter_id=matter_id)
+            job.thread = threading.Thread(
+                target=self._run_job,
+                args=(matter_id, job, render_fn),
+                name=f"render-{matter_id}",
+                daemon=True,
+            )
+            self._jobs[matter_id] = job
+            job.thread.start()
+            return job
+
+    def _run_job(self, matter_id: str, job: RenderJob, render_fn: Any) -> None:
+        try:
+            job.result = render_fn()
+        except BaseException as exc:  # noqa: BLE001 - recorded and surfaced to the poller
+            job.error = exc
+        finally:
+            job.done.set()
+            # Drop the finished job so the next poll re-checks the (now warm)
+            # cache and a later change can start a fresh render.
+            with self._lock:
+                if self._jobs.get(matter_id) is job:
+                    del self._jobs[matter_id]
+
+    def forget(self, matter_id: str) -> None:
+        """Drop any tracked job for a matter (e.g. on matter delete)."""
+        with self._lock:
+            self._jobs.pop(matter_id, None)
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._jobs.clear()
+
+
+_MATTER_RENDER_COORDINATOR = MatterRenderCoordinator()
+
+
+def matter_render_coordinator() -> MatterRenderCoordinator:
+    return _MATTER_RENDER_COORDINATOR
 
 
 def detect_source_kind(source_bytes: bytes, *, source_filename: str = "", content_type: str = "") -> str:

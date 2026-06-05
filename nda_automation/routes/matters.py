@@ -24,6 +24,12 @@ from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..triage import triage_review_result
 from .common import parse_matter_id, request_owner_user_id
 
+# Max seconds the render-status poll waits on the background render before
+# returning a non-blocking "rendering" status. A fast render (small NDA) still
+# resolves in one poll; a large NDA's rasterization stays on the worker thread
+# and the client polls again instead of holding the request thread.
+RENDER_STATUS_POLL_GRACE_SECONDS = 5.0
+
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
@@ -193,15 +199,46 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
 
 def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/render-status")
-    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
-    if render_result is None:
+    resolved = _resolve_matter_source(handler, matter_id, send_body=send_body)
+    if resolved is None:
         return
-    matter, rendered = render_result
-    page_manifest = None
-    if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
-        page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+    matter, source_path, owner_user_id = resolved
+
+    # Fast path: serve straight from cache WITHOUT converting or rasterizing on
+    # the polled request thread.
+    rendered = document_rendering.peek_rendered_document(
+        source_path,
+        content_type=_source_document_content_type(source_path),
+        owner_user_id=owner_user_id,
+    )
+    page_manifest = document_rendering.peek_page_image_manifest(rendered) if rendered is not None else None
+    if rendered is not None and page_manifest is not None:
+        handler._send_json(
+            {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
+            send_body=send_body,
+        )
+        return
+
+    # Not fully cached: kick off (or attach to) a single background render for
+    # this matter. Concurrent pollers de-dup onto the same job rather than each
+    # launching a render. The rasterization runs on the worker thread, never on
+    # this request thread; we wait at most a short grace for a quick render to
+    # finish (so small NDAs still resolve in one poll) and otherwise return a
+    # non-blocking "rendering" status for the client to poll again.
+    job = _ensure_background_matter_render(matter, source_path, owner_user_id)
+    if job is not None:
+        job.done.wait(timeout=RENDER_STATUS_POLL_GRACE_SECONDS)
+        if job.is_finished() and isinstance(job.result, tuple):
+            rendered, page_manifest = job.result
+            # Surface the terminal outcome — ready OR a render error such as
+            # converter_unavailable / unsupported — not a perpetual "rendering".
+            handler._send_json(
+                {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
+                send_body=send_body,
+            )
+            return
     handler._send_json(
-        {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
+        {"document_render": _rendering_in_progress_payload(matter_id or "", source_path)},
         send_body=send_body,
     )
 
@@ -270,6 +307,85 @@ def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> 
         )
         return
     handler._send_file(page.image_path, content_type=document_rendering.PAGE_IMAGE_CONTENT_TYPE, send_body=send_body)
+
+
+def _resolve_matter_source(
+    handler,
+    matter_id: str | None,
+    *,
+    send_body: bool,
+) -> tuple[dict, Path, str] | None:
+    """Ownership-gated resolution of a matter's source document, no rendering.
+
+    Returns (matter, source_path, owner_user_id) or None after emitting the
+    appropriate error response. Cheap enough to run on the polled endpoint.
+    """
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return None
+    try:
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_store.MatterStoreError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return None
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return None
+    source_path = matter_store.source_document_path(matter)
+    if source_path is None:
+        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
+        return None
+    return matter, source_path, str(matter.get("owner_user_id") or "")
+
+
+def _ensure_background_matter_render(
+    matter: dict, source_path: Path, owner_user_id: str
+) -> document_rendering.RenderJob | None:
+    """Schedule a single background render for this matter (in-flight de-dup).
+
+    The expensive convert + rasterize runs in a worker thread so the polled
+    status endpoint never blocks on it. The coordinator guarantees one render
+    per matter at a time; concurrent pollers attach to the running job. Returns
+    the RenderJob so the caller can briefly wait on it, or None if the matter
+    has no usable id.
+    """
+    matter_id = str(matter.get("id") or "")
+    if not matter_id:
+        return None
+    content_type = _source_document_content_type(source_path)
+
+    def _render():
+        # Full pipeline: source -> PDF (cache) -> page-image manifest (rasterize).
+        # Returns (rendered, manifest) so the poller can surface the terminal
+        # status (ready OR a render error like converter_unavailable) without
+        # re-running the work. DocxConverterBusy is transient backpressure: a
+        # later poll reschedules the render, so report None and let it retry.
+        try:
+            rendered = document_rendering.render_source_path_to_pdf(
+                source_path,
+                content_type=content_type,
+                owner_user_id=owner_user_id,
+            )
+        except document_rendering.DocxConverterBusy:
+            return None
+        manifest = None
+        if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
+            manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+        return rendered, manifest
+
+    return document_rendering.matter_render_coordinator().ensure_in_flight(matter_id, _render)
+
+
+def _rendering_in_progress_payload(matter_id: str, source_path: Path) -> dict:
+    """Non-blocking 'rendering' status for a matter whose render is in flight."""
+    source_kind = "pdf" if source_path.suffix.lower() == ".pdf" else "docx"
+    return {
+        "status": document_rendering.RENDERING_STATUS,
+        "source_kind": source_kind,
+        "source_label": "Original PDF" if source_kind == "pdf" else "Converted DOCX",
+        "cached": False,
+        "matter_id": matter_id,
+    }
 
 
 def _matter_render_result(
@@ -892,6 +1008,8 @@ def handle_matter_delete(handler, path: str) -> None:
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
+    # Stop tracking any in-flight background render for the now-deleted matter.
+    document_rendering.matter_render_coordinator().forget(matter_id)
     if source_bytes is not None:
         # Purge the deleted matter's rendered artifacts so they do not outlive
         # the matter (and cannot be served to a later, unrelated matter).
