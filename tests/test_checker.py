@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from nda_automation import checker as checker_module
 from nda_automation import semantic as semantic_module
-from nda_automation.checks.common import _match, _not_present, is_circumvention_freedom_preserving
+from nda_automation.checks.common import _match
 from nda_automation.checker import (
     EvidenceProvenanceError,
     ParagraphAlignmentError,
