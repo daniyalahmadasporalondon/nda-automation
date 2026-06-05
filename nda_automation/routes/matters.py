@@ -297,6 +297,7 @@ def _matter_render_result(
         rendered = document_rendering.render_source_path_to_pdf(
             source_path,
             content_type=_source_document_content_type(source_path),
+            owner_user_id=str(matter.get("owner_user_id") or ""),
         )
     except document_rendering.DocxConverterBusy as error:
         # Conversion capacity is saturated; shed load with retryable backpressure
@@ -879,10 +880,26 @@ def handle_matter_delete(handler, path: str) -> None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
-    matter = matter_store.delete_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    owner_user_id = request_owner_user_id(handler)
+    # Capture the source bytes before deletion unlinks them, so the render-cache
+    # purge below can recompute the (content + owner) cache key. Reading is gated
+    # on ownership: a non-owner caller gets None and the matter is not deleted.
+    pre_delete = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    source_bytes = matter_store.get_source_document_bytes(pre_delete) if pre_delete else None
+    source_filename = str(pre_delete.get("source_filename") or "") if pre_delete else ""
+
+    matter = matter_store.delete_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
+    if source_bytes is not None:
+        # Purge the deleted matter's rendered artifacts so they do not outlive
+        # the matter (and cannot be served to a later, unrelated matter).
+        document_rendering.purge_render_cache_for_source(
+            source_bytes,
+            owner_user_id=str(matter.get("owner_user_id") or owner_user_id),
+            source_filename=source_filename,
+        )
     handler._send_json({"deleted": matter_view.public_matter(matter)})
 
 

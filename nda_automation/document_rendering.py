@@ -65,6 +65,14 @@ CONVERSION_QUEUE_WAIT_SECONDS = 5.0
 CONVERSION_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB address space per child
 CONVERSION_CPU_LIMIT_SECONDS = 60  # CPU-seconds; backstops the wall-clock timeout
 
+# Render-cache bounds. The cache was unbounded, never evicted, and keyed only on
+# document bytes — so two tenants uploading the same NDA shared one entry (a
+# cross-tenant leak) and a flood of distinct documents grew the cache without
+# limit. The key now folds in the owner (no cross-tenant hit is possible) and
+# the cache is bounded by entry count with LRU eviction by directory mtime.
+MAX_RENDER_CACHE_ENTRIES = 256
+ANONYMOUS_CACHE_OWNER = "anonymous"
+
 READY_STATUS = "ready"
 UNAVAILABLE_STATUS = "unavailable"
 UNSUPPORTED_STATUS = "unsupported"
@@ -428,6 +436,7 @@ def render_source_path_to_pdf(
     cache_dir: Path | None = None,
     converter: DocxConverter | None = None,
     timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    owner_user_id: str = "",
 ) -> RenderedDocument:
     source_path = Path(source_path)
     return render_source_document_to_pdf(
@@ -437,6 +446,7 @@ def render_source_path_to_pdf(
         cache_dir=cache_dir,
         converter=converter,
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -448,10 +458,11 @@ def render_source_document_to_pdf(
     cache_dir: Path | None = None,
     converter: DocxConverter | None = None,
     timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    owner_user_id: str = "",
 ) -> RenderedDocument:
     source_kind = detect_source_kind(source_bytes, source_filename=source_filename, content_type=content_type)
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
-    cache_key = document_render_cache_key(source_bytes, source_kind=source_kind)
+    cache_key = document_render_cache_key(source_bytes, source_kind=source_kind, owner_user_id=owner_user_id)
     cache_root = document_render_cache_dir(cache_dir)
     entry_dir = cache_entry_dir(cache_root, cache_key)
     pdf_path = entry_dir / "document.pdf"
@@ -459,6 +470,7 @@ def render_source_document_to_pdf(
 
     cached_metadata = _read_metadata(metadata_path)
     if _is_ready_cache_hit(cached_metadata, pdf_path, source_sha256=source_sha256, source_kind=source_kind, cache_key=cache_key):
+        _touch_cache_entry(entry_dir)
         return RenderedDocument(
             status=READY_STATUS,
             cache_key=cache_key,
@@ -494,6 +506,7 @@ def render_source_document_to_pdf(
                 code="cache_write_failed",
                 message=f"Renderable PDF cache could not be written: {exc}",
             )
+        _enforce_render_cache_bound(cache_root, keep=entry_dir)
         return RenderedDocument(
             status=READY_STATUS,
             cache_key=cache_key,
@@ -589,6 +602,7 @@ def render_source_document_to_pdf(
         _persist_failure_metadata(result, converter_name=getattr(active_converter, "name", "unknown"))
         return result
 
+    _enforce_render_cache_bound(cache_root, keep=entry_dir)
     return RenderedDocument(
         status=READY_STATUS,
         cache_key=cache_key,
@@ -771,11 +785,23 @@ def document_render_cache_key(
     source_bytes: bytes,
     *,
     source_kind: str,
+    owner_user_id: str = "",
     cache_version: str = DOCUMENT_RENDER_CACHE_VERSION,
 ) -> str:
+    # Fold the owner into the key so identical bytes from different tenants never
+    # collide on one cache entry. The owner is hashed (not concatenated raw) so
+    # it cannot influence the final key's character set or length.
+    owner_token = _normalized_cache_owner(owner_user_id)
     source_hash = hashlib.sha256(source_bytes).hexdigest()
-    key_hash = hashlib.sha256(f"{cache_version}:{source_kind}:{source_hash}".encode("utf-8")).hexdigest()
+    key_hash = hashlib.sha256(
+        f"{cache_version}:{owner_token}:{source_kind}:{source_hash}".encode("utf-8")
+    ).hexdigest()
     return f"{source_kind}-{key_hash}"
+
+
+def _normalized_cache_owner(owner_user_id: str) -> str:
+    owner = str(owner_user_id or "").strip()
+    return owner or ANONYMOUS_CACHE_OWNER
 
 
 def document_render_cache_dir(cache_dir: Path | None = None) -> Path:
@@ -792,6 +818,87 @@ def cache_entry_dir(cache_root: Path, cache_key: str) -> Path:
     if resolved_entry != resolved_root and resolved_root not in resolved_entry.parents:
         raise ValueError("Document render cache path escapes the cache root.")
     return resolved_entry
+
+
+def _touch_cache_entry(entry_dir: Path) -> None:
+    """Mark a cache entry as most-recently-used so LRU eviction spares it."""
+    try:
+        os.utime(entry_dir, None)
+    except OSError:
+        pass
+
+
+def _enforce_render_cache_bound(
+    cache_root: Path,
+    *,
+    keep: Path | None = None,
+    max_entries: int | None = None,
+) -> None:
+    """Evict least-recently-used entries so the cache stays within max_entries.
+
+    Recency is the entry directory's mtime (bumped on every cache hit via
+    _touch_cache_entry); the just-written ``keep`` entry is never evicted even if
+    a clock skew would otherwise sort it oldest. Best-effort: a filesystem error
+    while pruning must never fail the render that triggered it. ``max_entries``
+    is read from the module global at call time when not supplied, so the cap
+    stays overridable (and patchable in tests).
+    """
+    if max_entries is None:
+        max_entries = MAX_RENDER_CACHE_ENTRIES
+    try:
+        entries = [child for child in Path(cache_root).iterdir() if child.is_dir()]
+    except OSError:
+        return
+    if len(entries) <= max_entries:
+        return
+    keep_resolved = keep.resolve() if keep is not None else None
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    # Oldest first; drop until we are back within the bound.
+    for entry in sorted(entries, key=_mtime):
+        if len(entries) <= max_entries:
+            break
+        if keep_resolved is not None and entry.resolve() == keep_resolved:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        entries.remove(entry)
+
+
+def purge_render_cache_for_source(
+    source_bytes: bytes,
+    *,
+    owner_user_id: str = "",
+    source_filename: str = "",
+    content_type: str = "",
+    cache_dir: Path | None = None,
+) -> int:
+    """Remove the render-cache entry/entries for a specific source document.
+
+    Called when a matter is deleted so its rendered artifacts do not outlive it.
+    The per-user cache key is content-derived, so we recompute it for the
+    detected source kind (and defensively for both pdf/docx) and remove those
+    entry directories under the owner's partition. Returns the number removed.
+    Best-effort: never raises on a filesystem error.
+    """
+    cache_root = document_render_cache_dir(cache_dir)
+    detected_kind = detect_source_kind(source_bytes, source_filename=source_filename, content_type=content_type)
+    candidate_kinds = {detected_kind, "pdf", "docx"} - {"unknown"}
+    removed = 0
+    for source_kind in candidate_kinds:
+        cache_key = document_render_cache_key(source_bytes, source_kind=source_kind, owner_user_id=owner_user_id)
+        try:
+            entry_dir = cache_entry_dir(cache_root, cache_key)
+        except ValueError:
+            continue
+        if entry_dir.is_dir():
+            shutil.rmtree(entry_dir, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 def _is_ready_cache_hit(

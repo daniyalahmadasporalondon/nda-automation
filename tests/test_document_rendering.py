@@ -23,8 +23,11 @@ from nda_automation.document_rendering import (
     PyMuPdfPageRenderer,
     RenderedPdfPageImage,
     _budgeted_page_dpi,
+    _enforce_render_cache_bound,
     _run_soffice_command,
+    cache_entry_dir,
     document_render_cache_key,
+    purge_render_cache_for_source,
     render_pdf_page_image_manifest,
     render_source_document_to_pdf,
 )
@@ -501,6 +504,139 @@ class SofficeConcurrencyAndTimeoutTests(unittest.TestCase):
         if child_soft == _resource.RLIM_INFINITY:
             self.skipTest("platform does not honor RLIMIT_AS (e.g. macOS)")
         self.assertLessEqual(child_soft, document_rendering.CONVERSION_MEMORY_LIMIT_BYTES)
+
+
+class RenderCachePartitionEvictionPurgeTests(unittest.TestCase):
+    def test_owner_partitions_cache_no_cross_tenant_hit(self):
+        # Two tenants render byte-identical documents; each must get its OWN
+        # entry (cached=False both times) and distinct cache keys, so neither
+        # can read the other's rendered artifact.
+        pdf_bytes = b"%PDF-1.7\nshared\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as cache_name:
+            cache_dir = Path(cache_name)
+            alice = render_source_document_to_pdf(
+                pdf_bytes, source_filename="nda.pdf", cache_dir=cache_dir, owner_user_id="alice"
+            )
+            bob = render_source_document_to_pdf(
+                pdf_bytes, source_filename="nda.pdf", cache_dir=cache_dir, owner_user_id="bob"
+            )
+            self.assertNotEqual(alice.cache_key, bob.cache_key)
+            self.assertFalse(alice.cached)
+            self.assertFalse(bob.cached)  # bob did NOT hit alice's entry
+
+            # Same tenant re-render IS a cache hit (dedup still works per-user).
+            alice_again = render_source_document_to_pdf(
+                pdf_bytes, source_filename="nda.pdf", cache_dir=cache_dir, owner_user_id="alice"
+            )
+            self.assertTrue(alice_again.cached)
+            self.assertEqual(alice_again.cache_key, alice.cache_key)
+
+    def test_lru_eviction_bounds_cache_and_keeps_recent(self):
+        with tempfile.TemporaryDirectory() as cache_name:
+            cache_dir = Path(cache_name)
+            # Seed more entry dirs than the cap with increasing mtimes.
+            for i in range(5):
+                entry = cache_dir / f"pdf-{i:064d}"
+                entry.mkdir(parents=True)
+                os.utime(entry, (1000 + i, 1000 + i))
+            kept = cache_dir / ("pdf-" + "f" * 64)
+            kept.mkdir()
+            os.utime(kept, (2000, 2000))  # newest
+
+            _enforce_render_cache_bound(cache_dir, keep=kept, max_entries=3)
+
+            remaining = sorted(p.name for p in cache_dir.iterdir() if p.is_dir())
+            self.assertEqual(len(remaining), 3)
+            # Newest survivors kept; oldest evicted; the explicit keep survives.
+            self.assertIn(kept.name, remaining)
+            self.assertIn(f"pdf-{4:064d}", remaining)
+            self.assertNotIn(f"pdf-{0:064d}", remaining)
+
+    def test_render_path_evicts_when_over_cap(self):
+        # Drive eviction through the real render entrypoint: render more distinct
+        # documents than the cap (via a tiny per-call cap) and confirm the cache
+        # never exceeds it.
+        import nda_automation.document_rendering as module
+
+        original_cap = module.MAX_RENDER_CACHE_ENTRIES
+        module.MAX_RENDER_CACHE_ENTRIES = 3
+        try:
+            with tempfile.TemporaryDirectory() as cache_name:
+                cache_dir = Path(cache_name)
+                for i in range(8):
+                    render_source_document_to_pdf(
+                        f"%PDF-1.7\ndoc-{i}\n%%EOF\n".encode(),
+                        source_filename=f"nda-{i}.pdf",
+                        cache_dir=cache_dir,
+                        owner_user_id="alice",
+                    )
+                    time.sleep(0.01)  # keep mtimes monotonic for deterministic LRU
+                entries = [p for p in cache_dir.iterdir() if p.is_dir()]
+                self.assertLessEqual(len(entries), 3)
+        finally:
+            module.MAX_RENDER_CACHE_ENTRIES = original_cap
+
+    def test_cache_hit_refreshes_recency_so_it_survives_eviction(self):
+        import nda_automation.document_rendering as module
+
+        original_cap = module.MAX_RENDER_CACHE_ENTRIES
+        module.MAX_RENDER_CACHE_ENTRIES = 3
+        try:
+            with tempfile.TemporaryDirectory() as cache_name:
+                cache_dir = Path(cache_name)
+                first_bytes = b"%PDF-1.7\nfirst\n%%EOF\n"
+                first = render_source_document_to_pdf(
+                    first_bytes, source_filename="first.pdf", cache_dir=cache_dir, owner_user_id="alice"
+                )
+                time.sleep(0.01)
+                # Add two more, then re-touch `first` via a cache hit so it is no
+                # longer the oldest.
+                for i in range(2):
+                    render_source_document_to_pdf(
+                        f"%PDF-1.7\nfiller-{i}\n%%EOF\n".encode(),
+                        source_filename=f"f{i}.pdf",
+                        cache_dir=cache_dir,
+                        owner_user_id="alice",
+                    )
+                    time.sleep(0.01)
+                hit = render_source_document_to_pdf(
+                    first_bytes, source_filename="first.pdf", cache_dir=cache_dir, owner_user_id="alice"
+                )
+                self.assertTrue(hit.cached)
+                time.sleep(0.01)
+                # One more push triggers eviction; `first` was just touched, so a
+                # filler should be evicted instead.
+                render_source_document_to_pdf(
+                    b"%PDF-1.7\nfiller-evict\n%%EOF\n",
+                    source_filename="evict.pdf",
+                    cache_dir=cache_dir,
+                    owner_user_id="alice",
+                )
+                first_entry = cache_entry_dir(cache_dir, first.cache_key)
+                self.assertTrue(first_entry.is_dir(), "recently-hit entry was wrongly evicted")
+        finally:
+            module.MAX_RENDER_CACHE_ENTRIES = original_cap
+
+    def test_purge_removes_only_the_owners_entry(self):
+        pdf_bytes = b"%PDF-1.7\nshared\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as cache_name:
+            cache_dir = Path(cache_name)
+            alice = render_source_document_to_pdf(
+                pdf_bytes, source_filename="nda.pdf", cache_dir=cache_dir, owner_user_id="alice"
+            )
+            bob = render_source_document_to_pdf(
+                pdf_bytes, source_filename="nda.pdf", cache_dir=cache_dir, owner_user_id="bob"
+            )
+            self.assertTrue(cache_entry_dir(cache_dir, alice.cache_key).is_dir())
+            self.assertTrue(cache_entry_dir(cache_dir, bob.cache_key).is_dir())
+
+            removed = purge_render_cache_for_source(
+                pdf_bytes, owner_user_id="alice", source_filename="nda.pdf", cache_dir=cache_dir
+            )
+            self.assertGreaterEqual(removed, 1)
+            # Alice's entry gone; Bob's untouched (no cross-tenant purge).
+            self.assertFalse(cache_entry_dir(cache_dir, alice.cache_key).is_dir())
+            self.assertTrue(cache_entry_dir(cache_dir, bob.cache_key).is_dir())
 
 
 if __name__ == "__main__":
