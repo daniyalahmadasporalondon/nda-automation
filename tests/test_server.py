@@ -599,6 +599,69 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(authed_payload["documents"][0]["size_bytes"], len(b"backup-source-docx"))
         self.assertNotIn("content_base64", authed_payload["documents"][0])
 
+    def test_matter_backup_denies_non_admin_google_user(self):
+        # A per-user Google account is authenticated but not an administrator,
+        # so the bulk backup (full NDA text dump) must be refused with 403.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/matters/export", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    def test_matter_backup_allows_listed_admin_google_user(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                admin_env = {**auth_env, "NDA_ADMIN_USERS": f"{user['id']}, other@example.com"}
+                with patch.dict(os.environ, admin_env):
+                    status, payload, headers = self.request_with_headers(
+                        "GET", "/api/matters/export", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Backup-Contains"], "matter-json")
+        self.assertEqual(payload["version"], 1)
+
+    def test_matter_backup_denies_google_user_not_in_admin_list(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "someone-else@example.com",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/matters/export", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
     def test_authenticated_matter_routes_are_owner_scoped(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",

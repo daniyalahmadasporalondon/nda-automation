@@ -8,6 +8,31 @@ import os
 AUTH_REALM = "nda-automation"
 AUTH_REQUIRED_MESSAGE = "Authentication required."
 AUTH_NOT_CONFIGURED_MESSAGE = "Authentication is required but neither Google OAuth nor HTTP Basic auth is configured."
+ADMIN_REQUIRED_MESSAGE = "Administrator access is required."
+ADMIN_USERS_ENV = "NDA_ADMIN_USERS"
+
+
+def _admin_user_ids() -> set[str]:
+    raw = os.environ.get(ADMIN_USERS_ENV, "")
+    return {value.strip() for value in raw.split(",") if value.strip()}
+
+
+def request_is_admin(*, user_id: str, provider: str, host: str) -> bool:
+    """Return whether the authenticated caller may use admin-only endpoints.
+
+    Admin identities are explicitly listed in NDA_ADMIN_USERS. When no list is
+    configured we fall back to the historical single-operator model: HTTP Basic
+    auth is the deployment's break-glass operator credential, so a Basic-auth
+    caller is treated as admin, while per-user Google accounts are not. On a
+    loopback host where authentication is not required, the local developer is
+    trusted, matching how the rest of the app treats loopback.
+    """
+    if not _auth_required_for_host(host):
+        return True
+    admin_ids = _admin_user_ids()
+    if admin_ids:
+        return str(user_id or "").strip() in admin_ids
+    return str(provider or "").strip().lower() == "basic"
 
 
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:

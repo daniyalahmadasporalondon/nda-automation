@@ -38,6 +38,7 @@ from .csrf import (
 )
 from .docx_export import DOCX_MIME
 from .http_auth import (
+    ADMIN_REQUIRED_MESSAGE as ADMIN_REQUIRED_MESSAGE,
     AUTH_NOT_CONFIGURED_MESSAGE,
     AUTH_REALM,
     AUTH_REQUIRED_MESSAGE,
