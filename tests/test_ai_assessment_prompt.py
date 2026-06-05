@@ -121,7 +121,46 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertEqual(packet["document"]["paragraph_count"], 3)
         self.assertEqual(packet["document"]["included_paragraph_count"], 2)
         self.assertEqual(packet["document"]["omitted_paragraph_count"], 1)
+        self.assertTrue(packet["document"]["truncated"])
         self.assertEqual([paragraph["id"] for paragraph in packet["paragraphs"]], ["p1", "p2"])
+
+    def test_oversized_first_paragraph_is_clipped_to_char_budget(self):
+        # A single paragraph far larger than the char budget must not be sent
+        # whole (the historical 8x packet-budget bypass). It is admitted clipped
+        # to the budget and flagged, never silently passed through intact.
+        oversized = "X" * 5000
+        packet = build_ai_assessment_packet(
+            oversized,
+            playbook=load_playbook(),
+            max_paragraphs=120,
+            max_chars=600,
+        )
+
+        included = packet["paragraphs"]
+        self.assertEqual(len(included), 1)
+        self.assertEqual(len(included[0]["text"]), 600)
+        self.assertTrue(included[0].get("text_clipped"))
+        self.assertEqual(included[0]["original_text_length"], 5000)
+        self.assertEqual(packet["document"]["clipped_paragraph_count"], 1)
+        self.assertTrue(packet["document"]["truncated"])
+
+    def test_char_budget_is_never_exceeded_by_any_single_paragraph(self):
+        # Two paragraphs that each individually exceed the budget: the first is
+        # clipped to the budget, the rest are omitted, and the total characters
+        # placed in the packet stay within the limit.
+        char_limit = 400
+        source = ("A" * 1000) + "\n\n" + ("B" * 1000)
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            max_paragraphs=120,
+            max_chars=char_limit,
+        )
+
+        total_chars = sum(len(paragraph["text"]) for paragraph in packet["paragraphs"])
+        self.assertLessEqual(total_chars, char_limit)
+        self.assertEqual(packet["document"]["omitted_paragraph_count"], 1)
+        self.assertEqual(packet["document"]["clipped_paragraph_count"], 1)
 
     def test_prompt_contract_wraps_packet_with_system_and_response_schema(self):
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())

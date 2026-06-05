@@ -31,6 +31,7 @@ from .ai_review import (
 )
 from .checker import load_playbook, validate_playbook
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
+from .review_state import REVIEW_STATE_CHECK, REVIEW_STATE_REVIEW
 
 AI_ASSESSOR_VERSION = 1
 AI_FIRST_ASSESSOR_MODE = "ai_first_assessor"
@@ -205,8 +206,10 @@ def assess_nda_with_ai(
         checked_at=checked_at,
         playbook=review_playbook,
     )
+    document_info = packet.get("document", {}) if isinstance(packet.get("document"), Mapping) else {}
+    truncation = _apply_truncation_guard(result, document_info)
     missing_clause_ids = list(result.get("ai_review", {}).get("missing_clause_ids", []))
-    status = "partial" if missing_clause_ids else "completed"
+    status = "partial" if (missing_clause_ids or truncation["truncated"]) else "completed"
     metadata = {
         "version": AI_ASSESSOR_VERSION,
         "status": status,
@@ -217,12 +220,96 @@ def assess_nda_with_ai(
         "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
         "record_count": len(raw_assessments),
         "missing_clause_ids": missing_clause_ids,
-        "included_paragraph_count": packet["document"]["included_paragraph_count"],
-        "omitted_paragraph_count": packet["document"]["omitted_paragraph_count"],
+        "included_paragraph_count": int(document_info.get("included_paragraph_count") or 0),
+        "omitted_paragraph_count": int(document_info.get("omitted_paragraph_count") or 0),
+        "truncated": truncation["truncated"],
     }
     result["ai_first_review"] = {**dict(result.get("ai_first_review", {})), **metadata}
     result["ai_review"] = {**dict(result.get("ai_review", {})), **metadata}
     return result
+
+
+def _apply_truncation_guard(
+    result: dict[str, Any],
+    document_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Force a truncated document to manual review so omitted text can't false-clear.
+
+    The AI only ever sees the paragraphs that fit the packet budget. When the
+    document was truncated (paragraphs dropped, or a single oversized paragraph
+    clipped), the unseen text was never assessed -- so a violation hiding past
+    the budget would otherwise pass silently on a long document. We escalate the
+    overall verdict to ``needs_review`` (never softening an existing fail) and
+    surface a reviewer-facing notice naming how much went unreviewed.
+    """
+    omitted = int(document_info.get("omitted_paragraph_count") or 0)
+    clipped = int(document_info.get("clipped_paragraph_count") or 0)
+    truncated = bool(document_info.get("truncated")) or omitted > 0 or clipped > 0
+    unreviewed = omitted + clipped
+    summary = {
+        "truncated": truncated,
+        "omitted_paragraph_count": omitted,
+        "clipped_paragraph_count": clipped,
+        "unreviewed_paragraph_count": unreviewed,
+        "included_paragraph_count": int(document_info.get("included_paragraph_count") or 0),
+        "paragraph_count": int(document_info.get("paragraph_count") or 0),
+        "context_budget": dict(document_info.get("context_budget") or {}),
+    }
+    if not truncated:
+        summary["message"] = ""
+        result["truncation"] = summary
+        return summary
+
+    notice = _truncation_notice(omitted, clipped)
+    summary["message"] = notice
+    summary["requires_manual_review"] = True
+    result["truncation"] = summary
+    _escalate_result_to_review(result, reason=notice)
+    return summary
+
+
+def _truncation_notice(omitted: int, clipped: int) -> str:
+    parts: list[str] = []
+    if omitted:
+        parts.append(f"{omitted} paragraph{'s' if omitted != 1 else ''} omitted")
+    if clipped:
+        parts.append(f"{clipped} paragraph{'s' if clipped != 1 else ''} truncated")
+    detail = " and ".join(parts) if parts else "part of the document"
+    return f"Document truncated, {detail} unreviewed -> manual review required."
+
+
+def _escalate_result_to_review(result: dict[str, Any], *, reason: str) -> None:
+    """Lift a passing verdict to review without softening an existing fail.
+
+    A ``check`` (deterministic fail) verdict already blocks the send and must
+    stay a fail; truncation only ever needs to convert a clean ``pass`` into a
+    ``review`` so the unseen text gets human eyes. Mirrors the review_state
+    contract so the surfaced overall_status/review_state stay consistent.
+    """
+    review_state = result.get("review_state")
+    review_state = dict(review_state) if isinstance(review_state, Mapping) else {}
+    current = str(review_state.get("state") or "").strip().lower()
+    if current == REVIEW_STATE_CHECK:
+        # A failing document already requires human action; leave the stronger
+        # signal in place but still record that truncation forced a manual look.
+        result["truncation_blocks_send"] = True
+        return
+
+    review_state.update({
+        "state": REVIEW_STATE_REVIEW,
+        "overall_status": "needs_review",
+        "label": "REVIEW",
+        "tone": "review",
+        "requires_attention": True,
+        "requires_human_review": True,
+        "blocks_send": True,
+        "blocks_auto_send": True,
+        "truncation_forced_review": True,
+        "truncation_reason": reason,
+    })
+    result["review_state"] = review_state
+    result["overall_status"] = "needs_review"
+    result["truncation_blocks_send"] = True
 
 
 def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None) -> AIAssessmentReviewer:

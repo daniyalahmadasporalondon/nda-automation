@@ -136,6 +136,14 @@ def build_ai_assessment_packet(
 ) -> dict[str, Any]:
     document_paragraphs = _review_paragraphs(source_text or "", paragraphs)
     included_paragraphs = _fit_context_budget(document_paragraphs, max_paragraphs=max_paragraphs, max_chars=max_chars)
+    omitted_paragraph_count = max(0, len(document_paragraphs) - len(included_paragraphs))
+    clipped_paragraph_count = sum(1 for paragraph in included_paragraphs if paragraph.get("text_clipped"))
+    # The packet is the single source of truth for what the model actually saw.
+    # "truncated" is true whenever any source text was dropped (paragraphs over
+    # the budget) or clipped (a single oversized paragraph trimmed to fit); the
+    # assessor reads this to force the document to manual review so a violation
+    # hiding in the unseen text can never be silently cleared.
+    truncated = bool(omitted_paragraph_count) or bool(clipped_paragraph_count)
     rules_packet = playbook_rules_for_ai(playbook)
     return {
         "version": AI_ASSESSMENT_PROMPT_VERSION,
@@ -145,7 +153,9 @@ def build_ai_assessment_packet(
         "document": {
             "paragraph_count": len(document_paragraphs),
             "included_paragraph_count": len(included_paragraphs),
-            "omitted_paragraph_count": max(0, len(document_paragraphs) - len(included_paragraphs)),
+            "omitted_paragraph_count": omitted_paragraph_count,
+            "clipped_paragraph_count": clipped_paragraph_count,
+            "truncated": truncated,
             "context_budget": {
                 "max_paragraphs": int(max_paragraphs),
                 "max_chars": int(max_chars),
@@ -202,11 +212,31 @@ def _fit_context_budget(
     char_limit = max(0, int(max_chars))
     for paragraph in paragraphs[:paragraph_limit]:
         text = str(paragraph.get("text") or "")
-        if char_limit and char_count + len(text) > char_limit and fitted:
+        remaining = char_limit - char_count if char_limit else None
+        if remaining is not None and len(text) > remaining:
+            # A single paragraph must never blow the char budget. The first
+            # paragraph still has to be admitted (an empty packet would force a
+            # blanket review and review nothing), but it is clipped to whatever
+            # budget is left rather than sent whole. Subsequent paragraphs that
+            # do not fit simply stop the loop; the clipped/omitted text is
+            # surfaced as omitted paragraphs so the truncation guard escalates.
+            if not fitted:
+                fitted.append(_clip_paragraph_text(paragraph, max(0, remaining)))
             break
         fitted.append(paragraph)
         char_count += len(text)
     return fitted
+
+
+def _clip_paragraph_text(paragraph: Paragraph, char_limit: int) -> Paragraph:
+    text = str(paragraph.get("text") or "")
+    if len(text) <= char_limit:
+        return paragraph
+    clipped = deepcopy(paragraph)
+    clipped["text"] = text[:char_limit]
+    clipped["text_clipped"] = True
+    clipped["original_text_length"] = len(text)
+    return clipped
 
 
 def _paragraph_record(paragraph: Paragraph) -> dict[str, Any]:
@@ -218,4 +248,11 @@ def _paragraph_record(paragraph: Paragraph) -> dict[str, Any]:
     for key in ["start", "end", "source_index", "source_part", "source_kind"]:
         if key in paragraph:
             record[key] = paragraph[key]
+    # Carry the budget-clip markers so the model and downstream truncation guard
+    # can tell when a paragraph's text was trimmed to fit the char budget.
+    if paragraph.get("text_clipped"):
+        record["text_clipped"] = True
+        original_length = paragraph.get("original_text_length")
+        if isinstance(original_length, int):
+            record["original_text_length"] = original_length
     return record
