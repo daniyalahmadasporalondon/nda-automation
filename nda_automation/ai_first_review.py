@@ -37,6 +37,8 @@ from .review_document import (
     validate_clause_evidence_trust,
 )
 from .playbook_rules import normalize_playbook_policy
+from .redline_rationale import attach_redline_rationales
+from .routes.playbook import playbook_snapshot_hash
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
@@ -101,6 +103,11 @@ def build_ai_first_review_result(
     document_paragraphs = _review_paragraphs(text, paragraphs)
     playbook = deepcopy(playbook) if isinstance(playbook, Mapping) else load_playbook()
     validate_playbook(playbook)
+    # Hash the playbook as published (before policy normalization) so this stamp's
+    # hash equals playbook_runtime.active_hash, which is computed over the raw
+    # active file. review_engine overwrites this with the runtime-backed stamp
+    # (same hash, plus the runtime id); a direct caller still gets a usable one.
+    playbook_version = _content_playbook_version(playbook)
     playbook = normalize_playbook_policy(playbook)
     playbook_clauses = [
         clause
@@ -150,9 +157,19 @@ def build_ai_first_review_result(
         review_count=len(review),
         check_count=len(failed),
     )
+    redline_edits = _build_redline_edits(clause_results, document_paragraphs)
+    # Explain WHY each proposed redline exists, sourced from the Playbook clause
+    # (requirement / fallback wording / instructions) and the clause's own
+    # grounded citation. Only clauses that produced an edit get a rationale.
+    attach_redline_rationales(
+        clause_results,
+        redline_edits,
+        playbook_clauses_by_id={str(clause.get("id") or ""): clause for clause in playbook_clauses},
+    )
     result = {
         "review_engine_version": REVIEW_ENGINE_VERSION,
         "review_mode": AI_FIRST_REVIEW_MODE,
+        "playbook_version": playbook_version,
         "overall_status": review_state["overall_status"],
         "review_state": review_state,
         "checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
@@ -183,13 +200,35 @@ def build_ai_first_review_result(
         },
         "ai_verifier": ai_verifier_review,
         "clauses": clause_results,
-        "redline_edits": _build_redline_edits(clause_results, document_paragraphs),
+        "redline_edits": redline_edits,
     }
     evidence_errors = validate_clause_evidence_trust(result, text)
     if evidence_errors:
         raise EvidenceProvenanceError("AI-first review evidence validation failed: " + "; ".join(evidence_errors))
     result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
+
+
+def _content_playbook_version(playbook: Mapping[str, Any]) -> dict[str, str]:
+    """Compact provenance stamp derived from the playbook content alone.
+
+    Used when ``build_ai_first_review_result`` is called directly (no runtime
+    context). ``hash`` matches ``playbook_runtime.active_hash`` for the same
+    published Playbook because both use ``playbook_snapshot_hash``. ``id`` is left
+    blank here — only the active runtime assigns the published version id, and
+    ``review_engine`` overwrites this stamp with the runtime-backed one.
+    """
+    name = str(playbook.get("name") or "").strip()
+    version = str(playbook.get("version") or "").strip()
+    if name and version:
+        label = f"{name} v{version}"
+    else:
+        label = name or (f"v{version}" if version else "")
+    return {
+        "id": "",
+        "hash": playbook_snapshot_hash(dict(playbook)),
+        "label": label,
+    }
 
 
 def _review_paragraphs(source_text: str, paragraphs: Sequence[Paragraph] | None) -> list[Paragraph]:

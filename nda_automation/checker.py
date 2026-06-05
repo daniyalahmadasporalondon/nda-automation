@@ -15,6 +15,7 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .inline_diff import diff_text_operation_dicts
+from .redline_rationale import attach_redline_rationales
 from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
 from .ai_verifier import VerifierFn, apply_ai_verifier, refinalize_clause_grounding
 from .checks import CLAUSE_CHECKS
@@ -222,6 +223,9 @@ def review_nda(
     review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
     passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
+    # Explain WHY each proposed redline exists, drawn from the Playbook clause and
+    # the clause's grounded citation. Only clauses that produced an edit get one.
+    attach_redline_rationales(clause_results, redline_edits, playbook_clauses_by_id=clauses_by_id)
     review_state = aggregate_review_state(
         clause_results,
         pass_count=len(passed),
