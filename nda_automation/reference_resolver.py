@@ -47,6 +47,31 @@ REFERENCE_KIND_ALIASES = {
     "sections": "section",
 }
 
+# "Schedule 2" and "Section 2" are different things: schedules/annexes/appendices
+# are attachments numbered in their own space, separate from the in-body
+# clauses/articles/sections. The kind-agnostic ``number:N`` alias exists so a
+# "Section 10.1" reference can still find a bare numbered heading ("10.1 Return
+# of Materials") that carries no explicit kind. But that same fallback must not
+# bridge across this divide -- letting "Schedule 2" resolve onto "Section 2" (or
+# vice versa) produces a latent false-clear in the governing-law check. We only
+# allow the numeric fallback within the same namespace.
+REFERENCE_KIND_NAMESPACES = {
+    "annex": "attachment",
+    "annexure": "attachment",
+    "appendix": "attachment",
+    "schedule": "attachment",
+    "article": "body",
+    "clause": "body",
+    "section": "body",
+}
+# Bare numbered/heading sections detected without an explicit kind belong to the
+# in-body namespace: they are the clauses/sections a "Section N" reference means.
+NUMERIC_FALLBACK_NAMESPACE = "body"
+
+
+def _kind_namespace(kind: str) -> str | None:
+    return REFERENCE_KIND_NAMESPACES.get(str(kind or "").lower())
+
 
 def resolve_document_references(
     paragraphs: List[Paragraph],
@@ -155,15 +180,27 @@ def _resolve_reference_item(
     alias_lookup: Dict[str, str],
     sections_by_id: Dict[str, Dict[str, object]],
 ) -> Dict[str, object]:
-    alias_keys = [f"{kind}:{number.lower()}", f"number:{number.lower()}"]
+    reference_namespace = _kind_namespace(kind)
+    alias_keys = [f"{kind}:{number.lower()}"]
+    # The kind-agnostic numeric fallback only applies inside the in-body
+    # namespace; an attachment reference ("Schedule 2") must match its explicit
+    # kind alias and never borrow a Section/numbered heading that happens to
+    # share the number.
+    if reference_namespace != "attachment":
+        alias_keys.append(f"number:{number.lower()}")
     matched_alias = ""
     section_id = ""
     for alias_key in alias_keys:
         candidate_section_id = alias_lookup.get(alias_key)
-        if candidate_section_id:
-            matched_alias = alias_key
-            section_id = candidate_section_id
-            break
+        if not candidate_section_id:
+            continue
+        if alias_key.startswith("number:") and not _numeric_fallback_namespace_matches(
+            reference_namespace, candidate_section_id, sections_by_id
+        ):
+            continue
+        matched_alias = alias_key
+        section_id = candidate_section_id
+        break
     return {
         "number": number,
         "alias_keys": alias_keys,
@@ -172,6 +209,27 @@ def _resolve_reference_item(
         "label": str(sections_by_id.get(section_id, {}).get("label") or "") if section_id else "",
         "status": "resolved" if section_id else "unresolved",
     }
+
+
+def _numeric_fallback_namespace_matches(
+    reference_namespace: str | None,
+    section_id: str,
+    sections_by_id: Dict[str, Dict[str, object]],
+) -> bool:
+    """Guard the kind-agnostic ``number:N`` match against a cross-namespace target.
+
+    A bare numbered/heading section has no namespace of its own and is treated as
+    in-body. If the matched section instead carries an explicit attachment kind
+    (a schedule/annex/appendix that only got a ``number:N`` alias), it must not
+    satisfy a body reference -- that is the Schedule-N <-> Section-N collision.
+    """
+    section = sections_by_id.get(section_id)
+    target_namespace = _kind_namespace(str(section.get("kind") or "")) if isinstance(section, dict) else None
+    if target_namespace is None:
+        target_namespace = NUMERIC_FALLBACK_NAMESPACE
+    if reference_namespace is None:
+        return True
+    return target_namespace == reference_namespace
 
 
 def _reference_status(items: Iterable[Dict[str, object]]) -> str:

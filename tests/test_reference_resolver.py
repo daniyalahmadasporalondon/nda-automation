@@ -169,6 +169,70 @@ class ReferenceResolverTests(unittest.TestCase):
         self.assertEqual(resolver["references"][0]["paragraph_id"], "p4")
         self.assertEqual(resolver["references"][0]["reference_text"], "Clause 1")
 
+    def test_schedule_reference_does_not_alias_onto_section_number(self):
+        # "Schedule 2" must not borrow the in-body Section 2 just because they
+        # share the number. Schedules/annexes/appendices are a separate namespace;
+        # bridging them is the latent governing-law false-clear.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Section 1 Definitions",
+            "Definitions text.",
+            "Section 2 Confidentiality",
+            "Confidentiality text.",
+            "The governing law is set out in Schedule 2.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        schedule_reference = resolver["references"][-1]
+        self.assertEqual(schedule_reference["kind"], "schedule")
+        self.assertEqual(schedule_reference["numbers"], ["2"])
+        # No Schedule 2 exists, so the reference is unresolved -- it must NOT fall
+        # back onto Section 2 via the kind-agnostic number alias.
+        self.assertEqual(schedule_reference["resolved_section_ids"], [])
+        self.assertEqual(schedule_reference["status"], "unresolved")
+        self.assertEqual(schedule_reference["items"][0]["matched_alias"], None)
+        self.assertEqual(schedule_reference["items"][0]["alias_keys"], ["schedule:2"])
+
+    def test_section_reference_does_not_alias_onto_schedule_number(self):
+        # The reverse collision: a "Section 2" reference must not resolve to an
+        # attachment "Schedule 2" target via the numeric fallback.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Section 1 Definitions",
+            "Definitions text.",
+            "Schedule 2 Data Processing",
+            "Data processing terms.",
+            "The obligations in Section 2 survive termination.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        section_reference = resolver["references"][-1]
+        self.assertEqual(section_reference["kind"], "section")
+        self.assertEqual(section_reference["numbers"], ["2"])
+        self.assertEqual(section_reference["resolved_section_ids"], [])
+        self.assertEqual(section_reference["status"], "unresolved")
+
+    def test_schedule_reference_resolves_to_explicit_schedule_target(self):
+        # The guard only blocks the cross-namespace fallback; an explicit Schedule
+        # target still resolves normally via its schedule:N alias.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Section 1 Definitions",
+            "Definitions text.",
+            "Schedule 2 Governing Law",
+            "Governing law terms.",
+            "The governing law is set out in Schedule 2.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        schedule_reference = resolver["references"][-1]
+        self.assertEqual(schedule_reference["kind"], "schedule")
+        self.assertEqual(schedule_reference["status"], "resolved")
+        self.assertEqual(schedule_reference["items"][0]["matched_alias"], "schedule:2")
+
     def test_review_result_and_legacy_enrichment_include_reference_resolver(self):
         text = "\n\n".join([
             "Clause 1: Definitions",

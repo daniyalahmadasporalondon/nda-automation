@@ -45,7 +45,6 @@ class DocxTextTests(unittest.TestCase):
                 "word/footer1.xml": part_xml("Footer governing law note."),
                 "word/footnotes.xml": part_xml("Footnote survival language."),
                 "word/endnotes.xml": part_xml("Endnote residual clause."),
-                "word/comments.xml": part_xml("Comment says check non-circumvention."),
             },
         )
 
@@ -61,13 +60,40 @@ class DocxTextTests(unittest.TestCase):
                     "table": {"table_index": 1, "row_index": 1, "cell_index": 1},
                     "text": "Signature table text.",
                 },
-                {"source_kind": "supplemental", "source_part": "comments", "text": "Comment says check non-circumvention."},
                 {"source_kind": "supplemental", "source_part": "endnotes", "text": "Endnote residual clause."},
                 {"source_kind": "supplemental", "source_part": "footer1", "text": "Footer governing law note."},
                 {"source_kind": "supplemental", "source_part": "footnotes", "text": "Footnote survival language."},
                 {"source_kind": "supplemental", "source_part": "header1", "text": "Header confidentiality term."},
             ],
         )
+
+    def test_comments_xml_is_excluded_from_reviewable_text(self):
+        # word/comments.xml carries counterparty/reviewer annotations, not body
+        # text. It must never reach the verdict engine: a comment that mentions a
+        # clause ("check non-circumvention") would otherwise manufacture a hit the
+        # agreement itself never makes.
+        data = make_docx(
+            ["The Receiving Party shall keep the information confidential."],
+            extra_parts={
+                "word/comments.xml": part_xml("We should add a non-circumvention covenant here."),
+            },
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        text = extract_docx_text(data)
+
+        self.assertEqual(
+            paragraphs,
+            [
+                {
+                    "source_index": 1,
+                    "source_kind": "paragraph",
+                    "text": "The Receiving Party shall keep the information confidential.",
+                },
+            ],
+        )
+        self.assertNotIn("non-circumvention", text)
+        self.assertNotIn("comments", [paragraph.get("source_part") for paragraph in paragraphs])
 
     def test_extracts_word_numbering_styles_and_table_context(self):
         data = make_structured_docx()

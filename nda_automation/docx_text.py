@@ -25,12 +25,18 @@ DOCX_TOO_MANY_ENTRIES_MESSAGE = "The Word document contains too many archive ent
 DOCX_UNSUPPORTED_ZIP64_MESSAGE = "The Word document uses unsupported ZIP64 archive metadata."
 DOCX_TABLE_NESTING_MESSAGE = "The Word document contains tables nested too deeply."
 DOCX_XML_NESTING_MESSAGE = "The Word document XML is too deeply nested."
+# Supplemental parts whose text is part of the agreement and must be reviewed
+# (headers, footers, footnotes, endnotes). word/comments.xml is deliberately
+# excluded: it holds counterparty/reviewer annotations, not body text, and
+# feeding it to the verdict engine lets a comment like "check non-circumvention"
+# manufacture a clause hit that the agreement itself never makes. Comments are
+# still surfaced separately on the export path (see docx_comments.py); they just
+# never reach the clause checkers.
 SUPPLEMENTAL_PART_PREFIXES = (
     "word/header",
     "word/footer",
     "word/footnotes.xml",
     "word/endnotes.xml",
-    "word/comments.xml",
 )
 DocxParagraph = Dict[str, object]
 NumberingDefinitions = Dict[str, object]

@@ -107,6 +107,11 @@ def reason_codes_for_clause(clause: Dict[str, Any], decision: str | None = None)
 
 
 def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
+    state = _derive_review_state_from_result(review_result)
+    return _apply_document_level_gates(state, review_result)
+
+
+def _derive_review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
     clauses = review_result.get("clauses", [])
     if isinstance(clauses, list):
         clause_dicts = [clause for clause in clauses if isinstance(clause, dict)]
@@ -132,6 +137,70 @@ def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
     if status == "meets_requirements":
         return aggregate_review_state([], pass_count=1, review_count=0, check_count=0)
     return aggregate_review_state([], pass_count=0, review_count=0, check_count=0)
+
+
+def _apply_document_level_gates(state: Dict[str, Any], review_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-apply document-level send gates that clause re-derivation can't see.
+
+    The per-clause aggregate above is the single source for clause verdicts, but
+    some gates are document-level: an AI packet that was truncated means the AI
+    never saw part of the text, so an all-pass clause set must still block. That
+    escalation is recorded as a top-level marker on the result; re-deriving state
+    from the (all-pass) clauses would silently drop it. Honor the marker here so
+    the gate is durable across re-derivation. Never downgrade a check -- a fail
+    already blocks and must stay a fail.
+    """
+    if not isinstance(state, dict) or not _result_is_truncated(review_result):
+        return state
+    if str(state.get("state") or "") == REVIEW_STATE_CHECK:
+        # A document-level fail already blocks; leave the stronger signal intact
+        # but make sure the human-review/send flags reflect the manual-review need.
+        gated = dict(state)
+        gated["requires_human_review"] = True
+        gated["requires_attention"] = True
+        gated["blocks_send"] = True
+        gated["blocks_auto_send"] = True
+        return gated
+    gated = dict(state)
+    gated["state"] = REVIEW_STATE_REVIEW
+    gated["overall_status"] = _overall_status_for_state(REVIEW_STATE_REVIEW)
+    gated["label"] = _state_label(REVIEW_STATE_REVIEW)
+    gated["tone"] = _state_tone(REVIEW_STATE_REVIEW)
+    gated["requires_attention"] = True
+    gated["requires_human_review"] = True
+    gated["blocks_send"] = True
+    gated["blocks_auto_send"] = True
+    gated["truncation_forced_review"] = True
+    reason = _result_truncation_reason(review_result)
+    if reason:
+        gated["truncation_reason"] = reason
+    return gated
+
+
+def _result_is_truncated(review_result: Dict[str, Any]) -> bool:
+    if not isinstance(review_result, dict):
+        return False
+    truncation = review_result.get("truncation")
+    if isinstance(truncation, dict) and bool(truncation.get("truncated")):
+        return True
+    existing_state = review_result.get("review_state")
+    if isinstance(existing_state, dict) and bool(existing_state.get("truncation_forced_review")):
+        return True
+    return bool(review_result.get("truncation_blocks_send"))
+
+
+def _result_truncation_reason(review_result: Dict[str, Any]) -> str:
+    truncation = review_result.get("truncation")
+    if isinstance(truncation, dict):
+        message = str(truncation.get("message") or "").strip()
+        if message:
+            return message
+    existing_state = review_result.get("review_state")
+    if isinstance(existing_state, dict):
+        reason = str(existing_state.get("truncation_reason") or "").strip()
+        if reason:
+            return reason
+    return ""
 
 
 def result_requires_human_review(review_result: Dict[str, Any]) -> bool:
@@ -167,13 +236,15 @@ def _normalize_clause_decision(clause: Dict[str, Any], decision: str | None = No
         return raw_decision
     if has_supplied_decision or has_clause_decision:
         return CLAUSE_DECISION_REVIEW
-    if bool(clause.get("needs_review")):
-        return CLAUSE_DECISION_REVIEW
-    if clause.get("passes") is False:
-        return CLAUSE_DECISION_FAIL
-    if clause.get("passes") is True:
-        return CLAUSE_DECISION_PASS
-    return CLAUSE_DECISION_REVIEW
+    # No explicit decision: derive it from the canonical deterministic rule in
+    # decision_arbiter rather than re-deriving here. That keeps the three
+    # normalizers in agreement -- in particular it makes review_state honor the
+    # confidence < 0.75 -> review rule, so a clause that "passes" but only at low
+    # semantic confidence no longer false-clears the send gate. Imported lazily
+    # because decision_arbiter imports this module's constants at load time.
+    from .decision_arbiter import deterministic_decision
+
+    return deterministic_decision(clause)
 
 
 def _state_for_clause_decision(decision: str) -> str:

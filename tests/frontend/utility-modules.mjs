@@ -76,6 +76,34 @@ assert.equal(failStatus.resultLabel, "Fail");
 
 assert.equal(clausePasses({ decision: "pass", status: "match" }), true);
 
+// clauseStatus consumes the backend canonical verdict (review_state.state /
+// decision) rather than re-deriving a second opinion. A backend "check" state
+// is a fail even though the raw `passes` flag is absent.
+const canonicalCheck = clauseStatus({ review_state: { state: "check", blocks_send: true } });
+assert.equal(canonicalCheck.fails, true);
+assert.equal(canonicalCheck.tone, "check");
+assert.equal(canonicalCheck.blocksSend, true);
+
+// A "fail" decision maps to the check state (needs a redline), matching
+// review_state.py, even with no nested review_state present.
+const decisionFail = clauseStatus({ decision: "fail" });
+assert.equal(decisionFail.fails, true);
+assert.equal(decisionFail.tone, "check");
+
+// A clause that carries only needs_review (no status/decision/review_state) must
+// surface as Needs-review, not silently pending -- matching the Python
+// normalizers' unknown -> review fail-safe.
+const needsReviewOnly = clauseStatus({ needs_review: true });
+assert.equal(needsReviewOnly.needsReview, true);
+assert.equal(needsReviewOnly.tone, "review");
+assert.equal(needsReviewOnly.passes, false);
+
+// A truly signal-less clause stays pre-review Pending (idle), unchanged.
+const signalLess = clauseStatus({});
+assert.equal(signalLess.tone, "pending");
+assert.equal(signalLess.needsReview, false);
+assert.equal(signalLess.fails, false);
+
 for (const pair of inlineDiffVectors.flatMap((vector) => vector.spacing_pairs || [])) {
   assert.equal(needsInlineSpace(pair.previous_token, pair.token), pair.needs_space, `${pair.previous_token} + ${pair.token}`);
 }
