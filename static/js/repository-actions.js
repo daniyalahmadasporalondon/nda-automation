@@ -160,6 +160,43 @@ const RepositoryActions = (() => {
       }
     }
 
+    // Re-run a stale matter's review against the active published Playbook from the
+    // inspector, then refresh the panel + board so the stale badge clears on success.
+    async function refreshMatterReview(matter) {
+      const refreshButton = repositoryMatterPanel?.querySelector(".repository-refresh-review");
+      const previousLabel = refreshButton?.textContent || "Refresh Review";
+      if (refreshButton) {
+        refreshButton.disabled = true;
+        refreshButton.textContent = "Refreshing";
+      }
+      setPanelMessage("Refreshing review against the active Playbook.");
+      try {
+        const reviewMatter = await api.getMatterReview(matter.id, { refresh: true });
+        await loadMatters();
+        // loadMatters resets state.matters from the list; keep the richer review
+        // payload (with review_refresh) as the selected matter for the panel.
+        if (getSelectedMatter()?.id === matter.id || !getSelectedMatter()) {
+          setSelectedMatter(reviewMatter);
+          renderDetailPanel(reviewMatter);
+        }
+        renderBoard();
+        const refresh = reviewMatter?.review_refresh || {};
+        if (refresh.stale) {
+          setPanelMessage(MatterUtils.reviewStaleLabel(reviewMatter) || "Review is still stale.");
+        } else if (refresh.redline_draft_cleared) {
+          setPanelMessage(refresh.message || "Review refreshed. Saved redline draft was cleared.");
+        } else {
+          setPanelMessage("Review refreshed against the active Playbook.");
+        }
+      } catch (error) {
+        setPanelMessage(error.message || "Review could not refresh.");
+        if (refreshButton?.isConnected) {
+          refreshButton.disabled = false;
+          refreshButton.textContent = previousLabel;
+        }
+      }
+    }
+
     async function exportMatter(matter) {
       setPendingSendMatterId(null);
       setPendingDeleteMatterId(null);
@@ -294,6 +331,7 @@ const RepositoryActions = (() => {
       moveMatterToColumn,
       openMatter,
       openMatterInReview,
+      refreshMatterReview,
       requestDeleteMatter,
       sendRedline,
     };

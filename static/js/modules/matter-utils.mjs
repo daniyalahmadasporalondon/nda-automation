@@ -87,6 +87,40 @@ export function gmailSendBlock(matter, gmailStatus = {}) {
   return "";
 }
 
+// True when a matter's stored review is stale against the active published
+// Playbook and should be refreshed before export/send. Reads both the list-level
+// `review_stale` flag (from GET /api/matters) and the richer `review_refresh.stale`
+// present once a matter is opened into review — so the indicator works on the
+// board and in the inspector regardless of which payload the matter came from.
+export function reviewStale(matter) {
+  if (matter?.review_stale === true) return true;
+  return Boolean(matter?.review_refresh?.stale);
+}
+
+// Stale reasons (e.g. ["playbook_changed"]) from whichever payload carries them.
+export function reviewStaleReasons(matter) {
+  const fromRefresh = matter?.review_refresh?.stale_reasons;
+  if (Array.isArray(fromRefresh) && fromRefresh.length) return fromRefresh.map(String);
+  const fromList = matter?.review_stale_reasons;
+  if (Array.isArray(fromList) && fromList.length) return fromList.map(String);
+  return [];
+}
+
+// Short, human label for a stale matter badge/tooltip.
+export function reviewStaleLabel(matter) {
+  if (!reviewStale(matter)) return "";
+  const message = String(matter?.review_refresh?.stale_message || matter?.review_stale_message || "").trim();
+  if (message) return message;
+  const reasons = reviewStaleReasons(matter);
+  if (reasons.includes("playbook_changed")) {
+    return "Active Playbook changed since this review. Refresh before exporting or sending.";
+  }
+  if (reasons.includes("review_engine_version_changed")) {
+    return "Review engine changed since this review. Refresh before exporting or sending.";
+  }
+  return "Review is out of date. Refresh against the active Playbook.";
+}
+
 export function gmailSendButtonLabel(blockReason) {
   if (!blockReason) return "";
   if (blockReason.includes("disabled")) return "Outbound Off";
@@ -105,5 +139,8 @@ export const MatterUtils = {
   gmailSendButtonLabel,
   needsHumanReview,
   recipientEmail,
+  reviewStale,
+  reviewStaleLabel,
+  reviewStaleReasons,
   reviewState,
 };

@@ -17,8 +17,24 @@ import {
   gmailSendBlock,
   gmailSendButtonLabel,
   needsHumanReview,
+  reviewStale,
+  reviewStaleLabel,
+  reviewStaleReasons,
 } from "../../static/js/modules/matter-utils.mjs";
 import { createRepositoryApi } from "../../static/js/modules/repository-api.mjs";
+import {
+  clausesOf,
+  draftDiffersFromActive,
+  hashOf,
+  isWorkingDirty,
+  normalizePlaybookResponse,
+  normalizeValidation,
+  shortHash,
+  validationSummary,
+  versionLabel,
+  versionOf,
+} from "../../static/js/modules/playbook-draft.mjs";
+import { createPlaybookApi } from "../../static/js/modules/playbook-api.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -69,6 +85,34 @@ assert.equal(counterpartyEmail({
   sender: "Me <me@example.com>",
   reply_to: "Counterparty <counterparty@example.com>",
 }), "counterparty@example.com");
+
+// reviewStale: reads the list-level flag and the opened-review review_refresh.
+assert.equal(reviewStale({}), false);
+assert.equal(reviewStale({ review_stale: true }), true);
+assert.equal(reviewStale({ review_refresh: { stale: true } }), true);
+assert.equal(reviewStale({ review_refresh: { stale: false } }), false);
+assert.deepEqual(reviewStaleReasons({ review_refresh: { stale_reasons: ["playbook_changed"] } }), ["playbook_changed"]);
+assert.deepEqual(reviewStaleReasons({ review_stale_reasons: ["review_engine_version_changed"] }), ["review_engine_version_changed"]);
+assert.deepEqual(reviewStaleReasons({}), []);
+// reviewStaleLabel: prefers explicit message, else maps reasons, else generic.
+assert.equal(reviewStaleLabel({}), "");
+assert.equal(
+  reviewStaleLabel({ review_refresh: { stale: true, stale_message: "Custom stale copy." } }),
+  "Custom stale copy.",
+);
+assert.equal(
+  reviewStaleLabel({ review_stale: true, review_stale_reasons: ["playbook_changed"] }),
+  "Active Playbook changed since this review. Refresh before exporting or sending.",
+);
+assert.equal(
+  reviewStaleLabel({ review_refresh: { stale: true, stale_reasons: ["review_engine_version_changed"] } }),
+  "Review engine changed since this review. Refresh before exporting or sending.",
+);
+assert.equal(
+  reviewStaleLabel({ review_stale: true }),
+  "Review is out of date. Refresh against the active Playbook.",
+);
+assert.equal(MatterUtils.reviewStale({ review_stale: true }), true);
 
 assert.equal(formatBytes(0), "0 B");
 assert.equal(formatBytes(1536), "1.5 KB");
@@ -131,6 +175,185 @@ assert.deepEqual(JSON.parse(calls[calls.length - 1].options.body), { limit: 2 })
 assert.equal(calls[4].options.method, "POST");
 assert.deepEqual(JSON.parse(calls[4].options.body), { board_column: "in_review" });
 assert.deepEqual(JSON.parse(calls[5].options.body), { matter_id: "matter-1", confirm_send: true });
+
+// --- Playbook draft/publish state helpers ---
+
+// shortHash truncates long hashes, strips algorithm prefixes, tolerates missing.
+assert.equal(shortHash("a1b2c3d4e5f6"), "a1b2c3d4");
+assert.equal(shortHash("abc123"), "abc123");
+assert.equal(shortHash("sha256:e2e59c8ed770abc123"), "e2e59c8e");
+assert.equal(shortHash(null), "");
+assert.equal(shortHash(undefined), "");
+
+// versionOf / hashOf read the backend's nested metadata, with flat fallback.
+assert.equal(versionOf({ metadata: { active_version_id: "pbv_9" } }), "pbv_9");
+assert.equal(versionOf({ metadata: { draft_id: "drf_3" } }), "drf_3");
+assert.equal(hashOf({ metadata: { active_hash: "abc12345def" } }), "abc12345def");
+assert.equal(hashOf({ metadata: { draft_hash: "draft999aa" } }), "draft999aa");
+assert.equal(versionOf({ version: 4 }), 4);
+assert.equal(hashOf({ hash: "flat1234" }), "flat1234");
+
+// versionLabel combines version + short hash from metadata, tolerant of gaps.
+// Numeric versions get a "v" prefix; string ids (e.g. "pbv_8") show verbatim.
+assert.equal(versionLabel({ metadata: { active_version_id: 4, active_hash: "a1b2c3d4e5f6" } }), "v4 · a1b2c3d4");
+assert.equal(versionLabel({ metadata: { draft_id: 7 } }), "v7");
+assert.equal(versionLabel({ metadata: { active_version_id: "pbv_8", active_hash: "draft888aa" } }), "pbv_8 · draft888");
+assert.equal(versionLabel({ metadata: { active_version_id: "12", active_hash: "abc" } }), "v12 · abc");
+assert.equal(versionLabel({ metadata: { draft_hash: "deadbeefcafe" } }), "deadbeef");
+assert.equal(versionLabel({ metadata: {} }), "");
+assert.equal(versionLabel(null), "");
+
+// normalizePlaybookResponse: {active, draft, history} with nested metadata.
+const normNew = normalizePlaybookResponse({
+  active: { playbook: { clauses: [{ id: "a" }] }, metadata: { active_version_id: "pbv_3", active_hash: "active11" } },
+  draft: {
+    playbook: { clauses: [{ id: "a" }, { id: "b" }] },
+    metadata: { draft_id: "drf_4", draft_hash: "draft222" },
+    has_unpublished_changes: true,
+  },
+  history: [{ id: "h1" }],
+});
+assert.deepEqual(clausesOf(normNew.active), [{ id: "a" }]);
+assert.deepEqual(clausesOf(normNew.draft), [{ id: "a" }, { id: "b" }]);
+assert.equal(versionOf(normNew.active), "pbv_3");
+assert.equal(normNew.draft.has_unpublished_changes, true);
+assert.deepEqual(normNew.history, [{ id: "h1" }]);
+
+// normalizePlaybookResponse: draft null → active becomes the draft baseline.
+const normNoDraft = normalizePlaybookResponse({
+  active: { playbook: { clauses: [{ id: "a" }] }, metadata: { active_version_id: "pbv_3", active_hash: "active11" } },
+  draft: null,
+  history: [],
+});
+assert.deepEqual(clausesOf(normNoDraft.draft), [{ id: "a" }]);
+assert.equal(hashOf(normNoDraft.draft), "active11");
+assert.equal(draftDiffersFromActive(normNoDraft.draft, normNoDraft.active), false);
+
+// normalizePlaybookResponse: legacy {playbook, history} → active==draft baseline.
+const normLegacy = normalizePlaybookResponse({ playbook: { clauses: [{ id: "x" }] }, history: [] });
+assert.deepEqual(clausesOf(normLegacy.active), [{ id: "x" }]);
+assert.deepEqual(clausesOf(normLegacy.draft), [{ id: "x" }]);
+
+// normalizePlaybookResponse: empty/garbage payload degrades to empty blocks.
+const normEmpty = normalizePlaybookResponse(null);
+assert.deepEqual(clausesOf(normEmpty.active), []);
+assert.deepEqual(clausesOf(normEmpty.draft), []);
+assert.deepEqual(normEmpty.history, []);
+
+// isWorkingDirty: working clauses vs saved draft clauses.
+const draftBlock = { playbook: { clauses: [{ id: "a", name: "Alpha" }] } };
+assert.equal(isWorkingDirty([{ id: "a", name: "Alpha" }], draftBlock), false);
+assert.equal(isWorkingDirty([{ id: "a", name: "Alpha edited" }], draftBlock), true);
+
+// draftDiffersFromActive: explicit flag wins, else metadata hash, else clauses.
+assert.equal(draftDiffersFromActive({ has_unpublished_changes: true }, {}), true);
+assert.equal(draftDiffersFromActive({ has_unpublished_changes: false }, {}), false);
+assert.equal(
+  draftDiffersFromActive({ metadata: { draft_hash: "aaa" } }, { metadata: { active_hash: "bbb" } }),
+  true,
+);
+assert.equal(
+  draftDiffersFromActive({ metadata: { draft_hash: "same" } }, { metadata: { active_hash: "same" } }),
+  false,
+);
+assert.equal(
+  draftDiffersFromActive(
+    { playbook: { clauses: [{ id: "a" }, { id: "b" }] } },
+    { playbook: { clauses: [{ id: "a" }] } },
+  ),
+  true,
+);
+
+// normalizeValidation: backend {location, clause, field, message, severity}.
+const valOk = normalizeValidation({ valid: true, errors: [] });
+assert.equal(valOk.valid, true);
+assert.deepEqual(valOk.errors, []);
+const valErr = normalizeValidation({
+  valid: false,
+  errors: [
+    { location: "mutuality.name", clause: "mutuality", field: "name", message: "Name is required", severity: "error" },
+    "Free-form problem",
+  ],
+});
+assert.equal(valErr.valid, false);
+assert.deepEqual(valErr.errors[0], { message: "Name is required", clause_id: "mutuality", field: "name", code: "error" });
+assert.deepEqual(valErr.errors[1], { message: "Free-form problem" });
+// Also accepts clause_id/code aliases.
+assert.deepEqual(
+  normalizeValidation({ errors: [{ clause_id: "term", field: "max_term_years", code: "required", message: "Bad" }] }).errors[0],
+  { message: "Bad", clause_id: "term", field: "max_term_years", code: "required" },
+);
+// Errors present but valid flag missing → treated as invalid.
+assert.equal(normalizeValidation({ errors: [{ message: "x" }] }).valid, false);
+// No errors and no flag → valid.
+assert.equal(normalizeValidation({}).valid, true);
+// Bare array of errors.
+assert.equal(normalizeValidation(["broken"]).valid, false);
+
+// validationSummary: pluralization + valid case.
+assert.equal(validationSummary({ valid: true, errors: [] }), "Draft is valid.");
+assert.equal(validationSummary({ valid: false, errors: [{ message: "a" }] }), "1 validation issue found.");
+assert.equal(validationSummary({ valid: false, errors: [{ message: "a" }, { message: "b" }] }), "2 validation issues found.");
+
+// --- Playbook draft/publish API wrapper (real endpoint contract) ---
+const playbookCalls = [];
+const blockWith = (idKey, idVal, hashKey, hashVal) => ({ playbook: {}, metadata: { [idKey]: idVal, [hashKey]: hashVal } });
+const playbookApi = createPlaybookApi({
+  fetchImpl: async (url, options = {}) => {
+    playbookCalls.push({ url, options });
+    if (url === "/api/playbook/draft" && (!options.method || options.method === "GET")) {
+      return jsonResponse({ active: blockWith("active_version_id", "pbv_1", "active_hash", "act11111"), draft: null, history: [] });
+    }
+    if (url === "/api/playbook/draft") return jsonResponse({ draft: blockWith("draft_id", "drf_3", "draft_hash", "drf33333") });
+    if (url === "/api/playbook/validate-draft") return jsonResponse({ valid: true, errors: [] });
+    if (url === "/api/playbook/publish") return jsonResponse({ active: blockWith("active_version_id", "pbv_3", "active_hash", "drf33333"), draft: null });
+    if (url === "/api/playbook/discard-draft") return jsonResponse({ active: blockWith("active_version_id", "pbv_1", "active_hash", "act11111"), draft: null });
+    if (url === "/api/playbook/restore") return jsonResponse({ active: blockWith("active_version_id", "pbv_4", "active_hash", "rst44444"), draft: null });
+    return jsonResponse({ error: "not found" }, { ok: false });
+  },
+});
+const samplePlaybook = { clauses: [{ id: "a", name: "Alpha" }] };
+const activeMeta = { active_version_id: "pbv_1", active_hash: "act11111" };
+await playbookApi.loadPlaybook();
+await playbookApi.saveDraft(samplePlaybook, { activeMeta });
+await playbookApi.validateDraft(samplePlaybook);
+await playbookApi.publishPlaybook(samplePlaybook, { activeMeta });
+await playbookApi.discardDraft({ draftId: "drf_3" });
+await playbookApi.restoreVersion("hist-1", "admin");
+// loadPlaybook GETs the draft endpoint.
+assert.equal(playbookCalls[0].url, "/api/playbook/draft");
+assert.ok(!playbookCalls[0].options.method || playbookCalls[0].options.method === "GET");
+// saveDraft POSTs the playbook + optimistic-concurrency hints.
+assert.equal(playbookCalls[1].url, "/api/playbook/draft");
+assert.equal(playbookCalls[1].options.method, "POST");
+assert.deepEqual(JSON.parse(playbookCalls[1].options.body), {
+  playbook: samplePlaybook,
+  expected_active_version_id: "pbv_1",
+  expected_active_hash: "act11111",
+});
+// validate POSTs to /validate-draft.
+assert.equal(playbookCalls[2].url, "/api/playbook/validate-draft");
+assert.equal(playbookCalls[2].options.method, "POST");
+assert.deepEqual(JSON.parse(playbookCalls[2].options.body), { playbook: samplePlaybook });
+// publish POSTs playbook + actor + concurrency hints.
+assert.equal(playbookCalls[3].url, "/api/playbook/publish");
+assert.deepEqual(JSON.parse(playbookCalls[3].options.body), {
+  playbook: samplePlaybook,
+  actor: "admin",
+  expected_active_version_id: "pbv_1",
+  expected_active_hash: "act11111",
+});
+// discard POSTs the draft id.
+assert.equal(playbookCalls[4].url, "/api/playbook/discard-draft");
+assert.deepEqual(JSON.parse(playbookCalls[4].options.body), { draft_id: "drf_3" });
+// restore POSTs history_id + actor.
+assert.equal(playbookCalls[5].url, "/api/playbook/restore");
+assert.deepEqual(JSON.parse(playbookCalls[5].options.body), { history_id: "hist-1", actor: "admin" });
+// Failed request surfaces the backend error message.
+await assert.rejects(
+  createPlaybookApi({ fetchImpl: async () => jsonResponse({ error: "boom" }, { ok: false }) }).saveDraft({}),
+  /boom/,
+);
 
 function jsonResponse(payload, { ok = true } = {}) {
   return {

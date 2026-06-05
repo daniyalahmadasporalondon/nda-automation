@@ -1,16 +1,41 @@
-function createPlaybookController({ state, playbookList, clauseDetail, renderStudioEmpty }) {
+function createPlaybookController({ state, playbookList, clauseDetail, renderStudioEmpty, runtime = (typeof PlaybookRuntime !== "undefined" ? PlaybookRuntime : null) }) {
   const TEMPLATE_PREVIEW_CONTEXT = {
     max_term_years: 5,
   };
+
+  // Last server validation result ({ valid, errors }) or null when not yet run /
+  // invalidated by an edit. Drives the validation region and gates Publish.
+  let lastValidation = null;
+
+  // The draft/publish modules load asynchronously via the runtime bridge. Resolve
+  // them once and reuse; every handler awaits this before touching draft helpers.
+  let runtimeReadyPromise = null;
+  function ensureRuntime() {
+    if (!runtime) return Promise.resolve(null);
+    if (!runtimeReadyPromise) runtimeReadyPromise = runtime.ready;
+    return runtimeReadyPromise;
+  }
+  function draftHelpers() {
+    return runtime?.draft || null;
+  }
+  function playbookApi() {
+    return runtime?.api || null;
+  }
 
   async function loadPlaybook() {
     playbookList.innerHTML = '<div class="playbook-loading">Loading clauses</div>';
     clauseDetail.innerHTML = '<div class="detail-empty">Loading playbook</div>';
 
     try {
-      const response = await fetch("/api/playbook");
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Playbook could not load");
+      await ensureRuntime();
+      const api = playbookApi();
+      const payload = api
+        ? await api.loadPlaybook()
+        : await fetch("/api/playbook").then(async (response) => {
+            const body = await response.json();
+            if (!response.ok) throw new Error(body.error || "Playbook could not load");
+            return body;
+          });
 
       updatePlaybookStateFromPayload(payload);
       state.selectedClauseId = state.playbookClauses[0]?.id || null;
@@ -76,6 +101,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
         </div>
 
+        ${playbookStatusBanner()}
+
         <nav class="playbook-subpanel-tabs" aria-label="${escapeHtml(clause.name)} editor sections">
           <button class="${panelActive("policy") ? "active" : ""}" type="button" data-playbook-panel-tab="policy" aria-pressed="${panelActive("policy") ? "true" : "false"}">Policy</button>
           <button class="${panelActive("redline") ? "active" : ""}" type="button" data-playbook-panel-tab="redline" aria-pressed="${panelActive("redline") ? "true" : "false"}">Redline</button>
@@ -139,18 +166,25 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           ${playbookHistoryPanel()}
         </section>
 
-        <div class="admin-actions">
+        <div class="playbook-validation" id="playbookValidation" data-state="idle" aria-live="polite" hidden></div>
+
+        <div class="admin-actions playbook-draft-actions">
           <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
-          <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Draft</button>
-          <button type="submit" id="savePlaybookButton" ${hasAnyDraft() && !hasTemplateValidationErrors() ? "" : "disabled"}>Commit & Save Playbook</button>
+          <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Changes</button>
+          <button class="secondary" type="button" id="validatePlaybookButton">Validate Draft</button>
+          <button type="submit" id="savePlaybookButton" ${hasAnyDraft() && !hasTemplateValidationErrors() ? "" : "disabled"}>Save Draft</button>
+          <button class="primary" type="button" id="publishPlaybookButton" ${canPublish() ? "" : "disabled"}>Publish Playbook</button>
         </div>
       </form>
     `;
 
     const editor = clauseDetail.querySelector("#playbookEditor");
     editor.addEventListener("input", handleEditorInput);
-    editor.addEventListener("submit", savePlaybook);
+    editor.addEventListener("submit", saveDraft);
     clauseDetail.querySelector("#discardPlaybookDraft").addEventListener("click", discardSelectedDraft);
+    clauseDetail.querySelector("#validatePlaybookButton").addEventListener("click", validateDraft);
+    clauseDetail.querySelector("#publishPlaybookButton").addEventListener("click", publishPlaybook);
+    renderValidationState();
     setupSpecialControls(clause);
     setupPlaybookSubpanels();
     setupPlaybookHistoryControls();
@@ -187,12 +221,134 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const diffNode = clauseDetail.querySelector("#playbookDraftDiff");
     const discard = clauseDetail.querySelector("#discardPlaybookDraft");
     const save = clauseDetail.querySelector("#savePlaybookButton");
+    const publish = clauseDetail.querySelector("#publishPlaybookButton");
     if (diffNode) diffNode.textContent = diff || "No unsaved changes.";
     if (discard) discard.disabled = !diff;
     renderTemplatePreviewState(clause);
     renderGoverningLawRedlinePreview(clause);
     if (save) save.disabled = !hasAnyDraft() || hasTemplateValidationErrors();
+    if (publish) publish.disabled = !canPublish();
+    // Editing invalidates a prior validation pass; clear it so the badge can't go stale.
+    if (lastValidation && hasAnyDraft()) {
+      lastValidation = null;
+      renderValidationState();
+    }
+    updateStatusBannerState();
     renderPlaybookList();
+  }
+
+  // Patch the version banner's draft-state class + note in place, so live edits
+  // flip it to the unsaved-changes look without a full editor re-render.
+  function updateStatusBannerState() {
+    const banner = clauseDetail.querySelector(".playbook-version-banner");
+    if (!banner) return;
+    const helpers = draftHelpers();
+    const dirty = hasAnyDraft();
+    const draftAhead = helpers ? helpers.draftDiffersFromActive(state.draftMeta, state.activePlaybook) : false;
+    let note = "Matches the active published version.";
+    let stateClass = "in-sync";
+    if (dirty) {
+      note = "Unsaved changes - Save Draft to keep them.";
+      stateClass = "editing";
+    } else if (draftAhead) {
+      note = "Saved draft is ahead of the active version - Publish to make it live.";
+      stateClass = "ahead";
+    }
+    banner.dataset.draftState = stateClass;
+    const draftNote = banner.querySelector(".playbook-version-card.draft small");
+    if (draftNote) draftNote.textContent = note;
+    const draftEyebrow = banner.querySelector(".playbook-version-card.draft .eyebrow");
+    if (draftEyebrow) {
+      const hasDot = Boolean(draftEyebrow.querySelector(".playbook-dirty-dot"));
+      if (dirty && !hasDot) {
+        draftEyebrow.insertAdjacentHTML("beforeend", ' <span class="playbook-dirty-dot" aria-hidden="true"></span>');
+      } else if (!dirty && hasDot) {
+        draftEyebrow.querySelector(".playbook-dirty-dot").remove();
+      }
+    }
+  }
+
+  // Banner above the editor that distinguishes the active published Playbook from
+  // the working draft, with version/hash labels and an unpublished-changes hint.
+  function playbookStatusBanner() {
+    const helpers = draftHelpers();
+    const active = state.activePlaybook || null;
+    const draft = state.draftMeta || null;
+    const activeLabel = helpers ? helpers.versionLabel(active) : "";
+    const draftLabel = helpers ? helpers.versionLabel(draft) : "";
+    const dirty = hasAnyDraft();
+    const draftAhead = helpers ? helpers.draftDiffersFromActive(draft, active) : false;
+    let draftNote = "Matches the active published version.";
+    let draftStateClass = "in-sync";
+    if (dirty) {
+      draftNote = "Unsaved changes - Save Draft to keep them.";
+      draftStateClass = "editing";
+    } else if (draftAhead) {
+      draftNote = "Saved draft is ahead of the active version - Publish to make it live.";
+      draftStateClass = "ahead";
+    }
+    return `
+      <section class="playbook-version-banner" data-draft-state="${escapeHtml(draftStateClass)}" aria-label="Playbook version status">
+        <article class="playbook-version-card active">
+          <p class="eyebrow">Active published</p>
+          <strong>${escapeHtml(activeLabel || "Unversioned")}</strong>
+          <small>Used by the review engine right now.</small>
+        </article>
+        <article class="playbook-version-card draft">
+          <p class="eyebrow">Working draft${dirty ? " <span class=\"playbook-dirty-dot\" aria-hidden=\"true\"></span>" : ""}</p>
+          <strong>${escapeHtml(draftLabel || "Unversioned")}</strong>
+          <small>${escapeHtml(draftNote)}</small>
+        </article>
+      </section>
+    `;
+  }
+
+  // Publish is allowed only when the draft is saved (no unsaved edits), the draft
+  // actually differs from the active version, and no validation errors are pending.
+  function canPublish() {
+    if (hasAnyDraft() || hasTemplateValidationErrors()) return false;
+    if (lastValidation && !lastValidation.valid) return false;
+    const helpers = draftHelpers();
+    if (!helpers) return false;
+    return helpers.draftDiffersFromActive(state.draftMeta, state.activePlaybook);
+  }
+
+  // Render the validation region from the last validation result. Hidden until a
+  // validation has run; shows a success note or a list of errors.
+  function renderValidationState() {
+    const region = clauseDetail.querySelector("#playbookValidation");
+    if (!region) return;
+    if (!lastValidation) {
+      region.hidden = true;
+      region.dataset.state = "idle";
+      region.innerHTML = "";
+      return;
+    }
+    region.hidden = false;
+    if (lastValidation.valid) {
+      region.dataset.state = "valid";
+      region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>';
+      return;
+    }
+    region.dataset.state = "invalid";
+    const items = lastValidation.errors
+      .map((error) => {
+        const where = error.clause_id
+          ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(error.field)}` : ""}</span>`
+          : "";
+        return `<li>${where}<span>${escapeHtml(error.message)}</span></li>`;
+      })
+      .join("");
+    region.innerHTML = `
+      <p class="playbook-validation-title">Resolve ${lastValidation.errors.length === 1 ? "this issue" : "these issues"} before publishing:</p>
+      <ul class="playbook-validation-list">${items}</ul>
+    `;
+  }
+
+  // Friendly clause name for a validation error's clause_id (falls back to the id).
+  function clauseNameForId(clauseId) {
+    const clause = state.playbookClauses.find((item) => item.id === clauseId);
+    return clause?.name || clauseId;
   }
 
   function setupSpecialControls(clause) {
@@ -303,8 +459,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return state.playbookClausePanels;
   }
 
-  async function savePlaybook(event) {
-    event.preventDefault();
+  // Save Draft persists the working clauses to the server-side draft only; the
+  // active published Playbook is untouched. Bound to the form submit.
+  async function saveDraft(event) {
+    if (event) event.preventDefault();
     const status = clauseDetail.querySelector("#playbookSaveStatus");
     const saveButton = clauseDetail.querySelector("#savePlaybookButton");
     sanitizePlaybookTemplatesForSave();
@@ -314,25 +472,112 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       if (saveButton) saveButton.disabled = true;
       return;
     }
-    if (status) status.textContent = "Saving playbook...";
+    if (status) status.textContent = "Saving draft...";
     if (saveButton) saveButton.disabled = true;
 
     try {
-      const response = await fetch("/api/playbook", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playbook: state.playbook }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Playbook could not be saved");
-      updatePlaybookStateFromPayload(payload);
-      if (status) status.textContent = "Playbook saved.";
+      await ensureRuntime();
+      const api = playbookApi();
+      if (!api) throw new Error("Draft tools are still loading. Try again in a moment.");
+      const payload = await api.saveDraft(state.playbook, { activeMeta: activeMetadata() });
+      // The saved draft is the new diff baseline; refresh labels from the response.
+      state.savedPlaybook = clonePlaybook(state.playbook);
+      applyActiveBlock(extractBlock(payload, "active", state.activePlaybook));
+      applyDraftBlock(extractBlock(payload, "draft", state.draftMeta));
       renderPlaybookList();
       renderClauseDetail();
+      // Re-render rebuilds #clauseDetail, so set the status on the fresh node.
+      setSaveStatus("Draft saved.");
     } catch (error) {
       if (status) status.textContent = error.message;
       if (saveButton) saveButton.disabled = !hasAnyDraft() || hasTemplateValidationErrors();
     }
+  }
+
+  // Validate Draft asks the backend to check the working clauses without saving,
+  // then surfaces any errors in the validation region. Does not mutate the draft.
+  async function validateDraft() {
+    const status = clauseDetail.querySelector("#playbookSaveStatus");
+    const button = clauseDetail.querySelector("#validatePlaybookButton");
+    sanitizePlaybookTemplatesForSave();
+    if (status) status.textContent = "Validating draft...";
+    if (button) button.disabled = true;
+    try {
+      await ensureRuntime();
+      const api = playbookApi();
+      const helpers = draftHelpers();
+      if (!api || !helpers) throw new Error("Draft tools are still loading. Try again in a moment.");
+      const payload = await api.validateDraft(state.playbook);
+      lastValidation = helpers.normalizeValidation(payload);
+      if (status) status.textContent = helpers.validationSummary(lastValidation);
+      renderValidationState();
+      const publish = clauseDetail.querySelector("#publishPlaybookButton");
+      if (publish) publish.disabled = !canPublish();
+    } catch (error) {
+      if (status) status.textContent = error.message;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // Publish promotes the saved draft to the active Playbook the engine uses. We
+  // require a clean (saved) draft so what publishes matches what the editor shows.
+  async function publishPlaybook() {
+    const status = clauseDetail.querySelector("#playbookSaveStatus");
+    const button = clauseDetail.querySelector("#publishPlaybookButton");
+    if (hasAnyDraft()) {
+      if (status) status.textContent = "Save the draft before publishing.";
+      return;
+    }
+    if (lastValidation && !lastValidation.valid) {
+      if (status) status.textContent = "Resolve validation issues before publishing.";
+      return;
+    }
+    if (status) status.textContent = "Publishing playbook...";
+    if (button) button.disabled = true;
+    try {
+      await ensureRuntime();
+      const api = playbookApi();
+      if (!api) throw new Error("Draft tools are still loading. Try again in a moment.");
+      const payload = await api.publishPlaybook(state.playbook, { activeMeta: activeMetadata() });
+      applyActiveBlock(extractBlock(payload, "active", state.activePlaybook));
+      // Publishing clears the server draft; reflect the now-in-sync state by
+      // re-baselining the draft block to the freshly published active version.
+      const publishedActive = extractBlock(payload, "active", state.activePlaybook);
+      applyDraftBlock(clonePlaybook(publishedActive));
+      state.savedPlaybook = clonePlaybook(state.playbook);
+      state.playbookHistory = Array.isArray(payload?.history) ? payload.history : state.playbookHistory;
+      lastValidation = null;
+      renderPlaybookList();
+      renderClauseDetail();
+      // Re-render rebuilds #clauseDetail, so set the status on the fresh node.
+      setSaveStatus("Playbook published.");
+    } catch (error) {
+      if (status) status.textContent = error.message;
+      if (button) button.disabled = !canPublish();
+    }
+  }
+
+  // Write to the (possibly freshly re-rendered) save-status region.
+  function setSaveStatus(message) {
+    const node = clauseDetail.querySelector("#playbookSaveStatus");
+    if (node) node.textContent = message;
+  }
+
+  // Pull a named block ({active}/{draft}) out of an API response. Each block is
+  // `{ playbook, metadata, ... }`. When the backend omits the block (e.g. draft is
+  // null after publish/discard) keep the current state value.
+  function extractBlock(payload, key, fallback) {
+    if (payload && typeof payload === "object" && payload[key] && typeof payload[key] === "object") {
+      return payload[key];
+    }
+    return fallback;
+  }
+
+  // The active block's metadata, used for opt-in optimistic-concurrency hints.
+  function activeMetadata() {
+    const block = state.activePlaybook;
+    return block && typeof block.metadata === "object" ? block.metadata : null;
   }
 
   function discardSelectedDraft() {
@@ -349,22 +594,29 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   async function restorePlaybookVersion(historyId) {
     const status = clauseDetail.querySelector("#playbookSaveStatus");
     if (hasAnyDraft()) {
-      if (status) status.textContent = "Discard unsaved drafts before restoring a saved version.";
+      if (status) status.textContent = "Discard unsaved changes before restoring a saved version.";
       return;
     }
     if (status) status.textContent = "Restoring playbook version...";
 
     try {
-      const response = await fetch("/api/playbook/restore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ history_id: historyId, actor: "admin" }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Playbook version could not be restored");
+      await ensureRuntime();
+      const api = playbookApi();
+      const payload = api
+        ? await api.restoreVersion(historyId, "admin")
+        : await fetch("/api/playbook/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ history_id: historyId, actor: "admin" }),
+          }).then(async (response) => {
+            const body = await response.json();
+            if (!response.ok) throw new Error(body.error || "Playbook version could not be restored");
+            return body;
+          });
       updatePlaybookStateFromPayload(payload);
       if (!selectedClause()) state.selectedClauseId = state.playbookClauses[0]?.id || null;
-      if (status) status.textContent = "Playbook version restored.";
+      lastValidation = null;
+      if (status) status.textContent = "Playbook version restored and published.";
       renderPlaybookList();
       renderClauseDetail();
     } catch (error) {
@@ -381,11 +633,39 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function updatePlaybookStateFromPayload(payload) {
+    const helpers = draftHelpers();
+    if (helpers) {
+      // New draft/publish contract: keep the active published block separate from
+      // the editable draft. The form binds to the draft; `savedPlaybook` is the
+      // draft baseline used for the unsaved-changes diff.
+      const normalized = helpers.normalizePlaybookResponse(payload);
+      state.activePlaybook = normalized.active;
+      state.draftMeta = normalized.draft;
+      const draftPlaybook = helpers.playbookOf(normalized.draft) || { clauses: [] };
+      state.playbook = clonePlaybook(draftPlaybook);
+      state.savedPlaybook = clonePlaybook(draftPlaybook);
+      state.playbookClauses = state.playbook.clauses || [];
+      state.playbookHistory = normalized.history;
+      return;
+    }
+    // Legacy fallback (runtime modules unavailable): single playbook acts as both.
     const playbook = payload?.playbook && typeof payload.playbook === "object" ? payload.playbook : payload;
     state.playbook = clonePlaybook(playbook);
     state.savedPlaybook = clonePlaybook(playbook);
+    state.activePlaybook = { playbook: clonePlaybook(playbook), version: null, hash: null };
+    state.draftMeta = { playbook: clonePlaybook(playbook), version: null, hash: null };
     state.playbookClauses = state.playbook.clauses || [];
     state.playbookHistory = Array.isArray(payload?.history) ? payload.history : [];
+  }
+
+  // After a Save Draft / Publish round-trip the backend returns an updated block.
+  // Merge it into state without disturbing the in-memory working clauses (which the
+  // user may keep editing). Used to refresh version/hash labels post-action.
+  function applyDraftBlock(block) {
+    if (block && typeof block === "object") state.draftMeta = block;
+  }
+  function applyActiveBlock(block) {
+    if (block && typeof block === "object") state.activePlaybook = block;
   }
 
   function hasClauseDraft(clauseId) {
@@ -780,8 +1060,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special admin-history">
         <h3>Policy Version History</h3>
-        <p class="admin-muted">Every Playbook save stores a restorable snapshot. Restore is disabled while there are unsaved drafts.</p>
-        ${rows || '<p class="admin-muted">No saved policy versions yet.</p>'}
+        <p class="admin-muted">Every published Playbook stores a restorable snapshot. Restore loads a version into the draft and is disabled while there are unsaved changes.</p>
+        ${rows || '<p class="admin-muted">No published policy versions yet.</p>'}
       </section>
     `;
   }
@@ -798,6 +1078,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function historyActionLabel(action) {
     if (action === "baseline") return "Baseline";
     if (action === "restore") return "Restored";
+    if (action === "publish") return "Published";
     return "Saved";
   }
 

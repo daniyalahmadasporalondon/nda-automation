@@ -37,6 +37,11 @@ const RepositoryDetail = (() => {
 
         <div class="repository-inspector-body">
           <section class="repository-inspector-main" aria-label="Matter review details">
+            ${MatterUtils.reviewStale(matter) ? `
+            <section class="repository-stale-notice" role="status">
+              <span class="repository-stale-badge">Stale</span>
+              <p>${escapeHtml(MatterUtils.reviewStaleLabel(matter))}</p>
+            </section>` : ""}
             <section class="repository-inspector-section">
               <p class="repository-inspector-section-title">Metadata Details</p>
               <dl class="repository-detail-meta repository-detail-meta-grid">
@@ -107,6 +112,7 @@ const RepositoryDetail = (() => {
           <p class="repository-detail-message" aria-live="polite"></p>
           <div class="repository-detail-actions">
             <button type="button" class="repository-open-review">Open Review</button>
+            ${MatterUtils.reviewStale(matter) ? '<button type="button" class="secondary repository-refresh-review">Refresh Review</button>' : ""}
             <button type="button" class="secondary repository-export-redline">Export Redline</button>
             <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
           </div>
@@ -115,6 +121,7 @@ const RepositoryDetail = (() => {
     `;
     repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", handlers.closePanel);
     repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => handlers.openMatterInReview(matter));
+    repositoryMatterPanel.querySelector(".repository-refresh-review")?.addEventListener("click", () => handlers.refreshMatterReview?.(matter));
     repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => handlers.exportMatter(matter));
     repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => handlers.sendRedline(matter));
   }

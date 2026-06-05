@@ -4548,6 +4548,128 @@ body.modal-open {
   margin-right: auto;
 }
 
+/* --- Playbook draft/publish: active vs draft version banner --- */
+.playbook-version-banner {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 4px;
+}
+
+.playbook-version-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--bg-softer);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.playbook-version-card .eyebrow {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+}
+
+.playbook-version-card strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.playbook-version-card small {
+  color: var(--ink-muted);
+}
+
+.playbook-version-card.active {
+  border-color: var(--violet-border);
+  background: var(--violet-bg);
+}
+
+.playbook-version-card.draft {
+  border-color: var(--border-strong);
+}
+
+.playbook-version-banner[data-draft-state="editing"] .playbook-version-card.draft {
+  border-color: var(--amber-border);
+  background: var(--amber-bg);
+}
+
+.playbook-version-banner[data-draft-state="ahead"] .playbook-version-card.draft {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+}
+
+.playbook-dirty-dot {
+  background: var(--amber);
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+/* --- Playbook validation surface --- */
+.playbook-validation {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.playbook-validation[data-state="valid"] {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+}
+
+.playbook-validation[data-state="invalid"] {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+}
+
+.playbook-validation-ok {
+  color: var(--green-ink);
+  margin: 0;
+}
+
+.playbook-validation-title {
+  color: var(--red-ink);
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.playbook-validation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.playbook-validation-list li {
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.playbook-validation-where {
+  color: var(--red-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.playbook-draft-actions .primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.playbook-draft-actions .primary:disabled {
+  opacity: 0.45;
+}
+
 .admin-section-head {
   align-items: center;
   border-bottom: 1px solid var(--border);

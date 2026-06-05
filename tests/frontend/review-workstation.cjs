@@ -58,6 +58,7 @@ const tests = [
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["wires stale review refresh controls", testStaleReviewRefreshWiring],
+  ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
@@ -530,7 +531,7 @@ async function testPlaybookAdminEditor(page) {
   const termTemplate = await page.locator('textarea[name="redline_template"]').inputValue();
   await page.locator('textarea[name="redline_template"]').fill("Bad {unknown_placeholder}");
   await assertTextContains(page.locator("#clauseDetail"), "Unknown placeholder: unknown_placeholder.");
-  assert.equal(await page.getByRole("button", { name: "Commit & Save Playbook" }).isEnabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Save Draft" }).isEnabled(), false);
   await page.locator('textarea[name="redline_template"]').fill(termTemplate);
   await assertTextContains(page.locator("#clauseDetail"), "up to five years");
   await page.locator("#clauseDetail").getByRole("button", { name: "Policy" }).click();
@@ -569,40 +570,58 @@ async function testPlaybookAdminEditor(page) {
   await page.locator('[data-clause-id="mutuality"]').click();
   await page.getByRole("button", { name: "Policy" }).click();
 
+  // The version banner distinguishes the active published Playbook from the draft.
+  // The real server serves the legacy single-playbook GET, so active == draft and
+  // the draft starts in sync; editing flips it to an unsaved-changes state.
+  // (.eyebrow renders uppercased via CSS text-transform, which innerText reflects.)
+  await assertTextContains(page.locator(".playbook-version-card.active"), "ACTIVE PUBLISHED");
+  await assertTextContains(page.locator(".playbook-version-card.active"), "Used by the review engine right now.");
+  await assertTextContains(page.locator(".playbook-version-card.draft"), "WORKING DRAFT");
+
   await page.locator('textarea[name="check_trigger"]').fill("One-way obligations need Check review.");
   await assertTextContains(page.locator("#playbookDraftDiff"), "check_trigger");
-  assert.equal(await page.getByRole("button", { name: "Commit & Save Playbook" }).isEnabled(), true);
+  await assertTextContains(page.locator(".playbook-version-card.draft"), "Unsaved changes");
+  assert.equal(await page.getByRole("button", { name: "Save Draft" }).isEnabled(), true);
+  // Publish is blocked while there are unsaved draft edits.
+  assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), false);
 
-  let savedPayload;
-  await page.route("**/api/playbook", async (route) => {
-    savedPayload = route.request().postDataJSON();
+  // --- Save Draft: persists the working clauses to the draft only ---
+  // The draft block nests version/hash under `metadata` (draft_id / draft_hash),
+  // matching the backend's public draft payload shape.
+  let savedDraftPayload;
+  await page.route("**/api/playbook/draft", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    savedDraftPayload = route.request().postDataJSON();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        playbook: savedPayload.playbook,
-        saved_at: "2026-05-31T20:00:00+00:00",
-        history: [{
-          id: "pbv_frontend_test",
-          recorded_at: "2026-05-31T20:00:00+00:00",
-          actor: "admin",
-          action: "save",
-          summary: "Saved changes to Mutuality.",
-          changed_clause_ids: ["mutuality"],
-        }],
+        active: { playbook: savedDraftPayload.playbook, metadata: { active_version_id: "pbv_active", active_hash: "active11a" } },
+        draft: {
+          playbook: savedDraftPayload.playbook,
+          metadata: { draft_id: "drf_8", draft_hash: "draft888a", draft_updated_at: "2026-05-31T20:00:00+00:00" },
+          has_unpublished_changes: true,
+        },
+        history: [],
+        saved_draft_at: "2026-05-31T20:00:00+00:00",
       }),
     });
   });
-  await page.getByRole("button", { name: "Commit & Save Playbook" }).click();
+  await page.getByRole("button", { name: "Save Draft" }).click();
+  await page.waitForFunction(() => document.querySelector("#playbookSaveStatus")?.textContent.includes("Draft saved."));
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
-  await page.getByRole("button", { name: "Audit" }).click();
-  await assertTextContains(page.locator("#clauseDetail"), "Saved changes to Mutuality.");
-  assert.equal(savedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
-  const savedConfidentialInfo = savedPayload.playbook.clauses.find((clause) => clause.id === "confidential_information");
+  // Saved draft is now ahead of the active version and the draft hash label shows.
+  await assertTextContains(page.locator(".playbook-version-card.draft"), "draft888");
+  await assertTextContains(page.locator(".playbook-version-card.draft"), "ahead of the active version");
+  assert.equal(savedDraftPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
+  const savedConfidentialInfo = savedDraftPayload.playbook.clauses.find((clause) => clause.id === "confidential_information");
   assert.equal(savedConfidentialInfo.standard_exclusions_template, "Publicly known information is excluded.");
-  const savedTerm = savedPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
+  const savedTerm = savedDraftPayload.playbook.clauses.find((clause) => clause.id === "term_and_survival");
   assert.ok(savedTerm.longer_survival_carve_out_terms.includes("regulatory obligation"));
-  const savedGoverningLaw = savedPayload.playbook.clauses.find((clause) => clause.id === "governing_law");
+  const savedGoverningLaw = savedDraftPayload.playbook.clauses.find((clause) => clause.id === "governing_law");
   assert.ok(savedGoverningLaw.approved_laws.includes("UAE"));
   assert.equal(savedGoverningLaw.preferred_law, "UAE");
   assert.equal(savedGoverningLaw.law_phrases.UAE, "the UAE");
@@ -611,6 +630,68 @@ async function testPlaybookAdminEditor(page) {
     savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
     [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],
   );
+
+  // --- Validate Draft: surfaces server validation errors, then a clean pass ---
+  // Errors use the backend's {location, clause, field, message, severity} shape.
+  let validateCount = 0;
+  await page.route("**/api/playbook/validate-draft", async (route) => {
+    validateCount += 1;
+    const body = validateCount === 1
+      ? { valid: false, errors: [{ location: "mutuality.check_trigger", clause: "mutuality", field: "check_trigger", message: "Check trigger is too vague.", severity: "error" }] }
+      : { valid: true, errors: [] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.getByRole("button", { name: "Validate Draft" }).click();
+  await page.waitForFunction(() => document.querySelector("#playbookValidation")?.getAttribute("data-state") === "invalid");
+  await assertTextContains(page.locator("#playbookValidation"), "Check trigger is too vague.");
+  await assertTextContains(page.locator("#playbookValidation"), "Mutuality");
+  // A failed validation blocks Publish.
+  assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), false);
+  await page.getByRole("button", { name: "Validate Draft" }).click();
+  await page.waitForFunction(() => document.querySelector("#playbookValidation")?.getAttribute("data-state") === "valid");
+  await assertTextContains(page.locator("#playbookValidation"), "Draft passed validation.");
+  // Clean validation + saved draft ahead of active → Publish is enabled.
+  assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), true);
+
+  // --- Publish: promotes the draft to the active published version ---
+  // Publish returns the new active block and a null draft (the server draft is
+  // consumed); the editor re-baselines the draft to the published active version.
+  let publishedPayload;
+  await page.route("**/api/playbook/publish", async (route) => {
+    publishedPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        playbook: publishedPayload.playbook,
+        active: {
+          playbook: publishedPayload.playbook,
+          metadata: { active_version_id: "pbv_8", active_hash: "draft888a", published_at: "2026-05-31T20:05:00+00:00" },
+        },
+        draft: null,
+        history: [{
+          id: "pbv_frontend_test",
+          recorded_at: "2026-05-31T20:05:00+00:00",
+          actor: "admin",
+          action: "publish",
+          summary: "Published changes to Mutuality.",
+          changed_clause_ids: ["mutuality"],
+        }],
+        published_at: "2026-05-31T20:05:00+00:00",
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Publish Playbook" }).click();
+  await page.waitForFunction(() => document.querySelector("#playbookSaveStatus")?.textContent.includes("Playbook published."));
+  assert.equal(publishedPayload.playbook.clauses[0].check_trigger, "One-way obligations need Check review.");
+  // Active now shows the published version and the draft is back in sync.
+  await assertTextContains(page.locator(".playbook-version-card.active"), "pbv_8");
+  await assertTextContains(page.locator(".playbook-version-card.active"), "draft888");
+  await assertTextContains(page.locator(".playbook-version-card.draft"), "Matches the active published version.");
+  // Publishing with no further changes is a no-op, so Publish disables again.
+  assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), false);
+  await page.getByRole("button", { name: "Audit" }).click();
+  await assertTextContains(page.locator("#clauseDetail"), "Published changes to Mutuality.");
   await page.getByRole("tab", { name: "Admin" }).click();
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
   await page.locator('[data-admin-section="email"]').click();
@@ -657,7 +738,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "2 imported / 1 skipped / 1 duplicates / 2 stale duplicates removed / 0 review failures");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "RECENT OUTBOUND");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "counterparty@example.com");
-  await page.unroute("**/api/playbook");
+  await page.unroute("**/api/playbook/draft");
+  await page.unroute("**/api/playbook/validate-draft");
+  await page.unroute("**/api/playbook/publish");
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/gmail/settings");
   await page.unroute("**/api/matters");
@@ -2035,6 +2118,104 @@ async function testStaleReviewRefreshWiring(page) {
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
   assert.equal(refreshCount, 2);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+async function testRepositoryStaleBadgeAndRefresh(page) {
+  // A matter whose stored review predates the active Playbook is flagged stale in
+  // the board list payload (review_stale) and in the inspector. Refreshing from the
+  // inspector re-runs the review and clears the stale state.
+  let staleAfterRefresh = false;
+  let refreshCount = 0;
+  const baseMatter = {
+    id: "matter_board_stale",
+    attachment_filename: "Board Stale NDA.docx",
+    board_column: "in_review",
+    document_title: "Board Stale NDA",
+    issue_count: 0,
+    message_snippet: "Confidentiality terms.",
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Board Stale NDA.docx",
+    source_type: "manual_upload",
+    subject: "Board Stale NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+  };
+  const listMatter = () => ({
+    ...baseMatter,
+    review_stale: !staleAfterRefresh,
+    review_stale_reasons: !staleAfterRefresh ? ["playbook_changed"] : [],
+  });
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true, email: "legal@example.com" } } }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [listMatter()] }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
+      refreshCount += 1;
+      staleAfterRefresh = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: "Confidentiality terms.",
+          matter: baseMatter,
+          review_refresh: { refreshed: true, stale: false, stale_reasons: [] },
+          review_result: { clauses: [], overall_status: "meets_requirements" },
+        }),
+      });
+      return;
+    }
+    if (requestUrl.pathname === `/api/matters/${baseMatter.id}`) {
+      // Inspector open: matter detail carries the same list-level stale flag.
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: listMatter() }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: listMatter() }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  // Board card shows a Stale badge while the stored review is out of date.
+  await page.waitForSelector(".repository-card .repository-stale-badge");
+  assert.equal(await page.locator(".repository-card .repository-stale-badge").first().innerText(), "Stale");
+  // Searching "stale" keeps the stale card visible.
+  const search = page.locator("#repositorySearchInput");
+  if (await search.count()) {
+    await search.fill("stale");
+    await page.waitForTimeout(150);
+    assert.equal(await page.locator(".repository-card").count(), 1);
+    await search.fill("");
+  }
+
+  // Open the inspector: it shows the stale notice and a Refresh Review action.
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.waitForSelector(".repository-stale-notice");
+  await assertTextContains(page.locator(".repository-stale-notice"), "Active Playbook changed");
+  await page.waitForSelector(".repository-refresh-review");
+
+  // Refresh clears the stale state: badge and notice disappear, message confirms.
+  await page.getByRole("button", { name: "Refresh Review" }).click();
+  await waitForText(page, ".repository-detail-message", "Review refreshed against the active Playbook.");
+  assert.equal(refreshCount, 1);
+  await page.waitForSelector(".repository-stale-notice", { state: "detached" });
+  assert.equal(await page.locator(".repository-card .repository-stale-badge").count(), 0);
+  assert.equal(await page.locator(".repository-refresh-review").count(), 0);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");

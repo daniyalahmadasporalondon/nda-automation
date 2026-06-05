@@ -98,5 +98,35 @@ const MatterUtils = (() => {
     return "Gmail Setup";
   }
 
-  return { canSendRedline, counterpartyEmail, emailAddress, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail, reviewState };
+  // True when a matter's stored review is stale against the active published
+  // Playbook. Reads both the list-level `review_stale` flag and the richer
+  // `review_refresh.stale` present once a matter is opened into review.
+  function reviewStale(matter) {
+    if (matter?.review_stale === true) return true;
+    return Boolean(matter?.review_refresh?.stale);
+  }
+
+  function reviewStaleReasons(matter) {
+    const fromRefresh = matter?.review_refresh?.stale_reasons;
+    if (Array.isArray(fromRefresh) && fromRefresh.length) return fromRefresh.map(String);
+    const fromList = matter?.review_stale_reasons;
+    if (Array.isArray(fromList) && fromList.length) return fromList.map(String);
+    return [];
+  }
+
+  function reviewStaleLabel(matter) {
+    if (!reviewStale(matter)) return "";
+    const message = String(matter?.review_refresh?.stale_message || matter?.review_stale_message || "").trim();
+    if (message) return message;
+    const reasons = reviewStaleReasons(matter);
+    if (reasons.includes("playbook_changed")) {
+      return "Active Playbook changed since this review. Refresh before exporting or sending.";
+    }
+    if (reasons.includes("review_engine_version_changed")) {
+      return "Review engine changed since this review. Refresh before exporting or sending.";
+    }
+    return "Review is out of date. Refresh against the active Playbook.";
+  }
+
+  return { canSendRedline, counterpartyEmail, emailAddress, gmailSendBlock, gmailSendButtonLabel, needsHumanReview, recipientEmail, reviewStale, reviewStaleLabel, reviewStaleReasons, reviewState };
 })();
