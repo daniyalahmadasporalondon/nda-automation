@@ -128,6 +128,72 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(local_key_status["api_key_configured"], True)
         self.assertEqual(local_key_status["api_key_source"], "local_settings")
 
+    def test_stored_gemini_direct_key_flags_openrouter_migration(self):
+        # A locally stored Google/Gemini-direct key ("AIza...") can no longer
+        # authenticate now that OpenRouter is the sole provider, so the status
+        # surfaces a migration hint toward an OpenRouter "sk-or-" key.
+        with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="AIzaSyDexampleexampleexampleexample123"):
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}, clear=False):
+                migration = ai_review.stored_ai_key_migration()
+                status = ai_review.ai_review_status()
+
+        self.assertIsNotNone(migration)
+        self.assertEqual(migration["code"], ai_review.STORED_KEY_MIGRATION_CODE)
+        self.assertEqual(migration["expected_key_prefix"], "sk-or-")
+        self.assertIn("OpenRouter", migration["message"])
+        self.assertEqual(status["stored_key_migration"], migration)
+
+    def test_openrouter_stored_key_needs_no_migration(self):
+        with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="sk-or-v1-abcdef0123456789"):
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}, clear=False):
+                self.assertIsNone(ai_review.stored_ai_key_migration())
+                self.assertIsNone(ai_review.ai_review_status()["stored_key_migration"])
+
+    def test_env_openrouter_key_overrides_legacy_stored_key(self):
+        # An env OPENROUTER_API_KEY is used over the stored key, so a legacy stored
+        # key is moot and no migration is prompted.
+        with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value="AIzaSyDexample123"):
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-v1-envconfigured"}, clear=False):
+                self.assertIsNone(ai_review.stored_ai_key_migration())
+
+    def test_no_stored_key_needs_no_migration(self):
+        with patch.object(ai_review.app_settings, "stored_ai_api_key", return_value=""):
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}, clear=False):
+                self.assertIsNone(ai_review.stored_ai_key_migration())
+
+    def test_operational_warnings_surface_stored_key_migration(self):
+        # The admin status surface turns the migration hint into an operational
+        # warning so the settings UI prompts the operator to swap the key.
+        from nda_automation.routes import admin
+
+        migration = {
+            "code": ai_review.STORED_KEY_MIGRATION_CODE,
+            "message": ai_review.STORED_KEY_MIGRATION_MESSAGE,
+            "expected_key_prefix": "sk-or-",
+        }
+        status = {"api_key_configured": True, "stored_key_migration": migration}
+        with patch.object(admin.ai_review, "ai_review_status", return_value=status):
+            with patch.object(admin, "active_review_engine_status", return_value={}):
+                warnings = admin._operational_warnings()
+
+        codes = [warning["code"] for warning in warnings]
+        self.assertIn(ai_review.STORED_KEY_MIGRATION_CODE, codes)
+        flagged = next(w for w in warnings if w["code"] == ai_review.STORED_KEY_MIGRATION_CODE)
+        self.assertIn("OpenRouter", flagged["message"])
+
+    def test_operational_warnings_omit_migration_when_key_is_openrouter(self):
+        from nda_automation.routes import admin
+
+        status = {"api_key_configured": True, "stored_key_migration": None}
+        with patch.object(admin.ai_review, "ai_review_status", return_value=status):
+            with patch.object(admin, "active_review_engine_status", return_value={}):
+                warnings = admin._operational_warnings()
+
+        self.assertNotIn(
+            ai_review.STORED_KEY_MIGRATION_CODE,
+            [warning["code"] for warning in warnings],
+        )
+
     def test_ai_review_can_confirm_deterministic_passes(self):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)
 
