@@ -12,7 +12,6 @@ const RepositoryDetail = (() => {
     const attentionClauses = Array.isArray(reviewResult.clauses)
       ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention)
       : [];
-    const isClosed = matter.board_column === "signed_closed";
     const subject = RepositoryModel.matterSubject(matter);
     const fileName = matter.source_filename || matter.attachment_filename || subject;
     const recipient = MatterUtils.recipientEmail(matter);
@@ -110,7 +109,6 @@ const RepositoryDetail = (() => {
             <button type="button" class="repository-open-review">Open Review</button>
             <button type="button" class="secondary repository-export-redline">Export Redline</button>
             <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
-            <button type="button" class="secondary repository-close-matter" ${isClosed ? "disabled" : ""}>Close Matter</button>
           </div>
         </footer>
       </section>
@@ -119,7 +117,6 @@ const RepositoryDetail = (() => {
     repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => handlers.openMatterInReview(matter));
     repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => handlers.exportMatter(matter));
     repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => handlers.sendRedline(matter));
-    repositoryMatterPanel.querySelector(".repository-close-matter")?.addEventListener("click", () => handlers.closeMatterWorkflow(matter));
   }
 
   function renderEmptyPanel({ repositoryMatterPanel, repositoryWorkspace }) {

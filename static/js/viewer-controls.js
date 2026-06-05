@@ -98,18 +98,53 @@
       updatePages();
     });
 
-    // ---- Comment-on-highlight: reveal a paragraph's "Comment" button only
-    // while text is selected inside that paragraph ----
-    document.addEventListener("selectionchange", function () {
+    function clearSelectionCommentAffordances() {
       document
         .querySelectorAll("#reviewView .studio-doc-paragraph.has-selection")
-        .forEach(function (p) { p.classList.remove("has-selection"); });
+        .forEach(function (paragraph) {
+          paragraph.classList.remove("has-selection");
+          const tools = paragraph.querySelector(".paragraph-comment-tools");
+          if (tools) tools.removeAttribute("style");
+        });
+    }
+
+    function selectionRect(range) {
+      const rects = Array.from(range.getClientRects()).filter(function (rect) {
+        return rect.width > 0 && rect.height > 0;
+      });
+      return rects[rects.length - 1] || range.getBoundingClientRect();
+    }
+
+    function positionSelectionCommentButton(paragraph, range) {
+      const tools = paragraph.querySelector(".paragraph-comment-tools");
+      if (!tools) return;
+      const rect = selectionRect(range);
+      const paragraphBox = paragraph.getBoundingClientRect();
+      const left = Math.max(4, Math.min(rect.right - paragraphBox.left + 8, paragraphBox.width - 32));
+      const top = Math.max(4, rect.top - paragraphBox.top - 2);
+      tools.style.left = left + "px";
+      tools.style.right = "auto";
+      tools.style.top = top + "px";
+    }
+
+    // ---- Comment-on-highlight: reveal an icon-only comment button while text
+    // is selected inside one rendered document paragraph. ----
+    document.addEventListener("selectionchange", function () {
+      clearSelectionCommentAffordances();
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
       const anchor = sel.anchorNode;
       const el = anchor && anchor.nodeType === 3 ? anchor.parentElement : anchor;
       const para = el && el.closest ? el.closest("#reviewView .studio-doc-paragraph") : null;
-      if (para && para.contains(sel.focusNode)) para.classList.add("has-selection");
+      if (para && para.contains(sel.focusNode)) {
+        para.classList.add("has-selection");
+        positionSelectionCommentButton(para, range);
+      }
+    });
+    document.addEventListener("focusin", function (event) {
+      if (!event.target.closest || event.target.closest("#reviewView .studio-page")) return;
+      clearSelectionCommentAffordances();
     });
     // Pressing the comment button must not clear the text selection.
     document.addEventListener("mousedown", function (event) {

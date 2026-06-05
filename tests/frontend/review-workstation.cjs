@@ -250,6 +250,8 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#dashboardView").isHidden(), false);
   await assertTextContains(page.locator("#dashboardView"), "Welcome back, Counsel");
   await assertTextContains(page.locator("#dashboardView"), "Submit for Review");
+  await assertTextContains(page.locator("#dashboardView"), "Send Document");
+  assert.equal(await page.getByRole("button", { name: "Send Document" }).isDisabled(), true);
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="ai"]')?.classList.contains("ready"));
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="email"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="ai"]'), "AI Review");
@@ -258,6 +260,15 @@ async function testAccessibleControlState(page) {
   assert.doesNotMatch(dashboardHealthText, /Ready|Partial|OpenRouter review available|Gmail receive and send are available|Inbound ready/i);
   assert.equal(await page.locator('[data-dashboard-health="ai"]').evaluate((node) => node.classList.contains("ready")), true);
   assert.equal(await page.locator('[data-dashboard-health="email"]').evaluate((node) => node.classList.contains("warning")), true);
+  const dashboardHealthLayout = await page.evaluate(() => {
+    const ai = document.querySelector('[data-dashboard-health="ai"]').getBoundingClientRect();
+    const email = document.querySelector('[data-dashboard-health="email"]').getBoundingClientRect();
+    return {
+      sameRow: Math.abs(ai.top - email.top) <= 2,
+      emailAfterAi: email.left > ai.left,
+    };
+  });
+  assert.deepEqual(dashboardHealthLayout, { sameRow: true, emailAfterAi: true });
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 0);
@@ -1386,7 +1397,7 @@ async function testReviewSendUsesCurrentMatterAfterSwitch(page) {
         filename: `${matter.document_title.replaceAll(" ", "-")}-redlined.docx`,
         matter: {
           ...matter,
-          board_column: "redline_ready",
+          board_column: "sent",
           last_outbound_subject: payload.subject,
           last_outbound_to: matter.recipient_email,
         },
@@ -1546,7 +1557,7 @@ async function testReviewSendAcceptsManualRecipient(page) {
         filename: "Manual-Upload-NDA-redlined.docx",
         matter: {
           ...matter,
-          board_column: "redline_ready",
+          board_column: "sent",
           last_outbound_subject: capturedSendPayload.subject,
           last_outbound_to: capturedSendPayload.to,
         },
@@ -1679,7 +1690,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "in_review", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
-  assert.equal(await page.locator('[data-repository-count="redline_ready"]').innerText(), "0");
+  assert.equal(await page.locator('[data-repository-count="reviewed"]').innerText(), "0");
   await assertTextContains(page.locator(".repository-card"), "Manual upload");
   await assertTextContains(page.locator(".repository-card"), "Manual Upload");
   await assertTextContains(page.locator(".repository-card"), "Manual upload of repository-matter");
@@ -1701,8 +1712,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
   assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await waitForRepositoryCount(page, "in_review", "0");
-  await waitForRepositoryCount(page, "redline_ready", "1");
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "Redline Ready");
+  await waitForRepositoryCount(page, "reviewed", "1");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Reviewed");
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
@@ -1711,7 +1722,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForText(page, "#studioFileMeta", "Manual Upload matter loaded");
   await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
   await waitForRepositoryCount(page, "in_review", "1");
-  await waitForRepositoryCount(page, "redline_ready", "0");
+  await waitForRepositoryCount(page, "reviewed", "0");
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   assert.equal(await page.locator(".repository-card.active").count(), 0);
@@ -1726,15 +1737,13 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
   assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await waitForRepositoryCount(page, "in_review", "0");
-  await waitForRepositoryCount(page, "redline_ready", "1");
+  await waitForRepositoryCount(page, "reviewed", "1");
   assert.equal(await page.getByRole("button", { name: "Review NDA" }).count(), 0);
 
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.locator(".repository-card").filter({ hasText: path.basename(docxPath, ".docx") }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
-  await page.getByRole("button", { name: "Close Matter", exact: true }).click();
-  await waitForRepositoryCount(page, "redline_ready", "0");
-  await waitForRepositoryCount(page, "signed_closed", "1");
+  assert.equal(await page.getByRole("button", { name: "Close Matter", exact: true }).count(), 0);
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   assert.equal(await page.getByRole("button", { name: "Reset Demo" }).count(), 0);
@@ -1745,7 +1754,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
-  await waitForRepositoryCount(page, "signed_closed", "0");
+  await waitForRepositoryCount(page, "sent", "0");
 
   fs.rmSync(docxPath, { force: true });
 }
@@ -2053,7 +2062,7 @@ async function testRepositoryLoadErrorClearsBoard(page) {
       subject: "Ready NDA",
       sender: "counterparty@example.com",
       message_snippet: "Ready matter",
-      board_column: "redline_ready",
+      board_column: "reviewed",
       triage_status: "needs_redline",
       issue_count: 2,
       created_at: "2026-06-01T12:01:00+00:00",
@@ -2081,15 +2090,15 @@ async function testRepositoryLoadErrorClearsBoard(page) {
   await page.goto(`${BASE_URL}/?v=repository-error-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await waitForRepositoryCount(page, "in_review", "1");
-  await waitForRepositoryCount(page, "redline_ready", "1");
+  await waitForRepositoryCount(page, "reviewed", "1");
   assert.equal(await page.locator(".repository-card").count(), 2);
 
   failMattersLoad = true;
   await page.evaluate(() => repositoryController.loadMatters());
   await waitForRepositoryCount(page, "in_review", "0");
-  await waitForRepositoryCount(page, "redline_ready", "0");
+  await waitForRepositoryCount(page, "reviewed", "0");
   assert.equal(await page.locator(".repository-card").count(), 0);
-  for (const column of ["gmail_demo", "in_review", "redline_ready", "signed_closed"]) {
+  for (const column of ["gmail_demo", "in_review", "reviewed", "sent"]) {
     await assertTextContains(page.locator(`[data-repository-list="${column}"]`), "Matter store is not valid JSON.");
   }
 
@@ -2099,11 +2108,17 @@ async function testRepositoryLoadErrorClearsBoard(page) {
 
 async function testManualUploadModal(page) {
   const docxPath = path.join(os.tmpdir(), `manual-upload-${Date.now()}.docx`);
+  const reviewedDocxPath = path.join(os.tmpdir(), `manual-upload-reviewed-${Date.now()}.docx`);
   const filename = path.basename(docxPath);
   const stem = path.basename(docxPath, ".docx");
+  const reviewedFilename = path.basename(reviewedDocxPath);
+  const reviewedStem = path.basename(reviewedDocxPath, ".docx");
   makeDocxFixture(docxPath, [
     "This Agreement shall be governed by the laws of California.",
     "The Recipient must not circumvent the Company.",
+  ]);
+  makeDocxFixture(reviewedDocxPath, [
+    "This Agreement shall be governed by the laws of Delaware.",
   ]);
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
@@ -2146,7 +2161,37 @@ async function testManualUploadModal(page) {
     stem,
   );
 
+  assert.equal(await page.getByRole("button", { name: "Add document to Inbox" }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Add document to In Review" }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Add document to Reviewed" }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Add document to Sent" }).count(), 1);
+
+  await page.getByRole("button", { name: "Add document to Reviewed" }).click();
+  await page.waitForSelector("#manualUploadModal:not([hidden])");
+  await assertTextContains(page.locator("#manualUploadStageLabel"), "Reviewed");
+  await page.locator("#manualUploadFileInput").setInputFiles(reviewedDocxPath);
+  await assertTextContains(page.locator("#manualUploadSelectedFile"), reviewedFilename);
+  const uploadRequestPromise = page.waitForRequest((request) => (
+    request.url().endsWith("/api/matters") && request.method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Upload NDA" }).click();
+  const uploadRequest = await uploadRequestPromise;
+  assert.equal(uploadRequest.postDataJSON().board_column, "reviewed");
+  await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
+  await assertTextContains(page.locator('[data-repository-list="reviewed"]'), reviewedStem);
+  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
+
+  const reviewedCard = page.locator('[data-repository-list="reviewed"] .repository-card').filter({ hasText: reviewedStem });
+  await reviewedCard.getByRole("button", { name: "Delete matter" }).click();
+  await reviewedCard.getByRole("button", { name: "Confirm delete matter" }).click();
+  await page.waitForFunction(
+    (uploadedStem) => !document.querySelector('[data-repository-list="reviewed"]')?.innerText.includes(uploadedStem),
+    reviewedStem,
+  );
+
   fs.rmSync(docxPath, { force: true });
+  fs.rmSync(reviewedDocxPath, { force: true });
 }
 
 async function testRepositoryOutboundSendComposer(page) {
@@ -2223,7 +2268,7 @@ async function testRepositoryOutboundSendComposer(page) {
     capturedSendPayload = route.request().postDataJSON();
     matter = {
       ...matter,
-      board_column: "redline_ready",
+      board_column: "sent",
       last_outbound_account: "daniyal.ahmad@aspora.com",
       last_outbound_at: "2026-05-31T20:45:00+00:00",
       last_outbound_filename: "Counterparty-NDA-redlined.docx",
@@ -2272,7 +2317,7 @@ async function testRepositoryOutboundSendComposer(page) {
   await panel.getByRole("button", { name: "Confirm Send" }).click();
   await sendRequest;
   await waitForText(page, "#repositoryMatterPanel", "Sent redline to legal@example.com.");
-  await waitForRepositoryCount(page, "redline_ready", "1");
+  await waitForRepositoryCount(page, "sent", "1");
 
   assert.deepEqual(capturedSendPayload, {
     matter_id: "matter_send",
@@ -2454,7 +2499,7 @@ async function testReviewOutboundSendModal(page) {
     capturedSendPayload = route.request().postDataJSON();
     matter = {
       ...matter,
-      board_column: "redline_ready",
+      board_column: "sent",
       last_outbound_account: "daniyal.ahmad@aspora.com",
       last_outbound_at: "2026-05-31T20:45:00+00:00",
       last_outbound_filename: "Counterparty-NDA-redlined.docx",
@@ -3182,19 +3227,23 @@ async function testBackendRedlineModes(page) {
       borderLeftWidth: styles.borderLeftWidth,
       borderRightColor: styles.borderRightColor,
       borderRightWidth: styles.borderRightWidth,
+      boxShadow: styles.boxShadow,
     };
   });
   assert.equal(prohibitedParagraphStyles.hasProhibitedClass, true);
   assert.equal(prohibitedParagraphStyles.borderLeftWidth, prohibitedParagraphStyles.borderRightWidth);
   assert.equal(prohibitedParagraphStyles.borderLeftColor, prohibitedParagraphStyles.borderRightColor);
+  assert.equal(prohibitedParagraphStyles.borderLeftColor, "rgba(0, 0, 0, 0)");
+  assert.equal(prohibitedParagraphStyles.boxShadow, "none");
   assert.notEqual(prohibitedParagraphStyles.backgroundColor, "rgba(0, 0, 0, 0)");
   assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
   assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
+  assert.equal(await page.getByText("Comment", { exact: true }).count(), 0);
 
   const viewerSpacing = await page.evaluate(() => {
     const pageNode = document.querySelector("#reviewView .studio-page");
     const paragraphNode = document.querySelector('#reviewView [data-paragraph-id="p2"]');
-    const commentToolsNode = paragraphNode.querySelector(".paragraph-comment-tools");
     const contentNode = [...paragraphNode.querySelectorAll(
       ".paragraph-redline-preview, .paragraph-editable, .paragraph-redline-note, .paragraph-insertion"
     )].find((node) => {
@@ -3203,11 +3252,9 @@ async function testBackendRedlineModes(page) {
     });
     const pageBox = pageNode.getBoundingClientRect();
     const paragraphBox = paragraphNode.getBoundingClientRect();
-    const commentToolsBox = commentToolsNode.getBoundingClientRect();
     const contentBox = contentNode.getBoundingClientRect();
     return {
       borderToPageLeft: Math.round(paragraphBox.left - pageBox.left),
-      commentRightToPageLeft: Math.round(commentToolsBox.right - pageBox.left),
       paragraphWidth: Math.round(paragraphBox.width),
       textToPageLeft: Math.round(contentBox.left - pageBox.left),
       textWidth: Math.round(contentBox.width),
@@ -3215,10 +3262,47 @@ async function testBackendRedlineModes(page) {
     };
   });
   assert.ok(viewerSpacing.borderToPageLeft >= 24, `paragraph should sit inside the page margin: ${JSON.stringify(viewerSpacing)}`);
-  assert.ok(viewerSpacing.commentRightToPageLeft <= -8, `comment controls should sit in the gray gutter: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.textToPageLeft > viewerSpacing.borderToPageLeft, `paragraph text should be inset from the paragraph frame: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.paragraphWidth >= viewerSpacing.pageWidth - 90, `paragraph card should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
   assert.ok(viewerSpacing.textWidth >= viewerSpacing.pageWidth - 120, `paragraph text should use most of the page width: ${JSON.stringify(viewerSpacing)}`);
+
+  await page.evaluate(() => {
+    const paragraph = document.querySelector('[data-paragraph-id="p2"]');
+    const target = paragraph.querySelector('[data-editable-paragraph-id="p2"], .paragraph-redline-preview') || paragraph;
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
+    const textNode = walker.nextNode();
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, Math.min(textNode.nodeValue.length, 14));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForSelector('[data-paragraph-id="p2"].has-selection .paragraph-comment-add');
+  assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 1);
+  const addCommentStyle = await page.getByRole("button", { name: "Add comment" }).evaluate((node) => {
+    const styles = getComputedStyle(node);
+    return {
+      height: styles.height,
+      text: node.textContent.trim(),
+      visibility: styles.visibility,
+      width: styles.width,
+    };
+  });
+  assert.deepEqual(addCommentStyle, {
+    height: "28px",
+    text: "",
+    visibility: "visible",
+    width: "28px",
+  });
+  await page.getByRole("button", { name: "Add comment" }).click();
+  await page.waitForSelector('[data-paragraph-id="p2"] .paragraph-comment-composer');
+  await assertTextContains(page.locator('[data-paragraph-id="p2"] .paragraph-comment-composer'), "SELECTED TEXT COMMENT");
+  assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
+  await page.locator('[data-paragraph-id="p2"] .paragraph-comment-cancel').click();
 
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
@@ -3233,7 +3317,7 @@ async function testBackendRedlineModes(page) {
   });
   assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
   assert.equal(termParagraphStyles.borderLeftColor, "rgba(0, 0, 0, 0)");
-  assert.match(termParagraphStyles.boxShadow, /252, 165, 165/);
+  assert.equal(termParagraphStyles.boxShadow, "none");
   await assertRedlinePreview(termParagraph, {
     originalText: "seven",
     insertedText: "fixed period of up to five",
@@ -3765,7 +3849,7 @@ async function testExportMarksCapturedMatterReady(page) {
     };
     repositoryController.markMatterRedlineReady = async (matter) => {
       window.__markedRedlineReadyMatterIds.push(matter?.id || null);
-      return matter ? { ...matter, board_column: "redline_ready" } : null;
+      return matter ? { ...matter, board_column: "reviewed" } : null;
     };
     state.selectedMatter = {
       board_column: "in_review",

@@ -177,8 +177,8 @@ const RepositoryActions = (() => {
         if (MatterUtils.needsHumanReview(matter)) {
           setPanelMessage(`Downloading ${filename}. Matter still needs human review before send.`);
         } else {
-          const movedMatter = await moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
-          setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Redline Ready.` : `Downloading ${filename}. Stage could not update.`);
+          const movedMatter = await moveMatterToColumn(matter.id, "reviewed", { quiet: true });
+          setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Reviewed.` : `Downloading ${filename}. Stage could not update.`);
         }
       } catch (error) {
         setPanelMessage(repositoryStaleReviewMessage(error, "Export could not run"));
@@ -236,27 +236,10 @@ const RepositoryActions = (() => {
       }
     }
 
-    async function closeMatterWorkflow(matter) {
-      setPendingSendMatterId(null);
-      setPendingDeleteMatterId(null);
-      const closeButton = repositoryMatterPanel?.querySelector(".repository-close-matter");
-      setPanelMessage("");
-      if (closeButton) {
-        closeButton.disabled = true;
-        closeButton.textContent = "Closing";
-      }
-      const movedMatter = await moveMatterToColumn(matter.id, "signed_closed", { quiet: true });
-      setPanelMessage(movedMatter ? "Moved to Signed / Closed." : "Matter could not move.");
-      if (closeButton?.isConnected && !movedMatter) {
-        closeButton.disabled = false;
-        closeButton.textContent = "Close Matter";
-      }
-    }
-
     async function markMatterRedlineReady(matter) {
       if (!matter?.id) return null;
       if (MatterUtils.needsHumanReview(matter)) return null;
-      return moveMatterToColumn(matter.id, "redline_ready", { quiet: true });
+      return moveMatterToColumn(matter.id, "reviewed", { quiet: true });
     }
 
     async function moveMatterToColumn(matterId, boardColumn, options = {}) {
@@ -302,7 +285,6 @@ const RepositoryActions = (() => {
 
     return {
       cancelDeleteMatter,
-      closeMatterWorkflow,
       closePanel,
       deleteMatter,
       exportMatter,

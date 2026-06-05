@@ -839,7 +839,8 @@ h3 {
   min-width: 260px;
 }
 
-.dashboard-submit-button {
+.dashboard-submit-button,
+.dashboard-send-document-button {
   background: #f09ac6;
   box-shadow: 0 14px 28px -16px rgba(240, 154, 198, 0.8);
   color: #1f0b3c;
@@ -855,16 +856,26 @@ h3 {
   color: #160833;
 }
 
-.dashboard-submit-button span:first-child {
+.dashboard-send-document-button {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: none;
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.dashboard-submit-button span:first-child,
+.dashboard-send-document-button span:first-child {
   font-size: 17px;
   font-weight: 800;
   line-height: 1;
 }
 
 .dashboard-health-list {
-  display: grid;
-  gap: 12px;
-  justify-items: start;
+  align-items: center;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin-top: 10px;
 }
 
 .dashboard-health-item {
@@ -1788,18 +1799,36 @@ h3 {
   border-radius: var(--r-pill);
   color: #0e7490;
   display: inline-flex;
-  font-size: 9px;
   font-weight: 800;
   gap: 4px;
+  height: 28px;
+  justify-content: center;
   line-height: 1;
-  min-height: 22px;
-  padding: 4px 8px;
+  opacity: 0;
+  padding: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.14s ease, transform 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+  visibility: hidden;
   white-space: nowrap;
+  width: 28px;
+}
+
+.studio-doc-paragraph.has-selection .paragraph-comment-tools button {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
 }
 
 .paragraph-comment-tools button:hover {
   background: #f7fbff;
   border-color: rgba(14, 116, 144, 0.34);
+}
+
+.paragraph-comment-tools button:focus-visible {
+  outline: 2px solid rgba(14, 116, 144, 0.28);
+  outline-offset: 2px;
 }
 
 .paragraph-comment-tools .comment-ico {
@@ -1815,18 +1844,6 @@ h3 {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
-}
-
-.paragraph-comment-tools .paragraph-comment-add span {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  color: inherit;
-  display: inline;
-  font-size: inherit;
-  font-weight: inherit;
-  min-height: 0;
-  min-width: 0;
 }
 
 .paragraph-comment-tools .paragraph-comment-count {
@@ -1990,40 +2007,31 @@ h3 {
 
 .studio-doc-paragraph.has-clause {
   background: rgba(85, 35, 178, 0.045);
-  box-shadow: inset 0 0 0 1px rgba(85, 35, 178, 0.07);
   cursor: pointer;
 }
 
 .studio-doc-paragraph.match {
   background: var(--green-bg);
-  box-shadow: inset 0 0 0 1px var(--green-border);
 }
 
 .studio-doc-paragraph.verify {
   background: var(--red-bg);
-  box-shadow: inset 0 0 0 1px var(--red-border);
 }
 
 .studio-doc-paragraph.review {
   background: var(--amber-bg);
-  box-shadow: inset 0 0 0 1px var(--amber-border);
 }
 
 .studio-doc-paragraph.has-redline {
   background: var(--red-bg);
-  box-shadow: inset 0 0 0 1px var(--red-border);
 }
 
 .studio-doc-paragraph.manual-redline {
   background: var(--violet-bg);
-  box-shadow: inset 0 0 0 1px var(--violet-border);
 }
 
 .studio-doc-paragraph.selected {
   background: var(--violet-bg);
-  box-shadow:
-    inset 0 0 0 2px var(--violet-border),
-    0 12px 26px -16px rgba(85, 35, 178, 0.22);
 }
 
 .studio-doc-paragraph.selected.match {
@@ -2032,16 +2040,10 @@ h3 {
 
 .studio-doc-paragraph.selected.verify {
   background: var(--red-bg);
-  box-shadow:
-    inset 0 0 0 2px var(--red-border),
-    0 12px 26px -16px rgba(239, 68, 68, 0.22);
 }
 
 .studio-doc-paragraph.selected.review {
   background: var(--amber-bg);
-  box-shadow:
-    inset 0 0 0 2px var(--amber-border),
-    0 12px 26px -16px rgba(245, 158, 11, 0.22);
 }
 
 .studio-doc-paragraph.is-editing {
@@ -2052,24 +2054,18 @@ h3 {
 
 .studio-doc-paragraph.redline-delete {
   background: #fdf2f2;
-  border-color: rgba(239, 68, 68, 0.26);
 }
 
 .studio-doc-paragraph.prohibited {
   background: rgba(239, 68, 68, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.2);
 }
 
 .studio-doc-paragraph.selected.prohibited {
   background: rgba(239, 68, 68, 0.08);
-  box-shadow:
-    inset 0 0 0 2px rgba(239, 68, 68, 0.22),
-    0 12px 26px -16px rgba(239, 68, 68, 0.22);
 }
 
 .studio-doc-paragraph.redline-insert {
   background: #effdf5;
-  border-color: rgba(16, 185, 129, 0.3);
 }
 
 .studio-doc-paragraph.paragraph-pulse {
@@ -5850,8 +5846,13 @@ body.modal-open {
     width: 100%;
   }
 
-  .dashboard-submit-button {
+  .dashboard-submit-button,
+  .dashboard-send-document-button {
     width: 100%;
+  }
+
+  .dashboard-health-list {
+    justify-content: flex-start;
   }
 
   .upload-header,

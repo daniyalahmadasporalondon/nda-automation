@@ -11,6 +11,10 @@ function createManualUploadController({
   submitButton,
   clearButton,
   dropzone,
+  routeStageNode,
+  allowedBoardColumns = ["in_review"],
+  defaultBoardColumn = "in_review",
+  boardColumnLabel = (boardColumn) => boardColumn || "In Review",
   fileToBase64,
   repositoryController,
   activateTab,
@@ -19,6 +23,8 @@ function createManualUploadController({
   let selectedFile = null;
   let busy = false;
   let previousFocus = null;
+  let targetBoardColumn = defaultBoardColumn;
+  const allowedBoardColumnIds = new Set(allowedBoardColumns);
 
   fileInput?.addEventListener("change", () => {
     setSelectedFile(fileInput.files?.[0] || null);
@@ -117,6 +123,7 @@ function createManualUploadController({
           received_at: new Date().toISOString(),
           message_snippet: noteInput.value.trim() || `Manual upload of ${selectedFile.name}.`,
           attachment_filename: selectedFile.name,
+          board_column: targetBoardColumn,
         }),
       });
       const payload = await response.json();
@@ -151,7 +158,8 @@ function createManualUploadController({
     fileInput?.click();
   }
 
-  function openModal() {
+  function openModal(options = {}) {
+    setTargetBoardColumn(options.boardColumn || defaultBoardColumn);
     if (!modalNode) {
       openFilePicker();
       return;
@@ -176,6 +184,13 @@ function createManualUploadController({
     previousFocus = null;
   }
 
+  function setTargetBoardColumn(boardColumn) {
+    targetBoardColumn = allowedBoardColumnIds.has(boardColumn) ? boardColumn : defaultBoardColumn;
+    if (routeStageNode) {
+      routeStageNode.textContent = boardColumnLabel(targetBoardColumn);
+    }
+  }
+
   function isModalOpen() {
     return Boolean(modalNode && !modalNode.hidden);
   }
@@ -188,6 +203,7 @@ function createManualUploadController({
   }
 
   renderSelectedFile();
+  setTargetBoardColumn(defaultBoardColumn);
   return { closeModal, openFilePicker, openModal, resetForm, uploadSelectedFile };
 }
 

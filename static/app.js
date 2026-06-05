@@ -83,6 +83,10 @@ const manualUploadController = createManualUploadController({
   submitButton: document.querySelector("#manualUploadSubmitButton"),
   clearButton: document.querySelector("#manualUploadClearButton"),
   dropzone: document.querySelector("#manualUploadDropzone"),
+  routeStageNode: document.querySelector("#manualUploadStageLabel"),
+  allowedBoardColumns: RepositoryModel.BOARD_COLUMNS.map((column) => column.id),
+  defaultBoardColumn: "in_review",
+  boardColumnLabel: RepositoryModel.boardColumnLabel,
   fileToBase64,
   repositoryController,
   activateTab,
@@ -205,6 +209,12 @@ reviewInspectorButtons.forEach((button) => {
 
 dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
+});
+
+document.querySelectorAll("[data-repository-add-column]").forEach((button) => {
+  button.addEventListener("click", () => {
+    manualUploadController.openModal({ boardColumn: button.dataset.repositoryAddColumn });
+  });
 });
 
 function reviewErrorFromPayload(payload, fallbackMessage) {

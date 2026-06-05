@@ -810,8 +810,10 @@ def _matter_duplicate_rank(matter: dict[str, Any]) -> tuple[int, str]:
     board_rank = {
         "gmail_demo": 0,
         "in_review": 1,
+        "reviewed": 2,
         "redline_ready": 2,
-        "signed_closed": 3,
+        "sent": 3,
+        "signed_closed": 4,
     }.get(str(matter.get("board_column") or ""), 0)
     return (board_rank, str(matter.get("updated_at") or matter.get("created_at") or ""))
 

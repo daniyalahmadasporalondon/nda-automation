@@ -26,7 +26,8 @@ from .common import parse_matter_id, request_owner_user_id
 
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
-MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "redline_ready", "signed_closed"}
+MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
+MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 MAX_REDLINE_DRAFT_ITEMS = 200
 
 
@@ -545,9 +546,13 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
     if not isinstance(source_type, str) or not source_type.strip():
         source_type = "manual_upload"
     source_type = source_type.strip()
-    board_column = HTTP_MATTER_SOURCE_COLUMNS.get(source_type)
-    if board_column is None:
+    default_board_column = HTTP_MATTER_SOURCE_COLUMNS.get(source_type)
+    if default_board_column is None:
         handler._send_json({"error": "Unsupported matter source."}, status=400)
+        return
+    board_column = _manual_upload_board_column(payload, default_board_column)
+    if board_column is None:
+        handler._send_json({"error": "Unsupported manual upload stage."}, status=400)
         return
 
     try:
@@ -585,6 +590,18 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
         return
 
     handler._send_json({"matter": matter_view.public_matter(matter)}, status=201)
+
+
+def _manual_upload_board_column(payload: dict, default_board_column: str) -> str | None:
+    requested_board_column = payload.get("board_column")
+    if requested_board_column in (None, ""):
+        return default_board_column
+    if not isinstance(requested_board_column, str):
+        return None
+    requested_board_column = requested_board_column.strip()
+    if requested_board_column not in MANUAL_UPLOAD_BOARD_COLUMNS:
+        return None
+    return requested_board_column
 
 
 def matter_intake_metadata(payload: dict, filename: str) -> dict[str, str]:

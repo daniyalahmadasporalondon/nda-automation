@@ -313,7 +313,7 @@ def handle_gmail_send_redline(handler) -> None:
     updated_matter = matter_store.update_matter_fields(
         matter_id.strip(),
         {
-            "board_column": "redline_ready",
+            "board_column": "sent",
             "last_outbound_account": sent.get("outbound_account", ""),
             "last_outbound_at": sent.get("sent_at", ""),
             "last_outbound_filename": redline_export.filename,

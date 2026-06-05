@@ -1195,6 +1195,13 @@ function closeParagraphCommentComposers() {
   });
 }
 
+function clearSelectionCommentAffordances() {
+  studioDocumentRender?.querySelectorAll(".studio-doc-paragraph.has-selection").forEach((paragraph) => {
+    paragraph.classList.remove("has-selection");
+    paragraph.querySelector(".paragraph-comment-tools")?.removeAttribute("style");
+  });
+}
+
 function openParagraphCommentComposer({
   existingText = "",
   onSave,
@@ -1207,6 +1214,7 @@ function openParagraphCommentComposer({
   );
   if (!paragraph || typeof onSave !== "function") return;
 
+  clearSelectionCommentAffordances();
   closeParagraphCommentComposers();
   paragraph.classList.add("has-comment-composer");
 

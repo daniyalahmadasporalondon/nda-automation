@@ -1,11 +1,15 @@
 const RepositoryModel = (() => {
   const BOARD_COLUMNS = [
-    { id: "gmail_demo", label: "Gmail Demo" },
+    { id: "gmail_demo", label: "Inbox" },
     { id: "in_review", label: "In Review" },
-    { id: "redline_ready", label: "Redline Ready" },
-    { id: "signed_closed", label: "Signed / Closed" },
+    { id: "reviewed", label: "Reviewed" },
+    { id: "sent", label: "Sent" },
   ];
   const BOARD_COLUMN_IDS = new Set(BOARD_COLUMNS.map((column) => column.id));
+  const LEGACY_BOARD_COLUMN_IDS = {
+    redline_ready: "reviewed",
+    signed_closed: "sent",
+  };
 
   function triageLabel(status) {
     const labels = {
@@ -33,11 +37,17 @@ const RepositoryModel = (() => {
   }
 
   function boardColumnLabel(boardColumn) {
-    return BOARD_COLUMNS.find((column) => column.id === boardColumn)?.label || "Gmail Demo";
+    const columnId = canonicalBoardColumn(boardColumn);
+    return BOARD_COLUMNS.find((column) => column.id === columnId)?.label || "Inbox";
+  }
+
+  function canonicalBoardColumn(boardColumn) {
+    if (BOARD_COLUMN_IDS.has(boardColumn)) return boardColumn;
+    return LEGACY_BOARD_COLUMN_IDS[boardColumn] || "gmail_demo";
   }
 
   function matterColumn(matter) {
-    return BOARD_COLUMN_IDS.has(matter?.board_column) ? matter.board_column : "gmail_demo";
+    return canonicalBoardColumn(matter?.board_column);
   }
 
   function matterSubject(matter) {
@@ -105,6 +115,7 @@ const RepositoryModel = (() => {
     BOARD_COLUMNS,
     BOARD_COLUMN_IDS,
     boardColumnLabel,
+    canonicalBoardColumn,
     compareMatterRecency,
     formatMatterDate,
     formatMatterDateTime,

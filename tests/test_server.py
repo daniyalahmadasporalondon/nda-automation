@@ -665,7 +665,7 @@ class ServerTests(unittest.TestCase):
                     stage_status, stage_payload = self.request(
                         "POST",
                         f"/api/matters/{matter_id}/stage",
-                        {"board_column": "signed_closed"},
+                        {"board_column": "sent"},
                         headers=self.basic_auth_headers(username="bob@example.com"),
                     )
                     export_status, export_payload = self.request(
@@ -2282,6 +2282,52 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["sender"], "counterparty@example.com")
         self.assertEqual(matter["recipient_email"], "counterparty@example.com")
         self.assertEqual(matter["subject"], "Uploaded NDA")
+
+    def test_matter_upload_allows_valid_manual_target_stage(self):
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of Delaware.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                reviewed_status, reviewed_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Reviewed NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "manual_upload",
+                        "board_column": "reviewed",
+                    },
+                )
+                sent_status, sent_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Sent NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "manual_upload",
+                        "board_column": "sent",
+                    },
+                )
+                invalid_status, invalid_payload = self.request(
+                    "POST",
+                    "/api/matters",
+                    {
+                        "filename": "Invalid NDA.docx",
+                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        "source_type": "manual_upload",
+                        "board_column": "redline_ready",
+                    },
+                )
+
+        self.assertEqual(reviewed_status, 201)
+        self.assertEqual(reviewed_payload["matter"]["board_column"], "reviewed")
+        self.assertEqual(sent_status, 201)
+        self.assertEqual(sent_payload["matter"]["board_column"], "sent")
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(invalid_payload["error"], "Unsupported manual upload stage.")
 
     def test_demo_reset_clears_repository_and_uploaded_documents(self):
         source_docx = make_docx([
@@ -4544,10 +4590,20 @@ class ServerTests(unittest.TestCase):
                     {"board_column": "in_review"},
                 )
                 list_status, list_payload = self.request("GET", "/api/matters")
-                close_status, close_payload = self.request(
+                sent_status, sent_payload = self.request(
                     "POST",
                     f"/api/matters/{matter_id}/stage",
-                    {"board_column": "signed_closed"},
+                    {"board_column": "sent"},
+                )
+                reviewed_status, reviewed_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/stage",
+                    {"board_column": "reviewed"},
+                )
+                legacy_status, legacy_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/stage",
+                    {"board_column": "redline_ready"},
                 )
                 invalid_status, invalid_payload = self.request(
                     "POST",
@@ -4566,9 +4622,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(review_payload["matter"]["status"], "active")
         self.assertEqual(list_status, 200)
         self.assertEqual(list_payload["matters"][0]["board_column"], "in_review")
-        self.assertEqual(close_status, 200)
-        self.assertEqual(close_payload["matter"]["board_column"], "signed_closed")
-        self.assertEqual(close_payload["matter"]["status"], "closed")
+        self.assertEqual(sent_status, 200)
+        self.assertEqual(sent_payload["matter"]["board_column"], "sent")
+        self.assertEqual(sent_payload["matter"]["status"], "active")
+        self.assertEqual(reviewed_status, 200)
+        self.assertEqual(reviewed_payload["matter"]["board_column"], "reviewed")
+        self.assertEqual(reviewed_payload["matter"]["status"], "active")
+        self.assertEqual(legacy_status, 400)
+        self.assertEqual(legacy_payload["error"], "Unsupported matter stage.")
         self.assertEqual(invalid_status, 400)
         self.assertEqual(invalid_payload["error"], "Unsupported matter stage.")
         self.assertEqual(missing_status, 404)
@@ -5365,7 +5426,7 @@ class ServerTests(unittest.TestCase):
         }
         updated_matter = {
             **matter,
-            "board_column": "redline_ready",
+            "board_column": "sent",
             "last_outbound_to": "counterparty@example.com",
         }
 
@@ -5644,12 +5705,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(unconfirmed_payload["error"], "Confirm send is required before emailing a redline.")
         self.assertEqual(confirmed_status, 200)
         self.assertEqual(confirmed_payload["filename"], "Email-NDA-redlined.docx")
-        self.assertEqual(confirmed_payload["matter"]["board_column"], "redline_ready")
+        self.assertEqual(confirmed_payload["matter"]["board_column"], "sent")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_to"], "legal@example.com")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_account"], "outbound@example.com")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_message_id"], "msg_outbound")
         self.assertEqual(confirmed_payload["matter"]["last_outbound_subject"], "Aspora redline Update")
-        self.assertEqual(stored_matter["board_column"], "redline_ready")
+        self.assertEqual(stored_matter["board_column"], "sent")
         self.assertEqual(stored_matter["last_outbound_filename"], "Email-NDA-redlined.docx")
         send_redline_email.assert_called_once()
         _matter, attachment_bytes, attachment_filename = send_redline_email.call_args.args
@@ -5767,7 +5828,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(send_status, 200)
-        self.assertEqual(send_payload["matter"]["board_column"], "redline_ready")
+        self.assertEqual(send_payload["matter"]["board_column"], "sent")
         self.assertEqual(captured["redline_count"], 0)
 
     def test_gmail_send_redline_rejects_source_text_change_without_manual_redlines(self):

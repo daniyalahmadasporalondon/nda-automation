@@ -158,6 +158,37 @@
   margin: 0;
 }
 
+.repository-column-title {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.repository-column-add {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--brand);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 24px;
+}
+
+.repository-column-add:hover,
+.repository-column-add:focus-visible {
+  background: #f7f2ff;
+  border-color: #d9c9f5;
+  outline: none;
+}
+
 .repository-column-head span {
   color: var(--ink-muted);
   font-size: 12px;
