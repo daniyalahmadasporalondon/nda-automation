@@ -16,7 +16,7 @@ from .redline_actions import (
 )
 from .inline_diff import diff_text_operation_dicts
 from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
-from .ai_verifier import VerifierFn, apply_ai_verifier
+from .ai_verifier import VerifierFn, apply_ai_verifier, refinalize_clause_grounding
 from .checks import CLAUSE_CHECKS
 from .checks.signatures import SIGNATURE_FOR_LINE_PATTERN
 from .semantic import SemanticEvaluateFn, apply_semantic_fallback
@@ -584,8 +584,12 @@ def _refinalize_verifier_changes(
             reason_codes = reason_codes_for_clause(clause, decision)
             clause["reason_code"] = reason_codes[0]
             clause["reason_codes"] = reason_codes
-        clause["review_state"] = clause_review_state(clause, decision)
+        # Order: rebuild structured evidence -> re-derive grounding/citation from it
+        # -> review_state -> audit trace. Grounding is owned by the evidence pass
+        # (#16); we re-derive it after the evidence it summarizes is rebuilt.
         _finalize_structured_evidence(clause, decision)
+        refinalize_clause_grounding(clause)
+        clause["review_state"] = clause_review_state(clause, decision)
         _attach_audit_trace(clause, decision)
 
 

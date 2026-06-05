@@ -39,7 +39,7 @@ from .review_state import (
     clause_review_state,
     reason_codes_for_clause,
 )
-from .ai_verifier import apply_ai_verifier
+from .ai_verifier import apply_ai_verifier, refinalize_clause_grounding
 
 AI_FIRST_REVIEW_MODE = "ai_first_compat"
 
@@ -315,6 +315,9 @@ def _refinalize_ai_first_verifier_changes(
             if paragraph_id in paragraphs_by_id
         ]
         clause["structured_evidence"] = _structured_evidence_records(clause, matched_paragraphs, {})
+        # Grounding/citation are owned by the evidence pass (#16); re-derive them from
+        # the freshly rebuilt structured_evidence, before review_state/audit_trace.
+        refinalize_clause_grounding(clause)
         clause["review_state"] = clause_review_state(clause, decision)
         clause["audit_trace"] = _audit_trace(clause)
 

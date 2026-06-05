@@ -576,6 +576,29 @@ def _verifier_text(packet: Mapping[str, object]) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
+def refinalize_clause_grounding(clause: dict) -> dict:
+    """Re-derive a verifier-changed clause's grounding/citation via the evidence pass.
+
+    Grounding/citation are OWNED by the evidence-grounding pass (#16). After the
+    verifier rewrites a clause (and rebuilds its structured evidence), this delegates
+    to ``evidence_grounding.refinalize_clause_grounding`` so grounding/citation are
+    recomputed from the clause's CURRENT structured_evidence/decision/type -- a
+    verifier-cleared pass then reads ``grounding.status == "absence"`` with no stale
+    citation, and is not re-downgraded.
+
+    The evidence module lives on its own branch until consolidation, so the import is
+    lazy and optional: if it is not present yet, this is a no-op and the verifier's
+    own interim absence stamp (set in ``_clear_disproven_evidence``) stands in. Once
+    merged, the evidence helper owns the grounding field and the interim stamp is
+    overwritten by the authoritative value.
+    """
+    try:
+        from .evidence_grounding import refinalize_clause_grounding as _evidence_refinalize
+    except ImportError:
+        return clause
+    return _evidence_refinalize(clause)
+
+
 # --- Production resolver + Claude-backed verifier --------------------------
 
 _VERIFIER_SYSTEM_PROMPT = (
