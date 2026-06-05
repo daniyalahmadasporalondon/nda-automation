@@ -696,7 +696,14 @@ class DocxExportTests(unittest.TestCase):
         redlined_docx = build_source_redline_docx(source_docx, result)
 
         # A real redline only adds tracked text, so it always covers the source.
-        self.assertEqual(verify_export_content_coverage(redlined_docx, source_text), [])
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=result["redline_edits"],
+            ),
+            [],
+        )
 
     def test_export_content_coverage_flags_empty_body(self):
         empty_docx = make_source_docx([])
@@ -711,6 +718,97 @@ class DocxExportTests(unittest.TestCase):
         big_source = "This Agreement shall be governed by the laws of California. " * 20
         errors = verify_export_content_coverage(tiny_docx, big_source)
         self.assertTrue(errors)
+
+    def test_export_content_coverage_flags_reordered_source_body(self):
+        source_text = "First source paragraph.\n\nSecond source paragraph."
+        reordered_docx = make_source_docx(["Second source paragraph.", "First source paragraph."])
+
+        errors = verify_export_content_coverage(reordered_docx, source_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("misplaced, duplicated, or dropped source content", errors[0])
+
+    def test_export_content_coverage_flags_duplicated_source_body(self):
+        source_text = "Only source paragraph."
+        duplicated_docx = make_source_docx(["Only source paragraph.", "Only source paragraph."])
+
+        errors = verify_export_content_coverage(duplicated_docx, source_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("expected 1", errors[0])
+
+    def test_export_content_coverage_flags_misplaced_expected_insert(self):
+        source_docx = make_source_docx(["Anchor one.", "Anchor two."])
+        source_text = "Anchor one.\n\nAnchor two."
+        misplaced_result = {
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": "Anchor one."},
+                {"id": "p2", "index": 2, "source_index": 2, "text": "Anchor two."},
+            ],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "paragraph_id": "p2",
+                    "paragraph_index": 2,
+                    "source_index": 2,
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "insert_text": "Inserted clause.",
+                }
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, misplaced_result)
+        expected_redlines = [{
+            **misplaced_result["redline_edits"][0],
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+        }]
+
+        errors = verify_export_content_coverage(
+            redlined_docx,
+            source_text,
+            expected_redline_edits=expected_redlines,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("paragraph sequence does not match", errors[0])
+
+    def test_export_content_coverage_flags_duplicated_expected_insert(self):
+        source_docx = make_source_docx(["Anchor paragraph."])
+        source_text = "Anchor paragraph."
+        duplicated_insert_result = {
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": "Anchor paragraph."},
+            ],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "insert_text": "Inserted clause.",
+                },
+                {
+                    "id": "r1-copy",
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "insert_text": "Inserted clause.",
+                },
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, duplicated_insert_result)
+
+        errors = verify_export_content_coverage(
+            redlined_docx,
+            source_text,
+            expected_redline_edits=duplicated_insert_result["redline_edits"][:1],
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("paragraph sequence does not match", errors[0])
 
     def test_export_content_coverage_ignores_missing_source_text(self):
         docx = make_source_docx(["Some body text."])

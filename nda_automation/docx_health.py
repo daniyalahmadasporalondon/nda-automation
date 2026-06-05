@@ -10,6 +10,11 @@ from zipfile import BadZipFile, ZipFile
 
 from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
 from .docx_text import DocxExtractionError, validate_docx_archive
+from .redline_actions import (
+    REDLINE_DELETE_PARAGRAPH,
+    REDLINE_INSERT_AFTER_PARAGRAPH,
+    REDLINE_REPLACE_PARAGRAPH,
+)
 
 # Tracked redlines only add text (insertions as w:t, deletions retained as
 # w:delText), so the exported visible text is always >= the source text. An
@@ -152,14 +157,20 @@ def exported_document_text(docx_bytes: bytes) -> str:
     return " ".join(parts)
 
 
-def verify_export_content_coverage(docx_bytes: bytes, source_text: str) -> List[str]:
+def verify_export_content_coverage(
+    docx_bytes: bytes,
+    source_text: str,
+    *,
+    expected_redline_edits: object = None,
+) -> List[str]:
     """Content gate the structural health check misses: an empty body or a
-    truncated redline that drops source content. Returns error strings (counts
-    only, never source text, to avoid leaking NDA content)."""
+    redline that drops, reorders, duplicates, or misplaces source content.
+    Returns error strings (counts only, never source text, to avoid leaking NDA content)."""
     source_normalized = _normalize_export_text(source_text)
     if not source_normalized:
         return []
-    export_normalized = _normalize_export_text(exported_document_text(docx_bytes))
+    export_paragraphs = _export_revision_paragraphs(docx_bytes)
+    export_normalized = _normalize_export_text(" ".join(record["all"] for record in export_paragraphs))
     if not export_normalized:
         return ["Exported document body contains no text."]
     if len(export_normalized) < len(source_normalized) * EXPORT_CONTENT_COVERAGE_RATIO:
@@ -167,7 +178,137 @@ def verify_export_content_coverage(docx_bytes: bytes, source_text: str) -> List[
             f"Exported text covers only {len(export_normalized)} of {len(source_normalized)} "
             "source characters; the redline may have dropped source content."
         ]
+    source_paragraphs = _source_paragraphs_from_text(source_text)
+    if source_paragraphs:
+        expected_accepted_paragraphs, expected_errors = _expected_accepted_source_paragraphs(
+            source_paragraphs,
+            expected_redline_edits,
+        )
+        if expected_errors:
+            return expected_errors
+        accepted_paragraphs = [record["accepted"] for record in export_paragraphs if record["accepted"]]
+        if accepted_paragraphs != expected_accepted_paragraphs:
+            return [
+                "Exported accepted-change paragraph sequence does not match the expected source/redline "
+                f"sequence ({len(accepted_paragraphs)} paragraph(s); expected {len(expected_accepted_paragraphs)}). "
+                "The redline may have misplaced, duplicated, or dropped source content."
+            ]
     return []
+
+
+def _export_revision_paragraphs(docx_bytes: bytes) -> List[Dict[str, str]]:
+    try:
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            validate_docx_archive(archive)
+            document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
+        return []
+
+    return [
+        {
+            "accepted": _normalize_export_text(_paragraph_revision_text(paragraph, accepted=True)),
+            "all": _normalize_export_text(_paragraph_all_revision_text(paragraph)),
+            "rejected": _normalize_export_text(_paragraph_revision_text(paragraph, accepted=False)),
+        }
+        for paragraph in document_root.iter(_w_tag("p"))
+    ]
+
+
+def _paragraph_revision_text(node: ET.Element, *, accepted: bool) -> str:
+    tag = node.tag.rsplit("}", 1)[-1]
+    if tag == "del":
+        return "" if accepted else "".join(_paragraph_revision_text(child, accepted=False) for child in list(node))
+    if tag == "ins":
+        return "".join(_paragraph_revision_text(child, accepted=True) for child in list(node)) if accepted else ""
+    if tag in {"t", "delText"}:
+        return node.text or ""
+    if tag == "br":
+        return "\n"
+    return "".join(_paragraph_revision_text(child, accepted=accepted) for child in list(node))
+
+
+def _paragraph_all_revision_text(paragraph: ET.Element) -> str:
+    return "".join(
+        node.text or ""
+        for node in paragraph.iter()
+        if node.tag in (_w_tag("t"), _w_tag("delText"))
+    )
+
+
+def _source_paragraphs_from_text(source_text: str) -> List[str]:
+    return [
+        normalized
+        for paragraph in re.split(r"\n\s*\n+", str(source_text or ""))
+        if (normalized := _normalize_export_text(paragraph))
+    ]
+
+
+def _expected_accepted_source_paragraphs(
+    source_paragraphs: List[str],
+    expected_redline_edits: object,
+) -> Tuple[List[str], List[str]]:
+    expected = list(source_paragraphs)
+    errors: List[str] = []
+    expected_insertions_by_source_index: Dict[int, List[str]] = {}
+    if not isinstance(expected_redline_edits, list):
+        return expected, []
+
+    for redline in expected_redline_edits:
+        if not isinstance(redline, dict):
+            continue
+        action = str(redline.get("action") or "")
+        source_index = _expected_redline_source_index(redline)
+        if source_index is None:
+            continue
+        if source_index < 1 or source_index > len(source_paragraphs):
+            errors.append(f"Redline {_redline_label(redline)} targets missing source paragraph {source_index}.")
+            continue
+
+        if action == REDLINE_REPLACE_PARAGRAPH:
+            expected[source_index - 1] = _normalize_export_text(redline.get("replacement_text"))
+        elif action == REDLINE_DELETE_PARAGRAPH:
+            expected[source_index - 1] = ""
+        elif action == REDLINE_INSERT_AFTER_PARAGRAPH:
+            expected_insertions_by_source_index.setdefault(source_index, []).extend(
+                _redline_text_blocks(redline.get("insert_text") or redline.get("replacement_text") or "")
+            )
+
+    if errors:
+        return [], errors
+
+    accepted: List[str] = []
+    for source_index, paragraph in enumerate(expected, start=1):
+        if paragraph:
+            accepted.append(paragraph)
+        accepted.extend(expected_insertions_by_source_index.get(source_index, []))
+    return accepted, []
+
+
+def _expected_redline_source_index(redline: Dict[str, object]) -> int | None:
+    for key in ("source_index", "paragraph_index"):
+        value = redline.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def _redline_text_blocks(value: object) -> List[str]:
+    blocks = [
+        normalized
+        for block in str(value or "").split("\n\n")
+        if (normalized := _normalize_export_text(block))
+    ]
+    return blocks
+
+
+def _redline_label(redline: Dict[str, object]) -> str:
+    for key in ("id", "clause_id", "paragraph_id"):
+        value = str(redline.get(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
 
 
 def _normalize_export_text(value: str) -> str:
