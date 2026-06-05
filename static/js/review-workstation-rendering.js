@@ -865,6 +865,12 @@ function renderStudioDetail() {
   const rationale = clause.rationale || clause.requirement || "";
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
+  // Audit/context detail beneath the primary finding. Both self-gate to "" when
+  // their result fields are empty, so they only appear when the clause carries
+  // reason codes / an audit trace. The evidence-grounding surface (citations,
+  // evidence paragraphs/signals) is owned separately by renderClauseCitationBlock.
+  const reasonCodes = renderReasonCodeBlock(clause);
+  const auditTrace = renderAuditTraceBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
@@ -884,6 +890,8 @@ function renderStudioDetail() {
       ${explanation}
       ${playbookPosition}
       ${proposedRedlines}
+      ${reasonCodes}
+      ${auditTrace}
       ${commentBlock}
     </div>
   `;
