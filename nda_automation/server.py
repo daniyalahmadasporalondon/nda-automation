@@ -60,6 +60,7 @@ from .rate_limit import (
 from .ingestion_service import create_matter_from_document, extract_document
 from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
+from .routes import approval as approval_routes
 from .routes import auth as auth_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
@@ -285,6 +286,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/source"):
             matter_routes.handle_matter_source(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/reviewed-docx"):
+            approval_routes.handle_matter_reviewed_docx(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/"):
             matter_routes.handle_matter_detail(self, path, send_body=send_body)
             return
@@ -339,6 +343,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
                 matter_routes.handle_matter_redline_draft_update(self, path)
+                return
+            if path.startswith("/api/matters/") and "/clauses/" in path and path.endswith("/decision"):
+                approval_routes.handle_clause_decision(self, path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/approve"):
+                approval_routes.handle_matter_approve(self, path)
                 return
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:

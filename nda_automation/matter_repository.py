@@ -70,6 +70,24 @@ class MatterRepository(Protocol):
         self, matter_id: str, review_result: dict[str, Any], triage: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
 
+    def set_clause_reviewer_decision(
+        self,
+        matter_id: str,
+        clause_id: str,
+        reviewer_decision: dict[str, Any] | None,
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None: ...
+
+    def record_matter_approval(
+        self,
+        matter_id: str,
+        *,
+        approver: str,
+        approved_at: str,
+        timeline_event: dict[str, Any],
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None: ...
+
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
@@ -148,6 +166,34 @@ class DiskMatterRepository:
         self, matter_id: str, review_result: dict[str, Any], triage: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None:
         return matter_store.update_matter_review(matter_id, review_result, triage, owner_user_id=owner_user_id)
+
+    def set_clause_reviewer_decision(
+        self,
+        matter_id: str,
+        clause_id: str,
+        reviewer_decision: dict[str, Any] | None,
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        return matter_store.set_clause_reviewer_decision(
+            matter_id, clause_id, reviewer_decision, owner_user_id=owner_user_id
+        )
+
+    def record_matter_approval(
+        self,
+        matter_id: str,
+        *,
+        approver: str,
+        approved_at: str,
+        timeline_event: dict[str, Any],
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        return matter_store.record_matter_approval(
+            matter_id,
+            approver=approver,
+            approved_at=approved_at,
+            timeline_event=timeline_event,
+            owner_user_id=owner_user_id,
+        )
 
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
@@ -350,6 +396,59 @@ class InMemoryMatterRepository:
                     "updated_at": now,
                 }
                 updated_matter.pop("redline_draft", None)
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def set_clause_reviewer_decision(
+        self,
+        matter_id: str,
+        clause_id: str,
+        reviewer_decision: dict[str, Any] | None,
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                decisions = dict(matter.get("reviewer_decisions") or {})
+                if reviewer_decision is None:
+                    decisions.pop(clause_id, None)
+                else:
+                    decisions[clause_id] = copy.deepcopy(reviewer_decision)
+                updated_matter = {
+                    **matter,
+                    "reviewer_decisions": decisions,
+                    "updated_at": now,
+                }
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def record_matter_approval(
+        self,
+        matter_id: str,
+        *,
+        approver: str,
+        approved_at: str,
+        timeline_event: dict[str, Any],
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                timeline = list(matter.get("matter_timeline") or [])
+                timeline.append(copy.deepcopy(timeline_event))
+                updated_matter = {
+                    **matter,
+                    "status": "approved",
+                    "approver": approver,
+                    "approved_at": approved_at,
+                    "matter_timeline": timeline,
+                    "updated_at": approved_at,
+                }
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None

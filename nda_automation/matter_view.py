@@ -12,6 +12,8 @@ from .review_state import aggregate_review_state, result_requires_human_review, 
 
 
 class PublicMatter(TypedDict, total=False):
+    approved_at: str
+    approver: str
     attachment_filename: str
     board_column: str
     can_send_redline: bool
@@ -33,6 +35,7 @@ class PublicMatter(TypedDict, total=False):
     last_outbound_subject: str
     last_outbound_thread_id: str
     last_outbound_to: str
+    matter_timeline: list[dict[str, Any]]
     message_snippet: str
     next_action: str
     recipient_email: str
@@ -42,6 +45,7 @@ class PublicMatter(TypedDict, total=False):
     requirements_passed: int
     reply_to: str
     review_state: dict[str, Any]
+    reviewer_decisions: dict[str, Any]
     sender: str
     send_block_reason: str
     source_filename: str
@@ -53,6 +57,8 @@ class PublicMatter(TypedDict, total=False):
 
 
 PUBLIC_MATTER_FIELDS = {
+    "approved_at",
+    "approver",
     "attachment_filename",
     "board_column",
     "created_at",
@@ -72,6 +78,7 @@ PUBLIC_MATTER_FIELDS = {
     "last_outbound_subject",
     "last_outbound_thread_id",
     "last_outbound_to",
+    "matter_timeline",
     "message_snippet",
     "next_action",
     "received_at",
@@ -80,6 +87,7 @@ PUBLIC_MATTER_FIELDS = {
     "requirements_passed",
     "reply_to",
     "review_state",
+    "reviewer_decisions",
     "sender",
     "send_block_reason",
     "source_filename",

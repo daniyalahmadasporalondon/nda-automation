@@ -247,6 +247,67 @@ def update_matter_review(
     return None
 
 
+def set_clause_reviewer_decision(
+    matter_id: str,
+    clause_id: str,
+    reviewer_decision: dict[str, Any] | None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Persist (or clear when None) a single clause's reviewer_decision.
+
+    Decisions live in a matter-level ``reviewer_decisions`` map keyed by clause
+    id; the review_result payload is never mutated here.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        decisions = dict(matter.get("reviewer_decisions") or {})
+        if reviewer_decision is None:
+            decisions.pop(clause_id, None)
+        else:
+            decisions[clause_id] = reviewer_decision
+        updated_matter = {
+            **matter,
+            "reviewer_decisions": decisions,
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
+def record_matter_approval(
+    matter_id: str,
+    *,
+    approver: str,
+    approved_at: str,
+    timeline_event: dict[str, Any],
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Stamp a matter as approved and append an immutable timeline event."""
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        timeline = list(matter.get("matter_timeline") or [])
+        timeline.append(timeline_event)
+        updated_matter = {
+            **matter,
+            "status": "approved",
+            "approver": approver,
+            "approved_at": approved_at,
+            "matter_timeline": timeline,
+            "updated_at": approved_at,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
 def update_matter_ai_first_review(
     matter_id: str,
     ai_first_review_result: dict[str, Any],
