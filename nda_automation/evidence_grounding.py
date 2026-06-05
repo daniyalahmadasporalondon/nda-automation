@@ -59,17 +59,27 @@ def classify_grounding(
     issue_type: str,
     clause_type: str,
     structured_evidence: Sequence[Mapping[str, Any]],
+    decision_source: str = "",
 ) -> str:
     """Return the grounding status for a single finding.
 
     A finding is ``grounded`` when at least one structured-evidence record
     carries a quote that was matched into a source paragraph. The two
     quote-less verdicts above are ``absence``. Anything else is ``ungrounded``.
+
+    ``decision_source`` lets the AI verifier mark a finding it owns: when it
+    refutes a clause to a pass it deliberately clears the disproven evidence, so
+    that empty-evidence verdict is a legitimate absence regardless of clause type.
     """
 
     if _has_groundable_quote(structured_evidence):
         return GROUNDING_GROUNDED
-    if _is_legitimate_absence(decision=decision, issue_type=issue_type, clause_type=clause_type):
+    if _is_legitimate_absence(
+        decision=decision,
+        issue_type=issue_type,
+        clause_type=clause_type,
+        decision_source=decision_source,
+    ):
         return GROUNDING_ABSENCE
     return GROUNDING_UNGROUNDED
 
@@ -80,6 +90,7 @@ def build_grounding(
     issue_type: str,
     clause_type: str,
     structured_evidence: Sequence[Mapping[str, Any]],
+    decision_source: str = "",
 ) -> dict[str, Any]:
     """Build the per-finding ``grounding`` object surfaced in the result."""
 
@@ -90,6 +101,7 @@ def build_grounding(
         issue_type=issue_type,
         clause_type=clause_type,
         structured_evidence=records,
+        decision_source=decision_source,
     )
     return {
         "version": GROUNDING_VERSION,
@@ -158,31 +170,20 @@ def refinalize_clause_grounding(clause: dict[str, Any]) -> dict[str, Any]:
     decision = str(clause.get("decision") or "").strip().lower()
     issue_type = str(clause.get("issue_type") or "").strip().lower()
     clause_type = str(clause.get("type") or "").strip().lower()
+    decision_source = str(clause.get("decision_source") or "")
     structured_evidence = clause.get("structured_evidence")
     if not isinstance(structured_evidence, Sequence) or isinstance(structured_evidence, (str, bytes)):
         structured_evidence = []
 
-    # A verifier-owned verdict that cleared its evidence is a legitimate absence,
-    # not an ungrounded finding to re-downgrade.
-    if (
-        str(clause.get("decision_source") or "") == VERIFIER_DECISION_SOURCE
-        and not _has_groundable_quote(structured_evidence)
-    ):
-        clause["grounding"] = {
-            "version": GROUNDING_VERSION,
-            "status": GROUNDING_ABSENCE,
-            "evidence_count": 0,
-            "requires_quote": False,
-            "grounded": False,
-        }
-        clause.pop("citation", None)
-        return clause
-
+    # ``decision_source`` carries the verifier marker, so a verifier-cleared pass
+    # of any clause type resolves to a legitimate absence (handled uniformly in
+    # _is_legitimate_absence) rather than being re-flagged as ungrounded.
     clause["grounding"] = build_grounding(
         decision=decision,
         issue_type=issue_type,
         clause_type=clause_type,
         structured_evidence=structured_evidence,
+        decision_source=decision_source,
     )
     citation = build_citation(structured_evidence)
     if citation is not None:
@@ -245,7 +246,13 @@ def _has_groundable_quote(structured_evidence: Sequence[Mapping[str, Any]]) -> b
     )
 
 
-def _is_legitimate_absence(*, decision: str, issue_type: str, clause_type: str) -> bool:
+def _is_legitimate_absence(
+    *,
+    decision: str,
+    issue_type: str,
+    clause_type: str,
+    decision_source: str = "",
+) -> bool:
     normalized_decision = str(decision or "").strip().lower()
     normalized_issue = str(issue_type or "").strip().lower()
     normalized_type = str(clause_type or "").strip().lower()
@@ -254,6 +261,11 @@ def _is_legitimate_absence(*, decision: str, issue_type: str, clause_type: str) 
         return True
     # A prohibited clause that does not appear: you cannot quote absent text.
     if normalized_decision == CLAUSE_DECISION_PASS and normalized_type == CLAUSE_TYPE_PROHIBITED:
+        return True
+    # A clause the AI verifier owns: a refute-to-pass deliberately clears the
+    # disproven evidence, so an empty-evidence verifier verdict is a legitimate
+    # absence for any clause type, not an ungrounded finding to re-downgrade.
+    if str(decision_source or "") == VERIFIER_DECISION_SOURCE:
         return True
     return False
 

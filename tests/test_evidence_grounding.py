@@ -80,6 +80,27 @@ class ClassifyGroundingTests(unittest.TestCase):
         )
         self.assertEqual(status, GROUNDING_UNGROUNDED)
 
+    def test_verifier_cleared_pass_on_required_clause_is_absence(self):
+        # The gap the verifier flagged: a refute-to-pass on a REQUIRED clause
+        # clears its evidence; without the verifier marker this would be read as
+        # ungrounded, but decision_source=ai_verifier makes it a legit absence.
+        ungrounded = classify_grounding(
+            decision="pass",
+            issue_type="none",
+            clause_type="required",
+            structured_evidence=[],
+        )
+        self.assertEqual(ungrounded, GROUNDING_UNGROUNDED)
+
+        absence = classify_grounding(
+            decision="pass",
+            issue_type="none",
+            clause_type="required",
+            structured_evidence=[],
+            decision_source="ai_verifier",
+        )
+        self.assertEqual(absence, GROUNDING_ABSENCE)
+
 
 class BuildGroundingTests(unittest.TestCase):
     def test_grounded_finding_counts_quoted_evidence(self):
