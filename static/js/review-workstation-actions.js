@@ -622,9 +622,32 @@ function renderOperationError(error, fallbackMeta) {
   studioResultMeta.textContent = `${fallbackMeta}${details}`;
 }
 
+// Returns true when it is safe to discard the current in-memory redline edits:
+// either there is nothing unsaved, or the reviewer confirmed the loss. The
+// confirm() is skipped (returns true) when the draft is clean so the common case
+// never sees a dialog.
+function confirmDiscardUnsavedReviewEdits(reason) {
+  if (!hasUnsavedReviewEdits()) return true;
+  const message = `${reason} Save Draft first if you want to keep them.\n\nDiscard your unsaved edits and continue?`;
+  if (typeof window !== "undefined" && typeof window.confirm === "function") {
+    return window.confirm(message);
+  }
+  return true;
+}
+
+function hasUnsavedReviewEdits() {
+  return Boolean(state.redlineDraftDirty);
+}
+
 async function refreshSelectedMatterReview() {
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
+  // Refreshing reloads the review from the server and discards in-memory redline
+  // edits. Guard against silently losing unsaved changes: confirm first, and tell
+  // the reviewer they can Save Draft to keep them.
+  if (!confirmDiscardUnsavedReviewEdits("Refreshing the review will discard your unsaved redline edits.")) {
+    return;
+  }
   const previousLabel = studioRefreshReviewButton?.textContent || "Refresh Review";
   if (studioRefreshReviewButton) {
     studioRefreshReviewButton.disabled = true;

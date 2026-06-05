@@ -114,6 +114,7 @@ function renderSideBySideDocumentParagraph(model) {
 
 function renderRedlineDocumentParagraph(model) {
   const status = model.primaryClause ? clauseStatus(model.primaryClause) : null;
+  const prohibited = model.linkedClauses.some(isFailedProhibitedClause);
   return renderParagraphFrame(model, {
     body: renderRedlineParagraphBody(model.paragraph, model.primaryRedline, model.visibleRedlines),
     classes: [
@@ -122,12 +123,52 @@ function renderRedlineDocumentParagraph(model) {
       model.manualRedline ? "manual-redline" : "",
       model.primaryRedline?.action === REDLINE_DELETE_PARAGRAPH ? "redline-delete" : "",
       model.primaryRedline?.action === REDLINE_INSERT_AFTER_PARAGRAPH ? "redline-insert" : "",
-      model.linkedClauses.some(isFailedProhibitedClause) ? "prohibited" : "",
+      prohibited ? "prohibited" : "",
       status?.needsReview ? "review" : "",
       status?.fails ? "verify" : "",
       status && !status.requiresAttention ? "match" : "",
     ],
+    // WCAG 1.4.1: the paragraph verdict is otherwise conveyed by background
+    // colour alone, so emit a text+icon badge so the verdict is not colour-only.
+    badge: paragraphVerdictBadge(status, prohibited),
   });
+}
+
+// Text+icon verdict badge for a flagged document paragraph. Returns "" when the
+// paragraph carries no clause verdict, so unflagged paragraphs are unchanged.
+function paragraphVerdictBadge(status, prohibited = false) {
+  if (!status) return "";
+  let tone = "";
+  let label = "";
+  if (prohibited || status.fails) {
+    tone = "verify";
+    label = prohibited ? "Prohibited" : "Fail";
+  } else if (status.needsReview) {
+    tone = "review";
+    label = "Review";
+  } else if (!status.requiresAttention) {
+    tone = "match";
+    label = "Pass";
+  } else {
+    return "";
+  }
+  return `
+    <span class="paragraph-verdict-badge ${tone}" contenteditable="false" aria-hidden="false">
+      ${paragraphVerdictIcon(tone)}
+      <span class="paragraph-verdict-badge-label">${escapeHtml(label)}</span>
+    </span>
+  `;
+}
+
+function paragraphVerdictIcon(tone) {
+  if (tone === "match") {
+    return '<svg class="paragraph-verdict-badge-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m5 13 4 4L19 7"/></svg>';
+  }
+  if (tone === "review") {
+    return '<svg class="paragraph-verdict-badge-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>';
+  }
+  // verify / fail
+  return '<svg class="paragraph-verdict-badge-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 }
 
 function isFailedProhibitedClause(clause) {
@@ -142,8 +183,9 @@ function isFailedProhibitedClause(clause) {
     && String(clause.fallback?.redline_action || "").trim() === REDLINE_DELETE_PARAGRAPH;
 }
 
-function renderParagraphFrame(model, { body, classes = [] }) {
+function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
   return renderStudioParagraphFrame({
+    badge,
     body,
     classes,
     clauseIds: model.ids,
@@ -153,13 +195,14 @@ function renderParagraphFrame(model, { body, classes = [] }) {
   });
 }
 
-function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "" }) {
+function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", badge = "" }) {
   const frameAttributes = [];
   if (paragraphId) frameAttributes.push(`data-paragraph-id="${escapeHtml(paragraphId)}"`);
   if (clauseIds) frameAttributes.push(`data-clause-ids="${escapeHtml(clauseIds)}"`);
   if (attributes) frameAttributes.push(attributes);
   const commentTools = paragraphId ? renderParagraphCommentTools(paragraphId, commentCount).trim() : "";
-  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "", commentCount ? "has-comments" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${body}</div>`;
+  const verdictBadge = badge ? badge.trim() : "";
+  return `<div class="${joinClasses("studio-doc-paragraph", classes, selected ? "selected" : "", commentCount ? "has-comments" : "")}"${frameAttributes.length ? ` ${frameAttributes.join(" ")}` : ""}>${commentTools}${verdictBadge}${body}</div>`;
 }
 
 function renderParagraphCommentTools(paragraphId, commentCount) {

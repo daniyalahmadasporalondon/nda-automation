@@ -86,6 +86,8 @@ const tests = [
   ["collapses the reasoning trail and remembers its open state", testReasoningTrailCollapse],
   ["records reviewer Accept/Reject/Modify/Comment decisions", testReviewerDecisionControls],
   ["gates Approve Review on staleness and unresolved clauses", testApproveReviewGate],
+  ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
+  ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -4618,6 +4620,130 @@ async function testApproveReviewGate(page) {
   ]);
   assert.ok(await download.path(), "reviewed DOCX download path should be available");
   assert.match(download.suggestedFilename(), /reviewed\.docx$/);
+}
+
+// WCAG 1.4.1: the document paragraph verdict must not be conveyed by colour
+// alone — a flagged paragraph carries a text+icon verdict badge.
+async function testDocumentVerdictLabel(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate(() => {
+    const paragraphs = [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ];
+    renderResult({
+      checked_at: "2026-06-05T09:00:00+00:00",
+      clauses: [
+        {
+          decision: "pass",
+          evidence_paragraphs: [paragraphs[0]],
+          id: "confidential_information",
+          issue_label: "Pass",
+          matched_paragraph_ids: ["p1"],
+          name: "Confidential Information",
+          passes: true,
+          reason: "Definition is acceptable.",
+          review_state: { state: "pass" },
+          status: "pass",
+        },
+        {
+          decision: "fail",
+          evidence_paragraphs: [paragraphs[1]],
+          id: "governing_law",
+          issue_label: "Fail",
+          matched_paragraph_ids: ["p2"],
+          name: "Governing Law",
+          reason: "Governing law is outside the approved set.",
+          review_state: { state: "check" },
+          status: "check",
+        },
+      ],
+      overall_status: "needs_review",
+      paragraphs,
+      redline_edits: [],
+      requirements_failed: 1,
+      requirements_needs_review: 0,
+      requirements_passed: 1,
+    }, paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  });
+
+  const passBadge = page.locator('[data-paragraph-id="p1"] .paragraph-verdict-badge');
+  const failBadge = page.locator('[data-paragraph-id="p2"] .paragraph-verdict-badge');
+  assert.equal(await passBadge.count(), 1, "passing paragraph should carry a verdict badge");
+  assert.equal(await failBadge.count(), 1, "failing paragraph should carry a verdict badge");
+
+  // The verdict is conveyed by TEXT (not colour alone): the badge has a label.
+  await assertTextContains(passBadge, "PASS");
+  await assertTextContains(failBadge, "FAIL");
+  // ...and a non-color icon accompanies it.
+  assert.equal(await failBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
+  assert.equal(await passBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
+
+  // The badge sits outside the editable flow so it cannot be typed into.
+  assert.equal(
+    await failBadge.evaluate((node) => node.getAttribute("contenteditable")),
+    "false",
+    "verdict badge must not be editable",
+  );
+}
+
+// A dirty redline draft must not be silently discarded by Refresh Review — the
+// reviewer is asked to confirm, and cancelling aborts the refresh.
+async function testRefreshUnsavedEditsGuard(page) {
+  await loadReviewWithMatter(page);
+
+  let refreshCount = 0;
+  await page.route("**/api/matters/matter_review_panel/review-refresh", async (route) => {
+    refreshCount += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter: { id: "matter_review_panel", review_result: { clauses: [] } },
+        extracted_text: "Refreshed.",
+        review_refresh: { stale: false },
+      }),
+    });
+  });
+  // Loading the matter list is a side effect of a successful refresh.
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [] }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  // Clean draft: refresh runs with no confirm dialog.
+  let dialogs = 0;
+  const countingHandler = (dialog) => { dialogs += 1; dialog.accept(); };
+  page.on("dialog", countingHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.equal(dialogs, 0, "a clean draft should not prompt a confirm dialog");
+  assert.equal(refreshCount, 1, "a clean draft should refresh immediately");
+  page.off("dialog", countingHandler);
+
+  // Dirty the redline draft, then cancel the confirm: refresh must NOT run.
+  await page.evaluate(() => {
+    state.reviewClauses = [{ id: "confidential_information", name: "Confidential Information", decision: "review", status: "review", review_state: { state: "review" } }];
+    markRedlineDraftDirty();
+  });
+  assert.equal(await page.evaluate(() => state.redlineDraftDirty), true);
+  const cancelHandler = (dialog) => dialog.dismiss();
+  page.on("dialog", cancelHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.equal(refreshCount, 1, "cancelling the unsaved-edits confirm must abort the refresh");
+  page.off("dialog", cancelHandler);
+
+  // Accept the confirm: refresh proceeds.
+  let confirmMessage = "";
+  const acceptHandler = (dialog) => { confirmMessage = dialog.message(); dialog.accept(); };
+  page.on("dialog", acceptHandler);
+  await page.evaluate(() => refreshSelectedMatterReview());
+  assert.match(confirmMessage, /unsaved/i, "the confirm dialog should mention unsaved edits");
+  assert.equal(refreshCount, 2, "accepting the unsaved-edits confirm should let the refresh run");
+  page.off("dialog", acceptHandler);
 }
 
 function testPngBuffer(width, height) {

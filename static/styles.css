@@ -2066,6 +2066,59 @@ h3 {
   background: var(--amber-bg);
 }
 
+/* WCAG 1.4.1: text + icon verdict badge so the paragraph verdict is not
+   conveyed by background colour alone. */
+.studio-doc-paragraph {
+  position: relative;
+}
+
+.paragraph-verdict-badge {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  display: inline-flex;
+  font-size: 9.5px;
+  font-weight: 800;
+  gap: 3px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px 2px 5px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  text-transform: uppercase;
+  top: 6px;
+  user-select: none;
+  z-index: 4;
+}
+
+.paragraph-verdict-badge-ico {
+  fill: none;
+  height: 11px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  width: 11px;
+}
+
+.paragraph-verdict-badge.match {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+.paragraph-verdict-badge.review {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+.paragraph-verdict-badge.verify {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
 .studio-doc-paragraph.has-redline {
   background: var(--red-bg);
 }
