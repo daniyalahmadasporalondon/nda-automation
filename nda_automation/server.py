@@ -65,6 +65,7 @@ from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
 from .routes import playbook as playbook_routes
 from .routes import review as review_routes
+from .routes import send_document as send_document_routes
 from .routes.common import parse_matter_id as _route_parse_matter_id
 
 try:
@@ -135,6 +136,10 @@ def _handle_matter_upload_post(handler) -> None:
     )
 
 
+def _handle_send_document_post(handler) -> None:
+    send_document_routes.handle_send_document(handler)
+
+
 def _handle_playbook_save_post(handler) -> None:
     playbook_routes.handle_playbook_save(
         handler,
@@ -203,6 +208,7 @@ _POST_EXACT_ROUTES = {
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
+    "/api/send-document": _handle_send_document_post,
     "/api/gmail/import": gmail_routes.handle_gmail_import,
     "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
     "/api/gmail/settings": gmail_routes.handle_gmail_settings_update,
