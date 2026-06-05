@@ -40,7 +40,7 @@ services:
       - key: NDA_AI_PROVIDER
         value: gemini
       - key: NDA_AI_MODEL
-        value: gemini-1.5-flash
+        value: gemini-3.5-flash
       - key: GEMINI_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_API_KEY

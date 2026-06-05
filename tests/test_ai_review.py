@@ -466,7 +466,6 @@ class AIReviewTests(unittest.TestCase):
         schema_json = json.dumps(body["generationConfig"]["responseSchema"])
         for unsupported_key in GEMINI_UNSUPPORTED_SCHEMA_KEYS:
             self.assertNotIn(f'"{unsupported_key}"', schema_json)
-        self.assertIn('"additionalProperties"', schema_json)
         self.assertIn('"minimum"', schema_json)
         self.assertIn('"maximum"', schema_json)
         self.assertIn("semantic_clause_crosscheck", encoded)

@@ -41,7 +41,7 @@ In `.env`, set the AI provider/model and API key:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=gemini
-NDA_AI_MODEL=gemini-1.5-flash
+NDA_AI_MODEL=gemini-3.5-flash
 # Active review defaults to AI-first + fail-closed. Leave these unset unless pinning runtime.
 NDA_ACTIVE_REVIEW_ENGINE=
 NDA_AI_FIRST_FALLBACK_MODE=
@@ -186,7 +186,7 @@ Common environment variables:
 - `NDA_GMAIL_OUTBOUND_TOKEN_PATH`: legacy shared OAuth token file for local outbound Gmail sends. Leave unset for hosted per-user Gmail.
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `NDA_AI_PROVIDER`: `gemini`, `openrouter`, or `alibaba`.
-- `NDA_AI_MODEL`: provider model name. Use `gemini-1.5-flash` or `gemini-1.5-pro` for the current hosted Gemini setup, or another model your key can access.
+- `NDA_AI_MODEL`: provider model name. Use `gemini-3.5-flash` for the current hosted Gemini setup, or another model your key can access.
 - `ALIBABA_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`: server-side AI review key for the selected provider.
 - `NDA_GMAIL_TRIAGE_API_KEY`: server-side key for Qwen/Groq Gmail attachment selection.
 - `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `qwen/qwen3-32b`.
@@ -214,7 +214,7 @@ Optional AI semantic review:
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=gemini
-export NDA_AI_MODEL=gemini-1.5-flash
+export NDA_AI_MODEL=gemini-3.5-flash
 export GEMINI_API_KEY=...
 ```
 
