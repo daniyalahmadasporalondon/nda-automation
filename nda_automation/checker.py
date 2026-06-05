@@ -1481,27 +1481,6 @@ def _term_and_survival_redlines(
     return [edit] if edit else []
 
 
-def _non_circumvention_redlines(
-    clause: ClauseResult,
-    paragraphs_by_id: Dict[str, Paragraph],
-    start_number: int,
-) -> List[RedlineEdit]:
-    if not _is_present_but_wrong_check(clause):
-        return []
-
-    edits: List[RedlineEdit] = []
-    for paragraph in _matched_redline_paragraphs(clause, paragraphs_by_id):
-        edits.append(
-            _redline_edit(
-                start_number + len(edits),
-                clause,
-                paragraph,
-                REDLINE_DELETE_PARAGRAPH,
-            )
-        )
-    return edits
-
-
 def _signatures_redline(
     clause: ClauseResult,
     paragraphs_by_id: Dict[str, Paragraph],
@@ -1574,7 +1553,6 @@ REDLINE_BUILDERS: List[tuple[str, RedlineBuildFn]] = [
     ("confidential_information", _confidential_information_redlines),
     ("governing_law", _governing_law_redlines),
     ("term_and_survival", _term_and_survival_redlines),
-    ("non_circumvention", _non_circumvention_redlines),
     ("signatures", _signatures_redlines),
 ]
 REDLINE_BUILDERS_BY_ID: Dict[str, RedlineBuildFn] = dict(REDLINE_BUILDERS)

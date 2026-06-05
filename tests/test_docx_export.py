@@ -145,6 +145,57 @@ def resolve_relationship_target(relationship_part, target):
     return posixpath.normpath(posixpath.join(base_dir, target))
 
 
+def _delete_and_insert_review_result(paragraphs):
+    """Build a review result with one delete + one insert redline edit.
+
+    Decouples the source-export delete+insert mechanism test from the deterministic
+    engine: it deletes the paragraph mentioning circumvention and inserts a
+    governing-law clause after the first paragraph.
+    """
+    paragraph_records = [
+        {
+            "id": f"p{index}",
+            "index": index,
+            "source_index": paragraph.get("source_index", index),
+            "text": str(paragraph["text"]),
+        }
+        for index, paragraph in enumerate(paragraphs, start=1)
+    ]
+    delete_paragraph = next(p for p in paragraph_records if "circumvent" in p["text"])
+    anchor_paragraph = paragraph_records[0]
+    insert_text = "This Agreement shall be governed by the laws of England and Wales."
+    return {
+        "paragraphs": paragraph_records,
+        "clauses": [],
+        "redline_edits": [
+            {
+                "id": "r1",
+                "clause_id": "non_circumvention",
+                "clause_name": "Non-Circumvention",
+                "paragraph_id": delete_paragraph["id"],
+                "paragraph_index": delete_paragraph["index"],
+                "source_index": delete_paragraph["source_index"],
+                "action": REDLINE_DELETE_PARAGRAPH,
+                "original_text": delete_paragraph["text"],
+                "replacement_text": "",
+            },
+            {
+                "id": "r2",
+                "clause_id": "governing_law",
+                "clause_name": "Governing Law",
+                "paragraph_id": anchor_paragraph["id"],
+                "paragraph_index": anchor_paragraph["index"],
+                "source_index": anchor_paragraph["source_index"],
+                "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                "original_text": "",
+                "replacement_text": insert_text,
+                "anchor_text": anchor_paragraph["text"],
+                "insert_text": insert_text,
+            },
+        ],
+    }
+
+
 def assert_docx_package_healthy(testcase, docx_bytes, require_styles=False):
     testcase.assertEqual(validate_docx_open_health(docx_bytes, require_styles=require_styles), [])
     required_parts = {
@@ -1339,7 +1390,10 @@ class DocxExportTests(unittest.TestCase):
             "The Recipient must not circumvent the Company or deal directly with introduced parties.",
         ])
         paragraphs = extract_docx_paragraphs(source_docx)
-        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        # Exercise the delete + insert source-export mechanism directly via redline_edits
+        # (a delete for the prohibited paragraph, an insert for the governing-law gap),
+        # independent of which engine produced them.
+        result = _delete_and_insert_review_result(paragraphs)
 
         redlined_docx = build_source_redline_docx(source_docx, result)
 
@@ -1367,7 +1421,7 @@ class DocxExportTests(unittest.TestCase):
         )
         source_docx = replace_docx_parts(source_docx, {"word/document.xml": document_xml})
         paragraphs = extract_docx_paragraphs(source_docx)
-        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result = _delete_and_insert_review_result(paragraphs)
 
         redlined_docx = build_source_redline_docx(source_docx, result)
 
@@ -1431,17 +1485,32 @@ class DocxExportTests(unittest.TestCase):
         assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
 
     def test_review_report_docx_marks_delete_paragraph_redlines(self):
-        result = review_nda("The Recipient must not circumvent the Company or deal directly with introduced parties.")
+        # A delete_paragraph redline edit renders as a tracked deletion. (non_circumvention
+        # is now a dynamic clause; its delete redline arrives via redline_edits, which is
+        # what the report renderer consumes — exercise that mechanism directly.)
+        offending = "The Recipient must not circumvent the Company or deal directly with introduced parties."
+        result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": offending}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "clause_name": "Non-Circumvention",
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "action": REDLINE_DELETE_PARAGRAPH,
+                    "original_text": offending,
+                    "replacement_text": "",
+                }
+            ],
+        }
 
         _settings_root, document_root, _document_xml = docx_xml_roots(build_review_report_docx(result))
 
         deleted_text = tracked_deleted_text(document_root)
-        self.assertTrue(
-            any(
-                "The Recipient must not circumvent the Company or deal directly with introduced parties." in text
-                for text in deleted_text
-            )
-        )
+        self.assertTrue(any(offending in text for text in deleted_text))
         self.assertEqual(paragraph_property_revisions(document_root, "del"), [])
 
     def test_review_report_docx_marks_insert_after_paragraph_redlines(self):

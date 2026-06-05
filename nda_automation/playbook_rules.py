@@ -37,12 +37,13 @@ CLAUSE_ENGINE_DYNAMIC = "dynamic"
 CLAUSE_ENGINES = {CLAUSE_ENGINE_NATIVE, CLAUSE_ENGINE_DYNAMIC}
 
 # The clause ids backed by Python checks. Dynamic clauses must NOT use these.
+# non_circumvention was migrated to a pure dynamic Playbook clause (tracer), so
+# it is intentionally absent even though its id remains well-known.
 NATIVE_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
     "governing_law",
     "term_and_survival",
-    "non_circumvention",
     "signatures",
 }
 

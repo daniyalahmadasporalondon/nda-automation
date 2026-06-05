@@ -85,8 +85,10 @@ class DynamicClausePacketTests(unittest.TestCase):
 
     def test_native_packet_clauses_have_native_engine_and_no_fallback(self):
         packet = build_ai_assessment_packet("NDA text.", playbook=load_playbook())
-        for clause in packet["playbook"]["clauses"]:
-            self.assertEqual(clause["engine"], "native")
+        native_clauses = [clause for clause in packet["playbook"]["clauses"] if clause["engine"] == "native"]
+        # The shipped playbook still has native clauses (non_circumvention is now dynamic).
+        self.assertTrue(native_clauses)
+        for clause in native_clauses:
             self.assertNotIn("fallback", clause)
 
 

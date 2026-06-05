@@ -551,7 +551,11 @@
           "drafting_note": "Remove the prohibited restraint rather than replacing it with another commercial restriction."
         }
       },
-      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA."
+      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA.",
+      "engine": "dynamic",
+      "fallback": {
+        "redline_action": "delete_paragraph"
+      }
     },
     {
       "id": "signatures",

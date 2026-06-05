@@ -9,7 +9,9 @@
       "reason_code": "weak_mutuality_signal",
       "redline_count": 0,
       "analysis": {
-        "mutuality_analysis.weak_mutuality_paragraph_ids": ["p1"]
+        "mutuality_analysis.weak_mutuality_paragraph_ids": [
+          "p1"
+        ]
       }
     }
   },
@@ -23,8 +25,12 @@
       "reason_code": "mutuality_obligation_found",
       "redline_count": 0,
       "analysis": {
-        "mutuality_analysis.strong_mutuality_paragraph_ids": ["p1"],
-        "mutuality_analysis.one_way_paragraph_ids": ["p2"]
+        "mutuality_analysis.strong_mutuality_paragraph_ids": [
+          "p1"
+        ],
+        "mutuality_analysis.one_way_paragraph_ids": [
+          "p2"
+        ]
       }
     }
   },
@@ -52,7 +58,9 @@
       "reason_code": "unqualified_independent_development_exclusion",
       "redline_count": 0,
       "analysis": {
-        "confidential_information_analysis.independent_development_review_paragraph_ids": ["p2"]
+        "confidential_information_analysis.independent_development_review_paragraph_ids": [
+          "p2"
+        ]
       }
     }
   },
@@ -66,7 +74,9 @@
       "reason_code": "usage_right_language_needs_review",
       "redline_count": 0,
       "analysis": {
-        "confidential_information_analysis.usage_right_review_paragraph_ids": ["p2"]
+        "confidential_information_analysis.usage_right_review_paragraph_ids": [
+          "p2"
+        ]
       }
     }
   },
@@ -80,7 +90,9 @@
       "reason_code": "unclear_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.unclear_paragraph_ids": ["p1"],
+        "governing_law_analysis.unclear_paragraph_ids": [
+          "p1"
+        ],
         "governing_law_analysis.candidate_records.0.value": "[jurisdiction]"
       }
     }
@@ -95,7 +107,9 @@
       "reason_code": "approved_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.approved_paragraph_ids": ["p1"],
+        "governing_law_analysis.approved_paragraph_ids": [
+          "p1"
+        ],
         "governing_law_analysis.candidate_records.0.value": "State of Delaware",
         "governing_law_analysis.candidate_records.0.approved": true,
         "governing_law_analysis.candidate_records.0.needs_review": false
@@ -112,7 +126,9 @@
       "reason_code": "approved_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.approved_paragraph_ids": ["p5"],
+        "governing_law_analysis.approved_paragraph_ids": [
+          "p5"
+        ],
         "governing_law_analysis.unapproved_paragraph_ids": [],
         "governing_law_analysis.references.0.status": "approved"
       }
@@ -128,9 +144,13 @@
       "reason_code": "unclear_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.unclear_paragraph_ids": ["p3"],
+        "governing_law_analysis.unclear_paragraph_ids": [
+          "p3"
+        ],
         "governing_law_analysis.references.0.status": "unresolved",
-        "governing_law_analysis.references.0.unresolved_numbers": ["99"]
+        "governing_law_analysis.references.0.unresolved_numbers": [
+          "99"
+        ]
       }
     }
   },
@@ -144,7 +164,9 @@
       "reason_code": "unclear_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.unclear_paragraph_ids": ["p1"],
+        "governing_law_analysis.unclear_paragraph_ids": [
+          "p1"
+        ],
         "governing_law_analysis.candidate_records.0.approved": true,
         "governing_law_analysis.candidate_records.0.needs_review": true,
         "governing_law_analysis.candidate_records.1.approved": false
@@ -161,7 +183,10 @@
       "reason_code": "unclear_governing_law",
       "redline_count": 0,
       "analysis": {
-        "governing_law_analysis.unclear_paragraph_ids": ["p3", "p5"],
+        "governing_law_analysis.unclear_paragraph_ids": [
+          "p3",
+          "p5"
+        ],
         "governing_law_analysis.references.0.status": "unclear",
         "governing_law_analysis.candidate_records.1.approved": true,
         "governing_law_analysis.candidate_records.1.needs_review": true,
@@ -177,7 +202,9 @@
       "status": "not_present",
       "decision": "fail",
       "reason_code": "missing_term_or_survival",
-      "analysis_absent": ["term_survival_analysis"]
+      "analysis_absent": [
+        "term_survival_analysis"
+      ]
     }
   },
   {
@@ -214,7 +241,9 @@
       "status": "not_present",
       "decision": "fail",
       "reason_code": "missing_term_or_survival",
-      "analysis_absent": ["term_survival_analysis"]
+      "analysis_absent": [
+        "term_survival_analysis"
+      ]
     }
   },
   {
@@ -226,7 +255,9 @@
       "decision": "pass",
       "reason_code": "term_survival_within_cap",
       "redline_count": 0,
-      "analysis_absent": ["term_survival_analysis"]
+      "analysis_absent": [
+        "term_survival_analysis"
+      ]
     }
   },
   {
@@ -240,140 +271,9 @@
       "redline_count": 0,
       "analysis": {
         "term_survival_analysis.references.0.status": "partial",
-        "term_survival_analysis.references.0.unresolved_numbers": ["99"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_modal_negated_reference_passes",
-    "clause_id": "non_circumvention",
-    "text": "This Agreement may not include non-solicitation obligations or exclusivity restrictions.",
-    "expected": {
-      "status": "not_present",
-      "decision": "pass",
-      "reason_code": "negated_non_circumvention_reference",
-      "redline_count": 0,
-      "analysis": {
-        "non_circumvention_analysis.negated_reference_paragraph_ids": ["p1"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_direct_dealing_restriction_checks",
-    "clause_id": "non_circumvention",
-    "text": "The Recipient must not circumvent the Company or deal directly with introduced parties.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_contact_transact_introduced_party_checks",
-    "clause_id": "non_circumvention",
-    "text": "The Recipient shall not contact or transact with any party introduced by the Company.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_bypass_company_checks",
-    "clause_id": "non_circumvention",
-    "text": "The Recipient shall not bypass the Company.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_deal_exclusively_checks",
-    "clause_id": "non_circumvention",
-    "text": "The Recipient agrees to deal exclusively with the Company.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p1"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_referenced_section_prohibited_checks",
-    "clause_id": "non_circumvention",
-    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with the non-circumvention provisions in Section 12.\n\nSection 12 Non-Circumvention\n\nThe Recipient shall not contact introduced parties.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p5"],
-        "non_circumvention_analysis.references.0.status": "prohibited",
-        "non_circumvention_analysis.references.0.targets.0.status": "prohibited"
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_unresolved_reference_reviews",
-    "clause_id": "non_circumvention",
-    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with the non-circumvention provisions in Section 99.",
-    "expected": {
-      "status": "review",
-      "decision": "review",
-      "reason_code": "unclear_non_circumvention_reference",
-      "redline_count": 0,
-      "analysis": {
-        "non_circumvention_analysis.review_paragraph_ids": ["p3"],
-        "non_circumvention_analysis.references.0.status": "unresolved",
-        "non_circumvention_analysis.references.0.unresolved_numbers": ["99"]
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_negated_referenced_section_passes",
-    "clause_id": "non_circumvention",
-    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nNo non-circumvention restrictions apply under Section 12.\n\nSection 12 No Non-Circumvention\n\nThis Agreement does not include non-circumvention or non-solicitation obligations.",
-    "expected": {
-      "status": "not_present",
-      "decision": "pass",
-      "reason_code": "negated_non_circumvention_reference",
-      "redline_count": 0,
-      "analysis": {
-        "non_circumvention_analysis.negated_reference_paragraph_ids": ["p3", "p5"],
-        "non_circumvention_analysis.references.0.status": "negated"
-      }
-    }
-  },
-  {
-    "name": "non_circumvention_generic_reference_uses_target_scope_checks",
-    "clause_id": "non_circumvention",
-    "text": "Mutual NDA\n\nArticle 8 Restrictions\n\nThe Recipient shall comply with Section 12.\n\nSection 12 Introduced Contacts\n\nThe Recipient shall not contact introduced parties.",
-    "expected": {
-      "status": "check",
-      "decision": "fail",
-      "reason_code": "prohibited_non_circumvention_restriction",
-      "redline_count": 1,
-      "analysis": {
-        "non_circumvention_analysis.prohibited_paragraph_ids": ["p5"],
-        "non_circumvention_analysis.references.0.status": "prohibited",
-        "non_circumvention_analysis.references.0.source_classification": "no_signal"
+        "term_survival_analysis.references.0.unresolved_numbers": [
+          "99"
+        ]
       }
     }
   }

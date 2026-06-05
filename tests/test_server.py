@@ -1384,8 +1384,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["attachment_filename"], "Acme NDA.docx")
         self.assertEqual(matter["message_snippet"], "Manual upload of Acme NDA.docx.")
         self.assertIn("received_at", matter)
-        self.assertEqual(matter["triage_status"], "legal_review")
-        self.assertEqual(matter["next_action"], "Needs legal review")
+        # non_circumvention is now a dynamic clause, so the deterministic upload triage
+        # no longer flags the "must not circumvent" line; the doc still needs a redline
+        # for its missing required clauses.
+        self.assertEqual(matter["triage_status"], "needs_redline")
         self.assertGreaterEqual(matter["issue_count"], 1)
         self.assertNotIn("review_result", matter)
         self.assertNotIn("extracted_text", matter)
@@ -5961,24 +5963,20 @@ class ServerTests(unittest.TestCase):
         self.assertIn("For [Party 1 legal name]", signatures_redline["replacement_text"])
         self.assertIn("For [Party 2 legal name]", signatures_redline["replacement_text"])
 
-    def test_text_review_returns_term_and_non_circumvention_redlines(self):
+    def test_text_review_returns_term_redline(self):
+        # non_circumvention is now a dynamic clause reviewed by the AI-first engine;
+        # the deterministic /api/review path produces the native term redline.
         status, payload = self.request(
             "POST",
             "/api/review",
-            {
-                "text": (
-                    "The confidentiality obligations survive for seven years.\n\n"
-                    "The Recipient must not circumvent the Company or deal directly with introduced parties."
-                )
-            },
+            {"text": "The confidentiality obligations survive for seven years."},
         )
 
         self.assertEqual(status, 200)
         redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
         self.assertEqual(redlines_by_clause["term_and_survival"]["action"], "replace_paragraph")
         self.assertIn("up to five years", redlines_by_clause["term_and_survival"]["replacement_text"])
-        self.assertEqual(redlines_by_clause["non_circumvention"]["action"], "delete_paragraph")
-        self.assertEqual(redlines_by_clause["non_circumvention"]["replacement_text"], "")
+        self.assertNotIn("non_circumvention", redlines_by_clause)
 
     def test_review_docx_export_returns_track_changes_enabled_docx(self):
         with tempfile.TemporaryDirectory() as exports_dir:
@@ -6512,9 +6510,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(review_payload["source"]["type"], "docx")
         self.assertEqual(review_payload["paragraphs"][1]["source_index"], 2)
         governing_law_redline = next(edit for edit in review_payload["redline_edits"] if edit["clause_id"] == "governing_law")
-        non_circumvention_redline = next(edit for edit in review_payload["redline_edits"] if edit["clause_id"] == "non_circumvention")
         self.assertEqual(governing_law_redline["source_index"], 2)
-        self.assertEqual(non_circumvention_redline["source_index"], 3)
+        # non_circumvention is now a dynamic clause; the deterministic round-trip
+        # produces the native governing-law redline only.
+        self.assertNotIn("non_circumvention", {edit["clause_id"] for edit in review_payload["redline_edits"]})
 
         self.assertEqual(export_status, 200)
         self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="round-trip-redlined.docx"')
@@ -6523,7 +6522,7 @@ class ServerTests(unittest.TestCase):
             export_payload,
             extra_forbidden=["Stale pasted browser text should not appear in the export."],
         )
-        assert_docx_redline_contract(self, export_payload, [governing_law_redline, non_circumvention_redline])
+        assert_docx_redline_contract(self, export_payload, [governing_law_redline])
         with ZipFile(BytesIO(export_payload)) as archive:
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
@@ -6543,7 +6542,12 @@ class ServerTests(unittest.TestCase):
             ),
             revision_states,
         )
-        self.assertIn(("The Recipient must not circumvent the Company.", ""), revision_states)
+        # non_circumvention is dynamic now, so the deterministic round-trip leaves the
+        # "must not circumvent" paragraph unchanged (same text accepted or rejected).
+        self.assertIn(
+            ("The Recipient must not circumvent the Company.", "The Recipient must not circumvent the Company."),
+            revision_states,
+        )
 
     def test_saved_export_route_returns_exact_docx_bytes(self):
         with tempfile.TemporaryDirectory() as exports_dir:
