@@ -198,18 +198,39 @@ function createDraftIntakeController({
   // The last successful generation, used by the Download/Send actions.
   let lastGenerated = null;
 
-  // Download + Send are always available (not staged). If nothing has been
-  // generated yet, generate first, then perform the action — so a single click
-  // does the whole thing.
+  // Download + Send are always available (not staged). Download needs the actual
+  // document, so it generates first (if needed) then downloads.
   downloadButton?.addEventListener("click", async () => {
     if (!lastGenerated) await generate();
     if (lastGenerated && typeof onDownloadGenerated === "function") onDownloadGenerated(lastGenerated);
   });
 
-  sendButton?.addEventListener("click", async () => {
-    if (!lastGenerated) await generate();
-    if (lastGenerated && typeof onSendGenerated === "function") onSendGenerated(lastGenerated);
+  // Send ALWAYS opens the email popup immediately — never blocked on generation —
+  // with the recipient prefilled from the counterparty email. If no NDA exists
+  // yet, it generates in the background and attaches the document to the open
+  // modal when ready (the modal's own "Send document" stays disabled until a
+  // document is attached, so nothing can be sent empty).
+  sendButton?.addEventListener("click", () => {
+    if (typeof onSendGenerated !== "function") return;
+    onSendGenerated(currentSendContext());
+    if (!lastGenerated) {
+      generate().then(() => {
+        if (lastGenerated) onSendGenerated(lastGenerated);
+      });
+    }
   });
+
+  // The handle Send acts on: the last generation if present, otherwise a draft
+  // context carrying just the recipient + subject so the popup can open + prefill
+  // immediately, before any document exists.
+  function currentSendContext() {
+    if (lastGenerated) return lastGenerated;
+    const name = intake && intake.counterpartyName ? intake.counterpartyName.trim() : "";
+    return {
+      counterpartyEmail: (intake && intake.counterpartyEmail) || "",
+      subject: name ? `NDA — ${name}` : "NDA",
+    };
+  }
 
   // Records the last successful generation so Download/Send act on it.
   function setStagedActions(generated) {
@@ -488,6 +509,7 @@ function createDraftIntakeController({
     busy = true;
     if (clearButton) clearButton.disabled = true;
     updateGenerateState();
+    setStatus("Generating NDA…");
 
     const payload = intakeApi.buildDraftPayload(intake);
     try {
