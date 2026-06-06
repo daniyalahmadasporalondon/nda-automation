@@ -75,6 +75,17 @@ def _law_value(option_id: str) -> str:
     raise KeyError(option_id)
 
 
+# The 4 approved options are coupled law+forum packages: an override to a given law
+# must also yield that option's proper FORUM (forum follows the override is correct
+# coherence). These are the option-derived forums the engine renders (task #7).
+_OPTION_FORUM = {
+    "india": "Courts of India",
+    "delaware": "Courts of the State of Delaware",
+    "england_and_wales": "Courts of England and Wales",
+    "difc": "DIFC Courts, Dubai",
+}
+
+
 def _fe_payload(entity_id: str, option_id: str, *, overridden: bool) -> dict:
     """The exact nested buildDraftPayload shape, with the law under signing_entity."""
     return {
@@ -181,7 +192,9 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertTrue(m["governing_law_overridden"], m)
                     self.assertEqual(m["governing_law_value"], override_value)
                     self.assertEqual(m["entity_default_governing_law_value"], default_value)
-                    # The FETCHED, rendered NDA NAMES the override law.
+                    # The FETCHED, rendered NDA NAMES the override law. (This is the
+                    # parser-fix differential: FAILS on the buggy tip where the nested
+                    # override is dropped, PASSES once the parser reads it.)
                     self.assertIn(override_value, text, f"{entity_id}: override law not rendered")
 
                     # Independent gate on the fetched bytes: governing-law correct,
@@ -218,6 +231,37 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertFalse(m["governing_law_overridden"], m)
                     self.assertEqual(m["governing_law_value"], default_value)
                     self.assertIn(default_value, text, f"{entity_id}: default law not rendered")
+
+    def test_override_forum_follows_the_chosen_option(self):
+        """FORUM-COUPLING coherence (task #7): the 4 approved options are coupled
+        law+forum packages, so an override to e.g. DIFC must yield DIFC law AND DIFC
+        courts. Through the full HTTP round-trip, the manifest forum must be the
+        OVERRIDE option's forum and appear in the rendered prose, and the entity's
+        default forum must not leak in. (Requires the option-derived-forum feature;
+        on a pre-#7 tip the forum falls back to the law value, which this catches.)
+        """
+        for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
+            with self.subTest(entity_id=entity_id, override=override_opt):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    p = self._store_patches(data_dir)
+                    with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
+                        payload, docx = self._generate_and_fetch(
+                            _fe_payload(entity_id, override_opt, overridden=True)
+                        )
+                    text = extract_docx_text(docx)
+                    expected_forum = _OPTION_FORUM[override_opt]
+                    default_forum = _OPTION_FORUM[default_opt]
+                    self.assertEqual(
+                        payload["manifest"]["forum"], expected_forum,
+                        f"{entity_id}: forum did not follow the override (got "
+                        f"{payload['manifest']['forum']!r}, expected {expected_forum!r})",
+                    )
+                    self.assertIn(expected_forum, text, f"{entity_id}: override forum not in prose")
+                    if expected_forum != default_forum:
+                        self.assertNotIn(
+                            default_forum, text,
+                            f"{entity_id}: default forum {default_forum!r} leaked into an overridden draft",
+                        )
 
 
 if __name__ == "__main__":
