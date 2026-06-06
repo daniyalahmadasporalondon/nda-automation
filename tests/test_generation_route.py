@@ -212,6 +212,50 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
 
+    def test_nested_fe_override_RENDERS_into_the_downloaded_doc(self):
+        # Regression for the silent-drop class draft-ui caught: the override is
+        # nested ONLY at signing_entity.governing_law.playbook_option_id (the real FE
+        # shape — NO top-level field). A manifest-only assertion can pass even if the
+        # parser read the wrong level, so this drives the REAL FE payload through the
+        # route AND downloads the rendered .docx to assert the GOVERNING LAW clause
+        # actually NAMES the override (aspora default India -> Delaware).
+        from io import BytesIO
+
+        from nda_automation.docx_text import extract_docx_text
+
+        fe_payload = {
+            "counterparty": {"name": "Acme Ltd", "email": None},
+            "project_purpose": "a pilot",
+            "term": "3",
+            "nda_type": "mutual",
+            "notes": "",
+            "signing_entity": {
+                "id": "aspora_technology",  # registry default = India
+                "legal_name": "Aspora Technology Services Private Limited",
+                "address": {"id": "b", "label": "B", "lines": ["MG Road"]},
+                "governing_law": {"playbook_option_id": "delaware", "label": "Delaware"},
+                "governing_law_overridden": True,
+            },
+        }
+        # Sanity: the real FE payload carries NO top-level override field.
+        self.assertNotIn("governing_law_override", fe_payload)
+        self.assertNotIn("governing_law", fe_payload)
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, payload)
+                self.assertEqual(payload["manifest"]["governing_law_value"], "Delaware")
+                # Download the actual rendered .docx and assert the CLAUSE names the override.
+                dl_status, dl_body, _ = self.request(
+                    "GET", payload["download_url"], headers=self.basic_auth_headers()
+                )
+        self.assertEqual(dl_status, 200)
+        text = extract_docx_text(BytesIO(bytes(dl_body)).getvalue())
+        gov_line = next(line for line in text.split("\n") if "GOVERNING LAW" in line.upper())
+        self.assertIn("laws of Delaware", gov_line)
+        self.assertNotIn("laws of India", gov_line)  # did NOT silently snap to the entity default
+
     def test_fe_payload_without_override_keeps_entity_default(self):
         # signing_entity.governing_law present but matching the entity default ->
         # no-op, governing_law_overridden False.
@@ -280,12 +324,16 @@ class GenerateNdaRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                # The FE carries the chosen law INSIDE signing_entity.governing_law —
+                # there is no top-level governing_law_override string.
                 status, payload, _ = self.generate(
                     {
-                        # aspora default is India; override to England.
-                        "signing_entity_id": "aspora_technology",
-                        "intake": {"counterparty_name": "Acme Corp Ltd"},
-                        "governing_law_override": "england_and_wales",
+                        "signing_entity": {
+                            "id": "aspora_technology",  # default India; picked England
+                            "governing_law": {"playbook_option_id": "england_and_wales"},
+                            "governing_law_overridden": True,
+                        },
+                        "counterparty": {"name": "Acme Corp Ltd"},
                     },
                     headers=self.basic_auth_headers(),
                 )
@@ -295,18 +343,21 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(payload["manifest"]["entity_default_governing_law_value"], "India")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
 
-    def test_unapproved_governing_law_override_is_rejected(self):
+    def test_unapproved_governing_law_option_is_rejected(self):
         with patch.dict(os.environ, self.auth_env()):
             status, payload, _ = self.generate(
                 {
-                    "signing_entity_id": "aspora_technology",
-                    "intake": {"counterparty_name": "Acme"},
-                    "governing_law_override": "new_york",
+                    "signing_entity": {
+                        "id": "aspora_technology",
+                        "governing_law": {"playbook_option_id": "new_york"},
+                        "governing_law_overridden": True,
+                    },
+                    "counterparty": {"name": "Acme"},
                 },
                 headers=self.basic_auth_headers(),
             )
         self.assertEqual(status, 400)
-        self.assertIn("override", payload["error"].lower())
+        self.assertIn("not an approved", payload["error"].lower())
 
     def test_off_position_draft_is_blocked_by_the_safety_gate_before_save(self):
         # DEFECT-2 regression: the hard safety gate must run on the ACTUAL endpoint
