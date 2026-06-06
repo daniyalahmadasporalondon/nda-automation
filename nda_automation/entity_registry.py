@@ -53,6 +53,7 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
         ],
         "governing_law": {"playbook_option_id": "india", "label": "India"},
         "jurisdiction": "Courts of India",
+        "incorporation_jurisdiction": "India",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
     {
@@ -74,6 +75,7 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
         ],
         "governing_law": {"playbook_option_id": "delaware", "label": "Delaware"},
         "jurisdiction": "Courts of the State of Delaware",
+        "incorporation_jurisdiction": "Delaware",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
     {
@@ -115,6 +117,10 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             "label": "England and Wales",
         },
         "jurisdiction": "Courts of England and Wales",
+        # Legal confirmed England and Wales as the place of incorporation (not
+        # Northern Ireland, despite the Belfast registered office) so it aligns
+        # with the chosen governing law via the London corporate office.
+        "incorporation_jurisdiction": "England and Wales",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
     {
@@ -141,6 +147,7 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
         # playbook does not offer (see ENTITY_LAW_MAPPING_NOTES["vance_techlabs"]).
         "governing_law": {"playbook_option_id": "difc", "label": "DIFC"},
         "jurisdiction": "DIFC Courts, Dubai",
+        "incorporation_jurisdiction": "DIFC",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
 ]
@@ -259,6 +266,11 @@ def validate_registry() -> None:
 
         if not entity.get("legal_name"):
             raise ValueError(f"Entity {entity_id} is missing legal_name.")
+
+        if not entity.get("incorporation_jurisdiction"):
+            raise ValueError(
+                f"Entity {entity_id} is missing incorporation_jurisdiction."
+            )
 
         addresses = entity.get("addresses") or []
         if not addresses:

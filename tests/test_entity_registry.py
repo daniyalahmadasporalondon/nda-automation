@@ -95,6 +95,23 @@ class EntityRegistryBundleTests(unittest.TestCase):
         self.assertEqual(names["real_transfer"], "Real Transfer Limited")
         self.assertEqual(names["vance_techlabs"], "Vance Techlabs Limited")
 
+    def test_incorporation_jurisdiction_is_legal_confirmed_value(self):
+        # Fills generation's [JURISDICTION OF INCORPORATION] slot. Legal confirmed
+        # these align with the governing-law jurisdiction for all four (Real
+        # Transfer = England and Wales, NOT Northern Ireland).
+        jurisdictions = {
+            e["id"]: e["incorporation_jurisdiction"] for e in er.list_entities()
+        }
+        self.assertEqual(
+            jurisdictions,
+            {
+                "aspora_technology": "India",
+                "vance_money": "Delaware",
+                "real_transfer": "England and Wales",
+                "vance_techlabs": "DIFC",
+            },
+        )
+
     def test_actor_slug_is_the_stable_entity_id(self):
         # Generation passes this as the artifact-registry `actor`, which slugs it
         # into the artifact filename. Using the id keeps names short and stable.
