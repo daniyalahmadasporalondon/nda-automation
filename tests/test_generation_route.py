@@ -256,6 +256,52 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertIn("laws of Delaware", gov_line)
         self.assertNotIn("laws of India", gov_line)  # did NOT silently snap to the entity default
 
+    def test_nested_fe_override_renders_BOTH_law_and_coupled_forum(self):
+        # The 4 approved options are coupled law+forum PACKAGES: an override must
+        # render the override's law AND its coupled forum, not the entity's original
+        # forum. aspora (default India / Courts of India) overridden to DIFC must
+        # render DIFC law AND DIFC Courts — through the real nested FE payload — and
+        # manifest.forum must MATCH the prose forum (gen-verify cross-checks this).
+        from io import BytesIO
+
+        from nda_automation.docx_text import extract_docx_text
+
+        fe_payload = {
+            "counterparty": {"name": "Acme Ltd", "email": None},
+            "project_purpose": "a pilot",
+            "term": "3",
+            "nda_type": "mutual",
+            "notes": "",
+            "signing_entity": {
+                "id": "aspora_technology",  # registry default = India / Courts of India
+                "legal_name": "Aspora Technology Services Private Limited",
+                "address": {"id": "b", "label": "B", "lines": ["MG Road"]},
+                "governing_law": {"playbook_option_id": "difc", "label": "DIFC"},
+                "governing_law_overridden": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, payload)
+                m = payload["manifest"]
+                self.assertEqual(m["governing_law_value"], "DIFC")
+                self.assertEqual(m["forum"], "DIFC Courts, Dubai")  # the option's coupled forum
+                dl_status, dl_body, _ = self.request(
+                    "GET", payload["download_url"], headers=self.basic_auth_headers()
+                )
+        self.assertEqual(dl_status, 200)
+        text = extract_docx_text(BytesIO(bytes(dl_body)).getvalue())
+        gov_line = next(line for line in text.split("\n") if "GOVERNING LAW" in line.upper())
+        # Both halves of the package are rendered, neither snaps to the entity default.
+        self.assertIn("laws of DIFC", gov_line)
+        self.assertIn("DIFC Courts", gov_line)
+        self.assertNotIn("laws of India", gov_line)
+        self.assertNotIn("Courts of India", text)
+        # manifest.forum matches the rendered prose forum (the cross-check contract).
+        self.assertIn(m["forum"], text)
+
     def test_fe_payload_without_override_keeps_entity_default(self):
         # signing_entity.governing_law present but matching the entity default ->
         # no-op, governing_law_overridden False.
