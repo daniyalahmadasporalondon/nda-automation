@@ -321,6 +321,7 @@ def generate_and_save_nda(
     based_on_artifact_id: str = "",
     owner_user_id: str = "",
     clause_adapter: ClauseAdapter | None = None,
+    use_ai: bool = True,
 ) -> tuple[GenerationResult, Any]:
     """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
 
@@ -328,6 +329,12 @@ def generate_and_save_nda(
     ``artifact_service`` so a caller only needs an ``entity_id`` + intake +
     ``matter_id``. Returns ``(result, artifact)``. The live modules are imported
     lazily so this module imports cleanly even where they are absent.
+
+    AI-first: when ``use_ai`` and no explicit ``clause_adapter`` is passed, the
+    runtime AI clause adapter is built (``build_clause_adapter``) and drives the
+    clause writing — Playbook-bounded, with a guardrail that falls back to the
+    deterministic wording on drift. With no API key configured the adapter is
+    ``None`` and generation runs fully deterministic.
     """
 
     from . import entity_registry  # noqa: PLC0415
@@ -336,6 +343,11 @@ def generate_and_save_nda(
         from .checker import load_playbook  # noqa: PLC0415
 
         playbook = load_playbook()
+
+    if clause_adapter is None and use_ai:
+        from .nda_generation_ai import build_clause_adapter  # noqa: PLC0415
+
+        clause_adapter = build_clause_adapter()
 
     bundle = entity_registry.get_entity(entity_id)
     if bundle is None:
