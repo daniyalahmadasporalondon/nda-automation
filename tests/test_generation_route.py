@@ -203,10 +203,12 @@ class GenerateNdaRouteTests(unittest.TestCase):
         m = payload["manifest"]
         self.assertEqual(m["counterparty_name"], "Globex International Ltd")
         self.assertEqual(m["term_years"], 3)  # parsed from "3 years"
-        # The FE-chosen governing law was applied + flagged.
+        # The FE-chosen governing law was applied + flagged with full provenance.
         self.assertEqual(m["governing_law_value"], "England and Wales")
+        self.assertEqual(m["governing_law_option_id"], "england_and_wales")
         self.assertTrue(m["governing_law_overridden"])
         self.assertEqual(m["entity_default_governing_law_value"], "India")
+        self.assertEqual(m["forum"], "Courts of England and Wales")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
 

@@ -252,8 +252,10 @@ class TestGoverningLawOverride:
             india_bundle, playbook, governing_law_option_id="england_and_wales"
         )
         assert entity.governing_law_value == "England and Wales"
-        # Forum tracks the OVERRIDDEN law, not the entity's default courts.
-        assert entity.forum == "England and Wales"
+        # Forum tracks the OVERRIDDEN option's proper courts (resolved from the
+        # registry entity that defaults to england_and_wales), not the entity's
+        # default Indian courts and not a bare law value.
+        assert entity.forum == "Courts of England and Wales"
 
     def test_unapproved_override_is_rejected(self, playbook):
         with pytest.raises(gen.NdaGenerationError):
@@ -264,22 +266,46 @@ class TestGoverningLawOverride:
         result = gen.generate_nda_for_entity(
             "aspora_technology", _intake(), playbook=playbook, governing_law_override="england_and_wales"
         )
-        assert result.manifest.governing_law_value == "England and Wales"
-        assert result.manifest.governing_law_overridden is True
-        assert result.manifest.entity_default_governing_law_value == "India"
-        # The effective law is in the clause; the entity default is not.
+        m = result.manifest
+        assert m.governing_law_value == "England and Wales"
+        assert m.governing_law_option_id == "england_and_wales"
+        assert m.governing_law_overridden is True
+        assert m.entity_default_governing_law_value == "India"
+        # Forum tracks the chosen option's proper courts (registry-derived).
+        assert m.forum == "Courts of England and Wales"
+        # The effective law + forum are in the clause; the entity default is not.
         text = extract_docx_text(result.docx_bytes)
         assert "the laws of England and Wales" in text
+        assert "Courts of England and Wales" in text
         # And the override draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
-        # Provenance round-trips through to_dict for gen-verify to read.
-        d = result.manifest.to_dict()
+        # Full provenance round-trips through to_dict for gen-verify to read.
+        d = m.to_dict()
+        assert d["governing_law_option_id"] == "england_and_wales"
         assert d["governing_law_overridden"] is True
         assert d["entity_default_governing_law_value"] == "India"
+
+    def test_override_to_each_approved_option_derives_its_forum(self, playbook):
+        # Every approved option resolves the forum that goes WITH it (from the
+        # registry entity that defaults to that option), never the wrong courts.
+        expected = {
+            "india": "Courts of India",
+            "delaware": "Courts of the State of Delaware",
+            "england_and_wales": "Courts of England and Wales",
+            "difc": "DIFC Courts, Dubai",
+        }
+        for option_id, forum in expected.items():
+            result = gen.generate_nda_for_entity(
+                "aspora_technology", _intake(), playbook=playbook, governing_law_override=option_id
+            )
+            assert result.manifest.governing_law_option_id == option_id
+            assert result.manifest.forum == forum
+            assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
 
     def test_no_override_keeps_entity_default_and_flag_false(self, playbook):
         result = gen.generate_nda_for_entity("aspora_technology", _intake(), playbook=playbook)
         assert result.manifest.governing_law_overridden is False
+        assert result.manifest.governing_law_option_id == "india"
         assert result.manifest.governing_law_value == result.manifest.entity_default_governing_law_value
 
     def test_override_equal_to_default_is_not_flagged(self, playbook):
