@@ -105,6 +105,44 @@
     }
   },
   {
+    "name": "governing_law_foreign_incorporated_party_pass",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "label_source": "engineering",
+    "label_note": "Foreign-incorporated counterparty recital (\"incorporated under the laws of Singapore\") must NOT be read as a competing governing law; the operative clause picks an approved law (India).",
+    "text": "Acme Pte Ltd, a company incorporated under the laws of Singapore, having its registered office at 1 Raffles Place, Singapore (hereinafter referred to as \"Company\") of the FIRST PARTY.\n\nAspora Technologies Private Limited, a company incorporated under the laws of India, having its registered office at Bangalore (hereinafter referred to as \"Aspora\") of the SECOND PARTY.\n\nGOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and construed in accordance with the laws of India. In the event of any dispute amongst the Parties, the dispute shall be finally resolved by courts in Mumbai.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "approved_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_foreign_incorporated_party_unapproved_still_fails",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Recital neutralization must not mask an actually-unapproved operative governing law (California).",
+    "text": "Acme Pte Ltd, a company incorporated under the laws of Singapore, having its registered office at 1 Raffles Place, Singapore (hereinafter referred to as \"Company\") of the FIRST PARTY.\n\nGOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and construed in accordance with the laws of California.",
+    "expected": {
+      "decision": "fail",
+      "reason_code": "unapproved_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_only_incorporation_recital_missing",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "A party-incorporation recital alone is NOT a governing-law clause; with no operative governing-law statement the clause is missing.",
+    "text": "Acme Pte Ltd, a company incorporated under the laws of Singapore, having its registered office at 1 Raffles Place, Singapore (hereinafter referred to as \"Company\") of the FIRST PARTY.\n\nThe parties agree to keep all shared information confidential and to use it only for the purpose of the discussions.",
+    "expected": {
+      "decision": "fail",
+      "reason_code": "missing_governing_law"
+    }
+  },
+  {
     "name": "term_three_years_pass",
     "clause_id": "term_and_survival",
     "kind": "deterministic",

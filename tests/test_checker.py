@@ -1054,6 +1054,64 @@ class CheckerTests(unittest.TestCase):
             [True, False],
         )
 
+    def test_governing_law_ignores_foreign_incorporation_recital_when_operative_law_approved(self):
+        # A party incorporated under foreign (unapproved) laws is a recital, not the
+        # agreement's governing law; the operative clause picks an approved law (India).
+        result = review_nda(
+            "Acme Pte Ltd, a company incorporated under the laws of Singapore, having its "
+            "registered office at 1 Raffles Place, Singapore (hereinafter referred to as "
+            "\"Company\") of the FIRST PARTY.\n\n"
+            "Aspora Technologies Private Limited, a company incorporated under the laws of "
+            "India, having its registered office at Bangalore (hereinafter referred to as "
+            "\"Aspora\") of the SECOND PARTY.\n\n"
+            "GOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and construed "
+            "in accordance with the laws of India. In the event of any dispute amongst the "
+            "Parties, the dispute shall be finally resolved by courts in Mumbai."
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["decision"], "pass")
+        self.assertTrue(governing_law["passes"])
+        self.assertEqual(governing_law["reason_code"], "approved_governing_law")
+        self.assertEqual(governing_law["reason"], "Approved governing law found.")
+        analysis = governing_law["governing_law_analysis"]
+        # Only the operative governing-law paragraph is approved; the incorporation
+        # recitals contribute no unapproved/unclear signal.
+        self.assertEqual(analysis["unapproved_paragraph_ids"], [])
+        self.assertEqual(analysis["unclear_paragraph_ids"], [])
+        self.assertEqual(
+            [record["value"] for record in analysis["candidate_records"]],
+            ["India"],
+        )
+
+    def test_governing_law_still_fails_unapproved_operative_law_despite_foreign_incorporation(self):
+        # Recital neutralisation must not mask an actually-unapproved operative law.
+        result = review_nda(
+            "Acme Pte Ltd, a company incorporated under the laws of Singapore (hereinafter "
+            "referred to as \"Company\") of the FIRST PARTY.\n\n"
+            "This Agreement shall be governed by and construed in accordance with the laws of "
+            "California."
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
+
+    def test_governing_law_missing_when_only_incorporation_recital_present(self):
+        # A party-incorporation recital alone is not a governing-law clause.
+        result = review_nda(
+            "Acme Pte Ltd, a company incorporated under the laws of Singapore, having its "
+            "registered office at 1 Raffles Place, Singapore (hereinafter referred to as "
+            "\"Company\") of the FIRST PARTY.\n\n"
+            "The parties agree to keep all shared information confidential and to use it only "
+            "for the purpose of the discussions."
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["reason_code"], "missing_governing_law")
+        self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], [])
+
     def test_governing_law_allows_forum_carveout_without_choice_of_law(self):
         text = (ROOT / "samples" / "pass-nda.txt").read_text(encoding="utf-8").replace(
             "This Agreement shall be governed by the laws of England and Wales.",
