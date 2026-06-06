@@ -92,6 +92,82 @@ def build_clause_adapter(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Frozen / golden-fixture adapter (repeatable AI-shaped output for the gate)
+# --------------------------------------------------------------------------- #
+# The live AI adapter is non-deterministic, so gen-verify cannot gate the exact
+# AI-shaped document the product ships. The frozen adapter REPLAYS recorded,
+# on-position adapted clause text from a committed JSON fixture, wrapped in the
+# SAME GuardedClauseAdapter as the live path -- so the gate exercises the real
+# guardrail/fallback machinery against a FIXED set of AI outputs. The result is a
+# deterministic, network-free AI-path draft the gate can re-run identically.
+#
+# Fixture file (package data): nda_automation/fixtures/frozen_clause_adapter.json
+#   {"clauses": {"<clause_id>": "<recorded adapted clause text>", ...}}
+# A clause absent from the fixture replays as "" -> the guard keeps the Playbook
+# wording (the same safe fallback as a live AI miss), so the fixture only needs to
+# carry the clauses whose AI-shaped wording the gate wants to pin.
+FROZEN_FIXTURE_RESOURCE = ("fixtures", "frozen_clause_adapter.json")
+
+
+class FrozenClauseAdapter:
+    """An inner adapter that replays recorded per-clause text (no network).
+
+    Keyed by ``clause_id`` only: the recorded text is the on-position adaptation
+    the gate pins, independent of deal context (the context-specific values --
+    counterparty, purpose -- are filled by the template's variable slots, not the
+    clause bodies the adapter rewrites, so a single recording per clause is the
+    right grain). An unknown clause replays as "" so the guard falls back to the
+    authoritative Playbook wording.
+    """
+
+    def __init__(self, recordings: Mapping[str, str]) -> None:
+        self._recordings = {str(k): str(v) for k, v in dict(recordings).items()}
+
+    def adapt(self, clause_id: str, playbook_text: str, context: Mapping[str, Any]) -> str:
+        return self._recordings.get(clause_id, "")
+
+
+def build_frozen_clause_adapter(
+    *,
+    recordings: Mapping[str, str] | None = None,
+    fixtures_path: Any | None = None,
+):
+    """Return a GUARDED frozen adapter for a repeatable AI-shaped generation.
+
+    ``recordings`` (clause_id -> adapted text) is injectable for tests; otherwise
+    the committed golden fixture is loaded (from ``fixtures_path`` if given, else
+    the package resource). The frozen adapter is wrapped in the same
+    ``GuardedClauseAdapter`` as the live path so the guardrail still rejects any
+    fixture that drifts off position -- the fixture cannot smuggle a bad clause
+    past the gate, it would just fall back to the Playbook wording like a live miss.
+    """
+
+    if recordings is None:
+        recordings = _load_frozen_recordings(fixtures_path)
+    return GuardedClauseAdapter(FrozenClauseAdapter(recordings))
+
+
+def _load_frozen_recordings(fixtures_path: Any | None = None) -> dict[str, str]:
+    """Load the recorded clause adaptations from the golden fixture JSON."""
+
+    if fixtures_path is not None:
+        from pathlib import Path  # noqa: PLC0415
+
+        raw = json.loads(Path(fixtures_path).read_text(encoding="utf-8"))
+    else:
+        import importlib.resources as resources  # noqa: PLC0415
+
+        resource = resources.files("nda_automation").joinpath(*FROZEN_FIXTURE_RESOURCE)
+        raw = json.loads(resource.read_text(encoding="utf-8"))
+    clauses = raw.get("clauses") if isinstance(raw, Mapping) else None
+    if not isinstance(clauses, Mapping):
+        raise ClauseAdaptationError(
+            "Frozen clause-adapter fixture is missing a 'clauses' object."
+        )
+    return {str(clause_id): str(text) for clause_id, text in clauses.items()}
+
+
 class GuardedClauseAdapter:
     """Wraps an adapter so AI drift falls back to the Playbook wording.
 

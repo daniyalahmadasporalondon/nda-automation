@@ -1,0 +1,8 @@
+{
+  "_comment": "Golden recordings for build_frozen_clause_adapter: on-position, AI-shaped rephrasings of each Playbook clause base. Keyed by clause_id. Each MUST keep its CLAUSE_REQUIRED_TERMS (nda_generation_ai.CLAUSE_REQUIRED_TERMS) and carry no prohibited position, or the GuardedClauseAdapter rejects it and falls back to the deterministic Playbook wording. These let gen-verify gate the AI-path output deterministically. Regenerate by recording the live adapter's output and re-running tests/test_nda_generation_ai.py + the gen-verify gate.",
+  "clauses": {
+    "mutuality": "Each party acts in the dual capacity of a Disclosing Party and a Receiving Party in respect of the Confidential Information it discloses or receives under this Agreement, and the confidentiality obligations set out in this Agreement bind each party reciprocally and to the same extent.",
+    "confidential_information": "is independently developed by the receiving Party without any use of, reliance on, or reference to the Confidential Information.",
+    "term_and_survival": "Notwithstanding the foregoing, trade secrets, any information whose confidentiality is required by applicable law or regulation, and personal data protected under data-protection law shall each remain confidential for so long as the protected status or the applicable law continues to require."
+  }
+}
