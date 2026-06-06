@@ -220,9 +220,12 @@ def apply_ai_review(
     review_context: Dict[str, object],
     reviewer: AIReviewFn | None = None,
     target_clause_ids: Iterable[str] | None = None,
+    ai_enabled: bool = True,
 ) -> Tuple[List[ClauseResult], Dict[str, object]]:
     settings = _ai_review_settings()
-    if reviewer is None and not settings["enabled"]:
+    # ai_enabled=False forces the offline path (no AI overlay, no network) — used by
+    # the deterministic review engine so "deterministic" is genuinely offline.
+    if not ai_enabled or (reviewer is None and not settings["enabled"]):
         return clause_results, _summary(status="disabled", provider=settings["provider"], model=settings["model"])
 
     configured_reviewer = reviewer

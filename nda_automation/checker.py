@@ -149,6 +149,7 @@ def review_nda(
     ai_reviewer: AIReviewFn | None = None,
     ai_verifier: VerifierFn | None = None,
     verify: bool = True,
+    ai_enabled: bool = True,
 ) -> Dict[str, object]:
     source_text = text or ""
     if paragraphs is None:
@@ -203,6 +204,7 @@ def review_nda(
         paragraphs=document_paragraphs,
         review_context=review_context,
         reviewer=ai_reviewer,
+        ai_enabled=ai_enabled,
     )
     for clause in clause_results:
         _apply_clause_decision(clause)
@@ -214,7 +216,7 @@ def review_nda(
         clause_results,
         source_text=source_text,
         verifier=ai_verifier,
-        enabled=verify,
+        enabled=verify and ai_enabled,
     )
     # Re-finalize the derived structures (structured evidence + audit trace) for any
     # clause the verifier rewrote, so the evidence-trust contract still holds.

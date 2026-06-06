@@ -46,11 +46,21 @@ def active_review_engine_status() -> dict[str, Any]:
     }
 
 
+def _offline_deterministic_review(text: str, *, paragraphs: Sequence[Paragraph] | None = None) -> dict[str, Any]:
+    # The deterministic engine is the OFFLINE oracle. review_nda defaults to
+    # verify=True, which runs an AI verifier over the findings — i.e. live network
+    # calls. That (not the checks themselves) is what made the "deterministic"
+    # review take ~20s. Pin ai_enabled=False (no AI overlay) + verify=False (no AI
+    # verifier) so the deterministic engine is genuinely offline and fast, as its
+    # name promises.
+    return review_nda(text, paragraphs=paragraphs, verify=False, ai_enabled=False)
+
+
 def review_nda_with_active_engine(
     text: str,
     *,
     paragraphs: Sequence[Paragraph] | None = None,
-    deterministic_review_func: ReviewEngineFn = review_nda,
+    deterministic_review_func: ReviewEngineFn = _offline_deterministic_review,
     ai_first_review_func: ReviewEngineFn = assess_nda_with_ai,
     playbook_runtime_func: PlaybookRuntimeFn = playbook_routes.ensure_active_playbook_runtime,
     force_engine: str | None = None,
