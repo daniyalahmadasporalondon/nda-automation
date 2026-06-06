@@ -266,3 +266,78 @@ class TestArtifactSave:
         assert calls["source"] == "generated"
         assert calls["document_bytes"] == result.docx_bytes
         assert calls["metadata"]["generation"]["governing_law_value"] == "England and Wales"
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end against the LIVE entity_registry + artifact_service
+# --------------------------------------------------------------------------- #
+
+
+def _seed_matter(repo):
+    return repo.create_matter(
+        source_filename="Generated NDA.docx",
+        document_bytes=b"PK\x03\x04 placeholder",
+        extracted_text="placeholder",
+        review_result={"clauses": []},
+        triage={"triage_status": "review", "headline": "Generated NDA"},
+        source_type="generated",
+        board_column="in_review",
+    )
+
+
+class TestEndToEndWithLiveDeps:
+    """Generation wired to the real entity registry and artifact service."""
+
+    def test_generate_from_real_registry_entity_passes_self_check(self, playbook):
+        from nda_automation import entity_registry
+
+        bundle = entity_registry.get_entity("real_transfer")
+        entity = gen.entity_party_from_bundle(bundle, playbook)
+        result = gen.generate_nda(entity, _intake(), playbook=playbook)
+
+        review = review_nda(extract_docx_text(result.docx_bytes))
+        assert review["requirements_failed"] == 0, review["clauses"]
+        assert review["overall_status"] == "meets_requirements"
+        # Entity truth flows from the registry into the document + manifest.
+        assert result.manifest.entity_legal_name == bundle["legal_name"]
+
+    def test_generate_and_save_persists_generated_artifact(self, playbook):
+        from nda_automation.matter_repository import InMemoryMatterRepository
+        from nda_automation import artifact_service, entity_registry
+
+        repo = InMemoryMatterRepository()
+        matter = _seed_matter(repo)
+
+        result, artifact = gen.generate_and_save_nda(
+            "real_transfer",
+            _intake(),
+            matter["id"],
+            playbook=playbook,
+            repository=repo,
+        )
+
+        # The artifact carries the right provenance + the manifest as metadata.
+        # The registry slugifies the actor for storage; the unslugged entity
+        # legal name is preserved on the manifest.
+        assert artifact.role == "generated"
+        assert artifact.source == "generated"
+        assert artifact.actor == "real-transfer-limited"
+        assert (
+            artifact.metadata["generation"]["entity_legal_name"]
+            == entity_registry.get_entity("real_transfer")["legal_name"]
+        )
+        assert artifact.metadata["generation"]["governing_law_value"] == "England and Wales"
+
+        # The persisted bytes round-trip and still pass the Playbook.
+        stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
+        assert stored == result.docx_bytes
+        review = review_nda(extract_docx_text(stored))
+        assert review["requirements_failed"] == 0, review["clauses"]
+
+    def test_generate_and_save_rejects_unknown_entity(self, playbook):
+        from nda_automation.matter_repository import InMemoryMatterRepository
+
+        repo = InMemoryMatterRepository()
+        matter = _seed_matter(repo)
+        with pytest.raises(gen.NdaGenerationError):
+            gen.generate_and_save_nda("no_such_entity", _intake(), matter["id"], playbook=playbook, repository=repo)

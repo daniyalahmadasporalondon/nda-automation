@@ -249,17 +249,26 @@ def save_generated_nda(
     result: GenerationResult,
     matter_id: str,
     *,
-    add_artifact: Callable[..., Any],
+    add_artifact: Callable[..., Any] | None = None,
     repository: Any | None = None,
+    based_on_artifact_id: str = "",
     owner_user_id: str = "",
 ) -> Any:
-    """Persist a generated NDA as artifact v1 (actor=entity, role=generated).
+    """Persist a generated NDA artifact (actor=entity, role=generated).
 
-    ``add_artifact`` is injected (``artifact_service.add_artifact``) so this
-    module does not depend on the artifact registry at import time. The actor is
-    the chosen entity's legal name; the role is ``generated``; the manifest rides
-    along as artifact metadata for provenance.
+    The actor is the chosen entity's legal name; the role is ``generated``; the
+    manifest rides along as artifact metadata for provenance. ``based_on_artifact_id``
+    records lineage when the generation derives from an existing matter artifact
+    (e.g. a template/original); it is optional because a generated NDA is often
+    the matter's first document.
+
+    ``add_artifact`` defaults to the live ``artifact_service.add_artifact`` but
+    stays injectable so the engine can be tested without the artifact registry.
+    The import is deferred so importing this module never requires artifact-spine.
     """
+
+    if add_artifact is None:
+        from .artifact_service import add_artifact as add_artifact  # noqa: PLC0415
 
     return add_artifact(
         matter_id,
@@ -267,10 +276,53 @@ def save_generated_nda(
         actor=result.manifest.entity_legal_name or "aspora",
         role="generated",
         document_bytes=result.docx_bytes,
+        based_on_artifact_id=based_on_artifact_id,
         repository=repository,
         owner_user_id=owner_user_id,
         metadata={"generation": result.manifest.to_dict()},
     )
+
+
+def generate_and_save_nda(
+    entity_id: str,
+    intake: CounterpartyIntake,
+    matter_id: str,
+    *,
+    playbook: Mapping[str, Any] | None = None,
+    repository: Any | None = None,
+    based_on_artifact_id: str = "",
+    owner_user_id: str = "",
+    clause_adapter: ClauseAdapter | None = None,
+) -> tuple[GenerationResult, Any]:
+    """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
+
+    Wires the live ``entity_registry`` (the single source of entity truth) and
+    ``artifact_service`` so a caller only needs an ``entity_id`` + intake +
+    ``matter_id``. Returns ``(result, artifact)``. The live modules are imported
+    lazily so this module imports cleanly even where they are absent.
+    """
+
+    from . import entity_registry  # noqa: PLC0415
+
+    if playbook is None:
+        from .checker import load_playbook  # noqa: PLC0415
+
+        playbook = load_playbook()
+
+    bundle = entity_registry.get_entity(entity_id)
+    if bundle is None:
+        raise NdaGenerationError(f"Unknown signing entity {entity_id!r}.")
+
+    entity = entity_party_from_bundle(bundle, playbook)
+    result = generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
+    artifact = save_generated_nda(
+        result,
+        matter_id,
+        repository=repository,
+        based_on_artifact_id=based_on_artifact_id,
+        owner_user_id=owner_user_id,
+    )
+    return result, artifact
 
 
 # --------------------------------------------------------------------------- #
