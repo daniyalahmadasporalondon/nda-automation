@@ -311,30 +311,22 @@ def save_generated_nda(
     )
 
 
-def generate_and_save_nda(
+def generate_nda_for_entity(
     entity_id: str,
     intake: CounterpartyIntake,
-    matter_id: str,
     *,
     playbook: Mapping[str, Any] | None = None,
-    repository: Any | None = None,
-    based_on_artifact_id: str = "",
-    owner_user_id: str = "",
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
-) -> tuple[GenerationResult, Any]:
-    """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
+) -> GenerationResult:
+    """Resolve the entity from the registry and generate the NDA (no save).
 
-    Wires the live ``entity_registry`` (the single source of entity truth) and
-    ``artifact_service`` so a caller only needs an ``entity_id`` + intake +
-    ``matter_id``. Returns ``(result, artifact)``. The live modules are imported
-    lazily so this module imports cleanly even where they are absent.
-
-    AI-first: when ``use_ai`` and no explicit ``clause_adapter`` is passed, the
-    runtime AI clause adapter is built (``build_clause_adapter``) and drives the
-    clause writing — Playbook-bounded, with a guardrail that falls back to the
-    deterministic wording on drift. With no API key configured the adapter is
-    ``None`` and generation runs fully deterministic.
+    The single convenience entry both the HTTP route and gen-verify can share:
+    ``entity_id`` + intake -> ``GenerationResult``. Resolves the entity via the
+    live ``entity_registry`` and builds the AI clause adapter when ``use_ai`` and
+    no explicit adapter is given (Playbook-bounded; falls back to deterministic
+    with no API key). The live ``entity_registry`` import is deferred so this
+    module imports cleanly where the registry is absent.
     """
 
     from . import entity_registry  # noqa: PLC0415
@@ -354,7 +346,35 @@ def generate_and_save_nda(
         raise NdaGenerationError(f"Unknown signing entity {entity_id!r}.")
 
     entity = entity_party_from_bundle(bundle, playbook)
-    result = generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
+    return generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
+
+
+def generate_and_save_nda(
+    entity_id: str,
+    intake: CounterpartyIntake,
+    matter_id: str,
+    *,
+    playbook: Mapping[str, Any] | None = None,
+    repository: Any | None = None,
+    based_on_artifact_id: str = "",
+    owner_user_id: str = "",
+    clause_adapter: ClauseAdapter | None = None,
+    use_ai: bool = True,
+) -> tuple[GenerationResult, Any]:
+    """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
+
+    Wires the live ``entity_registry`` (the single source of entity truth) and
+    ``artifact_service`` so a caller only needs an ``entity_id`` + intake +
+    ``matter_id``. Returns ``(result, artifact)``.
+    """
+
+    result = generate_nda_for_entity(
+        entity_id,
+        intake,
+        playbook=playbook,
+        clause_adapter=clause_adapter,
+        use_ai=use_ai,
+    )
     artifact = save_generated_nda(
         result,
         matter_id,

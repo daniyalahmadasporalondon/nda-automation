@@ -1,0 +1,235 @@
+"""End-to-end tests for POST /api/generate-nda.
+
+These drive the real HTTP handler (a threaded test server) the way draft-ui will:
+post the intake + signing entity, get back a generated NDA that is a tracked
+matter + a role=generated artifact, with a manifest and a passing self-check. The
+generated .docx is downloadable over the matter-source route the response points
+at. The route is exercised against the deterministic generation path (no API key),
+so the assertions are repeatable and network-free.
+"""
+
+from __future__ import annotations
+
+import base64
+import http.client
+import json
+import os
+import tempfile
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+from unittest.mock import patch
+
+from nda_automation import matter_store
+from nda_automation import server as server_module
+from nda_automation import telemetry
+from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV
+from nda_automation.server import NdaAutomationHandler
+
+
+class QuietHandler(NdaAutomationHandler):
+    def log_message(self, *args, **kwargs):
+        return
+
+
+# Every signing entity in the registry should generate a Playbook-passing NDA.
+ENTITY_IDS = ("aspora_technology", "vance_money", "real_transfer", "vance_techlabs")
+
+
+class GenerateNdaRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.host, cls.port = cls.server.server_address
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        server_module._reset_rate_limits()
+        telemetry.reset()
+
+    # --- request helpers ------------------------------------------------- #
+    def request(self, method, path, body=None, headers=None):
+        request_headers = dict(headers or {})
+        request_body = body
+        if isinstance(body, dict):
+            request_body = json.dumps(body).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/json")
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=10)
+        try:
+            connection.request(method, path, body=request_body, headers=request_headers)
+            response = connection.getresponse()
+            raw = response.read()
+            content_type = response.getheader("Content-Type", "")
+            payload = json.loads(raw.decode("utf-8")) if "application/json" in content_type else raw
+            return response.status, payload, dict(response.getheaders())
+        finally:
+            connection.close()
+
+    def basic_auth_headers(self, username="nda-admin", password="secret"):
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
+    def auth_env(self):
+        return {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+        }
+
+    def matter_store_patches(self, data_dir):
+        data_path = server_module.Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", data_path),
+            patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
+        )
+
+    def generate(self, body, *, headers=None):
+        return self.request("POST", "/api/generate-nda", body, headers=headers)
+
+    # --- tests ----------------------------------------------------------- #
+    def test_requires_auth(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {"signing_entity_id": "aspora_technology", "intake": {"counterparty_name": "Acme"}}
+            )
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+
+    def test_generates_passing_nda_for_each_entity(self):
+        for entity_id in ENTITY_IDS:
+            with self.subTest(entity_id=entity_id):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    p = self.matter_store_patches(data_dir)
+                    with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                        status, payload, _ = self.generate(
+                            {
+                                "signing_entity_id": entity_id,
+                                "intake": {
+                                    "counterparty_name": "Counterparty Holdings Limited",
+                                    "project": "evaluating a potential commercial relationship",
+                                    "term_years": 3,
+                                    "nda_type": "mutual",
+                                },
+                            },
+                            headers=self.basic_auth_headers(),
+                        )
+                        self.assertEqual(status, 201, payload)
+                        self.assertEqual(payload["status"], "generated")
+                        self.assertTrue(payload["matter_id"])
+                        self.assertTrue(payload["artifact_id"])
+                        self.assertEqual(
+                            payload["download_url"],
+                            f"/api/matters/{payload['matter_id']}/source",
+                        )
+                        # The whole point of the gate: the generated NDA passes
+                        # its own Playbook with zero native + zero dynamic fails.
+                        self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
+                        self.assertEqual(payload["self_check"]["native_failures"], [])
+                        self.assertEqual(payload["self_check"]["dynamic_failures"], [])
+                        # The manifest names the entity + counterparty it filled.
+                        self.assertEqual(payload["manifest"]["entity_id"], entity_id)
+                        self.assertEqual(
+                            payload["manifest"]["counterparty_name"],
+                            "Counterparty Holdings Limited",
+                        )
+
+    def test_download_url_serves_the_generated_docx(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        "signing_entity_id": "aspora_technology",
+                        "intake": {"counterparty_name": "Acme Corp Ltd"},
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+                self.assertEqual(status, 201, payload)
+                dl_status, dl_body, dl_headers = self.request(
+                    "GET", payload["download_url"], headers=self.basic_auth_headers()
+                )
+        self.assertEqual(dl_status, 200)
+        self.assertIn("wordprocessingml.document", dl_headers["Content-Type"])
+        # A .docx is a zip: it starts with the PK signature.
+        self.assertTrue(bytes(dl_body).startswith(b"PK"))
+
+    def test_accepts_nested_signing_entity_and_flat_intake_aliases(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        "signing_entity": {"id": "aspora_technology"},
+                        "counterparty": {"name": "Nested Acme Ltd"},
+                        "project_purpose": "a pilot integration",
+                        "term": "3",
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+        self.assertEqual(status, 201, payload)
+        self.assertEqual(payload["manifest"]["counterparty_name"], "Nested Acme Ltd")
+
+    def test_missing_counterparty_name_is_rejected(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {"signing_entity_id": "aspora_technology", "intake": {}},
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("counterparty", payload["error"].lower())
+
+    def test_missing_signing_entity_is_rejected(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {"intake": {"counterparty_name": "Acme"}},
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("signing entity", payload["error"].lower())
+
+    def test_unknown_entity_is_rejected(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {"signing_entity_id": "not_a_real_entity", "intake": {"counterparty_name": "Acme"}},
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("entity", payload["error"].lower())
+
+    def test_one_way_nda_type_is_rejected(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {
+                    "signing_entity_id": "aspora_technology",
+                    "intake": {"counterparty_name": "Acme", "nda_type": "one_way"},
+                },
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("one_way", payload["error"])
+
+    def test_governing_law_override_is_rejected(self):
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {
+                    "signing_entity_id": "aspora_technology",
+                    "intake": {"counterparty_name": "Acme"},
+                    "governing_law_override": "england_and_wales",
+                },
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("governing_law_override", payload["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()
