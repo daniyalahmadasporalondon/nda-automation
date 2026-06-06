@@ -369,7 +369,10 @@ class TestArtifactSave:
         gen.save_generated_nda(result, "matter-123", add_artifact=fake_add_artifact)
 
         assert calls["matter_id"] == "matter-123"
-        assert calls["actor"] == "Real Transfer Limited"
+        # Actor is the entity-id slug (registry slugifies it downstream); the
+        # legal name is preserved on the manifest metadata.
+        assert calls["actor"] == "real_transfer"
+        assert calls["metadata"]["generation"]["entity_legal_name"] == "Real Transfer Limited"
         assert calls["role"] == "generated"
         assert calls["source"] == "generated"
         assert calls["document_bytes"] == result.docx_bytes
@@ -425,11 +428,11 @@ class TestEndToEndWithLiveDeps:
         )
 
         # The artifact carries the right provenance + the manifest as metadata.
-        # The registry slugifies the actor for storage; the unslugged entity
-        # legal name is preserved on the manifest.
+        # The actor is the entity-id slug (stable + short, clean filename); the
+        # full legal name is preserved on the manifest.
         assert artifact.role == "generated"
         assert artifact.source == "generated"
-        assert artifact.actor == "real-transfer-limited"
+        assert artifact.actor == "real-transfer"  # slug of entity id "real_transfer"
         assert (
             artifact.metadata["generation"]["entity_legal_name"]
             == entity_registry.get_entity("real_transfer")["legal_name"]

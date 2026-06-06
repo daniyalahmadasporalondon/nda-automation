@@ -282,11 +282,12 @@ def save_generated_nda(
 ) -> Any:
     """Persist a generated NDA artifact (actor=entity, role=generated).
 
-    The actor is the chosen entity's legal name; the role is ``generated``; the
-    manifest rides along as artifact metadata for provenance. ``based_on_artifact_id``
-    records lineage when the generation derives from an existing matter artifact
-    (e.g. a template/original); it is optional because a generated NDA is often
-    the matter's first document.
+    The actor is the entity id slug (e.g. ``aspora_technology``) — stable and
+    short, so the auto-generated filename stays clean; the full legal name is
+    preserved on the manifest metadata. The role is ``generated``;
+    ``based_on_artifact_id`` records lineage when the generation derives from an
+    existing matter artifact (e.g. the original), and is optional because a
+    generated NDA is often the matter's first document.
 
     ``add_artifact`` defaults to the live ``artifact_service.add_artifact`` but
     stays injectable so the engine can be tested without the artifact registry.
@@ -296,10 +297,11 @@ def save_generated_nda(
     if add_artifact is None:
         from .artifact_service import add_artifact as add_artifact  # noqa: PLC0415
 
+    actor = result.manifest.entity_id or result.manifest.entity_legal_name or "aspora"
     return add_artifact(
         matter_id,
         source="generated",
-        actor=result.manifest.entity_legal_name or "aspora",
+        actor=actor,
         role="generated",
         document_bytes=result.docx_bytes,
         based_on_artifact_id=based_on_artifact_id,
