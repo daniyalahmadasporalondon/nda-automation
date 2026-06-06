@@ -1803,6 +1803,7 @@ async function testDraftIntakeGenerateNda(page) {
   );
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
+  await page.locator("#draftIntakeCounterpartyEmail").fill("deals@acme.com");
   await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
 
   // Generate no longer auto-downloads — it stages the Download/Send actions and
@@ -1833,6 +1834,13 @@ async function testDraftIntakeGenerateNda(page) {
   assert.ok(capturedGeneratePayload.signing_entity.legal_name);
   assert.equal(capturedGeneratePayload.counterparty.name, "Acme Corporation");
   assert.ok(capturedGeneratePayload.signing_entity.governing_law.playbook_option_id);
+
+  // Send opens the Send Document modal with the counterparty email linked as the
+  // Recipient Email immediately — the link is not gated on the document download.
+  await page.locator("#draftIntakeSendButton").click();
+  await page.waitForSelector("#sendDocumentModal:not([hidden])");
+  assert.equal(await page.locator("#sendDocumentRecipientInput").inputValue(), "deals@acme.com");
+  await page.locator("#sendDocumentModalClose").click();
 
   await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/matters/mat_generated_1/source");

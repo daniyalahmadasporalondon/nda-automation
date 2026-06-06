@@ -107,7 +107,7 @@ function createSendDocumentController({
   // the file input — which can't be set programmatically — and optionally prefill
   // the recipient + subject.
   function loadFile(file, { recipient = "", subject = "" } = {}) {
-    setSelectedFile(file);
+    if (file) setSelectedFile(file);
     if (recipient && recipientInput) recipientInput.value = recipient;
     if (subject && subjectInput) subjectInput.value = subject;
     updateSubmitState();

@@ -420,9 +420,20 @@ function downloadGeneratedNda(generated) {
 // email / subject) so the user can email it straight from the generator.
 async function sendGeneratedNda(generated) {
   if (!generated) return;
+  // Open the modal and prefill recipient + subject IMMEDIATELY — never block the
+  // modal (or the counterparty-email -> Recipient Email link) on the document
+  // download. The counterparty email always links the moment Send is clicked.
+  sendDocumentController.openModal();
+  if (typeof sendDocumentController.loadFile === "function") {
+    sendDocumentController.loadFile(null, {
+      recipient: generated.counterpartyEmail,
+      subject: generated.subject,
+    });
+  }
+  // Then load the generated document into the modal in the background.
   const docxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  let file = null;
   try {
+    let file = null;
     if (generated.blob) {
       file = new File([generated.blob], generated.filename || "nda.docx", { type: docxType });
     } else if (generated.downloadUrl) {
@@ -432,15 +443,12 @@ async function sendGeneratedNda(generated) {
         file = new File([blob], generated.filename || "nda.docx", { type: blob.type || docxType });
       }
     }
+    if (file && typeof sendDocumentController.loadFile === "function") {
+      sendDocumentController.loadFile(file);
+    }
   } catch (error) {
-    file = null;
-  }
-  sendDocumentController.openModal();
-  if (file && typeof sendDocumentController.loadFile === "function") {
-    sendDocumentController.loadFile(file, {
-      recipient: generated.counterpartyEmail,
-      subject: generated.subject,
-    });
+    // Leave the modal open with the recipient prefilled — the user can attach the
+    // document manually if the background load failed.
   }
 }
 
