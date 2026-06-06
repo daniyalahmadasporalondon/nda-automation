@@ -709,9 +709,80 @@ h3 {
   color: rgba(93, 84, 112, 0.52);
 }
 
-/* --- Outbound-draft intake modal --- */
+/* --- NDA Generator tab (outbound-draft intake) --- */
+.generator-view {
+  flex: 1;
+  min-height: 0;
+  padding: 72px 24px 28px;
+}
+
+.generator-view.view.active {
+  display: block;
+}
+
+/* The Generator hero mirrors the dashboard hero's purple gradient so the tab
+   reads as a first-class creation surface. */
+.generator-hero {
+  background: linear-gradient(100deg, #1d0d45 0%, #311276 56%, #4a24a1 100%);
+  border-radius: 20px;
+  color: #ffffff;
+  margin-bottom: 18px;
+  padding: 28px 32px;
+}
+
+.generator-hero .eyebrow {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.generator-hero h1 {
+  font-size: 28px;
+  margin: 4px 0 8px;
+}
+
+.generator-hero-copy p:last-child {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  margin: 0;
+  max-width: 64ch;
+}
+
+/* Two-column workspace (form + summary) matching the upload modal's layout. */
+.generator-workspace {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+}
+
+.generator-form {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+/* The summary aside reuses .upload-side-panel styling; pin it so it stays beside
+   a long form. */
+.generator-side-panel {
+  position: sticky;
+  top: 18px;
+}
+
+@media (max-width: 920px) {
+  .generator-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .generator-side-panel {
+    position: static;
+  }
+}
+
 /* Group the intake into legible sections (entity / deal / governing law) using
-   the same panel borders as the rest of the modal rather than the native
+   the same panel borders as the rest of the form rather than the native
    fieldset chrome. */
 .draft-fieldset {
   border: 1px solid var(--border);

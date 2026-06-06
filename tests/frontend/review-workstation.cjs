@@ -59,7 +59,7 @@ const tests = [
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
-  ["generates an NDA from the draft intake and downloads the saved document", testDraftIntakeGenerateNda],
+  ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
@@ -356,9 +356,13 @@ async function testAccessibleControlState(page) {
 
   await page.locator("#dashboardTab").focus();
   await page.locator("#dashboardTab").press("ArrowRight");
+  // The Generator tab sits between Dashboard and Repository in the tab order.
+  assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#generatorTab").getAttribute("tabindex"), "0");
+  assert.equal(await page.locator("#dashboardTab").getAttribute("tabindex"), "-1");
+  await page.locator("#generatorTab").press("ArrowRight");
   assert.equal(await page.locator("#repositoryTab").getAttribute("aria-selected"), "true");
   assert.equal(await page.locator("#repositoryTab").getAttribute("tabindex"), "0");
-  assert.equal(await page.locator("#dashboardTab").getAttribute("tabindex"), "-1");
   await page.locator("#repositoryTab").press("Home");
   assert.equal(await page.locator("#dashboardTab").getAttribute("aria-selected"), "true");
   await page.locator("#dashboardTab").press("End");
@@ -1777,10 +1781,18 @@ async function testDraftIntakeGenerateNda(page) {
       }),
     });
   });
-  // Open the draft-intake modal from the dashboard, pick our signing entity and a
+  // The Generator is its own top-nav tab. Open it from the dashboard shortcut,
+  // confirm the tab panel (not a modal) is shown, pick our signing entity + a
   // counterparty so the Generate button enables, then generate.
-  await page.locator("[data-dashboard-draft-nda]").click();
-  await page.waitForSelector("#draftIntakeModal:not([hidden])");
+  await page.locator("[data-dashboard-open-generator]").click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
+  // activate() loads the registry + populates the entity options asynchronously.
+  // Wait for the options to fill (an <option> can't be waited on via a visibility
+  // selector, so poll the select's option count) before picking our entity.
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
+  );
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
@@ -1822,8 +1834,11 @@ async function testDraftIntakeGenerateDegradesOn404(page) {
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
   });
 
-  await page.locator("[data-dashboard-draft-nda]").click();
-  await page.waitForSelector("#draftIntakeModal:not([hidden])");
+  await page.locator("[data-dashboard-open-generator]").click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
+  );
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");

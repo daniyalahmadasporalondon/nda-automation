@@ -1,11 +1,12 @@
-// Dashboard "Draft NDA" outbound-draft intake controller.
+// "Generator" tab outbound-draft intake controller.
 //
-// Mirrors createSendDocumentController: a modal the user fills to start a new
-// outbound NDA. The priority is the entity picker's "optionality" — picking one
-// of our signing entities pre-fills its legal name, address and governing law as
-// a single coupled bundle (so the UK entity can never end up on Delaware law),
-// while the governing law stays independently overridable (an escape hatch) and
-// the two-address entity lets the user choose which address signs.
+// The NDA Generator is its own top-nav tab (data-view="generator"). The user
+// fills the intake form to start a new outbound NDA. The priority is the entity
+// picker's "optionality" — picking one of our signing entities pre-fills its
+// legal name, address and governing law as a single coupled bundle (so the UK
+// entity can never end up on Delaware law), while the governing law stays
+// independently overridable (an escape hatch) and the two-address entity lets
+// the user choose which address signs.
 //
 // All pure logic lives in static/js/modules/draft-intake.mjs and is exercised by
 // the frontend tests; this controller only renders DOM and dispatches to those
@@ -16,8 +17,6 @@
 // deployed on the running base it degrades to a "pending" notice rather than a
 // hard error — the same graceful fallback the entity picker uses for its feed.
 function createDraftIntakeController({
-  modalNode,
-  closeButton,
   form,
   entitySelect,
   addressField,
@@ -55,7 +54,6 @@ function createDraftIntakeController({
   let intakeApi = null;
   let intake = null;
   let busy = false;
-  let previousFocus = null;
   let initialized = false;
   let registryLoaded = false;
 
@@ -97,22 +95,11 @@ function createDraftIntakeController({
     }
   }
 
-  closeButton?.addEventListener("click", () => closeModal({ reset: true }));
   clearButton?.addEventListener("click", () => resetForm());
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await generate();
-  });
-
-  modalNode?.addEventListener("click", (event) => {
-    if (event.target === modalNode && !busy) closeModal({ reset: true });
-  });
-
-  document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !isModalOpen() || busy) return;
-    event.preventDefault();
-    closeModal({ reset: true });
   });
 
   entitySelect?.addEventListener("change", () => {
@@ -357,38 +344,16 @@ function createDraftIntakeController({
     updateGenerateState();
   }
 
-  async function openModal() {
-    if (!modalNode) {
-      await ensureInitialized();
-      return;
-    }
-    previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    modalNode.hidden = false;
-    document.body.classList.add("modal-open");
-    window.setTimeout(() => entitySelect?.focus?.(), 0);
-    // Populate (loading the live registry on first open) then render. The modal
-    // is already visible so the brief async gap shows the empty-state copy, not a
-    // blank dialog, and the option lists fill in as soon as the feed resolves.
+  // Called when the Generator tab is shown. Loads the live registry on first
+  // activation (the empty-state copy shows during the brief async gap, never a
+  // blank panel), populates the option lists, and renders the current state. The
+  // form persists across tab switches — re-activating does not wipe in-progress
+  // input. Idempotent and safe to call on every tab activation.
+  async function activate() {
     await ensureInitialized();
     renderEntityBundle();
     renderGoverningLaw();
     updateGenerateState();
-  }
-
-  function closeModal({ reset = false, restoreFocus = true } = {}) {
-    if (!modalNode) return;
-    modalNode.hidden = true;
-    document.body.classList.remove("modal-open");
-    if (reset) resetForm();
-    if (restoreFocus) {
-      const focusTarget = previousFocus?.isConnected ? previousFocus : null;
-      focusTarget?.focus?.();
-    }
-    previousFocus = null;
-  }
-
-  function isModalOpen() {
-    return Boolean(modalNode && !modalNode.hidden);
   }
 
   function setStatus(message, tone = "") {
@@ -398,5 +363,5 @@ function createDraftIntakeController({
     statusNode.classList.toggle("success", tone === "success");
   }
 
-  return { openModal, closeModal, resetForm, generate };
+  return { activate, resetForm, generate };
 }

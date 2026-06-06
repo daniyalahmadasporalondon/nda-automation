@@ -114,8 +114,6 @@ const sendDocumentController = createSendDocumentController({
   reviewErrorFromPayload,
 });
 const draftIntakeController = createDraftIntakeController({
-  modalNode: document.querySelector("#draftIntakeModal"),
-  closeButton: document.querySelector("#draftIntakeModalClose"),
   form: document.querySelector("#draftIntakeForm"),
   entitySelect: document.querySelector("#draftIntakeEntitySelect"),
   addressField: document.querySelector("#draftIntakeAddressField"),
@@ -258,8 +256,8 @@ dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
 });
 
-document.querySelector("[data-dashboard-draft-nda]")?.addEventListener("click", () => {
-  draftIntakeController.openModal();
+document.querySelector("[data-dashboard-open-generator]")?.addEventListener("click", () => {
+  activateTab("generator");
 });
 
 document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {
@@ -435,6 +433,12 @@ function activateTab(tabName) {
   if (tabName === "dashboard") {
     loadDashboardAiHealth();
     renderDashboardEmailHealth(state.gmailStatus);
+  }
+  if (tabName === "generator") {
+    // Load the signing-entity registry on first activation and render the
+    // current intake state. Idempotent — re-activating preserves in-progress
+    // input rather than resetting the form.
+    draftIntakeController.activate();
   }
   if (tabName === "review") {
     // The playbook clause list loads asynchronously after bootstrap, so the
