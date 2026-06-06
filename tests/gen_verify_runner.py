@@ -22,6 +22,7 @@ from typing import Any
 from tests.gen_verify_harness import (
     EntityExpectation,
     VerificationReport,
+    docx_to_text,
     expectations_from_registry,
     template_authoritative_sentences,
     verify_generated_draft,
@@ -89,12 +90,40 @@ def _generate(entity_id: str, variant: str) -> tuple[bytes, Any]:
     return bytes(docx_bytes), manifest
 
 
-def _crosscheck_manifest(manifest: Any, expect: EntityExpectation, report: VerificationReport) -> None:
-    """Adversarially compare the generator's self-reported manifest against the
-    registry intent. The manifest is the generator's CLAIM about what it filled;
-    if it disagrees with the registry the generator's intent itself is wrong (this
-    is separate from, and additional to, re-deriving from the rendered prose)."""
+import re as _re
+
+# Manifest slots whose value the generator legitimately reformats before rendering,
+# so the canonical source string is NOT expected to appear verbatim in the prose.
+_TRANSFORMED_SLOT_KEYS = ("agreement_date", "purpose", "business description")
+_ISO_DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_transformed_fill(slot: str, value: str) -> bool:
+    """True when a manifest fill is reformatted into the prose (so a verbatim
+    presence check would false-positive). Covers the ISO agreement_date that the
+    template renders as 'Nth day of <Month>, <Year>', and free-text deal fields
+    (purpose / business description) that may be re-cased or rephrased."""
+    slot_l = slot.lower()
+    if any(key in slot_l for key in _TRANSFORMED_SLOT_KEYS):
+        return True
+    if _ISO_DATE_RE.match(value.strip()):
+        return True
+    return False
+
+
+def _crosscheck_manifest(manifest: Any, expect: EntityExpectation, text: str, report: VerificationReport) -> None:
+    """Adversarially cross-check the generator's self-reported manifest two ways.
+
+    1. manifest-vs-registry: the manifest is the generator's CLAIM about its
+       intent; if it disagrees with the registry the generator's intent is wrong.
+    2. manifest-vs-prose: a manifest can claim the right value yet the rendered
+       document say something else. So every value the manifest claims to have
+       filled must actually appear in the rendered text -- catching a generator
+       whose ground-truth record and output diverge. This is the check that keeps
+       the manifest honest as a ground-truth source.
+    """
     if manifest is None:
+        report.warn("manifest.absent", "no manifest returned; relying on prose-derived checks only")
         return
     legal = getattr(manifest, "entity_legal_name", None)
     if legal is not None and legal != expect.legal_name:
@@ -102,6 +131,28 @@ def _crosscheck_manifest(manifest: Any, expect: EntityExpectation, report: Verif
     law = getattr(manifest, "governing_law_value", None)
     if law is not None and law != expect.governing_law:
         report.defect("manifest.governing_law", f"manifest claims {law!r}, registry expects {expect.governing_law!r}")
+
+    # manifest-vs-prose: each claimed IDENTITY fill must appear verbatim. We only
+    # check values the generator reproduces literally (names, addresses, law,
+    # forum). Values it legitimately TRANSFORMS -- the ISO agreement_date becomes
+    # "6th day of June, 2026", and the purpose/business prose may be re-cased -- are
+    # excluded, since absence of the canonical source string is expected, not a bug.
+    for field_name in ("entity_legal_name", "governing_law_value", "counterparty_name", "forum"):
+        claimed = getattr(manifest, field_name, None)
+        if isinstance(claimed, str) and claimed and claimed not in text:
+            report.defect("manifest.prose_mismatch", f"manifest {field_name}={claimed!r} but not found in rendered draft")
+    slot_fills = getattr(manifest, "slot_fills", None)
+    if isinstance(slot_fills, dict):
+        for slot, value in slot_fills.items():
+            if not (isinstance(value, str) and value.strip()):
+                continue
+            if _is_transformed_fill(slot, value):
+                continue
+            if value not in text:
+                report.defect(
+                    "manifest.slot_mismatch",
+                    f"manifest slot_fills[{slot!r}]={value!r} but not found verbatim in rendered draft",
+                )
 
 
 def run(variants: tuple[str, ...] = VARIANTS_V1) -> list[VerificationReport]:
@@ -125,7 +176,7 @@ def run(variants: tuple[str, ...] = VARIANTS_V1) -> list[VerificationReport]:
                 variant=variant,
                 authoritative_sentences=authoritative,
             )
-            _crosscheck_manifest(manifest, expect, report)
+            _crosscheck_manifest(manifest, expect, docx_to_text(docx_bytes), report)
             reports.append(report)
     return reports
 
