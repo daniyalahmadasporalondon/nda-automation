@@ -318,15 +318,21 @@ def generate_nda_for_entity(
     playbook: Mapping[str, Any] | None = None,
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
+    use_frozen: bool = False,
 ) -> GenerationResult:
     """Resolve the entity from the registry and generate the NDA (no save).
 
-    The single convenience entry both the HTTP route and gen-verify can share:
+    The single convenience entry the HTTP route, gen-verify, and tests share:
     ``entity_id`` + intake -> ``GenerationResult``. Resolves the entity via the
     live ``entity_registry`` and builds the AI clause adapter when ``use_ai`` and
     no explicit adapter is given (Playbook-bounded; falls back to deterministic
     with no API key). The live ``entity_registry`` import is deferred so this
     module imports cleanly where the registry is absent.
+
+    ``use_frozen`` selects the repeatable golden-fixture adapter instead of the
+    live (non-deterministic) AI adapter: same guarded AI codepath, but replaying
+    recorded on-position clause text, so gen-verify can gate the AI-shaped output
+    deterministically. An explicit ``clause_adapter`` overrides both.
     """
 
     from . import entity_registry  # noqa: PLC0415
@@ -336,7 +342,11 @@ def generate_nda_for_entity(
 
         playbook = load_playbook()
 
-    if clause_adapter is None and use_ai:
+    if clause_adapter is None and use_frozen:
+        from .nda_generation_ai import build_frozen_clause_adapter  # noqa: PLC0415
+
+        clause_adapter = build_frozen_clause_adapter()
+    elif clause_adapter is None and use_ai:
         from .nda_generation_ai import build_clause_adapter  # noqa: PLC0415
 
         clause_adapter = build_clause_adapter()

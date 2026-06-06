@@ -145,3 +145,73 @@ class TestAiFirstStillPassesSelfCheck:
         assert "circumvent" not in extract_docx_text(result.docx_bytes).lower()
         check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
         assert check.dynamic_failures == [], check.dynamic_failures
+
+
+class TestFrozenClauseAdapter:
+    """The frozen adapter replays recorded on-position clause text so gen-verify
+    can gate the AI-shaped output deterministically (no network, no drift)."""
+
+    def test_golden_fixture_clauses_pass_the_guardrail(self):
+        # Every recorded clause must keep its load-bearing terms (so the guard
+        # accepts it, not the Playbook fallback) and carry no prohibited position.
+        recordings = gen_ai._load_frozen_recordings()
+        adapter = gen_ai.build_frozen_clause_adapter()
+        assert recordings, "fixture should record at least one clause"
+        for clause_id, recorded in recordings.items():
+            out = adapter.adapt(clause_id, "PLAYBOOK_BASE", {})
+            assert out == recorded, f"{clause_id} recording was rejected by the guard"
+            for term in gen_ai.CLAUSE_REQUIRED_TERMS.get(clause_id, ()):
+                assert term.lower() in out.lower()
+            assert not gen_ai._PROHIBITED_PATTERN.search(out)
+
+    def test_unknown_clause_replays_empty_so_guard_keeps_playbook(self):
+        adapter = gen_ai.build_frozen_clause_adapter()
+        playbook_text = "each party acts as both a Disclosing Party and a Receiving Party."
+        # No recording for this id -> inner returns "" -> guard keeps the Playbook.
+        assert adapter.adapt("not_a_recorded_clause", playbook_text, {}) == playbook_text
+
+    def test_injected_recordings_override_the_fixture(self):
+        adapter = gen_ai.build_frozen_clause_adapter(
+            recordings={"mutuality": "each party (Disclosing Party / Receiving Party) is bound reciprocally."}
+        )
+        out = adapter.adapt("mutuality", "PLAYBOOK_BASE", {})
+        assert out.startswith("each party")
+
+    def test_drifted_injected_recording_falls_back_to_playbook(self):
+        # A fixture that drifts off position cannot smuggle a bad clause past the
+        # guard — it falls back to the authoritative Playbook wording.
+        adapter = gen_ai.build_frozen_clause_adapter(
+            recordings={"term_and_survival": "obligations end after a while."}
+        )
+        playbook_text = "trade secrets and data-protection obligations survive as required."
+        assert adapter.adapt("term_and_survival", playbook_text, {}) == playbook_text
+
+    def test_frozen_generation_passes_self_check(self, playbook):
+        result = _generate(playbook, gen_ai.build_frozen_clause_adapter())
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.dynamic_failures)
+
+    def test_frozen_generation_is_repeatable(self, playbook):
+        from nda_automation.docx_text import extract_docx_text
+
+        a = extract_docx_text(_generate(playbook, gen_ai.build_frozen_clause_adapter()).docx_bytes)
+        b = extract_docx_text(_generate(playbook, gen_ai.build_frozen_clause_adapter()).docx_bytes)
+        assert a == b
+
+    def test_frozen_output_differs_from_deterministic(self, playbook):
+        # Proves the frozen path actually exercises the AI-shaped wording rather
+        # than collapsing to the deterministic path.
+        from nda_automation.docx_text import extract_docx_text
+
+        frozen = extract_docx_text(_generate(playbook, gen_ai.build_frozen_clause_adapter()).docx_bytes)
+        deterministic = extract_docx_text(_generate(playbook, None).docx_bytes)
+        assert frozen != deterministic
+
+    def test_generate_for_entity_use_frozen_is_repeatable_and_passes(self, playbook):
+        from nda_automation.docx_text import extract_docx_text
+
+        a = gen.generate_nda_for_entity("aspora_technology", _intake(), playbook=playbook, use_frozen=True)
+        b = gen.generate_nda_for_entity("aspora_technology", _intake(), playbook=playbook, use_frozen=True)
+        assert extract_docx_text(a.docx_bytes) == extract_docx_text(b.docx_bytes)
+        check = gen.self_check_generated_nda(a.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.dynamic_failures)
