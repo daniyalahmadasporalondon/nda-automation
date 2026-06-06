@@ -236,6 +236,62 @@ class TestClauseAlignment:
 
 
 # --------------------------------------------------------------------------- #
+# Governing-law override (user picks a different, still-approved, law)
+# --------------------------------------------------------------------------- #
+
+
+class TestGoverningLawOverride:
+    """The product lets the user override the entity-default governing law with
+    another Playbook-approved option. The draft must use the override and the
+    manifest must record the provenance gen-verify reads."""
+
+    def test_override_to_another_approved_law_is_applied(self, playbook):
+        # entity_party_from_bundle with an override option id picks the override law.
+        india_bundle = _bundle(option_id="india")
+        entity = gen.entity_party_from_bundle(
+            india_bundle, playbook, governing_law_option_id="england_and_wales"
+        )
+        assert entity.governing_law_value == "England and Wales"
+        # Forum tracks the OVERRIDDEN law, not the entity's default courts.
+        assert entity.forum == "England and Wales"
+
+    def test_unapproved_override_is_rejected(self, playbook):
+        with pytest.raises(gen.NdaGenerationError):
+            gen.entity_party_from_bundle(_bundle(), playbook, governing_law_option_id="new_york")
+
+    def test_generate_for_entity_override_sets_manifest_provenance(self, playbook):
+        # aspora_technology's registry default is India; override to England.
+        result = gen.generate_nda_for_entity(
+            "aspora_technology", _intake(), playbook=playbook, governing_law_override="england_and_wales"
+        )
+        assert result.manifest.governing_law_value == "England and Wales"
+        assert result.manifest.governing_law_overridden is True
+        assert result.manifest.entity_default_governing_law_value == "India"
+        # The effective law is in the clause; the entity default is not.
+        text = extract_docx_text(result.docx_bytes)
+        assert "the laws of England and Wales" in text
+        # And the override draft still passes its own Playbook.
+        assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
+        # Provenance round-trips through to_dict for gen-verify to read.
+        d = result.manifest.to_dict()
+        assert d["governing_law_overridden"] is True
+        assert d["entity_default_governing_law_value"] == "India"
+
+    def test_no_override_keeps_entity_default_and_flag_false(self, playbook):
+        result = gen.generate_nda_for_entity("aspora_technology", _intake(), playbook=playbook)
+        assert result.manifest.governing_law_overridden is False
+        assert result.manifest.governing_law_value == result.manifest.entity_default_governing_law_value
+
+    def test_override_equal_to_default_is_not_flagged(self, playbook):
+        # Override == the entity's own default is a no-op, not an "override".
+        result = gen.generate_nda_for_entity(
+            "aspora_technology", _intake(), playbook=playbook, governing_law_override="india"
+        )
+        assert result.manifest.governing_law_overridden is False
+        assert result.manifest.governing_law_value == "India"
+
+
+# --------------------------------------------------------------------------- #
 # Self-check — the generated NDA passes its own Playbook with zero failures
 # --------------------------------------------------------------------------- #
 
