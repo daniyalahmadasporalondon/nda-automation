@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, TypedDict
 
+from . import artifact_registry
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient, recipient_email
@@ -15,10 +16,12 @@ from .workflow import workflow_state
 class PublicMatter(TypedDict, total=False):
     approved_at: str
     approver: str
+    artifacts: list[dict[str, Any]]
     attachment_filename: str
     board_column: str
     can_send_redline: bool
     created_at: str
+    current_artifact_id: str
     document_title: str
     gmail_account: str
     gmail_attachment_selector: str
@@ -140,9 +143,43 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     workflow = workflow_state(matter)
     public["workflow_state"] = workflow
     public["next_action"] = workflow["next_action"]["label"]
+    # The artifact registry view: the tracked documents on the matter plus the
+    # current_artifact_id pointer ("the version that matters now"). A compact
+    # projection -- provenance the UI needs, never the storage internals
+    # (content_hash/stored_filename stay server-side).
+    artifacts_view = matter_artifacts_view(matter)
+    if artifacts_view:
+        public["artifacts"] = artifacts_view
+        public["current_artifact_id"] = str(matter.get(artifact_registry.CURRENT_ARTIFACT_FIELD) or "")
     if send_block_reason:
         public["send_block_reason"] = send_block_reason
     return public
+
+
+def matter_artifacts_view(matter: dict[str, Any]) -> list[dict[str, Any]]:
+    """A compact, UI-facing projection of the matter's tracked artifacts.
+
+    Exposes provenance (id/source/actor/role/version/name/based_on/created_at)
+    plus an ``is_current`` flag, in registration order. Storage internals
+    (content_hash, stored_filename) are deliberately omitted from the public
+    shape; callers that need bytes go through the registry by artifact id.
+    """
+    current_id = str(matter.get(artifact_registry.CURRENT_ARTIFACT_FIELD) or "")
+    view: list[dict[str, Any]] = []
+    for artifact in artifact_registry.matter_artifacts(matter):
+        view.append({
+            "id": artifact.id,
+            "source": artifact.source,
+            "actor": artifact.actor,
+            "role": artifact.role,
+            "version": artifact.version,
+            "name": artifact.name,
+            "ext": artifact.ext,
+            "based_on_artifact_id": artifact.based_on_artifact_id,
+            "created_at": artifact.created_at,
+            "is_current": bool(current_id) and artifact.id == current_id,
+        })
+    return view
 
 
 def matter_needs_human_review(matter: dict[str, Any]) -> bool:

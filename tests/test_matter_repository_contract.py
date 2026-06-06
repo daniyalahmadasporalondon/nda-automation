@@ -201,13 +201,13 @@ def test_set_and_clear_workflow_error(repository):
     matter = repository.create_matter(**_create_kwargs())
     matter_id = matter["id"]
 
-    errored = repository.set_workflow_error(matter_id, {"phase": "review", "code": "ai_error"})
+    errored = repository.set_matter_workflow_error(matter_id, {"phase": "review", "code": "ai_error"})
     assert errored["workflow_error"] == {"phase": "review", "code": "ai_error"}
 
-    cleared = repository.set_workflow_error(matter_id, None)
+    cleared = repository.set_matter_workflow_error(matter_id, None)
     assert "workflow_error" not in cleared
 
-    assert repository.set_workflow_error("matter_missing", {"phase": "review"}) is None
+    assert repository.set_matter_workflow_error("matter_missing", {"phase": "review"}) is None
 
 
 def test_delete_and_reset(repository):

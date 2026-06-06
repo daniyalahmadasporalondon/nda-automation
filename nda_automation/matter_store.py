@@ -341,7 +341,7 @@ def append_timeline_event(
     return None
 
 
-def set_workflow_error(
+def set_matter_workflow_error(
     matter_id: str,
     workflow_error: dict[str, Any] | None,
     owner_user_id: str = "",

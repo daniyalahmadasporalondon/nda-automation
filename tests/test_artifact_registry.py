@@ -384,3 +384,125 @@ def test_intake_registration_failure_does_not_break_intake(monkeypatch):
         repository=repo,
     )
     assert repo.get_matter(matter["id"]) is not None
+
+
+# --- public_matter artifact view -------------------------------------------
+def test_public_matter_exposes_artifact_view_and_current_pointer():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    redline = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline",
+        document_bytes=b"r", based_on_artifact_id=original.id, repository=repo,
+    )
+    public = public_matter(repo.get_matter(matter["id"]))
+
+    assert public["current_artifact_id"] == redline.id
+    view = public["artifacts"]
+    assert [a["role"] for a in view] == ["original", "redline"]
+    # Compact projection: provenance present, storage internals omitted.
+    redline_view = next(a for a in view if a["role"] == "redline")
+    assert redline_view["id"] == redline.id
+    assert redline_view["version"] == 1
+    assert redline_view["name"] == "02_ai_redline_v1.docx"
+    assert redline_view["based_on_artifact_id"] == original.id
+    assert redline_view["is_current"] is True
+    assert "content_hash" not in redline_view
+    assert "stored_filename" not in redline_view
+    # The earlier original is not current.
+    assert next(a for a in view if a["role"] == "original")["is_current"] is False
+
+
+def test_public_matter_omits_artifact_keys_when_no_registry():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    # A matter with no artifacts registered yet exposes neither key.
+    public = public_matter(repo.get_matter(matter["id"]))
+    assert "artifacts" not in public
+    assert "current_artifact_id" not in public
+
+
+# --- reviewed-DOCX registration (eager-at-approval wrapper) -----------------
+def _matter_with_original_and_redline(repo):
+    matter = _seed_matter(repo)
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    redline = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline",
+        document_bytes=b"redline bytes", based_on_artifact_id=original.id, repository=repo,
+    )
+    return matter, original, redline
+
+
+def test_register_reviewed_docx_registers_with_human_actor_and_redline_lineage():
+    repo = InMemoryMatterRepository()
+    matter, _original, redline = _matter_with_original_and_redline(repo)
+
+    reviewed = artifact_service.register_reviewed_docx(
+        matter["id"], b"reviewed docx bytes", review_version_hash="hash-v1", repository=repo,
+    )
+
+    assert reviewed is not None
+    assert reviewed.role == "reviewed"
+    assert reviewed.actor == "human"
+    assert reviewed.source == "generated"
+    assert reviewed.based_on_artifact_id == redline.id  # lineage prefers the redline
+    assert reviewed.metadata["review_version_hash"] == "hash-v1"
+    assert reviewed.metadata["materialized_at"] == "approval"
+    # Reviewed is the version that matters now.
+    assert repo.get_matter(matter["id"])["current_artifact_id"] == reviewed.id
+
+
+def test_register_reviewed_docx_falls_back_to_original_lineage_without_redline():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    reviewed = artifact_service.register_reviewed_docx(matter["id"], b"reviewed", repository=repo)
+    assert reviewed.based_on_artifact_id == original.id
+
+
+def test_register_reviewed_docx_is_idempotent_on_identical_bytes():
+    repo = InMemoryMatterRepository()
+    matter, _original, _redline = _matter_with_original_and_redline(repo)
+
+    first = artifact_service.register_reviewed_docx(matter["id"], b"reviewed v1", repository=repo)
+    # Re-approval with unchanged reviewer decisions -> byte-identical -> skipped.
+    second = artifact_service.register_reviewed_docx(matter["id"], b"reviewed v1", repository=repo)
+
+    assert first is not None
+    assert second is None
+    reviewed = [a for a in artifact_service.list_artifacts(matter["id"], repository=repo) if a.role == "reviewed"]
+    assert len(reviewed) == 1
+
+
+def test_register_reviewed_docx_new_version_when_bytes_change():
+    repo = InMemoryMatterRepository()
+    matter, _original, _redline = _matter_with_original_and_redline(repo)
+
+    first = artifact_service.register_reviewed_docx(matter["id"], b"reviewed v1", repository=repo)
+    # A re-review changes reviewer decisions -> different reviewed bytes -> new version.
+    second = artifact_service.register_reviewed_docx(matter["id"], b"reviewed v2 (re-reviewed)", repository=repo)
+
+    assert first is not None and second is not None
+    assert second.version == first.version + 1
+    assert repo.get_matter(matter["id"])["current_artifact_id"] == second.id
+    reviewed = [a for a in artifact_service.list_artifacts(matter["id"], repository=repo) if a.role == "reviewed"]
+    assert len(reviewed) == 2
+
+
+def test_register_reviewed_docx_missing_matter_raises():
+    repo = InMemoryMatterRepository()
+    with pytest.raises(ArtifactMatterNotFoundError):
+        artifact_service.register_reviewed_docx("matter_ghost", b"x", repository=repo)

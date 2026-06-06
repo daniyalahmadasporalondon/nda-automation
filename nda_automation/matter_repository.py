@@ -92,7 +92,7 @@ class MatterRepository(Protocol):
         self, matter_id: str, timeline_event: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
 
-    def set_workflow_error(
+    def set_matter_workflow_error(
         self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
 
@@ -220,10 +220,10 @@ class DiskMatterRepository:
     ) -> dict[str, Any] | None:
         return matter_store.append_timeline_event(matter_id, timeline_event, owner_user_id=owner_user_id)
 
-    def set_workflow_error(
+    def set_matter_workflow_error(
         self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
     ) -> dict[str, Any] | None:
-        return matter_store.set_workflow_error(matter_id, workflow_error, owner_user_id=owner_user_id)
+        return matter_store.set_matter_workflow_error(matter_id, workflow_error, owner_user_id=owner_user_id)
 
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
@@ -521,7 +521,7 @@ class InMemoryMatterRepository:
                 return copy.deepcopy(updated_matter)
         return None
 
-    def set_workflow_error(
+    def set_matter_workflow_error(
         self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
     ) -> dict[str, Any] | None:
         now = datetime.now(timezone.utc).isoformat()
