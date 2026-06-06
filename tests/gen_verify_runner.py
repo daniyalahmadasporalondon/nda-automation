@@ -22,6 +22,7 @@ from typing import Any
 from tests.gen_verify_harness import (
     EntityExpectation,
     VerificationReport,
+    check_registry_playbook_consistency,
     docx_to_text,
     expectations_from_registry,
     template_authoritative_sentences,
@@ -159,6 +160,11 @@ def run(variants: tuple[str, ...] = VARIANTS_V1) -> list[VerificationReport]:
     expectations = expectations_from_registry()
     authoritative = template_authoritative_sentences(_template_bytes())
     reports: list[VerificationReport] = []
+    # Once-per-gate pre-flight: registry<->playbook law-mapping consistency.
+    preflight = VerificationReport(label="registry/playbook pre-flight")
+    check_registry_playbook_consistency(preflight)
+    if preflight.findings:
+        reports.append(preflight)
     for entity_id, expect in expectations.items():
         for variant in variants:
             label = f"{entity_id} / {variant}"

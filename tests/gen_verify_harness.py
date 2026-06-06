@@ -226,6 +226,25 @@ def _approved_laws() -> tuple[str, ...]:
     return ()
 
 
+def check_registry_playbook_consistency(report: VerificationReport) -> None:
+    """Pre-flight: every entity's governing-law mapping must still resolve to a
+    Playbook-approved option. This is entity-model's own seam
+    (validate_registry_against_playbook) -- it catches a registry<->playbook drift
+    (e.g. a renamed/removed approved_option) at the source, before we even look at
+    a generated draft. Cheap; runs once per gate, not per draft."""
+    try:
+        from nda_automation import entity_registry
+    except Exception as error:  # registry not importable in this tree yet
+        report.warn("registry.unavailable", f"entity_registry not importable: {error!r}")
+        return
+    playbook = load_playbook()
+    try:
+        entity_registry.validate_registry_against_playbook(playbook)
+    except ValueError as error:
+        # The ValueError names the offending entity + the valid option set.
+        report.defect("registry.law_drift", f"entity law mapping drifted out of the Playbook: {error}")
+
+
 # --------------------------------------------------------------------------- #
 # 3. Mutuality (v1 is MUTUAL-only; one-way is out of scope, not just unbuilt)
 # --------------------------------------------------------------------------- #
@@ -291,6 +310,61 @@ def check_clause_drift(text: str, authoritative_fragments: Sequence[str], report
         if _max_shared_run(norm, fragments) >= _DRIFT_MIN_SHARED_RUN:
             continue
         report.warn("drift.candidate", f"clause text not traceable to template/Playbook: {sentence[:160]!r}")
+
+
+# --------------------------------------------------------------------------- #
+# 4b. Prohibited-position scan (the load-bearing guard for AI-FIRST generation)
+# --------------------------------------------------------------------------- #
+# Verbatim-traceability drift (above) catches an invented clause when the wording
+# is novel, but an AI adapter PARAPHRASES -- it can keep a clause on-skeleton while
+# drifting the POSITION, or introduce a prohibited obligation in fresh prose that
+# happens to share runs with allowed text. So we ALSO scan for prohibited positions
+# by meaning, independent of phrasing. Each entry: (label, regex over normalized
+# text). A hit is a DEFECT: the generator must never assert these positions. This
+# complements the deterministic Playbook pass (which scores the 6 hard clauses) by
+# catching prohibited obligations the AI might add OUTSIDE those clause anchors.
+_PROHIBITED_POSITION_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("non_compete", r"non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)"),
+    ("non_solicit", r"non-?solicit|shall not solicit|will not solicit|refrain from soliciting"),
+    ("non_circumvention", r"non-?circumvent|shall not circumvent|bypass the disclosing party|circumvent or bypass"),
+    ("exclusivity", r"exclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to"),
+    ("ip_assignment", r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right, )?title and interest in"),
+    ("perpetual_confidentiality", r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|forever\b|for an unlimited (?:time|period)"),
+    ("penalty", r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages payable"),
+    ("auto_renew_lock", r"automatically renew|evergreen|may not (?:be )?terminat"),
+)
+
+
+def check_prohibited_positions(text: str, report: VerificationReport) -> None:
+    """Scan for prohibited LEGAL POSITIONS by meaning, regardless of phrasing.
+
+    This is the guard that does not depend on verbatim traceability, so it holds up
+    when an AI adapter rewords freely. A match is a DEFECT (not a WARN): these are
+    positions the generator must never introduce. Perpetual-confidentiality is the
+    one nuance -- the Playbook permits narrow trade-secret/legal/data-protection
+    survival "for as long as ... required", so we only flag perpetual language when
+    it is NOT in such a carve-out context.
+    """
+    normalized = _normalize_sentence(text)
+    for sentence in _substantive_sentences(text):
+        norm = _normalize_sentence(sentence)
+        for label, pattern in _PROHIBITED_POSITION_PATTERNS:
+            if not re.search(pattern, norm):
+                continue
+            if label == "perpetual_confidentiality" and _is_permitted_long_survival(norm):
+                continue
+            report.defect(
+                "position.prohibited",
+                f"generator introduced a prohibited position ({label}): {sentence[:160]!r}",
+            )
+
+
+def _is_permitted_long_survival(norm: str) -> bool:
+    """The Playbook allows narrow trade-secret / legal / regulatory / data-protection
+    obligations to survive as long as the protected status or law requires. Perpetual
+    language inside that carve-out is on-position, not drift."""
+    carve_outs = ("trade secret", "trade secrets", "as long as", "so long as", "applicable law", "law requires", "legal", "regulatory", "personal data", "data protection")
+    return any(token in norm for token in carve_outs)
 
 
 def _is_party_or_signature_line(sentence: str) -> bool:
@@ -456,13 +530,25 @@ def expectations_from_registry() -> dict[str, EntityExpectation]:
                 if line and line not in default_lines:
                     forbidden.append(str(line))
         option_id = str(bundle.get("governing_law", {}).get("playbook_option_id") or "")
+        # Incorporation jurisdiction is NOT yet an authoritative registry field
+        # (entity-model: Real Transfer's value is genuinely undecided, escalated to
+        # legal; task #11 adds it). Read it ONLY if the bundle actually carries an
+        # authoritative key -- never derive it from the address country (too coarse:
+        # Vance Money's country is USA but its law/incorporation is Delaware). Empty
+        # => check_entity skips the assertion until the field lands.
+        incorp = ""
+        for key in ("incorporation_jurisdiction", "jurisdiction_of_incorporation"):
+            value = bundle.get(key)
+            if isinstance(value, str) and value.strip():
+                incorp = value.strip()
+                break
         expectations[bundle["id"]] = EntityExpectation(
             key=bundle["id"],
             legal_name=str(bundle.get("legal_name") or ""),
             # Match on the most identifying default line rather than the full join,
             # since the generator may format the address block differently.
             registered_office=_most_identifying_line(default_lines),
-            jurisdiction_of_incorporation=str(default.get("country") or ""),
+            jurisdiction_of_incorporation=incorp,
             governing_law=_law_value_for_option_id(option_id),
             forbidden_substrings=tuple(forbidden),
         )
@@ -506,6 +592,9 @@ def verify_generated_draft(
     check_governing_law(text, entity, report)
     check_variant(text, variant, report)
     check_clause_drift(text, authoritative_sentences, report)
+    # Load-bearing for AI-first generation: catch prohibited positions by meaning,
+    # regardless of how the AI adapter phrases them.
+    check_prohibited_positions(text, report)
     return report
 
 
