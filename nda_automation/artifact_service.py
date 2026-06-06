@@ -18,12 +18,17 @@ from typing import Any
 
 from . import artifact_registry
 from .artifact_registry import (
+    ACTOR_HUMAN,
     Artifact,
     ArtifactRegistryError,
     ROLE_ORIGINAL,
     ROLE_REDLINE,
+    ROLE_REVIEWED,
+    SOURCE_GENERATED,
     SOURCE_GMAIL,
     SOURCE_UPLOAD,
+    hash_bytes,
+    latest_artifact_for_role,
 )
 from .matter_repository import DiskMatterRepository, MatterRepository
 
@@ -87,6 +92,73 @@ def add_artifact(
     if updated is None:
         raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
     return artifact
+
+
+def register_reviewed_docx(
+    matter_id: str,
+    reviewed_bytes: bytes,
+    *,
+    review_version_hash: str = "",
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
+) -> Artifact | None:
+    """Register the reviewed DOCX as a role="reviewed" artifact (idempotent).
+
+    Called at the approval transition (eager): the one moment the reviewed DOCX
+    is both materializable without a stale error and decision-complete. This
+    wrapper owns the reviewed-artifact semantics so callers (the approval
+    handler) pass only the bytes:
+
+    * actor = human (the reviewed DOCX reflects human reviewer decisions),
+      source = generated, role = reviewed.
+    * based_on = the matter's latest redline artifact when one exists, else the
+      original — so lineage reads original -> redline -> reviewed.
+    * make_current = True: the reviewed version becomes "the version that
+      matters now" at approval, which is what the Sent/Executed live-doc wants.
+
+    IDEMPOTENCY is keyed on the reviewed bytes' content hash, NOT merely on
+    "a reviewed artifact exists". A re-review changes the reviewer decisions,
+    which changes the reviewed bytes, which changes the content hash -> a NEW
+    reviewed version is registered. A bare re-approval with unchanged decisions
+    produces byte-identical output -> the same content hash -> we SKIP and
+    return None. ``review_version_hash`` (the locked playbook_version.hash) is
+    stamped into metadata for the timeline but is not the dedupe key — content
+    is authoritative even if provenance stamping is absent.
+
+    Returns the new Artifact, or None when an identical reviewed artifact is
+    already current/registered (the skip case).
+    """
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
+
+    new_hash = hash_bytes(reviewed_bytes)
+    existing_reviewed = latest_artifact_for_role(matter, ROLE_REVIEWED)
+    if existing_reviewed is not None and existing_reviewed.content_hash == new_hash:
+        # Re-approval with unchanged reviewer decisions: byte-identical output,
+        # nothing new to register.
+        return None
+
+    redline = latest_artifact_for_role(matter, ROLE_REDLINE)
+    original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
+    based_on = redline or original
+    metadata: dict[str, Any] = {"materialized_at": "approval"}
+    if review_version_hash:
+        metadata["review_version_hash"] = str(review_version_hash)
+
+    return add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_REVIEWED,
+        document_bytes=reviewed_bytes,
+        based_on_artifact_id=(based_on.id if based_on is not None else ""),
+        make_current=True,
+        metadata=metadata,
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
 
 
 def set_current_artifact(
