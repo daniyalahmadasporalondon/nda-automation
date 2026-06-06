@@ -375,16 +375,32 @@ def template_authoritative_sentences(template_bytes: bytes) -> list[str]:
         skeleton.extend(GENERIC_PLACEHOLDER_RE.split(fragment))
     fragments = [f.strip() for f in skeleton if f.strip()]
     playbook = load_playbook()
+    # check_trigger + rationale name the Playbook's STANDARD carve-outs (public-
+    # domain, prior-possession, lawful third-party source, qualified independent-
+    # development), so a generator clause that renders one of those approved
+    # carve-outs anchors here and is not flagged as invented. The drift check still
+    # surfaces genuinely novel positions (e.g. a non-compete) that match none of these.
     for clause in playbook.get("clauses", []):
-        for key in ("acceptable_language", "preferred_position", "acceptable_position", "requirement"):
+        for key in (
+            "acceptable_language",
+            "preferred_position",
+            "acceptable_position",
+            "requirement",
+            "check_trigger",
+            "rationale",
+        ):
             value = clause.get(key)
             if isinstance(value, str) and value.strip():
                 fragments.append(value)
         rules = clause.get("rules", {})
-        for option in rules.get("approved_options", []) if isinstance(rules, Mapping) else []:
-            value = option.get("value") if isinstance(option, Mapping) else None
-            if isinstance(value, str):
-                fragments.append(value)
+        if isinstance(rules, Mapping):
+            position = rules.get("acceptable_position")
+            if isinstance(position, str) and position.strip():
+                fragments.append(position)
+            for option in rules.get("approved_options", []):
+                value = option.get("value") if isinstance(option, Mapping) else None
+                if isinstance(value, str):
+                    fragments.append(value)
     return fragments
 
 
