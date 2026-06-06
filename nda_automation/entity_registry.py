@@ -197,6 +197,19 @@ def default_address(entity: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def actor_slug(entity: Mapping[str, Any]) -> str:
+    """The actor identifier for this entity when it signs/generates an artifact.
+
+    The artifact registry slugs whatever ``actor`` it is given into an artifact
+    filename (``{seq}_{actor}_{role}_v{n}.ext``). The entity ``id`` is already a
+    stable, short slug, so passing it as the actor yields clean, predictable
+    names (e.g. ``aspora_technology`` -> ``...aspora-technology...``) rather than
+    a truncated slug of the long legal name.
+    """
+
+    return str(entity.get("id") or "")
+
+
 def _copy_bundle(entity: Mapping[str, Any]) -> dict[str, Any]:
     """Deep-ish copy so callers cannot mutate the module-level registry."""
 
@@ -351,6 +364,7 @@ __all__ = [
     "list_entities",
     "get_entity",
     "default_address",
+    "actor_slug",
     "validate_registry",
     "validate_registry_against_playbook",
     "entity_law_mapping",

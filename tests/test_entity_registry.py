@@ -95,6 +95,16 @@ class EntityRegistryBundleTests(unittest.TestCase):
         self.assertEqual(names["real_transfer"], "Real Transfer Limited")
         self.assertEqual(names["vance_techlabs"], "Vance Techlabs Limited")
 
+    def test_actor_slug_is_the_stable_entity_id(self):
+        # Generation passes this as the artifact-registry `actor`, which slugs it
+        # into the artifact filename. Using the id keeps names short and stable.
+        for entity in er.list_entities():
+            self.assertEqual(er.actor_slug(entity), entity["id"])
+        self.assertEqual(
+            er.actor_slug(er.get_entity("aspora_technology")),
+            "aspora_technology",
+        )
+
 
 class GoverningLawMappingTests(unittest.TestCase):
     def test_mapping_matches_expected_positions(self):
