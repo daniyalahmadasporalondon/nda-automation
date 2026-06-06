@@ -113,6 +113,15 @@ function createSendDocumentController({
     updateSubmitState();
   }
 
+  // Show a transient "attaching…" (or error) message in the file slot while a
+  // generated document is being fetched/attached. Keeps the Send button disabled
+  // (no selectedFile) until loadFile lands the real document.
+  function showPendingAttachment(message) {
+    if (!selectedFileNode) return;
+    selectedFileNode.classList.remove("empty");
+    selectedFileNode.innerHTML = `<strong>${escapeHtml(message)}</strong>`;
+  }
+
   recipientInput?.addEventListener("input", () => {
     setStatus("");
     updateSubmitState();
@@ -220,7 +229,7 @@ function createSendDocumentController({
   }
 
   renderSelectedFile();
-  return { closeModal, openFilePicker, openModal, resetForm, sendSelectedDocument, loadFile };
+  return { closeModal, openFilePicker, openModal, resetForm, sendSelectedDocument, loadFile, showPendingAttachment };
 }
 
 // isSupportedSendFilename / isValidRecipientEmail / fileStem come from the shared

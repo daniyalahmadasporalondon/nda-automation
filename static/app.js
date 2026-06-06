@@ -418,11 +418,11 @@ function downloadGeneratedNda(generated) {
 
 // Open the Send Document modal pre-loaded with the generated NDA (+ counterparty
 // email / subject) so the user can email it straight from the generator.
-async function sendGeneratedNda(generated) {
+async function sendGeneratedNda(generated, { pending = false } = {}) {
   if (!generated) return;
-  // Open the modal and prefill recipient + subject IMMEDIATELY — never block the
-  // modal (or the counterparty-email -> Recipient Email link) on the document
-  // download. The counterparty email always links the moment Send is clicked.
+  // Open the modal + prefill recipient/subject IMMEDIATELY and show an
+  // "attaching…" state — the popup and the counterparty-email -> Recipient Email
+  // link never wait on the document.
   sendDocumentController.openModal();
   if (typeof sendDocumentController.loadFile === "function") {
     sendDocumentController.loadFile(null, {
@@ -430,7 +430,12 @@ async function sendGeneratedNda(generated) {
       subject: generated.subject,
     });
   }
-  // Then load the generated document into the modal in the background.
+  if (typeof sendDocumentController.showPendingAttachment === "function") {
+    sendDocumentController.showPendingAttachment("Attaching the generated NDA…");
+  }
+  // pending = the NDA isn't ready yet; a follow-up call attaches it once generated.
+  if (pending) return;
+  // Fetch the generated document and attach it to the open modal.
   const docxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   try {
     let file = null;
@@ -445,10 +450,17 @@ async function sendGeneratedNda(generated) {
     }
     if (file && typeof sendDocumentController.loadFile === "function") {
       sendDocumentController.loadFile(file);
+    } else if (typeof sendDocumentController.showPendingAttachment === "function") {
+      sendDocumentController.showPendingAttachment(
+        "Couldn't attach the NDA automatically — select the document below.",
+      );
     }
   } catch (error) {
-    // Leave the modal open with the recipient prefilled — the user can attach the
-    // document manually if the background load failed.
+    if (typeof sendDocumentController.showPendingAttachment === "function") {
+      sendDocumentController.showPendingAttachment(
+        "Couldn't attach the NDA automatically — select the document below.",
+      );
+    }
   }
 }
 

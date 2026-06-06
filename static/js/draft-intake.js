@@ -210,14 +210,23 @@ function createDraftIntakeController({
   // yet, it generates in the background and attaches the document to the open
   // modal when ready (the modal's own "Send document" stays disabled until a
   // document is attached, so nothing can be sent empty).
-  sendButton?.addEventListener("click", () => {
+  sendButton?.addEventListener("click", async () => {
     if (typeof onSendGenerated !== "function") return;
-    onSendGenerated(currentSendContext());
-    if (!lastGenerated) {
-      generate().then(() => {
-        if (lastGenerated) onSendGenerated(lastGenerated);
-      });
+    // Already generated -> open the popup and attach the NDA straight away.
+    if (lastGenerated) {
+      onSendGenerated(lastGenerated);
+      return;
     }
+    // Not generated yet -> validate first so we don't open an empty popup, then
+    // open it (recipient prefilled + "attaching…"), generate, and attach.
+    const result = api().validateDraftIntake(intake);
+    if (!result.ok) {
+      setStatus(result.error, "error");
+      return;
+    }
+    onSendGenerated(currentSendContext(), { pending: true });
+    await generate();
+    if (lastGenerated) onSendGenerated(lastGenerated);
   });
 
   // The handle Send acts on: the last generation if present, otherwise a draft

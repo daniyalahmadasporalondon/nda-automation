@@ -1789,6 +1789,15 @@ async function testDraftIntakeGenerateNda(page) {
       }),
     });
   });
+  // The generated document is fetched from the matter-source URL when Send
+  // attaches it to the Send Document modal.
+  await page.route("**/api/matters/mat_generated_1/source", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      body: "PK generated-nda-docx-bytes",
+    });
+  });
   // The Generator is its own top-nav tab. Open it from the nav, confirm the tab
   // panel (not a modal) is shown, pick our signing entity + a counterparty so the
   // Generate button enables, then generate.
@@ -1840,6 +1849,13 @@ async function testDraftIntakeGenerateNda(page) {
   await page.locator("#draftIntakeSendButton").click();
   await page.waitForSelector("#sendDocumentModal:not([hidden])");
   assert.equal(await page.locator("#sendDocumentRecipientInput").inputValue(), "deals@acme.com");
+  // The generated NDA is fetched from the matter-source URL and attached to the
+  // modal, so it can actually be emailed (Send document enables once attached).
+  await page.waitForFunction(() => {
+    const n = document.querySelector("#sendDocumentSelectedFile");
+    return n && !n.classList.contains("empty") && !/attaching/i.test(n.textContent || "");
+  });
+  await page.waitForSelector("#sendDocumentSubmitButton:not([disabled])");
   await page.locator("#sendDocumentModalClose").click();
 
   await page.unroute("**/api/generate-nda");
