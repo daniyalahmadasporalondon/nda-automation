@@ -227,24 +227,33 @@ def _approved_laws() -> tuple[str, ...]:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Variant asymmetry (mutual vs one-way)
+# 3. Mutuality (v1 is MUTUAL-only; one-way is out of scope, not just unbuilt)
 # --------------------------------------------------------------------------- #
 def check_variant(text: str, variant: str, report: VerificationReport) -> None:
-    """mutual -> deterministic mutuality must pass; one_way -> must NOT read as mutual."""
+    """v1 generates only MUTUAL NDAs, so the output must be properly mutual.
+
+    The deterministic mutuality clause passing with `mutuality_obligation_found`
+    is the engine's own confirmation of reciprocal Disclosing/Receiving
+    obligations. Anything other than pass is a DEFECT: a `fail`/`review` means the
+    draft binds only one side or left the template's one-directional 'The
+    Receiving Party agrees...' phrasing un-aligned (the exact risk pre-flight
+    flagged). We assert pass, not merely 'not fail', so a `review` is caught too.
+    """
+    if variant != "mutual":
+        report.defect("variant.scope", f"v1 is mutual-only; unexpected variant {variant!r}")
+        return
     result = review_nda(text, verify=False)
     clause = next((c for c in result.get("clauses", []) if c.get("id") == "mutuality"), None)
-    decision = str(clause.get("decision")) if clause else "missing"
-    if variant == "mutual":
-        if decision == "fail":
-            report.defect("variant.mutual", f"mutual variant fails mutuality (reason={clause.get('reason_code')})")
-    elif variant == "one_way":
-        if decision == "pass":
-            report.warn(
-                "variant.one_way",
-                "one-way variant still reads as operationally mutual -- confirm asymmetry is real",
-            )
-    else:
-        report.warn("variant.unknown", f"unrecognized variant {variant!r}")
+    if clause is None:
+        report.defect("mutuality.missing", "mutuality clause not emitted by the engine")
+        return
+    decision = str(clause.get("decision"))
+    reason = str(clause.get("reason_code") or "")
+    if decision != "pass":
+        report.defect(
+            "mutuality.not_mutual",
+            f"mutual NDA does not read as operationally mutual (decision={decision}, reason={reason})",
+        )
 
 
 # --------------------------------------------------------------------------- #

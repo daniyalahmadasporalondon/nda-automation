@@ -7,8 +7,8 @@ hands them to ``gen_verify_harness.verify_generated_draft`` -- the adversarial g
 that re-derives every verdict independently (it does NOT trust the generator's own
 self-check or manifest).
 
-v1 generates only the ``mutual`` variant; the one-way asymmetry check stays warm
-for when that variant lands. Run as a module:
+v1 is MUTUAL-only by product scope (one-way is out of scope), so the gate checks
+that each draft is *properly mutual*. Run as a module:
 
     python -m tests.gen_verify_runner
 
@@ -27,8 +27,8 @@ from tests.gen_verify_harness import (
     verify_generated_draft,
 )
 
-# Variants to verify. v1 ships mutual only; one_way is appended once generation
-# implements it (NDA_TYPE_ONE_WAY).
+# v1 is MUTUAL-only by product scope (one-way is out of scope, not just unbuilt),
+# so the gate verifies the single mutual variant per entity.
 VARIANTS_V1 = ("mutual",)
 
 
