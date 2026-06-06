@@ -1773,7 +1773,7 @@ async function testDraftIntakeGenerateNda(page) {
         status: "generated",
         download_url: "/api/matters/mat_generated_1/source",
         self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
-        manifest: { entity_id: "aspora_technology" },
+        manifest: { entity_id: "aspora_technology", governing_law_value: "England and Wales", term_years: 2, sanitized_fields: [] },
       }),
     });
   });
@@ -1796,6 +1796,9 @@ async function testDraftIntakeGenerateNda(page) {
 
   await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
   await assertTextContains(page.locator("#draftIntakeStatus"), "Acme Corporation");
+  // The success line confirms the generated terms from the manifest at a glance.
+  await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "2-year term");
 
   // The POST carries buildDraftPayload's shape: the coupled signing-entity bundle
   // and the counterparty block the endpoint resolves the entity + intake from.

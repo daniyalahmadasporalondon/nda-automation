@@ -356,15 +356,24 @@ async function generateNdaFromDraft(payload) {
       downloadUrl(result.download_url, result.filename || draftNdaDownloadFilename(payload));
     }
     const savedFor = payload?.counterparty?.name ? ` for ${payload.counterparty.name}` : "";
+    const summary = generatedManifestSummary(result.manifest);
     // The engine passes the Playbook deterministically; self_check is advisory, so
     // a rare miss is surfaced as a soft caution rather than blocking the success.
     if (result.self_check && result.self_check.passed === false) {
       return {
-        message: `NDA generated and saved${savedFor}, but the self-check flagged it — review before sending.`,
+        message: `NDA generated and saved${savedFor}${summary}, but the self-check flagged it — review before sending.`,
         tone: "error",
       };
     }
-    return { message: `NDA generated and saved${savedFor}.`, tone: "success" };
+    // If untrusted intake text (purpose/notes) was neutralised on the way into the
+    // document, surface it: the user should know their free text was sanitised.
+    if (Array.isArray(result.manifest?.sanitized_fields) && result.manifest.sanitized_fields.length) {
+      return {
+        message: `NDA generated and saved${savedFor}${summary}. Note: ${result.manifest.sanitized_fields.join(", ")} was sanitised before drafting.`,
+        tone: "error",
+      };
+    }
+    return { message: `NDA generated and saved${savedFor}${summary}.`, tone: "success" };
   } catch (error) {
     if (error instanceof window.GenerationUnavailableError || error?.code === "generation_unavailable") {
       // Endpoint not deployed on this base yet — degrade gracefully.
@@ -375,6 +384,20 @@ async function generateNdaFromDraft(payload) {
     }
     throw error;
   }
+}
+
+// A short parenthetical summary of what the engine actually filled, from the
+// response manifest (governing law + term) — so the success line confirms the
+// generated terms at a glance. Empty when the manifest is absent or sparse.
+function generatedManifestSummary(manifest) {
+  if (!manifest || typeof manifest !== "object") return "";
+  const bits = [];
+  if (manifest.governing_law_value) bits.push(String(manifest.governing_law_value));
+  if (manifest.term_years) {
+    const years = Number(manifest.term_years);
+    if (Number.isFinite(years) && years > 0) bits.push(`${years}-year term`);
+  }
+  return bits.length ? ` (${bits.join(", ")})` : "";
 }
 
 // Derives a download filename when the response carries none, from the
