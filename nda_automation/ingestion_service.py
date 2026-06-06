@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import artifact_service
+from .artifact_registry import ArtifactRegistryError
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
@@ -40,7 +42,7 @@ def create_matter_from_document(
         review_result["source"]["extraction_quality"] = extraction_quality
         _append_extraction_warnings(review_result, extraction_quality)
     review_result["extracted_text"] = extracted_text
-    return repository.create_matter(
+    matter = repository.create_matter(
         source_filename=filename,
         document_bytes=document_bytes,
         extracted_text=extracted_text,
@@ -52,6 +54,32 @@ def create_matter_from_document(
         dedupe_gmail=dedupe_gmail,
         owner_user_id=owner_user_id,
     )
+    _register_original_artifact(matter, repository=repository, owner_user_id=owner_user_id)
+    return matter
+
+
+def _register_original_artifact(
+    matter: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    owner_user_id: str = "",
+) -> None:
+    """Auto-register the matter's source document as its original artifact.
+
+    Runs for every NEWLY created matter so the artifact layer is real from
+    intake, not only after a one-time backfill. Skipped when ``create_matter``
+    returned an existing gmail duplicate (the original is already registered, or
+    will be by backfill) so we never double-register. Fail-soft: the matter is
+    the source of truth, so a registry hiccup must never break intake — backfill
+    can re-register later (it is idempotent).
+    """
+    if matter.get("_existing_gmail_duplicate"):
+        return
+    try:
+        artifact_service.backfill_matter(matter, repository=repository, owner_user_id=owner_user_id)
+    except (ArtifactRegistryError, OSError, KeyError, ValueError):
+        # Never let artifact registration fail an otherwise-successful intake.
+        pass
 
 
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:

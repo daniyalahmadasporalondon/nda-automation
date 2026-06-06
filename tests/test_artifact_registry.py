@@ -1,6 +1,9 @@
 """Tests for the artifact registry: the thin metadata layer over matter documents."""
 from __future__ import annotations
 
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
+
 import pytest
 
 from nda_automation import artifact_registry, artifact_service
@@ -11,7 +14,28 @@ from nda_automation.artifact_registry import (
     hash_bytes,
 )
 from nda_automation.artifact_service import ArtifactMatterNotFoundError
+from nda_automation.ingestion_service import create_matter_from_document
 from nda_automation.matter_repository import InMemoryMatterRepository
+
+_NDA_PARAGRAPHS = [
+    "This Mutual Non-Disclosure Agreement is entered into by both parties.",
+    "Each party agrees to keep the other party's Confidential Information secret.",
+    "This Agreement shall be governed by the laws of England and Wales.",
+    "The confidentiality obligations survive for three years from disclosure.",
+]
+
+
+def _docx(paragraphs):
+    body = "".join(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in paragraphs)
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
 
 
 def _seed_matter(repo, **overrides):
@@ -294,3 +318,69 @@ def test_artifacts_persist_across_repository_reads():
     listed = artifact_service.list_artifacts(matter["id"], repository=repo)
     assert len(listed) == 1
     assert listed[0].role == "original"
+
+
+# --- intake auto-registration ----------------------------------------------
+def test_intake_auto_registers_original_artifact():
+    repo = InMemoryMatterRepository()
+    docx = _docx(_NDA_PARAGRAPHS)
+    matter = create_matter_from_document(
+        filename="mutual-nda.docx",
+        document_bytes=docx,
+        source_type="manual_upload",
+        board_column="intake",
+        repository=repo,
+    )
+    artifacts = artifact_service.list_artifacts(matter["id"], repository=repo)
+    assert len(artifacts) == 1
+    original = artifacts[0]
+    assert original.role == "original"
+    assert original.version == 1
+    assert original.source == "upload"  # inferred from manual_upload source_type
+    assert original.actor == "counterparty"
+    assert original.content_hash == hash_bytes(docx)
+    # The original is the current version, and its bytes are the source document.
+    stored = repo.get_matter(matter["id"])
+    assert stored["current_artifact_id"] == original.id
+    assert artifact_service.get_artifact_bytes(matter["id"], original.id, repository=repo) == docx
+
+
+def test_intake_gmail_source_registers_gmail_original():
+    repo = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="mutual-nda.docx",
+        document_bytes=_docx(_NDA_PARAGRAPHS),
+        source_type="gmail_demo",
+        board_column="gmail_demo",
+        repository=repo,
+    )
+    [original] = artifact_service.list_artifacts(matter["id"], repository=repo)
+    assert original.source == "gmail"
+
+
+def test_intake_registration_does_not_double_register_on_redundant_backfill():
+    repo = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="mutual-nda.docx",
+        document_bytes=_docx(_NDA_PARAGRAPHS),
+        repository=repo,
+    )
+    # Re-running backfill over an already-registered matter is a no-op.
+    artifact_service.backfill_matter(repo.get_matter(matter["id"]), repository=repo)
+    assert len(artifact_service.list_artifacts(matter["id"], repository=repo)) == 1
+
+
+def test_intake_registration_failure_does_not_break_intake(monkeypatch):
+    repo = InMemoryMatterRepository()
+
+    def _boom(*args, **kwargs):
+        raise ArtifactRegistryError("registry exploded")
+
+    monkeypatch.setattr(artifact_service, "backfill_matter", _boom)
+    # Intake still succeeds even though artifact registration raised.
+    matter = create_matter_from_document(
+        filename="mutual-nda.docx",
+        document_bytes=_docx(_NDA_PARAGRAPHS),
+        repository=repo,
+    )
+    assert repo.get_matter(matter["id"]) is not None
