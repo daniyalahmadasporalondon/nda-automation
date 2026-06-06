@@ -40,9 +40,15 @@ def handle_generate_nda(handler) -> None:
             entity_id, intake, owner_user_id=owner_user_id, governing_law_override=governing_law_override
         )
     except NdaGenerationError as error:
-        # Unknown entity, unapproved governing law, malformed template, or an
-        # unsupported posture (one-way) — all are client-correctable input errors.
-        telemetry.increment("generate_nda_rejected")
+        # Unknown entity, unapproved governing law, malformed template, an
+        # unsupported posture (one-way) — client-correctable input errors — OR the
+        # hard safety gate refusing an off-position draft. All surface as 400 with a
+        # clear message and NEVER return the document; the safety-gate trip gets its
+        # own telemetry signal so a drifting AI is visible in the metrics.
+        if str(error).startswith(nda_generation.SAFETY_GATE_MESSAGE):
+            telemetry.increment("generate_nda_safety_gate_blocked")
+        else:
+            telemetry.increment("generate_nda_rejected")
         handler._send_json({"error": str(error)}, status=400)
         return
     except Exception as error:  # noqa: BLE001 - surface engine failure as 500, don't leak a stack
@@ -94,6 +100,15 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
     result = nda_generation.generate_nda_for_entity(
         entity_id, intake, governing_law_override=governing_law_override
     )
+
+    # HARD safety gate on the ACTUAL ship path, BEFORE any persistence: a generated
+    # NDA that fails its own Playbook or carries a prohibited position must never
+    # become a matter/artifact. Raises NdaGenerationError (-> 4xx) so the endpoint
+    # returns a "safety gate" error and never the unsafe document. (The per-clause
+    # adapter guard can fall back to deterministic wording; this whole-doc gate is
+    # the final backstop, and it must live here because the route builds the matter
+    # + artifact itself rather than going through generate_and_save_nda.)
+    nda_generation.assert_generated_nda_is_on_position(result)
 
     filename = _generated_filename(intake, result)
     matter = create_matter_from_document(

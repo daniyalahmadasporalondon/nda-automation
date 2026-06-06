@@ -34,6 +34,7 @@ from .ai_review import (
     OPENROUTER_API_KEY_ENV,
     _sanitize_model_name,
 )
+from .prohibited_positions import ANY_PROHIBITED_POSITION
 
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_ADAPT_TIMEOUT_SECONDS = 30
@@ -50,30 +51,13 @@ CLAUSE_REQUIRED_TERMS: dict[str, tuple[str, ...]] = {
 
 # Prohibited language the AI must never smuggle into ANY adapted clause — the
 # restrictions the Playbook bans. If adapted text matches, the guard rejects it
-# and keeps the Playbook wording. (The deterministic self-check and gen-verify's
-# meaning-based scan would also catch a leak, but the guard stops it from ever
-# reaching the document — defence in depth.)
+# and keeps the Playbook wording. (The deterministic self-check, the pre-save ship
+# gate, and gen-verify's meaning-based scan would also catch a leak, but the guard
+# stops it from ever reaching the document — defence in depth.)
 #
-# This MUST cover the same families as gen-verify's _PROHIBITED_POSITION_PATTERNS
-# so the in-process guard and the independent gate agree on what is off-position.
-# The earlier pattern only caught circumvention / non-solicit / exclusivity, so
-# non_compete, ip_assignment, penalty, perpetual-confidentiality, and evergreen
-# could pass the guard and reach the document (caught only by the external gate).
-_PROHIBITED_PATTERN = re.compile(
-    "|".join(
-        (
-            r"circumvent|bypass the disclosing party|\bdeal\s+directly\b|introduced\s+part",
-            r"non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)|competing business",
-            r"non-?solicit|(?:shall|will|may) not\b[^.]{0,30}\bsolicit|refrain from soliciting|solicit or hire",
-            r"\bexclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to",
-            r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest in",
-            r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b|for an unlimited (?:time|period)",
-            r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages",
-            r"automatically renew|evergreen|may not (?:be )?terminat",
-        )
-    ),
-    re.IGNORECASE,
-)
+# The pattern set is the SHARED canonical one (prohibited_positions) so the guard,
+# the ship gate, and gen-verify's gate never drift apart on what is off-position.
+_PROHIBITED_PATTERN = ANY_PROHIBITED_POSITION
 
 
 class ClauseAdaptationError(RuntimeError):

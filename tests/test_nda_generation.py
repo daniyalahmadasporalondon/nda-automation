@@ -636,7 +636,7 @@ class TestShipGate:
     def test_gate_passes_a_legitimate_draft(self, playbook):
         result = _generate(playbook)
         # Does not raise.
-        gen._assert_generated_nda_is_on_position(result, playbook)
+        gen.assert_generated_nda_is_on_position(result, playbook)
 
     @pytest.mark.parametrize(
         "smuggled,acceptable_labels",
@@ -653,7 +653,7 @@ class TestShipGate:
     def test_gate_blocks_a_smuggled_prohibited_position(self, playbook, smuggled, acceptable_labels):
         tampered = self._tamper(_generate(playbook), smuggled)
         with pytest.raises(gen.NdaGenerationError) as excinfo:
-            gen._assert_generated_nda_is_on_position(tampered, playbook)
+            gen.assert_generated_nda_is_on_position(tampered, playbook)
         assert any(label in str(excinfo.value) for label in acceptable_labels), str(excinfo.value)
 
     def test_gate_permits_the_narrow_survival_carveout(self, playbook):
@@ -662,7 +662,7 @@ class TestShipGate:
         result = _generate(playbook)
         text = extract_docx_text(result.docx_bytes)
         assert "data-protection" in text.lower()
-        gen._assert_generated_nda_is_on_position(result, playbook)  # does not raise
+        gen.assert_generated_nda_is_on_position(result, playbook)  # does not raise
 
     def test_generate_and_save_with_hostile_adapter_still_saves_clean(self, playbook):
         # An adapter that tries to smuggle a non-compete is neutralised by the guard,

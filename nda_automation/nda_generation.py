@@ -576,7 +576,7 @@ def generate_and_save_nda(
     # is guarded and the intake is sanitised, but this is the last, independent
     # backstop on the SHIP path — a generated NDA that fails its own Playbook or
     # carries a prohibited position must not become a saved artifact.
-    _assert_generated_nda_is_on_position(result, playbook)
+    assert_generated_nda_is_on_position(result, playbook)
     artifact = save_generated_nda(
         result,
         matter_id,
@@ -590,45 +590,52 @@ def generate_and_save_nda(
 # --------------------------------------------------------------------------- #
 # Pre-save ship gate — the last backstop before a draft becomes an artifact
 # --------------------------------------------------------------------------- #
-# Meaning-based prohibited-position families, mirroring gen-verify's gate so the
-# ship path enforces the same bar the independent verifier does. A hit anywhere in
-# the generated document (outside the permitted narrow survival carve-out) means
+# The prohibited-position families are the SHARED canonical set
+# (prohibited_positions.PROHIBITED_POSITION_PATTERNS) so this gate, the AI-adapter
+# guard, and gen-verify's independent gate all enforce the same bar. A hit anywhere
+# in the generated document (outside the permitted narrow survival carve-out) means
 # the draft asserts a position the Playbook bans -> refuse to save.
-_PROHIBITED_POSITION_DOC_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
-    ("non_compete", re.compile(r"non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)|competing business", re.IGNORECASE)),
-    ("non_solicit", re.compile(r"non-?solicit|(?:shall|will|may) not\b[^.]{0,30}\bsolicit|refrain from soliciting|solicit or hire", re.IGNORECASE)),
-    ("non_circumvention", re.compile(r"non-?circumvent|shall not circumvent|circumvent or bypass|bypass the disclosing party", re.IGNORECASE)),
-    ("exclusivity", re.compile(r"\bexclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to", re.IGNORECASE)),
-    ("ip_assignment", re.compile(r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest in", re.IGNORECASE)),
-    ("perpetual_confidentiality", re.compile(r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b|for an unlimited (?:time|period)", re.IGNORECASE)),
-    ("penalty", re.compile(r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages", re.IGNORECASE)),
-    ("auto_renew_lock", re.compile(r"automatically renew|evergreen|may not (?:be )?terminat", re.IGNORECASE)),
-)
+
+# A clear, stable message the endpoint surfaces when the ship gate trips.
+SAFETY_GATE_MESSAGE = "Generated NDA failed the safety gate and was not saved"
 
 
-def _assert_generated_nda_is_on_position(result: "GenerationResult", playbook: Mapping[str, Any]) -> None:
+def assert_generated_nda_is_on_position(result: "GenerationResult", playbook: Mapping[str, Any] | None = None) -> None:
     """Refuse to ship a generated NDA that fails its own Playbook or carries a
     prohibited position. Raises :class:`NdaGenerationError` (which the endpoint
-    surfaces as a 400) so an off-position draft never reaches storage.
+    surfaces as a 4xx with a "safety gate" message) so an off-position draft never
+    reaches storage.
 
-    Two independent screens, matching gen-verify's gate:
+    PUBLIC so every persistence path can call it — both the convenience
+    ``generate_and_save_nda`` AND the HTTP route (which builds the matter +
+    artifact itself) MUST run this BEFORE any save, or the AI-first safety
+    contract has a hole on the actual ship path.
+
+    This is the load-bearing AI-first backstop on the SHIP path: the per-clause
+    adapter guard can fall back to deterministic wording, but a drifted live-AI
+    clause that slips through (or a prohibited position outside the six scored
+    clauses) must still be caught here before save. Two independent screens:
     1. ``self_check_generated_nda`` — zero native fails AND non_circumvention does
-       not fail (the deterministic + AI-first oracles).
-    2. a meaning-based prohibited-position scan over the whole document, so a
-       position smuggled OUTSIDE the six scored clauses is still caught.
+       not fail (the deterministic + AI-first oracles). self_check ALONE is not
+       enough: it only scores the six hard clauses, so a non-compete appended to
+       mutuality leaves mutuality passing — hence screen 2.
+    2. a meaning-based prohibited-position scan (the shared canonical set) over the
+       whole document, so a position smuggled OUTSIDE the scored clauses is caught.
     The narrow trade-secret / legal / data-protection survival carve-out the
     Playbook permits ("for as long as ... required") is exempt from the perpetual
     screen so the legitimate survival sentence is not mistaken for a position.
     """
 
     from .docx_text import extract_docx_text  # noqa: PLC0415
+    from .prohibited_positions import PROHIBITED_POSITION_PATTERNS  # noqa: PLC0415
 
     check = self_check_generated_nda(result.docx_bytes, playbook=playbook)
     if not check.passed:
         problems = check.native_failures + check.dynamic_failures
         raise NdaGenerationError(
-            "Generated NDA failed its own Playbook and cannot be saved: "
+            f"{SAFETY_GATE_MESSAGE}: failed its own Playbook ("
             + ", ".join(problems or ["unknown failure"])
+            + ")."
         )
 
     text = extract_docx_text(result.docx_bytes)
@@ -637,13 +644,13 @@ def _assert_generated_nda_is_on_position(result: "GenerationResult", playbook: M
     # (the legitimate trade-secret/data-protection survival sentence must not
     # license a perpetual claim made elsewhere in the draft).
     for sentence in _scan_sentences(text):
-        for label, pattern in _PROHIBITED_POSITION_DOC_PATTERNS:
+        for label, pattern in PROHIBITED_POSITION_PATTERNS:
             if not pattern.search(sentence):
                 continue
             if label == "perpetual_confidentiality" and _is_permitted_long_survival(sentence):
                 continue
             raise NdaGenerationError(
-                f"Generated NDA carries a prohibited position ({label}) and cannot be saved."
+                f"{SAFETY_GATE_MESSAGE}: carries a prohibited position ({label})."
             )
 
 
