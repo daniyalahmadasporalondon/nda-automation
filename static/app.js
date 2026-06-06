@@ -108,6 +108,7 @@ const sendDocumentController = createSendDocumentController({
   submitButton: document.querySelector("#sendDocumentSubmitButton"),
   clearButton: document.querySelector("#sendDocumentClearButton"),
   dropzone: document.querySelector("#sendDocumentDropzone"),
+  draftNdaButton: document.querySelector("#sendDocumentDraftNdaButton"),
   fileToBase64,
   repositoryController,
   activateTab,
@@ -134,7 +135,15 @@ const draftIntakeController = createDraftIntakeController({
   sideEntityNode: document.querySelector("#draftIntakeSideEntity"),
   sideLawNode: document.querySelector("#draftIntakeSideLaw"),
   sideTypeNode: document.querySelector("#draftIntakeSideType"),
+  previewNode: document.querySelector("#draftIntakePreview"),
+  counterpartyIncorporationInput: document.querySelector("#draftIntakeCounterpartyIncorporation"),
+  counterpartyAddressInput: document.querySelector("#draftIntakeCounterpartyAddress"),
+  businessDescriptionInput: document.querySelector("#draftIntakeBusinessDescription"),
+  downloadButton: document.querySelector("#draftIntakeDownloadButton"),
+  sendButton: document.querySelector("#draftIntakeSendButton"),
   onGenerate: generateNdaFromDraft,
+  onDownloadGenerated: downloadGeneratedNda,
+  onSendGenerated: sendGeneratedNda,
 });
 adminAiController = createAdminAiController({
   state,
@@ -256,9 +265,6 @@ dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
 });
 
-document.querySelector("[data-dashboard-open-generator]")?.addEventListener("click", () => {
-  activateTab("generator");
-});
 
 document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {
   sendDocumentController.openModal();
@@ -339,20 +345,29 @@ function downloadFilename(response) {
 // picker uses for /api/signing-entities — rather than a generation failure.
 async function generateNdaFromDraft(payload) {
   const api = window.createGenerationApi();
+  const counterpartyEmail = payload?.counterparty?.email || "";
+  const subject = payload?.counterparty?.name ? `NDA — ${payload.counterparty.name}` : "NDA";
   try {
     const result = await api.generateNda(payload);
     if (result.kind === "blob") {
       const filename = result.filename || draftNdaDownloadFilename(payload);
-      downloadBlob(result.blob, filename);
-      return { message: `NDA generated — downloading ${filename}.`, tone: "success" };
+      // Don't auto-download — stage the Download/Send actions instead.
+      return {
+        message: "NDA generated — use Download or Send.",
+        tone: "success",
+        generated: { blob: result.blob, filename, counterpartyEmail, subject },
+      };
     }
     // JSON response (the real contract): the document was generated, a matter +
-    // tracked artifact were created, and download_url points at the matter source
-    // GET. Trigger the download and report the saved state so the user can find it
-    // in the repository.
-    if (result.download_url) {
-      downloadUrl(result.download_url, result.filename || draftNdaDownloadFilename(payload));
-    }
+    // tracked artifact were created, and download_url points at the matter source.
+    // We no longer auto-download — the staged Download/Send buttons drive that.
+    const generated = {
+      downloadUrl: result.download_url || null,
+      filename: result.filename || draftNdaDownloadFilename(payload),
+      matterId: result.matter_id || null,
+      counterpartyEmail,
+      subject,
+    };
     const savedFor = payload?.counterparty?.name ? ` for ${payload.counterparty.name}` : "";
     const summary = generatedManifestSummary(result.manifest);
     // The engine passes the Playbook deterministically; self_check is advisory, so
@@ -361,6 +376,7 @@ async function generateNdaFromDraft(payload) {
       return {
         message: `NDA generated and saved${savedFor}${summary}, but the self-check flagged it — review before sending.`,
         tone: "error",
+        generated,
       };
     }
     // If untrusted intake text (purpose/notes) was neutralised on the way into the
@@ -369,9 +385,14 @@ async function generateNdaFromDraft(payload) {
       return {
         message: `NDA generated and saved${savedFor}${summary}. Note: ${result.manifest.sanitized_fields.join(", ")} was sanitised before drafting.`,
         tone: "error",
+        generated,
       };
     }
-    return { message: `NDA generated and saved${savedFor}${summary}.`, tone: "success" };
+    return {
+      message: `NDA generated and saved${savedFor}${summary}. Use Download or Send.`,
+      tone: "success",
+      generated,
+    };
   } catch (error) {
     if (error instanceof window.GenerationUnavailableError || error?.code === "generation_unavailable") {
       // Endpoint not deployed on this base yet — degrade gracefully.
@@ -381,6 +402,45 @@ async function generateNdaFromDraft(payload) {
       };
     }
     throw error;
+  }
+}
+
+// Download the last generated NDA — from the in-memory blob or the saved matter
+// source URL. Wired to the staged "Download" button in the generator.
+function downloadGeneratedNda(generated) {
+  if (!generated) return;
+  if (generated.blob) {
+    downloadBlob(generated.blob, generated.filename || "nda.docx");
+  } else if (generated.downloadUrl) {
+    downloadUrl(generated.downloadUrl, generated.filename || "nda.docx");
+  }
+}
+
+// Open the Send Document modal pre-loaded with the generated NDA (+ counterparty
+// email / subject) so the user can email it straight from the generator.
+async function sendGeneratedNda(generated) {
+  if (!generated) return;
+  const docxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  let file = null;
+  try {
+    if (generated.blob) {
+      file = new File([generated.blob], generated.filename || "nda.docx", { type: docxType });
+    } else if (generated.downloadUrl) {
+      const response = await fetch(generated.downloadUrl, { headers: { Accept: docxType } });
+      if (response.ok) {
+        const blob = await response.blob();
+        file = new File([blob], generated.filename || "nda.docx", { type: blob.type || docxType });
+      }
+    }
+  } catch (error) {
+    file = null;
+  }
+  sendDocumentController.openModal();
+  if (file && typeof sendDocumentController.loadFile === "function") {
+    sendDocumentController.loadFile(file, {
+      recipient: generated.counterpartyEmail,
+      subject: generated.subject,
+    });
   }
 }
 

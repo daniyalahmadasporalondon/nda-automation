@@ -37,6 +37,19 @@ function createDraftIntakeController({
   sideEntityNode,
   sideLawNode,
   sideTypeNode,
+  // Optional live-preview surface. When present, the controller renders a
+  // readable NDA draft into it on every field change so the user watches the
+  // agreement build out. Display-only; "Generate NDA" stays authoritative.
+  previewNode,
+  // Counterparty detail fields — fill the FIRST-PARTY [SLOT]s in the live preview.
+  counterpartyIncorporationInput,
+  counterpartyAddressInput,
+  businessDescriptionInput,
+  // Staged post-generation actions: enabled only after a successful generate.
+  downloadButton,
+  sendButton,
+  onDownloadGenerated,
+  onSendGenerated,
   // Optional seam: a stubbed generation handler. When the Generic NDA template
   // ships, app.js can pass a real one; until then the default reports pending.
   onGenerate,
@@ -144,6 +157,7 @@ function createDraftIntakeController({
     intake = { ...intake, counterpartyName: counterpartyNameInput.value };
     setStatus("");
     updateGenerateState();
+    renderSidePanel();
   });
 
   counterpartyEmailInput?.addEventListener("input", () => {
@@ -154,15 +168,58 @@ function createDraftIntakeController({
 
   termInput?.addEventListener("input", () => {
     intake = { ...intake, term: termInput.value };
+    renderSidePanel();
   });
 
   projectPurposeInput?.addEventListener("input", () => {
     intake = { ...intake, projectPurpose: projectPurposeInput.value };
+    renderSidePanel();
   });
 
   notesInput?.addEventListener("input", () => {
     intake = { ...intake, notes: notesInput.value };
   });
+
+  counterpartyIncorporationInput?.addEventListener("input", () => {
+    intake = { ...intake, counterpartyIncorporation: counterpartyIncorporationInput.value };
+    renderSidePanel();
+  });
+
+  counterpartyAddressInput?.addEventListener("input", () => {
+    intake = { ...intake, counterpartyAddress: counterpartyAddressInput.value };
+    renderSidePanel();
+  });
+
+  businessDescriptionInput?.addEventListener("input", () => {
+    intake = { ...intake, businessDescription: businessDescriptionInput.value };
+    renderSidePanel();
+  });
+
+  // The last successful generation, used to stage the Download/Send actions.
+  let lastGenerated = null;
+
+  downloadButton?.addEventListener("click", () => {
+    if (lastGenerated && typeof onDownloadGenerated === "function") onDownloadGenerated(lastGenerated);
+  });
+
+  sendButton?.addEventListener("click", () => {
+    if (lastGenerated && typeof onSendGenerated === "function") onSendGenerated(lastGenerated);
+  });
+
+  // Enable/disable the staged Download + Send actions. They only come online once
+  // an NDA has actually been generated, and reset to disabled on Clear / new edits.
+  function setStagedActions(generated) {
+    lastGenerated = generated || null;
+    const enabled = Boolean(lastGenerated);
+    if (downloadButton) {
+      downloadButton.disabled = !enabled;
+      downloadButton.title = enabled ? "Download the generated NDA" : "Generate an NDA first";
+    }
+    if (sendButton) {
+      sendButton.disabled = !enabled;
+      sendButton.title = enabled ? "Email the generated NDA" : "Generate an NDA first";
+    }
+  }
 
   // One-time population of the static option lists (entities, NDA types, laws).
   // Loads the live registry first so the option lists reflect the deployed
@@ -287,6 +344,137 @@ function createDraftIntakeController({
     if (sideEntityNode) sideEntityNode.textContent = entity ? intakeApi.entityLabel(entity) : "—";
     if (sideLawNode) sideLawNode.textContent = law ? law.label : "—";
     if (sideTypeNode) sideTypeNode.textContent = type ? type.label : "—";
+    renderLivePreview();
+  }
+
+  // Assembles a readable NDA draft from the current intake and writes it into the
+  // preview pane. Re-rendered on every change so the document visibly fills in as
+  // the user picks an entity, names the counterparty, sets the term, etc. This is
+  // an illustrative client-side preview; "Generate NDA" produces the authoritative
+  // server-rendered .docx with the full playbook clause wording.
+  function renderLivePreview() {
+    if (!previewNode) return;
+    const entity = intakeApi.selectedEntity(intake);
+    const address = intakeApi.selectedAddress(intake);
+    const law = intakeApi.effectiveGoverningLaw(intake);
+
+    // Filled value -> emphasised span; empty -> bracketed amber placeholder,
+    // mirroring the [SLOT] markers in the Generic NDA template.
+    const field = (value, placeholder) =>
+      value && String(value).trim()
+        ? `<span class="nda-fill">${escapeHtml(String(value).trim())}</span>`
+        : `<span class="nda-blank">[${escapeHtml(placeholder)}]</span>`;
+
+    const asporaName = entity ? entity.legal_name : null;
+    const asporaShort = entity ? entity.short_name || "Aspora" : "Aspora";
+    const asporaIncorp = entity ? entity.incorporation_jurisdiction : null;
+    const asporaAddr = entity ? intakeApi.formatAddressLines(address) : null;
+    const sig = (entity && entity.signatory) || {};
+    const governingLaw = law ? law.label : null;
+
+    const ordinal = (n) => {
+      const s = ["th", "st", "nd", "rd"];
+      const v = n % 100;
+      return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+    };
+    const now = new Date();
+    const dateStr = `${ordinal(now.getDate())} day of ${now.toLocaleString("en-GB", {
+      month: "long",
+    })}, ${now.getFullYear()}`;
+
+    const counterpartyLabel =
+      intake.counterpartyName && intake.counterpartyName.trim()
+        ? escapeHtml(intake.counterpartyName.trim())
+        : "[Company name]";
+    const sigName = sig.name ? escapeHtml(sig.name) : "[Authorised Signatory]";
+    const sigTitle = sig.title ? escapeHtml(sig.title) : "[Title]";
+
+    previewNode.innerHTML = `
+      <article class="nda-doc">
+        <p class="nda-doc-kicker">Draft &middot; ${escapeHtml(asporaShort)} paper &middot; Generic NDA</p>
+        <h3 class="nda-doc-title">NON-DISCLOSURE AGREEMENT</h3>
+
+        <p>This Non-Disclosure Agreement (&ldquo;<b>Agreement</b>&rdquo;) is made on this ${escapeHtml(dateStr)} by and between:</p>
+
+        <p>${field(intake.counterpartyName, "Company name")}, a company incorporated under the laws of ${field(intake.counterpartyIncorporation, "jurisdiction of incorporation")}, having its registered office at ${field(intake.counterpartyAddress, "registered office address")} (hereinafter the &ldquo;<b>Company</b>&rdquo;, which includes its successors and permitted assigns) of the FIRST PARTY.</p>
+
+        <p class="nda-doc-and">AND</p>
+
+        <p>${field(asporaName, "Aspora signing entity")}, a company incorporated under the laws of ${field(asporaIncorp, "jurisdiction of incorporation")}, having its registered office at ${field(asporaAddr, "registered office address")} (hereinafter &ldquo;<b>Aspora</b>&rdquo;, which includes its successors and permitted assigns) of the SECOND PARTY.</p>
+
+        <p>The Company and Aspora are collectively the &ldquo;<b>Parties</b>&rdquo; and individually a &ldquo;<b>Party</b>&rdquo;. The Party disclosing Information is the &ldquo;<b>Disclosing Party</b>&rdquo; and the Party receiving it is the &ldquo;<b>Receiving Party</b>&rdquo;.</p>
+
+        <p class="nda-doc-recital-h">WHEREAS:</p>
+        <p class="nda-doc-recital">(A)&nbsp;&nbsp;The Company is involved in the business of ${field(intake.businessDescription, "business description")}.</p>
+        <p class="nda-doc-recital">(B)&nbsp;&nbsp;The Parties intend to enter discussions regarding ${field(intake.projectPurpose, "certain commercial propositions")} (the &ldquo;<b>Purpose</b>&rdquo;); and</p>
+        <p class="nda-doc-recital">(C)&nbsp;&nbsp;To proceed with the Purpose, the Disclosing Party has agreed to exchange certain Confidential Information on a strictly confidential basis on the terms of this Agreement.</p>
+
+        <p>IN CONSIDERATION of the Purpose and for other good and valuable consideration (the receipt and sufficiency of which is acknowledged), each Party agrees as follows:</p>
+
+        <ol class="nda-clauses">
+          <li><b>No obligation.</b> The Disclosing Party is under no obligation to disclose any additional documents, papers or Confidential Information, save and except what it in its discretion deems necessary for the Purpose.</li>
+
+          <li><b>Confidential Information.</b> &ldquo;Confidential Information&rdquo; means any and all information and/or data obtained &mdash; whether in writing, pictorially, in machine-readable form, orally or by observation during visits &mdash; in connection with the Purpose or otherwise, including but not limited to financial information, business reports, account books, profit and loss statements, digital or other content, know-how, processes, trade secrets, schematics, technology, technical and research information, procedures, algorithms, data, designs, business and operational information, planning, marketing interests, merchandising, packaging, advertising, customer, employee and supplier information, sales statistics, pricing, market intelligence, strategies, and the existence of this Agreement, whether or not designated as confidential.</li>
+
+          <li><b>Exceptions to Confidential Information.</b> Confidential Information does not include information that:
+            <ol class="nda-subclauses">
+              <li>is or becomes publicly available without breach of this Agreement;</li>
+              <li>becomes lawfully available to either Party from a third party free from any confidentiality restriction; or</li>
+              <li>was previously in the Receiving Party&rsquo;s possession and was not acquired, directly or indirectly, from the Disclosing Party, as evidenced by written records.</li>
+            </ol>
+          </li>
+
+          <li><b>Use and non-disclosure.</b> The Receiving Party agrees that the Confidential Information will be:
+            <ol class="nda-subclauses">
+              <li>used solely for the Purpose and not in any way, directly or indirectly, detrimental to the Disclosing Party or to procure a commercial advantage over it;</li>
+              <li>treated with at least the same degree of care as the Receiving Party&rsquo;s own Confidential Information, without modifying or erasing any logos or trademarks; and</li>
+              <li>kept strictly confidential and not disclosed to any person without the Disclosing Party&rsquo;s prior written consent.</li>
+            </ol>
+          </li>
+
+          <li><b>Permitted disclosures.</b> The Receiving Party may disclose Confidential Information to its directors, officers, consultants, advisers, employees and staff (&ldquo;Representatives&rdquo;) who need to know it for the Purpose, having informed them of its confidential nature and bound them to equivalent obligations; the Receiving Party is responsible for any breach by its Representatives. Disclosure may also be made where legally compelled, on prompt notice to the Disclosing Party and, where possible, the opportunity to contest, limited to the extent required.</li>
+
+          <li><b>Copies.</b> The Receiving Party will not copy or reproduce (including storing in any computer or electronic system) any Confidential Information except for the Purpose without prior written consent; all copies are returned or destroyed on expiry or termination.</li>
+
+          <li><b>Intellectual property rights.</b> The Receiving Party acquires no intellectual property rights under this Agreement or any disclosure hereunder, except the limited right to use the Confidential Information in accordance with the Purpose.</li>
+
+          <li><b>Remedies for breach.</b> The Receiving Party acknowledges that damages are not a sufficient remedy and that the Disclosing Party is entitled to specific performance or injunctive relief for any breach or threatened breach, in addition to any other remedy available at law or in equity.</li>
+
+          <li><b>Confirmations.</b> The Disclosing Party confirms that, by disclosing the Confidential Information, it has not breached any confidentiality obligation owed to any other party.</li>
+
+          <li><b>No warranties.</b> Save as expressly provided, no warranties of any kind are given with respect to the Confidential Information; in no event is either Party liable for loss of profits or business, or for any direct, indirect, special or consequential damages arising out of the Confidential Information or its use.</li>
+
+          <li><b>Return of Confidential Information.</b> On expiry or on the Disclosing Party&rsquo;s request, the Receiving Party will deliver and return all copies of Confidential Information in its possession or control, or with written consent erase and/or destroy it and certify the destruction in writing. The confidentiality requirements survive the return or destruction of the Confidential Information.</li>
+
+          <li><b>Entire agreement; waiver and modification.</b> This Agreement supersedes all prior discussions and writings and is the entire agreement on its subject matter. No waiver or modification binds either Party unless made in writing and signed by a duly authorised representative of each Party; no failure or delay in exercising any right operates as a waiver.</li>
+
+          <li><b>Governing law and jurisdiction.</b> This Agreement is governed by and construed in accordance with the laws of ${field(governingLaw, "governing law")}.</li>
+
+          <li><b>Severability.</b> If any provision is held unenforceable by a court or tribunal of competent jurisdiction, the remaining provisions remain in full force and effect.</li>
+
+          <li><b>Term.</b> This Agreement is effective on the date of signing and remains in force until the earlier of (i) completion of the Purpose, or (ii) ${field(intake.term, "two (2) years")} from the date of this Agreement.</li>
+        </ol>
+
+        <p class="nda-doc-witness">IN WITNESS WHEREOF the Parties, through their Authorised Signatories, have set and subscribed their respective hands and seals the day and year first written above.</p>
+
+        <div class="nda-doc-signoff">
+          <div>
+            <span class="nda-doc-sig-label">For the Company</span>
+            <span class="nda-doc-sig-party">${counterpartyLabel}</span>
+            <span class="nda-doc-sig-line"></span>
+            <span class="nda-doc-sig-meta">Name &middot; Title &middot; Date</span>
+          </div>
+          <div>
+            <span class="nda-doc-sig-label">For Aspora</span>
+            <span class="nda-doc-sig-party">${field(asporaName, "Aspora signing entity")}</span>
+            <span class="nda-doc-sig-line"></span>
+            <span class="nda-doc-sig-meta">${sigName} &middot; ${sigTitle} &middot; Date</span>
+          </div>
+        </div>
+
+        <p class="nda-doc-foot">Live preview of the Generic NDA &middot; final wording, dates and signatories are set when you generate.</p>
+      </article>
+    `;
   }
 
   function updateGenerateState() {
@@ -315,6 +503,8 @@ function createDraftIntakeController({
         // shown. A thrown error is surfaced in the error tone below.
         const outcome = await onGenerate(payload);
         setStatus(outcome?.message || "NDA generated.", outcome?.tone || "success");
+        // A real generation returns the saved-artifact handle; stage Download/Send.
+        if (outcome?.generated) setStagedActions(outcome.generated);
       } else {
         // Stub: the Generic NDA template has not arrived. Capture the inputs and
         // tell the user generation is pending rather than pretending to draft.
@@ -340,6 +530,7 @@ function createDraftIntakeController({
     if (ndaTypeSelect) ndaTypeSelect.value = intake.ndaType;
     renderEntityBundle();
     renderGoverningLaw();
+    setStagedActions(null);
     setStatus(status, status ? "success" : "");
     updateGenerateState();
   }

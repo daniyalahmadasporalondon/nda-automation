@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260606a">
+    <link rel="stylesheet" href="/static/styles.css?v=20260606f">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260605b">
   </head>
   <body>
@@ -63,10 +63,6 @@
                 <span aria-hidden="true">+</span>
                 <span>Submit for Review</span>
               </button>
-              <button class="dashboard-draft-nda-button" type="button" data-dashboard-open-generator title="Draft a new outbound NDA from one of our signing entities">
-                <span aria-hidden="true">✎</span>
-                <span>Draft NDA</span>
-              </button>
               <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
                 <span aria-hidden="true">↗</span>
                 <span>Send Document</span>
@@ -94,7 +90,6 @@
             <div class="generator-hero-copy">
               <p class="eyebrow">outbound draft</p>
               <h1>NDA Generator</h1>
-              <p>Pick our signing entity, then describe the deal. We pre-fill the legal name, address and governing law from that entity so the bundle always stays consistent.</p>
             </div>
           </header>
 
@@ -114,9 +109,6 @@
                     <select id="draftIntakeAddressSelect"></select>
                   </label>
                 </div>
-                <div class="draft-entity-bundle empty" id="draftIntakeBundle" aria-live="polite">
-                  Pick an entity to pre-fill its legal name, address and governing law.
-                </div>
               </fieldset>
 
               <fieldset class="draft-fieldset">
@@ -129,6 +121,18 @@
                   <label class="upload-field" for="draftIntakeCounterpartyEmail">
                     <span>Counterparty email (optional)</span>
                     <input id="draftIntakeCounterpartyEmail" type="email" autocomplete="email" placeholder="deals@acme.com">
+                  </label>
+                  <label class="upload-field" for="draftIntakeCounterpartyIncorporation">
+                    <span>Counterparty incorporation</span>
+                    <input id="draftIntakeCounterpartyIncorporation" type="text" autocomplete="off" placeholder="e.g. Delaware, USA">
+                  </label>
+                  <label class="upload-field" for="draftIntakeCounterpartyAddress">
+                    <span>Counterparty registered office</span>
+                    <input id="draftIntakeCounterpartyAddress" type="text" autocomplete="off" placeholder="Street, city, country">
+                  </label>
+                  <label class="upload-field upload-field-wide" for="draftIntakeBusinessDescription">
+                    <span>Counterparty business (recital)</span>
+                    <input id="draftIntakeBusinessDescription" type="text" autocomplete="off" placeholder="e.g. cross-border payments">
                   </label>
                   <label class="upload-field" for="draftIntakeNdaType">
                     <span>NDA type</span>
@@ -166,34 +170,23 @@
 
               <footer class="upload-actions">
                 <p class="upload-status" id="draftIntakeStatus" aria-live="polite"></p>
-                <div>
+                <div class="draft-actions-row">
                   <button class="secondary" id="draftIntakeClearButton" type="button">Clear</button>
                   <button id="draftIntakeGenerateButton" type="submit" disabled title="Pick a signing entity and counterparty to generate">Generate NDA</button>
+                  <button class="secondary icon-text draft-stage-action" id="draftIntakeDownloadButton" type="button" disabled title="Generate an NDA first" aria-label="Download the generated NDA">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                    <span>Download</span>
+                  </button>
+                  <button class="secondary icon-text draft-stage-action" id="draftIntakeSendButton" type="button" disabled title="Generate an NDA first" aria-label="Send the generated NDA">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.99 5.73a2 2 0 0 1-2.02 0L2 7"/></svg>
+                    <span>Send</span>
+                  </button>
                 </div>
               </footer>
             </form>
 
-            <aside class="generator-side-panel upload-side-panel" aria-label="Draft NDA details">
-              <p class="eyebrow">from our paper</p>
-              <h2>Draft summary</h2>
-              <dl>
-                <div>
-                  <dt>Signing entity</dt>
-                  <dd id="draftIntakeSideEntity">—</dd>
-                </div>
-                <div>
-                  <dt>Governing law</dt>
-                  <dd id="draftIntakeSideLaw">—</dd>
-                </div>
-                <div>
-                  <dt>NDA type</dt>
-                  <dd id="draftIntakeSideType">Mutual (two-way)</dd>
-                </div>
-                <div>
-                  <dt>Generation</dt>
-                  <dd id="draftIntakeSideGeneration">From the Generic NDA template</dd>
-                </div>
-              </dl>
+            <aside class="generator-side-panel generator-preview-panel" aria-label="Live NDA preview">
+              <div class="nda-paper" id="draftIntakePreview" aria-live="polite"></div>
             </aside>
           </section>
         </main>
@@ -1272,6 +1265,13 @@
                   <dd>Document sent as-is</dd>
                 </div>
               </dl>
+              <div class="send-document-draft-cta">
+                <p>Don't have a document yet?</p>
+                <button class="send-document-draft-link" id="sendDocumentDraftNdaButton" type="button">
+                  <span aria-hidden="true">✎</span>
+                  <span>Draft new NDA</span>
+                </button>
+              </div>
             </aside>
           </section>
         </section>
@@ -1352,8 +1352,8 @@
     <script src="/static/js/repository-actions.js?v=20260605b"></script>
     <script src="/static/js/repository.js?v=20260605a"></script>
     <script src="/static/js/manual-upload.js"></script>
-    <script src="/static/js/send-document.js"></script>
-    <script src="/static/js/draft-intake.js?v=20260606b"></script>
+    <script src="/static/js/send-document.js?v=20260606f"></script>
+    <script src="/static/js/draft-intake.js?v=20260606f"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
@@ -1366,6 +1366,6 @@
     <script src="/static/js/review-workstation-viewer.js?v=20260605a"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js?v=20260606b"></script>
+    <script src="/static/app.js?v=20260606f"></script>
   </body>
 </html>

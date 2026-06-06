@@ -15,6 +15,7 @@ function createSendDocumentController({
   submitButton,
   clearButton,
   dropzone,
+  draftNdaButton,
   fileToBase64,
   repositoryController,
   activateTab,
@@ -30,6 +31,12 @@ function createSendDocumentController({
 
   clearButton?.addEventListener("click", () => resetForm());
   closeButton?.addEventListener("click", () => closeModal({ reset: true }));
+
+  // "Draft new NDA" — close this modal and jump straight to the Generator tab.
+  draftNdaButton?.addEventListener("click", () => {
+    closeModal({ reset: true, restoreFocus: false });
+    if (typeof activateTab === "function") activateTab("generator");
+  });
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -94,6 +101,16 @@ function createSendDocumentController({
     const recipient = recipientInput?.value || "";
     const ready = Boolean(selectedFile) && isValidRecipientEmail(recipient) && isSupportedSendFilename(selectedFile?.name);
     submitButton.disabled = busy || !ready;
+  }
+
+  // Load a File directly (e.g. an NDA just generated in the Generator), bypassing
+  // the file input — which can't be set programmatically — and optionally prefill
+  // the recipient + subject.
+  function loadFile(file, { recipient = "", subject = "" } = {}) {
+    setSelectedFile(file);
+    if (recipient && recipientInput) recipientInput.value = recipient;
+    if (subject && subjectInput) subjectInput.value = subject;
+    updateSubmitState();
   }
 
   recipientInput?.addEventListener("input", () => {
@@ -203,7 +220,7 @@ function createSendDocumentController({
   }
 
   renderSelectedFile();
-  return { closeModal, openFilePicker, openModal, resetForm, sendSelectedDocument };
+  return { closeModal, openFilePicker, openModal, resetForm, sendSelectedDocument, loadFile };
 }
 
 // isSupportedSendFilename / isValidRecipientEmail / fileStem come from the shared

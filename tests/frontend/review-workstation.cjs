@@ -1789,10 +1789,10 @@ async function testDraftIntakeGenerateNda(page) {
       }),
     });
   });
-  // The Generator is its own top-nav tab. Open it from the dashboard shortcut,
-  // confirm the tab panel (not a modal) is shown, pick our signing entity + a
-  // counterparty so the Generate button enables, then generate.
-  await page.locator("[data-dashboard-open-generator]").click();
+  // The Generator is its own top-nav tab. Open it from the nav, confirm the tab
+  // panel (not a modal) is shown, pick our signing entity + a counterparty so the
+  // Generate button enables, then generate.
+  await page.locator("#generatorTab").click();
   await page.waitForSelector("#generatorView:not([hidden])");
   assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
   // activate() loads the registry + populates the entity options asynchronously.
@@ -1805,21 +1805,26 @@ async function testDraftIntakeGenerateNda(page) {
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
 
-  // The success path navigates an anchor download at download_url, which the
-  // browser surfaces as a download event (the context has acceptDownloads on).
-  // Assert the generated document is offered from the matter-source URL returned.
-  const [download] = await Promise.all([
-    page.waitForEvent("download"),
-    page.locator("#draftIntakeGenerateButton").click(),
-  ]);
-  assert.match(download.url(), /\/api\/matters\/mat_generated_1\/source$/);
-
+  // Generate no longer auto-downloads — it stages the Download/Send actions and
+  // reports the saved state. Click Generate and confirm the success line.
+  await page.locator("#draftIntakeGenerateButton").click();
   await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
   await assertTextContains(page.locator("#draftIntakeStatus"), "Acme Corporation");
   // The success line confirms the generated terms from the manifest at a glance,
   // including the server-authoritative governing-law override provenance.
   await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales (overridden from India)");
   await assertTextContains(page.locator("#draftIntakeStatus"), "2-year term");
+
+  // Download + Send come online only after a successful generation; clicking
+  // Download offers the generated document from the returned matter-source URL,
+  // which the browser surfaces as a download event (context has acceptDownloads).
+  await page.waitForSelector("#draftIntakeDownloadButton:not([disabled])");
+  await page.waitForSelector("#draftIntakeSendButton:not([disabled])");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#draftIntakeDownloadButton").click(),
+  ]);
+  assert.match(download.url(), /\/api\/matters\/mat_generated_1\/source$/);
 
   // The POST carries buildDraftPayload's shape: the coupled signing-entity bundle
   // and the counterparty block the endpoint resolves the entity + intake from.
@@ -1843,7 +1848,7 @@ async function testDraftIntakeGenerateDegradesOn404(page) {
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
   });
 
-  await page.locator("[data-dashboard-open-generator]").click();
+  await page.locator("#generatorTab").click();
   await page.waitForSelector("#generatorView:not([hidden])");
   await page.waitForFunction(
     () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
