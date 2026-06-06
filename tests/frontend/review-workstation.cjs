@@ -59,6 +59,8 @@ const tests = [
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
+  ["generates an NDA from the draft intake and downloads the saved document", testDraftIntakeGenerateNda],
+  ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
   ["renders backend redlines across all document modes", testBackendRedlineModes],
@@ -1750,6 +1752,85 @@ async function testReviewSendAcceptsManualRecipient(page) {
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
   await page.unroute("**/api/gmail/send-redline");
+}
+
+// The draft-intake "Generate NDA" button (un-stubbed): opening the modal, picking
+// a signing entity + counterparty, and clicking Generate POSTs buildDraftPayload's
+// shape to /api/generate-nda, then surfaces the saved-NDA success and downloads
+// the generated document from the matter-source download_url the endpoint returns.
+async function testDraftIntakeGenerateNda(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  let capturedGeneratePayload = null;
+  await page.route("**/api/generate-nda", async (route) => {
+    capturedGeneratePayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter_id: "mat_generated_1",
+        artifact_id: "art_generated_1",
+        status: "generated",
+        download_url: "/api/matters/mat_generated_1/source",
+        self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
+        manifest: { entity_id: "aspora_technology" },
+      }),
+    });
+  });
+  // Open the draft-intake modal from the dashboard, pick our signing entity and a
+  // counterparty so the Generate button enables, then generate.
+  await page.locator("[data-dashboard-draft-nda]").click();
+  await page.waitForSelector("#draftIntakeModal:not([hidden])");
+  await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
+  await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
+  await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
+
+  // The success path navigates an anchor download at download_url, which the
+  // browser surfaces as a download event (the context has acceptDownloads on).
+  // Assert the generated document is offered from the matter-source URL returned.
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#draftIntakeGenerateButton").click(),
+  ]);
+  assert.match(download.url(), /\/api\/matters\/mat_generated_1\/source$/);
+
+  await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "Acme Corporation");
+
+  // The POST carries buildDraftPayload's shape: the coupled signing-entity bundle
+  // and the counterparty block the endpoint resolves the entity + intake from.
+  assert.ok(capturedGeneratePayload, "expected a /api/generate-nda POST");
+  assert.equal(capturedGeneratePayload.signing_entity.id, "aspora_technology");
+  assert.ok(capturedGeneratePayload.signing_entity.legal_name);
+  assert.equal(capturedGeneratePayload.counterparty.name, "Acme Corporation");
+  assert.ok(capturedGeneratePayload.signing_entity.governing_law.playbook_option_id);
+
+  await page.unroute("**/api/generate-nda");
+  await page.unroute("**/api/matters/mat_generated_1/source");
+}
+
+// When the endpoint is not deployed on this base (404 — generation lives on
+// another branch until integration), the form degrades gracefully to a neutral
+// "not available" notice rather than showing a hard generation failure.
+async function testDraftIntakeGenerateDegradesOn404(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  await page.route("**/api/generate-nda", async (route) => {
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
+  });
+
+  await page.locator("[data-dashboard-draft-nda]").click();
+  await page.waitForSelector("#draftIntakeModal:not([hidden])");
+  await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
+  await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
+  await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
+  await page.locator("#draftIntakeGenerateButton").click();
+
+  await waitForText(page, "#draftIntakeStatus", "not available on this build yet");
+  // Degradation is a notice, not an error tone.
+  assert.equal(await page.locator("#draftIntakeStatus.error").count(), 0);
+
+  await page.unroute("**/api/generate-nda");
 }
 
 async function testRepositoryMatterImportAndFreshReview(page) {

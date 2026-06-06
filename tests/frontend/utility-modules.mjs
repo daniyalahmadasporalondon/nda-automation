@@ -68,6 +68,10 @@ import {
   setGoverningLawOverride,
   validateDraftIntake,
 } from "../../static/js/modules/draft-intake.mjs";
+import {
+  GenerationUnavailableError,
+  createGenerationApi,
+} from "../../static/js/modules/generation-api.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -713,3 +717,121 @@ assert.equal(
   intakeApi.applyEntitySelection(intakeApi.createInitialIntake(), "aspora_technology").entityId,
   null,
 );
+
+// --- NDA generation API wrapper (the "Generate NDA" un-stub) ---
+//
+// createGenerationApi POSTs buildDraftPayload's shape to /api/generate-nda and
+// normalises the response so the controller can either download the DOCX bytes
+// or surface the saved artifact. A 404 means the endpoint is not deployed on the
+// running base yet (generation lives on another branch until integration) and is
+// reported as GenerationUnavailableError so the form degrades gracefully — the
+// same fallback the entity picker uses for /api/signing-entities.
+
+// Builds a response that mirrors the parts of fetch's Response the wrapper reads:
+// status, ok, a Content-Type/Content-Disposition header bag, and json()/blob().
+function generationResponse({ status = 200, headers = {}, json = null, blob = null } = {}) {
+  const headerBag = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: (name) => headerBag.get(String(name).toLowerCase()) ?? null },
+    json: async () => {
+      if (json === null) throw new Error("not json");
+      return json;
+    },
+    blob: async () => blob,
+  };
+}
+
+// The payload the entity picker produces — sent to the endpoint verbatim.
+const generationPayload = buildDraftPayload(validIntake);
+
+// DOCX-bytes response: returns kind "blob" with the bytes + the header filename.
+const docxCalls = [];
+const docxBlob = { size: 1024, type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+const docxApi = createGenerationApi({
+  fetchImpl: async (url, options) => {
+    docxCalls.push({ url, options });
+    return generationResponse({
+      headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": 'attachment; filename="aspora-nda.docx"',
+      },
+      blob: docxBlob,
+    });
+  },
+});
+const docxResult = await docxApi.generateNda(generationPayload);
+// POSTs to the generation endpoint with the buildDraftPayload body verbatim.
+assert.equal(docxCalls.length, 1);
+assert.equal(docxCalls[0].url, "/api/generate-nda");
+assert.equal(docxCalls[0].options.method, "POST");
+assert.equal(docxCalls[0].options.headers["Content-Type"], "application/json");
+assert.deepEqual(JSON.parse(docxCalls[0].options.body), generationPayload);
+// Byte response normalises to a downloadable blob + the Content-Disposition name.
+assert.equal(docxResult.kind, "blob");
+assert.equal(docxResult.blob, docxBlob);
+assert.equal(docxResult.filename, "aspora-nda.docx");
+
+// JSON response (the real 201 contract from routes/generation.py): matter_id,
+// artifact_id, status, a matter-source download_url, an advisory self_check, and
+// the manifest. The wrapper passes the whole body through so the controller can
+// download via download_url and flag a self_check miss.
+const jsonApi = createGenerationApi({
+  fetchImpl: async () =>
+    generationResponse({
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+      json: {
+        matter_id: "mat_1",
+        artifact_id: "art_1",
+        status: "generated",
+        download_url: "/api/matters/mat_1/source",
+        self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
+        manifest: { entity_id: "aspora_technology" },
+      },
+    }),
+});
+const jsonResult = await jsonApi.generateNda(generationPayload);
+assert.equal(jsonResult.kind, "json");
+assert.equal(jsonResult.matter_id, "mat_1");
+assert.equal(jsonResult.artifact_id, "art_1");
+assert.equal(jsonResult.status, "generated");
+assert.equal(jsonResult.download_url, "/api/matters/mat_1/source");
+assert.equal(jsonResult.self_check.passed, true);
+assert.deepEqual(jsonResult.manifest, { entity_id: "aspora_technology" });
+
+// 404: endpoint not deployed on this base → GenerationUnavailableError (degrade).
+const missingApi = createGenerationApi({
+  fetchImpl: async () => generationResponse({ status: 404, json: { error: "not found" } }),
+});
+await assert.rejects(missingApi.generateNda(generationPayload), (error) => {
+  assert.ok(error instanceof GenerationUnavailableError);
+  assert.equal(error.code, "generation_unavailable");
+  return true;
+});
+
+// Other failure (e.g. 422 validation): surfaces the backend message.
+const badApi = createGenerationApi({
+  fetchImpl: async () =>
+    generationResponse({ status: 422, headers: { "Content-Type": "application/json" }, json: { error: "Counterparty name is required" } }),
+});
+await assert.rejects(badApi.generateNda(generationPayload), /Counterparty name is required/);
+
+// A failure whose body is not JSON falls back to the default message rather than
+// throwing the JSON-parse error.
+const opaqueApi = createGenerationApi({
+  fetchImpl: async () => generationResponse({ status: 500 }),
+});
+await assert.rejects(opaqueApi.generateNda(generationPayload), /Could not generate the NDA/);
+
+// The endpoint URL is overridable (parity with the other API wrappers' seams).
+const customUrlCalls = [];
+await createGenerationApi({
+  url: "/api/v2/generate-nda",
+  fetchImpl: async (url) => {
+    customUrlCalls.push(url);
+    return generationResponse({ headers: { "Content-Type": "application/json" }, json: {} });
+  },
+}).generateNda(generationPayload);
+assert.equal(customUrlCalls[0], "/api/v2/generate-nda");

@@ -28,6 +28,7 @@ import {
   fileStem,
 } from "./send-document.mjs";
 import { createDraftIntake } from "./draft-intake.mjs";
+import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
 
 Object.assign(window, {
   clauseStatus,
@@ -52,4 +53,9 @@ Object.assign(window, {
   // time) constructs its helper surface lazily via this factory, so it runs the
   // exact entity-picker logic the tests exercise.
   createDraftIntake,
+  // The generation API wrapper backs the draft-intake controller's onGenerate
+  // seam (wired in app.js). Constructed lazily inside the handler, never at
+  // load time, so the deferred-module availability is safe.
+  createGenerationApi,
+  GenerationUnavailableError,
 });

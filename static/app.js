@@ -136,9 +136,7 @@ const draftIntakeController = createDraftIntakeController({
   sideEntityNode: document.querySelector("#draftIntakeSideEntity"),
   sideLawNode: document.querySelector("#draftIntakeSideLaw"),
   sideTypeNode: document.querySelector("#draftIntakeSideType"),
-  // onGenerate is intentionally omitted: the generation step is stubbed until
-  // the Generic NDA template ships. The controller then captures inputs and
-  // reports "generation pending" instead of producing a document.
+  onGenerate: generateNdaFromDraft,
 });
 adminAiController = createAdminAiController({
   state,
@@ -329,6 +327,69 @@ function downloadFilename(response) {
   const contentDisposition = response.headers.get("Content-Disposition") || "";
   const match = contentDisposition.match(/filename="?([^";]+)"?/i);
   return match ? match[1] : "";
+}
+
+// onGenerate seam for the draft-intake "Generate NDA" button. POSTs the captured
+// entity bundle + intake (buildDraftPayload's shape) to POST /api/generate-nda
+// via the bridged generation API, then either triggers the DOCX download (byte
+// response) or surfaces the saved artifact (JSON response). Returns a {message,
+// tone} the controller renders; a thrown error is shown in the error tone.
+//
+// The endpoint lives on the generation branch and is not deployed on this base
+// until integration, so a 404 is caught as GenerationUnavailableError and shown
+// as a neutral "pending" notice — the same graceful degradation the entity
+// picker uses for /api/signing-entities — rather than a generation failure.
+async function generateNdaFromDraft(payload) {
+  const api = window.createGenerationApi();
+  try {
+    const result = await api.generateNda(payload);
+    if (result.kind === "blob") {
+      const filename = result.filename || draftNdaDownloadFilename(payload);
+      downloadBlob(result.blob, filename);
+      return { message: `NDA generated — downloading ${filename}.`, tone: "success" };
+    }
+    // JSON response (the real contract): the document was generated, a matter +
+    // tracked artifact were created, and download_url points at the matter source
+    // GET. Trigger the download and report the saved state so the user can find it
+    // in the repository.
+    if (result.download_url) {
+      downloadUrl(result.download_url, result.filename || draftNdaDownloadFilename(payload));
+    }
+    const savedFor = payload?.counterparty?.name ? ` for ${payload.counterparty.name}` : "";
+    // The engine passes the Playbook deterministically; self_check is advisory, so
+    // a rare miss is surfaced as a soft caution rather than blocking the success.
+    if (result.self_check && result.self_check.passed === false) {
+      return {
+        message: `NDA generated and saved${savedFor}, but the self-check flagged it — review before sending.`,
+        tone: "error",
+      };
+    }
+    return { message: `NDA generated and saved${savedFor}.`, tone: "success" };
+  } catch (error) {
+    if (error instanceof window.GenerationUnavailableError || error?.code === "generation_unavailable") {
+      // Endpoint not deployed on this base yet — degrade gracefully.
+      return {
+        message: `Captured draft for ${payload.counterparty.name} on ${payload.signing_entity.legal_name} paper. Generation is not available on this build yet.`,
+        tone: "success",
+      };
+    }
+    throw error;
+  }
+}
+
+// Derives a download filename when the response carries none, from the
+// counterparty + signing entity so multiple drafts don't all land as "nda.docx".
+function draftNdaDownloadFilename(payload) {
+  const parts = [payload?.signing_entity?.legal_name, payload?.counterparty?.name, "nda"]
+    .filter(Boolean)
+    .join("-");
+  const safe = Array.from(parts)
+    .map((character) => (/[a-z0-9_-]/i.test(character) ? character : "-"))
+    .join("")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+/g, "")
+    .replace(/[-_]+$/g, "");
+  return `${safe || "nda"}.docx`;
 }
 
 function setActiveTab(tabName) {

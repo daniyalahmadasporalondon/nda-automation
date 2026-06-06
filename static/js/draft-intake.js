@@ -9,9 +9,12 @@
 //
 // All pure logic lives in static/js/modules/draft-intake.mjs and is exercised by
 // the frontend tests; this controller only renders DOM and dispatches to those
-// helpers. The generation step is intentionally STUBBED — the Generic NDA
-// template has not arrived yet — so "Generate NDA" captures the inputs and
-// reports that generation is pending rather than producing a document.
+// helpers. "Generate NDA" POSTs buildDraftPayload's output through the injected
+// onGenerate seam (wired in app.js to POST /api/generate-nda and download the
+// resulting DOCX / show the saved artifact). When onGenerate is absent the
+// controller falls back to the legacy stub copy, and when the endpoint is not
+// deployed on the running base it degrades to a "pending" notice rather than a
+// hard error — the same graceful fallback the entity picker uses for its feed.
 function createDraftIntakeController({
   modalNode,
   closeButton,
@@ -319,8 +322,12 @@ function createDraftIntakeController({
     const payload = intakeApi.buildDraftPayload(intake);
     try {
       if (typeof onGenerate === "function") {
-        await onGenerate(payload);
-        setStatus("NDA generated.", "success");
+        // onGenerate performs the POST + download/save side effects. It may
+        // return a {message, tone} to render (e.g. a "pending" notice when the
+        // endpoint is not deployed yet); otherwise the default success copy is
+        // shown. A thrown error is surfaced in the error tone below.
+        const outcome = await onGenerate(payload);
+        setStatus(outcome?.message || "NDA generated.", outcome?.tone || "success");
       } else {
         // Stub: the Generic NDA template has not arrived. Capture the inputs and
         // tell the user generation is pending rather than pretending to draft.
