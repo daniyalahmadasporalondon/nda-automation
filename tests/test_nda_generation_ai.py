@@ -147,6 +147,50 @@ class TestAiFirstStillPassesSelfCheck:
         assert check.dynamic_failures == [], check.dynamic_failures
 
 
+class TestProhibitedPatternCoverage:
+    """D1: the guard's prohibited-language screen must cover ALL the families
+    gen-verify's gate flags, so the in-process guard and the external gate agree
+    on what is off-position (the earlier pattern leaked 5 families to the doc)."""
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "the receiving party shall not compete in our market",
+            "the parties will not solicit one another's employees",
+            "you must not circumvent or bypass the disclosing party",
+            "the parties shall deal exclusively with one another",
+            "all right, title and interest in the IP is hereby assigned",
+            "the obligations shall continue in perpetuity",
+            "any breach carries liquidated damages of USD 100,000",
+            "this agreement will automatically renew each year",
+        ],
+    )
+    def test_widened_guard_catches_every_prohibited_family(self, snippet):
+        assert gen_ai._PROHIBITED_PATTERN.search(snippet) is not None
+
+    @pytest.mark.parametrize(
+        "on_position",
+        [
+            "Each party acts as both a Disclosing Party and a Receiving Party and is bound reciprocally.",
+            "is independently developed by the receiving Party without use of the Confidential Information.",
+            "trade secrets and personal data protected by data-protection law remain confidential for as long as the law requires.",
+            "exploring opportunities in a competitive payments market",
+        ],
+    )
+    def test_widened_guard_does_not_false_positive_on_legitimate_text(self, on_position):
+        assert gen_ai._PROHIBITED_PATTERN.search(on_position) is None
+
+    def test_guard_rejects_smuggled_non_compete_and_keeps_playbook(self):
+        playbook_text = "each party acts as both a Disclosing Party and a Receiving Party."
+
+        def provider(request):
+            return request["playbook_text"] + " The receiving party shall not compete with us."
+
+        adapter = gen_ai.build_clause_adapter(provider=provider)
+        # The non_compete now trips the guard -> Playbook wording kept.
+        assert adapter.adapt("mutuality", playbook_text, {}) == playbook_text
+
+
 class TestFrozenClauseAdapter:
     """The frozen adapter replays recorded on-position clause text so gen-verify
     can gate the AI-shaped output deterministically (no network, no drift)."""
