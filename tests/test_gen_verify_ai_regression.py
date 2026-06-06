@@ -15,14 +15,14 @@ The contract these tests ENCODE (what "AI-first is safe" means):
   C. Gate-as-backstop-> when the in-process guard is bypassed, the gate's
      by-meaning prohibited-position scan still flags the smuggled position.
 
-KNOWN-FAIL (xfail, strict): five red-team families currently LEAK past the
-``GuardedClauseAdapter`` because its ``_PROHIBITED_PATTERN`` only covers 3/8
-position families (DEFECT 1), and nothing gates the ship path (DEFECT 2). Those
-parametrizations are marked ``xfail(strict=True)`` referencing the defects, so:
-  * the suite is GREEN today (the leaks are expected failures), and
-  * the moment generation lands the fix, the xfail will XPASS and -- because it is
-    STRICT -- turn the suite RED, forcing whoever fixed it to delete the xfail and
-    lock the contained behaviour in. That is what keeps the net deployed.
+D1/D2 history: five red-team families (non_compete, non_solicit, ip_assignment,
+penalty, evergreen) once LEAKED past the ``GuardedClauseAdapter`` because its
+``_PROHIBITED_PATTERN`` covered only 3/8 position families (DEFECT 1), and the ship
+path saved without a gate (DEFECT 2). Both are fixed: the guard now covers all 8
+families, and ``generate_and_save_nda`` runs a meaning-based prohibited-position
+gate that raises before save. These tests (formerly strict-xfails that flipped the
+suite RED when the fix landed) now assert the contained behaviour directly, locking
+it in so a regression in either layer turns the suite RED again.
 """
 from __future__ import annotations
 
@@ -46,14 +46,6 @@ from tests.gen_verify_harness import (
     verify_generated_draft,
 )
 from tests.gen_verify_runner import _crosscheck_manifest, _default_intake, _template_bytes
-
-# The five red-team families that currently leak past the guard (DEFECT 1: the
-# GuardedClauseAdapter prohibited-pattern covers only non_circumvention /
-# exclusivity / perpetual_confidentiality; DEFECT 2: the ship path never gates).
-# These are xfail(strict) so they flip the suite RED once the fix lands.
-_KNOWN_LEAKING_ATTACKS = frozenset(
-    {"non_compete", "non_solicit", "ip_assignment", "penalty", "evergreen"}
-)
 
 _ENTITY_IDS = ("aspora_technology", "vance_money", "real_transfer", "vance_techlabs")
 
@@ -115,22 +107,14 @@ def test_on_position_ai_is_clear(entity_id, playbook, expectations, authoritativ
 # The 5 known-leaking families are xfail(strict) pending DEFECT 1/2.
 # --------------------------------------------------------------------------- #
 def _redteam_params():
+    # D1 widened the guard to all 8 prohibited families, so every red-team attack is
+    # now CONTAINED for every entity -- no xfails. (History: 5 families
+    # non_compete/non_solicit/ip_assignment/penalty/evergreen used to leak; the guard
+    # fix + ship-path gate closed them, and these assertions now lock that in.)
     params = []
     for attack in RED_TEAM_PROVIDERS:
-        marks = ()
-        if attack in _KNOWN_LEAKING_ATTACKS:
-            marks = (
-                pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        f"DEFECT 1: GuardedClauseAdapter._PROHIBITED_PATTERN does not cover "
-                        f"{attack!r}; it leaks into the document. DEFECT 2: generate_and_save_nda "
-                        f"never gates. Remove this xfail once both are fixed."
-                    ),
-                ),
-            )
         for entity_id in _ENTITY_IDS:
-            params.append(pytest.param(attack, entity_id, marks=marks, id=f"{attack}-{entity_id}"))
+            params.append(pytest.param(attack, entity_id, id=f"{attack}-{entity_id}"))
     return params
 
 
@@ -194,24 +178,7 @@ _GUARD_LEAK_MARKER = {
 }
 
 
-@pytest.mark.parametrize(
-    "attack",
-    [
-        pytest.param(
-            a,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    f"DEFECT 1: GuardedClauseAdapter._PROHIBITED_PATTERN does not cover {a!r}, so "
-                    f"the guard accepts the appended position instead of falling back. Remove this "
-                    f"xfail once the pattern is widened."
-                ),
-            ),
-            id=a,
-        )
-        for a in _GUARD_LEAK_APPENDIX
-    ],
-)
+@pytest.mark.parametrize("attack", list(_GUARD_LEAK_APPENDIX))
 def test_guard_blocks_prohibited_position(attack):
     """The GUARD (not just the downstream gate) must strip a prohibited position from
     adapted clause text: when the AI appends one, the guard's on-position check must
@@ -231,25 +198,19 @@ def test_guard_blocks_prohibited_position(attack):
 # --------------------------------------------------------------------------- #
 # DEFECT 2 contract -- the SHIP PATH must GATE: if a prohibited position reaches the
 # rendered document, generate_and_save_nda must RAISE and NOT persist the artifact.
-# xfail(strict) until the pre-save gate is added (today it saves unconditionally).
+#
+# We exercise D2 INDEPENDENTLY of D1: a guard-bypassing adapter (_RawSmugglingAdapter)
+# puts a non-solicit into the document without going through the GuardedClauseAdapter,
+# so the prohibited position genuinely reaches the rendered doc. The ship-path gate is
+# the LAST line -- it must catch it by meaning and refuse to save, even though the
+# guard never saw it. This is what makes the gate a real backstop, not a duplicate of
+# the guard: a position the guard can't see (smuggled outside an adapted clause, or via
+# any future code path) is still stopped before it becomes a signable artifact.
 # --------------------------------------------------------------------------- #
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT 2: generate_and_save_nda goes generate->save with no blocking gate, so a "
-        "leaked prohibited position is persisted (the route's self_check is advisory, post-save). "
-        "Remove this xfail once a hard pre-save gate (raise + no save) is added."
-    ),
-)
 def test_ship_path_gate_raises_and_does_not_save_on_leak(monkeypatch, playbook):
-    """A drifting AI adapter that leaks a prohibited position into the document must be
-    BLOCKED by the ship path: generate_and_save_nda raises and the artifact is NOT saved."""
-
-    def leaky_provider(request):
-        # Append a non-compete (a D1-gap family) so it survives the guard today.
-        return str(request.get("playbook_text", "")) + " Furthermore, each party shall not compete with the other."
-
-    adapter = gen_ai.build_clause_adapter(provider=leaky_provider)
+    """A prohibited position that reaches the document (here via a guard-bypassing
+    adapter) must be BLOCKED by the ship path: generate_and_save_nda raises and the
+    artifact is NOT saved."""
 
     saved = {"called": False}
 
@@ -262,13 +223,13 @@ def test_ship_path_gate_raises_and_does_not_save_on_leak(monkeypatch, playbook):
     # Intercept the persistence boundary so we can assert "no save happened".
     monkeypatch.setattr("nda_automation.artifact_service.add_artifact", fake_add_artifact)
 
-    with pytest.raises(Exception):
+    with pytest.raises(gen.NdaGenerationError):
         gen.generate_and_save_nda(
             "aspora_technology",
             _default_intake("mutual"),
             matter_id="m-test",
             playbook=playbook,
-            clause_adapter=adapter,
+            clause_adapter=_RawSmugglingAdapter(),  # bypasses the guard
             use_ai=False,
         )
     assert not saved["called"], "ship path persisted an artifact containing a prohibited position"
