@@ -178,6 +178,63 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(status, 201, payload)
         self.assertEqual(payload["manifest"]["counterparty_name"], "Nested Acme Ltd")
 
+    def test_accepts_committed_fe_build_draft_payload_shape(self):
+        # The EXACT shape static/js/modules/draft-intake.mjs:buildDraftPayload emits.
+        fe_payload = {
+            "counterparty": {"name": "Globex International Ltd", "email": "legal@globex.example"},
+            "project_purpose": "evaluating a data-sharing integration",
+            "term": "3 years",  # FREE TEXT — parsed to term_years server-side
+            "nda_type": "mutual",
+            "notes": "introduced via the partnerships team",
+            "signing_entity": {
+                "id": "aspora_technology",
+                "legal_name": "Aspora Technology Services Private Limited",
+                "address": {"id": "bengaluru", "label": "Bengaluru", "lines": ["MG Road"]},
+                # aspora default is India; the FE picked England (overridden).
+                "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
+                "governing_law_overridden": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
+        self.assertEqual(status, 201, payload)
+        m = payload["manifest"]
+        self.assertEqual(m["counterparty_name"], "Globex International Ltd")
+        self.assertEqual(m["term_years"], 3)  # parsed from "3 years"
+        # The FE-chosen governing law was applied + flagged.
+        self.assertEqual(m["governing_law_value"], "England and Wales")
+        self.assertTrue(m["governing_law_overridden"])
+        self.assertEqual(m["entity_default_governing_law_value"], "India")
+        self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
+        self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
+
+    def test_fe_payload_without_override_keeps_entity_default(self):
+        # signing_entity.governing_law present but matching the entity default ->
+        # no-op, governing_law_overridden False.
+        fe_payload = {
+            "counterparty": {"name": "Initech Ltd", "email": None},
+            "project_purpose": "a pilot",
+            "term": "2",
+            "nda_type": "mutual",
+            "notes": "",
+            "signing_entity": {
+                "id": "aspora_technology",
+                "legal_name": "Aspora Technology Services Private Limited",
+                "address": None,
+                "governing_law": {"playbook_option_id": "india", "label": "India"},
+                "governing_law_overridden": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
+        self.assertEqual(status, 201, payload)
+        self.assertEqual(payload["manifest"]["governing_law_value"], "India")
+        self.assertFalse(payload["manifest"]["governing_law_overridden"])
+
     def test_missing_counterparty_name_is_rejected(self):
         with patch.dict(os.environ, self.auth_env()):
             status, payload, _ = self.generate(

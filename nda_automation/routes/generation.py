@@ -206,16 +206,32 @@ def _entity_id_from_payload(payload: dict[str, Any]) -> str:
 
 
 def _governing_law_override_from_payload(payload: dict[str, Any]) -> str:
-    """Resolve an optional governing-law override (a Playbook option id).
+    """Resolve the chosen governing-law option id from the payload.
 
-    Accepts a flat ``governing_law_override`` string, or a nested
-    ``governing_law: {playbook_option_id}`` block (the shape the FE emits). Empty
-    when absent. Validity (must be an approved option) is enforced downstream by
-    the engine, which raises NdaGenerationError -> 400 for an unapproved value."""
+    The committed FE (buildDraftPayload) carries the chosen law INSIDE the
+    signing-entity bundle as ``signing_entity.governing_law.playbook_option_id``
+    (always present — the effective law, override or not). We pass it through as
+    the engine's ``governing_law_override``; the engine treats a value equal to
+    the entity default as a no-op, so always forwarding the chosen law is correct
+    and keeps the server authoritative on the overridden flag. A flat
+    ``governing_law_override`` / top-level ``governing_law`` block is also accepted
+    (test + alternate-client robustness). An unapproved id is rejected downstream
+    (NdaGenerationError -> 400)."""
+    # Preferred: the FE's nested signing_entity.governing_law.playbook_option_id.
+    signing_entity = payload.get("signing_entity")
+    if isinstance(signing_entity, dict):
+        option_id = _option_id_from_law_block(signing_entity.get("governing_law"))
+        if option_id:
+            return option_id
+    # Fallbacks: a flat override string or a top-level governing_law block.
     flat = payload.get("governing_law_override")
     if isinstance(flat, str) and flat.strip():
         return flat.strip()
-    block = payload.get("governing_law")
+    return _option_id_from_law_block(payload.get("governing_law"))
+
+
+def _option_id_from_law_block(block: object) -> str:
+    """Pull the playbook_option_id (or id) out of a governing_law block."""
     if isinstance(block, dict):
         option_id = block.get("playbook_option_id") or block.get("id")
         if isinstance(option_id, str) and option_id.strip():
