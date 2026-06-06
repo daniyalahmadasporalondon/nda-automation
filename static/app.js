@@ -113,6 +113,33 @@ const sendDocumentController = createSendDocumentController({
   activateTab,
   reviewErrorFromPayload,
 });
+const draftIntakeController = createDraftIntakeController({
+  modalNode: document.querySelector("#draftIntakeModal"),
+  closeButton: document.querySelector("#draftIntakeModalClose"),
+  form: document.querySelector("#draftIntakeForm"),
+  entitySelect: document.querySelector("#draftIntakeEntitySelect"),
+  addressField: document.querySelector("#draftIntakeAddressField"),
+  addressSelect: document.querySelector("#draftIntakeAddressSelect"),
+  bundleNode: document.querySelector("#draftIntakeBundle"),
+  counterpartyNameInput: document.querySelector("#draftIntakeCounterpartyName"),
+  counterpartyEmailInput: document.querySelector("#draftIntakeCounterpartyEmail"),
+  ndaTypeSelect: document.querySelector("#draftIntakeNdaType"),
+  termInput: document.querySelector("#draftIntakeTerm"),
+  projectPurposeInput: document.querySelector("#draftIntakeProjectPurpose"),
+  notesInput: document.querySelector("#draftIntakeNotes"),
+  governingLawSelect: document.querySelector("#draftIntakeGoverningLaw"),
+  lawStatusNode: document.querySelector("#draftIntakeLawStatus"),
+  lawResetButton: document.querySelector("#draftIntakeLawResetButton"),
+  statusNode: document.querySelector("#draftIntakeStatus"),
+  clearButton: document.querySelector("#draftIntakeClearButton"),
+  generateButton: document.querySelector("#draftIntakeGenerateButton"),
+  sideEntityNode: document.querySelector("#draftIntakeSideEntity"),
+  sideLawNode: document.querySelector("#draftIntakeSideLaw"),
+  sideTypeNode: document.querySelector("#draftIntakeSideType"),
+  // onGenerate is intentionally omitted: the generation step is stubbed until
+  // the Generic NDA template ships. The controller then captures inputs and
+  // reports "generation pending" instead of producing a document.
+});
 adminAiController = createAdminAiController({
   state,
   aiCard: document.querySelector("#adminAiCard"),
@@ -231,6 +258,10 @@ reviewInspectorButtons.forEach((button) => {
 
 dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
+});
+
+document.querySelector("[data-dashboard-draft-nda]")?.addEventListener("click", () => {
+  draftIntakeController.openModal();
 });
 
 document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {

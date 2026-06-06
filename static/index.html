@@ -60,6 +60,10 @@
                 <span aria-hidden="true">+</span>
                 <span>Submit for Review</span>
               </button>
+              <button class="dashboard-draft-nda-button" type="button" data-dashboard-draft-nda title="Draft a new outbound NDA from one of our signing entities">
+                <span aria-hidden="true">✎</span>
+                <span>Draft NDA</span>
+              </button>
               <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
                 <span aria-hidden="true">↗</span>
                 <span>Send Document</span>
@@ -1087,6 +1091,126 @@
       </div>
     </div>
 
+    <div class="upload-modal" id="draftIntakeModal" role="dialog" aria-modal="true" aria-labelledby="draftIntakeModalTitle" hidden>
+      <div class="upload-modal-dialog">
+        <section class="upload-shell">
+          <header class="upload-header">
+            <div class="repository-title">
+              <span class="upload-icon" aria-hidden="true"></span>
+              <div class="upload-header-copy">
+                <h1 id="draftIntakeModalTitle">Draft outbound NDA</h1>
+                <p>Pick our signing entity, then describe the deal. We pre-fill the legal name, address and governing law from that entity.</p>
+              </div>
+            </div>
+            <button class="send-modal-close" id="draftIntakeModalClose" type="button" aria-label="Close draft NDA dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <section class="upload-workspace">
+            <form class="upload-panel" id="draftIntakeForm">
+              <fieldset class="draft-fieldset">
+                <legend>Our signing entity</legend>
+                <div class="upload-field-grid">
+                  <label class="upload-field" for="draftIntakeEntitySelect">
+                    <span>Signing entity</span>
+                    <select id="draftIntakeEntitySelect" required>
+                      <option value="" disabled selected>Pick an entity…</option>
+                    </select>
+                  </label>
+                  <label class="upload-field" id="draftIntakeAddressField" for="draftIntakeAddressSelect" hidden>
+                    <span>Signing address</span>
+                    <select id="draftIntakeAddressSelect"></select>
+                  </label>
+                </div>
+                <div class="draft-entity-bundle empty" id="draftIntakeBundle" aria-live="polite">
+                  Pick an entity to pre-fill its legal name, address and governing law.
+                </div>
+              </fieldset>
+
+              <fieldset class="draft-fieldset">
+                <legend>Counterparty &amp; deal</legend>
+                <div class="upload-field-grid">
+                  <label class="upload-field" for="draftIntakeCounterpartyName">
+                    <span>Counterparty name</span>
+                    <input id="draftIntakeCounterpartyName" type="text" autocomplete="organization" placeholder="Acme Corporation" required>
+                  </label>
+                  <label class="upload-field" for="draftIntakeCounterpartyEmail">
+                    <span>Counterparty email (optional)</span>
+                    <input id="draftIntakeCounterpartyEmail" type="email" autocomplete="email" placeholder="deals@acme.com">
+                  </label>
+                  <label class="upload-field" for="draftIntakeNdaType">
+                    <span>NDA type</span>
+                    <select id="draftIntakeNdaType"></select>
+                  </label>
+                  <label class="upload-field" for="draftIntakeTerm">
+                    <span>Term</span>
+                    <input id="draftIntakeTerm" type="text" autocomplete="off" placeholder="e.g. 2 years">
+                  </label>
+                  <label class="upload-field upload-field-wide" for="draftIntakeProjectPurpose">
+                    <span>Project / purpose</span>
+                    <input id="draftIntakeProjectPurpose" type="text" autocomplete="off" placeholder="e.g. Series B diligence">
+                  </label>
+                  <label class="upload-field upload-field-wide" for="draftIntakeNotes">
+                    <span>Special notes (optional)</span>
+                    <textarea id="draftIntakeNotes" rows="3" placeholder="Anything counsel should know"></textarea>
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset class="draft-fieldset">
+                <legend>Governing law</legend>
+                <div class="upload-field-grid">
+                  <label class="upload-field" for="draftIntakeGoverningLaw">
+                    <span>Governing law</span>
+                    <select id="draftIntakeGoverningLaw"></select>
+                  </label>
+                  <div class="upload-field draft-law-note">
+                    <span>Coupling</span>
+                    <p class="draft-law-status" id="draftIntakeLawStatus" aria-live="polite">Defaults to the entity's law.</p>
+                    <button class="link-button" id="draftIntakeLawResetButton" type="button" hidden>Reset to entity law</button>
+                  </div>
+                </div>
+              </fieldset>
+
+              <footer class="upload-actions">
+                <p class="upload-status" id="draftIntakeStatus" aria-live="polite"></p>
+                <div>
+                  <button class="secondary" id="draftIntakeClearButton" type="button">Clear</button>
+                  <button id="draftIntakeGenerateButton" type="submit" disabled title="Generic NDA template pending">Generate NDA</button>
+                </div>
+              </footer>
+            </form>
+
+            <aside class="upload-side-panel" aria-label="Draft NDA details">
+              <p class="eyebrow">outbound draft</p>
+              <h2>From our paper</h2>
+              <dl>
+                <div>
+                  <dt>Signing entity</dt>
+                  <dd id="draftIntakeSideEntity">—</dd>
+                </div>
+                <div>
+                  <dt>Governing law</dt>
+                  <dd id="draftIntakeSideLaw">—</dd>
+                </div>
+                <div>
+                  <dt>NDA type</dt>
+                  <dd id="draftIntakeSideType">Mutual (two-way)</dd>
+                </div>
+                <div>
+                  <dt>Generation</dt>
+                  <dd id="draftIntakeSideGeneration">Generic NDA template pending</dd>
+                </div>
+              </dl>
+            </aside>
+          </section>
+        </section>
+      </div>
+    </div>
+
     <div class="upload-modal" id="sendDocumentModal" role="dialog" aria-modal="true" aria-labelledby="sendDocumentModalTitle" hidden>
       <div class="upload-modal-dialog">
         <section class="upload-shell">
@@ -1237,6 +1361,7 @@
     <script src="/static/js/repository.js?v=20260605a"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js"></script>
+    <script src="/static/js/draft-intake.js?v=20260606a"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>

@@ -840,6 +840,7 @@ h3 {
 }
 
 .dashboard-submit-button,
+.dashboard-draft-nda-button,
 .dashboard-send-document-button {
   background: #f09ac6;
   box-shadow: 0 14px 28px -16px rgba(240, 154, 198, 0.8);
@@ -848,6 +849,21 @@ h3 {
   gap: 8px;
   height: 42px;
   padding: 0 20px;
+}
+
+/* Draft NDA is the "from our paper" creator — a brand-purple pill so it reads as
+   its own action, distinct from the pink Submit/Send siblings, while sharing the
+   base pill shape and glow. */
+.dashboard-draft-nda-button {
+  background: var(--brand);
+  box-shadow: 0 14px 28px -16px var(--brand-glow);
+  color: #ffffff;
+}
+
+.dashboard-draft-nda-button:hover:not(:disabled),
+.dashboard-draft-nda-button:focus-visible {
+  background: var(--brand-bright);
+  color: #ffffff;
 }
 
 .dashboard-submit-button:hover:not(:disabled),
@@ -881,11 +897,18 @@ h3 {
    on Send Document. Matched size, a lighter (thinner) stroke than the bold label,
    and a soft glow so they read as crafted marks rather than flat characters. */
 .dashboard-submit-button span:first-child,
+.dashboard-draft-nda-button span:first-child,
 .dashboard-send-document-button span:first-child {
   font-size: 18px;
   font-weight: 400;
   line-height: 1;
   text-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+/* The purple Draft pill carries a white "✎" glyph; its glow should darken (not
+   whiten) so the mark stays crisp on the dark fill. */
+.dashboard-draft-nda-button span:first-child {
+  text-shadow: 0 0 6px rgba(22, 8, 51, 0.45);
 }
 
 .dashboard-health-list {
@@ -6552,6 +6575,7 @@ body.modal-open {
   }
 
   .dashboard-submit-button,
+  .dashboard-draft-nda-button,
   .dashboard-send-document-button {
     width: 100%;
   }
