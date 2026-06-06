@@ -450,6 +450,34 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status_auth_payload["user"]["provider"], "basic")
         self.assertEqual(status_auth_payload["user"]["id"], "nda-admin")
 
+    def test_signing_entities_endpoint_is_authed_and_serves_bundles(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, auth_env):
+            unauth_status, unauth_payload = self.request("GET", "/api/signing-entities")
+            authed_status, authed_payload = self.request(
+                "GET",
+                "/api/signing-entities",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(unauth_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(authed_status, 200)
+        entity_ids = {entity["id"] for entity in authed_payload["entities"]}
+        self.assertEqual(
+            entity_ids,
+            {"aspora_technology", "vance_money", "real_transfer", "vance_techlabs"},
+        )
+        # The live playbook maps cleanly, so every entity is drift-free.
+        self.assertTrue(
+            all(row["matches_playbook"] for row in authed_payload["law_mapping"])
+        )
+        self.assertIn("england_and_wales", authed_payload["playbook_option_ids"])
+
     def test_google_oauth_session_authenticates_and_scopes_matter_owner(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
