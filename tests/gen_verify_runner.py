@@ -22,9 +22,11 @@ from typing import Any
 from tests.gen_verify_harness import (
     EntityExpectation,
     VerificationReport,
+    _approved_laws as _approved_law_values,
     check_registry_playbook_consistency,
     docx_to_text,
     expectations_from_registry,
+    gov_law_override_from_manifest,
     template_authoritative_sentences,
     verify_generated_draft,
 )
@@ -141,9 +143,26 @@ def _crosscheck_manifest(manifest: Any, expect: EntityExpectation, text: str, re
     legal = getattr(manifest, "entity_legal_name", None)
     if legal is not None and legal != expect.legal_name:
         report.defect("manifest.legal_name", f"manifest claims {legal!r}, registry expects {expect.legal_name!r}")
+    # Governing-law manifest cross-check is OVERRIDE-AWARE. Without an override the
+    # manifest's law must equal the entity's registry default. WITH an override the
+    # manifest legitimately differs from the default -- so we only require the
+    # override stays within the 4 approved positions (the entity-default equality
+    # check would false-positive on a valid override).
     law = getattr(manifest, "governing_law_value", None)
-    if law is not None and law != expect.governing_law:
-        report.defect("manifest.governing_law", f"manifest claims {law!r}, registry expects {expect.governing_law!r}")
+    overridden = bool(getattr(manifest, "governing_law_overridden", False))
+    if isinstance(law, str) and law:
+        if overridden:
+            approved = _approved_law_values()
+            if approved and law not in approved:
+                report.defect(
+                    "manifest.override_not_approved",
+                    f"manifest override governing_law={law!r} is not one of the approved {approved}",
+                )
+        elif law != expect.governing_law:
+            report.defect(
+                "manifest.governing_law",
+                f"manifest claims {law!r}, registry expects {expect.governing_law!r} (no override flagged)",
+            )
 
     # manifest-vs-prose: each claimed IDENTITY fill must appear verbatim. We only
     # check values the generator reproduces literally (names, addresses, law,
@@ -193,6 +212,10 @@ def run(variants: tuple[str, ...] = VARIANTS_V1) -> list[VerificationReport]:
                 entity=expect,
                 variant=variant,
                 authoritative_sentences=authoritative,
+                # Override-aware: read the chosen law from the generator's manifest
+                # so a user-selected approved override is validated against the
+                # chosen law, not flagged as drift vs the entity default.
+                gov_law_override=gov_law_override_from_manifest(manifest, expect),
             )
             _crosscheck_manifest(manifest, expect, docx_to_text(docx_bytes), report)
             reports.append(report)

@@ -192,30 +192,119 @@ def check_entity(text: str, expect: EntityExpectation, report: VerificationRepor
             report.defect("entity.wrong_address", f"forbidden substring present (wrong/non-default value): {forbidden!r}")
 
 
-def check_governing_law(text: str, expect: EntityExpectation, report: VerificationReport) -> None:
-    """The governing-law value must match the entity AND be a Playbook-approved law."""
+@dataclass
+class GovLawOverride:
+    """The resolved governing-law intent for one draft, override-aware.
+
+    The product lets a user OVERRIDE the entity's default governing law with a
+    different one -- but only ever to one of the same 4 Playbook-approved options
+    (india / delaware / england_and_wales / difc), so the law is always approved,
+    override or not. This record carries what the *clause* should actually say
+    (``effective_law``) versus what the entity would default to
+    (``entity_default_law``), so the gate validates the draft against the chosen
+    law rather than mechanically flagging "law != entity default" as drift.
+
+    Built from the generator's manifest (the authoritative record of what it
+    intended) via :func:`gov_law_override_from_manifest`. When the manifest does
+    not carry the override fields (pre-override generators), the resolver returns
+    ``None`` and the gate keeps its original entity-default behaviour.
+    """
+
+    effective_law: str
+    overridden: bool
+    entity_default_law: str = ""
+
+
+def gov_law_override_from_manifest(
+    manifest: object, expect: EntityExpectation
+) -> "GovLawOverride | None":
+    """Resolve the override-aware governing-law intent from a generation manifest.
+
+    Reads the manifest's authoritative governing-law fields when present:
+    ``governing_law_value`` (the EFFECTIVE law that should appear in the clause)
+    and ``governing_law_overridden`` (bool). The entity default comes from
+    ``entity_default_governing_law_value`` if the manifest carries it, else from
+    the registry-derived ``expect.governing_law``.
+
+    Returns ``None`` when the manifest is absent or carries no governing-law value,
+    so callers fall back to the entity-default check (defensive: works both before
+    and after generation lands the new fields).
+    """
+
+    if manifest is None:
+        return None
+    effective = getattr(manifest, "governing_law_value", None)
+    if not (isinstance(effective, str) and effective.strip()):
+        return None
+    overridden = bool(getattr(manifest, "governing_law_overridden", False))
+    default = getattr(manifest, "entity_default_governing_law_value", None)
+    if not (isinstance(default, str) and default.strip()):
+        default = expect.governing_law
+    return GovLawOverride(
+        effective_law=effective.strip(),
+        overridden=overridden,
+        entity_default_law=str(default or "").strip(),
+    )
+
+
+def check_governing_law(
+    text: str,
+    expect: EntityExpectation,
+    report: VerificationReport,
+    override: "GovLawOverride | None" = None,
+) -> None:
+    """The governing-law value in the draft must match the INTENDED law (entity
+    default, or a user-chosen override) AND be one of the 4 Playbook-approved laws.
+
+    ``override`` (from the generator's manifest) makes the check override-aware:
+
+    * overridden -> the clause must name the OVERRIDE law; we do NOT flag a
+      mismatch against the entity default (the difference is intentional). The
+      override law must still be one of the 4 approved positions (defence in depth
+      -- the FE constrains the override to the 4, but the gate verifies it anyway).
+    * not overridden (or no manifest override info) -> the clause must name the
+      entity default, exactly as before.
+    """
     approved = _approved_laws()
-    if expect.governing_law not in approved:
+    # The law the draft is REQUIRED to name. Default to the entity's registry law;
+    # when the manifest reports an override, the effective (chosen) law is intended.
+    expected_law = expect.governing_law
+    if override is not None:
+        expected_law = override.effective_law
+        if override.overridden:
+            # An override must stay within the approved set (defence in depth).
+            if override.effective_law not in approved:
+                report.defect(
+                    "law.override_not_approved",
+                    f"override governing law {override.effective_law!r} is not in Playbook "
+                    f"approved_laws {approved} (override must stay within the 4 approved positions)",
+                )
+
+    if expected_law not in approved:
         report.defect(
             "law.not_approved",
-            f"expected governing law {expect.governing_law!r} is not in Playbook approved_laws {approved}",
+            f"expected governing law {expected_law!r} is not in Playbook approved_laws {approved}",
         )
-    # The governing-law sentence must name the entity's law. Use the deterministic
+    # The governing-law sentence must name the INTENDED law. Use the deterministic
     # engine's own verdict on the governing_law clause as the independent oracle,
     # then additionally assert the *specific* expected jurisdiction is present.
-    if expect.governing_law and expect.governing_law not in text:
+    if expected_law and expected_law not in text:
+        # Label distinguishes an override-mismatch from a default-mismatch so a
+        # failure is diagnosable (which law the draft was supposed to name).
+        check_name = "law.override_mismatch" if (override and override.overridden) else "law.entity_mismatch"
         report.defect(
-            "law.entity_mismatch",
-            f"governing-law value {expect.governing_law!r} for entity {expect.key!r} not found in draft",
+            check_name,
+            f"governing-law value {expected_law!r} for entity {expect.key!r} not found in draft"
+            + (" (user-chosen override)" if (override and override.overridden) else ""),
         )
-    # Guard against a draft that names a DIFFERENT approved law than the entity wants.
+    # Guard against a draft that names a DIFFERENT approved law than intended.
     for other in approved:
-        if other == expect.governing_law:
+        if other == expected_law:
             continue
         # Only flag if the other law appears in a governing-law context and the
         # expected one does not (avoids false positives from the approved-law menu).
-        if other in text and expect.governing_law not in text:
-            report.defect("law.wrong_jurisdiction", f"draft names {other!r} instead of expected {expect.governing_law!r}")
+        if other in text and expected_law not in text:
+            report.defect("law.wrong_jurisdiction", f"draft names {other!r} instead of expected {expected_law!r}")
 
 
 def _approved_laws() -> tuple[str, ...]:
@@ -581,15 +670,23 @@ def verify_generated_draft(
     entity: EntityExpectation,
     variant: str,
     authoritative_sentences: Sequence[str],
+    gov_law_override: "GovLawOverride | None" = None,
 ) -> VerificationReport:
-    """Run the full adversarial gate on one generated draft."""
+    """Run the full adversarial gate on one generated draft.
+
+    ``gov_law_override`` (resolved from the generator's manifest via
+    :func:`gov_law_override_from_manifest`) makes the governing-law check
+    override-aware: a user-chosen approved law that differs from the entity default
+    is validated against the chosen law, not flagged as drift. ``None`` keeps the
+    original entity-default behaviour.
+    """
     report = VerificationReport(label=label)
     text = docx_to_text(docx_bytes)
     check_structural(text, report)
     check_playbook_native(text, report)
     check_non_circumvention(text, report)
     check_entity(text, entity, report)
-    check_governing_law(text, entity, report)
+    check_governing_law(text, entity, report, override=gov_law_override)
     check_variant(text, variant, report)
     check_clause_drift(text, authoritative_sentences, report)
     # Load-bearing for AI-first generation: catch prohibited positions by meaning,
