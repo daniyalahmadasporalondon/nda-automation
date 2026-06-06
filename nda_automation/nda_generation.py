@@ -76,8 +76,10 @@ class EntityParty:
     jurisdiction_of_incorporation: str
     governing_law_value: str
     forum: str
-    signatory_name: str = "[Authorised Signatory]"
-    signatory_title: str = "[Designation]"
+    # Empty signatory name/title means "no signer assigned" — the signature block
+    # renders blank fill-lines (underscores) for signing, never bracketed text.
+    signatory_name: str = ""
+    signatory_title: str = ""
     entity_id: str = ""
 
 
@@ -180,14 +182,43 @@ def entity_party_from_bundle(bundle: Mapping[str, Any], playbook: Mapping[str, A
     return EntityParty(
         legal_name=legal_name,
         registered_office=address,
-        jurisdiction_of_incorporation=governing_law_value,
+        jurisdiction_of_incorporation=_incorporation_jurisdiction(bundle, governing_law_value),
         governing_law_value=governing_law_value,
         forum=str(bundle.get("jurisdiction") or "").strip() or governing_law_value,
-        signatory_name=str(signatory.get("name") or "[Authorised Signatory]").strip()
-        or "[Authorised Signatory]",
-        signatory_title=str(signatory.get("title") or "[Designation]").strip() or "[Designation]",
+        # The registry ships placeholder signatory strings ("[Authorised Signatory]"
+        # / "[Title]") when no real signer is assigned; treat those as unassigned so
+        # the signature block renders clean blank fill-lines, not bracketed text.
+        signatory_name=_real_or_blank(signatory.get("name")),
+        signatory_title=_real_or_blank(signatory.get("title")),
         entity_id=str(bundle.get("id") or "").strip(),
     )
+
+
+def _real_or_blank(value: object) -> str:
+    """Return a real signatory value, or "" if it is empty or a bracketed placeholder.
+
+    The registry uses ``"[Authorised Signatory]"`` / ``"[Title]"`` as placeholders
+    for an unassigned signer. We map those (and any ``[...]`` form) to an empty
+    string so the signature block renders blank fill-lines for signing.
+    """
+
+    text = str(value or "").strip()
+    if not text or (text.startswith("[") and text.endswith("]")):
+        return ""
+    return text
+
+
+def _incorporation_jurisdiction(bundle: Mapping[str, Any], governing_law_value: str) -> str:
+    """The entity's jurisdiction of incorporation.
+
+    Consumes the registry's explicit ``incorporation_jurisdiction`` field when
+    present (the authoritative value, e.g. "Delaware, United States" for a
+    Delaware LLC). Falls back to the governing-law value, which the registry
+    confirms matches incorporation for all current entities.
+    """
+
+    explicit = str(bundle.get("incorporation_jurisdiction") or "").strip()
+    return explicit or governing_law_value
 
 
 def generate_nda(
@@ -233,14 +264,9 @@ def generate_nda(
     _align_confidential_information(document, playbook, clause_adapter, intake, manifest)
     _align_term_and_survival(document, term_years, clause_adapter, intake, manifest)
 
-    # An entity may legitimately supply a bracketed signatory value when no
-    # signatory is assigned yet; those filled-from-input values are allowed.
-    allowed_brackets = {
-        value
-        for value in (entity.signatory_name, entity.signatory_title)
-        if value.startswith("[") and value.endswith("]")
-    }
-    _assert_no_unfilled_placeholders(document, allowed_brackets)
+    # Unassigned signatories render as blank fill-lines (not bracketed text), so
+    # no bracketed values are ever legitimately retained — the guard is strict.
+    _assert_no_unfilled_placeholders(document, allowed=set())
 
     return GenerationResult(docx_bytes=_document_bytes(document), manifest=manifest)
 
@@ -538,8 +564,9 @@ def _fill_variable_slots(
             "[BUSINESS DESCRIPTION]": intake.business_description,
             "[GOVERNING LAW]": entity.governing_law_value,
             "[FORUM / JURISDICTION]": entity.forum,
-            "[AUTHORISED SIGNATORY]": entity.signatory_name,
-            "[DESIGNATION]": entity.signatory_title,
+            # Empty -> the signature block renders a blank fill-line for signing.
+            "[AUTHORISED SIGNATORY]": entity.signatory_name or "(blank fill-line)",
+            "[DESIGNATION]": entity.signatory_title or "(blank fill-line)",
             "purpose": intake.purpose,
             "agreement_date": agreement_date.isoformat(),
         }

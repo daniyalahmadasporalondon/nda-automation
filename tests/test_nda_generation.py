@@ -160,6 +160,39 @@ class TestSlotFill:
         for slot in gen._TEMPLATE_SLOTS:
             assert slot not in text, f"Unfilled slot {slot} survived generation."
 
+    def test_unassigned_signatory_renders_blank_fill_lines_not_brackets(self, playbook):
+        # The registry ships placeholder signatory strings when no signer is
+        # assigned. The shipped doc must NOT show bracketed text — both party
+        # blocks render clean underscores. (Finding 1.)
+        import re
+
+        bundle = _bundle()
+        bundle["signatory"] = {"name": "[Authorised Signatory]", "title": "[Title]"}
+        result = _generate(playbook, bundle=bundle)
+        text = extract_docx_text(result.docx_bytes)
+        assert re.findall(r"\[[^\]]+\]", text) == []
+        # Both signature blocks use the same blank Name fill-line.
+        assert text.count("Name: _______________________") == 2
+        # And the signatures clause still passes its Playbook.
+        assert "signatures" not in gen.self_check_generated_nda(
+            result.docx_bytes, playbook=playbook
+        ).native_failures
+
+    def test_incorporation_jurisdiction_consumes_registry_field(self, playbook):
+        # When the registry supplies an explicit incorporation_jurisdiction, the
+        # engine uses it (distinct from the governing-law value).
+        bundle = _bundle(option_id="delaware")
+        bundle["incorporation_jurisdiction"] = "Delaware, United States"
+        entity = gen.entity_party_from_bundle(bundle, playbook)
+        assert entity.jurisdiction_of_incorporation == "Delaware, United States"
+        assert entity.governing_law_value == "Delaware"
+
+    def test_incorporation_jurisdiction_falls_back_to_governing_law(self, playbook):
+        bundle = _bundle(option_id="india")
+        bundle.pop("incorporation_jurisdiction", None)
+        entity = gen.entity_party_from_bundle(bundle, playbook)
+        assert entity.jurisdiction_of_incorporation == "India"
+
 
 # --------------------------------------------------------------------------- #
 # Generation — clauses realign to the Playbook
