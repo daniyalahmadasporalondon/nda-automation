@@ -97,17 +97,29 @@ import re as _re
 # so the canonical source string is NOT expected to appear verbatim in the prose.
 _TRANSFORMED_SLOT_KEYS = ("agreement_date", "purpose", "business description")
 _ISO_DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Sentinel values the manifest records to denote an INTENTIONALLY BLANK slot (the
+# signature block renders clean underscores for signing, never this literal text).
+# A blank-fill sentinel is correct behaviour -- it must NOT be required in the prose.
+_BLANK_FILL_SENTINELS = ("(blank fill-line)", "(blank)", "(unassigned)", "")
 
 
 def _is_transformed_fill(slot: str, value: str) -> bool:
-    """True when a manifest fill is reformatted into the prose (so a verbatim
-    presence check would false-positive). Covers the ISO agreement_date that the
-    template renders as 'Nth day of <Month>, <Year>', and free-text deal fields
-    (purpose / business description) that may be re-cased or rephrased."""
+    """True when a manifest fill is reformatted/sentinelled into the prose (so a
+    verbatim presence check would false-positive). Covers: the ISO agreement_date
+    rendered as 'Nth day of <Month>, <Year>'; free-text deal fields (purpose /
+    business description) that may be re-cased; and blank-fill sentinels for
+    intentionally-unassigned signatory slots (rendered as underscores, by design)."""
     slot_l = slot.lower()
     if any(key in slot_l for key in _TRANSFORMED_SLOT_KEYS):
         return True
     if _ISO_DATE_RE.match(value.strip()):
+        return True
+    if value.strip().lower() in _BLANK_FILL_SENTINELS:
+        return True
+    # A sentinel that is purely punctuation/parenthetical marker text, or only
+    # underscores, is a blank-line marker -- not a value that appears in prose.
+    stripped = value.strip()
+    if stripped and set(stripped) <= set("_-—– "):
         return True
     return False
 
