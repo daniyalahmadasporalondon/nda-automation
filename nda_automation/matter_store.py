@@ -308,6 +308,72 @@ def record_matter_approval(
     return None
 
 
+def append_timeline_event(
+    matter_id: str,
+    timeline_event: dict[str, Any],
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Append one immutable event to a matter's ``matter_timeline`` (append-only).
+
+    The canonical writer for the workflow timeline backbone: every lifecycle
+    transition (created, extracted, review_completed, sent, ...) appends through
+    here so the log is built one way. The existing append-only contract holds --
+    prior events are never rewritten or removed, only appended after. Runs under
+    the store lock so a concurrent transition can't lose-update the list.
+    """
+    if not isinstance(timeline_event, dict):
+        return get_matter(matter_id, owner_user_id=owner_user_id)
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        timeline = list(matter.get("matter_timeline") or [])
+        timeline.append(timeline_event)
+        updated_matter = {
+            **matter,
+            "matter_timeline": timeline,
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
+def set_matter_workflow_error(
+    matter_id: str,
+    workflow_error: dict[str, Any] | None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Record (or clear when None) the ``workflow_error`` failure marker.
+
+    The single new persisted bit of the workflow layer, written ONLY on failure
+    paths (render/AI/send errored). It's what the pure-derive ``workflow.py`` reads
+    to surface ``needs_attention`` -- a failure isn't otherwise recoverable from a
+    half-written matter. Its own dedicated writer (never folded into an existing
+    happy-path writer) so a normal review/artifact/send write can't clobber it and
+    it can't clobber them.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "updated_at": now,
+        }
+        if workflow_error is None:
+            updated_matter.pop("workflow_error", None)
+        else:
+            updated_matter["workflow_error"] = workflow_error
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
 def migrate_ownerless_matter_ownership(
     *,
     user_email_to_id: dict[str, str],
@@ -395,6 +461,70 @@ def update_matter_ai_first_review(
         _save_matter_record(updated_matter)
         return updated_matter
     return None
+
+
+def update_matter_artifacts(
+    matter_id: str,
+    artifacts: list[dict[str, Any]],
+    current_artifact_id: str = "",
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Persist a matter's artifact registry (the ``artifacts`` list + pointer).
+
+    Additive: only the registry fields are touched; the rest of the matter
+    record is left exactly as-is.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        updated_matter = {
+            **matter,
+            "artifacts": list(artifacts),
+            "current_artifact_id": str(current_artifact_id or ""),
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+    return None
+
+
+def put_artifact_document(stored_filename: str, document_bytes: bytes) -> str:
+    """Store an artifact's bytes under UPLOADS_DIR and return its storage key.
+
+    The key is the (sanitised) ``stored_filename`` callers later pass to
+    ``get_artifact_document`` / ``source_document_path``. Bytes for the original
+    NDA are NOT re-stored — the registry reuses the matter's existing
+    ``stored_filename`` — so this is only used for generated/derived artifacts.
+    """
+    safe_name = _safe_artifact_stored_filename(stored_filename)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    _write_bytes_atomic(UPLOADS_DIR / safe_name, document_bytes)
+    return safe_name
+
+
+def get_artifact_document(stored_filename: str) -> bytes | None:
+    """Read an artifact's bytes by storage key (None when missing/escaping)."""
+    safe_name = str(stored_filename or "")
+    if not safe_name:
+        return None
+    source_path = (UPLOADS_DIR / safe_name).resolve()
+    if source_path.parent != UPLOADS_DIR.resolve() or not source_path.is_file():
+        return None
+    try:
+        return source_path.read_bytes()
+    except OSError:
+        return None
+
+
+def _safe_artifact_stored_filename(filename: str) -> str:
+    basename = Path(str(filename or "")).name
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip("-._")
+    if not safe_name:
+        safe_name = f"artifact-{uuid.uuid4().hex[:12]}.docx"
+    return safe_name[:MAX_SOURCE_FILENAME_LENGTH] or f"artifact-{uuid.uuid4().hex[:12]}.docx"
 
 
 def reset_demo_repository(owner_user_id: str = "") -> int:
