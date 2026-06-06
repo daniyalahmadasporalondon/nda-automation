@@ -195,30 +195,25 @@ function createDraftIntakeController({
     renderSidePanel();
   });
 
-  // The last successful generation, used to stage the Download/Send actions.
+  // The last successful generation, used by the Download/Send actions.
   let lastGenerated = null;
 
-  downloadButton?.addEventListener("click", () => {
+  // Download + Send are always available (not staged). If nothing has been
+  // generated yet, generate first, then perform the action — so a single click
+  // does the whole thing.
+  downloadButton?.addEventListener("click", async () => {
+    if (!lastGenerated) await generate();
     if (lastGenerated && typeof onDownloadGenerated === "function") onDownloadGenerated(lastGenerated);
   });
 
-  sendButton?.addEventListener("click", () => {
+  sendButton?.addEventListener("click", async () => {
+    if (!lastGenerated) await generate();
     if (lastGenerated && typeof onSendGenerated === "function") onSendGenerated(lastGenerated);
   });
 
-  // Enable/disable the staged Download + Send actions. They only come online once
-  // an NDA has actually been generated, and reset to disabled on Clear / new edits.
+  // Records the last successful generation so Download/Send act on it.
   function setStagedActions(generated) {
     lastGenerated = generated || null;
-    const enabled = Boolean(lastGenerated);
-    if (downloadButton) {
-      downloadButton.disabled = !enabled;
-      downloadButton.title = enabled ? "Download the generated NDA" : "Generate an NDA first";
-    }
-    if (sendButton) {
-      sendButton.disabled = !enabled;
-      sendButton.title = enabled ? "Email the generated NDA" : "Generate an NDA first";
-    }
   }
 
   // One-time population of the static option lists (entities, NDA types, laws).
