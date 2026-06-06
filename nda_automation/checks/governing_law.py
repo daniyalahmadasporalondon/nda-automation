@@ -62,6 +62,21 @@ GOVERNING_LAW_REFERENCE_SCOPE_PATTERN = (
     r"annex|annexes|annexure|annexures|appendix|appendices)\b"
     r".{0,180}\bgoverning\s+law\b"
 )
+# "[Party], (a company) incorporated under the laws of X" states a PARTY's
+# jurisdiction of incorporation, not the AGREEMENT's governing law. Most
+# counterparties are foreign-incorporated, so this recital's "laws of X" otherwise
+# trips the broad `laws of` anchor and gets mis-read as a competing/unapproved
+# governing law. We neutralise the recital's "laws of X" span before governing-law
+# analysis so only the operative "this Agreement is governed by..." clause counts.
+# The verbs below mark incorporation/formation; "governed"/"construed"/"subject to"
+# are deliberately excluded so an operative governing-law clause is never stripped.
+PARTY_INCORPORATION_RECITAL_PATTERN = (
+    r"\b(?:incorporated|organi[sz]ed|formed|constituted|established|existing|"
+    r"registered|domiciled)\b"
+    r"(?:\s+and\s+(?:existing|registered))?"
+    r"\s+(?:under|in\s+accordance\s+with|pursuant\s+to|by)\b"
+    r"[^.;\n]*?\blaws?\s+of\s+(?:the\s+)?[^.;,\n)]+"
+)
 # An approved law that can be moved/overridden later by agreement is not the
 # same risk as an unapproved law, but it weakens certainty enough to surface.
 # Matched against the full paragraph (the candidate value is comma-truncated and
@@ -221,7 +236,7 @@ def _governing_law_paragraph_analysis(
     }
 
     for paragraph in governing_paragraphs:
-        text = str(paragraph["text"])
+        raw_text = str(paragraph["text"])
         paragraph_id = str(paragraph.get("id") or "")
         reference_record = references_by_paragraph_id.get(paragraph_id)
         if reference_record:
@@ -231,6 +246,12 @@ def _governing_law_paragraph_analysis(
                 unclear_paragraphs.append(paragraph)
             elif reference_status == "unapproved":
                 unapproved_paragraphs.append(paragraph)
+            continue
+        # Neutralise a party's "incorporated under the laws of X" recital: it is an
+        # incorporation jurisdiction, not the agreement's governing law. If nothing
+        # operative survives, the paragraph is a recital -- skip it rather than flag.
+        text = _governing_law_analysis_text(raw_text)
+        if text != raw_text and not _has_governing_law_signal(text):
             continue
         candidates = _governing_law_candidates(text)
         records = [
@@ -387,7 +408,7 @@ def _governing_law_reference_target_paragraph_record(
     clause: Dict[str, object],
 ) -> Dict[str, object]:
     paragraph = paragraph_lookup[paragraph_id]
-    text = str(paragraph.get("text") or "")
+    text = _governing_law_analysis_text(str(paragraph.get("text") or ""))
     candidates = _governing_law_candidates(text)
     records = [_governing_law_candidate_record(paragraph_id, candidate, clause) for candidate in candidates]
     approved_records = [record for record in records if record["approved"] and not record["needs_review"]]
@@ -580,6 +601,52 @@ def _has_unclear_governing_law_text(text: str) -> bool:
 
 def _has_conditional_governing_override(text: str) -> bool:
     return bool(re.search(GOVERNING_LAW_CONDITIONAL_OVERRIDE_PATTERN, text, flags=re.IGNORECASE))
+
+
+def _strip_party_incorporation_recitals(text: str) -> str:
+    """Drop a PARTY's "incorporated under the laws of X" recital span.
+
+    The recital states a party's jurisdiction of incorporation, not the
+    agreement's governing law. We blank only the recital's "laws of X" span (the
+    incorporation verb up to the next clause boundary), leaving any operative
+    "this Agreement is governed by..." language in the same paragraph untouched so
+    a real governing-law clause -- approved or not -- is still analysed.
+    """
+    return re.sub(
+        PARTY_INCORPORATION_RECITAL_PATTERN,
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+def _governing_law_analysis_text(text: str) -> str:
+    """The paragraph text the governing-law analysis should reason over.
+
+    Identical to the raw text unless it carries a party-incorporation recital,
+    whose jurisdiction span is neutralised so it cannot be mistaken for a
+    governing-law value.
+    """
+    return _strip_party_incorporation_recitals(text)
+
+
+def _has_governing_law_signal(text: str) -> bool:
+    """Whether the (recital-stripped) text still asserts a governing law.
+
+    A paragraph only reaches governing-law bucketing because it matched an anchor
+    (often the broad `laws of`) or a concept. If neutralising a party's
+    incorporation recital leaves no operative governing-law language, the
+    paragraph is a recital, not a governing-law clause, and must be skipped rather
+    than counted as unapproved/unclear.
+    """
+    return bool(
+        re.search(
+            r"\b(?:governing\s+law|governed\b|construed\b|subject\s+to\b|"
+            r"laws?\s+of\b|law\s+of\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _is_governing_law_heading_only(text: str) -> bool:
