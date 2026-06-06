@@ -157,6 +157,21 @@ def _redteam_exception(request: Mapping[str, Any]) -> str:
     raise RuntimeError("model timed out")
 
 
+class _RawSmugglingAdapter:
+    """Raw adapter NOT wrapped by the guard (Suite C). It keeps a clause's load-
+    bearing terms (so even a guard's required-term check would accept it) but
+    smuggles a prohibited position in fresh prose -- used to prove the GATE's
+    by-meaning scan is a true backstop, independent of the in-process guard."""
+
+    def adapt(self, clause_id, playbook_text, context):  # noqa: ANN001
+        if clause_id == "mutuality":
+            return (
+                "Each party acts as both a Disclosing Party and a Receiving Party. "
+                "In addition, each party agrees it shall not solicit the customers of the other."
+            )
+        return playbook_text
+
+
 RED_TEAM_PROVIDERS: dict[str, ProviderFn] = {
     "non_compete": _redteam_non_compete,
     "non_solicit": _redteam_non_solicit,
@@ -281,19 +296,6 @@ def run_suite_c(playbook, expectations, authoritative) -> list[tuple[str, Verifi
 
     We attach the prohibited text to mutuality, keeping its required terms intact.
     """
-
-    class _RawSmugglingAdapter:
-        """Not wrapped by the guard. Keeps required terms, smuggles a position."""
-
-        def adapt(self, clause_id, playbook_text, context):  # noqa: ANN001
-            if clause_id == "mutuality":
-                # Keep the load-bearing terms so a guard would accept it, but add a
-                # non-solicit position in fresh prose.
-                return (
-                    "Each party acts as both a Disclosing Party and a Receiving Party. "
-                    "In addition, each party agrees it shall not solicit the customers of the other."
-                )
-            return playbook_text
 
     results = []
     adapter = _RawSmugglingAdapter()
