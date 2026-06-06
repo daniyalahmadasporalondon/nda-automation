@@ -1,0 +1,296 @@
+"""Tests for the artifact registry: the thin metadata layer over matter documents."""
+from __future__ import annotations
+
+import pytest
+
+from nda_automation import artifact_registry, artifact_service
+from nda_automation.artifact_registry import (
+    Artifact,
+    ArtifactRegistryError,
+    artifact_name,
+    hash_bytes,
+)
+from nda_automation.artifact_service import ArtifactMatterNotFoundError
+from nda_automation.matter_repository import InMemoryMatterRepository
+
+
+def _seed_matter(repo, **overrides):
+    kwargs = dict(
+        source_filename="Mutual NDA.docx",
+        document_bytes=b"PK\x03\x04 original nda bytes",
+        extracted_text="This Agreement is mutual.",
+        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        triage={"triage_status": "review", "headline": "Mutual NDA"},
+        source_type="gmail_demo",
+        board_column="in_review",
+    )
+    kwargs.update(overrides)
+    return repo.create_matter(**kwargs)
+
+
+# --- naming grammar --------------------------------------------------------
+def test_auto_naming_grammar():
+    assert artifact_name(1, "acme", "original", 1, "docx") == "01_acme_original_v1.docx"
+    assert artifact_name(2, "aspora", "redline", 2, "docx") == "02_aspora_redline_v2.docx"
+
+
+def test_auto_naming_slugifies_and_pads():
+    # Actor/role are slugified; sequence zero-padded; ext normalised.
+    assert artifact_name(10, "Acme Corp, Inc.", "Original", 1, "PDF") == "10_acme-corp-inc_original_v1.pdf"
+    # Unknown extension falls back to docx.
+    assert artifact_name(1, "ai", "redline", 1, "exe") == "01_ai_redline_v1.docx"
+
+
+# --- creation + provenance -------------------------------------------------
+def test_register_artifact_sets_provenance_and_current_pointer():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+
+    artifact = artifact_service.add_artifact(
+        matter["id"],
+        source=artifact_registry.SOURCE_GMAIL,
+        actor="counterparty",
+        role="original",
+        stored_filename=matter["stored_filename"],
+        repository=repo,
+    )
+
+    assert artifact.id.startswith("artifact_")
+    assert artifact.matter_id == matter["id"]
+    assert artifact.source == "gmail"
+    assert artifact.actor == "counterparty"
+    assert artifact.role == "original"
+    assert artifact.version == 1
+    assert artifact.name == "01_counterparty_original_v1.docx"
+    assert artifact.created_at  # stamped
+
+    stored = repo.get_matter(matter["id"])
+    assert stored["current_artifact_id"] == artifact.id
+    assert len(stored["artifacts"]) == 1
+    assert stored["artifacts"][0]["id"] == artifact.id
+
+
+def test_register_artifact_hashes_supplied_bytes():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    body = b"PK\x03\x04 generated nda"
+
+    artifact = artifact_service.add_artifact(
+        matter["id"],
+        source=artifact_registry.SOURCE_GENERATED,
+        actor="aspora",
+        role="generated",
+        document_bytes=body,
+        repository=repo,
+    )
+
+    assert artifact.content_hash == hash_bytes(body)
+    # Bytes are retrievable through the registry.
+    assert artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo) == body
+
+
+def test_register_artifact_reuses_existing_original_bytes_without_duplicating():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo, document_bytes=b"PK\x03\x04 the original")
+
+    artifact = artifact_service.add_artifact(
+        matter["id"],
+        source=artifact_registry.SOURCE_GMAIL,
+        actor="counterparty",
+        role="original",
+        stored_filename=matter["stored_filename"],  # reuse, no new bytes
+        repository=repo,
+    )
+    # Stored filename points at the original document already in storage.
+    assert artifact.stored_filename == matter["stored_filename"]
+    assert artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo) == b"PK\x03\x04 the original"
+
+
+def test_register_rejects_unknown_source_role_and_missing_actor():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    base = dict(actor="ai", role="redline", repository=repo)
+
+    with pytest.raises(ArtifactRegistryError):
+        artifact_service.add_artifact(matter["id"], source="ftp", **base)
+    with pytest.raises(ArtifactRegistryError):
+        artifact_service.add_artifact(matter["id"], source="gmail", actor="", role="redline", repository=repo)
+    with pytest.raises(ArtifactRegistryError):
+        artifact_service.add_artifact(matter["id"], source="gmail", actor="ai", role="bogus", repository=repo)
+
+
+def test_add_artifact_to_missing_matter_raises():
+    repo = InMemoryMatterRepository()
+    with pytest.raises(ArtifactMatterNotFoundError):
+        artifact_service.add_artifact(
+            "matter_does_not_exist", source="upload", actor="human", role="original", repository=repo
+        )
+
+
+# --- versioning ------------------------------------------------------------
+def test_versions_increment_per_role():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+
+    first = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline", document_bytes=b"r1", repository=repo
+    )
+    second = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline", document_bytes=b"r2", repository=repo
+    )
+    assert first.version == 1
+    assert second.version == 2
+    assert second.name == "02_ai_redline_v2.docx"
+
+
+# --- lineage ---------------------------------------------------------------
+def test_based_on_lineage_links_to_existing_artifact():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    redline = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline",
+        document_bytes=b"redline bytes", based_on_artifact_id=original.id, repository=repo,
+    )
+    assert redline.based_on_artifact_id == original.id
+
+
+def test_based_on_unknown_artifact_rejected():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    with pytest.raises(ArtifactRegistryError):
+        artifact_service.add_artifact(
+            matter["id"], source="generated", actor="ai", role="redline",
+            document_bytes=b"x", based_on_artifact_id="artifact_ghost", repository=repo,
+        )
+
+
+# --- current pointer -------------------------------------------------------
+def test_set_current_artifact_moves_pointer():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    redline = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline",
+        document_bytes=b"r", based_on_artifact_id=original.id, make_current=False, repository=repo,
+    )
+    # make_current=False left the original as current.
+    assert repo.get_matter(matter["id"])["current_artifact_id"] == original.id
+
+    artifact_service.set_current_artifact(matter["id"], redline.id, repository=repo)
+    assert repo.get_matter(matter["id"])["current_artifact_id"] == redline.id
+
+
+def test_set_current_unknown_artifact_rejected():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    with pytest.raises(ArtifactRegistryError):
+        artifact_service.set_current_artifact(matter["id"], "artifact_ghost", repository=repo)
+
+
+# --- backfill --------------------------------------------------------------
+def test_backfill_registers_original_for_existing_matter():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo, source_type="gmail_demo", document_bytes=b"PK original")
+
+    artifacts = artifact_service.backfill_matter(matter, repository=repo)
+
+    assert len(artifacts) == 1
+    original = artifacts[0]
+    assert original.role == "original"
+    assert original.version == 1
+    assert original.source == "gmail"
+    assert original.actor == "counterparty"
+    assert original.stored_filename == matter["stored_filename"]
+
+    stored = repo.get_matter(matter["id"])
+    assert stored["current_artifact_id"] == original.id
+
+
+def test_backfill_registers_redline_when_draft_present_with_lineage():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    repo.update_redline_draft(matter["id"], {"export_redline_edits": [{"id": "r1"}]})
+    matter = repo.get_matter(matter["id"])
+
+    artifacts = artifact_service.backfill_matter(matter, repository=repo)
+
+    assert [a.role for a in artifacts] == ["original", "redline"]
+    original, redline = artifacts
+    assert redline.based_on_artifact_id == original.id
+    assert redline.actor == "ai"
+    assert redline.source == "generated"
+    # Redline is the version that matters now.
+    assert repo.get_matter(matter["id"])["current_artifact_id"] == redline.id
+
+
+def test_backfill_is_idempotent():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+
+    first = artifact_service.backfill_matter(matter, repository=repo)
+    refreshed = repo.get_matter(matter["id"])
+    second = artifact_service.backfill_matter(refreshed, repository=repo)
+
+    assert [a.id for a in first] == [a.id for a in second]
+    assert len(repo.get_matter(matter["id"])["artifacts"]) == 1
+
+
+def test_backfill_infers_upload_source():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo, source_type="manual_upload")
+    artifacts = artifact_service.backfill_matter(matter, repository=repo)
+    assert artifacts[0].source == "upload"
+
+
+def test_backfill_all_matters_summary():
+    repo = InMemoryMatterRepository()
+    already = _seed_matter(repo)
+    artifact_service.backfill_matter(already, repository=repo)  # pre-registered
+    _seed_matter(repo, source_filename="Second.docx")  # un-registered
+
+    summary = artifact_service.backfill_all_matters(repository=repo)
+
+    assert summary["scanned"] == 2
+    assert summary["registered"] == 1
+    assert summary["skipped_already_registered"] == 1
+    assert summary["artifacts_created"] == 1
+
+
+# --- (de)serialisation round-trip -----------------------------------------
+def test_artifact_round_trips_through_dict():
+    artifact = Artifact(
+        id="artifact_abc",
+        matter_id="matter_1",
+        source="gmail",
+        actor="counterparty",
+        role="original",
+        version=1,
+        name="01_counterparty_original_v1.docx",
+        content_hash="deadbeef",
+        based_on_artifact_id="",
+        stored_filename="matter_1-orig.docx",
+        ext="docx",
+        created_at="2026-06-06T00:00:00+00:00",
+        metadata={"k": "v"},
+    )
+    assert Artifact.from_dict(artifact.to_dict()) == artifact
+
+
+def test_artifacts_persist_across_repository_reads():
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    listed = artifact_service.list_artifacts(matter["id"], repository=repo)
+    assert len(listed) == 1
+    assert listed[0].role == "original"
