@@ -161,3 +161,114 @@ def test_gate_catches_smuggled_position_when_guard_bypassed(
     # ...and the gate's meaning-based scan flags it as a prohibited position.
     flagged = [f for f in report.findings if f.severity == "DEFECT" and f.check == "position.prohibited"]
     assert flagged, "gate failed to flag a smuggled prohibited position by meaning"
+
+
+# --------------------------------------------------------------------------- #
+# DEFECT 1 contract -- the GUARD itself must BLOCK each leaking family (strip the
+# prohibited text via fallback), not merely rely on the downstream gate to flag it.
+# These assert at the GuardedClauseAdapter boundary: the adapted clause text must
+# NOT contain the prohibited wording. xfail(strict) until the pattern is widened.
+# --------------------------------------------------------------------------- #
+# An on-position base clause for mutuality that keeps the guard's required terms,
+# so the only reason to reject is the appended prohibited position (not a missing
+# load-bearing term) -- isolating the prohibited-pattern's coverage.
+_MUTUALITY_BASE = (
+    "Each party acts as both a Disclosing Party and a Receiving Party with respect to "
+    "Confidential Information it discloses or receives."
+)
+
+# Each leaking family -> a clause-appended prohibited sentence the guard must strip.
+_GUARD_LEAK_APPENDIX = {
+    "non_compete": " Furthermore, each party shall not compete with the other in any market.",
+    "non_solicit": " The Receiving Party will not solicit the employees of the Disclosing Party.",
+    "ip_assignment": " The Receiving Party hereby assigns all right, title and interest in derived IP.",
+    "penalty": " Any breach shall incur liquidated damages and a penalty of USD 100,000.",
+    "evergreen": " This Agreement shall automatically renew and may not be terminated.",
+}
+_GUARD_LEAK_MARKER = {
+    "non_compete": "shall not compete",
+    "non_solicit": "will not solicit",
+    "ip_assignment": "hereby assigns all right",
+    "penalty": "liquidated damages",
+    "evergreen": "automatically renew",
+}
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        pytest.param(
+            a,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    f"DEFECT 1: GuardedClauseAdapter._PROHIBITED_PATTERN does not cover {a!r}, so "
+                    f"the guard accepts the appended position instead of falling back. Remove this "
+                    f"xfail once the pattern is widened."
+                ),
+            ),
+            id=a,
+        )
+        for a in _GUARD_LEAK_APPENDIX
+    ],
+)
+def test_guard_blocks_prohibited_position(attack):
+    """The GUARD (not just the downstream gate) must strip a prohibited position from
+    adapted clause text: when the AI appends one, the guard's on-position check must
+    fail and fall back to the Playbook wording, so the prohibited marker is absent."""
+
+    def provider(_request):
+        return _MUTUALITY_BASE + _GUARD_LEAK_APPENDIX[attack]
+
+    adapter = gen_ai.build_clause_adapter(provider=provider)
+    adapted = adapter.adapt("mutuality", _MUTUALITY_BASE, {"counterparty": "X"})
+    marker = _GUARD_LEAK_MARKER[attack]
+    assert marker not in adapted.lower(), (
+        f"guard accepted prohibited {attack!r}: {marker!r} survived in adapted text"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# DEFECT 2 contract -- the SHIP PATH must GATE: if a prohibited position reaches the
+# rendered document, generate_and_save_nda must RAISE and NOT persist the artifact.
+# xfail(strict) until the pre-save gate is added (today it saves unconditionally).
+# --------------------------------------------------------------------------- #
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEFECT 2: generate_and_save_nda goes generate->save with no blocking gate, so a "
+        "leaked prohibited position is persisted (the route's self_check is advisory, post-save). "
+        "Remove this xfail once a hard pre-save gate (raise + no save) is added."
+    ),
+)
+def test_ship_path_gate_raises_and_does_not_save_on_leak(monkeypatch, playbook):
+    """A drifting AI adapter that leaks a prohibited position into the document must be
+    BLOCKED by the ship path: generate_and_save_nda raises and the artifact is NOT saved."""
+
+    def leaky_provider(request):
+        # Append a non-compete (a D1-gap family) so it survives the guard today.
+        return str(request.get("playbook_text", "")) + " Furthermore, each party shall not compete with the other."
+
+    adapter = gen_ai.build_clause_adapter(provider=leaky_provider)
+
+    saved = {"called": False}
+
+    def fake_add_artifact(*args, **kwargs):
+        saved["called"] = True
+        class _A:
+            id = "artifact-should-not-exist"
+        return _A()
+
+    # Intercept the persistence boundary so we can assert "no save happened".
+    monkeypatch.setattr("nda_automation.artifact_service.add_artifact", fake_add_artifact)
+
+    with pytest.raises(Exception):
+        gen.generate_and_save_nda(
+            "aspora_technology",
+            _default_intake("mutual"),
+            matter_id="m-test",
+            playbook=playbook,
+            clause_adapter=adapter,
+            use_ai=False,
+        )
+    assert not saved["called"], "ship path persisted an artifact containing a prohibited position"
