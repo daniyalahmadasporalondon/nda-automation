@@ -143,22 +143,20 @@ class _PayloadError(ValueError):
 
 
 def _intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntake, str]:
-    """Map the draft-ui Generate payload to (entity_id, intake, govlaw_override).
+    """Map the draft-ui Generate payload to (entity_id, intake, govlaw_option_id).
 
-    Two payload shapes are accepted so the route is robust to how draft-ui wires
-    the form (the field names were settled by message, but we tolerate both the
-    flat and the nested intake shape, plus the obvious aliases):
+    The committed FE (buildDraftPayload) sends the nested shape; the flat shape is
+    tolerated for tests / alternate clients:
 
-        {signing_entity_id, intake:{counterparty_name, project, term_years,
-         nda_type, ...}, governing_law_override?}
-        {signing_entity:{id}, counterparty:{name,...}, project_purpose, term,
-         nda_type, notes, effective_date}
+        {signing_entity:{id, governing_law:{playbook_option_id}, ...},
+         counterparty:{name,...}, project_purpose, term, nda_type, notes}   (FE)
+        {signing_entity_id, intake:{counterparty_name, project, term_years, ...}} (flat)
 
-    ``governing_law_override`` is an optional Playbook governing-law option id
-    (india | delaware | england_and_wales | difc): when set, the draft uses that
-    (still approved) law instead of the entity default. The engine rejects an
-    UNAPPROVED override with NdaGenerationError -> 400; an empty/absent value
-    keeps the entity's registered law.
+    The chosen governing law is the ``signing_entity.governing_law.playbook_option_id``
+    the FE always emits (the entity default when not overridden, the user's pick
+    when overridden). It is read as the EFFECTIVE governing law and passed straight
+    to the engine; an UNAPPROVED option is rejected with NdaGenerationError -> 400.
+    There is NO top-level ``governing_law_override`` string — the FE never sends one.
     """
 
     if not isinstance(payload, dict):
@@ -221,27 +219,22 @@ def _entity_id_from_payload(payload: dict[str, Any]) -> str:
 
 
 def _governing_law_override_from_payload(payload: dict[str, Any]) -> str:
-    """Resolve the chosen governing-law option id from the payload.
+    """Resolve the chosen governing-law option id from the committed FE payload.
 
-    The committed FE (buildDraftPayload) carries the chosen law INSIDE the
-    signing-entity bundle as ``signing_entity.governing_law.playbook_option_id``
-    (always present — the effective law, override or not). We pass it through as
-    the engine's ``governing_law_override``; the engine treats a value equal to
-    the entity default as a no-op, so always forwarding the chosen law is correct
-    and keeps the server authoritative on the overridden flag. A flat
-    ``governing_law_override`` / top-level ``governing_law`` block is also accepted
-    (test + alternate-client robustness). An unapproved id is rejected downstream
-    (NdaGenerationError -> 400)."""
-    # Preferred: the FE's nested signing_entity.governing_law.playbook_option_id.
+    The FE (buildDraftPayload) carries the chosen law INSIDE the signing-entity
+    bundle as ``signing_entity.governing_law.playbook_option_id`` — ALWAYS present
+    (it is the effective law: the entity default when not overridden, the user's
+    pick when overridden). The server reads THAT as the effective option and is the
+    authority on whether it differs from the entity default. There is deliberately
+    NO top-level ``governing_law_override`` string: the FE never sends one, so
+    honouring a phantom field would only invite confusion. A top-level
+    ``governing_law`` block is still accepted as an alternate-client convenience.
+    An unapproved id is rejected downstream (NdaGenerationError -> 400)."""
     signing_entity = payload.get("signing_entity")
     if isinstance(signing_entity, dict):
         option_id = _option_id_from_law_block(signing_entity.get("governing_law"))
         if option_id:
             return option_id
-    # Fallbacks: a flat override string or a top-level governing_law block.
-    flat = payload.get("governing_law_override")
-    if isinstance(flat, str) and flat.strip():
-        return flat.strip()
     return _option_id_from_law_block(payload.get("governing_law"))
 
 

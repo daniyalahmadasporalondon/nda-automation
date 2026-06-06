@@ -280,12 +280,16 @@ class GenerateNdaRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                # The FE carries the chosen law INSIDE signing_entity.governing_law —
+                # there is no top-level governing_law_override string.
                 status, payload, _ = self.generate(
                     {
-                        # aspora default is India; override to England.
-                        "signing_entity_id": "aspora_technology",
-                        "intake": {"counterparty_name": "Acme Corp Ltd"},
-                        "governing_law_override": "england_and_wales",
+                        "signing_entity": {
+                            "id": "aspora_technology",  # default India; picked England
+                            "governing_law": {"playbook_option_id": "england_and_wales"},
+                            "governing_law_overridden": True,
+                        },
+                        "counterparty": {"name": "Acme Corp Ltd"},
                     },
                     headers=self.basic_auth_headers(),
                 )
@@ -295,18 +299,21 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(payload["manifest"]["entity_default_governing_law_value"], "India")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
 
-    def test_unapproved_governing_law_override_is_rejected(self):
+    def test_unapproved_governing_law_option_is_rejected(self):
         with patch.dict(os.environ, self.auth_env()):
             status, payload, _ = self.generate(
                 {
-                    "signing_entity_id": "aspora_technology",
-                    "intake": {"counterparty_name": "Acme"},
-                    "governing_law_override": "new_york",
+                    "signing_entity": {
+                        "id": "aspora_technology",
+                        "governing_law": {"playbook_option_id": "new_york"},
+                        "governing_law_overridden": True,
+                    },
+                    "counterparty": {"name": "Acme"},
                 },
                 headers=self.basic_auth_headers(),
             )
         self.assertEqual(status, 400)
-        self.assertIn("override", payload["error"].lower())
+        self.assertIn("not an approved", payload["error"].lower())
 
     def test_off_position_draft_is_blocked_by_the_safety_gate_before_save(self):
         # DEFECT-2 regression: the hard safety gate must run on the ACTUAL endpoint
