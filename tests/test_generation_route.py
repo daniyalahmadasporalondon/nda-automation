@@ -353,6 +353,159 @@ class GenerateNdaRouteTests(unittest.TestCase):
                     [m for m in matters if m.get("source_type") == "generated"], []
                 )
 
+    # --- integrator route-level differentials (authoritative route-parser proofs) --- #
+    # These close the route-bypass class of gaps end-to-end: they exercise the FULL
+    # FE -> /api/generate-nda route -> generate path (not the internal functions the
+    # route doesn't call), each with an anti-false-green half so the test can't pass
+    # for the wrong reason. Kept alongside the D2 gate test above.
+
+    def _generated_docx_text(self, download_url, headers):
+        """Download the generated .docx over the matter-source route and return its prose."""
+        import io
+        import re
+        import zipfile
+
+        status, raw, _ = self.request("GET", download_url, headers=headers)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(raw[:2], b"PK", "matter source is not a .docx (zip)")
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            document_xml = zf.read("word/document.xml").decode("utf-8")
+        return re.sub(r"<[^>]+>", " ", document_xml)
+
+    def test_route_override_survives_to_rendered_docx_via_nested_fe_shape(self):
+        # aspora default is India; the FE nests an override to Delaware. The override
+        # must win on the manifest AND the rendered DOCX governing-law clause AND the
+        # derived forum -- proving the override travels the real route, not a bypass.
+        fe_payload = {
+            "counterparty": {"name": "Wayne Enterprises Ltd"},
+            "project_purpose": "evaluating a partnership",
+            "term": "2 years",
+            "nda_type": "mutual",
+            "signing_entity": {
+                "id": "aspora_technology",
+                "legal_name": "Aspora Technology Services Private Limited",
+                "governing_law": {"playbook_option_id": "delaware", "label": "Delaware"},
+                "governing_law_overridden": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, payload)
+                manifest = payload["manifest"]
+                # Signal 1: manifest carries the chosen option + full provenance.
+                self.assertEqual(manifest["governing_law_option_id"], "delaware")
+                self.assertEqual(manifest["governing_law_value"], "Delaware")
+                self.assertTrue(manifest["governing_law_overridden"])
+                self.assertEqual(manifest["entity_default_governing_law_value"], "India")
+                self.assertNotIn("India", manifest["forum"])
+                self.assertIn("Delaware", manifest["forum"])
+                # Signal 2: the rendered DOCX's GOVERNING-LAW CLAUSE names the override
+                # law. "the laws of India" legitimately remains in Aspora's
+                # incorporation recital (incorporation jurisdiction != governing law),
+                # so we assert against the governing-law clause specifically.
+                prose = self._generated_docx_text(payload["download_url"], self.basic_auth_headers())
+                self.assertIn("governed by and construed in accordance with the laws of Delaware", prose)
+                self.assertNotIn("governed by and construed in accordance with the laws of India", prose)
+
+    def test_route_reads_nested_override_not_top_level_only(self):
+        # Differential / anti-false-green: the override carried ONLY at the FE's nested
+        # path applies (proving the route reads the nested path); the same payload
+        # WITHOUT that nesting falls back to the entity default. A top-level-only parser
+        # (the original bug) would fail the first half.
+        base = {
+            "counterparty": {"name": "Stark Industries Ltd"},
+            "project_purpose": "a pilot",
+            "term": "2 years",
+            "nda_type": "mutual",
+        }
+        nested_override = {
+            **base,
+            "signing_entity": {
+                "id": "aspora_technology",
+                "legal_name": "Aspora Technology Services Private Limited",
+                "governing_law": {"playbook_option_id": "delaware", "label": "Delaware"},
+            },
+        }
+        no_nesting = {
+            **base,
+            "signing_entity": {
+                "id": "aspora_technology",
+                "legal_name": "Aspora Technology Services Private Limited",
+            },
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, applied, _ = self.generate(nested_override, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, applied)
+                self.assertEqual(applied["manifest"]["governing_law_option_id"], "delaware")
+                self.assertTrue(applied["manifest"]["governing_law_overridden"])
+
+                status, defaulted, _ = self.generate(no_nesting, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, defaulted)
+                self.assertEqual(defaulted["manifest"]["governing_law_value"], "India")
+                self.assertFalse(defaulted["manifest"]["governing_law_overridden"])
+
+    def test_route_d2_gate_is_what_blocks_the_off_position_ship(self):
+        # D2 anti-false-green: the SAME off-position draft is REJECTED (400, nothing
+        # saved) on the real route BECAUSE the gate runs there -- and would have SHIPPED
+        # if the gate weren't called (the 7577e8d route-bypass hole). We prove the gate
+        # is the cause by neutralising only assert_generated_nda_is_on_position: with it
+        # bypassed, the identical tampered draft is PERSISTED + returned (the old bug);
+        # with it active (the real route), it is refused. Same input, gate is the pivot.
+        from io import BytesIO
+
+        from docx import Document
+
+        from nda_automation import nda_generation
+
+        real_generate = nda_generation.generate_nda_for_entity
+
+        def tampered_generate(entity_id, intake, **kwargs):
+            result = real_generate(entity_id, intake, **kwargs)
+            document = Document(BytesIO(result.docx_bytes))
+            document.add_paragraph("The Receiving Party shall not compete with the Disclosing Party.")
+            with BytesIO() as buffer:
+                document.save(buffer)
+                return nda_generation.GenerationResult(docx_bytes=buffer.getvalue(), manifest=result.manifest)
+
+        body = {"signing_entity_id": "aspora_technology", "intake": {"counterparty_name": "Acme"}}
+
+        # Half A — gate ACTIVE on the real route: refused, nothing persisted.
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()), patch(
+                "nda_automation.routes.generation.nda_generation.generate_nda_for_entity",
+                side_effect=tampered_generate,
+            ):
+                status, payload, _ = self.generate(body, headers=self.basic_auth_headers())
+                self.assertEqual(status, 400)
+                self.assertIn("safety gate", payload["error"].lower())
+                refused_matters = matter_store.list_matters(owner_user_id="nda-admin")
+                self.assertEqual([m for m in refused_matters if m.get("source_type") == "generated"], [])
+
+        # Half B — gate NEUTRALISED (simulating the 7577e8d bypass): the IDENTICAL
+        # tampered draft now ships (201) and persists. This is what the route did
+        # before the fix -- proving the gate in Half A is the thing that blocks it.
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()), patch(
+                "nda_automation.routes.generation.nda_generation.generate_nda_for_entity",
+                side_effect=tampered_generate,
+            ), patch(
+                "nda_automation.routes.generation.nda_generation.assert_generated_nda_is_on_position",
+                return_value=None,
+            ):
+                status, payload, _ = self.generate(body, headers=self.basic_auth_headers())
+                self.assertEqual(status, 201, payload)
+                shipped_matters = matter_store.list_matters(owner_user_id="nda-admin")
+                self.assertTrue(
+                    [m for m in shipped_matters if m.get("source_type") == "generated"],
+                    "without the gate the off-position draft should have shipped (the old bug)",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
