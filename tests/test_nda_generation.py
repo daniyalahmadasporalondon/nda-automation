@@ -535,3 +535,74 @@ class TestEndToEndWithLiveDeps:
         matter = _seed_matter(repo)
         with pytest.raises(gen.NdaGenerationError):
             gen.generate_and_save_nda("no_such_entity", _intake(), matter["id"], playbook=playbook, repository=repo)
+
+
+class TestShipGate:
+    """D2: generate_and_save_nda must NEVER persist an off-position draft. The
+    pre-save gate is the last, independent backstop on the ship path."""
+
+    def _tamper(self, result, extra_sentence):
+        from docx import Document
+        from io import BytesIO
+
+        document = Document(BytesIO(result.docx_bytes))
+        document.add_paragraph(extra_sentence)
+        with BytesIO() as buffer:
+            document.save(buffer)
+            return gen.GenerationResult(docx_bytes=buffer.getvalue(), manifest=result.manifest)
+
+    def test_gate_passes_a_legitimate_draft(self, playbook):
+        result = _generate(playbook)
+        # Does not raise.
+        gen._assert_generated_nda_is_on_position(result, playbook)
+
+    @pytest.mark.parametrize(
+        "smuggled,acceptable_labels",
+        [
+            ("The Receiving Party shall not compete with the Disclosing Party in any market.", ("non_compete",)),
+            ("All right, title and interest in any improvements is hereby assigned to the Disclosing Party.", ("ip_assignment",)),
+            ("Any breach of this Agreement carries liquidated damages of USD 100,000.", ("penalty",)),
+            # Perpetual ordinary confidentiality is caught by EITHER screen — the
+            # native term_and_survival check (indefinite_survival) or the
+            # prohibited-position scan. Both are valid blocks.
+            ("All Confidential Information shall remain confidential in perpetuity.", ("perpetual_confidentiality", "term_and_survival")),
+        ],
+    )
+    def test_gate_blocks_a_smuggled_prohibited_position(self, playbook, smuggled, acceptable_labels):
+        tampered = self._tamper(_generate(playbook), smuggled)
+        with pytest.raises(gen.NdaGenerationError) as excinfo:
+            gen._assert_generated_nda_is_on_position(tampered, playbook)
+        assert any(label in str(excinfo.value) for label in acceptable_labels), str(excinfo.value)
+
+    def test_gate_permits_the_narrow_survival_carveout(self, playbook):
+        # The legitimate trade-secret/data-protection survival sentence uses
+        # "for as long as ... requires" and must NOT be read as perpetual drift.
+        result = _generate(playbook)
+        text = extract_docx_text(result.docx_bytes)
+        assert "data-protection" in text.lower()
+        gen._assert_generated_nda_is_on_position(result, playbook)  # does not raise
+
+    def test_generate_and_save_with_hostile_adapter_still_saves_clean(self, playbook):
+        # An adapter that tries to smuggle a non-compete is neutralised by the guard,
+        # so the ship gate passes and a CLEAN artifact is persisted.
+        from nda_automation.matter_repository import InMemoryMatterRepository
+        from nda_automation import artifact_service
+
+        def hostile(request):
+            return request["playbook_text"] + " The receiving party shall not compete with us."
+
+        from nda_automation.nda_generation_ai import build_clause_adapter
+
+        repo = InMemoryMatterRepository()
+        matter = _seed_matter(repo)
+        result, artifact = gen.generate_and_save_nda(
+            "real_transfer",
+            _intake(),
+            matter["id"],
+            playbook=playbook,
+            repository=repo,
+            clause_adapter=build_clause_adapter(provider=hostile),
+        )
+        stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
+        assert "shall not compete" not in extract_docx_text(stored).lower()
+        assert gen.self_check_generated_nda(stored, playbook=playbook).passed

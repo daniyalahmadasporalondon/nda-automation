@@ -467,6 +467,11 @@ def generate_and_save_nda(
     ``matter_id``. Returns ``(result, artifact)``.
     """
 
+    if playbook is None:
+        from .checker import load_playbook  # noqa: PLC0415
+
+        playbook = load_playbook()
+
     result = generate_nda_for_entity(
         entity_id,
         intake,
@@ -474,6 +479,11 @@ def generate_and_save_nda(
         clause_adapter=clause_adapter,
         use_ai=use_ai,
     )
+    # Hard pre-save gate: never persist an off-position draft. The clause adapter
+    # is guarded and the intake is sanitised, but this is the last, independent
+    # backstop on the SHIP path — a generated NDA that fails its own Playbook or
+    # carries a prohibited position must not become a saved artifact.
+    _assert_generated_nda_is_on_position(result, playbook)
     artifact = save_generated_nda(
         result,
         matter_id,
@@ -482,6 +492,92 @@ def generate_and_save_nda(
         owner_user_id=owner_user_id,
     )
     return result, artifact
+
+
+# --------------------------------------------------------------------------- #
+# Pre-save ship gate — the last backstop before a draft becomes an artifact
+# --------------------------------------------------------------------------- #
+# Meaning-based prohibited-position families, mirroring gen-verify's gate so the
+# ship path enforces the same bar the independent verifier does. A hit anywhere in
+# the generated document (outside the permitted narrow survival carve-out) means
+# the draft asserts a position the Playbook bans -> refuse to save.
+_PROHIBITED_POSITION_DOC_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("non_compete", re.compile(r"non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)|competing business", re.IGNORECASE)),
+    ("non_solicit", re.compile(r"non-?solicit|(?:shall|will|may) not\b[^.]{0,30}\bsolicit|refrain from soliciting|solicit or hire", re.IGNORECASE)),
+    ("non_circumvention", re.compile(r"non-?circumvent|shall not circumvent|circumvent or bypass|bypass the disclosing party", re.IGNORECASE)),
+    ("exclusivity", re.compile(r"\bexclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to", re.IGNORECASE)),
+    ("ip_assignment", re.compile(r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest in", re.IGNORECASE)),
+    ("perpetual_confidentiality", re.compile(r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b|for an unlimited (?:time|period)", re.IGNORECASE)),
+    ("penalty", re.compile(r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages", re.IGNORECASE)),
+    ("auto_renew_lock", re.compile(r"automatically renew|evergreen|may not (?:be )?terminat", re.IGNORECASE)),
+)
+
+
+def _assert_generated_nda_is_on_position(result: "GenerationResult", playbook: Mapping[str, Any]) -> None:
+    """Refuse to ship a generated NDA that fails its own Playbook or carries a
+    prohibited position. Raises :class:`NdaGenerationError` (which the endpoint
+    surfaces as a 400) so an off-position draft never reaches storage.
+
+    Two independent screens, matching gen-verify's gate:
+    1. ``self_check_generated_nda`` — zero native fails AND non_circumvention does
+       not fail (the deterministic + AI-first oracles).
+    2. a meaning-based prohibited-position scan over the whole document, so a
+       position smuggled OUTSIDE the six scored clauses is still caught.
+    The narrow trade-secret / legal / data-protection survival carve-out the
+    Playbook permits ("for as long as ... required") is exempt from the perpetual
+    screen so the legitimate survival sentence is not mistaken for a position.
+    """
+
+    from .docx_text import extract_docx_text  # noqa: PLC0415
+
+    check = self_check_generated_nda(result.docx_bytes, playbook=playbook)
+    if not check.passed:
+        problems = check.native_failures + check.dynamic_failures
+        raise NdaGenerationError(
+            "Generated NDA failed its own Playbook and cannot be saved: "
+            + ", ".join(problems or ["unknown failure"])
+        )
+
+    text = extract_docx_text(result.docx_bytes)
+    # Scan PER SENTENCE so the permitted-survival exemption applies only to the
+    # specific sentence that carries the carve-out scope -- not the whole document
+    # (the legitimate trade-secret/data-protection survival sentence must not
+    # license a perpetual claim made elsewhere in the draft).
+    for sentence in _scan_sentences(text):
+        for label, pattern in _PROHIBITED_POSITION_DOC_PATTERNS:
+            if not pattern.search(sentence):
+                continue
+            if label == "perpetual_confidentiality" and _is_permitted_long_survival(sentence):
+                continue
+            raise NdaGenerationError(
+                f"Generated NDA carries a prohibited position ({label}) and cannot be saved."
+            )
+
+
+def _scan_sentences(text: str) -> list[str]:
+    """Split the document into sentence/line units for the position scan."""
+    return [s.strip() for s in re.split(r"(?<=[.;])\s+|\n+", text) if s.strip()]
+
+
+def _is_permitted_long_survival(sentence: str) -> bool:
+    """The Playbook permits a NARROW trade-secret / legal / data-protection
+    survival obligation to last as long as the protected status or law requires.
+    Perpetual-survival language scoped to that carve-out is on-position; the same
+    language applied to ALL confidential information is drift. Mirrors gen-verify's
+    permitted-long-survival logic so the ship gate and the verifier agree -- judged
+    on the SAME sentence as the perpetual language, not the whole document."""
+
+    lowered = re.sub(r"\s+", " ", sentence.lower())
+    carve_outs = (
+        "trade secret", "as long as", "so long as", "applicable law", "law requires",
+        "legal obligation", "data protection", "data-protection",
+    )
+    if not any(token in lowered for token in carve_outs):
+        return False
+    # If the perpetual language in THIS sentence reaches ALL/ANY confidential
+    # information it is no longer the narrow carve-out and is not permitted.
+    blanket = ("all confidential information", "any and all information", "all information")
+    return not any(token in lowered for token in blanket)
 
 
 # --------------------------------------------------------------------------- #
