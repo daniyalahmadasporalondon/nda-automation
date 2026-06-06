@@ -1876,6 +1876,59 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(pdf_status, 409)
         self.assertEqual(pdf_payload["document_render"]["status"], document_rendering.UNAVAILABLE_STATUS)
 
+    def test_render_status_poll_does_not_block_on_slow_rasterization(self):
+        # The polled status endpoint must NOT rasterize synchronously on the
+        # request thread: with a renderer that blocks past the grace window, the
+        # poll returns a non-blocking "rendering" status instead of hanging.
+        from nda_automation.routes import matters as matters_routes
+
+        block_render = threading.Event()
+
+        class BlockingPdfPageRenderer:
+            name = "blocking-pdf-pages"
+
+            def is_available(self):
+                return True
+
+            def render_pdf_to_page_images(self, pdf_path, output_dir, *, dpi):
+                # Hold the background render open past the poll's grace window.
+                block_render.wait(timeout=10)
+                image_path = output_dir / "page-1.png"
+                image_path.write_bytes(b"\x89PNG\r\nlate page\n")
+                return [
+                    document_rendering.RenderedPdfPageImage(
+                        page_number=1, image_path=image_path, width=10, height=10, dpi=dpi, scale=1.0
+                    )
+                ]
+
+        source_pdf = b"%PDF-1.7\nslow render\n%%EOF\n"
+        try:
+            with tempfile.TemporaryDirectory() as data_dir:
+                patches = self.matter_store_patches(data_dir)
+                with patches[0], patches[1], patches[2], \
+                        patch.object(document_rendering, "PyMuPdfPageRenderer", BlockingPdfPageRenderer), \
+                        patch.object(matters_routes, "RENDER_STATUS_POLL_GRACE_SECONDS", 0.1):
+                    document_rendering.matter_render_coordinator().reset_for_tests()
+                    matter = matter_store.create_matter(
+                        source_filename="Slow NDA.pdf",
+                        document_bytes=source_pdf,
+                        extracted_text="PDF text.",
+                        review_result={"clauses": []},
+                        triage={"triage_status": "ready_to_sign", "issue_count": 0},
+                    )
+                    status, payload, _headers = self.request_with_headers(
+                        "GET", f"/api/matters/{matter['id']}/render-status"
+                    )
+                    # The poll returned promptly with a non-terminal rendering
+                    # status (it did not block until block_render was set).
+                    self.assertEqual(status, 200)
+                    self.assertEqual(
+                        payload["document_render"]["status"], document_rendering.RENDERING_STATUS
+                    )
+        finally:
+            block_render.set()
+            document_rendering.matter_render_coordinator().reset_for_tests()
+
     def test_matter_upload_uses_active_ai_first_review_as_saved_review_result(self):
         source_docx = make_docx([
             "Each party may disclose Confidential Information to the other party.",
@@ -2633,6 +2686,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_delete_status, 404)
         self.assertEqual(missing_delete_payload["error"], "Matter not found.")
         self.assertFalse(stored_path_exists)
+
+    def test_matter_delete_purges_render_cache(self):
+        # Rendering populates a per-matter cache entry under DATA_DIR/cache;
+        # deleting the matter must purge that entry so rendered artifacts do not
+        # outlive the matter.
+        source_pdf = b"%PDF-1.7\npurge-me\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Purge NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text="PDF text.",
+                    review_result={"clauses": []},
+                    triage={"triage_status": "ready_to_sign", "issue_count": 0},
+                )
+                # Populate the render cache via the status endpoint.
+                render_status, _payload, _headers = self.request_with_headers(
+                    "GET", f"/api/matters/{matter['id']}/render-status"
+                )
+                cache_root = document_rendering.document_render_cache_dir()
+                entries_before = sorted(p.name for p in cache_root.iterdir() if p.is_dir()) if cache_root.is_dir() else []
+
+                delete_status, _delete_payload = self.request("DELETE", f"/api/matters/{matter['id']}")
+                entries_after = sorted(p.name for p in cache_root.iterdir() if p.is_dir()) if cache_root.is_dir() else []
+
+        self.assertEqual(render_status, 200)
+        self.assertTrue(entries_before, "render did not populate a cache entry")
+        self.assertEqual(delete_status, 200)
+        self.assertEqual(entries_after, [], "render cache entry survived matter deletion")
 
     def test_public_matter_uses_explicit_allowlist(self):
         public = matter_view.public_matter({
