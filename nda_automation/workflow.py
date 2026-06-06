@@ -1,0 +1,562 @@
+"""The canonical Matter workflow state machine (the workflow half of a Matter).
+
+A matter today carries several overlapping, ad-hoc status signals -- an
+overloaded ``status`` flag, the kanban ``board_column``, ``triage_status`` plus a
+free-text ``next_action``, ``human_reviewed``, ``approved_at``, the derived
+``review_state`` (review_state.py), an approval-only ``matter_timeline``, and the
+``last_outbound_*`` send stamps. None of them is *the* source of truth for "where
+is this matter in its lifecycle and who owns the next move."
+
+This module promotes those signals into ONE canonical, **purely derived**
+workflow state. It reads the matter dict and returns a ``workflow_state`` object;
+it never persists a parallel status machine that could drift from the underlying
+fields (the same design that makes ``review_state`` trustworthy). The only thing
+the workflow layer ever *writes* is the append-only ``matter_timeline`` event log
+and, on failure paths only, a small ``workflow_error`` marker -- both via
+dedicated matter_store writers, never from here.
+
+The model:
+
+* ``phase`` -- the coarse lifecycle stage: Intake -> Review -> Approval -> Sent ->
+  Negotiation -> Executed.
+* ``status`` -- the fine machine-state within a phase (e.g. Review ->
+  ``ai_reviewing`` | ``awaiting_human``).
+* ``next_action`` -- the canonical "what happens next and who owns it"
+  ``{label, owner, blocked}`` (``owner`` is ``human`` or ``system``). This
+  SUPERSEDES triage's free-text next_action so the UI/automation read one source.
+* ``human_gate`` -- True when the matter is blocked on a person; False when a
+  machine is working. The rule is mechanical: any in-progress ("-ing") status is
+  machine work; the explicit waiting statuses are human gates.
+* ``needs_attention`` -- the ORTHOGONAL failure axis. A render/AI/send failure
+  flips this True (with an ``attention_reason``) so a matter can't silently die.
+  needs_attention does not move the board column -- it's a flag/overlay.
+* ``board_column`` -- the fine status rolled up into the existing kanban columns.
+
+Negotiation entry is an explicit "counter-received" transition for now (the real
+inbound-thread detection is Track C); Executed is a manual "mark signed" terminal
+with a DocuSign-shaped seam but no e-signature wiring yet.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from .review_state import review_state_from_result
+
+WORKFLOW_STATE_VERSION = 1
+
+# --- Phases (coarse lifecycle stages) -------------------------------------
+PHASE_INTAKE = "intake"
+PHASE_REVIEW = "review"
+PHASE_APPROVAL = "approval"
+PHASE_SENT = "sent"
+PHASE_NEGOTIATION = "negotiation"
+PHASE_EXECUTED = "executed"
+
+PHASE_ORDER = (
+    PHASE_INTAKE,
+    PHASE_REVIEW,
+    PHASE_APPROVAL,
+    PHASE_SENT,
+    PHASE_NEGOTIATION,
+    PHASE_EXECUTED,
+)
+
+# --- Statuses (fine machine-state within a phase) -------------------------
+# Intake
+STATUS_RECEIVED = "received"
+STATUS_EXTRACTING = "extracting"
+STATUS_EXTRACTED = "extracted"
+STATUS_INTAKE_FAILED = "intake_failed"
+# Review
+STATUS_RENDERING = "rendering"
+STATUS_AI_REVIEWING = "ai_reviewing"
+STATUS_AWAITING_HUMAN = "awaiting_human"
+STATUS_AUTO_CLEARED = "auto_cleared"
+STATUS_REVIEW_FAILED = "review_failed"
+# Approval
+STATUS_AWAITING_APPROVAL = "awaiting_approval"
+STATUS_APPROVAL_BLOCKED = "approval_blocked"
+STATUS_APPROVED = "approved"
+# Sent
+STATUS_SENDING = "sending"
+STATUS_SENT_AWAITING_COUNTERPARTY = "sent_awaiting_counterparty"
+STATUS_SEND_FAILED = "send_failed"
+# Negotiation
+STATUS_COUNTER_RECEIVED = "counter_received"
+STATUS_RE_REVIEWING = "re_reviewing"
+# Executed
+STATUS_FULLY_SIGNED = "fully_signed"
+
+# The human-gate set: a person owns the next move. Everything NOT in this set
+# (and not a failure) is machine work -- mechanically, the in-progress statuses.
+HUMAN_GATE_STATUSES = frozenset({
+    STATUS_AWAITING_HUMAN,
+    STATUS_AWAITING_APPROVAL,
+    STATUS_SENT_AWAITING_COUNTERPARTY,
+    STATUS_COUNTER_RECEIVED,
+})
+
+# In-progress ("a machine is working") statuses -- never a human gate.
+MACHINE_WORKING_STATUSES = frozenset({
+    STATUS_EXTRACTING,
+    STATUS_RENDERING,
+    STATUS_AI_REVIEWING,
+    STATUS_SENDING,
+    STATUS_RE_REVIEWING,
+})
+
+# The orthogonal failure axis: any of these flips needs_attention True so the
+# matter surfaces as stuck instead of dying silently. They do NOT move the board.
+FAILURE_STATUSES = frozenset({
+    STATUS_INTAKE_FAILED,
+    STATUS_REVIEW_FAILED,
+    STATUS_SEND_FAILED,
+})
+
+# Terminal statuses -- no further machine move is expected.
+TERMINAL_STATUSES = frozenset({STATUS_FULLY_SIGNED})
+
+# --- Board columns (existing kanban vocabulary; do not invent new columns) -
+BOARD_INBOX = "gmail_demo"
+BOARD_IN_REVIEW = "in_review"
+BOARD_REVIEWED = "reviewed"
+BOARD_SENT = "sent"
+# Legacy board columns the frontend still canonicalizes (redline_ready->reviewed,
+# signed_closed->sent). We never emit these from the rollup; we only tolerate
+# them as an existing board_column when deriving the phase.
+LEGACY_BOARD_REVIEWED = "redline_ready"
+LEGACY_BOARD_SENT = "signed_closed"
+
+OWNER_HUMAN = "human"
+OWNER_SYSTEM = "system"
+
+# --- Timeline event types (the append-only backbone) ----------------------
+# The existing approval flow already appends ``matter_approved``; these extend
+# the same log into the canonical lifecycle backbone. The log is append-only and
+# never rewritten.
+EVENT_CREATED = "created"
+EVENT_EXTRACTED = "extracted"
+EVENT_REVIEW_STARTED = "review_started"
+EVENT_REVIEW_COMPLETED = "review_completed"
+EVENT_FLAGGED_FOR_HUMAN = "flagged_for_human"
+EVENT_APPROVED = "matter_approved"  # matches the existing approval event type
+EVENT_SENT = "sent"
+EVENT_COUNTER_RECEIVED = "counter_received"
+EVENT_EXECUTED = "executed"
+EVENT_ERRORED = "errored"
+
+MAX_EVENT_ACTOR_CHARS = 240
+MAX_EVENT_DETAIL_CHARS = 2000
+
+
+def workflow_state(matter: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive the canonical workflow state for a matter (pure, read-only).
+
+    Returns ``{version, phase, status, next_action, human_gate, needs_attention,
+    attention_reason, board_column, timeline_summary}``. Never mutates ``matter``
+    and never persists anything.
+    """
+    if not isinstance(matter, dict):
+        matter = {}
+
+    error = _workflow_error(matter)
+    phase, status = _derive_phase_and_status(matter, error)
+    needs_attention = status in FAILURE_STATUSES
+    attention_reason = _attention_reason(error) if needs_attention else ""
+    next_action = _next_action_for(status, matter)
+    human_gate = status in HUMAN_GATE_STATUSES
+    board_column = board_column_for(phase, status, matter)
+
+    return {
+        "version": WORKFLOW_STATE_VERSION,
+        "phase": phase,
+        "status": status,
+        "label": _status_label(status),
+        "phase_label": _phase_label(phase),
+        "next_action": next_action,
+        "human_gate": human_gate,
+        "needs_attention": needs_attention,
+        "attention_reason": attention_reason,
+        "board_column": board_column,
+        "timeline_summary": timeline_summary(matter),
+    }
+
+
+def _derive_phase_and_status(matter: Dict[str, Any], error: Dict[str, Any]) -> tuple[str, str]:
+    """Compute (phase, status) from the matter's existing signals.
+
+    Resolution order, latest-lifecycle-stage first, so a matter that has already
+    moved forward never reads as an earlier phase:
+
+    1. A recorded ``workflow_error`` short-circuits to that phase's failed status.
+    2. Executed: an explicit ``executed_at`` / executed marker (manual "mark
+       signed"; DocuSign-shaped seam later).
+    3. Negotiation: an explicit ``negotiation`` marker (counter-received). The
+       real inbound-thread detection is Track C; we only honor the explicit flag.
+    4. Sent: a recorded outbound (``last_outbound_*``) or a ``sent`` board column.
+    5. Approval: ``status == "approved"`` -> approved; otherwise, once the review
+       is human-resolvable, awaiting_approval / approval_blocked.
+    6. Review: a ``review_result`` exists -> derive from review_state
+       (blocks_send -> awaiting_human, else auto_cleared); a review-in-flight
+       marker -> ai_reviewing/rendering.
+    7. Intake: nothing reviewed yet -> received/extracting/extracted.
+    """
+    if error:
+        failed_status = _FAILURE_STATUS_BY_PHASE.get(str(error.get("phase") or ""))
+        if failed_status:
+            return _PHASE_BY_STATUS[failed_status], failed_status
+
+    if _is_executed(matter):
+        return PHASE_EXECUTED, STATUS_FULLY_SIGNED
+
+    negotiation = _negotiation_status(matter)
+    if negotiation is not None:
+        return PHASE_NEGOTIATION, negotiation
+
+    sent = _sent_status(matter)
+    if sent is not None:
+        return PHASE_SENT, sent
+
+    approval = _approval_status(matter)
+    if approval is not None:
+        return PHASE_APPROVAL, approval
+
+    review = _review_status(matter)
+    if review is not None:
+        return PHASE_REVIEW, review
+
+    return PHASE_INTAKE, _intake_status(matter)
+
+
+# ---- per-phase status derivation -----------------------------------------
+
+def _is_executed(matter: Dict[str, Any]) -> bool:
+    if _truthy(matter.get("executed")) or matter.get("executed_at"):
+        return True
+    return _phase_marker(matter) == PHASE_EXECUTED
+
+
+def _negotiation_status(matter: Dict[str, Any]) -> str | None:
+    """Explicit counter-received entry (Track C will drive this automatically).
+
+    A re-review-in-flight marker reads as ``re_reviewing`` (machine working);
+    otherwise a counter awaiting human triage reads as ``counter_received``.
+    """
+    if not (_truthy(matter.get("counter_received")) or matter.get("counter_received_at") or _phase_marker(matter) == PHASE_NEGOTIATION):
+        return None
+    if _truthy(matter.get("re_reviewing")):
+        return STATUS_RE_REVIEWING
+    return STATUS_COUNTER_RECEIVED
+
+
+def _sent_status(matter: Dict[str, Any]) -> str | None:
+    if _truthy(matter.get("sending")):
+        return STATUS_SENDING
+    if _has_outbound(matter) or _canonical_board(matter.get("board_column")) == BOARD_SENT:
+        return STATUS_SENT_AWAITING_COUNTERPARTY
+    return None
+
+
+def _approval_status(matter: Dict[str, Any]) -> str | None:
+    """Approval-phase status, or None if the matter isn't at the approval gate yet.
+
+    A matter reaches the approval gate once it carries a review_result whose
+    flagged clauses the reviewer has resolved (``approval.approval_blocks`` is the
+    canonical gate -- it returns unresolved-clause / stale-playbook reason codes).
+
+    * ``approved`` -- already signed off (``status == "approved"`` / ``approved_at``).
+    * ``approval_blocked`` -- the reviewer has engaged (``human_reviewed``) but a
+      document-level blocker remains (stale playbook). Per-clause "unresolved"
+      blocks keep the matter in Review (awaiting_human), where the reviewer
+      resolves them; only once those are cleared does Approval surface.
+    * ``awaiting_approval`` -- no blockers remain; just needs the sign-off click.
+    """
+    if str(matter.get("status") or "") == STATUS_APPROVED or matter.get("approved_at"):
+        return STATUS_APPROVED
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return None
+    blocks = _approval_blocks(matter)
+    if not blocks:
+        # Clean review (auto-cleared all-pass) sits in Review/auto_cleared until a
+        # human engages; an engaged reviewer with nothing left to resolve is at
+        # the approval gate.
+        if _truthy(matter.get("human_reviewed")):
+            return STATUS_AWAITING_APPROVAL
+        return None
+    # There are blockers. Unresolved per-clause decisions belong to Review; a
+    # document-level blocker (stale playbook) with the reviewer already engaged is
+    # an Approval-phase block.
+    if _only_unresolved_clause_blocks(blocks):
+        return None
+    if _truthy(matter.get("human_reviewed")):
+        return STATUS_APPROVAL_BLOCKED
+    return None
+
+
+def _review_status(matter: Dict[str, Any]) -> str | None:
+    if _truthy(matter.get("ai_reviewing")):
+        return STATUS_AI_REVIEWING
+    if _truthy(matter.get("rendering")):
+        return STATUS_RENDERING
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        state = review_state_from_result(review_result)
+        if bool(state.get("blocks_send")) or bool(state.get("requires_human_review")):
+            return STATUS_AWAITING_HUMAN
+        return STATUS_AUTO_CLEARED
+    return None
+
+
+def _approval_blocks(matter: Dict[str, Any]) -> list[str]:
+    """The approval gate's reason codes, via the canonical approval module.
+
+    Imported lazily because ``approval`` imports several review modules at load
+    time; reaching into it only at call time keeps workflow.py's import graph
+    light and avoids a cycle. Failing closed (treat an unreadable gate as "no
+    derivable Approval status") just leaves the matter in Review, never advances
+    it past a real block.
+    """
+    try:
+        from . import approval
+
+        return list(approval.approval_blocks(matter))
+    except Exception:
+        return []
+
+
+def _only_unresolved_clause_blocks(blocks: list[str]) -> bool:
+    from . import approval
+
+    return bool(blocks) and all(
+        str(block).startswith(approval.UNRESOLVED_CLAUSE_PREFIX) for block in blocks
+    )
+
+
+def _intake_status(matter: Dict[str, Any]) -> str:
+    if _truthy(matter.get("extracting")):
+        return STATUS_EXTRACTING
+    if str(matter.get("extracted_text") or "").strip():
+        return STATUS_EXTRACTED
+    return STATUS_RECEIVED
+
+
+# ---- next_action (the single canonical "what next + who owns it") ----------
+
+def _next_action_for(status: str, matter: Dict[str, Any]) -> Dict[str, Any]:
+    label, owner, blocked = _NEXT_ACTION_BY_STATUS.get(
+        status, ("Review matter", OWNER_HUMAN, False)
+    )
+    return {"label": label, "owner": owner, "blocked": blocked}
+
+
+# (label, owner, blocked) per fine status. ``blocked`` means the matter cannot
+# advance until the owner acts (a hard gate), distinct from ``owner`` (who acts).
+_NEXT_ACTION_BY_STATUS: Dict[str, tuple[str, str, bool]] = {
+    STATUS_RECEIVED: ("Extract document text", OWNER_SYSTEM, False),
+    STATUS_EXTRACTING: ("Extracting document text", OWNER_SYSTEM, False),
+    STATUS_EXTRACTED: ("Run review", OWNER_SYSTEM, False),
+    STATUS_INTAKE_FAILED: ("Re-import document (extraction failed)", OWNER_HUMAN, True),
+    STATUS_RENDERING: ("Rendering document", OWNER_SYSTEM, False),
+    STATUS_AI_REVIEWING: ("AI review in progress", OWNER_SYSTEM, False),
+    STATUS_AWAITING_HUMAN: ("Resolve flagged clauses", OWNER_HUMAN, True),
+    STATUS_AUTO_CLEARED: ("Approve matter", OWNER_HUMAN, False),
+    STATUS_REVIEW_FAILED: ("Re-run review (review failed)", OWNER_HUMAN, True),
+    STATUS_AWAITING_APPROVAL: ("Approve matter", OWNER_HUMAN, False),
+    STATUS_APPROVAL_BLOCKED: ("Resolve approval blockers", OWNER_HUMAN, True),
+    STATUS_APPROVED: ("Send redline to counterparty", OWNER_HUMAN, False),
+    STATUS_SENDING: ("Sending redline", OWNER_SYSTEM, False),
+    STATUS_SENT_AWAITING_COUNTERPARTY: ("Await counterparty response", OWNER_HUMAN, False),
+    STATUS_SEND_FAILED: ("Retry send (send failed)", OWNER_HUMAN, True),
+    STATUS_COUNTER_RECEIVED: ("Triage counterparty changes", OWNER_HUMAN, False),
+    STATUS_RE_REVIEWING: ("Re-reviewing counterparty changes", OWNER_SYSTEM, False),
+    STATUS_FULLY_SIGNED: ("Matter executed", OWNER_HUMAN, False),
+}
+
+
+# ---- board rollup (fine status -> existing kanban column) -----------------
+
+def board_column_for(phase: str, status: str, matter: Dict[str, Any]) -> str:
+    """Roll the fine phase/status up into one of the existing kanban columns.
+
+    A failure does NOT move the column (needs_attention is a separate flag), so a
+    failed matter stays visible where it already was. Inbox (gmail_demo) is the
+    raw-arrival column for un-reviewed gmail imports; once a matter is being
+    reviewed it moves to in_review.
+    """
+    if status in FAILURE_STATUSES:
+        # Keep the matter in the column it already occupied; fall back to the
+        # phase rollup if no usable board_column is recorded.
+        existing = _canonical_board(matter.get("board_column"))
+        if existing:
+            return existing
+    if phase == PHASE_INTAKE:
+        # Un-reviewed gmail arrivals stay in Inbox; a manual upload that declared
+        # a stage keeps it. Otherwise default to in_review once intake completes.
+        existing = _canonical_board(matter.get("board_column"))
+        if existing == BOARD_INBOX:
+            return BOARD_INBOX
+        return existing or BOARD_IN_REVIEW
+    if phase == PHASE_REVIEW:
+        return BOARD_IN_REVIEW
+    if phase == PHASE_APPROVAL:
+        return BOARD_REVIEWED
+    if phase in (PHASE_SENT, PHASE_NEGOTIATION, PHASE_EXECUTED):
+        return BOARD_SENT
+    return _canonical_board(matter.get("board_column")) or BOARD_IN_REVIEW
+
+
+# ---- timeline events (the append-only backbone) ---------------------------
+
+def build_timeline_event(
+    event_type: str,
+    *,
+    phase: str = "",
+    status: str = "",
+    actor: str = "",
+    detail: str = "",
+    at: str = "",
+) -> Dict[str, Any]:
+    """Construct one canonical, immutable timeline event.
+
+    The single shape every transition appends: ``{type, at, phase?, status?,
+    actor?, detail?}``. ``at`` defaults to now (UTC ISO-8601). Optional fields are
+    omitted when empty so the log stays compact. matter_store.append_timeline_event
+    persists the returned event (append-only, under the store lock).
+    """
+    from datetime import datetime, timezone
+
+    event: Dict[str, Any] = {
+        "type": str(event_type or "").strip() or EVENT_ERRORED,
+        "at": str(at or "").strip() or datetime.now(timezone.utc).isoformat(),
+    }
+    phase = str(phase or "").strip()
+    if phase:
+        event["phase"] = phase
+    status = str(status or "").strip()
+    if status:
+        event["status"] = status
+    actor = str(actor or "").strip()[:MAX_EVENT_ACTOR_CHARS]
+    if actor:
+        event["actor"] = actor
+    detail = str(detail or "").strip()[:MAX_EVENT_DETAIL_CHARS]
+    if detail:
+        event["detail"] = detail
+    return event
+
+
+# ---- timeline summary -----------------------------------------------------
+
+def timeline_summary(matter: Dict[str, Any]) -> Dict[str, Any]:
+    """A compact view of the append-only timeline for the aggregate.
+
+    The full event log lives in ``matter_timeline``; here we surface the count and
+    the most recent event so the UI/board can show "last moved" without walking
+    the whole log.
+    """
+    timeline = matter.get("matter_timeline")
+    events = [event for event in timeline if isinstance(event, dict)] if isinstance(timeline, list) else []
+    last = events[-1] if events else None
+    summary: Dict[str, Any] = {"event_count": len(events)}
+    if last is not None:
+        summary["last_event"] = {
+            "type": str(last.get("type") or ""),
+            "at": str(last.get("at") or ""),
+        }
+    return summary
+
+
+# ---- helpers --------------------------------------------------------------
+
+def _workflow_error(matter: Dict[str, Any]) -> Dict[str, Any]:
+    error = matter.get("workflow_error")
+    if isinstance(error, dict) and str(error.get("phase") or ""):
+        return error
+    return {}
+
+
+def _attention_reason(error: Dict[str, Any]) -> str:
+    message = str(error.get("message") or "").strip()
+    if message:
+        return message
+    code = str(error.get("code") or "").strip()
+    if code:
+        return code
+    return "A processing step failed; this matter needs attention."
+
+
+def _phase_marker(matter: Dict[str, Any]) -> str:
+    """An explicit ``workflow_phase`` override, if a writer recorded one.
+
+    Pure derivation is the default; this is only honored for the phases whose
+    entry is an explicit human action with no other derivable signal
+    (negotiation, executed). It is never required for the inbound happy path.
+    """
+    return str(matter.get("workflow_phase") or "").strip().lower()
+
+
+def _has_outbound(matter: Dict[str, Any]) -> bool:
+    return any(
+        str(matter.get(field) or "").strip()
+        for field in ("last_outbound_at", "last_outbound_message_id", "last_outbound_to")
+    )
+
+
+def _canonical_board(board_column: object) -> str:
+    column = str(board_column or "").strip()
+    if column == LEGACY_BOARD_REVIEWED:
+        return BOARD_REVIEWED
+    if column == LEGACY_BOARD_SENT:
+        return BOARD_SENT
+    if column in (BOARD_INBOX, BOARD_IN_REVIEW, BOARD_REVIEWED, BOARD_SENT):
+        return column
+    return ""
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _phase_label(phase: str) -> str:
+    return {
+        PHASE_INTAKE: "Intake",
+        PHASE_REVIEW: "Review",
+        PHASE_APPROVAL: "Approval",
+        PHASE_SENT: "Sent",
+        PHASE_NEGOTIATION: "Negotiation",
+        PHASE_EXECUTED: "Executed",
+    }.get(phase, "Intake")
+
+
+def _status_label(status: str) -> str:
+    return status.replace("_", " ").title()
+
+
+_PHASE_BY_STATUS: Dict[str, str] = {
+    STATUS_RECEIVED: PHASE_INTAKE,
+    STATUS_EXTRACTING: PHASE_INTAKE,
+    STATUS_EXTRACTED: PHASE_INTAKE,
+    STATUS_INTAKE_FAILED: PHASE_INTAKE,
+    STATUS_RENDERING: PHASE_REVIEW,
+    STATUS_AI_REVIEWING: PHASE_REVIEW,
+    STATUS_AWAITING_HUMAN: PHASE_REVIEW,
+    STATUS_AUTO_CLEARED: PHASE_REVIEW,
+    STATUS_REVIEW_FAILED: PHASE_REVIEW,
+    STATUS_AWAITING_APPROVAL: PHASE_APPROVAL,
+    STATUS_APPROVAL_BLOCKED: PHASE_APPROVAL,
+    STATUS_APPROVED: PHASE_APPROVAL,
+    STATUS_SENDING: PHASE_SENT,
+    STATUS_SENT_AWAITING_COUNTERPARTY: PHASE_SENT,
+    STATUS_SEND_FAILED: PHASE_SENT,
+    STATUS_COUNTER_RECEIVED: PHASE_NEGOTIATION,
+    STATUS_RE_REVIEWING: PHASE_NEGOTIATION,
+    STATUS_FULLY_SIGNED: PHASE_EXECUTED,
+}
+
+_FAILURE_STATUS_BY_PHASE: Dict[str, str] = {
+    PHASE_INTAKE: STATUS_INTAKE_FAILED,
+    PHASE_REVIEW: STATUS_REVIEW_FAILED,
+    PHASE_SENT: STATUS_SEND_FAILED,
+}

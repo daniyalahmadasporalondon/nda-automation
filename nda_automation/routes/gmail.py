@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
-from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry
+from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry, workflow
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
 from .common import request_owner_user_id
@@ -346,11 +346,38 @@ def handle_gmail_send_redline(handler) -> None:
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
+    _stamp_sent_timeline(updated_matter, sent, owner_user_id=owner_user_id)
     handler._send_json({
         "filename": redline_export.filename,
         "matter": matter_view.public_matter(updated_matter),
         "sent": sent,
     })
+
+
+def _stamp_sent_timeline(matter: dict, sent: dict, *, owner_user_id: str = "") -> None:
+    """Append the Approval->Sent transition to the timeline backbone (best-effort).
+
+    The redline went out; record it on the append-only log referencing the
+    outbound message so the lifecycle is traceable. Never fails the send -- the
+    document is already delivered and the matter already stamped.
+    """
+    matter_id = str(matter.get("id") or "")
+    if not matter_id:
+        return
+    try:
+        matter_store.append_timeline_event(
+            matter_id,
+            workflow.build_timeline_event(
+                workflow.EVENT_SENT,
+                phase=workflow.PHASE_SENT,
+                status=workflow.STATUS_SENT_AWAITING_COUNTERPARTY,
+                actor=str(sent.get("outbound_account") or "system"),
+                detail=str(sent.get("to") or ""),
+            ),
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        return
 
 
 def matter_blocks_redline_send(matter: dict) -> bool:

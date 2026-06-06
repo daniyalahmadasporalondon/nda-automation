@@ -169,6 +169,47 @@ def test_update_ai_first_review_stamps_metadata(repository):
     assert repository.update_matter_ai_first_review("matter_missing", {}, {}) is None
 
 
+def test_append_timeline_event_is_append_only(repository):
+    matter = repository.create_matter(**_create_kwargs())
+    matter_id = matter["id"]
+
+    first = repository.append_timeline_event(matter_id, {"type": "created", "at": "2026-01-01"})
+    assert first["matter_timeline"] == [{"type": "created", "at": "2026-01-01"}]
+
+    second = repository.append_timeline_event(matter_id, {"type": "sent", "at": "2026-01-02"})
+    # The prior event is preserved, the new one appended after it (append-only).
+    assert [event["type"] for event in second["matter_timeline"]] == ["created", "sent"]
+
+    # A non-dict event is a no-op that returns the matter unchanged (not None).
+    unchanged = repository.append_timeline_event(matter_id, None)
+    assert len(unchanged["matter_timeline"]) == 2
+
+    assert repository.append_timeline_event("matter_missing", {"type": "x"}) is None
+
+
+def test_append_timeline_event_does_not_mutate_other_fields(repository):
+    matter = repository.create_matter(**_create_kwargs())
+    repository.update_matter_fields(matter["id"], {"human_reviewed": True})
+
+    updated = repository.append_timeline_event(matter["id"], {"type": "approved"})
+    # Appending an event must not disturb unrelated state.
+    assert updated["human_reviewed"] is True
+    assert updated["review_result"] == {"clauses": [{"id": "mutuality", "decision": "pass"}]}
+
+
+def test_set_and_clear_workflow_error(repository):
+    matter = repository.create_matter(**_create_kwargs())
+    matter_id = matter["id"]
+
+    errored = repository.set_workflow_error(matter_id, {"phase": "review", "code": "ai_error"})
+    assert errored["workflow_error"] == {"phase": "review", "code": "ai_error"}
+
+    cleared = repository.set_workflow_error(matter_id, None)
+    assert "workflow_error" not in cleared
+
+    assert repository.set_workflow_error("matter_missing", {"phase": "review"}) is None
+
+
 def test_delete_and_reset(repository):
     matter = repository.create_matter(**_create_kwargs())
     assert repository.delete_matter("matter_missing") is None

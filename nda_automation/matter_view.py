@@ -9,6 +9,7 @@ from .gmail_integration import matter_reply_recipient, recipient_email
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
+from .workflow import workflow_state
 
 
 class PublicMatter(TypedDict, total=False):
@@ -56,6 +57,7 @@ class PublicMatter(TypedDict, total=False):
     subject: str
     triage_status: str
     updated_at: str
+    workflow_state: dict[str, Any]
 
 
 PUBLIC_MATTER_FIELDS = {
@@ -131,6 +133,13 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     review_state = matter_review_state(matter)
     if review_state:
         public["review_state"] = review_state
+    # The canonical workflow state (phase/status/next_action/human_gate/
+    # needs_attention) -- one derived source the UI and automation read instead of
+    # guessing from the overlapping status/board/triage fields. Its
+    # next_action SUPERSEDES the legacy free-text top-level next_action.
+    workflow = workflow_state(matter)
+    public["workflow_state"] = workflow
+    public["next_action"] = workflow["next_action"]["label"]
     if send_block_reason:
         public["send_block_reason"] = send_block_reason
     return public

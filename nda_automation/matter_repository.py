@@ -88,9 +88,29 @@ class MatterRepository(Protocol):
         owner_user_id: str = "",
     ) -> dict[str, Any] | None: ...
 
+    def append_timeline_event(
+        self, matter_id: str, timeline_event: dict[str, Any], owner_user_id: str = ""
+    ) -> dict[str, Any] | None: ...
+
+    def set_workflow_error(
+        self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
+    ) -> dict[str, Any] | None: ...
+
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
+
+    def update_matter_artifacts(
+        self,
+        matter_id: str,
+        artifacts: list[dict[str, Any]],
+        current_artifact_id: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None: ...
+
+    def put_artifact_document(self, stored_filename: str, document_bytes: bytes) -> str: ...
+
+    def get_artifact_document(self, stored_filename: str) -> bytes | None: ...
 
     def delete_matter(self, matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None: ...
 
@@ -195,10 +215,37 @@ class DiskMatterRepository:
             owner_user_id=owner_user_id,
         )
 
+    def append_timeline_event(
+        self, matter_id: str, timeline_event: dict[str, Any], owner_user_id: str = ""
+    ) -> dict[str, Any] | None:
+        return matter_store.append_timeline_event(matter_id, timeline_event, owner_user_id=owner_user_id)
+
+    def set_workflow_error(
+        self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
+    ) -> dict[str, Any] | None:
+        return matter_store.set_workflow_error(matter_id, workflow_error, owner_user_id=owner_user_id)
+
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None:
         return matter_store.update_matter_ai_first_review(matter_id, ai_first_review_result, metadata, owner_user_id=owner_user_id)
+
+    def update_matter_artifacts(
+        self,
+        matter_id: str,
+        artifacts: list[dict[str, Any]],
+        current_artifact_id: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        return matter_store.update_matter_artifacts(
+            matter_id, artifacts, current_artifact_id, owner_user_id=owner_user_id
+        )
+
+    def put_artifact_document(self, stored_filename: str, document_bytes: bytes) -> str:
+        return matter_store.put_artifact_document(stored_filename, document_bytes)
+
+    def get_artifact_document(self, stored_filename: str) -> bytes | None:
+        return matter_store.get_artifact_document(stored_filename)
 
     def delete_matter(self, matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
         return matter_store.delete_matter(matter_id, owner_user_id=owner_user_id)
@@ -453,6 +500,47 @@ class InMemoryMatterRepository:
                 return copy.deepcopy(updated_matter)
         return None
 
+    def append_timeline_event(
+        self, matter_id: str, timeline_event: dict[str, Any], owner_user_id: str = ""
+    ) -> dict[str, Any] | None:
+        if not isinstance(timeline_event, dict):
+            return self.get_matter(matter_id, owner_user_id=owner_user_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                timeline = list(matter.get("matter_timeline") or [])
+                timeline.append(copy.deepcopy(timeline_event))
+                updated_matter = {
+                    **matter,
+                    "matter_timeline": timeline,
+                    "updated_at": now,
+                }
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def set_workflow_error(
+        self, matter_id: str, workflow_error: dict[str, Any] | None, owner_user_id: str = ""
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                updated_matter = {
+                    **matter,
+                    "updated_at": now,
+                }
+                if workflow_error is None:
+                    updated_matter.pop("workflow_error", None)
+                else:
+                    updated_matter["workflow_error"] = copy.deepcopy(workflow_error)
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
     def update_matter_ai_first_review(
         self, matter_id: str, ai_first_review_result: dict[str, Any], metadata: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None:
@@ -473,6 +561,41 @@ class InMemoryMatterRepository:
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None
+
+    def update_matter_artifacts(
+        self,
+        matter_id: str,
+        artifacts: list[dict[str, Any]],
+        current_artifact_id: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                updated_matter = {
+                    **matter,
+                    "artifacts": copy.deepcopy(list(artifacts)),
+                    "current_artifact_id": str(current_artifact_id or ""),
+                    "updated_at": now,
+                }
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def put_artifact_document(self, stored_filename: str, document_bytes: bytes) -> str:
+        safe_name = str(stored_filename or "") or f"artifact_{uuid.uuid4().hex[:12]}.docx"
+        with self._lock:
+            self._documents[safe_name] = document_bytes
+        return safe_name
+
+    def get_artifact_document(self, stored_filename: str) -> bytes | None:
+        safe_name = str(stored_filename or "")
+        if not safe_name:
+            return None
+        with self._lock:
+            return self._documents.get(safe_name)
 
     # --- delete / reset / dedupe --------------------------------------
     def delete_matter(self, matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
