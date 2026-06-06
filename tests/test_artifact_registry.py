@@ -384,3 +384,46 @@ def test_intake_registration_failure_does_not_break_intake(monkeypatch):
         repository=repo,
     )
     assert repo.get_matter(matter["id"]) is not None
+
+
+# --- public_matter artifact view -------------------------------------------
+def test_public_matter_exposes_artifact_view_and_current_pointer():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    original = artifact_service.add_artifact(
+        matter["id"], source="gmail", actor="counterparty", role="original",
+        stored_filename=matter["stored_filename"], repository=repo,
+    )
+    redline = artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="redline",
+        document_bytes=b"r", based_on_artifact_id=original.id, repository=repo,
+    )
+    public = public_matter(repo.get_matter(matter["id"]))
+
+    assert public["current_artifact_id"] == redline.id
+    view = public["artifacts"]
+    assert [a["role"] for a in view] == ["original", "redline"]
+    # Compact projection: provenance present, storage internals omitted.
+    redline_view = next(a for a in view if a["role"] == "redline")
+    assert redline_view["id"] == redline.id
+    assert redline_view["version"] == 1
+    assert redline_view["name"] == "02_ai_redline_v1.docx"
+    assert redline_view["based_on_artifact_id"] == original.id
+    assert redline_view["is_current"] is True
+    assert "content_hash" not in redline_view
+    assert "stored_filename" not in redline_view
+    # The earlier original is not current.
+    assert next(a for a in view if a["role"] == "original")["is_current"] is False
+
+
+def test_public_matter_omits_artifact_keys_when_no_registry():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(repo)
+    # A matter with no artifacts registered yet exposes neither key.
+    public = public_matter(repo.get_matter(matter["id"]))
+    assert "artifacts" not in public
+    assert "current_artifact_id" not in public
