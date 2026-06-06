@@ -127,6 +127,27 @@ class TestSlotFill:
         with pytest.raises(gen.NdaGenerationError):
             gen.entity_party_from_bundle(_bundle(option_id="california"), playbook)
 
+    def test_counterparty_location_does_not_bleed_into_governing_law(self, playbook):
+        # Carry-over risk: a counterparty "incorporated in England" must NOT flip
+        # the governing law away from the entity's approved value. Entity law is
+        # India here; the clause must say India and still pass.
+        bundle = _bundle(option_id="india")
+        bundle["jurisdiction"] = "Courts of India"
+        intake = _intake(
+            company_name="Britco Limited",
+            registered_office="1 London Wall, London",
+            jurisdiction_of_incorporation="England and Wales",
+            business_description="a company incorporated in England and Wales",
+        )
+        result = _generate(playbook, bundle=bundle, intake=intake)
+        assert result.manifest.governing_law_value == "India"
+        text = extract_docx_text(result.docx_bytes)
+        assert "governed by and construed in accordance with the laws of India" in text
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.native_reviews)
+        assert "governing_law" not in check.native_failures
+        assert "governing_law" not in check.native_reviews
+
     def test_purpose_and_business_description_fill(self, playbook):
         text = extract_docx_text(_generate(playbook).docx_bytes)
         assert "cross-border payments" in text
@@ -187,12 +208,37 @@ class TestClauseAlignment:
 
 
 class TestSelfCheck:
+    # The self-check uses the SAME oracle as gen-verify: deterministic native
+    # (review_nda verify=False) + key-free AI-first for the dynamic
+    # non_circumvention clause. The bare stub AI reviewer is deliberately NOT the
+    # native oracle — it would rubber-stamp native clauses and mask real defects.
+
     def test_generated_nda_passes_the_playbook_with_zero_fails(self, playbook):
         result = _generate(playbook)
-        review = review_nda(extract_docx_text(result.docx_bytes))
-        assert review["requirements_failed"] == 0, review["clauses"]
-        assert review["requirements_needs_review"] == 0, review["clauses"]
-        assert review["overall_status"] == "meets_requirements"
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.native_reviews, check.dynamic_failures)
+        assert check.native_failures == []
+        assert check.native_reviews == []  # we expect a clean pass, not just no-fails
+        assert check.dynamic_failures == []
+        assert check.overall_status == "meets_requirements"
+
+    def test_self_check_uses_deterministic_native_oracle_not_the_stub(self, playbook):
+        # The native oracle must be checker.review_nda with verify=False. Prove the
+        # self-check agrees with that call directly (and that it covers the 5
+        # native clauses), so a stub-driven false-green cannot creep in.
+        result = _generate(playbook)
+        native = review_nda(extract_docx_text(result.docx_bytes), verify=False)
+        assert native["requirements_failed"] == 0
+        emitted = {c["id"] for c in native["clauses"]}
+        assert set(gen.NATIVE_CLAUSE_IDS).issubset(emitted)
+
+    def test_self_check_covers_the_dynamic_non_circumvention_clause(self, playbook):
+        # The deterministic engine never emits non_circumvention; the self-check
+        # must surface it via the key-free AI-first path. A clean generated NDA
+        # has no non-circ, so the dynamic check passes.
+        result = _generate(playbook)
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.dynamic_failures == []
 
     @pytest.mark.parametrize(
         "option_id,expected_law",
@@ -206,8 +252,8 @@ class TestSelfCheck:
     def test_every_approved_entity_law_passes_self_check(self, playbook, option_id, expected_law):
         result = _generate(playbook, bundle=_bundle(option_id=option_id))
         assert result.manifest.governing_law_value == expected_law
-        review = review_nda(extract_docx_text(result.docx_bytes))
-        assert review["requirements_failed"] == 0, (option_id, review["clauses"])
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (option_id, check.native_failures, check.dynamic_failures)
 
 
 # --------------------------------------------------------------------------- #
@@ -239,8 +285,37 @@ class TestPostureAndAdapter:
                 return playbook_text
 
         result = _generate(playbook, clause_adapter=NoopAdapter())
-        review = review_nda(extract_docx_text(result.docx_bytes))
-        assert review["requirements_failed"] == 0, review["clauses"]
+        assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
+
+
+# --------------------------------------------------------------------------- #
+# Oracle integrity — the self-check must CATCH the template's own defects
+# --------------------------------------------------------------------------- #
+
+
+class TestSelfCheckCatchesDefects:
+    """Proof the oracle isn't a false-green: the RAW template must NOT pass."""
+
+    def test_raw_template_fails_term_and_signatures(self, playbook):
+        # The unadapted template fails its own Playbook on term_and_survival (no
+        # survival carve-out) and signatures (no proper execution block / date).
+        # If the self-check passed the raw template, it would be measuring with the
+        # wrong (rubber-stamp) oracle.
+        from docx import Document
+        from io import BytesIO
+
+        document = Document(str(gen.TEMPLATE_PATH))
+        with BytesIO() as buffer:
+            document.save(buffer)
+            raw_bytes = buffer.getvalue()
+
+        check = gen.self_check_generated_nda(raw_bytes, playbook=playbook)
+        assert not check.passed
+        # Both carry-over risks gen-verify flagged must be visible as native
+        # failures (or reviews) on the raw template.
+        flagged = set(check.native_failures) | set(check.native_reviews)
+        assert "term_and_survival" in flagged
+        assert "signatures" in flagged
 
 
 # --------------------------------------------------------------------------- #
@@ -295,9 +370,9 @@ class TestEndToEndWithLiveDeps:
         entity = gen.entity_party_from_bundle(bundle, playbook)
         result = gen.generate_nda(entity, _intake(), playbook=playbook)
 
-        review = review_nda(extract_docx_text(result.docx_bytes))
-        assert review["requirements_failed"] == 0, review["clauses"]
-        assert review["overall_status"] == "meets_requirements"
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.dynamic_failures)
+        assert check.overall_status == "meets_requirements"
         # Entity truth flows from the registry into the document + manifest.
         assert result.manifest.entity_legal_name == bundle["legal_name"]
 
@@ -328,11 +403,10 @@ class TestEndToEndWithLiveDeps:
         )
         assert artifact.metadata["generation"]["governing_law_value"] == "England and Wales"
 
-        # The persisted bytes round-trip and still pass the Playbook.
+        # The persisted bytes round-trip and still pass the Playbook (same oracle).
         stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
         assert stored == result.docx_bytes
-        review = review_nda(extract_docx_text(stored))
-        assert review["requirements_failed"] == 0, review["clauses"]
+        assert gen.self_check_generated_nda(stored, playbook=playbook).passed
 
     def test_generate_and_save_rejects_unknown_entity(self, playbook):
         from nda_automation.matter_repository import InMemoryMatterRepository

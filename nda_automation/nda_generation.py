@@ -326,6 +326,122 @@ def generate_and_save_nda(
 
 
 # --------------------------------------------------------------------------- #
+# Self-check — the same oracle gen-verify uses
+# --------------------------------------------------------------------------- #
+
+# The Playbook's hard clauses, split by review engine. NATIVE clauses are scored
+# deterministically (checker.review_nda); the DYNAMIC clause is only emitted on
+# the AI-first path. These mirror gen-verify's split so both sides measure the
+# generated NDA with the SAME oracle.
+NATIVE_CLAUSE_IDS = (
+    "mutuality",
+    "confidential_information",
+    "governing_law",
+    "term_and_survival",
+    "signatures",
+)
+DYNAMIC_CLAUSE_IDS = ("non_circumvention",)
+
+
+@dataclass
+class SelfCheckResult:
+    """Outcome of the generation self-check."""
+
+    passed: bool
+    native_failures: list[str] = field(default_factory=list)
+    native_reviews: list[str] = field(default_factory=list)
+    dynamic_failures: list[str] = field(default_factory=list)
+    overall_status: str = ""
+
+    def __bool__(self) -> bool:
+        return self.passed
+
+
+def self_check_generated_nda(
+    docx_bytes: bytes,
+    *,
+    playbook: Mapping[str, Any] | None = None,
+) -> SelfCheckResult:
+    """Run the generated NDA through the SAME oracle gen-verify uses.
+
+    The native clauses are scored by the deterministic engine with ``verify=False``
+    — the trustworthy, network-free oracle. The key-free *stub* AI reviewer is NOT
+    used as the native oracle: it rubber-stamps native clauses and downgrades
+    ungrounded passes to "review", which would make a stub-based self-check show a
+    false green while a real native defect (e.g. missing survival carve-out or a
+    broken execution block) slipped through.
+
+    The dynamic ``non_circumvention`` clause is only emitted on the AI-first path,
+    so it is checked separately via the key-free AI-first stub: the stub fails that
+    clause iff a prohibited restriction is present, so a fail means the draft
+    smuggled one in.
+
+    A generated NDA passes iff it has zero native failures AND non_circumvention
+    does not fail. (Native "review" verdicts are surfaced but are not failures —
+    the generated NDA is expected to score 0 fails / 0 review, but the contract the
+    bar enforces is 0 *fails*.)
+    """
+
+    from .checker import load_playbook, review_nda  # noqa: PLC0415
+    from .docx_text import extract_docx_text  # noqa: PLC0415
+
+    resolved_playbook = playbook if playbook is not None else load_playbook()
+    text = extract_docx_text(docx_bytes)
+
+    native = review_nda(text, verify=False)
+    native_by_id = {str(clause.get("id")): clause for clause in native.get("clauses", [])}
+    native_failures: list[str] = []
+    native_reviews: list[str] = []
+    for clause_id in NATIVE_CLAUSE_IDS:
+        clause = native_by_id.get(clause_id)
+        if clause is None:
+            native_failures.append(f"{clause_id} (not emitted by deterministic engine)")
+            continue
+        decision = str(clause.get("decision"))
+        if decision == "fail":
+            native_failures.append(clause_id)
+        elif decision == "review":
+            native_reviews.append(clause_id)
+
+    dynamic_failures = _self_check_non_circumvention(text, resolved_playbook)
+
+    passed = not native_failures and not dynamic_failures
+    return SelfCheckResult(
+        passed=passed,
+        native_failures=native_failures,
+        native_reviews=native_reviews,
+        dynamic_failures=dynamic_failures,
+        overall_status=str(native.get("overall_status") or ""),
+    )
+
+
+def _self_check_non_circumvention(text: str, playbook: Mapping[str, Any]) -> list[str]:
+    """Key-free AI-first pass to surface the dynamic non_circumvention clause."""
+
+    from .ai_assessor import (  # noqa: PLC0415
+        _validate_ai_assessment_response,
+        build_ai_assessment_packet,
+        stub_ai_assessment_response,
+    )
+    from .ai_first_review import build_ai_first_review_result  # noqa: PLC0415
+
+    packet = build_ai_assessment_packet(text, playbook=playbook)
+    raw = stub_ai_assessment_response(packet)
+    assessments = _validate_ai_assessment_response(raw, playbook=playbook, packet=packet)
+    result = build_ai_first_review_result(text, assessments, playbook=playbook)
+    by_id = {str(clause.get("id")): clause for clause in result.get("clauses", [])}
+
+    failures: list[str] = []
+    for clause_id in DYNAMIC_CLAUSE_IDS:
+        clause = by_id.get(clause_id)
+        if clause is None:
+            failures.append(f"{clause_id} (not emitted by AI-first engine)")
+        elif str(clause.get("decision")) == "fail":
+            failures.append(clause_id)
+    return failures
+
+
+# --------------------------------------------------------------------------- #
 # Variable-slot filling
 # --------------------------------------------------------------------------- #
 
