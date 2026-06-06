@@ -16,6 +16,7 @@ Exit status is non-zero if any draft has a DEFECT, so it doubles as a CI gate.
 """
 from __future__ import annotations
 
+import re as _re
 import sys
 from typing import Any
 
@@ -92,8 +93,6 @@ def _generate(entity_id: str, variant: str) -> tuple[bytes, Any]:
         raise TypeError(f"generate_nda returned no docx_bytes for {entity_id}/{variant}: {type(result)!r}")
     return bytes(docx_bytes), manifest
 
-
-import re as _re
 
 # Manifest slots whose value the generator legitimately reformats before rendering,
 # so the canonical source string is NOT expected to appear verbatim in the prose.

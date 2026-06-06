@@ -434,7 +434,6 @@ def check_prohibited_positions(text: str, report: VerificationReport) -> None:
     survival "for as long as ... required", so we only flag perpetual language when
     it is NOT in such a carve-out context.
     """
-    normalized = _normalize_sentence(text)
     for sentence in _substantive_sentences(text):
         norm = _normalize_sentence(sentence)
         for label, pattern in _PROHIBITED_POSITION_PATTERNS:

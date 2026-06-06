@@ -15,13 +15,12 @@ The manifest contract (coordinated with generation):
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from nda_automation import entity_registry, nda_generation as gen
 from nda_automation.checker import load_playbook
 
 from tests.gen_verify_harness import (
-    EntityExpectation,
     VerificationReport,
     check_governing_law,
     expectations_from_registry,
