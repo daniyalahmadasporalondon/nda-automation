@@ -1,7 +1,9 @@
 import unittest
+from unittest.mock import patch
 
 from nda_automation import entity_registry as er
 from nda_automation.checker import load_playbook
+from nda_automation.routes import entities as entity_routes
 
 EXPECTED_ENTITY_IDS = {
     "aspora_technology",
@@ -153,6 +155,74 @@ class GoverningLawMappingTests(unittest.TestCase):
     def test_validate_against_playbook_rejects_empty_options(self):
         with self.assertRaises(ValueError):
             er.validate_registry_against_playbook({"clauses": []})
+
+
+class SigningEntitiesPayloadTests(unittest.TestCase):
+    def test_payload_has_entities_mapping_and_option_ids(self):
+        playbook = load_playbook()
+        payload = er.signing_entities_payload(playbook)
+        self.assertEqual(
+            {row["entity_id"] for row in payload["law_mapping"]},
+            EXPECTED_ENTITY_IDS,
+        )
+        self.assertEqual(
+            {entity["id"] for entity in payload["entities"]},
+            EXPECTED_ENTITY_IDS,
+        )
+        # The override dropdown is built from these, so they must be the live
+        # playbook positions.
+        self.assertEqual(
+            set(payload["playbook_option_ids"]),
+            {"india", "delaware", "england_and_wales", "difc"},
+        )
+        self.assertTrue(
+            all(row["matches_playbook"] for row in payload["law_mapping"])
+        )
+
+    def test_payload_without_playbook_still_returns_entities(self):
+        payload = er.signing_entities_payload(None)
+        self.assertEqual(len(payload["entities"]), 4)
+        self.assertEqual(payload["playbook_option_ids"], [])
+        # No playbook means no drift verdict per row.
+        self.assertNotIn("matches_playbook", payload["law_mapping"][0])
+
+
+class _FakeHandler:
+    current_user_id = ""
+    current_user = None
+
+    def __init__(self):
+        self.status = 200
+        self.response = None
+
+    def _send_json(self, payload, *, status=200, send_body=True):
+        self.status = status
+        self.response = payload
+
+
+class SigningEntitiesRouteTests(unittest.TestCase):
+    def test_route_returns_payload_from_live_playbook(self):
+        handler = _FakeHandler()
+        entity_routes.handle_signing_entities(handler)
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(len(handler.response["entities"]), 4)
+        self.assertTrue(
+            all(row["matches_playbook"] for row in handler.response["law_mapping"])
+        )
+
+    def test_route_degrades_gracefully_when_playbook_unreadable(self):
+        # If the playbook can't be read, the registry is still self-contained,
+        # so the endpoint must still return the entities (without drift data).
+        handler = _FakeHandler()
+        with patch.object(
+            entity_routes,
+            "read_playbook_from_path",
+            side_effect=OSError("boom"),
+        ):
+            entity_routes.handle_signing_entities(handler)
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(len(handler.response["entities"]), 4)
+        self.assertEqual(handler.response["playbook_option_ids"], [])
 
 
 if __name__ == "__main__":

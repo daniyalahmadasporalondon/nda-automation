@@ -324,6 +324,27 @@ def entity_law_mapping(playbook: Mapping[str, Any] | None = None) -> list[dict[s
     return rows
 
 
+def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Assemble the API payload the draft-intake UI consumes.
+
+    Returns the entity bundles, the entity -> governing-law mapping (with
+    ``matches_playbook`` drift flags when ``playbook`` is supplied), and the live
+    set of playbook governing-law option ids so the UI's override dropdown can be
+    playbook-driven rather than hardcoded.
+    """
+
+    option_ids = (
+        sorted(_playbook_governing_law_option_ids(playbook))
+        if playbook is not None
+        else []
+    )
+    return {
+        "entities": list_entities(),
+        "law_mapping": entity_law_mapping(playbook),
+        "playbook_option_ids": option_ids,
+    }
+
+
 __all__ = [
     "SIGNING_ENTITIES",
     "ENTITY_LAW_MAPPING_NOTES",
@@ -333,4 +354,5 @@ __all__ = [
     "validate_registry",
     "validate_registry_against_playbook",
     "entity_law_mapping",
+    "signing_entities_payload",
 ]

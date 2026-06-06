@@ -68,6 +68,7 @@ from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import approval as approval_routes
 from .routes import auth as auth_routes
+from .routes import entities as entity_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
 from .routes import playbook as playbook_routes
@@ -203,6 +204,7 @@ _GET_EXACT_ROUTES = {
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
     "/api/matters/export": admin_routes.handle_matter_backup,
+    "/api/signing-entities": entity_routes.handle_signing_entities,
     "/api/telemetry": admin_routes.handle_telemetry,
 }
 
