@@ -431,7 +431,11 @@ async function sendGeneratedNda(generated, { pending = false } = {}) {
     });
   }
   if (typeof sendDocumentController.showPendingAttachment === "function") {
-    sendDocumentController.showPendingAttachment("Attaching the generated NDA…");
+    // pending = the NDA is still being generated (the slow, AI part); otherwise
+    // we're just fetching the already-generated document to attach (fast).
+    sendDocumentController.showPendingAttachment(
+      pending ? "Generating the NDA… (this can take a moment)" : "Attaching the generated NDA…",
+    );
   }
   // pending = the NDA isn't ready yet; a follow-up call attaches it once generated.
   if (pending) return;
