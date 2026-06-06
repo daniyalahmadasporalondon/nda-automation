@@ -687,7 +687,8 @@ h3 {
 }
 
 .upload-field input,
-.upload-field textarea {
+.upload-field textarea,
+.upload-field select {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
@@ -698,9 +699,187 @@ h3 {
   width: 100%;
 }
 
+.upload-field select {
+  appearance: auto;
+  cursor: pointer;
+}
+
 .upload-field input::placeholder,
 .upload-field textarea::placeholder {
   color: rgba(93, 84, 112, 0.52);
+}
+
+/* --- NDA Generator tab (outbound-draft intake) --- */
+.generator-view {
+  flex: 1;
+  min-height: 0;
+  padding: 72px 24px 28px;
+}
+
+.generator-view.view.active {
+  display: block;
+}
+
+/* The Generator hero mirrors the dashboard hero's purple gradient so the tab
+   reads as a first-class creation surface. */
+.generator-hero {
+  background: linear-gradient(100deg, #1d0d45 0%, #311276 56%, #4a24a1 100%);
+  border-radius: 20px;
+  color: #ffffff;
+  margin-bottom: 18px;
+  padding: 28px 32px;
+}
+
+.generator-hero .eyebrow {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.generator-hero h1 {
+  font-size: 28px;
+  margin: 4px 0 8px;
+}
+
+.generator-hero-copy p:last-child {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  margin: 0;
+  max-width: 64ch;
+}
+
+/* Two-column workspace (form + summary) matching the upload modal's layout. */
+.generator-workspace {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+}
+
+.generator-form {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+/* The summary aside reuses .upload-side-panel styling; pin it so it stays beside
+   a long form. */
+.generator-side-panel {
+  position: sticky;
+  top: 18px;
+}
+
+@media (max-width: 920px) {
+  .generator-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .generator-side-panel {
+    position: static;
+  }
+}
+
+/* Group the intake into legible sections (entity / deal / governing law) using
+   the same panel borders as the rest of the form rather than the native
+   fieldset chrome. */
+.draft-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px 16px;
+}
+
+.draft-fieldset legend {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0 6px;
+  text-transform: uppercase;
+}
+
+/* The read-only bundle preview that proves the entity's legal name, address and
+   governing law travel together. */
+.draft-entity-bundle {
+  background: var(--brand-glow);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 12px;
+  padding: 12px 14px;
+}
+
+.draft-entity-bundle.empty {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.draft-bundle-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.draft-bundle-grid div {
+  display: grid;
+  gap: 2px;
+}
+
+.draft-bundle-grid dt {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.draft-bundle-grid dd {
+  color: var(--ink);
+  margin: 0;
+}
+
+/* The governing-law coupling note + its reset escape hatch. */
+.draft-law-note {
+  gap: 6px;
+}
+
+.draft-law-status {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin: 0;
+  min-height: 1.3em;
+}
+
+.link-button {
+  align-self: start;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--brand);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 700;
+  height: auto;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.link-button:hover:not(:disabled),
+.link-button:focus-visible {
+  color: var(--brand-bright);
+}
+
+/* The base `button` rule sets display:flex, which would otherwise beat the UA
+   [hidden] { display:none }. Make hidden authoritative for the modal's toggled
+   controls so the reset link truly disappears when the law is coupled. */
+.link-button[hidden],
+.upload-field[hidden] {
+  display: none;
 }
 
 .upload-actions {
@@ -840,6 +1019,7 @@ h3 {
 }
 
 .dashboard-submit-button,
+.dashboard-draft-nda-button,
 .dashboard-send-document-button {
   background: #f09ac6;
   box-shadow: 0 14px 28px -16px rgba(240, 154, 198, 0.8);
@@ -848,6 +1028,21 @@ h3 {
   gap: 8px;
   height: 42px;
   padding: 0 20px;
+}
+
+/* Draft NDA is the "from our paper" creator — a brand-purple pill so it reads as
+   its own action, distinct from the pink Submit/Send siblings, while sharing the
+   base pill shape and glow. */
+.dashboard-draft-nda-button {
+  background: var(--brand);
+  box-shadow: 0 14px 28px -16px var(--brand-glow);
+  color: #ffffff;
+}
+
+.dashboard-draft-nda-button:hover:not(:disabled),
+.dashboard-draft-nda-button:focus-visible {
+  background: var(--brand-bright);
+  color: #ffffff;
 }
 
 .dashboard-submit-button:hover:not(:disabled),
@@ -881,11 +1076,18 @@ h3 {
    on Send Document. Matched size, a lighter (thinner) stroke than the bold label,
    and a soft glow so they read as crafted marks rather than flat characters. */
 .dashboard-submit-button span:first-child,
+.dashboard-draft-nda-button span:first-child,
 .dashboard-send-document-button span:first-child {
   font-size: 18px;
   font-weight: 400;
   line-height: 1;
   text-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+/* The purple Draft pill carries a white "✎" glyph; its glow should darken (not
+   whiten) so the mark stays crisp on the dark fill. */
+.dashboard-draft-nda-button span:first-child {
+  text-shadow: 0 0 6px rgba(22, 8, 51, 0.45);
 }
 
 .dashboard-health-list {
@@ -6552,6 +6754,7 @@ body.modal-open {
   }
 
   .dashboard-submit-button,
+  .dashboard-draft-nda-button,
   .dashboard-send-document-button {
     width: 100%;
   }

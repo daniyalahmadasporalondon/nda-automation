@@ -113,6 +113,29 @@ const sendDocumentController = createSendDocumentController({
   activateTab,
   reviewErrorFromPayload,
 });
+const draftIntakeController = createDraftIntakeController({
+  form: document.querySelector("#draftIntakeForm"),
+  entitySelect: document.querySelector("#draftIntakeEntitySelect"),
+  addressField: document.querySelector("#draftIntakeAddressField"),
+  addressSelect: document.querySelector("#draftIntakeAddressSelect"),
+  bundleNode: document.querySelector("#draftIntakeBundle"),
+  counterpartyNameInput: document.querySelector("#draftIntakeCounterpartyName"),
+  counterpartyEmailInput: document.querySelector("#draftIntakeCounterpartyEmail"),
+  ndaTypeSelect: document.querySelector("#draftIntakeNdaType"),
+  termInput: document.querySelector("#draftIntakeTerm"),
+  projectPurposeInput: document.querySelector("#draftIntakeProjectPurpose"),
+  notesInput: document.querySelector("#draftIntakeNotes"),
+  governingLawSelect: document.querySelector("#draftIntakeGoverningLaw"),
+  lawStatusNode: document.querySelector("#draftIntakeLawStatus"),
+  lawResetButton: document.querySelector("#draftIntakeLawResetButton"),
+  statusNode: document.querySelector("#draftIntakeStatus"),
+  clearButton: document.querySelector("#draftIntakeClearButton"),
+  generateButton: document.querySelector("#draftIntakeGenerateButton"),
+  sideEntityNode: document.querySelector("#draftIntakeSideEntity"),
+  sideLawNode: document.querySelector("#draftIntakeSideLaw"),
+  sideTypeNode: document.querySelector("#draftIntakeSideType"),
+  onGenerate: generateNdaFromDraft,
+});
 adminAiController = createAdminAiController({
   state,
   aiCard: document.querySelector("#adminAiCard"),
@@ -233,6 +256,10 @@ dashboardSubmitButton?.addEventListener("click", () => {
   manualUploadController.openModal();
 });
 
+document.querySelector("[data-dashboard-open-generator]")?.addEventListener("click", () => {
+  activateTab("generator");
+});
+
 document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {
   sendDocumentController.openModal();
 });
@@ -300,6 +327,104 @@ function downloadFilename(response) {
   return match ? match[1] : "";
 }
 
+// onGenerate seam for the draft-intake "Generate NDA" button. POSTs the captured
+// entity bundle + intake (buildDraftPayload's shape) to POST /api/generate-nda
+// via the bridged generation API, then either triggers the DOCX download (byte
+// response) or surfaces the saved artifact (JSON response). Returns a {message,
+// tone} the controller renders; a thrown error is shown in the error tone.
+//
+// The endpoint lives on the generation branch and is not deployed on this base
+// until integration, so a 404 is caught as GenerationUnavailableError and shown
+// as a neutral "pending" notice — the same graceful degradation the entity
+// picker uses for /api/signing-entities — rather than a generation failure.
+async function generateNdaFromDraft(payload) {
+  const api = window.createGenerationApi();
+  try {
+    const result = await api.generateNda(payload);
+    if (result.kind === "blob") {
+      const filename = result.filename || draftNdaDownloadFilename(payload);
+      downloadBlob(result.blob, filename);
+      return { message: `NDA generated — downloading ${filename}.`, tone: "success" };
+    }
+    // JSON response (the real contract): the document was generated, a matter +
+    // tracked artifact were created, and download_url points at the matter source
+    // GET. Trigger the download and report the saved state so the user can find it
+    // in the repository.
+    if (result.download_url) {
+      downloadUrl(result.download_url, result.filename || draftNdaDownloadFilename(payload));
+    }
+    const savedFor = payload?.counterparty?.name ? ` for ${payload.counterparty.name}` : "";
+    const summary = generatedManifestSummary(result.manifest);
+    // The engine passes the Playbook deterministically; self_check is advisory, so
+    // a rare miss is surfaced as a soft caution rather than blocking the success.
+    if (result.self_check && result.self_check.passed === false) {
+      return {
+        message: `NDA generated and saved${savedFor}${summary}, but the self-check flagged it — review before sending.`,
+        tone: "error",
+      };
+    }
+    // If untrusted intake text (purpose/notes) was neutralised on the way into the
+    // document, surface it: the user should know their free text was sanitised.
+    if (Array.isArray(result.manifest?.sanitized_fields) && result.manifest.sanitized_fields.length) {
+      return {
+        message: `NDA generated and saved${savedFor}${summary}. Note: ${result.manifest.sanitized_fields.join(", ")} was sanitised before drafting.`,
+        tone: "error",
+      };
+    }
+    return { message: `NDA generated and saved${savedFor}${summary}.`, tone: "success" };
+  } catch (error) {
+    if (error instanceof window.GenerationUnavailableError || error?.code === "generation_unavailable") {
+      // Endpoint not deployed on this base yet — degrade gracefully.
+      return {
+        message: `Captured draft for ${payload.counterparty.name} on ${payload.signing_entity.legal_name} paper. Generation is not available on this build yet.`,
+        tone: "success",
+      };
+    }
+    throw error;
+  }
+}
+
+// A short parenthetical summary of what the engine actually filled, from the
+// response manifest (governing law + term) — so the success line confirms the
+// generated terms at a glance. Empty when the manifest is absent or sparse.
+//
+// governing_law_value is the EFFECTIVE law written into the doc (server-
+// authoritative). When the server marks it overridden, we surface the provenance
+// — "England and Wales (overridden from India)" — so the user can see their law
+// override actually took effect rather than silently snapping to the entity
+// default.
+function generatedManifestSummary(manifest) {
+  if (!manifest || typeof manifest !== "object") return "";
+  const bits = [];
+  if (manifest.governing_law_value) {
+    let law = String(manifest.governing_law_value);
+    if (manifest.governing_law_overridden && manifest.entity_default_governing_law_value) {
+      law += ` (overridden from ${manifest.entity_default_governing_law_value})`;
+    }
+    bits.push(law);
+  }
+  if (manifest.term_years) {
+    const years = Number(manifest.term_years);
+    if (Number.isFinite(years) && years > 0) bits.push(`${years}-year term`);
+  }
+  return bits.length ? ` (${bits.join(", ")})` : "";
+}
+
+// Derives a download filename when the response carries none, from the
+// counterparty + signing entity so multiple drafts don't all land as "nda.docx".
+function draftNdaDownloadFilename(payload) {
+  const parts = [payload?.signing_entity?.legal_name, payload?.counterparty?.name, "nda"]
+    .filter(Boolean)
+    .join("-");
+  const safe = Array.from(parts)
+    .map((character) => (/[a-z0-9_-]/i.test(character) ? character : "-"))
+    .join("")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+/g, "")
+    .replace(/[-_]+$/g, "");
+  return `${safe || "nda"}.docx`;
+}
+
 function setActiveTab(tabName) {
   tabButtons.forEach((button) => {
     const active = button.dataset.tab === tabName;
@@ -320,6 +445,12 @@ function activateTab(tabName) {
   if (tabName === "dashboard") {
     loadDashboardAiHealth();
     renderDashboardEmailHealth(state.gmailStatus);
+  }
+  if (tabName === "generator") {
+    // Load the signing-entity registry on first activation and render the
+    // current intake state. Idempotent — re-activating preserves in-progress
+    // input rather than resetting the form.
+    draftIntakeController.activate();
   }
   if (tabName === "review") {
     // The playbook clause list loads asynchronously after bootstrap, so the

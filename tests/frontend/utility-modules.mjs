@@ -51,6 +51,27 @@ import {
   isValidRecipientEmail,
   validateSendDocument,
 } from "../../static/js/modules/send-document.mjs";
+import {
+  SIGNING_ENTITIES,
+  applyEntitySelection,
+  buildDraftPayload,
+  clearGoverningLawOverride,
+  createDraftIntake,
+  createInitialIntake,
+  defaultAddressFor,
+  effectiveGoverningLaw,
+  formatAddressLines,
+  governingLawOptions,
+  hasMultipleAddresses,
+  selectAddress,
+  selectedAddress,
+  setGoverningLawOverride,
+  validateDraftIntake,
+} from "../../static/js/modules/draft-intake.mjs";
+import {
+  GenerationUnavailableError,
+  createGenerationApi,
+} from "../../static/js/modules/generation-api.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -517,3 +538,300 @@ function jsonResponse(payload, { ok = true } = {}) {
     json: async () => payload,
   };
 }
+
+// --- Outbound-draft intake: entity picker bundle-prefill + law override ---
+//
+// The registry mirrors nda_automation/entity_registry.py field-for-field: the
+// same entity ids, the {playbook_option_id,label} governing-law bundle, and the
+// {id,label,lines,country,default} address shape. These tests pin that contract
+// so the embedded copy can never drift from entity-model's source of truth.
+
+// Exactly our four signing entities, each a coupled bundle.
+assert.equal(SIGNING_ENTITIES.length, 4);
+assert.deepEqual(
+  SIGNING_ENTITIES.map((entity) => entity.id),
+  ["aspora_technology", "vance_money", "real_transfer", "vance_techlabs"],
+);
+for (const entity of SIGNING_ENTITIES) {
+  assert.ok(entity.id && entity.legal_name, "entity has id + legal name");
+  assert.ok(
+    entity.governing_law?.playbook_option_id && entity.governing_law?.label,
+    "entity law carries playbook_option_id + label",
+  );
+  assert.ok(Array.isArray(entity.addresses) && entity.addresses.length >= 1, "entity has >=1 address");
+  // Exactly one default address per entity (matches the Python validator).
+  assert.equal(entity.addresses.filter((address) => address.default).length, 1);
+  assert.ok(defaultAddressFor(entity), "entity resolves a default address");
+}
+
+// Exactly one entity (Real Transfer) carries two addresses; its default is the
+// London corporate office, the alternate is the Belfast registered office.
+const multiAddressEntities = SIGNING_ENTITIES.filter(hasMultipleAddresses);
+assert.equal(multiAddressEntities.length, 1);
+assert.equal(multiAddressEntities[0].id, "real_transfer");
+assert.equal(multiAddressEntities[0].addresses.length, 2);
+assert.equal(defaultAddressFor(multiAddressEntities[0]).id, "corporate");
+
+// governingLawOptions is the distinct set of laws across the entities — every
+// option id is a playbook governing_law approved_option id, and the override
+// dropdown can never offer a law that no entity defines.
+const lawOptions = governingLawOptions();
+const lawIds = lawOptions.map((law) => law.id);
+assert.deepEqual(new Set(lawIds), new Set(["india", "delaware", "england_and_wales", "difc"]));
+assert.deepEqual(new Set(lawIds).size, lawIds.length, "law options are de-duplicated");
+for (const entity of SIGNING_ENTITIES) {
+  assert.ok(lawIds.includes(entity.governing_law.playbook_option_id), "every entity law is offered");
+}
+
+// Picking an entity pre-fills the coupled bundle: address defaults, law couples.
+const indiaPick = applyEntitySelection(createInitialIntake(), "aspora_technology");
+assert.equal(indiaPick.entityId, "aspora_technology");
+assert.equal(indiaPick.addressId, "registered");
+assert.equal(indiaPick.governingLawId, "india");
+assert.equal(indiaPick.governingLawOverridden, false);
+assert.equal(effectiveGoverningLaw(indiaPick).label, "India");
+
+// Re-picking a DIFFERENT entity moves the whole bundle together — you cannot end
+// up with the US (Vance Money) entity still bound to India.
+const usPick = applyEntitySelection(indiaPick, "vance_money");
+assert.equal(usPick.entityId, "vance_money");
+assert.equal(usPick.governingLawId, "delaware");
+assert.equal(effectiveGoverningLaw(usPick).label, "Delaware");
+
+// The escape hatch: override the governing law independently of the entity.
+const overridden = setGoverningLawOverride(usPick, "difc");
+assert.equal(overridden.governingLawId, "difc");
+assert.equal(overridden.governingLawOverridden, true);
+assert.equal(effectiveGoverningLaw(overridden).label, "DIFC");
+// The entity itself is untouched by a law override.
+assert.equal(overridden.entityId, "vance_money");
+
+// Once overridden, re-picking an entity preserves the user's chosen law (the
+// whole point of an independent override) but still moves the address bundle.
+const repickAfterOverride = applyEntitySelection(overridden, "real_transfer");
+assert.equal(repickAfterOverride.entityId, "real_transfer");
+assert.equal(repickAfterOverride.addressId, "corporate");
+assert.equal(repickAfterOverride.governingLawId, "difc", "override survives an entity re-pick");
+assert.equal(repickAfterOverride.governingLawOverridden, true);
+
+// Clearing the override re-couples the law to the current entity's law.
+const recoupled = clearGoverningLawOverride(repickAfterOverride);
+assert.equal(recoupled.governingLawOverridden, false);
+assert.equal(recoupled.governingLawId, "england_and_wales");
+assert.equal(effectiveGoverningLaw(recoupled).label, "England and Wales");
+
+// The two-address entity: default address is the London corporate office, and
+// the user can switch to the Belfast registered office.
+const rtPick = applyEntitySelection(createInitialIntake(), "real_transfer");
+assert.equal(rtPick.addressId, "corporate");
+assert.equal(selectedAddress(rtPick).label, "Corporate office");
+const rtRegistered = selectAddress(rtPick, "registered");
+assert.equal(rtRegistered.addressId, "registered");
+assert.equal(selectedAddress(rtRegistered).label, "Registered office");
+assert.ok(formatAddressLines(selectedAddress(rtRegistered)).includes("Belfast"));
+
+// selectAddress ignores an address id that does not belong to the picked entity
+// (e.g. a "corporate" id on a single-address entity).
+const indiaCorporateAttempt = selectAddress(indiaPick, "corporate");
+assert.equal(indiaCorporateAttempt.addressId, "registered", "foreign address id is ignored");
+
+// --- Validation ---
+assert.equal(validateDraftIntake(createInitialIntake()).ok, false);
+assert.match(validateDraftIntake(createInitialIntake()).error, /counterparty name/i);
+assert.equal(
+  validateDraftIntake({ ...createInitialIntake(), counterpartyName: "Acme Co" }).ok,
+  false,
+  "entity is required",
+);
+assert.match(
+  validateDraftIntake({ ...createInitialIntake(), counterpartyName: "Acme Co" }).error,
+  /signing entity/i,
+);
+const validIntake = applyEntitySelection(
+  { ...createInitialIntake(), counterpartyName: "Acme Co" },
+  "aspora_technology",
+);
+assert.equal(validateDraftIntake(validIntake).ok, true);
+// A malformed email blocks; a blank email is allowed.
+assert.equal(validateDraftIntake({ ...validIntake, counterpartyEmail: "not-an-email" }).ok, false);
+assert.equal(validateDraftIntake({ ...validIntake, counterpartyEmail: "" }).ok, true);
+assert.equal(validateDraftIntake({ ...validIntake, counterpartyEmail: "deals@acme.com" }).ok, true);
+
+// --- Payload: the signing-entity bundle travels as one coupled unit, with the
+// playbook_option_id join key preserved for downstream generation. ---
+const payload = buildDraftPayload({
+  ...validIntake,
+  counterpartyEmail: "deals@acme.com",
+  projectPurpose: "Series B diligence",
+  term: "2 years",
+  notes: "rush",
+});
+assert.equal(payload.counterparty.name, "Acme Co");
+assert.equal(payload.counterparty.email, "deals@acme.com");
+assert.equal(payload.nda_type, "mutual");
+assert.equal(payload.signing_entity.id, "aspora_technology");
+assert.equal(payload.signing_entity.legal_name, "Aspora Technology Services Private Limited");
+assert.equal(payload.signing_entity.governing_law.playbook_option_id, "india");
+assert.equal(payload.signing_entity.governing_law.label, "India");
+assert.equal(payload.signing_entity.address.id, "registered");
+assert.equal(payload.signing_entity.governing_law_overridden, false);
+// A blank email serializes to null, not "".
+assert.equal(buildDraftPayload(validIntake).counterparty.email, null);
+
+// An overridden law is flagged in the payload so generation/review can see the
+// coupling was deliberately broken.
+const overriddenPayload = buildDraftPayload(setGoverningLawOverride(validIntake, "delaware"));
+assert.equal(overriddenPayload.signing_entity.governing_law.playbook_option_id, "delaware");
+assert.equal(overriddenPayload.signing_entity.governing_law_overridden, true);
+
+// --- Factory binds a custom registry (the seam for an entity-model
+// /api/signing-entities feed): every helper reads through the injected entities,
+// and reads them through the SAME field names as the Python registry. ---
+const customRegistry = [
+  {
+    id: "only_one",
+    short_name: "Solo",
+    legal_name: "Solo Company Ltd",
+    governing_law: { playbook_option_id: "scotland", label: "Scotland" },
+    addresses: [
+      { id: "hq", label: "HQ", lines: ["Edinburgh"], country: "United Kingdom", default: true },
+    ],
+  },
+];
+const intakeApi = createDraftIntake({ entities: customRegistry });
+assert.deepEqual(
+  intakeApi.governingLawOptions().map((law) => law.id),
+  ["scotland"],
+);
+assert.equal(intakeApi.entityLabel(customRegistry[0]), "Solo");
+const customPick = intakeApi.applyEntitySelection(intakeApi.createInitialIntake(), "only_one");
+assert.equal(customPick.governingLawId, "scotland");
+assert.equal(intakeApi.validateDraftIntake({ ...customPick, counterpartyName: "X" }).ok, true);
+assert.equal(
+  intakeApi.buildDraftPayload({ ...customPick, counterpartyName: "X" }).signing_entity.id,
+  "only_one",
+);
+// An entity id that belongs to the default registry but not this one does not
+// resolve through the injected registry.
+assert.equal(
+  intakeApi.applyEntitySelection(intakeApi.createInitialIntake(), "aspora_technology").entityId,
+  null,
+);
+
+// --- NDA generation API wrapper (the "Generate NDA" un-stub) ---
+//
+// createGenerationApi POSTs buildDraftPayload's shape to /api/generate-nda and
+// normalises the response so the controller can either download the DOCX bytes
+// or surface the saved artifact. A 404 means the endpoint is not deployed on the
+// running base yet (generation lives on another branch until integration) and is
+// reported as GenerationUnavailableError so the form degrades gracefully — the
+// same fallback the entity picker uses for /api/signing-entities.
+
+// Builds a response that mirrors the parts of fetch's Response the wrapper reads:
+// status, ok, a Content-Type/Content-Disposition header bag, and json()/blob().
+function generationResponse({ status = 200, headers = {}, json = null, blob = null } = {}) {
+  const headerBag = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: (name) => headerBag.get(String(name).toLowerCase()) ?? null },
+    json: async () => {
+      if (json === null) throw new Error("not json");
+      return json;
+    },
+    blob: async () => blob,
+  };
+}
+
+// The payload the entity picker produces — sent to the endpoint verbatim.
+const generationPayload = buildDraftPayload(validIntake);
+
+// DOCX-bytes response: returns kind "blob" with the bytes + the header filename.
+const docxCalls = [];
+const docxBlob = { size: 1024, type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+const docxApi = createGenerationApi({
+  fetchImpl: async (url, options) => {
+    docxCalls.push({ url, options });
+    return generationResponse({
+      headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": 'attachment; filename="aspora-nda.docx"',
+      },
+      blob: docxBlob,
+    });
+  },
+});
+const docxResult = await docxApi.generateNda(generationPayload);
+// POSTs to the generation endpoint with the buildDraftPayload body verbatim.
+assert.equal(docxCalls.length, 1);
+assert.equal(docxCalls[0].url, "/api/generate-nda");
+assert.equal(docxCalls[0].options.method, "POST");
+assert.equal(docxCalls[0].options.headers["Content-Type"], "application/json");
+assert.deepEqual(JSON.parse(docxCalls[0].options.body), generationPayload);
+// Byte response normalises to a downloadable blob + the Content-Disposition name.
+assert.equal(docxResult.kind, "blob");
+assert.equal(docxResult.blob, docxBlob);
+assert.equal(docxResult.filename, "aspora-nda.docx");
+
+// JSON response (the real 201 contract from routes/generation.py): matter_id,
+// artifact_id, status, a matter-source download_url, an advisory self_check, and
+// the manifest. The wrapper passes the whole body through so the controller can
+// download via download_url and flag a self_check miss.
+const jsonApi = createGenerationApi({
+  fetchImpl: async () =>
+    generationResponse({
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+      json: {
+        matter_id: "mat_1",
+        artifact_id: "art_1",
+        status: "generated",
+        download_url: "/api/matters/mat_1/source",
+        self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
+        manifest: { entity_id: "aspora_technology" },
+      },
+    }),
+});
+const jsonResult = await jsonApi.generateNda(generationPayload);
+assert.equal(jsonResult.kind, "json");
+assert.equal(jsonResult.matter_id, "mat_1");
+assert.equal(jsonResult.artifact_id, "art_1");
+assert.equal(jsonResult.status, "generated");
+assert.equal(jsonResult.download_url, "/api/matters/mat_1/source");
+assert.equal(jsonResult.self_check.passed, true);
+assert.deepEqual(jsonResult.manifest, { entity_id: "aspora_technology" });
+
+// 404: endpoint not deployed on this base → GenerationUnavailableError (degrade).
+const missingApi = createGenerationApi({
+  fetchImpl: async () => generationResponse({ status: 404, json: { error: "not found" } }),
+});
+await assert.rejects(missingApi.generateNda(generationPayload), (error) => {
+  assert.ok(error instanceof GenerationUnavailableError);
+  assert.equal(error.code, "generation_unavailable");
+  return true;
+});
+
+// Other failure (e.g. 422 validation): surfaces the backend message.
+const badApi = createGenerationApi({
+  fetchImpl: async () =>
+    generationResponse({ status: 422, headers: { "Content-Type": "application/json" }, json: { error: "Counterparty name is required" } }),
+});
+await assert.rejects(badApi.generateNda(generationPayload), /Counterparty name is required/);
+
+// A failure whose body is not JSON falls back to the default message rather than
+// throwing the JSON-parse error.
+const opaqueApi = createGenerationApi({
+  fetchImpl: async () => generationResponse({ status: 500 }),
+});
+await assert.rejects(opaqueApi.generateNda(generationPayload), /Could not generate the NDA/);
+
+// The endpoint URL is overridable (parity with the other API wrappers' seams).
+const customUrlCalls = [];
+await createGenerationApi({
+  url: "/api/v2/generate-nda",
+  fetchImpl: async (url) => {
+    customUrlCalls.push(url);
+    return generationResponse({ headers: { "Content-Type": "application/json" }, json: {} });
+  },
+}).generateNda(generationPayload);
+assert.equal(customUrlCalls[0], "/api/v2/generate-nda");
