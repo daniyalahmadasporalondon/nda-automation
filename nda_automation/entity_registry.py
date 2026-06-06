@@ -145,23 +145,25 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
     },
 ]
 
-# Human-readable notes flagging the entities whose jurisdiction did not map
-# cleanly to a single playbook position. Surfaced to reviewers; not consumed by
-# generation logic.
+# Human-readable notes for the two entities whose jurisdiction needed a judgement
+# call between addresses/legal systems. Both calls were CONFIRMED by legal, so the
+# defaults below are locked. Surfaced to reviewers; not consumed by generation
+# logic.
 ENTITY_LAW_MAPPING_NOTES: dict[str, str] = {
     "real_transfer": (
         "Real Transfer Limited has a registered office in Belfast (Northern "
         "Ireland) and a corporate office in London (England). Northern Ireland is "
-        "a separate legal jurisdiction from England and Wales and has NO matching "
-        "playbook governing-law position. The bundle defaults to England and "
-        "Wales via the London corporate office. If NDAs for this entity must run "
-        "under Northern Ireland law, the playbook needs a new position."
+        "a separate legal jurisdiction from England and Wales with no matching "
+        "playbook position. CONFIRMED by legal: NDAs run under England and Wales "
+        "law via the London corporate office (the default address); the Belfast "
+        "registered office is retained for reference. No new playbook position is "
+        "needed."
     ),
     "vance_techlabs": (
-        "Vance Techlabs Limited is registered in the DIFC free zone (DIFC Courts), "
-        "which the playbook's `difc` position matches cleanly. This is only a gap "
-        "if NDAs for this entity must run under UAE federal/onshore law, which the "
-        "playbook does not offer."
+        "Vance Techlabs Limited is registered in the DIFC free zone, whose DIFC "
+        "Courts are a distinct common-law jurisdiction from UAE federal/onshore "
+        "law. CONFIRMED by legal: NDAs run under the playbook's `difc` position, "
+        "not UAE federal law."
     ),
 }
 
