@@ -53,9 +53,15 @@ def review_nda_with_active_engine(
     deterministic_review_func: ReviewEngineFn = review_nda,
     ai_first_review_func: ReviewEngineFn = assess_nda_with_ai,
     playbook_runtime_func: PlaybookRuntimeFn = playbook_routes.ensure_active_playbook_runtime,
+    force_engine: str | None = None,
 ) -> dict[str, Any]:
+    # force_engine lets a caller pin the engine regardless of the active config —
+    # used by outbound NDA generation to run the fast deterministic review at
+    # creation and defer the AI review to on-demand (Refresh Review). The inbound
+    # review paths leave it unset, so the AI-first fail-closed policy is unchanged.
     engine_config = _active_review_engine_config()
-    selected_engine = engine_config["value"]
+    selected_engine = force_engine or engine_config["value"]
+    engine_source = "forced" if force_engine else engine_config["source"]
     if selected_engine != REVIEW_ENGINE_AI_FIRST:
         telemetry.increment("active_review_deterministic_completed")
         result = deterministic_review_func(text, paragraphs=paragraphs)
@@ -65,7 +71,7 @@ def review_nda_with_active_engine(
             selected_engine=REVIEW_ENGINE_DETERMINISTIC,
             executed_engine=REVIEW_ENGINE_DETERMINISTIC,
             status="completed",
-            engine_source=engine_config["source"],
+            engine_source=engine_source,
             playbook_runtime=playbook_runtime,
         )
 

@@ -26,12 +26,21 @@ def create_matter_from_document(
     dedupe_gmail: bool = False,
     owner_user_id: str = "",
     repository: MatterRepository | None = None,
+    defer_ai_review: bool = False,
 ) -> dict[str, Any]:
     repository = repository or DiskMatterRepository()
     ensure_document_size(document_bytes)
     document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-    review_result = review_nda_with_active_engine(extracted_text, paragraphs=extracted_paragraphs)
+    # Outbound NDA generation defers the slow AI review: it runs the fast
+    # deterministic review at creation (so the matter is valid + sendable
+    # immediately) and leaves the AI review for on-demand (Refresh Review). Inbound
+    # intake (gmail / manual upload) leaves this off and keeps the active engine.
+    review_result = review_nda_with_active_engine(
+        extracted_text,
+        paragraphs=extracted_paragraphs,
+        force_engine="deterministic" if defer_ai_review else None,
+    )
     review_result["source"] = {
         "filename": filename,
         "type": document_type,

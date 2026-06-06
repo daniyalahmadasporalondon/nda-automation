@@ -119,6 +119,11 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
         intake_metadata={"generation": result.manifest.to_dict()},
         owner_user_id=owner_user_id,
         repository=repository,
+        # Defer the AI review: this NDA was just generated from our own playbook and
+        # already passed the safety gate above, so create the matter with the fast
+        # deterministic review and let the AI review run on-demand (Refresh Review).
+        # This is the slow step we're skipping at generation time.
+        defer_ai_review=True,
     )
 
     original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
