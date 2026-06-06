@@ -34,6 +34,7 @@ clause takes — adaptation is constrained to the slots, never the substance.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -56,6 +57,83 @@ NDA_TYPE_ONE_WAY = "one_way"
 CLAUSE_TERM = "term_and_survival"
 CLAUSE_CONFIDENTIAL = "confidential_information"
 CLAUSE_GOVERNING_LAW = "governing_law"
+
+# --------------------------------------------------------------------------- #
+# Untrusted free-text sanitisation
+# --------------------------------------------------------------------------- #
+# intake.purpose and intake.business_description are free text from the caller
+# that gets filled verbatim into the recital / [BUSINESS DESCRIPTION] slot. That
+# makes them an injection surface: a caller (or an upstream prompt-injection) can
+# put a prohibited LEGAL POSITION (non-solicit, non-compete, non-circumvention,
+# exclusivity, IP assignment, penalty, perpetual confidentiality), a one-way ask,
+# or a "drafter instruction" into those fields and have it land in the generated
+# NDA. The deterministic clause engine never invents these positions, but it also
+# does nothing to stop tainted free text reaching the document. So we neutralise
+# the offending content at the fill boundary, on every path (deterministic, AI,
+# frozen). Each pattern pairs a label (for the manifest/audit) with a regex over
+# the lowercased field; a hit means the field is replaced with a safe value.
+_PROHIBITED_FREE_TEXT_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("non_compete", re.compile(r"non-?compete|not\b[^.]{0,40}\bcompete\b|engage in any (?:competing|business that competes)|competing business", re.IGNORECASE)),
+    ("non_solicit", re.compile(r"non-?solicit|\bsolicit(?:s|ing)?\b[^.]{0,20}\b(?:employ|staff|hire|personnel)|(?:not|never|refrain from)[^.]{0,30}\bsolicit|solicit or hire", re.IGNORECASE)),
+    ("non_circumvention", re.compile(r"non-?circumvent|circumvent or bypass|bypass (?:the disclosing party|us)|deal directly with", re.IGNORECASE)),
+    ("exclusivity", re.compile(r"\bexclusiv(?:e|ity)\b|deal exclusively|sole and exclusive", re.IGNORECASE)),
+    ("ip_assignment", re.compile(r"\bassigned? to\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest", re.IGNORECASE)),
+    ("penalty", re.compile(r"liquidated damages|\bpenalt(?:y|ies)\b|punitive damages", re.IGNORECASE)),
+    ("perpetual_confidentiality", re.compile(r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b", re.IGNORECASE)),
+    ("one_way", re.compile(r"one-?way nda|binding only (?:on|the) (?:the )?receiving party|only (?:the )?receiving party|we receive only", re.IGNORECASE)),
+    ("drafter_instruction", re.compile(r"ignore (?:all )?(?:prior|previous) instructions|note to drafter|you are drafting|add a clause|do not mention", re.IGNORECASE)),
+)
+
+# Safe neutral replacements when an injection dominates the field. These keep the
+# recital/description on-position and readable rather than blanking the document.
+_SAFE_PURPOSE = "the proposed business relationship between the parties"
+_SAFE_BUSINESS_DESCRIPTION = "its business activities"
+
+
+def sanitize_free_text(value: str, *, field_name: str, fallback: str) -> tuple[str, str]:
+    """Neutralise untrusted free text before it is filled into the document.
+
+    Returns ``(safe_value, note)``: when the input carries a prohibited position,
+    a one-way ask, or a drafter instruction, the whole field is replaced with the
+    safe ``fallback`` (surgical excision of a span risks leaving a half-sentence
+    that still reads as a position, so we substitute the field wholesale) and a
+    note like ``"purpose: replaced injected content (non_solicit)"`` is returned
+    for the manifest. Clean input passes through unchanged with an empty note.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return fallback, ""
+    hits = [label for label, pattern in _PROHIBITED_FREE_TEXT_PATTERNS if pattern.search(text)]
+    if not hits:
+        return text, ""
+    note = f"{field_name}: replaced injected content ({', '.join(sorted(set(hits)))})"
+    return fallback, note
+
+
+def _sanitize_intake(intake: "CounterpartyIntake", manifest: "GenerationManifest") -> "CounterpartyIntake":
+    """Return an intake whose free-text fields are safe to fill into the document.
+
+    Only the two free-text slots that flow into prose (purpose, business
+    description) are sanitised; identity fields (names/addresses) are filled into
+    structured slots and checked by the entity gate, not the position scan. Any
+    neutralisation is recorded on the manifest so it is auditable downstream.
+    """
+
+    safe_purpose, purpose_note = sanitize_free_text(
+        intake.purpose, field_name="purpose", fallback=_SAFE_PURPOSE
+    )
+    safe_business, business_note = sanitize_free_text(
+        intake.business_description, field_name="business_description", fallback=_SAFE_BUSINESS_DESCRIPTION
+    )
+    for note in (purpose_note, business_note):
+        if note:
+            manifest.sanitized_fields.append(note)
+    if not purpose_note and not business_note:
+        return intake
+    from dataclasses import replace  # noqa: PLC0415
+
+    return replace(intake, purpose=safe_purpose, business_description=safe_business)
 
 
 class NdaGenerationError(ValueError):
@@ -116,6 +194,11 @@ class GenerationManifest:
     forum: str
     slot_fills: dict[str, str] = field(default_factory=dict)
     clause_alignments: list[str] = field(default_factory=list)
+    # Free-text intake fields whose untrusted content was neutralised before it
+    # could reach the document, e.g. "purpose: removed prohibited position
+    # (non_solicit)". Empty in the normal case; auditable when an injection was
+    # caught (the UI can surface that the purpose/description was sanitised).
+    sanitized_fields: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +212,7 @@ class GenerationManifest:
             "forum": self.forum,
             "slot_fills": dict(self.slot_fills),
             "clause_alignments": list(self.clause_alignments),
+            "sanitized_fields": list(self.sanitized_fields),
         }
 
 
@@ -258,6 +342,11 @@ def generate_nda(
         governing_law_value=entity.governing_law_value,
         forum=entity.forum,
     )
+
+    # Neutralise untrusted free text BEFORE it reaches either the document fills
+    # or the AI adapter context, so an injected prohibited position / one-way ask
+    # / drafter instruction can never land in the recital or steer the adapter.
+    intake = _sanitize_intake(intake, manifest)
 
     _fill_variable_slots(document, entity, intake, agreement_date, manifest)
     _align_mutuality(document, playbook, clause_adapter, intake, manifest)
