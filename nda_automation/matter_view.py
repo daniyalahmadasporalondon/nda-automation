@@ -242,6 +242,11 @@ def _recipient_redirect_warning(matter: dict[str, Any], recipient: str) -> str:
     would let a spoofed ``Reply-To`` redirect the outbound document. We still
     surface the matter so a human can decide, but we flag the divergence so the
     operator confirms the destination deliberately rather than by default.
+
+    We fail toward warning: if the ``From`` sender is absent or unparseable we
+    cannot confirm the Reply-To matches a verified participant, so we treat that
+    as a divergence and warn. Otherwise an attacker could suppress the warning by
+    pairing a spoofed Reply-To with a malformed From header.
     """
     if not recipient:
         return ""
@@ -249,9 +254,10 @@ def _recipient_redirect_warning(matter: dict[str, Any], recipient: str) -> str:
     if not reply_to_recipient or not _same_email_address(recipient, reply_to_recipient):
         return ""
     sender_recipient = recipient_email(matter.get("sender"))
-    if not sender_recipient or _same_email_address(reply_to_recipient, sender_recipient):
+    if sender_recipient and _same_email_address(reply_to_recipient, sender_recipient):
         return ""
+    sender_label = sender_recipient or "an unverified sender"
     return (
-        f"Reply-To ({reply_to_recipient}) differs from the sender ({sender_recipient}). "
+        f"Reply-To ({reply_to_recipient}) differs from the sender ({sender_label}). "
         "Confirm the recipient before sending."
     )
