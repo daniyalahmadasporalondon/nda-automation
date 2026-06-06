@@ -217,18 +217,37 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("one_way", payload["error"])
 
-    def test_governing_law_override_is_rejected(self):
+    def test_governing_law_override_to_approved_law_is_applied(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        # aspora default is India; override to England.
+                        "signing_entity_id": "aspora_technology",
+                        "intake": {"counterparty_name": "Acme Corp Ltd"},
+                        "governing_law_override": "england_and_wales",
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+        self.assertEqual(status, 201, payload)
+        self.assertEqual(payload["manifest"]["governing_law_value"], "England and Wales")
+        self.assertTrue(payload["manifest"]["governing_law_overridden"])
+        self.assertEqual(payload["manifest"]["entity_default_governing_law_value"], "India")
+        self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
+
+    def test_unapproved_governing_law_override_is_rejected(self):
         with patch.dict(os.environ, self.auth_env()):
             status, payload, _ = self.generate(
                 {
                     "signing_entity_id": "aspora_technology",
                     "intake": {"counterparty_name": "Acme"},
-                    "governing_law_override": "england_and_wales",
+                    "governing_law_override": "new_york",
                 },
                 headers=self.basic_auth_headers(),
             )
         self.assertEqual(status, 400)
-        self.assertIn("governing_law_override", payload["error"])
+        self.assertIn("override", payload["error"].lower())
 
 
 if __name__ == "__main__":

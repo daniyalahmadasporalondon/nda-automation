@@ -199,6 +199,13 @@ class GenerationManifest:
     # (non_solicit)". Empty in the normal case; auditable when an injection was
     # caught (the UI can surface that the purpose/description was sanitised).
     sanitized_fields: list[str] = field(default_factory=list)
+    # Governing-law override provenance. ``governing_law_value`` above is always
+    # the EFFECTIVE law written into the clause. When the user picked a non-default
+    # (but still Playbook-approved) law, ``governing_law_overridden`` is True and
+    # ``entity_default_governing_law_value`` records the entity's registry default,
+    # so gen-verify validates the chosen law rather than flagging it as a mismatch.
+    governing_law_overridden: bool = False
+    entity_default_governing_law_value: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +220,8 @@ class GenerationManifest:
             "slot_fills": dict(self.slot_fills),
             "clause_alignments": list(self.clause_alignments),
             "sanitized_fields": list(self.sanitized_fields),
+            "governing_law_overridden": self.governing_law_overridden,
+            "entity_default_governing_law_value": self.entity_default_governing_law_value,
         }
 
 
@@ -237,7 +246,12 @@ class ClauseAdapter(Protocol):
     def adapt(self, clause_id: str, playbook_text: str, context: Mapping[str, Any]) -> str: ...
 
 
-def entity_party_from_bundle(bundle: Mapping[str, Any], playbook: Mapping[str, Any]) -> EntityParty:
+def entity_party_from_bundle(
+    bundle: Mapping[str, Any],
+    playbook: Mapping[str, Any],
+    *,
+    governing_law_option_id: str = "",
+) -> EntityParty:
     """Build an :class:`EntityParty` from an ``entity_registry`` bundle.
 
     Resolves the governing-law *value* through the Playbook so the slot text
@@ -245,30 +259,51 @@ def entity_party_from_bundle(bundle: Mapping[str, Any], playbook: Mapping[str, A
     ``governing_law.playbook_option_id`` which joins onto the Playbook's
     ``governing_law.rules.approved_options[].id``. A bundle whose option is not
     approved is rejected — generation never emits an off-position governing law.
+
+    ``governing_law_option_id`` overrides the entity's default law with another
+    Playbook-approved option (the product lets the user pick a different — still
+    approved — governing law). An unapproved override is rejected. When the law is
+    overridden, the forum tracks the overridden law (rather than the entity's
+    default courts) so the draft never pairs one jurisdiction's law with another's
+    forum.
     """
 
     legal_name = str(bundle.get("legal_name") or "").strip()
     if not legal_name:
         raise NdaGenerationError("Entity bundle is missing legal_name.")
 
-    option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
     approved = _approved_governing_law_options(playbook)
-    if option_id not in approved:
+    default_option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
+    if default_option_id not in approved:
         raise NdaGenerationError(
-            f"Entity governing-law option {option_id!r} is not an approved Playbook option "
+            f"Entity governing-law option {default_option_id!r} is not an approved Playbook option "
             f"(approved: {sorted(approved)})."
         )
+
+    override_id = str(governing_law_option_id or "").strip()
+    overridden = bool(override_id) and override_id != default_option_id
+    if override_id and override_id not in approved:
+        raise NdaGenerationError(
+            f"Governing-law override {override_id!r} is not an approved Playbook option "
+            f"(approved: {sorted(approved)})."
+        )
+    option_id = override_id or default_option_id
     governing_law_value = approved[option_id]
 
     address = _bundle_default_address(bundle)
     signatory = bundle.get("signatory") or {}
+    # The entity's registered forum is correct for its default law; if the law is
+    # overridden to a different jurisdiction, fall back to the overridden law value
+    # so we never name one jurisdiction's law with another's courts.
+    forum = str(bundle.get("jurisdiction") or "").strip() if not overridden else ""
+    forum = forum or governing_law_value
 
     return EntityParty(
         legal_name=legal_name,
         registered_office=address,
         jurisdiction_of_incorporation=_incorporation_jurisdiction(bundle, governing_law_value),
         governing_law_value=governing_law_value,
-        forum=str(bundle.get("jurisdiction") or "").strip() or governing_law_value,
+        forum=forum,
         # The registry ships placeholder signatory strings ("[Authorised Signatory]"
         # / "[Title]") when no real signer is assigned; treat those as unassigned so
         # the signature block renders clean blank fill-lines, not bracketed text.
@@ -408,6 +443,7 @@ def generate_nda_for_entity(
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
     use_frozen: bool = False,
+    governing_law_override: str = "",
 ) -> GenerationResult:
     """Resolve the entity from the registry and generate the NDA (no save).
 
@@ -422,6 +458,12 @@ def generate_nda_for_entity(
     live (non-deterministic) AI adapter: same guarded AI codepath, but replaying
     recorded on-position clause text, so gen-verify can gate the AI-shaped output
     deterministically. An explicit ``clause_adapter`` overrides both.
+
+    ``governing_law_override`` is a Playbook governing-law option id; when given
+    and different from the entity default, the draft uses that (still approved)
+    law and the manifest records the override provenance (``governing_law_overridden``
+    + ``entity_default_governing_law_value``) so gen-verify validates the chosen
+    law rather than flagging an entity mismatch.
     """
 
     from . import entity_registry  # noqa: PLC0415
@@ -444,8 +486,19 @@ def generate_nda_for_entity(
     if bundle is None:
         raise NdaGenerationError(f"Unknown signing entity {entity_id!r}.")
 
-    entity = entity_party_from_bundle(bundle, playbook)
-    return generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
+    approved = _approved_governing_law_options(playbook)
+    default_option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
+    entity_default_law = approved.get(default_option_id, "")
+    override_id = str(governing_law_override or "").strip()
+    overridden = bool(override_id) and override_id != default_option_id
+
+    entity = entity_party_from_bundle(bundle, playbook, governing_law_option_id=override_id)
+    result = generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
+    # Record override provenance on the manifest (the effective law is already in
+    # manifest.governing_law_value; gen-verify reads these to validate the choice).
+    result.manifest.governing_law_overridden = overridden
+    result.manifest.entity_default_governing_law_value = entity_default_law
+    return result
 
 
 def generate_and_save_nda(
@@ -459,12 +512,14 @@ def generate_and_save_nda(
     owner_user_id: str = "",
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
+    governing_law_override: str = "",
 ) -> tuple[GenerationResult, Any]:
     """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
 
     Wires the live ``entity_registry`` (the single source of entity truth) and
     ``artifact_service`` so a caller only needs an ``entity_id`` + intake +
-    ``matter_id``. Returns ``(result, artifact)``.
+    ``matter_id``. Returns ``(result, artifact)``. ``governing_law_override`` is a
+    Playbook governing-law option id (see :func:`generate_nda_for_entity`).
     """
 
     if playbook is None:
@@ -478,6 +533,7 @@ def generate_and_save_nda(
         playbook=playbook,
         clause_adapter=clause_adapter,
         use_ai=use_ai,
+        governing_law_override=governing_law_override,
     )
     # Hard pre-save gate: never persist an off-position draft. The clause adapter
     # is guarded and the intake is sanitised, but this is the last, independent
