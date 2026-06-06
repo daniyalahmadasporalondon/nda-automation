@@ -387,10 +387,22 @@ async function generateNdaFromDraft(payload) {
 // A short parenthetical summary of what the engine actually filled, from the
 // response manifest (governing law + term) — so the success line confirms the
 // generated terms at a glance. Empty when the manifest is absent or sparse.
+//
+// governing_law_value is the EFFECTIVE law written into the doc (server-
+// authoritative). When the server marks it overridden, we surface the provenance
+// — "England and Wales (overridden from India)" — so the user can see their law
+// override actually took effect rather than silently snapping to the entity
+// default.
 function generatedManifestSummary(manifest) {
   if (!manifest || typeof manifest !== "object") return "";
   const bits = [];
-  if (manifest.governing_law_value) bits.push(String(manifest.governing_law_value));
+  if (manifest.governing_law_value) {
+    let law = String(manifest.governing_law_value);
+    if (manifest.governing_law_overridden && manifest.entity_default_governing_law_value) {
+      law += ` (overridden from ${manifest.entity_default_governing_law_value})`;
+    }
+    bits.push(law);
+  }
   if (manifest.term_years) {
     const years = Number(manifest.term_years);
     if (Number.isFinite(years) && years > 0) bits.push(`${years}-year term`);

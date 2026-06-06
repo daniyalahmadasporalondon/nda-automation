@@ -1777,7 +1777,15 @@ async function testDraftIntakeGenerateNda(page) {
         status: "generated",
         download_url: "/api/matters/mat_generated_1/source",
         self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
-        manifest: { entity_id: "aspora_technology", governing_law_value: "England and Wales", term_years: 2, sanitized_fields: [] },
+        manifest: {
+          entity_id: "aspora_technology",
+          governing_law_value: "England and Wales",
+          governing_law_option_id: "england_and_wales",
+          governing_law_overridden: true,
+          entity_default_governing_law_value: "India",
+          term_years: 2,
+          sanitized_fields: [],
+        },
       }),
     });
   });
@@ -1808,8 +1816,9 @@ async function testDraftIntakeGenerateNda(page) {
 
   await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
   await assertTextContains(page.locator("#draftIntakeStatus"), "Acme Corporation");
-  // The success line confirms the generated terms from the manifest at a glance.
-  await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales");
+  // The success line confirms the generated terms from the manifest at a glance,
+  // including the server-authoritative governing-law override provenance.
+  await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales (overridden from India)");
   await assertTextContains(page.locator("#draftIntakeStatus"), "2-year term");
 
   // The POST carries buildDraftPayload's shape: the coupled signing-entity bundle
