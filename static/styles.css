@@ -687,7 +687,8 @@ h3 {
 }
 
 .upload-field input,
-.upload-field textarea {
+.upload-field textarea,
+.upload-field select {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
@@ -698,9 +699,116 @@ h3 {
   width: 100%;
 }
 
+.upload-field select {
+  appearance: auto;
+  cursor: pointer;
+}
+
 .upload-field input::placeholder,
 .upload-field textarea::placeholder {
   color: rgba(93, 84, 112, 0.52);
+}
+
+/* --- Outbound-draft intake modal --- */
+/* Group the intake into legible sections (entity / deal / governing law) using
+   the same panel borders as the rest of the modal rather than the native
+   fieldset chrome. */
+.draft-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px 16px;
+}
+
+.draft-fieldset legend {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0 6px;
+  text-transform: uppercase;
+}
+
+/* The read-only bundle preview that proves the entity's legal name, address and
+   governing law travel together. */
+.draft-entity-bundle {
+  background: var(--brand-glow);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 12px;
+  padding: 12px 14px;
+}
+
+.draft-entity-bundle.empty {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.draft-bundle-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.draft-bundle-grid div {
+  display: grid;
+  gap: 2px;
+}
+
+.draft-bundle-grid dt {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.draft-bundle-grid dd {
+  color: var(--ink);
+  margin: 0;
+}
+
+/* The governing-law coupling note + its reset escape hatch. */
+.draft-law-note {
+  gap: 6px;
+}
+
+.draft-law-status {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin: 0;
+  min-height: 1.3em;
+}
+
+.link-button {
+  align-self: start;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--brand);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 700;
+  height: auto;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.link-button:hover:not(:disabled),
+.link-button:focus-visible {
+  color: var(--brand-bright);
+}
+
+/* The base `button` rule sets display:flex, which would otherwise beat the UA
+   [hidden] { display:none }. Make hidden authoritative for the modal's toggled
+   controls so the reset link truly disappears when the law is coupled. */
+.link-button[hidden],
+.upload-field[hidden] {
+  display: none;
 }
 
 .upload-actions {
