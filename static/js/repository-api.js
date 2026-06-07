@@ -1,13 +1,15 @@
 const RepositoryApi = (() => {
-  const repositoryApiModule = import("./modules/repository-api.mjs");
+  const repositoryApiModule = import("./modules/repository-api.mjs?v=20260607a");
   const methodNames = [
     "deleteMatter",
+    "driveStatus",
     "exportReviewDocx",
     "getMatter",
     "getMatterReview",
     "listMatters",
     "loadGmailStatus",
     "moveMatterToColumn",
+    "saveMatterToDrive",
     "sendRedline",
     "syncGmail",
   ];

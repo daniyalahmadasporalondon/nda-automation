@@ -74,6 +74,10 @@ const RepositoryView = (() => {
       RepositoryDetail.setPanelMessage(repositoryMatterPanel, message);
     }
 
+    function setPanelMessageHtml(html) {
+      RepositoryDetail.setPanelMessageHtml(repositoryMatterPanel, html);
+    }
+
     actions = RepositoryActions.create({
       api,
       downloadBlob,
@@ -92,6 +96,7 @@ const RepositoryView = (() => {
       showMatterReviewLoadError,
       repositoryMatterPanel,
       setPanelMessage,
+      setPanelMessageHtml,
       setPendingDeleteMatterId: (matterId) => { pendingDeleteMatterId = matterId; },
       setPendingSendMatterId: (matterId) => { pendingSendMatterId = matterId; },
       setSelectedMatter: (matter) => { selectedMatter = matter; },
