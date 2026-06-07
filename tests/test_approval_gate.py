@@ -3,9 +3,9 @@
 Two layers:
 * pure ``approval`` logic (decision validation, resolution summary, block
   reasons, reviewed-DOCX payload translation) — no HTTP, no DOCX;
-* the HTTP endpoints (decision, approve with both block reasons + success +
-  timeline, reviewed-docx status gate + payload wiring) driven through the real
-  request handler against an isolated on-disk store.
+* the HTTP endpoints (decision, approve — staleness is the sole block reason now
+  + success + timeline, reviewed-docx status gate + payload wiring) driven
+  through the real request handler against an isolated on-disk store.
 """
 from __future__ import annotations
 
@@ -115,30 +115,26 @@ class ApprovalLogicTests(unittest.TestCase):
 
     def test_approval_blocks_flags_stale_playbook(self):
         review_result = _review_result_with_runtime()
-        # Resolve every flagged clause so the only remaining block is staleness.
-        decisions = {
-            clause_id: approval.normalize_reviewer_decision({"action": "accept"}, actor="a")
-            for clause_id in self._flagged_clause_ids(review_result)
-        }
         stale_result = deepcopy(review_result)
         stale_result["playbook_runtime"]["active_hash"] = "sha256:stale-hash-does-not-match"
-        matter = {"id": "m1", "review_result": stale_result, "reviewer_decisions": decisions}
+        # Staleness blocks regardless of any per-clause decisions: the single
+        # "Approve Review" gate signs off the whole matter once the review is
+        # fresh, so the *only* block reason that can appear is stale_playbook.
+        matter = {"id": "m1", "review_result": stale_result, "reviewer_decisions": {}}
 
         blocks = approval.approval_blocks(matter)
-        self.assertIn(approval.BLOCK_STALE_PLAYBOOK, blocks)
-        self.assertFalse([b for b in blocks if b.startswith(approval.UNRESOLVED_CLAUSE_PREFIX)])
+        self.assertEqual(blocks, [approval.BLOCK_STALE_PLAYBOOK])
 
-    def test_approval_blocks_lists_unresolved_clauses(self):
+    def test_fresh_review_with_unresolved_clauses_is_not_blocked(self):
+        # One approval covers the whole matter: unresolved fail/review clauses no
+        # longer gate approval. A fresh review is approvable with no decisions.
         review_result = _review_result_with_runtime()
-        flagged = self._flagged_clause_ids(review_result)
-        matter = {"id": "m1", "review_result": review_result, "reviewer_decisions": {}}
-
-        blocks = approval.approval_blocks(matter)
-        self.assertNotIn(approval.BLOCK_STALE_PLAYBOOK, blocks)
-        self.assertEqual(
-            sorted(blocks),
-            sorted(f"{approval.UNRESOLVED_CLAUSE_PREFIX}{cid}" for cid in flagged),
+        self.assertTrue(
+            self._flagged_clause_ids(review_result),
+            "fixture should flag at least one clause that would have required a decision",
         )
+        matter = {"id": "m1", "review_result": review_result, "reviewer_decisions": {}}
+        self.assertEqual(approval.approval_blocks(matter), [])
 
     def test_review_is_stale_honors_playbook_version_hash_contract(self):
         # Fresh by review_staleness (runtime hash matches) but the locked
@@ -345,18 +341,20 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     # --- approve: block reasons -------------------------------------------
-    def test_approve_blocked_by_unresolved_clause(self):
+    def test_approve_succeeds_with_unresolved_clauses_when_fresh(self):
+        # The single "Approve Review" gate signs off the whole matter; unresolved
+        # fail/review clauses no longer block a fresh review.
         matter_id, flagged = self._seed_matter(resolve_all=False)
+        self.assertTrue(flagged, "fixture should flag at least one clause")
         status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
-        self.assertEqual(status, 409)
-        self.assertEqual(
-            sorted(payload["blocks_approval"]),
-            sorted(f"unresolved_clause:{cid}" for cid in flagged),
-        )
-        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "approved")
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "approved")
 
     def test_approve_blocked_by_stale_playbook(self):
-        matter_id, flagged = self._seed_matter(resolve_all=True)
+        # Staleness is the sole remaining approval blocker (a data-freshness
+        # guard), independent of any per-clause decisions.
+        matter_id, _ = self._seed_matter(resolve_all=False)
         # Make the stored review stale by rewriting its playbook hash.
         matter = matter_store.get_matter(matter_id)
         review_result = deepcopy(matter["review_result"])
@@ -364,17 +362,9 @@ class ApprovalEndpointTests(unittest.TestCase):
         matter_store.update_matter_review(
             matter_id, review_result, triage_review_result(review_result)
         )
-        # update_matter_review clears prior sign-off but not reviewer_decisions;
-        # re-resolve to isolate the stale block reason.
-        for clause_id in flagged:
-            matter_store.set_clause_reviewer_decision(
-                matter_id,
-                clause_id,
-                approval.normalize_reviewer_decision({"action": "accept"}, actor="reviewer"),
-            )
         status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
         self.assertEqual(status, 409)
-        self.assertIn("stale_playbook", payload["blocks_approval"])
+        self.assertEqual(payload["blocks_approval"], ["stale_playbook"])
         self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
 
     # --- approve: success + timeline --------------------------------------

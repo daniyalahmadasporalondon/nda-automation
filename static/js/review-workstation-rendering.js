@@ -17,7 +17,6 @@ function renderResult(result, reviewedText) {
   state.redlineDraftDirty = false;
   state.reviewedClauseIds = {};
   state.reasoningTrailOpen = {};
-  state.reviewerDecisionDraft = {};
   state.reviewResolution = null;
   state.approveServerBlocks = [];
   resetReviewEditHistory();
@@ -269,46 +268,9 @@ function renderClauseCommentBlock(clause) {
   `;
 }
 
-// 2.5: per-clause reviewer action controls (Accept / Modify / Reject / Comment).
-// Accept and Reject post immediately; Modify and Comment expand an inline
-// composer (modified_text / comment) with a Save button. The saved
-// reviewer_decision is read back from the clause and reflected as the active
-// action + an actor/decided-at banner, so the card always shows where the human
-// left the clause. Self-gates to "" until a review has run.
-const REVIEWER_DECISION_ACTIONS = [
-  { action: "accept", label: "Accept" },
-  { action: "modify", label: "Modify" },
-  { action: "reject", label: "Reject" },
-  { action: "comment", label: "Comment" },
-];
-
-function clauseReviewerDecision(clause) {
-  const decision = clause && typeof clause.reviewer_decision === "object" ? clause.reviewer_decision : null;
-  if (!decision) return null;
-  const action = String(decision.action || "").trim().toLowerCase();
-  if (!REVIEWER_DECISION_ACTIONS.some((entry) => entry.action === action)) return null;
-  return { ...decision, action };
-}
-
-function reviewerDecisionDraftForClause(clauseId) {
-  const drafts = state.reviewerDecisionDraft;
-  if (!drafts || typeof drafts !== "object") return null;
-  return drafts[clauseId] || null;
-}
-
-function reviewerDecisionStatusLine(decision) {
-  if (!decision) return "";
-  const verbs = { accept: "Accepted", modify: "Modified", reject: "Rejected", comment: "Commented" };
-  const verb = verbs[decision.action] || "Decided";
-  const actor = String(decision.actor || "").trim();
-  const decidedAt = formatReviewerDecisionTimestamp(decision.decided_at);
-  const parts = [verb];
-  if (actor) parts.push(`by ${actor}`);
-  if (decidedAt) parts.push(decidedAt);
-  return parts.join(" · ");
-}
-
-function formatReviewerDecisionTimestamp(value) {
+// Generic human-readable timestamp formatter (used by the approved-review
+// title). Falls back to the raw value when it isn't a parseable date.
+function formatReviewTimestamp(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   const date = new Date(raw);
@@ -318,116 +280,6 @@ function formatReviewerDecisionTimestamp(value) {
   } catch (error) {
     return date.toISOString();
   }
-}
-
-function renderReviewerDecisionBlock(clause) {
-  if (!hasReviewResults() || !clause) return "";
-  const clauseId = clause.id;
-  const decision = clauseReviewerDecision(clause);
-  const draft = reviewerDecisionDraftForClause(clauseId);
-  // Which action's composer is open (modify/comment only): the in-flight draft
-  // wins, else the saved modify/comment decision is shown editable so the
-  // reviewer can revise it. Accept/Reject drafts never open a composer.
-  const draftComposerAction = draft && (draft.action === "modify" || draft.action === "comment") ? draft.action : "";
-  const composerAction = draftComposerAction
-    || (decision && (decision.action === "modify" || decision.action === "comment") ? decision.action : "");
-  // The highlighted action reflects the *saved* decision (or an open composer),
-  // not an in-flight Accept/Reject that has not round-tripped yet.
-  const activeAction = composerAction || decision?.action || "";
-  const saving = Boolean(draft?.saving);
-
-  const buttons = REVIEWER_DECISION_ACTIONS.map((entry) => {
-    const active = activeAction === entry.action;
-    return `
-      <button
-        class="reviewer-action-button ${entry.action} ${active ? "active" : ""}"
-        type="button"
-        data-reviewer-action="${entry.action}"
-        data-reviewer-clause-id="${escapeHtml(clauseId)}"
-        aria-pressed="${active ? "true" : "false"}"
-        ${saving ? "disabled" : ""}
-      >${escapeHtml(entry.label)}</button>
-    `;
-  }).join("");
-
-  const status = decision
-    ? `<p class="reviewer-decision-status" data-reviewer-decision-status>${escapeHtml(reviewerDecisionStatusLine(decision))}</p>`
-    : `<p class="reviewer-decision-status muted" data-reviewer-decision-status>No reviewer decision yet.</p>`;
-
-  const composer = composerAction ? renderReviewerDecisionComposer(clause, composerAction, decision, draft) : "";
-  const errorText = String(draft?.error || "").trim();
-  const error = errorText
-    ? `<p class="reviewer-decision-error" role="alert">${escapeHtml(errorText)}</p>`
-    : "";
-
-  return `
-    <div class="studio-detail-block reviewer-decision-block" data-reviewer-decision-clause-id="${escapeHtml(clauseId)}">
-      <small>Reviewer decision</small>
-      ${status}
-      <div class="reviewer-action-controls" role="group" aria-label="Reviewer decision">
-        ${buttons}
-      </div>
-      ${composer}
-      ${error}
-    </div>
-  `;
-}
-
-function renderReviewerDecisionComposer(clause, action, decision, draft) {
-  const clauseId = clause.id;
-  if (action === "modify") {
-    const fallback = decision?.action === "modify" ? decision.modified_text : "";
-    const value = draft && typeof draft.modifiedText === "string" ? draft.modifiedText : fallback || "";
-    return `
-      <div class="reviewer-decision-composer modify">
-        <label class="reviewer-decision-label" for="reviewer-modify-${escapeHtml(clauseId)}">Modified clause text</label>
-        <textarea
-          id="reviewer-modify-${escapeHtml(clauseId)}"
-          class="reviewer-decision-input"
-          data-reviewer-modified-text="${escapeHtml(clauseId)}"
-          rows="4"
-          placeholder="Enter the revised clause wording"
-        >${escapeHtml(value)}</textarea>
-        ${renderReviewerDecisionComposerActions(clauseId, "modify", draft)}
-      </div>
-    `;
-  }
-  const fallback = decision?.action === "comment" ? decision.comment : "";
-  const value = draft && typeof draft.comment === "string" ? draft.comment : fallback || "";
-  return `
-    <div class="reviewer-decision-composer comment">
-      <label class="reviewer-decision-label" for="reviewer-comment-${escapeHtml(clauseId)}">Reviewer comment</label>
-      <textarea
-        id="reviewer-comment-${escapeHtml(clauseId)}"
-        class="reviewer-decision-input"
-        data-reviewer-comment-text="${escapeHtml(clauseId)}"
-        rows="4"
-        placeholder="Explain the decision for the counterparty or record"
-      >${escapeHtml(value)}</textarea>
-      ${renderReviewerDecisionComposerActions(clauseId, "comment", draft)}
-    </div>
-  `;
-}
-
-function renderReviewerDecisionComposerActions(clauseId, action, draft) {
-  const saving = Boolean(draft?.saving);
-  return `
-    <div class="reviewer-decision-composer-actions">
-      <button
-        class="reviewer-decision-save"
-        type="button"
-        data-reviewer-save="${escapeHtml(clauseId)}"
-        data-reviewer-save-action="${action}"
-        ${saving ? "disabled" : ""}
-      >${saving ? "Saving…" : "Save"}</button>
-      <button
-        class="reviewer-decision-cancel secondary"
-        type="button"
-        data-reviewer-cancel="${escapeHtml(clauseId)}"
-        ${saving ? "disabled" : ""}
-      >Cancel</button>
-    </div>
-  `;
 }
 
 function getClauseTotal(clauses = []) {
@@ -765,86 +617,6 @@ function bindReviewAcknowledgementControls(container) {
   });
 }
 
-function bindReviewerDecisionControls(container) {
-  // Accept / Reject post straight away. Modify / Comment open the matching
-  // composer (or close it if already open) and persist the keystrokes into the
-  // per-clause draft so a re-render keeps the in-progress text.
-  container.querySelectorAll("[data-reviewer-action]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const clauseId = button.dataset.reviewerClauseId;
-      const action = button.dataset.reviewerAction;
-      if (action === "modify" || action === "comment") {
-        toggleReviewerDecisionComposer(clauseId, action);
-      } else {
-        submitReviewerDecision(clauseId, action);
-      }
-    });
-  });
-  container.querySelectorAll("[data-reviewer-modified-text]").forEach((input) => {
-    input.addEventListener("input", () => {
-      updateReviewerDecisionDraft(input.dataset.reviewerModifiedText, { modifiedText: input.value });
-    });
-  });
-  container.querySelectorAll("[data-reviewer-comment-text]").forEach((input) => {
-    input.addEventListener("input", () => {
-      updateReviewerDecisionDraft(input.dataset.reviewerCommentText, { comment: input.value });
-    });
-  });
-  container.querySelectorAll("[data-reviewer-save]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      submitReviewerDecision(button.dataset.reviewerSave, button.dataset.reviewerSaveAction);
-    });
-  });
-  container.querySelectorAll("[data-reviewer-cancel]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      clearReviewerDecisionDraft(button.dataset.reviewerCancel);
-    });
-  });
-}
-
-function reviewerDecisionDraftMap() {
-  if (!state.reviewerDecisionDraft || typeof state.reviewerDecisionDraft !== "object") {
-    state.reviewerDecisionDraft = {};
-  }
-  return state.reviewerDecisionDraft;
-}
-
-function toggleReviewerDecisionComposer(clauseId, action) {
-  if (!clauseId) return;
-  const drafts = reviewerDecisionDraftMap();
-  const current = drafts[clauseId];
-  if (current && current.action === action && !current.saving) {
-    delete drafts[clauseId];
-  } else {
-    const clause = state.reviewClauses.find((item) => item.id === clauseId);
-    const decision = clause ? clauseReviewerDecision(clause) : null;
-    drafts[clauseId] = {
-      action,
-      comment: decision?.action === "comment" ? String(decision.comment || "") : "",
-      error: "",
-      modifiedText: decision?.action === "modify" ? String(decision.modified_text || "") : "",
-      saving: false,
-    };
-  }
-  renderStudioDetail();
-}
-
-function updateReviewerDecisionDraft(clauseId, patch) {
-  if (!clauseId) return;
-  const drafts = reviewerDecisionDraftMap();
-  drafts[clauseId] = { ...(drafts[clauseId] || {}), ...patch };
-}
-
-function clearReviewerDecisionDraft(clauseId) {
-  if (!clauseId) return;
-  const drafts = reviewerDecisionDraftMap();
-  if (drafts[clauseId]) delete drafts[clauseId];
-  renderStudioDetail();
-}
-
 function setRedlineExportDecision(redlineId, included) {
   if (!redlineId) return;
   const edit = state.reviewRedlines.find((item) => item.id === redlineId);
@@ -1149,7 +921,6 @@ function renderStudioDetail() {
   const reasoningTrail = renderReasoningTrailBlock(clause);
   const activeStatus = renderActiveClauseStatusToggle(clause, status);
   const commentBlock = renderClauseCommentBlock(clause);
-  const reviewerDecision = renderReviewerDecisionBlock(clause);
   studioDetailPanel.innerHTML = `
     <div class="studio-detail-heading active-clause-heading">
       <div>
@@ -1165,7 +936,6 @@ function renderStudioDetail() {
       ${citation}
       ${playbookPosition}
       ${proposedRedlines}
-      ${reviewerDecision}
       ${reasoningTrail}
       ${commentBlock}
     </div>
@@ -1175,7 +945,6 @@ function renderStudioDetail() {
   bindReviewAcknowledgementControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
   bindReasoningTrailControls(studioDetailPanel);
-  bindReviewerDecisionControls(studioDetailPanel);
 }
 
 function renderAiCitation(span) {
