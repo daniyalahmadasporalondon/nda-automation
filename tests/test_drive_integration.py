@@ -498,7 +498,7 @@ class DriveSettingsTests(unittest.TestCase):
         with self._isolated_data_dir():
             self.assertEqual(
                 app_settings.drive_settings(),
-                {"enabled": False, "folder_id": "", "folder_name": ""},
+                {"enabled": False, "folder_id": "", "folder_name": "", "auto_intake": True},
             )
 
     def test_update_drive_settings_persists(self):
@@ -508,10 +508,35 @@ class DriveSettingsTests(unittest.TestCase):
             )
             self.assertEqual(
                 updated,
-                {"enabled": True, "folder_id": "folder_XYZ-123", "folder_name": "Signed NDAs"},
+                {
+                    "enabled": True,
+                    "folder_id": "folder_XYZ-123",
+                    "folder_name": "Signed NDAs",
+                    "auto_intake": True,
+                },
             )
             # A fresh read returns the persisted values.
             self.assertEqual(app_settings.drive_settings(), updated)
+
+    def test_auto_intake_setting_round_trips(self):
+        with self._isolated_data_dir():
+            # Default on.
+            self.assertTrue(app_settings.drive_auto_intake_enabled())
+            # Turning it off round-trips through update + a fresh read.
+            updated = app_settings.update_drive_settings({"auto_intake": False})
+            self.assertFalse(updated["auto_intake"])
+            self.assertFalse(app_settings.drive_auto_intake_enabled())
+            self.assertFalse(app_settings.drive_settings()["auto_intake"])
+            # And back on again.
+            updated = app_settings.update_drive_settings({"auto_intake": True})
+            self.assertTrue(updated["auto_intake"])
+            self.assertTrue(app_settings.drive_auto_intake_enabled())
+
+    def test_auto_intake_setting_rejects_non_boolean(self):
+        with self._isolated_data_dir():
+            # A non-boolean is ignored (not coerced): the setting is unchanged.
+            updated = app_settings.update_drive_settings({"auto_intake": "yes"})
+            self.assertTrue(updated["auto_intake"])
 
     def test_update_drive_settings_records_audit_event(self):
         with self._isolated_data_dir():
@@ -827,11 +852,41 @@ class DriveRouteTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(
                     payload["drive"],
-                    {"enabled": True, "folder_id": "folder_99", "folder_name": "Vault"},
+                    {
+                        "enabled": True,
+                        "folder_id": "folder_99",
+                        "folder_name": "Vault",
+                        "auto_intake": True,
+                    },
                 )
                 # Audit event recorded for the admin change.
                 history = app_settings.settings_audit_history()
         self.assertTrue(any(event["action"] == "drive_settings_update" for event in history))
+
+    def test_drive_settings_update_auto_intake_via_route(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload, _headers = self.request(
+                    "POST",
+                    "/api/admin/drive-settings",
+                    {"auto_intake": False},
+                )
+                self.assertEqual(status, 200)
+                self.assertFalse(payload["drive"]["auto_intake"])
+                self.assertFalse(app_settings.drive_auto_intake_enabled())
+
+    def test_drive_settings_update_rejects_non_boolean_auto_intake(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload, _headers = self.request(
+                    "POST",
+                    "/api/admin/drive-settings",
+                    {"auto_intake": "nope"},
+                )
+        self.assertEqual(status, 400)
+        self.assertIn("auto-intake", payload["error"].lower())
 
     def test_drive_settings_update_rejects_bad_folder_id(self):
         with tempfile.TemporaryDirectory() as data_dir:

@@ -102,6 +102,10 @@ DEFAULT_DRIVE_SETTINGS = {
     "enabled": False,
     "folder_id": "",
     "folder_name": "",
+    # When True (the default), a newly created matter is auto-filed into Drive at
+    # intake (best-effort, gated on the user having Drive connected). When False,
+    # filing is manual-only (the "Save to Drive" button).
+    "auto_intake": True,
 }
 MAX_DRIVE_FOLDER_ID_LENGTH = 256
 MAX_DRIVE_FOLDER_NAME_LENGTH = 200
@@ -312,6 +316,11 @@ def drive_enabled() -> bool:
     return bool(drive_settings().get("enabled", DEFAULT_DRIVE_SETTINGS["enabled"]))
 
 
+def drive_auto_intake_enabled() -> bool:
+    """Whether matters are auto-filed into Drive at intake (default True)."""
+    return bool(drive_settings().get("auto_intake", DEFAULT_DRIVE_SETTINGS["auto_intake"]))
+
+
 def gmail_inbound_search_terms() -> list[str]:
     return gmail_settings()["inbound_search_terms"]
 
@@ -415,6 +424,7 @@ def drive_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(payload.get("enabled", DEFAULT_DRIVE_SETTINGS["enabled"])),
         "folder_id": _clean_drive_folder_id(payload.get("folder_id")),
         "folder_name": _clean_drive_folder_name(payload.get("folder_name")),
+        "auto_intake": bool(payload.get("auto_intake", DEFAULT_DRIVE_SETTINGS["auto_intake"])),
     }
 
 
@@ -511,7 +521,7 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
 
 
 def _valid_drive_setting(key: str, value: Any) -> bool:
-    if key == "enabled":
+    if key in ("enabled", "auto_intake"):
         return isinstance(value, bool)
     if key in ("folder_id", "folder_name"):
         return isinstance(value, str)
@@ -519,7 +529,7 @@ def _valid_drive_setting(key: str, value: Any) -> bool:
 
 
 def _clean_drive_setting(key: str, value: Any) -> Any:
-    if key == "enabled":
+    if key in ("enabled", "auto_intake"):
         return bool(value)
     if key == "folder_id":
         return _clean_drive_folder_id(value)
