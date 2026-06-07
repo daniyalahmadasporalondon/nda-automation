@@ -105,6 +105,8 @@ const RepositoryDetail = (() => {
               <p class="repository-inspector-section-title">Matter Timeline</p>
               ${renderMatterTimeline(matter)}
             </section>
+
+            ${renderDriveFolder(matter)}
           </aside>
         </div>
 
@@ -164,6 +166,22 @@ const RepositoryDetail = (() => {
           `;
         }).join("")}
       </ul>
+    `;
+  }
+
+  // Surface the matter's Drive folder inline when the matter already carries a
+  // drive block. With auto-intake on, the block is populated at creation (no
+  // Save-to-Drive click needed); after a manual sync it is refreshed. Renders
+  // nothing when the matter has not been filed to Drive yet.
+  function renderDriveFolder(matter) {
+    const drive = matter && matter.drive;
+    const folderUrl = drive ? String(drive.matter_folder_url || "") : "";
+    if (!folderUrl) return "";
+    return `
+      <section class="repository-inspector-section repository-drive-section">
+        <p class="repository-inspector-section-title">Google Drive</p>
+        <a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open matter folder</a>
+      </section>
     `;
   }
 
@@ -230,6 +248,7 @@ const RepositoryDetail = (() => {
 
   return {
     renderDetailPanel,
+    renderDriveFolder,
     renderEmptyPanel,
     renderFailedClauses,
     renderInspectorField,

@@ -215,6 +215,12 @@ def handle_drive_settings_update(handler) -> None:
             handler._send_json({"error": "Drive enabled setting must be true or false."}, status=400)
             return
         updates["enabled"] = enabled
+    if "auto_intake" in payload:
+        auto_intake = payload.get("auto_intake")
+        if not isinstance(auto_intake, bool):
+            handler._send_json({"error": "Drive auto-intake setting must be true or false."}, status=400)
+            return
+        updates["auto_intake"] = auto_intake
     if "folder_id" in payload:
         folder_id = payload.get("folder_id")
         if not isinstance(folder_id, str):
@@ -244,6 +250,7 @@ def handle_drive_settings_update(handler) -> None:
                 "enabled": bool(settings.get("enabled", False)),
                 "folder_id": str(settings.get("folder_id") or ""),
                 "folder_name": str(settings.get("folder_name") or ""),
+                "auto_intake": bool(settings.get("auto_intake", True)),
             }
         }
     )
@@ -260,7 +267,7 @@ def _needs_connect_payload() -> dict:
 
 def _record_drive_settings_audit(previous: dict, current: dict) -> None:
     changes = []
-    for key in ("enabled", "folder_id", "folder_name"):
+    for key in ("enabled", "folder_id", "folder_name", "auto_intake"):
         before = previous.get(key)
         after = current.get(key)
         if before != after:
