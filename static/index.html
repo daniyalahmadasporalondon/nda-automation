@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260606f">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260607a">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260607b">
   </head>
   <body>
     <div class="app-shell">
@@ -433,6 +433,10 @@
               <button class="admin-section-button" type="button" data-admin-section="email" data-admin-surface="admin" aria-pressed="false">
                 <strong>Gmail</strong>
                 <span>Accounts and sync state</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="drive" data-admin-surface="admin" aria-pressed="false">
+                <strong>Drive</strong>
+                <span>Google Drive uploads</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="document" data-admin-surface="guide" aria-pressed="false">
                 <strong>Document</strong>
@@ -1128,6 +1132,78 @@
                 </article>
               </section>
             </section>
+
+            <section class="admin-section-panel" id="adminDrivePanel" data-admin-panel="drive" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">drive</p>
+                  <h1>Google Drive uploads</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminDriveRefreshButton" type="button">Refresh</button>
+                </div>
+              </header>
+
+              <section class="integrations-grid">
+                <article class="integration-card" id="adminDriveCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">google drive</p>
+                      <h2>Drive</h2>
+                    </div>
+                    <span class="integration-status" id="adminDriveOverall">Checking</span>
+                  </header>
+
+                  <div class="integration-toggle-grid">
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>Drive uploads</strong>
+                        <span data-admin-drive="enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminDriveEnabledToggle" type="button" role="switch" aria-checked="false" aria-label="Enable Google Drive uploads">
+                        <span></span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <section class="integration-subsection">
+                    <h3>Connection setup</h3>
+                    <div class="integration-connection-list" id="adminDriveConnectPanel">
+                      <div class="integration-connection-empty">Checking Drive connection</div>
+                    </div>
+                  </section>
+
+                  <section class="integration-subsection">
+                    <h3>Target folder</h3>
+                    <form class="integration-search-form" id="adminDriveFolderForm">
+                      <label for="adminDriveFolderIdInput">Folder ID</label>
+                      <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
+                      <label for="adminDriveFolderNameInput">Folder name (optional)</label>
+                      <input id="adminDriveFolderNameInput" type="text" autocomplete="off" spellcheck="false" placeholder="Display name for the folder">
+                      <div class="integration-search-actions">
+                        <p data-admin-drive="folder-message">Uploads land in this folder when set.</p>
+                        <button class="secondary" id="adminDriveFolderSaveButton" type="submit">Save folder</button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <dl class="integration-facts" id="adminDriveFacts">
+                    <div>
+                      <dt>Connection</dt>
+                      <dd data-admin-drive="connection">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Account</dt>
+                      <dd data-admin-drive="account">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Target folder</dt>
+                      <dd data-admin-drive="folder">Checking</dd>
+                    </div>
+                  </dl>
+                </article>
+              </section>
+            </section>
           </section>
         </main>
       </section>
@@ -1356,19 +1432,20 @@
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260606b"></script>
     <script src="/static/js/redline-rendering.js?v=20260606a"></script>
-    <script src="/static/js/repository-api.js?v=20260604a"></script>
+    <script src="/static/js/repository-api.js?v=20260607a"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
     <script src="/static/js/repository-send.js"></script>
-    <script src="/static/js/repository-detail.js?v=20260605a"></script>
-    <script src="/static/js/repository-actions.js?v=20260605b"></script>
-    <script src="/static/js/repository.js?v=20260605a"></script>
+    <script src="/static/js/repository-detail.js?v=20260607a"></script>
+    <script src="/static/js/repository-actions.js?v=20260607a"></script>
+    <script src="/static/js/repository.js?v=20260607a"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260606i"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
+    <script src="/static/js/admin-drive.js?v=20260607a"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
@@ -1378,6 +1455,6 @@
     <script src="/static/js/review-workstation-viewer.js?v=20260605a"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js?v=20260606j"></script>
+    <script src="/static/app.js?v=20260607a"></script>
   </body>
 </html>

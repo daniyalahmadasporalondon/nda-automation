@@ -106,14 +106,35 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     );
   }
 
+  async function driveStatus() {
+    const payload = await jsonRequest("/api/drive/status", {}, "Drive status could not load");
+    return payload || {};
+  }
+
+  // Upload the matter's NDA to Google Drive. Unlike the other helpers this does
+  // not throw on a 409: the backend signals "not connected" with a structured
+  // body (needs_connect + connect_url) that the caller turns into a Connect
+  // prompt, so we hand the raw status + payload back instead of an Error.
+  async function saveMatterToDrive(matterId) {
+    const response = await fetchImpl("/api/drive/upload-matter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ matter_id: matterId }),
+    });
+    const payload = await response.json();
+    return { ok: response.ok, status: response.status, payload };
+  }
+
   return {
     deleteMatter,
+    driveStatus,
     exportReviewDocx,
     getMatter,
     getMatterReview,
     listMatters,
     loadGmailStatus,
     moveMatterToColumn,
+    saveMatterToDrive,
     sendRedline,
     syncGmail,
   };

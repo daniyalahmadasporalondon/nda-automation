@@ -71,6 +71,9 @@ const tests = [
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
+  ["saves a matter NDA to Google Drive from the inspector", testRepositorySaveToDriveSuccess],
+  ["prompts to connect Drive when the matter NDA upload is unauthorized", testRepositorySaveToDriveNotConnected],
+  ["renders the admin Drive connect status and saves folder settings", testAdminDriveSection],
   ["sends review redline email from editable composer", testReviewOutboundSendModal],
   ["blocks repository outbound send when Gmail is not ready", testRepositoryOutboundSendBlocked],
   ["shows Gmail setup required instead of stale sync errors", testGmailSetupRequiredStatus],
@@ -2712,6 +2715,263 @@ async function testRepositoryOutboundSendComposer(page) {
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/matter_send");
   await page.unroute("**/api/gmail/send-redline");
+}
+
+function driveMatter() {
+  return {
+    id: "matter_drive",
+    attachment_filename: "Counterparty NDA.docx",
+    board_column: "gmail_demo",
+    document_title: "Counterparty NDA",
+    gmail_account: "daniyal.ahmad@aspora.com",
+    issue_count: 1,
+    message_snippet: "Please review the attached NDA.",
+    next_action: "Review redline",
+    received_at: "2026-05-31T12:00:00+00:00",
+    recipient_email: "legal@example.com",
+    requirements_failed: 1,
+    requirements_passed: 5,
+    review_result: {
+      clauses: [{
+        id: "governing_law",
+        issue_label: "Present but wrong",
+        name: "Governing Law",
+        passes: false,
+      }],
+    },
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Counterparty NDA.docx",
+    source_type: "gmail_inbound",
+    subject: "Please review NDA",
+    triage_status: "needs_redline",
+  };
+}
+
+async function routeDriveBoard(page, matter) {
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { configured: true, email: "daniyal.ahmad@aspora.com", ready: true },
+          outbound: { configured: true, email: "daniyal.ahmad@aspora.com", ready: true },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [matter] }),
+    });
+  });
+  await page.route("**/api/matters/matter_drive", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter }),
+    });
+  });
+}
+
+async function testRepositorySaveToDriveSuccess(page) {
+  const matter = driveMatter();
+  let capturedUploadPayload = null;
+  await routeDriveBoard(page, matter);
+  await page.route("**/api/drive/upload-matter", async (route) => {
+    capturedUploadPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        uploaded: {
+          file_id: "drive_file_123",
+          filename: "Counterparty-NDA.docx",
+          folder_id: "folder_abc",
+          web_link: "https://drive.google.com/file/d/drive_file_123/view",
+        },
+        matter: { ...matter, board_column: "gmail_demo" },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  const panel = page.locator("#repositoryMatterPanel");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+
+  const uploadRequest = page.waitForRequest((request) => request.url().endsWith("/api/drive/upload-matter"));
+  await panel.getByRole("button", { name: "Save to Drive" }).click();
+  await uploadRequest;
+  await waitForText(page, "#repositoryMatterPanel", "Saved to Drive");
+
+  assert.deepEqual(capturedUploadPayload, { matter_id: "matter_drive" });
+  const link = panel.locator(".repository-detail-message a.repository-detail-link");
+  assert.equal(await link.count(), 1);
+  assert.equal(
+    await link.getAttribute("href"),
+    "https://drive.google.com/file/d/drive_file_123/view",
+  );
+  assert.equal(await link.getAttribute("target"), "_blank");
+  await assertTextContains(link, "Counterparty-NDA.docx");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_drive");
+  await page.unroute("**/api/drive/upload-matter");
+}
+
+async function testRepositorySaveToDriveNotConnected(page) {
+  const matter = driveMatter();
+  await routeDriveBoard(page, matter);
+  await page.route("**/api/drive/upload-matter", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Google Drive is not connected.",
+        needs_connect: true,
+        connect_url: "/auth/drive/start",
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  const panel = page.locator("#repositoryMatterPanel");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+
+  const uploadRequest = page.waitForRequest((request) => request.url().endsWith("/api/drive/upload-matter"));
+  await panel.getByRole("button", { name: "Save to Drive" }).click();
+  await uploadRequest;
+  // Do NOT navigate: assert the Connect affordance + its connect_url are present.
+  await waitForText(page, "#repositoryMatterPanel", "not connected");
+  const connectLink = panel.locator(".repository-detail-message a.repository-drive-connect");
+  assert.equal(await connectLink.count(), 1);
+  assert.equal(await connectLink.getAttribute("href"), "/auth/drive/start");
+  assert.equal(await connectLink.getAttribute("data-drive-connect-url"), "/auth/drive/start");
+  await assertTextContains(connectLink, "Connect Google Drive");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_drive");
+  await page.unroute("**/api/drive/upload-matter");
+}
+
+async function testAdminDriveSection(page) {
+  let connected = false;
+  const driveSettingsPayloads = [];
+  const driveStatusBody = () => (connected
+    ? {
+      connected: true,
+      account: "legal-bot@aspora.com",
+      folder: { id: "folder_abc", name: "NDA Vault" },
+      enabled: true,
+    }
+    : {
+      connected: false,
+      account: "",
+      folder: null,
+      enabled: false,
+      connect_url: "/auth/drive/start",
+    });
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { configured: true, email: "inbound@example.com", ready: true },
+          outbound: { configured: true, email: "outbound@example.com", ready: true },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matters: [] }),
+    });
+  });
+  await page.route("**/api/drive/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(driveStatusBody()),
+    });
+  });
+  await page.route("**/api/admin/drive-settings", async (route) => {
+    const payload = route.request().postDataJSON();
+    driveSettingsPayloads.push(payload);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        drive: {
+          enabled: payload.enabled !== undefined ? payload.enabled : true,
+          folder_id: payload.folder_id !== undefined ? payload.folder_id : "folder_abc",
+          folder_name: payload.folder_name !== undefined ? payload.folder_name : "NDA Vault",
+        },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Admin" }).click();
+
+  // Disconnected status: Connect affordance + Not connected facts.
+  // The overall status pill is CSS-uppercased, so match the rendered text.
+  await page.locator('[data-admin-section="drive"]').click();
+  await page.waitForSelector("#adminDrivePanel:not([hidden])");
+  await waitForText(page, "#adminDriveOverall", "NOT CONNECTED");
+  await assertTextContains(page.locator("#adminDrivePanel"), "Google Drive uploads");
+  const connectButton = page.locator("#adminDriveConnectPanel a.integration-connection-action");
+  assert.equal(await connectButton.count(), 1);
+  assert.equal(await connectButton.getAttribute("href"), "/auth/drive/start");
+  await assertTextContains(connectButton, "Connect Google Drive");
+  await assertTextContains(page.locator("#adminDriveFacts"), "Not connected");
+
+  // Save a target folder; assert the POST payload.
+  await page.locator("#adminDriveFolderIdInput").fill("folder_xyz");
+  await page.locator("#adminDriveFolderNameInput").fill("Signed NDAs");
+  const settingsRequest = page.waitForRequest((request) => request.url().endsWith("/api/admin/drive-settings"));
+  await page.locator("#adminDriveFolderSaveButton").click();
+  await settingsRequest;
+  await waitForText(page, "#adminDrivePanel", "Target Drive folder saved.");
+  assert.deepEqual(driveSettingsPayloads[driveSettingsPayloads.length - 1], {
+    folder_id: "folder_xyz",
+    folder_name: "Signed NDAs",
+  });
+
+  // Connected status: account + folder render after a refresh.
+  connected = true;
+  await page.locator("#adminDriveRefreshButton").click();
+  await waitForText(page, "#adminDriveOverall", "CONNECTED");
+  await assertTextContains(page.locator("#adminDriveFacts"), "legal-bot@aspora.com");
+  await assertTextContains(page.locator("#adminDriveFacts"), "NDA Vault");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "legal-bot@aspora.com");
+  assert.equal(await page.locator("#adminDriveEnabledToggle").getAttribute("aria-checked"), "true");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/drive/status");
+  await page.unroute("**/api/admin/drive-settings");
 }
 
 async function testReviewOutboundSendModal(page) {

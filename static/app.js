@@ -59,6 +59,7 @@ let pendingReviewSendMatterId = null;
 let authSessionController;
 let adminAiController;
 let adminIntegrationsController;
+let adminDriveController;
 
 const repositoryController = createRepositoryController({
   state,
@@ -175,6 +176,20 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailSearchTermsInput: document.querySelector("#adminGmailSearchTermsInput"),
   gmailSearchSaveButton: document.querySelector("#adminGmailSearchSaveButton"),
   gmailSyncHistory: document.querySelector("#adminGmailSyncHistory"),
+  reviewErrorFromPayload,
+});
+adminDriveController = createAdminDriveController({
+  state,
+  driveCard: document.querySelector("#adminDriveCard"),
+  driveFacts: document.querySelector("#adminDriveFacts"),
+  driveOverall: document.querySelector("#adminDriveOverall"),
+  driveRefreshButton: document.querySelector("#adminDriveRefreshButton"),
+  driveConnectPanel: document.querySelector("#adminDriveConnectPanel"),
+  driveEnabledToggle: document.querySelector("#adminDriveEnabledToggle"),
+  driveFolderForm: document.querySelector("#adminDriveFolderForm"),
+  driveFolderIdInput: document.querySelector("#adminDriveFolderIdInput"),
+  driveFolderNameInput: document.querySelector("#adminDriveFolderNameInput"),
+  driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),
   reviewErrorFromPayload,
 });
 authSessionController = createAuthSessionController({
@@ -691,6 +706,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "ai") {
     adminAiController.load();
+  }
+  if (sectionName === "drive") {
+    adminDriveController.load();
   }
 }
 

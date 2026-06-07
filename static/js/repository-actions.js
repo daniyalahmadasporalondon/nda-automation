@@ -16,6 +16,7 @@ const RepositoryActions = (() => {
     renderSyncStatus,
     repositoryMatterPanel,
     setPanelMessage,
+    setPanelMessageHtml,
     setPendingDeleteMatterId,
     setPendingSendMatterId,
     setSelectedMatter,
@@ -273,6 +274,61 @@ const RepositoryActions = (() => {
       }
     }
 
+    // Upload the matter's NDA to Google Drive. Mirrors exportMatter/sendRedline:
+    // disable the button, call the api, then surface the outcome in the panel.
+    // The api wrapper does NOT throw on 409 (not connected) - it returns the raw
+    // status/payload so we can render a Connect Google Drive affordance whose
+    // link navigates to the OAuth consent flow (connect_url) instead of an error.
+    async function saveMatterToDrive(matter) {
+      if (!matter?.id) return;
+      setPendingSendMatterId(null);
+      setPendingDeleteMatterId(null);
+      const driveButton = repositoryMatterPanel?.querySelector(".repository-save-to-drive");
+      setPanelMessage("");
+      if (driveButton) {
+        driveButton.disabled = true;
+        driveButton.textContent = "Saving";
+      }
+      try {
+        const result = await api.saveMatterToDrive(matter.id);
+        const payload = result?.payload || {};
+        if (result?.ok) {
+          const uploaded = payload.uploaded || {};
+          if (payload.matter?.id) {
+            replaceMatter(payload.matter);
+            renderBoard();
+            renderDetailPanel(payload.matter);
+          }
+          const webLink = String(uploaded.web_link || "");
+          const filename = String(uploaded.filename || matter.source_filename || "NDA");
+          if (webLink) {
+            setPanelMessageHtml(
+              `Saved to Drive: <a class="repository-detail-link" href="${escapeHtml(webLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(filename)}</a>`,
+            );
+          } else {
+            setPanelMessage(`Saved ${filename} to Drive.`);
+          }
+          return;
+        }
+        if (result?.status === 409 && payload.needs_connect) {
+          const connectUrl = String(payload.connect_url || "/auth/drive/start");
+          setPanelMessageHtml(
+            `${escapeHtml(payload.error || "Google Drive is not connected.")} `
+            + `<a class="repository-detail-link repository-drive-connect" href="${escapeHtml(connectUrl)}" data-drive-connect-url="${escapeHtml(connectUrl)}">Connect Google Drive</a>`,
+          );
+          return;
+        }
+        setPanelMessage(payload.error || "NDA could not be saved to Drive.");
+      } catch (error) {
+        setPanelMessage(error.message || "NDA could not be saved to Drive.");
+      } finally {
+        if (driveButton?.isConnected) {
+          driveButton.disabled = false;
+          driveButton.textContent = "Save to Drive";
+        }
+      }
+    }
+
     async function markMatterRedlineReady(matter) {
       if (!matter?.id) return null;
       if (MatterUtils.needsHumanReview(matter)) return null;
@@ -333,6 +389,7 @@ const RepositoryActions = (() => {
       openMatterInReview,
       refreshMatterReview,
       requestDeleteMatter,
+      saveMatterToDrive,
       sendRedline,
     };
   }

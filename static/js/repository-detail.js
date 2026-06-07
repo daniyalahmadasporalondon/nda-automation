@@ -114,6 +114,7 @@ const RepositoryDetail = (() => {
             <button type="button" class="repository-open-review">Open Review</button>
             ${MatterUtils.reviewStale(matter) ? '<button type="button" class="secondary repository-refresh-review">Refresh Review</button>' : ""}
             <button type="button" class="secondary repository-export-redline">Export Redline</button>
+            <button type="button" class="secondary repository-save-to-drive">Save to Drive</button>
             <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
           </div>
         </footer>
@@ -123,6 +124,7 @@ const RepositoryDetail = (() => {
     repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => handlers.openMatterInReview(matter));
     repositoryMatterPanel.querySelector(".repository-refresh-review")?.addEventListener("click", () => handlers.refreshMatterReview?.(matter));
     repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => handlers.exportMatter(matter));
+    repositoryMatterPanel.querySelector(".repository-save-to-drive")?.addEventListener("click", () => handlers.saveMatterToDrive(matter));
     repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => handlers.sendRedline(matter));
   }
 
@@ -136,6 +138,14 @@ const RepositoryDetail = (() => {
   function setPanelMessage(repositoryMatterPanel, message) {
     const messageNode = repositoryMatterPanel?.querySelector(".repository-detail-message");
     if (messageNode) messageNode.textContent = message;
+  }
+
+  // Render trusted HTML into the panel message (e.g. a "Saved to Drive" link or a
+  // Connect Google Drive affordance). Callers must escape any untrusted values
+  // before passing markup here.
+  function setPanelMessageHtml(repositoryMatterPanel, html) {
+    const messageNode = repositoryMatterPanel?.querySelector(".repository-detail-message");
+    if (messageNode) messageNode.innerHTML = html;
   }
 
   function renderFailedClauses(clauses) {
@@ -225,5 +235,6 @@ const RepositoryDetail = (() => {
     renderInspectorField,
     renderMatterTimeline,
     setPanelMessage,
+    setPanelMessageHtml,
   };
 })();
