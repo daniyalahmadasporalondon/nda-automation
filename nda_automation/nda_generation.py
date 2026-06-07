@@ -743,7 +743,11 @@ def self_check_generated_nda(
     resolved_playbook = playbook if playbook is not None else load_playbook()
     text = extract_docx_text(docx_bytes)
 
-    native = review_nda(text, verify=False)
+    # Network-free oracle, as the docstring promises: verify=False drops the AI
+    # verifier, ai_enabled=False drops the legacy per-clause AI overlay. Without
+    # the latter this made ~5 live model calls (~20s) that never changed the
+    # native verdict — and made a SAFETY GATE depend on a non-deterministic model.
+    native = review_nda(text, verify=False, ai_enabled=False)
     native_by_id = {str(clause.get("id")): clause for clause in native.get("clauses", [])}
     native_failures: list[str] = []
     native_reviews: list[str] = []
