@@ -21,7 +21,17 @@ def handle_deployment_status(handler, *, send_body: bool = True) -> None:
 
 
 def handle_telemetry(handler, *, send_body: bool = True) -> None:
-    handler._send_json({"telemetry": telemetry.snapshot()}, send_body=send_body)
+    # Snapshot once so the health summary derives from the same counters the
+    # caller sees (avoids a double snapshot / read race), then surface the
+    # derived health block additively alongside the unchanged telemetry block.
+    snapshot = telemetry.snapshot()
+    handler._send_json(
+        {
+            "telemetry": snapshot,
+            "health": telemetry.health_summary(snapshot.get("counters", {})),
+        },
+        send_body=send_body,
+    )
 
 
 def handle_ai_settings(handler, *, send_body: bool = True) -> None:

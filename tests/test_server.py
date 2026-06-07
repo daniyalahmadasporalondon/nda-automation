@@ -1294,6 +1294,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(counters["review_requests"], 1)
         self.assertEqual(counters["http_4xx_responses"], 1)
         self.assertNotIn(review_text, json.dumps(telemetry_payload))
+        # The telemetry block is unchanged; the health block is additive.
+        self.assertIn("started_at", telemetry_payload["telemetry"])
+        health = telemetry_payload["health"]
+        self.assertEqual(
+            set(health),
+            {"review", "generation", "other", "status", "alerts", "note"},
+        )
+        self.assertIn(health["status"], {"ok", "warn", "alert"})
+        self.assertIsInstance(health["alerts"], list)
+        self.assertIn("attempted", health["review"])
+        self.assertIn("requests", health["generation"])
+        # Health derives from the same snapshot counters the caller sees.
+        self.assertEqual(
+            health["review"]["attempted"],
+            counters.get("active_review_ai_first_attempted", 0),
+        )
 
     def test_export_copy_failure_logging_omits_exception_message(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -7689,6 +7705,142 @@ class RateLimitClientKeyTests(unittest.TestCase):
         with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "1"}):
             key = server_module._rate_limit_client_key("10.0.0.1", "", "")
         self.assertEqual(key, "ip:10.0.0.1")
+
+
+class TelemetryHealthSummaryTest(unittest.TestCase):
+    def test_all_zero_counters_are_division_safe_and_ok(self):
+        summary = telemetry.health_summary({})
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["review"]["fail_closed_rate"], 0.0)
+        self.assertEqual(summary["review"]["partial_rate"], 0.0)
+        self.assertEqual(summary["generation"]["failure_rate"], 0.0)
+        self.assertEqual(summary["generation"]["gate_block_rate"], 0.0)
+        self.assertEqual(
+            summary["alerts"],
+            ["No AI-review or generation failure thresholds crossed."],
+        )
+        self.assertIn("cumulative", summary["note"])
+        # Every watched 'other' failure counter defaults to 0.
+        self.assertEqual(set(summary["other"].values()), {0})
+
+    def test_shape_and_rate_math(self):
+        counters = {
+            "active_review_ai_first_attempted": 100,
+            "active_review_ai_first_completed": 80,
+            "active_review_ai_first_failed": 12,
+            "active_review_ai_first_fail_closed": 4,
+            "active_review_ai_first_partial": 10,
+            "active_review_deterministic_completed": 7,
+            "generate_nda_requests": 40,
+            "generate_nda_succeeded": 30,
+            "generate_nda_rejected": 6,
+            "generate_nda_failed": 4,
+            "generate_nda_safety_gate_blocked": 2,
+        }
+        summary = telemetry.health_summary(counters)
+        self.assertEqual(set(summary), {"review", "generation", "other", "status", "alerts", "note"})
+        review = summary["review"]
+        self.assertEqual(review["attempted"], 100)
+        self.assertEqual(review["completed"], 80)
+        self.assertEqual(review["failed"], 12)
+        self.assertEqual(review["fail_closed"], 4)
+        self.assertEqual(review["partial"], 10)
+        self.assertEqual(review["deterministic_completed"], 7)
+        self.assertAlmostEqual(review["fail_closed_rate"], 0.04)
+        self.assertAlmostEqual(review["partial_rate"], 0.10)
+        generation = summary["generation"]
+        self.assertEqual(generation["requests"], 40)
+        self.assertEqual(generation["succeeded"], 30)
+        self.assertEqual(generation["rejected"], 6)
+        self.assertEqual(generation["failed"], 4)
+        self.assertEqual(generation["safety_gate_blocked"], 2)
+        self.assertAlmostEqual(generation["failure_rate"], 0.10)
+        self.assertAlmostEqual(generation["gate_block_rate"], 0.05)
+
+    def test_ok_below_all_thresholds(self):
+        # Failures present but below every warn threshold.
+        counters = {
+            "active_review_ai_first_attempted": 50,
+            "active_review_ai_first_fail_closed": 2,
+            "generate_nda_requests": 20,
+            "generate_nda_failed": 2,
+            "generate_nda_safety_gate_blocked": 4,
+            "gmail_sync_failures": 9,
+        }
+        summary = telemetry.health_summary(counters)
+        self.assertEqual(summary["status"], "ok")
+
+    def test_warn_on_absolute_fail_closed(self):
+        summary = telemetry.health_summary({"active_review_ai_first_fail_closed": 3})
+        self.assertEqual(summary["status"], "warn")
+        self.assertTrue(any("fail-closed 3 times" in alert for alert in summary["alerts"]))
+
+    def test_warn_on_fail_closed_rate(self):
+        summary = telemetry.health_summary({
+            "active_review_ai_first_attempted": 40,
+            "active_review_ai_first_fail_closed": 2,  # 5% of 40
+        })
+        self.assertEqual(summary["status"], "warn")
+        self.assertTrue(any("fail-closed rate" in alert for alert in summary["alerts"]))
+
+    def test_warn_on_generation_failures(self):
+        summary = telemetry.health_summary({
+            "generate_nda_requests": 100,
+            "generate_nda_failed": 3,
+        })
+        self.assertEqual(summary["status"], "warn")
+        self.assertTrue(any("generation has failed 3" in alert for alert in summary["alerts"]))
+
+    def test_warn_on_safety_gate_blocks(self):
+        summary = telemetry.health_summary({
+            "generate_nda_requests": 100,
+            "generate_nda_safety_gate_blocked": 5,
+        })
+        self.assertEqual(summary["status"], "warn")
+        self.assertTrue(any("safety gate" in alert for alert in summary["alerts"]))
+
+    def test_warn_on_other_failure_counter(self):
+        summary = telemetry.health_summary({"csrf_rejections": 10})
+        self.assertEqual(summary["status"], "warn")
+        self.assertTrue(any("csrf_rejections" in alert for alert in summary["alerts"]))
+
+    def test_alert_on_absolute_fail_closed(self):
+        summary = telemetry.health_summary({"active_review_ai_first_fail_closed": 10})
+        self.assertEqual(summary["status"], "alert")
+
+    def test_alert_on_fail_closed_rate(self):
+        summary = telemetry.health_summary({
+            "active_review_ai_first_attempted": 20,
+            "active_review_ai_first_fail_closed": 3,  # 15% of 20
+        })
+        self.assertEqual(summary["status"], "alert")
+        self.assertTrue(any("fail-closed rate" in alert for alert in summary["alerts"]))
+
+    def test_alert_on_generation_failure_rate(self):
+        summary = telemetry.health_summary({
+            "generate_nda_requests": 10,
+            "generate_nda_failed": 3,  # 30% of 10
+        })
+        self.assertEqual(summary["status"], "alert")
+        self.assertTrue(any("generation failure rate" in alert for alert in summary["alerts"]))
+
+    def test_fail_closed_rate_ignored_below_minimum_attempts(self):
+        # 100% fail-closed but only 2 attempts: below the attempted>=20 guard,
+        # so the rate-based thresholds do not fire. (Absolute count still does.)
+        summary = telemetry.health_summary({
+            "active_review_ai_first_attempted": 2,
+            "active_review_ai_first_fail_closed": 2,
+        })
+        self.assertEqual(summary["status"], "ok")
+
+    def test_status_is_maximum_severity(self):
+        # A warn-tier generation failure plus an alert-tier fail_closed -> alert.
+        summary = telemetry.health_summary({
+            "generate_nda_requests": 100,
+            "generate_nda_failed": 3,
+            "active_review_ai_first_fail_closed": 10,
+        })
+        self.assertEqual(summary["status"], "alert")
 
 
 if __name__ == "__main__":

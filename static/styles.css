@@ -6705,6 +6705,100 @@ body.modal-open {
   text-transform: uppercase;
 }
 
+.health-card {
+  display: grid;
+  gap: 16px;
+}
+
+#adminHealthStatus {
+  font-size: 11px;
+  padding: 6px 12px;
+}
+
+.health-alerts {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px;
+}
+
+.health-alerts li {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+  position: relative;
+  padding-left: 16px;
+}
+
+.health-alerts li::before {
+  content: "•";
+  left: 2px;
+  position: absolute;
+}
+
+.health-alerts[data-health-status="ok"] {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+}
+
+.health-alerts[data-health-status="ok"] li {
+  color: var(--green-ink);
+}
+
+.health-alerts[data-health-status="warn"] {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+}
+
+.health-alerts[data-health-status="warn"] li {
+  color: var(--amber-ink);
+}
+
+.health-alerts[data-health-status="alert"] {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+
+.health-alerts[data-health-status="alert"] li {
+  color: var(--red-ink);
+}
+
+.health-caveat {
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.health-raw {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.health-raw summary {
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.health-raw-pre {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 10px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .integration-sync-history {
   display: grid;
   gap: 8px;
