@@ -199,14 +199,35 @@ class AIAssessorTests(unittest.TestCase):
         self.assertEqual(result["overall_status"], "does_not_meet_requirements")
         self.assertTrue(result.get("truncation_blocks_send"))
 
-    def test_ai_first_assessor_rejects_invalid_ai_response(self):
+    def test_ai_first_assessor_drops_ungroundable_quote_without_crashing(self):
+        # An ungroundable quote (appears nowhere in the document) must NOT crash
+        # the whole review -- the contract drops the fabricated evidence and the
+        # review completes. The now-unsupported pass is downgraded to a blocking
+        # human review by the evidence-grounding layer, never a silent pass.
         reviewer = InMemoryAssessmentReviewer(response={
             "assessments": [
                 _assessment("mutuality", "pass", paragraph_id="p1", quote="quote that is not present"),
             ],
         })
 
-        with self.assertRaisesRegex(AIAssessorError, "quote does not appear in paragraph p1"):
+        result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        mutuality = next(c for c in result["clauses"] if c["id"] == "mutuality")
+        self.assertEqual(mutuality["decision"], "review")
+        self.assertNotEqual(mutuality["decision"], "pass")
+        self.assertTrue(mutuality["blocks_send"])
+        self.assertIn("ungrounded_finding", mutuality.get("reason_codes", []))
+
+    def test_ai_first_assessor_rejects_nonexistent_paragraph_id(self):
+        # A paragraph_id the model invented (no such reviewed paragraph) is a
+        # structural error and still hard-rejects the response.
+        reviewer = InMemoryAssessmentReviewer(response={
+            "assessments": [
+                _assessment("mutuality", "pass", paragraph_id="p999", quote="Each party may disclose Confidential Information"),
+            ],
+        })
+
+        with self.assertRaisesRegex(AIAssessorError, "paragraph_id does not exist: p999"):
             assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
 
     def test_ai_first_assessor_rejects_bad_response_envelope(self):

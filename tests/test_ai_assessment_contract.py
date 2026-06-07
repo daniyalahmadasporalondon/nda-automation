@@ -159,7 +159,10 @@ class AIAssessmentContractTests(unittest.TestCase):
         message = str(error.exception)
         self.assertIn("rationale must be non-empty text", message)
         self.assertIn("fail/review decisions must not use issue_type none", message)
-        self.assertIn("quote does not appear in paragraph p2", message)
+        # "laws of France" appears nowhere in the document, so the ungroundable
+        # quote is dropped (a fabrication is not crashed on); the fail then has no
+        # surviving evidence, which the decision/evidence coupling rejects.
+        self.assertIn("fail decisions require at least one valid evidence item", message)
         self.assertIn("fail decisions require a proposed redline action", message)
         self.assertIn("blocks_send must be true only for review decisions", message)
 
@@ -243,6 +246,182 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertEqual(clause["decision"], "review")
         self.assertTrue(clause["blocks_send"])
         self.assertEqual(clause["proposed_redline"], {"action": AI_REDLINE_NO_CHANGE})
+
+    def test_quote_spanning_two_paragraphs_grounds_and_reanchors(self):
+        # The DOCX extractor splits a single sentence across paragraph boundaries.
+        # The model quotes the natural span; it is real document text but not a
+        # substring of either single paragraph. It must ground document-wide and
+        # re-anchor to the first containing paragraph (here p1).
+        source_text = "\n\n".join([
+            "This Agreement shall be governed by",
+            "the laws of California and the parties submit to its courts.",
+        ])
+        spanning = _valid_assessment(evidence=[{
+            "quote": "governed by the laws of California",
+            "relevance": "The governing-law selection spans the split sentence.",
+        }])
+
+        assessments = validate_ai_clause_assessments(
+            [spanning],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        evidence = assessments["governing_law"]["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["quote"], "governed by the laws of California")
+        # Re-anchored to the first paragraph holding the quote's first segment.
+        self.assertEqual(evidence[0]["paragraph_id"], "p1")
+
+    def test_ellipsis_elided_quote_grounds(self):
+        # The model elides the middle of a span with "...". Each non-empty segment
+        # must appear, in order, in the document; the elided middle is skipped.
+        source_text = "\n\n".join([
+            "This Agreement shall be governed by the laws of California,",
+            "without regard to its conflict-of-laws principles, in all respects.",
+        ])
+        elided = _valid_assessment(evidence=[{
+            "quote": "governed by the laws of California ... conflict-of-laws principles",
+            "relevance": "Elided governing-law span.",
+        }])
+
+        assessments = validate_ai_clause_assessments(
+            [elided],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        evidence = assessments["governing_law"]["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["paragraph_id"], "p1")
+
+    def test_typographic_glyph_variants_ground(self):
+        # Inbound real DOCX carries curly quotes, em-dashes and the ellipsis glyph.
+        # The model echoes one glyph while the paragraph holds another; glyph
+        # folding before grounding makes the quote resolve regardless.
+        source_text = "\n\n".join([
+            "This Agreement — the “Agreement” — shall be governed by the laws of California.",
+            "Each party may disclose Confidential Information.",
+        ])
+        # Quote uses straight quotes/hyphen/ellipsis char against curly/em-dash text.
+        glyphy = _valid_assessment(evidence=[{
+            "quote": "the \"Agreement\" - shall be … laws of California",
+            "relevance": "Glyph-variant governing-law span.",
+        }])
+
+        assessments = validate_ai_clause_assessments(
+            [glyphy],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        evidence = assessments["governing_law"]["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["paragraph_id"], "p1")
+
+    def test_fabricated_quote_is_dropped_without_raising(self):
+        # A quote that appears NOWHERE (not in the cited paragraph, not document-
+        # wide) is a genuine fabrication: it is dropped, NOT raised. The rest of the
+        # assessment survives so the whole document review is not crashed. Here the
+        # fail keeps a second, real evidence item so the decision is preserved.
+        source_text = "\n\n".join([
+            "This Agreement shall be governed by the laws of California.",
+            "Each party may disclose Confidential Information.",
+        ])
+        mixed = _valid_assessment(evidence=[
+            {"quote": "laws of California", "relevance": "Real governing-law text."},
+            {"quote": "laws of the planet Mars", "relevance": "Hallucinated jurisdiction."},
+        ])
+
+        assessments = validate_ai_clause_assessments(
+            [mixed],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        governing_law = assessments["governing_law"]
+        # Only the real quote survived; the fabrication was silently dropped.
+        self.assertEqual([item["quote"] for item in governing_law["evidence"]], ["laws of California"])
+        # The fail decision is untouched (it still carries grounded evidence).
+        self.assertEqual(governing_law["decision"], "fail")
+
+    def test_fully_fabricated_finding_is_surfaced_for_review_not_a_silent_pass(self):
+        # GATE-2 coherence: when EVERY evidence item on a non-pass finding is a
+        # fabrication, GATE 1 drops them all (no crash) and the downstream
+        # evidence-grounding layer must keep/flag the now-unsupported finding for a
+        # human -- never let it collapse into a silent pass.
+        #
+        # A "review" finding is the clean way to observe this: a fail with a real
+        # issue_type would be rejected by GATE 1's fail/evidence coupling, and a
+        # fail+missing is a LEGITIMATE quote-less absence (the absence is the
+        # evidence), so neither exercises the ungrounded path. A review whose only
+        # evidence is fabricated grounds nowhere and stays a blocking review.
+        from nda_automation.ai_first_review import build_ai_first_review_result
+
+        source_text = "\n\n".join([
+            "This Agreement shall be governed by the laws of California.",
+            "Each party may disclose Confidential Information.",
+        ])
+        fabricated_review = {
+            "clause_id": "governing_law",
+            "decision": "review",
+            "issue_type": "unclear",
+            "rationale": "The governing-law position is flagged for review on fabricated grounds.",
+            "evidence": [{
+                "quote": "laws of the planet Mars",
+                "relevance": "Hallucinated jurisdiction that appears nowhere.",
+            }],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.4,
+            "blocks_send": True,
+        }
+
+        validated = validate_ai_clause_assessments(
+            [fabricated_review],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+        # GATE 1 dropped the fabricated quote without raising.
+        self.assertEqual(validated["governing_law"]["evidence"], [])
+
+        # build_ai_first_review_result re-validates its RAW input (mirrors the
+        # production path in assess_nda_with_ai), so feed it the raw assessment.
+        result = build_ai_first_review_result(
+            source_text,
+            [fabricated_review],
+            verify=False,
+        )
+        clause = next(c for c in result["clauses"] if c["id"] == "governing_law")
+        # GATE 2 kept the ungrounded non-pass finding as a blocking human review --
+        # it did NOT silently pass.
+        self.assertEqual(clause["decision"], "review")
+        self.assertTrue(clause["blocks_send"])
+        self.assertNotEqual(clause["decision"], "pass")
+        # And it carries the ungrounded reason code so the audit trail shows why.
+        self.assertIn("ungrounded_finding", clause.get("reason_codes", []))
+
+    def test_nonexistent_cited_paragraph_id_still_errors(self):
+        # A paragraph_id the model invented (points at no reviewed paragraph) is a
+        # structural error, distinct from a quote that merely spans boundaries.
+        ghost = _valid_assessment(evidence=[{
+            "paragraph_id": "p999",
+            "quote": "laws of california",
+            "relevance": "Cites a paragraph that does not exist.",
+        }])
+
+        with self.assertRaises(AIAssessmentContractError) as error:
+            validate_ai_clause_assessments(
+                [ghost],
+                valid_clause_ids=_valid_clause_ids(),
+                paragraphs=_paragraphs(),
+            )
+
+        self.assertIn("paragraph_id does not exist: p999", str(error.exception))
 
     def test_duplicate_and_unknown_clause_ids_are_invalid(self):
         with self.assertRaises(AIAssessmentContractError) as error:
