@@ -799,9 +799,8 @@ function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", si
     <div class="studio-detail-block assessment-block">
       <small>Assessment</small>
       <p>${escapeHtml(assessment)}</p>
-      ${signals}
     </div>
-    ${(!signals && evidence) ? `
+    ${evidence ? `
       <div class="studio-detail-block studio-detail-evidence">
         <small>Evidence</small>
         ${evidence}
