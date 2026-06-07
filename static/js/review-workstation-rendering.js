@@ -801,7 +801,7 @@ function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", si
       <p>${escapeHtml(assessment)}</p>
       ${signals}
     </div>
-    ${evidence ? `
+    ${(!signals && evidence) ? `
       <div class="studio-detail-block studio-detail-evidence">
         <small>Evidence</small>
         ${evidence}
@@ -990,12 +990,14 @@ function renderClauseCitationBlock(clause) {
   const citation = typeof clause.citation === "object" && clause.citation ? clause.citation : null;
   const citationQuote = citation ? String(citation.quote || "").trim() : "";
 
-  // Grounded: the AI-first single citation.
+  // The matched quote now lives inline in the Assessment evidence, so "Based on"
+  // no longer repeats it for a grounded clause — it surfaces only the grounding
+  // confidence (when present), plus the absence/ungrounded states below.
   if (citationQuote) {
+    if (!confidence) return "";
     return `
       <div class="studio-detail-block clause-citation-block grounded">
         <small>Based on</small>
-        ${renderAiCitation(citation)}
         ${confidence}
       </div>
     `;

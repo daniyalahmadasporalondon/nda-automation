@@ -1757,8 +1757,8 @@ async function testStructuredEvidenceAndRationale(page) {
   await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Fail");
   assert.equal((await page.locator("#studioDetailPanel").innerText()).includes("ISSUE TYPE"), false);
   await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "EVIDENCE");
-  await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
+  // Evidence is now folded inline into the Assessment (a "¶N" paragraph), not a
+  // separate EVIDENCE block — the matched quote still proves it renders.
   await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
   await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
   await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
@@ -1791,7 +1791,6 @@ async function testStructuredEvidenceAndRationale(page) {
     renderStudioResult({ clauses: state.reviewClauses });
   });
   await assertTextContains(page.locator("#studioDetailPanel"), "AI assessment confirmed this finding.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "PARAGRAPH 1");
   assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI agrees|No contrary reason/);
 }
 
@@ -5299,8 +5298,10 @@ async function testPlaybookPositionAndConfidence(page) {
   // The label is uppercased by CSS text-transform, so innerText reads "PREFERRED POSITION".
   await assertTextContains(detailPanel.locator(".playbook-position-preferred"), "PREFERRED POSITION");
 
-  // 2.2 — grounded citation + confidence meter.
-  await assertTextContains(detailPanel.locator(".clause-citation-block.grounded"), "governed by the laws of California");
+  // 2.2 — the matched quote now lives inline in the evidence (Assessment, or the
+  // Evidence fallback when there are no inline signals — as here), and the grounded
+  // "Based on" carries only the confidence meter (no repeated quote).
+  await assertTextContains(detailPanel, "governed by the laws of California");
   await assertTextContains(detailPanel.locator(".clause-confidence"), "92%");
   assert.equal(await detailPanel.locator(".clause-confidence.high").count(), 1);
   assert.equal(
