@@ -57,8 +57,8 @@ services:
       - key: NDA_AI_PROVIDER
         value: openrouter
       - key: NDA_AI_MODEL
-        value: google/gemini-3.5-flash
+        value: x-ai/grok-4.3
       - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
-        value: google/gemini-3.5-flash
+        value: x-ai/grok-4.3

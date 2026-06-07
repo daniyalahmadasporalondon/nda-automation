@@ -65,7 +65,7 @@ class AIReviewTests(unittest.TestCase):
                 "NDA_AI_REVIEW_CLAUSES": "",
                 "NDA_AI_REVIEW_THRESHOLD": "",
                 "NDA_AI_PROVIDER": "openrouter",
-                "NDA_AI_MODEL": "google/gemini-3.5-flash",
+                "NDA_AI_MODEL": "x-ai/grok-4.3",
             },
             clear=False,
         )
