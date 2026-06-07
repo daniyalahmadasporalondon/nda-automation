@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
@@ -8,6 +9,8 @@ from typing import Any
 from .ai_assessment_contract import (
     AI_ASSESSMENT_CONTRACT_VERSION,
     AI_REDLINE_NO_CHANGE,
+    _fold_typographic_glyphs,
+    _normalize_quote_text,
     validate_ai_clause_assessments,
 )
 from .checker import REVIEW_ENGINE_VERSION, _build_redline_edits, load_playbook, validate_playbook
@@ -541,13 +544,20 @@ def _evidence_paragraph_ids(assessment: Mapping[str, Any], paragraphs: list[Para
 
 
 def _paragraph_id_for_quote(paragraphs: list[Paragraph], quote: str) -> str:
+    # Match with the SAME normalization the contract grounds with (glyph-fold +
+    # whitespace-collapse + lowercase), so a quote the contract accepted -- curly
+    # quotes, double spaces -- still resolves to its paragraph here instead of being
+    # silently dropped.
+    normalized_quote = _normalize_quote_text(quote)
+    if not normalized_quote:
+        return ""
     matching_ids: list[str] = []
-    quote_lower = quote.casefold()
     for paragraph in paragraphs:
         text = str(paragraph.get("text") or "")
-        if quote_lower in text.casefold():
-            matching_ids.append(str(paragraph.get("id") or ""))
-    matching_ids = [paragraph_id for paragraph_id in matching_ids if paragraph_id]
+        if normalized_quote in _normalize_quote_text(text):
+            paragraph_id = str(paragraph.get("id") or "")
+            if paragraph_id:
+                matching_ids.append(paragraph_id)
     return matching_ids[0] if len(matching_ids) == 1 else ""
 
 
@@ -630,17 +640,58 @@ def _quotes_by_paragraph_id(
     return quotes
 
 
+# Glyph-flexible character classes: a straight quote/hyphen in the model's quote
+# must still locate the curly/dashed variant in the source DOCX, mirroring the
+# contract's glyph folding so a quote the contract accepted keeps its highlight
+# offsets here instead of silently losing them.
+_CHAR_FLEX: dict[str, str] = {
+    "'": "['‘’‚‛′]",
+    '"': "[\"“”„‟″]",
+    "-": "[-‐‑‒–—―−]",
+}
+
+
+def _flexible_quote_regex(quote: str) -> "re.Pattern[str] | None":
+    """A whitespace- and glyph-tolerant regex for locating ``quote`` in source text.
+
+    Tokens match literally (glyph-folded), whitespace runs match ``\\s+``, and the
+    quote/dash glyph variants are accepted, so a quote the contract grounded against
+    a curly-quoted, double-spaced paragraph still yields an offset span.
+    """
+    folded = _fold_typographic_glyphs(quote).strip()
+    if not folded:
+        return None
+    parts = [
+        "".join(_CHAR_FLEX.get(char, re.escape(char)) for char in token)
+        for token in folded.split()
+    ]
+    if not parts:
+        return None
+    return re.compile(r"\s+".join(parts), re.IGNORECASE)
+
+
 def _quote_spans(paragraph: Paragraph, quote: str) -> list[dict[str, Any]]:
     if not quote:
         return []
     text = str(paragraph.get("text") or "")
-    offset = text.casefold().find(quote.casefold())
     paragraph_start = paragraph.get("start")
-    if offset < 0 or not isinstance(paragraph_start, int):
+    if not isinstance(paragraph_start, int):
         return []
+    # Fast path: exact case-insensitive substring (clean ASCII quotes).
+    offset = text.casefold().find(quote.casefold())
+    length = len(quote)
+    if offset < 0:
+        # Whitespace/glyph-tolerant fallback so curly quotes and collapsed spaces
+        # (which the contract folds before grounding) still yield a highlight span.
+        pattern = _flexible_quote_regex(quote)
+        match = pattern.search(text) if pattern is not None else None
+        if match is None:
+            return []
+        offset = match.start()
+        length = match.end() - match.start()
     start = paragraph_start + offset
-    end = start + len(quote)
-    return [{"start": start, "end": end, "text": text[offset:offset + len(quote)], "term": quote}]
+    end = start + length
+    return [{"start": start, "end": end, "text": text[offset:offset + length], "term": quote}]
 
 
 def _signal_type(clause: ClauseResult) -> str:

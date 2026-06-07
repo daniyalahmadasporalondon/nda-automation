@@ -354,21 +354,38 @@
     }
   },
   {
-    "name": "verifier_refutes_false_flag_carveout",
+    "name": "verifier_affirms_carveout_pass_without_over_escalating",
     "clause_id": "non_circumvention",
     "kind": "verifier",
     "high_risk": true,
     "label_source": "engineering",
-    "label_note": "Adversarial verifier refutes the engine false-flag and clears the carve-out to pass.",
+    "label_note": "A genuine freedom-to-deal carve-out the engine correctly clears must survive the always-on prohibited-pass verification: the adversary affirms the clear instead of over-escalating it to review. (The real default_verifier affirms a carve-out pass; a hallucinated clear with a cited restriction is what its refute path catches.)",
     "text": "Each party shall not be restricted from dealing with any contact introduced by the other party.",
     "verifier": {
-      "verdict": "refute",
+      "verdict": "affirm",
       "confidence": 0.92,
-      "rationale": "Freedom-to-deal carve-out, not a restriction; engine inverted the polarity."
+      "rationale": "Freedom-to-deal carve-out correctly cleared; there is no restriction to refute."
     },
     "expected": {
       "decision": "pass",
       "reason_code": "ai_first_pass"
+    }
+  },
+  {
+    "name": "verifier_refutes_false_flagged_carveout_fail_to_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "The engine false-flags a genuine freedom-to-deal carve-out as a restriction (fail); the adversarial verifier refutes the polarity inversion and clears it to pass (exercises the fail -> pass overlay end to end).",
+    "text": "Neither party shall be prevented from dealing directly with introduced parties.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.92,
+      "rationale": "Freedom-to-deal carve-out, not a restriction; the engine inverted the polarity."
+    },
+    "expected": {
+      "decision": "pass"
     }
   },
   {

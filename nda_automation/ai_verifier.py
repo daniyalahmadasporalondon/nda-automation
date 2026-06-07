@@ -176,6 +176,12 @@ def _should_verify(clause: Mapping[str, object]) -> bool:
     if decision in _VERIFIABLE_DECISIONS:
         return True
     if decision == CLAUSE_DECISION_PASS:
+        # A prohibited-clause pass asserts the restriction is ABSENT -- a claim no
+        # quote can ground (you cannot quote absent text), so the grounding gate
+        # cannot catch a hallucinated clear. Always second-look it, even at high
+        # confidence.
+        if str(clause.get("type") or "").strip().lower() == "prohibited":
+            return True
         confidence = _confidence(clause)
         # Only spend a call on a *low*-confidence pass; trust confident clears.
         return confidence is not None and confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
@@ -536,6 +542,22 @@ def default_verifier(packet: Mapping[str, object]) -> Dict[str, object] | None:
             "rationale": (
                 "Clause guarantees freedom to deal/contact (a carve-out), the literal opposite of a "
                 "restriction; the engine inverted the polarity. No co-located prohibition is present."
+            ),
+        }
+
+    if decision == CLAUSE_DECISION_PASS and is_prohibited and _GENUINE_PROHIBITION_PATTERN.search(text):
+        # The clause was CLEARED, yet its own cited text carries a genuine
+        # (non-freedom-preserving) restriction. A passed prohibited clause must not
+        # assert an active prohibition, so the clear is suspect -- refute it. A
+        # refuted pass escalates to review (see _apply_verdict), not to fail: the
+        # offline adversary never invents a fail it cannot anchor, but it must not
+        # let a hallucinated clear of a present restriction stand.
+        return {
+            "verdict": VERIFIER_VERDICT_REFUTE,
+            "confidence": 0.9,
+            "rationale": (
+                "Clause was cleared but its cited text contains a genuine restriction; a passed "
+                "prohibited clause must not assert an active prohibition."
             ),
         }
 

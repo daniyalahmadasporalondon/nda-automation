@@ -217,5 +217,42 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
 
 
+class QuoteOffsetRobustnessTests(unittest.TestCase):
+    """BUGFIX: downstream quote location must use the SAME normalization the
+    contract grounds with (glyph-fold + whitespace-collapse), so a quote the
+    contract accepted on a curly-quoted, double-spaced paragraph still resolves to
+    its paragraph AND keeps its highlight offsets instead of silently dropping them.
+    """
+
+    def test_quote_spans_tolerate_curly_quotes_and_collapsed_whitespace(self):
+        from nda_automation.ai_first_review import _quote_spans
+
+        paragraph = {
+            "id": "p1",
+            "text": 'The Recipient shall  not  disclose the “Confidential Information”.',
+            "start": 100,
+        }
+        spans = _quote_spans(paragraph, 'shall not disclose the "Confidential Information"')
+        self.assertEqual(len(spans), 1)
+        # Offsets map back to the ORIGINAL text (double spaces + curly quotes), not
+        # the normalized form.
+        self.assertEqual(spans[0]["start"], 114)
+        self.assertTrue(spans[0]["end"] > spans[0]["start"])
+        self.assertIn("Confidential Information", spans[0]["text"])
+
+    def test_quote_spans_fast_path_for_clean_ascii(self):
+        from nda_automation.ai_first_review import _quote_spans
+
+        paragraph = {"id": "p1", "text": "governed by the laws of Delaware", "start": 0}
+        spans = _quote_spans(paragraph, "laws of Delaware")
+        self.assertEqual(spans, [{"start": 16, "end": 32, "text": "laws of Delaware", "term": "laws of Delaware"}])
+
+    def test_paragraph_id_resolves_through_glyph_and_whitespace_variants(self):
+        from nda_automation.ai_first_review import _paragraph_id_for_quote
+
+        paragraphs = [{"id": "p1", "text": 'It is a “mutual”  agreement between the parties.'}]
+        self.assertEqual(_paragraph_id_for_quote(paragraphs, 'a "mutual" agreement'), "p1")
+
+
 if __name__ == "__main__":
     unittest.main()

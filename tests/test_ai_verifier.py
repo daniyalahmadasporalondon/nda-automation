@@ -279,6 +279,45 @@ class DefaultVerifierTests(unittest.TestCase):
         verdict = default_verifier(self._packet("fail", ""))
         self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
 
+    def test_refutes_cleared_prohibited_clause_whose_cited_text_holds_a_restriction(self):
+        # BUGFIX: a prohibited clause CLEARED to pass whose own cited text carries a
+        # genuine restriction is a suspect (hallucinated) clear -> refute so it
+        # escalates to review rather than letting a present restriction pass.
+        verdict = default_verifier(
+            self._packet(
+                "pass",
+                "The Recipient shall not solicit any party introduced by the Disclosing Party.",
+            )
+        )
+        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
+
+    def test_genuine_absence_pass_is_affirmed(self):
+        # A prohibited clause that genuinely does not appear has no cited text -> the
+        # offline adversary cannot (and must not) refute the absence.
+        verdict = default_verifier(self._packet("pass", ""))
+        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
+
+
+class ShouldVerifyTests(unittest.TestCase):
+    """BUGFIX: a prohibited-clause pass asserts the restriction is ABSENT -- a claim
+    no quote can ground -- so it must always be second-looked, even at high
+    confidence (the grounding gate cannot catch a hallucinated clear there)."""
+
+    def test_high_confidence_prohibited_pass_is_verified(self):
+        from nda_automation.ai_verifier import _should_verify
+
+        self.assertTrue(_should_verify({"decision": "pass", "type": "prohibited", "confidence": 0.97}))
+
+    def test_high_confidence_required_pass_is_trusted(self):
+        from nda_automation.ai_verifier import _should_verify
+
+        self.assertFalse(_should_verify({"decision": "pass", "type": "required", "confidence": 0.97}))
+
+    def test_low_confidence_pass_is_still_verified(self):
+        from nda_automation.ai_verifier import _should_verify
+
+        self.assertTrue(_should_verify({"decision": "pass", "type": "required", "confidence": 0.50}))
+
 
 class ReviewNdaIntegrationTests(unittest.TestCase):
     def test_verifier_summary_attached_to_result(self):
