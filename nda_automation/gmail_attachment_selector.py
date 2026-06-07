@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -10,6 +9,7 @@ from typing import Any
 
 from . import app_settings
 from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
+from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
 
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
 DEFAULT_GMAIL_TRIAGE_MODEL = "x-ai/grok-4.3"
@@ -38,13 +38,9 @@ SELECTOR_SYSTEM_PROMPT = (
     "never invent identifiers. Return only JSON matching the required schema."
 )
 
-# Markers that an injection payload uses to impersonate a new turn/role or a
-# control delimiter. We strip them from untrusted text so the data cannot pose as
-# a separate instruction block.
-_INJECTION_MARKER_PATTERN = re.compile(
-    r"(?im)^\s*(system|assistant|user|developer|tool)\s*:",
-)
-_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Injection-marker / control-char neutralization now lives in untrusted_text (shared
+# with the AI-assessment and verifier prompts). _neutralize_untrusted_text below stays
+# as the module-private entry point the rest of this file and its tests already use.
 
 
 class GmailAttachmentSelectorError(RuntimeError):
@@ -201,17 +197,15 @@ def _candidate_record(candidate: Mapping[str, Any]) -> dict[str, Any]:
 def _neutralize_untrusted_text(value: object, max_chars: int) -> str:
     """Render attacker-controlled email text inert before it enters the prompt.
 
-    JSON encoding already escapes structural characters, but a payload can still
-    try to pose as a new chat turn ("System:", "Assistant:") or smuggle control
-    characters. We strip control characters and defang those role markers so the
-    text cannot impersonate an instruction block. Content is preserved otherwise
-    so the model can still classify the document; the enforced output enumeration
-    is what ultimately bounds the selection.
+    Thin wrapper over the shared :func:`untrusted_text.neutralize_untrusted_text`
+    (the same neutralizer the AI-assessment and verifier prompts use): strips
+    control characters and defangs line-start role markers ("System:",
+    "Assistant:") so the text cannot impersonate an instruction block, then
+    truncates. Content is preserved otherwise so the model can still classify the
+    document; the enforced output enumeration is what ultimately bounds the
+    selection.
     """
-    text = str(value or "")
-    text = _CONTROL_CHAR_PATTERN.sub(" ", text)
-    text = _INJECTION_MARKER_PATTERN.sub(lambda match: match.group(0).replace(":", " -"), text)
-    return text[:max_chars]
+    return _neutralize_shared_untrusted_text(value, max_chars)
 
 
 def _parse_response(payload: Mapping[str, Any]) -> dict[str, Any]:

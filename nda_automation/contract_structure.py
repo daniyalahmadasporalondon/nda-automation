@@ -124,8 +124,8 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
             source=candidate.source,
         ))
 
-    aliases = _build_aliases(sections)
-    reference_index = _build_reference_index(sections, aliases)
+    aliases, ambiguous_alias_keys = _build_aliases(sections)
+    reference_index = _build_reference_index(sections, aliases, ambiguous_alias_keys)
     mapped_paragraph_ids = {
         paragraph_id
         for section in sections
@@ -337,17 +337,32 @@ def _find_parent_id(sections: List[Dict[str, object]], candidate: _SectionCandid
     return None
 
 
-def _build_aliases(sections: Iterable[Dict[str, object]]) -> List[Dict[str, str]]:
-    aliases: List[Dict[str, str]] = []
-    seen_keys = set()
+def _build_aliases(sections: Iterable[Dict[str, object]]) -> tuple[List[Dict[str, str]], List[str]]:
+    """Map alias keys to sections, refusing to bind a key shared by >1 section.
+
+    When a document restarts numbering -- e.g. an appended Exhibit/Order Form whose
+    "Section 2" follows the main body's "Section 2" -- a kind/number alias key like
+    ``section:2`` is claimed by more than one section. Silently binding the key to the
+    *first* occurrence (the old first-write-wins behaviour) makes every "Section 2"
+    cross-reference resolve to the wrong target with full confidence and no ambiguity
+    signal, which lets an unapproved governing law referenced via a duplicate section be
+    silently cleared. Instead, a key claimed by two or more *distinct* sections is
+    recorded as ambiguous and left out of the binding map, so the resolver treats those
+    references as unresolved rather than mis-resolved (the conservative-correct stance
+    the resolver already takes for the Schedule<->Section namespace collision)."""
+    first_section_for_key: Dict[str, Dict[str, str]] = {}
+    ambiguous_keys: set[str] = set()
+    key_order: List[str] = []
     for section in sections:
         section_id = str(section.get("id", ""))
+        if not section_id:
+            continue
         label = str(section.get("label", ""))
         heading = str(section.get("heading", ""))
         kind = str(section.get("kind", ""))
         number = section.get("number")
 
-        alias_keys = []
+        alias_keys: List[str] = []
         if isinstance(number, str) and number:
             alias_keys.append(f"number:{number.lower()}")
             if kind in EXPLICIT_KIND_LABELS:
@@ -357,16 +372,27 @@ def _build_aliases(sections: Iterable[Dict[str, object]]) -> List[Dict[str, str]
             alias_keys.append(f"heading:{heading_key}")
 
         for key in alias_keys:
-            if not section_id or key in seen_keys:
-                continue
-            aliases.append({"key": key, "section_id": section_id, "label": label})
-            seen_keys.add(key)
-    return aliases
+            existing = first_section_for_key.get(key)
+            if existing is None:
+                first_section_for_key[key] = {"key": key, "section_id": section_id, "label": label}
+                key_order.append(key)
+            elif existing["section_id"] != section_id:
+                # A second, distinct section claims this key -- the key is ambiguous and
+                # must not bind to either occurrence.
+                ambiguous_keys.add(key)
+
+    aliases = [
+        first_section_for_key[key]
+        for key in key_order
+        if key not in ambiguous_keys
+    ]
+    return aliases, sorted(ambiguous_keys)
 
 
 def _build_reference_index(
     sections: Iterable[Dict[str, object]],
     aliases: Iterable[Dict[str, str]],
+    ambiguous_alias_keys: Iterable[str] = (),
 ) -> Dict[str, object]:
     section_lookup: Dict[str, Dict[str, object]] = {}
     paragraph_lookup: Dict[str, str] = {}
@@ -391,6 +417,12 @@ def _build_reference_index(
             for alias in aliases
             if isinstance(alias.get("key"), str) and isinstance(alias.get("section_id"), str)
         },
+        # Alias keys claimed by more than one section (e.g. a "Section 2" that recurs in
+        # an appended Exhibit with restarted numbering). The resolver must treat
+        # references to these as unresolved rather than silently bind to one occurrence.
+        "ambiguous_alias_keys": sorted(
+            str(key) for key in ambiguous_alias_keys if isinstance(key, str) and key
+        ),
         "paragraph_to_section_id": paragraph_lookup,
     }
 

@@ -27,6 +27,7 @@ from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
 from nda_automation.docx_text import extract_docx_paragraphs
+from nda_automation.review_document import align_document_paragraphs
 from nda_automation.redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -304,6 +305,47 @@ def make_source_docx(paragraphs, include_package_rels=True):
             archive.writestr("word/document.xml", document_xml)
             archive.writestr("word/_rels/document.xml.rels", document_rels_xml)
             archive.writestr("customXml/item1.xml", "<custom>preserved</custom>")
+        return output.getvalue()
+
+
+def make_source_docx_with_internal_blank_line_paragraph(prefix_paragraphs, internal_blocks):
+    """A source DOCX whose final paragraph is ONE physical <w:p> holding several
+    logical blocks separated by a hard blank line (two <w:br/>), as the real
+    extractor produces. The extractor reads it as one paragraph whose text has an
+    internal "\\n\\n"; align_document_paragraphs re-splits it into one review
+    paragraph per block, all sharing that physical paragraph's source_index."""
+    runs = []
+    for index, block in enumerate(internal_blocks):
+        if index:
+            runs.append("<w:br/><w:br/>")
+        runs.append(f"<w:t>{escape_xml(block)}</w:t>")
+    blank_line_paragraph = f"<w:p><w:r>{''.join(runs)}</w:r></w:p>"
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in prefix_paragraphs
+    ) + blank_line_paragraph
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>"""
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+    package_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+    document_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types_xml)
+            archive.writestr("_rels/.rels", package_rels_xml)
+            archive.writestr("word/document.xml", document_xml)
+            archive.writestr("word/_rels/document.xml.rels", document_rels_xml)
         return output.getvalue()
 
 
@@ -1126,40 +1168,57 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(sum(1 for rejected, _accepted in states if rejected == original), 2)
         assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
 
-    def test_source_docx_export_redlines_split_blocks_sharing_source_index_distinctly(self):
-        # Two review paragraphs (p2, p3) split one extracted block on an internal
-        # blank line, so they share provenance source_index=2 but are distinct
-        # review paragraphs targeting distinct physical source <w:p>s. Each redline
-        # must land on its own physical paragraph -- not collide onto one, leaving
-        # the other source paragraph un-redlined.
-        source_docx = make_source_docx(["Alpha clause.", "Beta one.", "Beta two."])
+    def test_source_docx_export_real_split_block_paragraph_preserves_both_blocks(self):
+        # The REAL shape (the fabricated [1,2,2] source_index fixture can never
+        # occur: the extractor assigns source_index strictly by physical <w:p>
+        # ordinal). ONE physical <w:p> holds two logical blocks separated by a hard
+        # blank line; align_document_paragraphs re-splits it into two review
+        # paragraphs that SHARE that physical paragraph's source_index. Built
+        # end-to-end through the real extractor + aligner so the regression matches
+        # production. Before the fix this either hard-failed ("could not anchor 1
+        # approved redline") or rebuilt the whole <w:p> from one block's text,
+        # silently destroying the other block.
+        source_docx = make_source_docx_with_internal_blank_line_paragraph(
+            ["Alpha clause."], ["Beta one.", "Beta two."]
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        # The extractor yields ONE physical paragraph for the two blocks (its text
+        # carries the internal blank line) -- never two paragraphs with one
+        # source_index each.
+        self.assertEqual(extracted[-1]["text"], "Beta one.\n\nBeta two.")
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        aligned = align_document_paragraphs(extracted, source_text)
+        aligned_by_text = {str(paragraph["text"]): paragraph for paragraph in aligned}
+        beta_one = aligned_by_text["Beta one."]
+        beta_two = aligned_by_text["Beta two."]
+        # Two distinct review paragraphs, shared provenance source_index.
+        self.assertNotEqual(beta_one["id"], beta_two["id"])
+        self.assertEqual(beta_one["source_index"], beta_two["source_index"])
+
         review_result = {
             "overall_status": "does_not_meet_requirements",
             "requirements_passed": 0,
             "requirements_failed": 2,
             "checked_at": "2026-06-01T00:00:00+00:00",
-            "paragraphs": [
-                {"id": "p1", "index": 1, "source_index": 1, "text": "Alpha clause."},
-                {"id": "p2", "index": 2, "source_index": 2, "text": "Beta one."},
-                {"id": "p3", "index": 3, "source_index": 2, "text": "Beta two."},
-            ],
+            "extracted_text": source_text,
+            "paragraphs": aligned,
             "clauses": [],
             "redline_edits": [
                 {
-                    "id": "r2",
+                    "id": "r1",
                     "action": REDLINE_REPLACE_PARAGRAPH,
-                    "paragraph_id": "p2",
-                    "paragraph_index": 2,
-                    "source_index": 2,
+                    "paragraph_id": beta_one["id"],
+                    "paragraph_index": beta_one["index"],
+                    "source_index": beta_one["source_index"],
                     "original_text": "Beta one.",
                     "replacement_text": "First requirement satisfied.",
                 },
                 {
-                    "id": "r3",
+                    "id": "r2",
                     "action": REDLINE_REPLACE_PARAGRAPH,
-                    "paragraph_id": "p3",
-                    "paragraph_index": 3,
-                    "source_index": 2,
+                    "paragraph_id": beta_two["id"],
+                    "paragraph_index": beta_two["index"],
+                    "source_index": beta_two["source_index"],
                     "original_text": "Beta two.",
                     "replacement_text": "Second requirement satisfied.",
                 },
@@ -1179,20 +1238,72 @@ class DocxExportTests(unittest.TestCase):
             for paragraph in paragraphs
         ]
         accepted_texts = [accepted for _rejected, accepted in states]
-        # Both split blocks are redlined on their own physical paragraph...
+        # Each block is redlined on its own tracked paragraph -- no block clobbered.
         self.assertIn(("Beta one.", "First requirement satisfied."), states)
         self.assertIn(("Beta two.", "Second requirement satisfied."), states)
-        # ...and neither original block survives un-redlined (the collision symptom).
+        # ...and neither original block survives un-redlined (the data-loss symptom).
         self.assertNotIn("Beta one.", accepted_texts)
         self.assertNotIn("Beta two.", accepted_texts)
-        # Exactly the three source paragraphs remain: no spurious duplicate inserted
-        # because both redlines piled onto one paragraph.
+        # Alpha + the two re-emitted block paragraphs: no block dropped, no spurious
+        # duplicate inserted from two redlines piling onto one paragraph.
         self.assertEqual(len(paragraphs), 3)
-        # The export and the content-coverage health check agree on the sequence.
+        # The content-coverage gate (now always run on the direct-upload path)
+        # agrees the sequence is intact.
         self.assertEqual(
             verify_export_content_coverage(
                 redlined_docx,
-                "Alpha clause.\n\nBeta one.\n\nBeta two.",
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+        assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
+
+    def test_source_docx_export_split_block_preserves_unedited_sibling_block(self):
+        # Only ONE block of a split-block physical <w:p> is redlined. The sibling
+        # block must survive verbatim -- the rebuild-from-one-block bug used to drop
+        # it entirely.
+        source_docx = make_source_docx_with_internal_blank_line_paragraph(
+            ["Alpha clause."], ["Beta one.", "Beta two."]
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        aligned = align_document_paragraphs(extracted, source_text)
+        beta_two = {str(p["text"]): p for p in aligned}["Beta two."]
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "extracted_text": source_text,
+            "paragraphs": aligned,
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r2",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": beta_two["id"],
+                    "paragraph_index": beta_two["index"],
+                    "source_index": beta_two["source_index"],
+                    "original_text": "Beta two.",
+                    "replacement_text": "Second requirement satisfied.",
+                },
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        accepted_all = "\n".join(
+            revision_text_for_state(paragraph, accepted=True) for paragraph in paragraphs
+        )
+        # The untouched block survives verbatim; the edited block is redlined.
+        self.assertIn("Beta one.", accepted_all)
+        self.assertIn("Second requirement satisfied.", accepted_all)
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
                 expected_redline_edits=review_result["redline_edits"],
             ),
             [],

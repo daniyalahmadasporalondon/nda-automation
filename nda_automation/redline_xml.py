@@ -39,6 +39,15 @@ def _source_tracked_insert_paragraphs(text: str, first_revision_id: int) -> List
         for paragraph_xml in _tracked_insert_paragraphs(text, first_revision_id)
     ]
 
+def _source_verbatim_paragraph(source_paragraph: ET.Element, text: str) -> ET.Element:
+    """A plain (untracked) <w:p> carrying ``text`` and inheriting the source
+    paragraph's formatting. Used when a split-block physical paragraph is re-emitted
+    one paragraph per block: blocks with no redline must survive verbatim."""
+    return _merge_source_paragraph_properties(
+        source_paragraph,
+        _word_paragraph_from_xml(f"<w:p>{_run(text)}</w:p>"),
+    )
+
 def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_paragraph: ET.Element) -> ET.Element:
     merged = ET.Element(source_paragraph.tag, source_paragraph.attrib)
     source_properties = source_paragraph.find(_w_tag("pPr"))

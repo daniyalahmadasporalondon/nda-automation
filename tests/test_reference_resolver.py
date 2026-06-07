@@ -233,6 +233,70 @@ class ReferenceResolverTests(unittest.TestCase):
         self.assertEqual(schedule_reference["status"], "resolved")
         self.assertEqual(schedule_reference["items"][0]["matched_alias"], "schedule:2")
 
+    def test_duplicate_section_number_is_ambiguous_not_resolved_to_first(self):
+        # An appended Exhibit/Order Form restarts numbering, so "Section 2" exists twice.
+        # A "governed by ... Section 2" reference must NOT silently bind to the first
+        # occurrence with full confidence -- the alias key is ambiguous and the reference
+        # must be left unresolved so downstream consumers force human review rather than
+        # trusting the wrong (first) target. This is the duplicate-section false-clear.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Section 1 Definitions",
+            "Definitions text.",
+            "Section 2 Governing Law",
+            "This Agreement is governed by the laws of England and Wales.",
+            "ORDER FORM",
+            "Section 1 Pricing",
+            "Pricing terms.",
+            "Section 2 Local Terms",
+            "These local terms are governed by the laws of the State of Texas.",
+            "The parties agree this Agreement is governed by Section 2.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        # The colliding keys are recorded as ambiguous and never bound in the lookup.
+        reference_index = structure["reference_index"]
+        self.assertIn("section:2", reference_index["ambiguous_alias_keys"])
+        self.assertIn("number:2", reference_index["ambiguous_alias_keys"])
+        self.assertNotIn("section:2", reference_index["alias_to_section_id"])
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        section_2_reference = resolver["references"][-1]
+        self.assertEqual(section_2_reference["reference_text"], "Section 2")
+        self.assertEqual(section_2_reference["numbers"], ["2"])
+        # Not silently resolved to the first Section 2.
+        self.assertEqual(section_2_reference["resolved_section_ids"], [])
+        self.assertEqual(section_2_reference["status"], "unresolved")
+        self.assertIsNone(section_2_reference["items"][0]["section_id"])
+        self.assertIsNone(section_2_reference["items"][0]["matched_alias"])
+        self.assertTrue(section_2_reference["items"][0]["ambiguous"])
+
+    def test_unique_section_number_still_resolves_when_a_different_number_is_duplicated(self):
+        # The ambiguity guard is per-key: a duplicated "Section 2" must not poison the
+        # resolution of an unambiguous "Section 1" elsewhere in the same document.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Section 1 Definitions",
+            "Definitions text.",
+            "Section 2 Confidentiality",
+            "Confidentiality text.",
+            "ORDER FORM",
+            "Section 2 Local Terms",
+            "Local terms apply.",
+            "The obligations in Section 1 survive. Section 2 also applies.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+
+        resolver = resolve_document_references(paragraphs, structure)
+
+        section_1_reference, section_2_reference = resolver["references"][-2:]
+        self.assertEqual(section_1_reference["reference_text"], "Section 1")
+        self.assertEqual(section_1_reference["status"], "resolved")
+        self.assertEqual(section_1_reference["resolved_section_ids"], ["section-1"])
+        # The duplicated Section 2 stays ambiguous/unresolved.
+        self.assertEqual(section_2_reference["reference_text"], "Section 2")
+        self.assertEqual(section_2_reference["status"], "unresolved")
+        self.assertEqual(section_2_reference["resolved_section_ids"], [])
+
     def test_review_result_and_legacy_enrichment_include_reference_resolver(self):
         text = "\n\n".join([
             "Clause 1: Definitions",

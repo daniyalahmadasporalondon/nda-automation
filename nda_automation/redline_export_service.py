@@ -169,7 +169,13 @@ def _review_result_for_export(
 
         extracted_paragraphs = extract_docx_paragraphs(document_bytes)
         extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
-        return review_nda(extracted_text, paragraphs=extracted_paragraphs), document_bytes, filename
+        review_result = review_nda(extracted_text, paragraphs=extracted_paragraphs)
+        # Record the source text so the export coverage gate runs its strong
+        # sequence check on this direct-upload path. Without it the gate's
+        # expected_source_text is empty and the sequence check is skipped, so a
+        # corrupted source redline would ship silently.
+        review_result["extracted_text"] = extracted_text
+        return review_result, document_bytes, filename
 
     return review_nda(fallback_text), None, ""
 

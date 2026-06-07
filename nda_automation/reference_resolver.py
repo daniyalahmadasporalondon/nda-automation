@@ -82,6 +82,7 @@ def resolve_document_references(
     if not isinstance(reference_index, dict):
         reference_index = {}
     alias_lookup = _string_dict(reference_index.get("alias_to_section_id"))
+    ambiguous_alias_keys = _string_set(reference_index.get("ambiguous_alias_keys"))
     sections_by_id = _section_lookup(reference_index.get("sections_by_id"))
     paragraph_lookup = _string_dict(reference_index.get("paragraph_to_section_id"))
 
@@ -90,6 +91,7 @@ def resolve_document_references(
         references.extend(_references_for_paragraph(
             paragraph,
             alias_lookup=alias_lookup,
+            ambiguous_alias_keys=ambiguous_alias_keys,
             sections_by_id=sections_by_id,
             paragraph_lookup=paragraph_lookup,
             start_index=len(references) + 1,
@@ -122,6 +124,7 @@ def _references_for_paragraph(
     paragraph: Paragraph,
     *,
     alias_lookup: Dict[str, str],
+    ambiguous_alias_keys: set[str],
     sections_by_id: Dict[str, Dict[str, object]],
     paragraph_lookup: Dict[str, str],
     start_index: int,
@@ -137,7 +140,7 @@ def _references_for_paragraph(
         if not kind or not numbers:
             continue
         items = [
-            _resolve_reference_item(kind, number, alias_lookup, sections_by_id)
+            _resolve_reference_item(kind, number, alias_lookup, ambiguous_alias_keys, sections_by_id)
             for number in numbers
         ]
         resolved_section_ids = _dedupe(
@@ -178,6 +181,7 @@ def _resolve_reference_item(
     kind: str,
     number: str,
     alias_lookup: Dict[str, str],
+    ambiguous_alias_keys: set[str],
     sections_by_id: Dict[str, Dict[str, object]],
 ) -> Dict[str, object]:
     reference_namespace = _kind_namespace(kind)
@@ -190,7 +194,15 @@ def _resolve_reference_item(
         alias_keys.append(f"number:{number.lower()}")
     matched_alias = ""
     section_id = ""
+    ambiguous = False
     for alias_key in alias_keys:
+        # The alias key is claimed by more than one section (e.g. a "Section 2" that
+        # recurs in an appended Exhibit with restarted numbering). Binding it to one
+        # occurrence would mis-resolve with full confidence; leave it unresolved so
+        # downstream consumers force human review instead of trusting the wrong target.
+        if alias_key in ambiguous_alias_keys:
+            ambiguous = True
+            continue
         candidate_section_id = alias_lookup.get(alias_key)
         if not candidate_section_id:
             continue
@@ -206,6 +218,7 @@ def _resolve_reference_item(
         "alias_keys": alias_keys,
         "matched_alias": matched_alias or None,
         "section_id": section_id or None,
+        "ambiguous": ambiguous and not section_id,
         "label": str(sections_by_id.get(section_id, {}).get("label") or "") if section_id else "",
         "status": "resolved" if section_id else "unresolved",
     }
@@ -282,6 +295,12 @@ def _string_dict(value: object) -> Dict[str, str]:
         for key, item in value.items()
         if isinstance(key, str) and isinstance(item, str)
     }
+
+
+def _string_set(value: object) -> set[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    return {str(item) for item in value if isinstance(item, str) and item}
 
 
 def _section_lookup(value: object) -> Dict[str, Dict[str, object]]:

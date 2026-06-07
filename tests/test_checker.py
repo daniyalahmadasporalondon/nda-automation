@@ -1247,6 +1247,47 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(governing_law["governing_law_analysis"]["unapproved_paragraph_ids"], ["p3", "p5"])
         self.assertEqual(governing_law["governing_law_analysis"]["references"][0]["status"], "unapproved")
 
+    def test_governing_law_not_silently_cleared_by_duplicate_section_number(self):
+        # An appended Exhibit/Order Form restarts numbering, so "Section 12" exists twice:
+        # the main-body Section 12 states an APPROVED law and the exhibit Section 12 states
+        # an UNAPPROVED one. A "governed by ... Section 12" reference previously bound
+        # silently to the first (approved) Section 12 with full confidence, so its
+        # "approved" status propagated to the referencing paragraph and the unapproved law
+        # was silently cleared. The duplicate alias key is now ambiguous, so the reference
+        # is unresolved and the clause is NOT silently passed.
+        result = review_nda(
+            """
+            Mutual NDA
+
+            Article 8 Law
+
+            The governing law is set out in Section 12.
+
+            Section 12 Confidentiality
+
+            This Agreement shall be governed by the laws of England and Wales.
+
+            EXHIBIT A ORDER FORM
+
+            Section 12 Governing Law
+
+            This Agreement shall be governed by the laws of France.
+            """
+        )
+
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        # The unapproved law must not be silently cleared: a "review" decision forces a
+        # human to confirm rather than passing the clause automatically.
+        self.assertNotEqual(governing_law["decision"], "pass")
+        self.assertEqual(governing_law["decision"], "review")
+        analysis_references = governing_law["governing_law_analysis"]["references"]
+        # The duplicate "Section 12" reference must NOT carry an "approved" status borrowed
+        # from the wrong (first) target -- it is unresolved.
+        self.assertTrue(analysis_references)
+        for reference in analysis_references:
+            self.assertEqual(reference["status"], "unresolved")
+            self.assertNotEqual(reference["status"], "approved")
+
     def test_governing_law_needs_review_for_referenced_conditional_choice_of_law(self):
         result = review_nda(
             """

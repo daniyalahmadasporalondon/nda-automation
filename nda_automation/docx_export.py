@@ -21,6 +21,7 @@ from .redline_xml import (
     _source_tracked_delete_paragraph,
     _source_tracked_insert_paragraphs,
     _source_tracked_replace_paragraph,
+    _source_verbatim_paragraph,
     _strip_paragraph_property_revisions,
     _tracked_delete_paragraph,
     _tracked_insert_paragraphs,
@@ -347,6 +348,16 @@ def _redlines_by_source_paragraph(
                 redline, source_paragraphs, review_paragraphs_by_id, claimed_indexes=claimed_indexes
             )
             if source_paragraph is None:
+                # No fresh physical <w:p> claimable. Before rejecting, check the
+                # split-block case: this redline's block lives *inside* an already
+                # claimed physical paragraph (two review paragraphs split one <w:p>
+                # on an internal blank line, sharing its source_index). Those must
+                # SHARE that one physical paragraph -- applied as block-aware
+                # sub-span edits later -- not be dropped or hard-failed.
+                source_paragraph = _resolve_shared_split_block_paragraph(
+                    redline, source_paragraphs, review_paragraphs_by_id, claimed_indexes
+                )
+            if source_paragraph is None:
                 if not _redline_source_part(redline, review_paragraphs_by_id):
                     unresolved.append(redline)
                     continue
@@ -362,6 +373,60 @@ def _redlines_by_source_paragraph(
                 resolved_by_review_key[review_key] = source_paragraph
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
     return grouped, unresolved
+
+
+def _resolve_shared_split_block_paragraph(
+    redline: RedlineEdit,
+    source_paragraphs: List[SourceParagraph],
+    review_paragraphs_by_id: Dict[str, Paragraph],
+    claimed_indexes: set[int],
+) -> SourceParagraph | None:
+    """Resolve a redline whose review paragraph is one block of a physical <w:p>
+    that already holds another redlined block (the split-on-blank-line case).
+
+    The physical paragraph's text is the blocks joined by blank lines, so it never
+    equals (and rarely text-anchors to) a single block. We match by the redline's
+    provenance source_index and confirm the block is genuinely a sub-block of that
+    physical paragraph before sharing it; otherwise we decline so a real mismatch
+    still surfaces as unresolved rather than corrupting an unrelated paragraph."""
+    source_index = _redline_source_index(redline)
+    if source_index is None or source_index not in claimed_indexes:
+        return None
+    candidate = next(
+        (paragraph for paragraph in source_paragraphs if paragraph.source_index == source_index),
+        None,
+    )
+    if candidate is None:
+        return None
+    block_text = _redline_block_text(redline, review_paragraphs_by_id)
+    if not block_text:
+        return None
+    physical_blocks = _physical_paragraph_blocks(candidate.text)
+    if len(physical_blocks) < 2:
+        return None
+    normalized_block = _normalize_paragraph_text(block_text)
+    if any(_normalize_paragraph_text(block) == normalized_block for block in physical_blocks):
+        return candidate
+    return None
+
+
+def _redline_block_text(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> str:
+    """The verbatim source text of the single review-paragraph block a redline
+    targets (its ``original_text``, falling back to the review paragraph's text)."""
+    original = str(redline.get("original_text") or "").strip()
+    if original:
+        return original
+    review_paragraph = review_paragraphs_by_id.get(str(redline.get("paragraph_id") or ""))
+    if isinstance(review_paragraph, dict):
+        return str(review_paragraph.get("text") or "").strip()
+    return ""
+
+
+def _physical_paragraph_blocks(text: str) -> List[str]:
+    """Split a physical paragraph's text into the same logical blocks the review
+    pipeline derives from it, so a redline's block can be located within it."""
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", str(text or ""))]
+    return [block for block in blocks if block]
 
 
 def _redline_review_paragraph_key(redline: RedlineEdit) -> Tuple | None:
@@ -524,21 +589,40 @@ def _apply_redline_edits_to_source_document(
 
         primary_edits = [edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH]
         insert_position = paragraph_position + 1
-        primary_applied = False
-        for primary_edit in primary_edits:
-            primary_paragraph, revision_id = _source_tracked_primary_redline_paragraph(
-                source_paragraph.paragraph,
-                primary_edit,
+        physical_blocks = _physical_paragraph_blocks(source_paragraph.text)
+        block_paragraphs: List[ET.Element] = []
+        if len(physical_blocks) > 1 and primary_edits:
+            # Split-block physical paragraph: several review paragraphs share this
+            # one <w:p>. Rebuilding it from a single edit's text would clobber the
+            # sibling blocks (silent data loss). Re-emit it one tracked paragraph
+            # per block so every block's content survives.
+            block_paragraphs, revision_id = _combined_block_aware_redline_paragraphs(
+                source_paragraph,
+                physical_blocks,
+                primary_edits,
                 revision_id,
             )
-            if primary_paragraph is None:
-                continue
-            if primary_applied:
-                source_paragraph.parent.insert(insert_position, primary_paragraph)
-                insert_position += 1
-            else:
-                source_paragraph.parent[paragraph_position] = primary_paragraph
-                primary_applied = True
+        if block_paragraphs:
+            source_paragraph.parent[paragraph_position] = block_paragraphs[0]
+            for offset, block_paragraph in enumerate(block_paragraphs[1:], start=1):
+                source_paragraph.parent.insert(paragraph_position + offset, block_paragraph)
+            insert_position = paragraph_position + len(block_paragraphs)
+        else:
+            primary_applied = False
+            for primary_edit in primary_edits:
+                primary_paragraph, revision_id = _source_tracked_primary_redline_paragraph(
+                    source_paragraph.paragraph,
+                    primary_edit,
+                    revision_id,
+                )
+                if primary_paragraph is None:
+                    continue
+                if primary_applied:
+                    source_paragraph.parent.insert(insert_position, primary_paragraph)
+                    insert_position += 1
+                else:
+                    source_paragraph.parent[paragraph_position] = primary_paragraph
+                    primary_applied = True
 
         for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
             insert_text = str(insertion.get("insert_text") or insertion.get("replacement_text") or "")
@@ -605,6 +689,53 @@ def _source_tracked_primary_redline_paragraph(
     if redline.get("action") == REDLINE_DELETE_PARAGRAPH:
         return _source_tracked_delete_paragraph(source_paragraph, original_text, revision_id), revision_id + 1
     return None, revision_id
+
+
+def _combined_block_aware_redline_paragraphs(
+    source_paragraph: SourceParagraph,
+    physical_blocks: List[str],
+    primary_edits: List[RedlineEdit],
+    revision_id: int,
+) -> Tuple[List[ET.Element], int]:
+    """Redline a split-block physical <w:p> as one tracked paragraph PER block, so
+    no sibling block is destroyed.
+
+    Several review paragraphs split this one physical <w:p> on an internal blank
+    line. Rebuilding the whole <w:p> from a single edit's text would clobber the
+    other blocks (silent data loss). Instead each block becomes its own tracked
+    paragraph -- replaced where a redline targets it, deleted where a delete targets
+    it, verbatim (with the source paragraph's properties) otherwise. This mirrors
+    the review model's one-paragraph-per-block view and keeps every block's content.
+    Returns an empty list when no edit matched a block, so the caller leaves the
+    paragraph untouched rather than restructuring it needlessly."""
+    edits_by_block: Dict[str, RedlineEdit] = {}
+    for edit in primary_edits:
+        normalized = _normalize_paragraph_text(str(edit.get("original_text") or ""))
+        if normalized and normalized not in edits_by_block:
+            edits_by_block[normalized] = edit
+
+    matched_any = False
+    rendered: List[ET.Element] = []
+    for block in physical_blocks:
+        edit = edits_by_block.get(_normalize_paragraph_text(block))
+        if edit is None:
+            # Unedited block: keep it verbatim, carrying the source properties.
+            rendered.append(_source_verbatim_paragraph(source_paragraph.paragraph, block))
+            continue
+        block_paragraph, revision_id = _source_tracked_primary_redline_paragraph(
+            source_paragraph.paragraph,
+            {**edit, "original_text": block},
+            revision_id,
+        )
+        if block_paragraph is None:
+            rendered.append(_source_verbatim_paragraph(source_paragraph.paragraph, block))
+            continue
+        matched_any = True
+        rendered.append(block_paragraph)
+
+    if not matched_any:
+        return [], revision_id
+    return rendered, revision_id
 
 
 def _targeted_report_comments(review_result: ReviewResult) -> List[dict]:
