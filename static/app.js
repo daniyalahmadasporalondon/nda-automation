@@ -92,6 +92,12 @@ const dashboardSearchController = createDashboardSearchController({
     repositoryController.openMatter(matterId);
     activateTab("repository");
   },
+  // Async seam for the per-row "Summarize" affordance: POST to the matter's
+  // summary endpoint and hand the controller {ok, payload}. The endpoint is
+  // grounded in the matter's real document + review findings; on AI degradation
+  // the backend returns a friendly error the controller renders verbatim.
+  summarizeMatter: (matterId) =>
+    summarizeMatterById(matterId),
 });
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
@@ -653,6 +659,35 @@ async function loadDashboardAiHealth() {
     renderDashboardHealth("ai", {
       tone: "blocked",
     });
+  }
+}
+
+// POST for one matter's grounded AI summary. Returns {ok, payload} so the
+// dashboard-search controller can render the summary or the friendly error inline;
+// it never throws on a non-OK response (degradation is a normal, expected path).
+// The endpoint URL comes from the bridged pure helper so the path stays single-
+// source with the .mjs the tests exercise.
+async function summarizeMatterById(matterId) {
+  const lib = window.DashboardSearch || {};
+  const url = typeof lib.summaryEndpoint === "function"
+    ? lib.summaryEndpoint(matterId)
+    : `/api/matters/${encodeURIComponent(String(matterId || ""))}/summary`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      payload = {};
+    }
+    return { ok: response.ok, payload };
+  } catch (networkError) {
+    // A transport failure is just another "unavailable" — let the controller show
+    // the friendly message rather than surfacing the raw error.
+    return { ok: false, payload: {} };
   }
 }
 

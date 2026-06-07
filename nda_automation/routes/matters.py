@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-from .. import document_rendering, export_service, gmail_integration, matter_store, matter_view, telemetry
+from .. import document_rendering, export_service, gmail_integration, matter_store, matter_summary, matter_view, telemetry
 from ..ai_assessor import AIAssessorError, assess_nda_with_ai
 from ..checker import (
     EvidenceProvenanceError,
@@ -863,6 +863,57 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         "ai_first_review_metadata": updated_matter.get("ai_first_review_metadata"),
         "ai_first_review_result": ai_first_review_result,
     })
+
+
+def handle_matter_summary(handler, path: str) -> None:
+    """POST /api/matters/<id>/summary -- on-demand AI summary of one matter.
+
+    Mirrors the other matter routes' auth/ownership shape: it runs after
+    _authorize_request (auth) and resolves the matter through matter_store with the
+    request's owner_user_id, so a caller can never summarize another tenant's matter.
+
+    Grounding: the summary is derived ONLY from the matter's real document text and
+    stored review findings (assembled in matter_summary.build_summary_context); the
+    prompt forbids inventing facts. AI degradation is graceful -- when AI is disabled
+    / unconfigured / the call fails we return 503 with the friendly, frontend-ready
+    message, never a 500/stack trace.
+    """
+    telemetry.increment("matter_summary_requests")
+    matter_id = parse_matter_id(path, suffix="/summary")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    try:
+        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_store.MatterStoreError as error:
+        handler._send_json({"error": str(error)}, status=500)
+        return
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    try:
+        result = matter_summary.summarize_matter(matter, transport=_matter_summary_transport(handler))
+    except matter_summary.MatterSummaryUnavailableError as error:
+        # AI off / unconfigured / provider failed -> friendly 503, never a crash.
+        handler._send_json({"error": str(error)}, status=503)
+        return
+    except matter_summary.MatterSummaryError as error:
+        # Nothing to summarize (e.g. no document text) -> 400 with a clear message.
+        handler._send_json({"error": str(error)}, status=400)
+        return
+
+    handler._send_json(result)
+
+
+def _matter_summary_transport(handler):
+    """Test seam: a handler may carry an injected summary transport (no network).
+
+    Production handlers don't set this, so matter_summary builds the real OpenRouter
+    transport from the configured reviewer settings.
+    """
+    return getattr(handler, "matter_summary_transport", None)
 
 
 def review_result_paragraphs(review_result: object) -> list[dict] | None:

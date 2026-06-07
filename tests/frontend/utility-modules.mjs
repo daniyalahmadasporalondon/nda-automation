@@ -47,13 +47,18 @@ import {
 } from "../../static/js/modules/greeting.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
+  SUMMARY_LABEL,
+  SUMMARY_UNAVAILABLE_MESSAGE,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
+  formatSummaryResult,
   matterStatus,
   matterStatusLabel,
   matterTitle,
   runChip,
+  summaryEndpoint,
+  summaryErrorMessage,
 } from "../../static/js/modules/dashboard-search.mjs";
 import {
   buildSendDocumentPayload,
@@ -924,3 +929,34 @@ assert.equal(matterStatusLabel(dashboardMatters[0]), "Awaiting approval"); // pr
 assert.equal(matterStatusLabel({ workflow_state: { status: "send_failed" } }), "Send Failed"); // title-cased fallback
 assert.equal(matterTitle(dashboardMatters[1]), "Globex One-Way NDA");
 assert.equal(matterTitle({}), "Untitled NDA");
+
+// --- "Summarize a document" (v1.1) pure helpers ---------------------------- //
+// The endpoint encodes the matter id so an odd id can't break out of the path.
+assert.equal(summaryEndpoint("matter_abc123"), "/api/matters/matter_abc123/summary");
+assert.equal(summaryEndpoint("a/b c"), "/api/matters/a%2Fb%20c/summary");
+assert.equal(summaryEndpoint(""), "/api/matters//summary");
+
+// A successful payload is normalized to the rendered fields, always carrying the
+// "AI summary" label (the golden rule: a generated summary is never mistaken for
+// verified fact). We never fabricate text — a blank/absent summary yields null.
+assert.equal(SUMMARY_LABEL, "AI summary");
+const formatted = formatSummaryResult({
+  summary: "  Mutual NDA with Acme. Needs human review.  ",
+  model: "x-ai/grok-4.3",
+  generated_at: "2026-06-07T10:00:00Z",
+});
+assert.equal(formatted.label, "AI summary");
+assert.equal(formatted.summary, "Mutual NDA with Acme. Needs human review."); // trimmed
+assert.equal(formatted.model, "x-ai/grok-4.3");
+assert.equal(formatted.generatedAt, "2026-06-07T10:00:00Z");
+assert.equal(formatSummaryResult({ summary: "   " }), null); // blank -> null, never fabricated
+assert.equal(formatSummaryResult({}), null);
+assert.equal(formatSummaryResult(null), null);
+
+// The error message prefers the backend's friendly copy, else the constant. It
+// never surfaces a raw stack/HTTP detail.
+assert.equal(SUMMARY_UNAVAILABLE_MESSAGE, "Summary unavailable right now.");
+assert.equal(summaryErrorMessage({ error: "Summary unavailable right now." }), "Summary unavailable right now.");
+assert.equal(summaryErrorMessage({}), "Summary unavailable right now.");
+assert.equal(summaryErrorMessage(null), "Summary unavailable right now.");
+assert.equal(summaryErrorMessage({ error: "  Custom backend message  " }), "Custom backend message");

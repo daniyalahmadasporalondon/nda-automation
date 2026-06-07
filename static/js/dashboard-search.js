@@ -1,12 +1,18 @@
-// Dashboard smart-search controller — v1 (DETERMINISTIC ONLY).
+// Dashboard smart-search controller — v1.1 (deterministic search + AI summary).
 //
 // Wires the dashboard search panel: a free-text input + submit arrow, two quick
 // status chips, and a results list. Every result is a real matter from
 // state.matters (the same list the Repository tab loads) — we never fabricate
-// results and make no AI calls in v1. The pure filters live in
+// results, and the SEARCH itself makes no AI calls. The pure filters live in
 // static/js/modules/dashboard-search.mjs (bridged onto window.DashboardSearch);
 // this file is just the DOM glue. Clicking a result reuses the existing
 // repository openMatter flow.
+//
+// v1.1 adds a per-row "Summarize" affordance: it POSTs to
+// /api/matters/<id>/summary (via the injected summarizeMatter seam) and renders a
+// grounded AI summary inline, in an expandable panel clearly LABELED "AI summary"
+// so it is never mistaken for verified fact. On any failure it shows the friendly
+// "Summary unavailable right now." message — never a stack trace.
 const DashboardSearchView = (() => {
   // Resolve the bridged pure filters lazily — the .mjs bridge (global-bridge)
   // is a deferred module that runs after this classic script loads, so we only
@@ -35,6 +41,11 @@ const DashboardSearchView = (() => {
     resultsStatus,
     getMatters,
     openMatter,
+    // Async seam: POST to the summary endpoint and resolve the parsed JSON body
+    // (plus the HTTP ok flag). Lives in app.js so this controller stays DOM-only
+    // and the fetch is mockable. Optional — when absent the Summarize affordance is
+    // simply not rendered.
+    summarizeMatter,
   }) {
     if (!root) {
       // Dashboard search markup is absent (e.g. an old cached page) — no-op.
@@ -93,13 +104,26 @@ const DashboardSearchView = (() => {
           const statusMarkup = statusLabel
             ? `<span class="dashboard-search-result-status">${escapeHtml(statusLabel)}</span>`
             : "";
+          const id = escapeHtml(matter.id);
+          // The Summarize affordance is only rendered when a summarizer was wired
+          // in. The collapsed panel below the row holds the inline AI summary.
+          const summarizeMarkup = typeof summarizeMatter === "function"
+            ? `<button type="button" class="dashboard-search-result-summarize" ` +
+              `data-dashboard-search-summarize="${id}">Summarize</button>` +
+              `<div class="dashboard-search-result-summary" ` +
+              `data-dashboard-search-summary-for="${id}" hidden></div>`
+            : "";
           return (
             `<li class="dashboard-search-result">` +
+            `<div class="dashboard-search-result-row">` +
             `<button type="button" class="dashboard-search-result-button" ` +
-            `data-dashboard-search-open="${escapeHtml(matter.id)}">` +
+            `data-dashboard-search-open="${id}">` +
             `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
             statusMarkup +
-            `</button></li>`
+            `</button>` +
+            summarizeMarkup +
+            `</div>` +
+            `</li>`
           );
         })
         .join("");
@@ -174,6 +198,81 @@ const DashboardSearchView = (() => {
       }
     }
 
+    // Render the inline AI summary panel for one result. Always visibly LABELED as
+    // an AI summary (the golden rule: a generated summary is never mistaken for
+    // verified fact). `state` is "loading" | "ready" | "error".
+    function renderSummaryPanel(panel, state, payload) {
+      if (!panel) return;
+      const { SUMMARY_LABEL, formatSummaryResult, summaryErrorMessage } = lib();
+      const label = SUMMARY_LABEL || "AI summary";
+      if (state === "loading") {
+        panel.hidden = false;
+        panel.dataset.state = "loading";
+        panel.innerHTML =
+          `<p class="dashboard-search-summary-status" role="status">Summarizing…</p>`;
+        return;
+      }
+      if (state === "error") {
+        const message = (summaryErrorMessage || (() => "Summary unavailable right now."))(payload);
+        panel.hidden = false;
+        panel.dataset.state = "error";
+        panel.innerHTML =
+          `<p class="dashboard-search-summary-status dashboard-search-summary-status-error" role="status">` +
+          `${escapeHtml(message)}</p>`;
+        return;
+      }
+      const formatted = (formatSummaryResult || (() => null))(payload);
+      if (!formatted) {
+        renderSummaryPanel(panel, "error", payload);
+        return;
+      }
+      panel.hidden = false;
+      panel.dataset.state = "ready";
+      // Preserve newlines/bullets from the model as readable lines.
+      const body = escapeHtml(formatted.summary).replace(/\n/g, "<br>");
+      panel.innerHTML =
+        `<p class="dashboard-search-summary-label">${escapeHtml(formatted.label || label)}</p>` +
+        `<div class="dashboard-search-summary-body">${body}</div>`;
+    }
+
+    // POST for a matter's summary and render it inline. Re-clicking Summarize while
+    // a panel is open collapses it (toggle); otherwise it (re)runs the summary.
+    async function runSummarize(matterId, button) {
+      if (!matterId || typeof summarizeMatter !== "function") return;
+      const panel = resultsList?.querySelector(
+        `[data-dashboard-search-summary-for="${cssEscape(matterId)}"]`,
+      );
+      if (!panel) return;
+      // Toggle off an already-open panel.
+      if (!panel.hidden && panel.dataset.state !== "loading") {
+        panel.hidden = true;
+        panel.innerHTML = "";
+        if (button) button.setAttribute("aria-expanded", "false");
+        return;
+      }
+      if (panel.dataset.state === "loading") return;
+      if (button) {
+        button.disabled = true;
+        button.setAttribute("aria-expanded", "true");
+      }
+      renderSummaryPanel(panel, "loading");
+      try {
+        const { ok, payload } = await summarizeMatter(matterId);
+        renderSummaryPanel(panel, ok ? "ready" : "error", payload);
+      } catch (error) {
+        renderSummaryPanel(panel, "error", null);
+      } finally {
+        if (button?.isConnected) button.disabled = false;
+      }
+    }
+
+    // Minimal CSS.escape fallback for the attribute selector (matter ids are
+    // server-issued "matter_<hex>", but stay defensive).
+    function cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+      return String(value).replace(/["\\\]]/g, "\\$&");
+    }
+
     form?.addEventListener("submit", (event) => {
       event.preventDefault();
       runTextSearch();
@@ -196,6 +295,11 @@ const DashboardSearchView = (() => {
       runChipSearch(button.dataset.dashboardSearchChip);
     });
     resultsList?.addEventListener("click", (event) => {
+      const summarizeButton = event.target.closest("[data-dashboard-search-summarize]");
+      if (summarizeButton) {
+        runSummarize(summarizeButton.dataset.dashboardSearchSummarize, summarizeButton);
+        return;
+      }
       const button = event.target.closest("[data-dashboard-search-open]");
       if (!button) return;
       const matterId = button.dataset.dashboardSearchOpen;

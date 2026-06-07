@@ -5858,6 +5858,33 @@ async function testDashboardSmartSearch(page) {
       body: JSON.stringify({ matter }),
     });
   });
+  // The summary endpoint (v1.1 "Summarize a document"). Registered AFTER the
+  // generic /api/matters/* route so it wins for the POST .../summary path. The
+  // pending matter returns a grounded summary; the sent matter returns the
+  // friendly degradation error (a 503) so we exercise both UI states.
+  const summaryRequests = [];
+  await page.route("**/api/matters/*/summary", async (route) => {
+    const url = new URL(route.request().url());
+    const matterId = decodeURIComponent(url.pathname.split("/").slice(-2, -1)[0]);
+    summaryRequests.push({ matterId, method: route.request().method() });
+    if (matterId === "m_sent") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Summary unavailable right now." }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        summary: "Mutual NDA with Acme Corp. Governed by England and Wales; 3-year term. Recommendation: needs human review.",
+        model: "x-ai/grok-4.3",
+        generated_at: "2026-06-07T10:00:00Z",
+      }),
+    });
+  });
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
       status: 200,
@@ -5911,18 +5938,80 @@ async function testDashboardSmartSearch(page) {
   await page.waitForFunction(() => document.querySelector('[data-view="repository"]')?.classList.contains("active"));
   assert.ok(openedMatterIds.includes("m_pending"), "expected the repository open-matter flow to fetch m_pending");
 
+  // --- "Summarize a document" (v1.1) ----------------------------------------
+  // Back on the dashboard, each result row has a Summarize affordance. Clicking it
+  // POSTs to the summary endpoint and renders a grounded, AI-LABELED summary inline.
+  // First dismiss the matter inspector the open-matter step left up (it overlays the
+  // tab strip as a modal dialog), then return to the dashboard tab.
+  await page.locator("#repositoryMatterPanel .repository-detail-close").click();
+  await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
+  await page.locator("#dashboardTab").click();
+  await searchSection.waitFor({ state: "visible" });
+  // Use a fresh free-text search (deterministic regardless of the chip toggle state
+  // the earlier steps left behind) to surface exactly the m_pending row.
+  await page.fill("#dashboardSearchInput", "acme");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForFunction(
+    () => document.querySelectorAll('#dashboardSearchResults [data-dashboard-search-summarize="m_pending"]').length === 1,
+  );
+  const summarizeButton = page.locator('[data-dashboard-search-summarize="m_pending"]');
+  await summarizeButton.click();
+  // The panel resolves to a ready summary, explicitly labeled "AI summary".
+  const summaryPanel = page.locator('[data-dashboard-search-summary-for="m_pending"]');
+  await page.waitForFunction(
+    () => document.querySelector('[data-dashboard-search-summary-for="m_pending"]')?.dataset.state === "ready",
+  );
+  // The label is uppercased by CSS (text-transform), so the rendered text is
+  // "AI SUMMARY". The panel must carry the AI-summary label so it is never mistaken
+  // for verified fact.
+  await assertTextContains(summaryPanel, "AI SUMMARY");
+  await assertTextContains(summaryPanel, "Governed by England and Wales");
+  assert.ok(
+    summaryRequests.some((req) => req.matterId === "m_pending" && req.method === "POST"),
+    "expected a POST to the m_pending summary endpoint",
+  );
+  // Re-clicking Summarize collapses the open panel (toggle off).
+  await summarizeButton.click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-dashboard-search-summary-for="m_pending"]')?.hidden === true,
+  );
+
+  // A degraded summary (503) shows the friendly "Summary unavailable" message,
+  // never a stack trace.
+  await page.fill("#dashboardSearchInput", "globex");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-summarize]").length === 1,
+  );
+  await page.locator('[data-dashboard-search-summarize="m_sent"]').click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-dashboard-search-summary-for="m_sent"]')?.dataset.state === "error",
+  );
+  await assertTextContains(
+    page.locator('[data-dashboard-search-summary-for="m_sent"]'),
+    "Summary unavailable right now.",
+  );
+
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/*");
+  await page.unroute("**/api/matters/*/summary");
   await page.unroute("**/api/gmail/status");
 
-  // The dashboard search bar must add no console errors of its own. We ignore a
-  // single pre-existing, feature-independent race: under the mocked-route fast
-  // load the classic repository board can render (using the bridged global
-  // `escapeHtml`) a tick before the deferred global-bridge.mjs module assigns it
-  // — a load-order artifact of the existing app, not of this feature (the search
-  // controller's own escapeHtml is self-contained).
+  // The dashboard search bar must add no console errors of its own. We ignore two
+  // feature-independent messages:
+  //  1. A pre-existing race: under the mocked-route fast load the classic repository
+  //     board can render (using the bridged global `escapeHtml`) a tick before the
+  //     deferred global-bridge.mjs module assigns it — a load-order artifact of the
+  //     existing app, not of this feature (the search controller's own escapeHtml is
+  //     self-contained).
+  //  2. The browser's automatic "Failed to load resource ... 503" log for the
+  //     summary degradation path we deliberately exercise above. That 503 is the
+  //     EXPECTED graceful-degradation response (the UI shows the friendly message);
+  //     it is a browser network log, not a JS error the feature emits.
   const unexpectedErrors = consoleErrors.filter(
-    (text) => !/escapeHtml is not defined/.test(text),
+    (text) =>
+      !/escapeHtml is not defined/.test(text) &&
+      !/Failed to load resource.*503/.test(text),
   );
   assert.equal(
     unexpectedErrors.length,

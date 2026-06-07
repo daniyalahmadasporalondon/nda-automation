@@ -9,9 +9,13 @@
 // tests/frontend/utility-modules.mjs. The DOM controller lives in
 // static/js/dashboard-search.js and consumes these functions.
 //
-// DEFERRED to v1.1 (need backend work we don't have yet — left here as a map of
-// the chips the mockup showed but we are NOT shipping):
-//   * "Summarize a document"                  -> needs an AI summarization endpoint.
+// v1.1 SHIPPED: "Summarize a document" — each result row now has a Summarize
+// affordance that POSTs to /api/matters/<id>/summary and renders a grounded AI
+// summary inline. The pure helpers for that live at the bottom of this file
+// (summaryEndpoint / formatSummaryResult / summaryErrorMessage / SUMMARY_LABEL);
+// the DOM controller in static/js/dashboard-search.js consumes them.
+//
+// STILL DEFERRED (need backend work we don't have yet):
 //   * "Find documents linked to a counterparty" -> counterparty data is weak for
 //        inbound matters; matching would be noisy/misleading.
 //   * "Show how documents relate"             -> needs artifact-lineage rendering.
@@ -135,15 +139,63 @@ function chipById(chipId) {
   return DASHBOARD_SEARCH_CHIPS.find((chip) => chip.id === chipId) || null;
 }
 
+// --------------------------------------------------------------------------- //
+// "Summarize a document" (v1.1) — pure helpers (no DOM, unit-testable).
+// --------------------------------------------------------------------------- //
+
+// The label the UI puts on every summary panel. The GOLDEN RULE: a generated
+// summary must always be visibly marked as AI, never mistaken for verified fact.
+const SUMMARY_LABEL = "AI summary";
+
+// The fallback shown whenever the backend can't produce a summary (AI disabled,
+// no key, the call failed, or any non-OK response). Matches the backend's
+// friendly copy so the message is consistent wherever it surfaces.
+const SUMMARY_UNAVAILABLE_MESSAGE = "Summary unavailable right now.";
+
+// The summary endpoint for one matter. Encodes the id so an id with odd
+// characters can't break out of the path.
+function summaryEndpoint(matterId) {
+  return `/api/matters/${encodeURIComponent(String(matterId || ""))}/summary`;
+}
+
+// Normalize a successful summary response into the fields the UI renders. We only
+// ever surface the model's summary text plus its provenance (model + when it was
+// generated); we never fabricate text. Returns null when the payload has no usable
+// summary so the caller falls back to the unavailable message.
+function formatSummaryResult(payload) {
+  const text = payload && typeof payload.summary === "string" ? payload.summary.trim() : "";
+  if (!text) return null;
+  return {
+    label: SUMMARY_LABEL,
+    summary: text,
+    model: payload && payload.model ? String(payload.model) : "",
+    generatedAt: payload && payload.generated_at ? String(payload.generated_at) : "",
+  };
+}
+
+// The user-facing error message for a failed summary. Prefer the backend's own
+// friendly `error` field (it returns the exact "Summary unavailable right now."
+// copy on degradation), falling back to our constant. Never surfaces a stack/HTTP
+// detail.
+function summaryErrorMessage(payload) {
+  const fromPayload = payload && typeof payload.error === "string" ? payload.error.trim() : "";
+  return fromPayload || SUMMARY_UNAVAILABLE_MESSAGE;
+}
+
 export {
   DASHBOARD_SEARCH_CHIPS,
+  SUMMARY_LABEL,
+  SUMMARY_UNAVAILABLE_MESSAGE,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
+  formatSummaryResult,
   matterHaystack,
   matterStatus,
   matterStatusLabel,
   matterTitle,
   queryTerms,
   runChip,
+  summaryEndpoint,
+  summaryErrorMessage,
 };
