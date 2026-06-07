@@ -8,6 +8,7 @@ from nda_automation.ai_assessment_contract import (
     validate_ai_clause_assessments,
 )
 from nda_automation.checker import load_playbook
+from nda_automation.playbook_rules import normalize_playbook_policy
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 from nda_automation.review_document import split_document_paragraphs
 
@@ -16,6 +17,11 @@ SOURCE_TEXT = "\n\n".join([
     "Each party may disclose Confidential Information to the other party under this Agreement.",
     "This Agreement shall be governed by the laws of California.",
 ])
+
+
+def _playbook_clauses_by_id():
+    playbook = normalize_playbook_policy(load_playbook())
+    return {str(clause["id"]): clause for clause in playbook["clauses"]}
 
 
 def _valid_clause_ids():
@@ -156,6 +162,87 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertIn("quote does not appear in paragraph p2", message)
         self.assertIn("fail decisions require a proposed redline action", message)
         self.assertIn("blocks_send must be true only for review decisions", message)
+
+    def test_blank_redline_text_is_defaulted_from_governing_law_playbook(self):
+        # The AI supplies the judgment (fail) but leaves the replacement wording
+        # blank. With the Playbook threaded in, the governing-law fix is defaulted
+        # from the approved law instead of rejecting the whole document.
+        blank = _valid_assessment(proposed_redline={
+            "action": REDLINE_REPLACE_PARAGRAPH,
+            "paragraph_id": "p2",
+        })
+
+        assessments = validate_ai_clause_assessments(
+            [blank],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        governing_law = assessments["governing_law"]
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["proposed_redline"]["action"], REDLINE_REPLACE_PARAGRAPH)
+        self.assertEqual(
+            governing_law["proposed_redline"]["text"],
+            "This Agreement shall be governed by the laws of England and Wales.",
+        )
+
+    def test_ai_authored_redline_text_overrides_the_playbook_default(self):
+        authored = _valid_assessment(proposed_redline={
+            "action": REDLINE_REPLACE_PARAGRAPH,
+            "paragraph_id": "p2",
+            "text": "This Agreement shall be governed by the laws of India.",
+        })
+
+        assessments = validate_ai_clause_assessments(
+            [authored],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        self.assertEqual(
+            assessments["governing_law"]["proposed_redline"]["text"],
+            "This Agreement shall be governed by the laws of India.",
+        )
+
+    def test_blank_redline_with_no_template_degrades_one_clause_to_review(self):
+        # non_circumvention is a prohibited clause: its fix is a deletion, so the
+        # Playbook carries no replacement wording. A model that mislabels the fix
+        # as a blank replace must not discard every other (correct) assessment;
+        # the single clause degrades to a human-review flag (never a silent pass).
+        source = "\n\n".join([
+            "The parties shall not circumvent each other or deal directly with introduced parties.",
+            "This Agreement shall be governed by the laws of England and Wales.",
+        ])
+        paragraphs = split_document_paragraphs(source)
+        blank_no_template = {
+            "clause_id": "non_circumvention",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "rationale": "A non-circumvention restriction is present and should be removed.",
+            "evidence": [{
+                "quote": "shall not circumvent",
+                "relevance": "States the prohibited restriction.",
+            }],
+            "proposed_redline": {"action": REDLINE_REPLACE_PARAGRAPH, "paragraph_id": "p1"},
+            "confidence": 0.9,
+            "blocks_send": False,
+        }
+
+        assessments = validate_ai_clause_assessments(
+            [blank_no_template],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=paragraphs,
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        clause = assessments["non_circumvention"]
+        # A blank, untemplatable fail is escalated to review (still blocks send) —
+        # never softened to a silent pass.
+        self.assertEqual(clause["decision"], "review")
+        self.assertTrue(clause["blocks_send"])
+        self.assertEqual(clause["proposed_redline"], {"action": AI_REDLINE_NO_CHANGE})
 
     def test_duplicate_and_unknown_clause_ids_are_invalid(self):
         with self.assertRaises(AIAssessmentContractError) as error:
