@@ -93,8 +93,7 @@ const tests = [
   ["renders the playbook preferred position and confidence on a clause", testPlaybookPositionAndConfidence],
   ["renders backend redline rationale beside the suggested edit", testRedlineRationaleBlock],
   ["collapses the reasoning trail and remembers its open state", testReasoningTrailCollapse],
-  ["records reviewer Accept/Reject/Modify/Comment decisions", testReviewerDecisionControls],
-  ["gates Approve Review on staleness and unresolved clauses", testApproveReviewGate],
+  ["gates Approve Review on staleness only", testApproveReviewGate],
   ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
   ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
   ["honours the reduced-motion preference", testReducedMotionPreference],
@@ -4416,9 +4415,7 @@ async function testBackendRedlineModes(page) {
   assert.equal(await page.locator('[data-paragraph-id="p2"] .paragraph-verdict-label').count(), 0);
   assert.equal(await page.locator("#reviewView .studio-doc-paragraph .redline-label").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
-  // No stray "Comment" affordance in the document viewer. (Scoped to the page
-  // surface so it does not pick up the intended per-clause reviewer-decision
-  // "Comment" action in the inspector — that control is covered separately.)
+  // No stray "Comment" affordance in the document viewer.
   assert.equal(await page.locator("#reviewView .studio-page").getByText("Comment", { exact: true }).count(), 0);
 
   const viewerSpacing = await page.evaluate(() => {
@@ -5209,10 +5206,9 @@ async function colorPixelCounts(locator) {
   return { redPixels, greenPixels };
 }
 
-// Load a review with a persisted selected matter so the per-clause decision and
-// approve endpoints have a matter id to POST to. The clauses default to one
-// "review" clause that requires attention (so the reviewer-decision block and
-// approve gate engage) plus one passing clause.
+// Load a review with a persisted selected matter so the approve endpoint has a
+// matter id to POST to. The clauses default to one "review" clause that requires
+// attention plus one passing clause.
 async function loadReviewWithMatter(page, { matter = {}, clauses, paragraphs, result = {} } = {}) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Review" }).click();
@@ -5420,121 +5416,43 @@ async function testReasoningTrailCollapse(page) {
   assert.equal(await detailPanel.locator(".reasoning-trail-block").evaluate((node) => node.open), true);
 }
 
-async function testReviewerDecisionControls(page) {
-  await loadReviewWithMatter(page);
-
-  const requests = [];
-  await page.route("**/api/matters/matter_review_panel/clauses/*/decision", async (route) => {
-    const request = route.request();
-    const body = JSON.parse(request.postData() || "{}");
-    const clauseId = request.url().split("/clauses/")[1].split("/decision")[0];
-    requests.push({ body, clauseId });
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        clause: {
-          id: clauseId,
-          reviewer_decision: {
-            action: body.action,
-            actor: "Test Reviewer",
-            comment: body.comment,
-            decided_at: "2026-06-05T10:00:00+00:00",
-            modified_text: body.modified_text,
-          },
-        },
-        resolution: { resolved: 1, total: 1, unresolved: [] },
-      }),
-    });
-  });
-
-  const detailPanel = page.locator("#studioDetailPanel");
-  await page.locator('[data-studio-lane-id="confidential_information"]').click();
-
-  // The decision block renders with all four actions and no decision yet.
-  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "No reviewer decision yet.");
-  assert.deepEqual(
-    await detailPanel.locator(".reviewer-action-button").evaluateAll((nodes) => nodes.map((node) => node.textContent.trim())),
-    ["Accept", "Modify", "Reject", "Comment"],
-  );
-
-  // Accept posts immediately and reflects the saved decision.
-  await detailPanel.locator('[data-reviewer-action="accept"]').click();
-  await page.waitForFunction(() => document.querySelector('#studioDetailPanel .reviewer-action-button.accept')?.classList.contains("active"));
-  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "Accepted");
-  await assertTextContains(detailPanel.locator(".reviewer-decision-status"), "Test Reviewer");
-  assert.deepEqual(requests.at(-1), { body: { action: "accept" }, clauseId: "confidential_information" });
-
-  // Modify opens a composer; Save posts modified_text.
-  await detailPanel.locator('[data-reviewer-action="modify"]').click();
-  await page.waitForSelector('#studioDetailPanel [data-reviewer-modified-text]');
-  await detailPanel.locator("[data-reviewer-modified-text]").fill("Narrowed confidential information definition.");
-  await detailPanel.locator("[data-reviewer-save]").click();
-  // Wait for the saved decision to merge back (status flips Accepted -> Modified).
-  await waitForText(page, "#studioDetailPanel .reviewer-decision-status", "Modified");
-  assert.deepEqual(requests.at(-1), {
-    body: { action: "modify", modified_text: "Narrowed confidential information definition." },
-    clauseId: "confidential_information",
-  });
-
-  // Modify with an empty composer surfaces a validation error and does not post.
-  const requestCountBeforeEmpty = requests.length;
-  await detailPanel.locator('[data-reviewer-action="modify"]').click();
-  await detailPanel.locator("[data-reviewer-modified-text]").fill("   ");
-  await detailPanel.locator("[data-reviewer-save]").click();
-  await assertTextContains(detailPanel.locator(".reviewer-decision-error"), "Enter the revised clause text");
-  assert.equal(requests.length, requestCountBeforeEmpty);
-}
-
 async function testApproveReviewGate(page) {
-  // Start blocked: one unresolved review clause, fresh playbook.
+  // "Approve Review" is the single human sign-off: one approval covers the whole
+  // matter, so there are no per-clause reviewer decisions. The gate blocks ONLY
+  // on review staleness (a data-freshness guard).
+
+  // A fresh review with an unresolved fail/review clause and NO per-clause
+  // decision is approvable: the button is enabled out of the gate.
   await loadReviewWithMatter(page);
 
   const approveButton = page.locator("#studioApproveReviewButton");
   await page.waitForFunction(() => !document.querySelector("#studioApproveReviewButton")?.hidden);
-  assert.equal(await approveButton.isDisabled(), true);
+  assert.equal(await approveButton.isDisabled(), false);
   await assertTextContains(approveButton, "Approve Review");
 
-  // Resolving the clause (server returns no unresolved) unblocks the button.
-  await page.route("**/api/matters/matter_review_panel/clauses/*/decision", async (route) => {
-    const body = JSON.parse(route.request().postData() || "{}");
-    const clauseId = route.request().url().split("/clauses/")[1].split("/decision")[0];
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        clause: { id: clauseId, reviewer_decision: { action: body.action, actor: "QA", decided_at: "2026-06-05T10:00:00+00:00" } },
-        resolution: { resolved: 1, total: 1, unresolved: [] },
-      }),
-    });
-  });
-  await page.locator('[data-studio-lane-id="confidential_information"]').click();
-  await page.locator('#studioDetailPanel [data-reviewer-action="accept"]').click();
-  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false);
-
-  // 409 from the server re-blocks the button and lists both reason kinds.
+  // A 409 from the server (stale playbook) re-blocks the button. Wait on the
+  // "blocked" class, which is set only after the 409 RESPONSE is processed — not
+  // the optimistic in-flight "Approving…" disable (which toggles `.disabled`
+  // alone, without `blocked`).
   await page.route("**/api/matters/matter_review_panel/approve", async (route) => {
     await route.fulfill({
       status: 409,
       contentType: "application/json",
       body: JSON.stringify({
-        blocks_approval: ["stale_playbook", "unresolved_clause:confidential_information"],
+        blocks_approval: ["stale_playbook"],
         error: "Approval blocked",
       }),
     });
   });
   await approveButton.click();
-  // The server 409 re-blocks: wait for the "blocked" class (set only after the
-  // 409 RESPONSE is processed), not the optimistic in-flight "Approving…" disable.
   await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.classList.contains("blocked"));
   assert.equal(await approveButton.isDisabled(), true);
 
-  // A successful approve flips to the approved state and offers the reviewed DOCX.
+  // Clearing the server-induced staleness re-enables the button (no decisions
+  // needed), and a successful approve flips it to the approved state.
   await page.unroute("**/api/matters/matter_review_panel/approve");
   await page.evaluate(() => {
-    // Clear the server-induced staleness + stashed 409 blocks so the success path runs.
     state.selectedMatter = { ...state.selectedMatter, review_refresh: null };
-    state.reviewResolution = { resolved: 1, total: 1, unresolved: [] };
     state.approveServerBlocks = [];
     updateApproveReviewControl();
   });
@@ -5544,11 +5462,11 @@ async function testApproveReviewGate(page) {
       contentType: "application/json",
       body: JSON.stringify({
         matter: { approved_at: "2026-06-05T11:00:00+00:00", approver: "QA", id: "matter_review_panel", status: "approved" },
-        resolution: { resolved: 1, total: 1, unresolved: [] },
       }),
     });
   });
-  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false);
+  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false
+    && !document.querySelector("#studioApproveReviewButton")?.classList.contains("blocked"));
   await approveButton.click();
   await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.classList.contains("approved"));
   await assertTextContains(approveButton, "Approved");
@@ -5682,9 +5600,9 @@ async function testRefreshUnsavedEditsGuard(page) {
 // animations are clamped to ~0 so the UI does not animate for users who asked
 // not to see motion.
 async function testReducedMotionPreference(page) {
-  const buttonTransition = '#studioDetailPanel .reviewer-action-button.accept';
+  const buttonTransition = '[data-studio-lane-id="confidential_information"]';
 
-  // Baseline (no preference): the reviewer-action button has a real transition.
+  // Baseline (no preference): the clause-lane button has a real transition.
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await loadReviewWithMatter(page);
   await page.locator('[data-studio-lane-id="confidential_information"]').click();

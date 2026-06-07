@@ -199,18 +199,15 @@ def review_is_stale(
 def approval_blocks(matter: dict[str, Any]) -> list[str]:
     """Return the reason codes that currently block approval (empty == approvable).
 
-    ``stale_playbook`` when the stored review no longer matches the published
-    Playbook (by review_staleness or the locked playbook_version.hash);
-    ``unresolved_clause:{id}`` for each fail/review clause without a
-    reviewer_decision.
+    The single human gate is "Approve Review": one approval signs off the whole
+    matter, so per-clause reviewer decisions never block. The only blocker is
+    ``stale_playbook`` -- a data-freshness guard raised when the stored review no
+    longer matches the published Playbook (by review_staleness or the locked
+    playbook_version.hash). As soon as the review is fresh, approval is allowed.
     """
     blocks: list[str] = []
     if review_is_stale(matter.get("review_result")):
         blocks.append(BLOCK_STALE_PLAYBOOK)
-    blocks.extend(
-        f"{UNRESOLVED_CLAUSE_PREFIX}{clause_id}"
-        for clause_id in resolution_summary(matter)["unresolved"]
-    )
     return blocks
 
 

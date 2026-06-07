@@ -937,147 +937,13 @@ function suggestedAnnotatedPdfFilenameForContext(matter) {
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer decisions + approval gate (tasks 2.5 / 3.1–3.5).
+// Approval gate (tasks 3.1–3.5).
+//
+// "Approve Review" is the sole human sign-off: one approval covers the whole
+// matter, so there are no per-clause reviewer decisions. The gate blocks only
+// on review staleness (a data-freshness guard) plus any authoritative
+// blocks_approval the server returned on a 409.
 // ---------------------------------------------------------------------------
-
-// Persist a per-clause reviewer decision. Accept/Reject carry no body fields;
-// Modify carries modified_text; Comment carries comment. On success the server
-// returns { clause, resolution: { total, resolved, unresolved: [clauseId] } };
-// we merge the updated clause back into state.reviewClauses, stash the
-// resolution summary for the approval gate, clear the draft, and re-render.
-async function submitReviewerDecision(clauseId, action) {
-  const matterId = state.selectedMatter?.id;
-  const clause = state.reviewClauses.find((item) => item.id === clauseId);
-  if (!clauseId || !clause) return;
-
-  const drafts = reviewerDecisionDraftMap();
-  const draft = drafts[clauseId] || {};
-  const body = { action };
-  if (action === "modify") {
-    const modifiedText = String(draft.modifiedText || "").trim();
-    if (!modifiedText) {
-      drafts[clauseId] = { ...draft, action, error: "Enter the revised clause text before saving." };
-      renderStudioDetail();
-      return;
-    }
-    body.modified_text = modifiedText;
-  }
-  if (action === "comment") {
-    const comment = String(draft.comment || "").trim();
-    if (!comment) {
-      drafts[clauseId] = { ...draft, action, error: "Enter a comment before saving." };
-      renderStudioDetail();
-      return;
-    }
-    body.comment = comment;
-  }
-
-  if (!matterId) {
-    // No persisted matter yet (ad-hoc paste review): keep the decision locally so
-    // the UI still reflects the reviewer's choice, degrading gracefully.
-    applyReviewerDecisionToClause(clauseId, {
-      action,
-      actor: "You",
-      comment: body.comment,
-      decided_at: new Date().toISOString(),
-      modified_text: body.modified_text,
-    });
-    delete drafts[clauseId];
-    renderStudioDetail();
-    renderStudioClauseLane();
-    updateApproveReviewControl();
-    return;
-  }
-
-  drafts[clauseId] = { ...draft, action, error: "", saving: true };
-  renderStudioDetail();
-
-  try {
-    const response = await fetch(
-      `/api/matters/${encodeURIComponent(matterId)}/clauses/${encodeURIComponent(clauseId)}/decision`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "Reviewer decision could not save");
-    const updatedClause = payload.clause && typeof payload.clause === "object" ? payload.clause : null;
-    if (updatedClause?.id) {
-      mergeReviewClause(updatedClause);
-    } else {
-      // The endpoint may echo only the decision; reflect it locally.
-      applyReviewerDecisionToClause(clauseId, payload.reviewer_decision || {
-        action,
-        actor: payload.actor || "You",
-        comment: body.comment,
-        decided_at: new Date().toISOString(),
-        modified_text: body.modified_text,
-      });
-    }
-    if (payload.resolution && typeof payload.resolution === "object") {
-      state.reviewResolution = payload.resolution;
-    }
-    // A fresh decision can clear an unresolved-clause block, so drop the stashed
-    // server blocks and let the gate re-derive (from the new resolution summary).
-    state.approveServerBlocks = [];
-    delete reviewerDecisionDraftMap()[clauseId];
-    setFileMeta(reviewerDecisionSavedMessage(action, clause));
-    renderStudioResult({ clauses: state.reviewClauses });
-    updateApproveReviewControl();
-  } catch (error) {
-    const currentDrafts = reviewerDecisionDraftMap();
-    currentDrafts[clauseId] = {
-      ...(currentDrafts[clauseId] || { action }),
-      action,
-      saving: false,
-      error: error?.message || "Reviewer decision could not save.",
-    };
-    renderStudioDetail();
-    renderOperationError(error, "Reviewer decision could not save.");
-  }
-}
-
-function reviewerDecisionSavedMessage(action, clause) {
-  const name = clause?.name || clause?.id || "clause";
-  const verbs = {
-    accept: "Accepted",
-    modify: "Saved modified wording for",
-    reject: "Rejected",
-    comment: "Saved a comment on",
-  };
-  return `${verbs[action] || "Recorded a decision on"} ${name}.`;
-}
-
-function mergeReviewClause(updatedClause) {
-  state.reviewClauses = state.reviewClauses.map((clause) =>
-    clause.id === updatedClause.id ? { ...clause, ...updatedClause } : clause);
-}
-
-function applyReviewerDecisionToClause(clauseId, decision) {
-  state.reviewClauses = state.reviewClauses.map((clause) =>
-    clause.id === clauseId ? { ...clause, reviewer_decision: decision } : clause);
-}
-
-// Whether every clause that demands attention (fail/review) carries a reviewer
-// decision. Prefers the server's resolution summary when present, else derives
-// it locally so the gate works before the first decision round-trips.
-function unresolvedReviewClauseIds() {
-  const resolution = state.reviewResolution;
-  if (resolution && Array.isArray(resolution.unresolved)) {
-    return resolution.unresolved.filter(Boolean).map((id) => String(id));
-  }
-  return state.reviewClauses
-    .filter((clause) => clauseStatus(clause).requiresAttention && !clauseHasReviewerDecision(clause))
-    .map((clause) => clause.id)
-    .filter(Boolean);
-}
-
-function clauseHasReviewerDecision(clause) {
-  const decision = clause && typeof clause.reviewer_decision === "object" ? clause.reviewer_decision : null;
-  return Boolean(decision && String(decision.action || "").trim());
-}
 
 // Drive the Approve Review button's enabled/disabled + label state from the
 // local view of staleness and unresolved clauses, so it reflects what a POST
@@ -1117,14 +983,14 @@ function updateApproveReviewControl() {
   renderReviewedDocxControl();
 }
 
-// Local prediction of the server's blocks_approval reason codes:
-// "stale_playbook" and "unresolved_clause:{clauseId}". Unioned with the last
-// authoritative blocks the server returned on a 409, so the displayed gate never
-// understates what the backend would reject.
+// Local prediction of the server's blocks_approval reason codes. The only
+// blocker is "stale_playbook" (a data-freshness guard); per-clause reviewer
+// decisions no longer gate approval. Unioned with the last authoritative blocks
+// the server returned on a 409, so the displayed gate never understates what the
+// backend would reject.
 function approveBlockReasons(matter) {
   const reasons = [];
   if (reviewIsStale()) reasons.push("stale_playbook");
-  unresolvedReviewClauseIds().forEach((clauseId) => reasons.push(`unresolved_clause:${clauseId}`));
   const serverBlocks = Array.isArray(state.approveServerBlocks) ? state.approveServerBlocks : [];
   serverBlocks.forEach((reason) => {
     if (!reasons.includes(reason)) reasons.push(reason);
@@ -1138,7 +1004,7 @@ function isMatterApproved(matter) {
 
 function approvedReviewTitle(matter) {
   const approver = String(matter?.approver || "").trim();
-  const approvedAt = matter?.approved_at ? formatReviewerDecisionTimestamp(matter.approved_at) : "";
+  const approvedAt = matter?.approved_at ? formatReviewTimestamp(matter.approved_at) : "";
   const parts = ["Review approved"];
   if (approver) parts.push(`by ${approver}`);
   if (approvedAt) parts.push(approvedAt);
@@ -1163,12 +1029,6 @@ function approveBlockReasonLabel(reason) {
   const code = String(reason || "").trim();
   if (code === "stale_playbook") {
     return "The review is stale — refresh it against the active Playbook.";
-  }
-  if (code.startsWith("unresolved_clause:")) {
-    const clauseId = code.slice("unresolved_clause:".length);
-    const clause = state.reviewClauses.find((item) => item.id === clauseId);
-    const name = clause?.name || clauseId || "A flagged clause";
-    return `${name} still needs a reviewer decision.`;
   }
   return code;
 }
