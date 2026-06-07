@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260607c">
+    <link rel="stylesheet" href="/static/styles.css?v=20260607e">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -245,6 +245,7 @@
                     <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
                     <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
                     <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
+                    <button type="button" class="vs-btn" data-view-mode="original" aria-pressed="false">Original</button>
                   </div>
                   <div class="studio-viewer-controls" role="group" aria-label="Document controls">
                     <div class="vc-group">
@@ -1544,7 +1545,7 @@
       </div>
     </div>
 
-    <script src="/static/js/config.js?v=20260605b"></script>
+    <script src="/static/js/config.js?v=20260607e"></script>
     <!--
       Single-source utility bridge. html-utils / clause-status / inline-diff /
       matter-utils now live ONLY as static/js/modules/*.mjs (the modules the
@@ -1554,7 +1555,7 @@
       runs before any user interaction; all consumers call these at runtime.
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260606b"></script>
-    <script src="/static/js/redline-rendering.js?v=20260606a"></script>
+    <script src="/static/js/redline-rendering.js?v=20260607e"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
@@ -1575,7 +1576,7 @@
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260606a"></script>
     <script src="/static/js/review-workstation-source.js?v=20260604a"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260607a"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260607e"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260605a"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>

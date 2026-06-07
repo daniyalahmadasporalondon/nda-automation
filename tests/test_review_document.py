@@ -21,6 +21,34 @@ class ReviewDocumentTests(unittest.TestCase):
         self.assertEqual([paragraph["start"] for paragraph in aligned], [0, 14, 29])
         self.assertEqual([paragraph["end"] for paragraph in aligned], [12, 27, 41])
 
+    def test_align_preserves_run_formatting_for_unsplit_paragraph(self):
+        source_text = "Plain bold text."
+        runs = [
+            {"text": "Plain ", "bold": False, "italic": False, "underline": False},
+            {"text": "bold", "bold": True, "italic": False, "underline": False},
+            {"text": " text.", "bold": False, "italic": False, "underline": False},
+        ]
+        extracted_paragraphs = [
+            {"source_index": 1, "source_kind": "paragraph", "text": "Plain bold text.", "runs": runs},
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual(aligned[0]["runs"], runs)
+
+    def test_align_drops_run_formatting_when_paragraph_is_resplit(self):
+        source_text = "First block.\n\nSecond block."
+        runs = [{"text": "First block.\n\nSecond block.", "bold": True, "italic": False, "underline": False}]
+        extracted_paragraphs = [
+            {"source_index": 1, "source_kind": "paragraph", "text": "First block.\n\nSecond block.", "runs": runs},
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual([paragraph["text"] for paragraph in aligned], ["First block.", "Second block."])
+        self.assertNotIn("runs", aligned[0])
+        self.assertNotIn("runs", aligned[1])
+
     def test_align_preserves_pdf_page_number_metadata(self):
         source_text = "First PDF block.\n\nSecond PDF block."
         extracted_paragraphs = [

@@ -91,8 +91,16 @@ function renderDocumentParagraph(model) {
 
 function renderCleanDocumentParagraph(model) {
   let html = "";
+  // When the clean text is the unedited paragraph text, render its run-level
+  // formatting; for a replacement the clean text is the proposed string (no
+  // run breakdown), so fall back to the plain escaped text.
+  const cleanBody = model.plan.remove
+    ? ""
+    : model.plan.cleanText === String(model.paragraph.text || "")
+      ? renderParagraphRichText(model.paragraph)
+      : escapeHtml(model.plan.cleanText);
   html += renderParagraphFrame(model, {
-    body: model.plan.remove ? "" : escapeHtml(model.plan.cleanText),
+    body: cleanBody,
     classes: ["doc-clean-paragraph", model.plan.remove ? "doc-clean-removed-anchor" : ""],
   });
   return html + renderInsertedParagraphs(model.plan.inserts, VIEW_MODE_CLEAN);
@@ -184,14 +192,16 @@ function isFailedProhibitedClause(clause) {
 }
 
 function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
+  const structureAttributes = paragraphStructureAttributes(model.paragraph);
   return renderStudioParagraphFrame({
     badge,
     body,
-    classes,
+    classes: [...classes, ...paragraphStructureClasses(model.paragraph)],
     clauseIds: model.ids,
     commentCount: model.commentCount,
     paragraphId: model.paragraph.id,
     selected: model.selected,
+    attributes: structureAttributes,
   });
 }
 
@@ -313,11 +323,11 @@ function sideBySideParagraphColumns(paragraph, plan) {
       latestClass: "clause-sxs-col latest empty",
     };
   }
-  const original = String(paragraph.text || "");
+  const richText = renderParagraphRichText(paragraph);
   return {
-    original: escapeHtml(original),
+    original: richText,
     originalClass: "clause-sxs-col original",
-    latest: escapeHtml(original),
+    latest: richText,
     latestClass: "clause-sxs-col latest",
   };
 }
@@ -386,7 +396,68 @@ function redlineDiffOperations(edit, original, replacement) {
 
 function renderEditableParagraph(paragraph, extraClasses = []) {
   const classes = joinClasses("paragraph-editable", extraClasses);
-  return `<div class="${classes}" contenteditable="plaintext-only" spellcheck="true" role="textbox" aria-multiline="true" data-editable-paragraph-id="${escapeHtml(paragraph.id)}" aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}">${escapeHtml(String(paragraph.text || ""))}</div>`;
+  return `<div class="${classes}" contenteditable="plaintext-only" spellcheck="true" role="textbox" aria-multiline="true" data-editable-paragraph-id="${escapeHtml(paragraph.id)}" aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}">${renderParagraphRichText(paragraph)}</div>`;
+}
+
+// Renders the paragraph's text with run-level bold/italic/underline when the
+// extractor captured a `runs` breakdown, otherwise the plain escaped text. The
+// run markup is display-only: editing reads innerText, so the editable identity
+// and the round-trip to `paragraph.text` are unchanged.
+function renderParagraphRichText(paragraph) {
+  const text = String(paragraph?.text || "");
+  const runs = Array.isArray(paragraph?.runs) ? paragraph.runs : null;
+  if (!runs || !runs.length) return escapeHtml(text);
+  if (runs.map((run) => String(run?.text || "")).join("") !== text) {
+    // Defensive: never let a drifted run breakdown change what the editable body
+    // shows. Fall back to the authoritative flat text.
+    return escapeHtml(text);
+  }
+  return runs.map(renderFormattedRun).join("");
+}
+
+function renderFormattedRun(run) {
+  let html = escapeHtml(String(run?.text || ""));
+  if (run?.bold) html = `<strong>${html}</strong>`;
+  if (run?.italic) html = `<em>${html}</em>`;
+  if (run?.underline) html = `<u>${html}</u>`;
+  return html;
+}
+
+// Structural CSS classes + data hooks for a paragraph frame, driven by metadata
+// the DOCX extractor already captures (heading level, list numbering, table
+// context). These are additive: the paragraph keeps its id and clause/redline
+// data-hooks; only its typography/indentation changes.
+function paragraphStructureClasses(paragraph) {
+  const classes = [];
+  const headingLevel = Number(paragraph?.heading_level);
+  if (Number.isFinite(headingLevel) && headingLevel >= 1) {
+    classes.push("doc-heading", `doc-heading-${Math.min(Math.max(Math.floor(headingLevel), 1), 6)}`);
+  }
+  const numbering = paragraph?.numbering;
+  if (numbering && typeof numbering === "object") {
+    classes.push("doc-list");
+    const level = Number(numbering.level);
+    if (Number.isFinite(level) && level > 0) {
+      classes.push(`doc-list-level-${Math.min(Math.floor(level), 6)}`);
+    }
+  }
+  if (paragraph?.table && typeof paragraph.table === "object") {
+    classes.push("doc-table-cell");
+  }
+  return classes;
+}
+
+function paragraphStructureAttributes(paragraph) {
+  const attributes = [];
+  const label = String(paragraph?.structure_label || paragraph?.numbering?.label || "").trim();
+  if (label) attributes.push(`data-structure-label="${escapeHtml(label)}"`);
+  const table = paragraph?.table;
+  if (table && typeof table === "object") {
+    attributes.push(`data-table-index="${escapeHtml(table.table_index ?? "")}"`);
+    attributes.push(`data-table-row="${escapeHtml(table.row_index ?? "")}"`);
+    attributes.push(`data-table-cell="${escapeHtml(table.cell_index ?? "")}"`);
+  }
+  return attributes.join(" ");
 }
 
 function renderParagraphRedlines(edits) {

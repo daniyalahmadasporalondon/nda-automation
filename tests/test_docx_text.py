@@ -111,6 +111,64 @@ class DocxTextTests(unittest.TestCase):
         self.assertEqual(paragraphs[3]["heading_level"], 2)
         self.assertEqual(paragraphs[3]["table"], {"table_index": 1, "row_index": 1, "cell_index": 1})
 
+    def test_extracts_run_level_bold_italic_underline(self):
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Plain start </w:t></w:r>
+      <w:r><w:rPr><w:b/></w:rPr><w:t>bold word</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> and </w:t></w:r>
+      <w:r><w:rPr><w:i/></w:rPr><w:t>italic word</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> and </w:t></w:r>
+      <w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>underlined</w:t></w:r>
+      <w:r><w:t>.</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>Entirely plain paragraph.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        data = make_zip({"word/document.xml": document_xml}, compression=ZIP_DEFLATED)
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["text"],
+            "Plain start bold word and italic word and underlined.",
+        )
+        self.assertEqual(
+            paragraphs[0]["runs"],
+            [
+                {"text": "Plain start ", "bold": False, "italic": False, "underline": False},
+                {"text": "bold word", "bold": True, "italic": False, "underline": False},
+                {"text": " and ", "bold": False, "italic": False, "underline": False},
+                {"text": "italic word", "bold": False, "italic": True, "underline": False},
+                {"text": " and ", "bold": False, "italic": False, "underline": False},
+                {"text": "underlined", "bold": False, "italic": False, "underline": True},
+                {"text": ".", "bold": False, "italic": False, "underline": False},
+            ],
+        )
+        # A run-reconstruction must equal the flat text exactly.
+        self.assertEqual(
+            "".join(run["text"] for run in paragraphs[0]["runs"]),
+            paragraphs[0]["text"],
+        )
+        # Plain paragraphs stay lean: no runs key, so the additive contract holds.
+        self.assertNotIn("runs", paragraphs[1])
+
+    def test_run_toggle_disabled_is_not_treated_as_formatting(self):
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:rPr><w:b w:val="0"/></w:rPr><w:t>Not actually bold.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        data = make_zip({"word/document.xml": document_xml}, compression=ZIP_DEFLATED)
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["text"], "Not actually bold.")
+        self.assertNotIn("runs", paragraphs[0])
+
     def test_rejects_non_docx_bytes(self):
         with self.assertRaises(DocxExtractionError):
             extract_docx_text(b"not a word document")

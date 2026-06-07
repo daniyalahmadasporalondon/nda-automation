@@ -9,6 +9,7 @@ STRUCTURAL_METADATA_KEYS = (
     "numbering",
     "outline_level",
     "page_number",
+    "runs",
     "source_kind",
     "source_part",
     "source_index",
@@ -83,6 +84,11 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
             for key in STRUCTURAL_METADATA_KEYS:
                 if key in paragraph:
                     aligned_paragraph[key] = paragraph[key]
+            # ``runs`` describes the whole extracted paragraph. If that paragraph
+            # was re-split into parts here, the run breakdown no longer matches a
+            # part, so drop it and fall back to the part's flat text.
+            if "runs" in aligned_paragraph and (len(paragraph_parts) > 1 or paragraph_text != str(paragraph.get("text", "")).strip()):
+                del aligned_paragraph["runs"]
             aligned.append(aligned_paragraph)
     return aligned
 
