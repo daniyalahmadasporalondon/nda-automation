@@ -103,11 +103,11 @@
     {
       "id": "confidential_information",
       "name": "Confidential Information",
-      "requirement": "Confidential Information must be broad, must cover the existence and terms of the Agreement, and must not include extra exclusions beyond the standard carve-outs.",
+      "requirement": "Confidential Information must be broad, must cover the existence and terms of the Agreement and the right of publicity, and must not include extra exclusions beyond the standard carve-outs.",
       "type": "required",
-      "preferred_position": "Broad definition covering all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information, including the existence and terms of the Agreement, whether marked or unmarked.",
+      "preferred_position": "Broad definition covering all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information, including the right of publicity and the existence and terms of the Agreement, whether marked or unmarked.",
       "check_trigger": "The definition is missing, too narrow, carves out core categories, or includes exclusions beyond the standard public-domain, prior-possession, lawful third-party source, and qualified independent-development carve-outs.",
-      "redline_template": "\"Confidential Information\" means any and all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information disclosed by either party, including the existence and terms of this Agreement, whether disclosed orally, visually, electronically or in writing and whether or not marked confidential. Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
+      "redline_template": "\"Confidential Information\" means any and all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information disclosed by either party, including the right of publicity and the existence and terms of this Agreement, whether disclosed orally, visually, electronically or in writing and whether or not marked confidential. Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
       "standard_exclusions_template": "Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
       "search_terms": [
         "confidential information",
@@ -131,7 +131,7 @@
       "rules": {
         "version": 1,
         "clause_type": "required",
-        "acceptable_position": "Confidential Information is defined broadly enough to cover non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret, and source code information, as well as the existence and terms of the Agreement, with only standard carve-outs.",
+        "acceptable_position": "Confidential Information is defined broadly enough to cover non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret, and source code information, as well as the right of publicity and the existence and terms of the Agreement, with only standard carve-outs.",
         "pass_conditions": [
           {
             "id": "broad_definition_with_standard_exclusions",
@@ -251,7 +251,7 @@
         "excluded from confidential information",
         "excludes"
       ],
-      "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party, including the existence and terms of the Agreement."
+      "acceptable_language": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party, including the right of publicity and the existence and terms of the Agreement."
     },
     {
       "id": "governing_law",
