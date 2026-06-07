@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260606f">
+    <link rel="stylesheet" href="/static/styles.css?v=20260607a">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607a">
   </head>
   <body>
@@ -429,6 +429,10 @@
               <button class="admin-section-button" type="button" data-admin-section="ai" data-admin-surface="admin" aria-pressed="false">
                 <strong>AI Runtime</strong>
                 <span>Provider and model</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="health" data-admin-surface="admin" aria-pressed="false">
+                <strong>Health</strong>
+                <span>AI review monitoring</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="email" data-admin-surface="admin" aria-pressed="false">
                 <strong>Gmail</strong>
@@ -927,6 +931,124 @@
               </section>
             </section>
 
+            <section class="admin-section-panel" id="adminHealthPanel" data-admin-panel="health" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">observability</p>
+                  <h1>AI review health</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminHealthRefreshButton" type="button">Refresh</button>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
+                <article class="integration-card health-card" id="adminHealthCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">monitoring</p>
+                      <h2>AI review &amp; generation</h2>
+                    </div>
+                    <span class="integration-status" id="adminHealthStatus" data-health-status="ok">Checking</span>
+                  </header>
+
+                  <ul class="health-alerts" id="adminHealthAlerts" aria-live="polite">
+                    <li>Checking AI review health…</li>
+                  </ul>
+
+                  <div class="integration-subsection">
+                    <h3>AI-first review</h3>
+                    <dl class="integration-facts" id="adminHealthReviewFacts">
+                      <div>
+                        <dt>Attempted</dt>
+                        <dd data-admin-health="review-attempted">—</dd>
+                      </div>
+                      <div>
+                        <dt>Completed</dt>
+                        <dd data-admin-health="review-completed">—</dd>
+                      </div>
+                      <div>
+                        <dt>Failed</dt>
+                        <dd data-admin-health="review-failed">—</dd>
+                      </div>
+                      <div>
+                        <dt>Fail-closed</dt>
+                        <dd data-admin-health="review-fail-closed">—</dd>
+                      </div>
+                      <div>
+                        <dt>Partial</dt>
+                        <dd data-admin-health="review-partial">—</dd>
+                      </div>
+                      <div>
+                        <dt>Deterministic completed</dt>
+                        <dd data-admin-health="review-deterministic">—</dd>
+                      </div>
+                      <div>
+                        <dt>Fail-closed rate</dt>
+                        <dd data-admin-health="review-fail-closed-rate">—</dd>
+                      </div>
+                      <div>
+                        <dt>Partial rate</dt>
+                        <dd data-admin-health="review-partial-rate">—</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div class="integration-subsection">
+                    <h3>NDA generation</h3>
+                    <dl class="integration-facts" id="adminHealthGenerationFacts">
+                      <div>
+                        <dt>Requests</dt>
+                        <dd data-admin-health="generation-requests">—</dd>
+                      </div>
+                      <div>
+                        <dt>Succeeded</dt>
+                        <dd data-admin-health="generation-succeeded">—</dd>
+                      </div>
+                      <div>
+                        <dt>Rejected</dt>
+                        <dd data-admin-health="generation-rejected">—</dd>
+                      </div>
+                      <div>
+                        <dt>Failed</dt>
+                        <dd data-admin-health="generation-failed">—</dd>
+                      </div>
+                      <div>
+                        <dt>Safety gate blocked</dt>
+                        <dd data-admin-health="generation-gate-blocked">—</dd>
+                      </div>
+                      <div>
+                        <dt>Failure rate</dt>
+                        <dd data-admin-health="generation-failure-rate">—</dd>
+                      </div>
+                      <div>
+                        <dt>Gate block rate</dt>
+                        <dd data-admin-health="generation-gate-rate">—</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div class="integration-subsection">
+                    <h3>Other operational failures</h3>
+                    <dl class="integration-facts">
+                      <div>
+                        <dt>Failure counters</dt>
+                        <dd data-admin-health="other-failures">—</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <p class="health-caveat" id="adminHealthCaveat">Counts are cumulative since process start. Telemetry is in-memory and resets on restart.</p>
+
+                  <details class="health-raw">
+                    <summary>Raw counters</summary>
+                    <pre id="adminHealthRaw" class="health-raw-pre">No counters recorded since process start.</pre>
+                  </details>
+                </article>
+
+              </section>
+            </section>
+
             <section class="admin-section-panel" id="adminAiGuidePanel" data-admin-panel="ai_guide" hidden>
               <header class="admin-section-head">
                 <div>
@@ -1368,6 +1490,7 @@
     <script src="/static/js/draft-intake.js?v=20260606i"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
+    <script src="/static/js/admin-health.js?v=20260607a"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
@@ -1378,6 +1501,6 @@
     <script src="/static/js/review-workstation-viewer.js?v=20260605a"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/app-state.js"></script>
-    <script src="/static/app.js?v=20260606j"></script>
+    <script src="/static/app.js?v=20260607a"></script>
   </body>
 </html>

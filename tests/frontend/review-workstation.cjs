@@ -91,6 +91,7 @@ const tests = [
   ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
   ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
   ["honours the reduced-motion preference", testReducedMotionPreference],
+  ["renders the AI review health panel with status banner and metrics", testAdminHealthPanel],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -4911,6 +4912,165 @@ async function testReducedMotionPreference(page) {
   // 0.001ms rounds toward "0s" in computed style; assert it is effectively instant.
   assert.ok(parseFloat(reduced.transition) < 0.01, `reduced-motion transition should be ~0, got ${reduced.transition}`);
   assert.ok(parseFloat(reduced.animation) < 0.01, `reduced-motion animation should be ~0, got ${reduced.animation}`);
+}
+
+async function testAdminHealthPanel(page) {
+  const alertTelemetry = {
+    telemetry: {
+      started_at: "2026-06-07T08:00:00+00:00",
+      checked_at: "2026-06-07T09:00:00+00:00",
+      uptime_seconds: 3600,
+      counters: {
+        active_review_ai_first_attempted: 40,
+        active_review_ai_first_completed: 20,
+        active_review_ai_first_failed: 12,
+        active_review_ai_first_fail_closed: 11,
+        active_review_ai_first_partial: 4,
+        active_review_deterministic_completed: 3,
+        generate_nda_requests: 20,
+        generate_nda_succeeded: 12,
+        generate_nda_rejected: 3,
+        generate_nda_failed: 6,
+        generate_nda_safety_gate_blocked: 5,
+        csrf_rejections: 10,
+      },
+    },
+    health: {
+      review: {
+        attempted: 40,
+        completed: 20,
+        failed: 12,
+        fail_closed: 11,
+        partial: 4,
+        deterministic_completed: 3,
+        fail_closed_rate: 0.275,
+        partial_rate: 0.1,
+      },
+      generation: {
+        requests: 20,
+        succeeded: 12,
+        rejected: 3,
+        failed: 6,
+        safety_gate_blocked: 5,
+        failure_rate: 0.3,
+        gate_block_rate: 0.25,
+      },
+      other: {
+        gmail_sync_failures: 0,
+        gmail_sync_rate_limit_failures: 0,
+        csrf_rejections: 10,
+        host_header_rejections: 0,
+        rate_limit_hits: 0,
+        docx_export_content_failures: 0,
+        docx_export_health_failures: 0,
+        export_copy_failures: 0,
+      },
+      status: "alert",
+      alerts: [
+        "AI review has fail-closed 11 times since start.",
+        "NDA generation failure rate is 30% over 20 requests.",
+      ],
+      note: "Counts are cumulative since process start. Telemetry is in-memory and resets on restart; these figures are NOT windowed.",
+    },
+  };
+  const healthyTelemetry = {
+    telemetry: {
+      started_at: "2026-06-07T08:00:00+00:00",
+      checked_at: "2026-06-07T09:00:00+00:00",
+      uptime_seconds: 600,
+      counters: {
+        active_review_ai_first_attempted: 5,
+        active_review_ai_first_completed: 5,
+        generate_nda_requests: 3,
+        generate_nda_succeeded: 3,
+      },
+    },
+    health: {
+      review: {
+        attempted: 5,
+        completed: 5,
+        failed: 0,
+        fail_closed: 0,
+        partial: 0,
+        deterministic_completed: 0,
+        fail_closed_rate: 0.0,
+        partial_rate: 0.0,
+      },
+      generation: {
+        requests: 3,
+        succeeded: 3,
+        rejected: 0,
+        failed: 0,
+        safety_gate_blocked: 0,
+        failure_rate: 0.0,
+        gate_block_rate: 0.0,
+      },
+      other: {
+        gmail_sync_failures: 0,
+        gmail_sync_rate_limit_failures: 0,
+        csrf_rejections: 0,
+        host_header_rejections: 0,
+        rate_limit_hits: 0,
+        docx_export_content_failures: 0,
+        docx_export_health_failures: 0,
+        export_copy_failures: 0,
+      },
+      status: "ok",
+      alerts: ["No AI-review or generation failure thresholds crossed."],
+      note: "Counts are cumulative since process start. Telemetry is in-memory and resets on restart; these figures are NOT windowed.",
+    },
+  };
+
+  let telemetryResponse = alertTelemetry;
+  await page.route("**/api/telemetry", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(telemetryResponse),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Admin" }).click();
+  assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "admin");
+
+  // Alerting state: banner red, alerts listed, failing metrics rendered.
+  await page.locator('[data-admin-section="health"]').click();
+  const healthPanel = page.locator("#adminHealthPanel");
+  await assertTextContains(healthPanel, "AI review health");
+  await page.waitForFunction(() => document.querySelector("#adminHealthStatus")?.getAttribute("data-health-status") === "alert");
+  // .integration-status is text-transform: uppercase, so innerText is uppercased.
+  assert.equal(await page.locator("#adminHealthStatus").innerText(), "ALERT");
+  assert.equal(await page.locator("#adminHealthStatus").evaluate((node) => node.classList.contains("blocked")), true);
+  assert.equal(await page.locator("#adminHealthAlerts").getAttribute("data-health-status"), "alert");
+  await assertTextContains(page.locator("#adminHealthAlerts"), "fail-closed 11 times");
+  await assertTextContains(page.locator("#adminHealthAlerts"), "failure rate is 30%");
+  assert.equal(await page.locator('[data-admin-health="review-attempted"]').innerText(), "40");
+  assert.equal(await page.locator('[data-admin-health="review-fail-closed"]').innerText(), "11");
+  assert.equal(await page.locator('[data-admin-health="review-fail-closed-rate"]').innerText(), "27.5%");
+  assert.equal(await page.locator('[data-admin-health="generation-failed"]').innerText(), "6");
+  assert.equal(await page.locator('[data-admin-health="generation-failure-rate"]').innerText(), "30.0%");
+  assert.equal(await page.locator('[data-admin-health="generation-gate-blocked"]').innerText(), "5");
+  await assertTextContains(page.locator('[data-admin-health="other-failures"]'), "csrf_rejections 10");
+  await assertTextContains(healthPanel, "cumulative since process start");
+  // Raw counters live inside a collapsed <details>; assert on textContent.
+  const rawCounters = await page.locator("#adminHealthRaw").evaluate((node) => node.textContent);
+  assert.ok(rawCounters.includes("active_review_ai_first_fail_closed: 11"), `expected raw counters to include the fail-closed count, got "${rawCounters}"`);
+
+  // Healthy state via Refresh: banner green, "ok" status, no failing metrics.
+  telemetryResponse = healthyTelemetry;
+  await page.locator("#adminHealthRefreshButton").click();
+  await page.waitForFunction(() => document.querySelector("#adminHealthStatus")?.getAttribute("data-health-status") === "ok");
+  assert.equal(await page.locator("#adminHealthStatus").innerText(), "HEALTHY");
+  assert.equal(await page.locator("#adminHealthStatus").evaluate((node) => node.classList.contains("ready")), true);
+  assert.equal(await page.locator("#adminHealthAlerts").getAttribute("data-health-status"), "ok");
+  await assertTextContains(page.locator("#adminHealthAlerts"), "No AI-review or generation failure thresholds crossed.");
+  assert.equal(await page.locator('[data-admin-health="review-attempted"]').innerText(), "5");
+  assert.equal(await page.locator('[data-admin-health="review-fail-closed"]').innerText(), "0");
+  assert.equal(await page.locator('[data-admin-health="generation-failure-rate"]').innerText(), "0.0%");
+  assert.equal(await page.locator('[data-admin-health="other-failures"]').innerText(), "None");
+
+  await page.unroute("**/api/telemetry");
 }
 
 function testPngBuffer(width, height) {

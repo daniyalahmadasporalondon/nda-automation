@@ -58,6 +58,7 @@ const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE 
 let pendingReviewSendMatterId = null;
 let authSessionController;
 let adminAiController;
+let adminHealthController;
 let adminIntegrationsController;
 
 const repositoryController = createRepositoryController({
@@ -158,6 +159,17 @@ adminAiController = createAdminAiController({
   aiFacts: document.querySelector("#adminAiFacts"),
   aiOverall: document.querySelector("#adminAiOverall"),
   aiRefreshButton: document.querySelector("#adminAiRefreshButton"),
+  reviewErrorFromPayload,
+});
+adminHealthController = createAdminHealthController({
+  state,
+  healthCard: document.querySelector("#adminHealthCard"),
+  healthFacts: document.querySelector("#adminHealthReviewFacts"),
+  healthStatus: document.querySelector("#adminHealthStatus"),
+  healthAlerts: document.querySelector("#adminHealthAlerts"),
+  healthCaveat: document.querySelector("#adminHealthCaveat"),
+  healthRaw: document.querySelector("#adminHealthRaw"),
+  healthRefreshButton: document.querySelector("#adminHealthRefreshButton"),
   reviewErrorFromPayload,
 });
 adminIntegrationsController = createAdminIntegrationsController({
@@ -691,6 +703,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "ai") {
     adminAiController.load();
+  }
+  if (sectionName === "health") {
+    adminHealthController.load();
   }
 }
 
