@@ -794,11 +794,12 @@ function renderClauseAiEvidenceList(spans) {
   return `<div class="evidence-list">${list.map(renderAiCitation).join("")}</div>`;
 }
 
-function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "" }) {
+function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", signals = "" }) {
   return `
     <div class="studio-detail-block assessment-block">
       <small>Assessment</small>
       <p>${escapeHtml(assessment)}</p>
+      ${signals}
     </div>
     ${evidence ? `
       <div class="studio-detail-block studio-detail-evidence">
@@ -831,11 +832,13 @@ function renderClauseExplanation(clause) {
     : [];
   const aiSpans = Array.isArray(analysis?.cited_spans) ? analysis.cited_spans.filter(Boolean) : [];
   const evidence = aiSpans.length ? renderClauseAiEvidenceList(aiSpans) : renderClauseEvidenceList(allDetParas);
+  const signals = renderEvidenceSignalsBlock(clause);
 
   if (isDisagreement) {
     return renderClauseAssessmentBlocks({
       assessment: aiReason || findingText,
       evidence,
+      signals,
       note: "AI assessment and deterministic validation recorded different outcomes. Treat the assessment as the review verdict; the validation result is audit context.",
     });
   }
@@ -857,6 +860,7 @@ function renderClauseExplanation(clause) {
     return renderClauseAssessmentBlocks({
       assessment: `This clause was escalated for human review because ${detail}.`,
       evidence,
+      signals,
       note: findingText,
     });
   }
@@ -868,12 +872,14 @@ function renderClauseExplanation(clause) {
     return renderClauseAssessmentBlocks({
       assessment: `${findingText}${aiAgrees}`,
       evidence,
+      signals,
     });
   }
 
   return renderClauseAssessmentBlocks({
     assessment: `${findingText}${aiAgrees}`,
     evidence,
+    signals,
   });
 }
 
@@ -1138,9 +1144,7 @@ function renderEvidenceSignalsBlock(clause) {
     : [];
   if (!records.length) return "";
   return `
-    <div class="studio-detail-block evidence-signals-block">
-      <small>Evidence signals</small>
-      <div class="evidence-signal-list">
+      <div class="evidence-signal-list assessment-evidence-signals">
         ${records.slice(0, 5).map((record) => {
           const terms = Array.isArray(record.matched_terms)
             ? record.matched_terms.filter(Boolean).slice(0, 5)
@@ -1163,7 +1167,6 @@ function renderEvidenceSignalsBlock(clause) {
           `;
         }).join("")}
       </div>
-    </div>
   `;
 }
 
@@ -1210,18 +1213,16 @@ function renderAuditTraceBlock(clause) {
 // with no deeper detail shows no trail. Collapsed by default; the open/closed
 // choice is remembered per clause across re-renders via state.reasoningTrailOpen.
 function renderReasoningTrailBlock(clause) {
-  const evidenceSignals = renderEvidenceSignalsBlock(clause);
   const auditTrace = renderAuditTraceBlock(clause);
-  if (!evidenceSignals && !auditTrace) return "";
+  if (!auditTrace) return "";
   const open = reasoningTrailOpenForClause(clause?.id) ? " open" : "";
   return `
     <details class="studio-detail-block reasoning-trail-block" data-reasoning-trail-clause-id="${escapeHtml(clause?.id || "")}"${open}>
       <summary class="reasoning-trail-summary">
         <span>Reasoning trail</span>
-        <span class="reasoning-trail-hint">Evidence &amp; audit detail</span>
+        <span class="reasoning-trail-hint">Audit detail</span>
       </summary>
       <div class="reasoning-trail-body">
-        ${evidenceSignals}
         ${auditTrace}
       </div>
     </details>
