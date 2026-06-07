@@ -11,7 +11,11 @@ CONCEPT_DEFINITIONS: Dict[str, Dict[str, object]] = {
     "mutuality": {
         "label": "Mutuality",
         "patterns": [
-            r"\bmutual(?:ity|ly)?\b",
+            # "mutual" must co-occur with a confidentiality/obligation context so
+            # boilerplate ("mutual written consent", "mutually convenient time") does
+            # not get tagged as a mutuality-of-obligations signal.
+            r"\bmutual(?:ity|ly)?\b.{0,140}\b(?:disclos\w+|confidential|obligation|undertak\w+|recipient|receiving\s+party|each\s+party|both\s+parties)\b",
+            r"\b(?:disclos\w+|confidential|obligation|undertak\w+|recipient|receiving\s+party)\b.{0,140}\bmutual(?:ity|ly)?\b",
             r"\breciprocal(?:ly)?\b",
             r"\beach\s+party\b.{0,140}\b(?:disclos(?:e|es|ing)|receiv(?:e|es|ing)|confidential)\b",
             r"\bboth\s+parties\b.{0,140}\b(?:disclos(?:e|es|ing)|receiv(?:e|es|ing)|confidential)\b",
@@ -113,8 +117,18 @@ CONCEPT_DEFINITIONS: Dict[str, Dict[str, object]] = {
         "label": "Non-circumvention",
         "patterns": [
             r"\bnon[-\s]?circumvention\b",
-            r"\bnon[-\s]?solicitation\b",
+            r"\bnon[-\s]?solicit(?:ation)?\b",
             r"\b(?:bypass|circumvent|direct\s+dealing|introduced\s+contacts?)\b",
+            # Restrictions phrased WITHOUT the trigger keywords. Kept in step with the
+            # dedicated non_circumvention check's flexible candidate patterns so the
+            # concept layer does not under-detect (and silently drop from reference
+            # scope) a real restriction the check itself would catch.
+            r"\bsolicit\w*\b",
+            r"\bdeal(?:s|ing)?\s+(?:directly|exclusiv\w+)\b",
+            r"\bexclusiv\w+\s+(?:through|with)\b",
+            r"\bsubstitute\s+(?:for\s+transact\w+|purpose)\b",
+            r"\bintroduced\b.{0,60}\b(?:part(?:y|ies)|persons?|contacts?|customers?|counterpart(?:y|ies)|opportunit\w+)\b",
+            r"\b(?:part(?:y|ies)|persons?|contacts?|customers?|counterpart(?:y|ies)|opportunit\w+)\b.{0,60}\b(?:introduced|(?:first\s+)?made\s+known|disclosed\s+(?:hereunder|pursuant|under\s+this))\b",
         ],
     },
 }

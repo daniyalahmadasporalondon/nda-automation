@@ -19,6 +19,7 @@ from .checks.common import (
     _year_count_label,
 )
 from .redline_actions import (
+    REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
@@ -542,6 +543,21 @@ def _validate_dynamic_fallback(clause: Mapping[str, Any], clause_id: str, errors
     redline_action = _text(fallback.get("redline_action"))
     if redline_action not in AI_ASSESSMENT_REDLINE_ACTIONS:
         errors.append(f"Playbook clause {clause_id} fallback.redline_action is unsupported.")
+    else:
+        # The fallback action must be coherent with the clause type: a prohibited
+        # clause is REMOVED (delete_paragraph / no_change), never have text added; a
+        # required clause is FIXED (replace / insert / no_change), never deleted.
+        clause_type = _text(clause.get("type"))
+        if clause_type == "prohibited" and redline_action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH}:
+            errors.append(
+                f"Playbook clause {clause_id} is prohibited; fallback.redline_action {redline_action} adds text -- "
+                "a prohibited clause should be removed (delete_paragraph) or left (no_change)."
+            )
+        elif clause_type == "required" and redline_action == REDLINE_DELETE_PARAGRAPH:
+            errors.append(
+                f"Playbook clause {clause_id} is required; fallback.redline_action delete_paragraph would remove "
+                "required language (use replace, insert_after_paragraph, or no_change)."
+            )
     # Only the text-inserting actions need wording; delete_paragraph and no_change do not.
     wording_required_actions = {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH}
     if redline_action in wording_required_actions and not _text(fallback.get("wording")):

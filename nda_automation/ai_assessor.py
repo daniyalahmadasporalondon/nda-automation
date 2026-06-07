@@ -61,6 +61,11 @@ class OpenRouterAIAssessmentReviewer:
         self.api_key = cleaned_key
         self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
+        # Provenance: set on a successful call so the result attributes the model
+        # that ACTUALLY produced the verdict, not just the configured settings (which
+        # would silently misreport once a fallback/override provider is introduced).
+        self.last_success_provider = ""
+        self.last_success_model = ""
 
     def __call__(self, packet: dict[str, Any]) -> dict[str, Any] | None:
         request = urllib.request.Request(
@@ -81,7 +86,10 @@ class OpenRouterAIAssessmentReviewer:
             raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
-        return _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
+        parsed = _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
+        self.last_success_provider = "openrouter"
+        self.last_success_model = self.model
+        return parsed
 
 
 class InMemoryAssessmentReviewer:

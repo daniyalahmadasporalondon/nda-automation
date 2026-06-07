@@ -27,6 +27,7 @@ fail, and the finding is corrected to ``pass``.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import urllib.error
@@ -389,6 +390,10 @@ def _normalize_verdict(raw: object) -> Dict[str, object]:
     try:
         confidence = float(raw.get("confidence"))
     except (TypeError, ValueError):
+        confidence = 0.0
+    # json.loads accepts NaN/Infinity; min(1.0, NaN) == 1.0 would let a non-finite
+    # confidence sail past the overturn threshold. Treat non-finite as no confidence.
+    if not math.isfinite(confidence):
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
     return {

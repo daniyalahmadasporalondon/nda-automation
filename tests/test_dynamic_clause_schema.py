@@ -126,6 +126,42 @@ class DynamicClauseSchemaTests(unittest.TestCase):
 
         self.assertTrue(any("fallback.redline_action" in error["message"] for error in errors), errors)
 
+    def test_dynamic_fallback_action_must_match_clause_type(self):
+        # BUGFIX (D2): a prohibited clause is REMOVED (delete/no_change), never has
+        # text added; a required clause is FIXED (replace/insert/no_change), never
+        # deleted. Validation must reject the incoherent combinations.
+        from nda_automation.playbook_rules import _validate_dynamic_fallback
+
+        prohibited_add: list[str] = []
+        _validate_dynamic_fallback(
+            {"type": "prohibited", "fallback": {"redline_action": "insert_after_paragraph", "wording": "x"}},
+            "c", prohibited_add,
+        )
+        self.assertTrue(any("prohibited" in e for e in prohibited_add), prohibited_add)
+
+        required_delete: list[str] = []
+        _validate_dynamic_fallback(
+            {"type": "required", "fallback": {"redline_action": "delete_paragraph"}},
+            "c", required_delete,
+        )
+        self.assertTrue(any("required" in e for e in required_delete), required_delete)
+
+        # Coherent combinations stay clean.
+        ok: list[str] = []
+        _validate_dynamic_fallback(
+            {"type": "prohibited", "fallback": {"redline_action": "delete_paragraph"}}, "c", ok,
+        )
+        self.assertEqual(ok, [])
+
+    def test_dynamic_required_clause_rejects_delete_fallback_action_end_to_end(self):
+        clause = make_dynamic_clause()  # type=required
+        clause["fallback"]["redline_action"] = "delete_paragraph"
+        errors = collect_playbook_validation_errors(playbook_with_dynamic_clause(clause))
+        self.assertTrue(
+            any("required" in error["message"] and "delete" in error["message"] for error in errors),
+            errors,
+        )
+
     def test_dynamic_clause_cannot_reuse_a_native_clause_id(self):
         clause = make_dynamic_clause(id="governing_law")
         errors = collect_playbook_validation_errors(playbook_with_dynamic_clause(clause))

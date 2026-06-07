@@ -350,6 +350,17 @@ class ShouldVerifyTests(unittest.TestCase):
         self.assertTrue(_should_verify({"decision": "pass", "type": "required", "confidence": 0.50}))
 
 
+class NormalizeVerdictTests(unittest.TestCase):
+    def test_non_finite_confidence_is_treated_as_zero(self):
+        # BUGFIX (C3): json.loads accepts NaN/Infinity and min(1.0, NaN) == 1.0 would
+        # let a non-finite confidence sail past the overturn threshold.
+        from nda_automation.ai_verifier import _normalize_verdict
+
+        self.assertEqual(_normalize_verdict({"verdict": "refute", "confidence": float("nan")})["confidence"], 0.0)
+        self.assertEqual(_normalize_verdict({"verdict": "refute", "confidence": float("inf")})["confidence"], 0.0)
+        self.assertEqual(_normalize_verdict({"verdict": "refute", "confidence": 0.9})["confidence"], 0.9)
+
+
 class ReviewNdaIntegrationTests(unittest.TestCase):
     def test_verifier_summary_attached_to_result(self):
         result = review_nda("This Agreement shall be governed by the laws of England and Wales.")

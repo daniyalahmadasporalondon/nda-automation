@@ -299,6 +299,19 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
         self.assertEqual(body["model"], DEFAULT_OPENROUTER_MODEL)
         self.assertEqual(body["response_format"], {"type": "json_object"})
 
+    def test_openrouter_reviewer_records_provenance_on_success(self):
+        # BUGFIX (C1): last_success_provider/model must reflect the model that
+        # actually produced the verdict, not just the configured settings.
+        response = json.dumps({
+            "choices": [{"message": {"content": json.dumps(_complete_response())}}],
+        }).encode("utf-8")
+        reviewer = OpenRouterAIAssessmentReviewer(api_key="ork", model="x-ai/grok-4.3")
+        self.assertEqual((reviewer.last_success_provider, reviewer.last_success_model), ("", ""))
+        with patch("urllib.request.urlopen", _mock_urlopen(response, [])):
+            reviewer({"task": AI_ASSESSMENT_TASK, "paragraphs": []})
+        self.assertEqual(reviewer.last_success_provider, "openrouter")
+        self.assertEqual(reviewer.last_success_model, reviewer.model)
+
     def test_configured_reviewer_builds_openrouter_gemini(self):
         with (
             patch("nda_automation.ai_assessor._configured_api_key", side_effect=lambda provider: f"{provider}-key"),
