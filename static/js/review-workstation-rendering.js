@@ -914,12 +914,12 @@ function selectedRedlineTemplateOptionId(edit) {
     || "";
 }
 
-// Small additive badge marking a data-defined Playbook clause (engine
-// "dynamic") so reviewers can tell it from the native clauses. Returns "" for
-// native clauses, so their markup is unchanged.
-function clauseEngineBadge(clause) {
-  if (!clauseIsDynamic(clause)) return "";
-  return '<span class="clause-engine-badge" title="Data-defined Playbook clause">Dynamic</span>';
+// The "Dynamic" engine badge was removed from the UI (product decision). The
+// dynamic/native split still drives review behaviour — it's just no longer
+// surfaced as a pill in the navigator or the active-clause heading. Kept as a
+// no-op so the call sites need no change; restore the span here to bring it back.
+function clauseEngineBadge() {
+  return "";
 }
 
 function renderStudioClauseLane() {

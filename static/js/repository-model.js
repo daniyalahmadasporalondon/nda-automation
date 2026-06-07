@@ -1,5 +1,6 @@
 const RepositoryModel = (() => {
   const BOARD_COLUMNS = [
+    { id: "generated", label: "Generated" },
     { id: "gmail_demo", label: "Inbox" },
     { id: "in_review", label: "In Review" },
     { id: "reviewed", label: "Reviewed" },
@@ -26,6 +27,7 @@ const RepositoryModel = (() => {
       gmail_demo: "Gmail Demo",
       gmail_inbound: "Gmail Inbound",
       manual_upload: "Manual Upload",
+      generated: "Generated",
     };
     return labels[sourceType] || sourceType || "Source";
   }

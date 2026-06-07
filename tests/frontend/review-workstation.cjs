@@ -3749,6 +3749,7 @@ async function testDynamicProhibitedClauseRendering(page) {
   const nonCircCard = page.locator('[data-studio-lane-id="non_circumvention"]');
   assert.equal(await nonCircCard.count(), 1, "dynamic non_circumvention clause should appear as a lane");
   assert.equal(await page.locator('.studio-clause-dot.verify').count() >= 1, true);
+  assert.equal(await page.locator('.clause-engine-badge').count(), 0, "the Dynamic engine badge bubble should no longer render");
 
   const prohibited = await page.locator('[data-paragraph-id="p2"]').evaluate((node) => ({
     hasProhibitedClass: node.classList.contains("prohibited"),

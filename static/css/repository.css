@@ -130,8 +130,9 @@
   background: #fff;
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(5, minmax(160px, 1fr));
   min-width: 0;
+  overflow-x: auto;
 }
 
 .repository-column {
