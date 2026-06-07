@@ -41,7 +41,7 @@ In `.env`, set the AI provider/model and API key:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=openrouter
-NDA_AI_MODEL=google/gemini-3.5-flash
+NDA_AI_MODEL=x-ai/grok-4.3
 # Active review defaults to AI-first + fail-closed. Leave unset unless pinning runtime.
 NDA_ACTIVE_REVIEW_ENGINE=
 OPENROUTER_API_KEY="your-openrouter-api-key"
@@ -186,8 +186,8 @@ Common environment variables:
 - `NDA_AI_REVIEW_ENABLED`: enables provider-backed AI review when true.
 - `OPENROUTER_API_KEY`: server-side OpenRouter key for NDA review and Gmail attachment selection.
 - `NDA_AI_PROVIDER`: `openrouter`.
-- `NDA_AI_MODEL`: OpenRouter model ID. Use `google/gemini-3.5-flash` by default, or another OpenRouter model your key can access.
-- `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `google/gemini-3.5-flash`.
+- `NDA_AI_MODEL`: OpenRouter model ID. Use `x-ai/grok-4.3` by default, or another OpenRouter model your key can access.
+- `NDA_GMAIL_TRIAGE_MODEL`: Gmail triage model name, for example `x-ai/grok-4.3`.
 - `NDA_ACTIVE_REVIEW_ENGINE`: optional environment pin for `ai_first` or `deterministic`.
 - `NDA_AI_FIRST_REVIEW_ENABLED`: stores AI-first shadow/comparison results when enabled.
 - `NDA_ALLOW_EPHEMERAL_DATA`: set to `true` only for short-lived public demos using ephemeral storage.
@@ -211,11 +211,11 @@ Optional AI semantic review:
 ```bash
 export NDA_AI_REVIEW_ENABLED=true
 export NDA_AI_PROVIDER=openrouter
-export NDA_AI_MODEL=google/gemini-3.5-flash
+export NDA_AI_MODEL=x-ai/grok-4.3
 export OPENROUTER_API_KEY=...
 ```
 
-Supported AI calls use OpenRouter by default with `google/gemini-3.5-flash`. Admins can save a local OpenRouter API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
+Supported AI calls use OpenRouter by default with `x-ai/grok-4.3`. Admins can save a local OpenRouter API key from the AI tab; saved keys are stored under ignored app data and are not returned to the browser.
 
 ## Deploy
 

@@ -23,7 +23,7 @@ from .review_state import (
 )
 
 AI_REVIEW_VERSION = 1
-DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash"
+DEFAULT_OPENROUTER_MODEL = "x-ai/grok-4.3"
 DEFAULT_AI_REVIEW_THRESHOLD = 0.75
 DEFAULT_AI_TIMEOUT_SECONDS = 20
 MAX_AI_CONTEXT_PARAGRAPHS = 40
@@ -39,15 +39,15 @@ AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 # OpenRouter API keys are prefixed "sk-or-"; legacy Google/Gemini-direct keys are
-# prefixed "AIza". OpenRouter is the sole provider now (google/gemini-3.5-flash is
-# served THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
+# prefixed "AIza". OpenRouter is the sole provider now (the default model x-ai/grok-4.3
+# is served THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
 # and must be replaced with an OpenRouter key.
 OPENROUTER_API_KEY_PREFIX = "sk-or-"
 GEMINI_DIRECT_API_KEY_PREFIX = "AIza"
 STORED_KEY_MIGRATION_CODE = "gemini_direct_stored_key"
 STORED_KEY_MIGRATION_MESSAGE = (
     "The stored AI API key looks like a Google/Gemini API key, but AI review now "
-    "runs through OpenRouter (model google/gemini-3.5-flash). Replace it with an "
+    "runs through OpenRouter (model x-ai/grok-4.3). Replace it with an "
     "OpenRouter API key (it starts with \"sk-or-\") from openrouter.ai to re-enable AI review."
 )
 AI_REVIEW_CLAUSE_IDS = {
@@ -482,7 +482,7 @@ def ai_review_status() -> Dict[str, object]:
 def stored_ai_key_migration() -> Dict[str, str] | None:
     """Flag a stored AI key that predates the OpenRouter-only provider.
 
-    OpenRouter is the sole provider now (it serves google/gemini-3.5-flash), so a
+    OpenRouter is the sole provider now (it serves x-ai/grok-4.3), so a
     locally stored Google/Gemini-direct key ("AIza...") can no longer authenticate.
     When such a key is the configured source — and no OpenRouter env key overrides
     it — return a migration hint guiding the operator to a "sk-or-" OpenRouter key.

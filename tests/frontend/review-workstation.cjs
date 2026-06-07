@@ -256,7 +256,7 @@ async function testAccessibleControlState(page) {
         ai_review: {
           api_key_configured: true,
           enabled: true,
-          model: "google/gemini-3.5-flash",
+          model: "x-ai/grok-4.3",
           provider: "openrouter",
         },
         active_review_engine: {
@@ -814,7 +814,7 @@ async function testContractStructureReviewPanel(page) {
   let aiKeyConfigured = false;
   let aiKeySource = "";
   let aiProvider = "openrouter";
-  let aiModel = "google/gemini-3.5-flash";
+  let aiModel = "x-ai/grok-4.3";
   let activeReviewEngine = "ai_first";
   let runtimeSource = "default";
   let settingsAudit = [];
@@ -1049,7 +1049,7 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
   assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
-  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "google/gemini-3.5-flash");
+  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "x-ai/grok-4.3");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   assert.equal(await page.locator('[data-admin-ai="active-engine"]').innerText(), "AI-first");
@@ -1309,7 +1309,7 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "google/gemini-3.5-flash",
+      model: "x-ai/grok-4.3",
       provider: "openrouter",
       status: "completed",
     };
