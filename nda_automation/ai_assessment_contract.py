@@ -454,17 +454,32 @@ def _ellipsis_split(quote: str) -> list[str]:
     return [segment for segment in re.split(r"\.\.\.|…", str(quote or ""))]
 
 
-def _ellipsis_segments_appear_in_order(quote: str, text: str) -> bool:
-    """True when the quote's ellipsis-separated segments all appear, in order.
+# A legitimate "..." trims the middle of ONE sentence or block (the extractor split
+# a sentence / signature block into fine-grained paragraphs). It must NOT stitch
+# fragments from different sentences or far-apart paragraphs -- that lets the model
+# fabricate a prohibition (or a clean-looking quote) by eliding the contradicting
+# middle, e.g. "shall not ... solicit" assembled from "shall not disclose" (one
+# sentence) and "may solicit freely" (another). So each elided gap between
+# consecutive segments is length-bounded AND may not cross a sentence boundary.
+_MAX_ELIDED_GAP_CHARS = 200
+_SENTENCE_BOUNDARY_IN_GAP = re.compile(r"[.?!]")
 
-    Each non-empty segment must be found at or after the previous match position
-    in the normalized text, so an elided span grounds without the elided middle.
+
+def _ellipsis_segments_appear_in_order(quote: str, text: str) -> bool:
+    """True when the quote's ellipsis-separated segments all appear, in order, with
+    each elided gap short and within a single sentence.
+
+    Each non-empty segment must be found at or after the previous match position in
+    the normalized text, so an elided span grounds without the elided middle -- but
+    a gap that is too long, or that crosses a sentence boundary, is rejected as a
+    fabricated stitch rather than a genuine elision.
     """
     segments = [segment for segment in _ellipsis_split(quote) if segment.strip()]
     if len(segments) < 2:
         return False
     normalized_text = _normalize_quote_text(text)
     position = 0
+    previous_end: int | None = None
     for segment in segments:
         normalized_segment = _normalize_quote_text(segment)
         if not normalized_segment:
@@ -472,7 +487,14 @@ def _ellipsis_segments_appear_in_order(quote: str, text: str) -> bool:
         found = normalized_text.find(normalized_segment, position)
         if found < 0:
             return False
-        position = found + len(normalized_segment)
+        if previous_end is not None:
+            elided_gap = normalized_text[previous_end:found]
+            if len(elided_gap) > _MAX_ELIDED_GAP_CHARS:
+                return False
+            if _SENTENCE_BOUNDARY_IN_GAP.search(elided_gap):
+                return False
+        previous_end = found + len(normalized_segment)
+        position = previous_end
     return True
 
 

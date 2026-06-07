@@ -297,6 +297,30 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0]["paragraph_id"], "p1")
 
+    def test_ellipsis_grounding_rejects_cross_sentence_stitch(self):
+        # BUGFIX: ellipsis grounding must not stitch fragments from different
+        # sentences / far-apart paragraphs. "shall not ... solicit" assembled from a
+        # "shall not disclose" sentence and a separate "may solicit freely" sentence
+        # fabricates a prohibition that isn't in the document; it must NOT ground.
+        from nda_automation.ai_assessment_contract import _ellipsis_segments_appear_in_order
+
+        stitched_doc = (
+            "The Recipient shall not disclose Confidential Information. "
+            "The parties are free to deal with any third party they independently identify. "
+            "The Recipient may solicit freely."
+        )
+        self.assertFalse(_ellipsis_segments_appear_in_order("shall not ... solicit", stitched_doc))
+
+        # A genuine within-sentence elision (short gap, no sentence boundary) still grounds.
+        legit_doc = (
+            "The Recipient shall not, except as required by law, disclose any Confidential Information."
+        )
+        self.assertTrue(
+            _ellipsis_segments_appear_in_order(
+                "shall not ... disclose any Confidential Information", legit_doc
+            )
+        )
+
     def test_typographic_glyph_variants_ground(self):
         # Inbound real DOCX carries curly quotes, em-dashes and the ellipsis glyph.
         # The model echoes one glyph while the paragraph holds another; glyph

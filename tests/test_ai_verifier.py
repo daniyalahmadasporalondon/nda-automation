@@ -228,6 +228,36 @@ class DefaultVerifierTests(unittest.TestCase):
         )
         self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
 
+    def test_affirms_negated_permission_restriction(self):
+        # BUGFIX: "shall not be permitted/entitled/allowed/free to <action>" is a
+        # restriction, the literal opposite of "permitted/free to deal" -- the
+        # offline verifier must NOT read it as freedom and clear a real fail to pass.
+        for text in (
+            "During the Term, the Recipient shall not be permitted to deal directly with, "
+            "contact, or solicit any party introduced by the Disclosing Party.",
+            "The Recipient is not permitted to contact any introduced party.",
+            "The Recipient shall not be entitled to solicit introduced parties.",
+            "The Recipient will not be allowed to deal with introduced parties.",
+            "The Recipient is not free to deal with any party introduced by the Disclosing Party.",
+        ):
+            with self.subTest(text=text):
+                verdict = default_verifier(self._packet("fail", text))
+                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
+
+    def test_affirms_interposed_phrase_restriction_with_colocated_freedom(self):
+        # BUGFIX: a genuine active prohibition with an interposed temporal/manner
+        # phrase, sitting next to freedom language, must NOT be refuted.
+        text = (
+            "Nothing in this Agreement shall restrict either party from dealing with parties "
+            "it independently identifies. Notwithstanding the foregoing, the Recipient agrees "
+            "not to, during the Term and for two years thereafter, solicit or contact any party "
+            "introduced by the Disclosing Party."
+        )
+        self.assertEqual(default_verifier(self._packet("fail", text))["verdict"], VERIFIER_VERDICT_AFFIRM)
+
+        text2 = "The Recipient shall not, in any manner whatsoever, solicit any introduced party."
+        self.assertEqual(default_verifier(self._packet("fail", text2))["verdict"], VERIFIER_VERDICT_AFFIRM)
+
     def test_does_not_refute_a_required_clause(self):
         # Freedom-to-deal text is off-topic for a required clause -> never refute it.
         # (A required clause's finding is about a missing/weak obligation, not a

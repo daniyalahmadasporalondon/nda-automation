@@ -456,17 +456,37 @@ _CIRCUMVENTION_ACTION = (
     r"(?:solicit|contact|deal|approach|poach|circumvent|bypass|pursu|engage|transact|divert|"
     r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
 )
+# Interposition allowed between "not" and the barred action in a genuine ACTIVE
+# prohibition: temporal/manner qualifiers like "not, during the Term, solicit" or
+# "not, in any manner whatsoever, contact". Bounded and sentence-local (no '.'/';'/
+# newline), and explicitly NOT the freedom inversion "be <restricted/...> from" --
+# the inner lookahead drops that so "shall not, during the term, be restricted from
+# dealing" stays freedom-preserving and refutable.
+_PROHIBITION_INTERPOSITION = (
+    r"(?:(?!\bbe\s+(?:restricted|prevented|prohibited|barred|precluded|restrained|limited|obligated|required)\b)[^.;\n]){0,60}?"
+)
+
 # A genuine restriction sitting alongside freedom language ("each party is not
 # restricted from public dealings; however the Recipient is prohibited from dealing
-# directly with introduced parties"). Two shapes, both guarded so the freedom
+# directly with introduced parties"). Three shapes, each guarded so the freedom
 # inversion "[modal] not be restricted from dealing" is NOT mistaken for one:
-#   active : "[party] shall/agrees not [to] <action>"   (negative lookahead drops "not be")
-#   passive: "[party] is/are/be <barred> from <action>" (lookbehind drops "not <barred>")
+#   active            : "[party] shall/agrees not [to][, during the term,] <action>"
+#   negated-permission: "[party] shall not be permitted/entitled/allowed/free to <action>"
+#   passive           : "[party] is/are/be <barred> from <action>" (lookbehind drops "not <barred>")
 _GENUINE_PROHIBITION_PATTERN = re.compile(
+    # active: lookahead drops "not be ..."; the interposition (above) tolerates an
+    # interposed temporal/manner phrase yet still drops a later "be restricted from".
     r"\b(?:shall|will|must|may|agrees?|undertakes?|covenants?)\s+not\s+(?!be\b)(?:to\s+)?"
-    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
+    rf"{_PROHIBITION_INTERPOSITION}{_CIRCUMVENTION_ACTION}"
+    r"|"
+    # negated permission: "shall not be permitted to deal", "is not free to contact".
+    # A negated permission to take a circumvention-shaped action IS a restriction --
+    # the literal opposite of the positive freedom marker "permitted/free to deal".
+    r"\b(?:shall|will|may|must|is|are|was|were|be|been|being|does|do|did|agrees?|undertakes?|covenants?)\s+not\s+(?:be\s+)?"
+    r"(?:free|entitled|permitted|allowed|at\s+liberty)\s+to\s+(?:\w+\s+){0,4}"
     rf"{_CIRCUMVENTION_ACTION}"
     r"|"
+    # passive: "is/are/be barred from <action>" (lookbehind drops "not barred from").
     r"(?<!not\s)\b(?:is|are|was|were|be|been|being|remains?|remained)\s+"
     r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
     r"(?:prohibited|restricted|barred|prevented|precluded|restrained)\s+from\s+"
