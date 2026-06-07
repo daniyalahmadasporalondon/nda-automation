@@ -2278,6 +2278,77 @@ h3 {
   font-weight: 600;
 }
 
+/* Tier 1 "Original" view: the faithful page-image render is the focus, shown
+   full-width with no editable-text divider beneath it. */
+.review-original-surface {
+  background: #eef2f6;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: var(--r-sm);
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  overflow: hidden;
+  padding: 14px;
+  width: 100%;
+}
+
+.review-original-surface.review-page-surface.ready {
+  background: #f2f4f8;
+}
+
+.review-original-frame {
+  height: min(80vh, 960px);
+}
+
+.review-original-empty {
+  background: #f8fafc;
+}
+
+.review-original-empty.error {
+  background: #fff7ed;
+  border-color: rgba(251, 146, 60, 0.45);
+}
+
+.review-original-empty-body {
+  align-items: flex-start;
+  display: grid;
+  font-family: var(--text-font);
+  gap: 8px;
+  justify-items: start;
+  max-width: 560px;
+  padding: 18px 4px;
+}
+
+.review-original-empty-body strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.review-original-empty-body p {
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.review-original-fallback-button {
+  background: var(--brand, #4f1bb3);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #ffffff;
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 4px;
+  padding: 8px 14px;
+}
+
+.review-original-fallback-button:hover {
+  filter: brightness(1.05);
+}
+
 .review-fallback-divider {
   align-items: center;
   color: var(--ink-soft);
@@ -2515,6 +2586,112 @@ h3 {
 .paragraph-source-editor .paragraph-editable {
   background: rgba(255, 255, 255, 0.76);
   box-shadow: inset 0 0 0 1px rgba(85, 35, 178, 0.08);
+}
+
+/* Tier 2: Word-like typography for the reconstructed document body. These rules
+   only restyle the inside of paragraph frames; the frame element, its id, and
+   its clause/redline/comment data-hooks are unchanged. */
+.paragraph-editable strong,
+.studio-doc-paragraph strong {
+  font-weight: 700;
+}
+
+.paragraph-editable em,
+.studio-doc-paragraph em {
+  font-style: italic;
+}
+
+.paragraph-editable u,
+.studio-doc-paragraph u {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* Headings: heading paragraphs get document heading typography. */
+.studio-doc-paragraph.doc-heading .paragraph-editable,
+.studio-doc-paragraph.doc-heading .paragraph-redline-preview,
+.studio-doc-paragraph.doc-heading .doc-clean-paragraph,
+.studio-doc-paragraph.doc-heading.doc-clean-paragraph {
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.studio-doc-paragraph.doc-heading {
+  margin-top: 6px;
+}
+
+.studio-doc-paragraph.doc-heading-1 .paragraph-editable,
+.studio-doc-paragraph.doc-heading-1.doc-clean-paragraph,
+.studio-doc-paragraph.doc-heading-1 .doc-clean-paragraph {
+  font-size: 1.5em;
+  line-height: 1.3;
+}
+
+.studio-doc-paragraph.doc-heading-2 .paragraph-editable,
+.studio-doc-paragraph.doc-heading-2.doc-clean-paragraph,
+.studio-doc-paragraph.doc-heading-2 .doc-clean-paragraph {
+  font-size: 1.28em;
+  line-height: 1.32;
+}
+
+.studio-doc-paragraph.doc-heading-3 .paragraph-editable,
+.studio-doc-paragraph.doc-heading-3.doc-clean-paragraph,
+.studio-doc-paragraph.doc-heading-3 .doc-clean-paragraph {
+  font-size: 1.13em;
+}
+
+.studio-doc-paragraph.doc-heading-4 .paragraph-editable,
+.studio-doc-paragraph.doc-heading-5 .paragraph-editable,
+.studio-doc-paragraph.doc-heading-6 .paragraph-editable,
+.studio-doc-paragraph[class*="doc-heading-4"].doc-clean-paragraph,
+.studio-doc-paragraph[class*="doc-heading-5"].doc-clean-paragraph,
+.studio-doc-paragraph[class*="doc-heading-6"].doc-clean-paragraph {
+  font-size: 1.04em;
+  text-transform: uppercase;
+}
+
+/* Numbered / bulleted list paragraphs: indent and show the captured marker. */
+.studio-doc-paragraph.doc-list {
+  padding-left: 30px;
+}
+
+.studio-doc-paragraph.doc-list-level-1 { padding-left: 52px; }
+.studio-doc-paragraph.doc-list-level-2 { padding-left: 74px; }
+.studio-doc-paragraph.doc-list-level-3 { padding-left: 96px; }
+.studio-doc-paragraph.doc-list-level-4,
+.studio-doc-paragraph.doc-list-level-5,
+.studio-doc-paragraph.doc-list-level-6 { padding-left: 118px; }
+
+.studio-doc-paragraph.doc-list[data-structure-label]::before {
+  color: var(--ink-soft);
+  content: attr(data-structure-label);
+  font-family: var(--doc-font);
+  font-variant-numeric: tabular-nums;
+  left: 11px;
+  position: absolute;
+  top: 8px;
+}
+
+.studio-doc-paragraph.doc-list-level-1[data-structure-label]::before { left: 33px; }
+.studio-doc-paragraph.doc-list-level-2[data-structure-label]::before { left: 55px; }
+.studio-doc-paragraph.doc-list-level-3[data-structure-label]::before { left: 77px; }
+
+/* Table-cell paragraphs: a safe bordered/indented "table" visual treatment.
+   We deliberately keep these as individual paragraph frames (real <table>
+   grouping would jeopardise per-paragraph clause/redline/comment anchoring), so
+   each cell paragraph retains its id and every data-hook. */
+.studio-doc-paragraph.doc-table-cell {
+  background: rgba(148, 163, 184, 0.06);
+  border-color: rgba(148, 163, 184, 0.4);
+  border-left: 3px solid rgba(148, 163, 184, 0.55);
+  border-radius: 4px;
+  margin-left: 14px;
+}
+
+.studio-doc-paragraph.doc-table-cell.has-clause {
+  background: rgba(85, 35, 178, 0.05);
 }
 
 .inline-del,

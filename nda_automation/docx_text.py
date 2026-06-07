@@ -320,6 +320,10 @@ def _paragraph_record(
     if table_context:
         record["table"] = dict(table_context)
 
+    runs = _paragraph_runs(paragraph, text)
+    if runs is not None:
+        record["runs"] = runs
+
     ppr = paragraph.find(f"{WORD_NS}pPr")
     style_id = _paragraph_style_id(ppr)
     style = styles.get(style_id or "", {})
@@ -606,6 +610,92 @@ def _paragraph_text(paragraph: ET.Element) -> str:
         elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
             parts.append("\n")
     return "".join(parts).strip()
+
+
+def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]] | None:
+    """Build a run-level breakdown of the paragraph with bold/italic/underline.
+
+    Returns ``None`` (and the caller keeps only the flat ``text``) unless at least
+    one run carries formatting AND the reconstructed run text exactly matches the
+    paragraph ``text``. The strict match keeps ``runs`` purely additive: any
+    paragraph whose runs cannot be faithfully reconstructed (unusual nesting,
+    fields, etc.) falls back to the flat-text rendering with no fidelity loss.
+    """
+    runs: List[Dict[str, object]] = []
+    any_formatted = False
+    for run in paragraph.iter(f"{WORD_NS}r"):
+        run_text = _run_text(run)
+        if not run_text:
+            continue
+        formatting = _run_formatting(run)
+        if formatting["bold"] or formatting["italic"] or formatting["underline"]:
+            any_formatted = True
+        if runs and _run_formatting_matches(runs[-1], formatting):
+            runs[-1]["text"] = str(runs[-1]["text"]) + run_text
+        else:
+            runs.append({"text": run_text, **formatting})
+
+    if not any_formatted or not runs:
+        return None
+
+    if "".join(str(run["text"]) for run in runs).strip() != text:
+        return None
+    return _trim_run_edges(runs)
+
+
+def _run_text(run: ET.Element) -> str:
+    parts = []
+    for node in run.iter():
+        if node.tag == f"{WORD_NS}t" and node.text:
+            parts.append(node.text)
+        elif node.tag == f"{WORD_NS}tab":
+            parts.append("\t")
+        elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _run_formatting(run: ET.Element) -> Dict[str, bool]:
+    rpr = run.find(f"{WORD_NS}rPr")
+    return {
+        "bold": _toggle_property(rpr, "b"),
+        "italic": _toggle_property(rpr, "i"),
+        "underline": _underline_property(rpr),
+    }
+
+
+def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, bool]) -> bool:
+    return all(bool(existing.get(key)) == formatting[key] for key in ("bold", "italic", "underline"))
+
+
+def _toggle_property(rpr: ET.Element | None, local_name: str) -> bool:
+    if rpr is None:
+        return False
+    element = rpr.find(f"{WORD_NS}{local_name}")
+    if element is None:
+        return False
+    value = _attr(element, "val").strip().lower()
+    # An on/off toggle is "on" unless explicitly disabled (val of 0/false/off/none).
+    return value not in {"0", "false", "off", "none"}
+
+
+def _underline_property(rpr: ET.Element | None) -> bool:
+    if rpr is None:
+        return False
+    element = rpr.find(f"{WORD_NS}u")
+    if element is None:
+        return False
+    value = _attr(element, "val").strip().lower()
+    return bool(value) and value != "none"
+
+
+def _trim_run_edges(runs: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Strip the leading/trailing whitespace the flat ``text`` already dropped."""
+    trimmed = [dict(run) for run in runs]
+    if trimmed:
+        trimmed[0]["text"] = str(trimmed[0]["text"]).lstrip()
+        trimmed[-1]["text"] = str(trimmed[-1]["text"]).rstrip()
+    return [run for run in trimmed if str(run["text"])]
 
 
 def _source_part_label(part_name: str) -> str:

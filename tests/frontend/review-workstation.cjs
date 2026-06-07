@@ -53,6 +53,8 @@ const tests = [
   ["surfaces review and export error details", testFailureUxDetails],
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["renders page image preview with text fallback", testRenderedPageImagePreview],
+  ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
+  ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
@@ -1298,6 +1300,230 @@ async function testRenderedPageImagePreview(page) {
   });
 
   await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+}
+
+async function testOriginalViewToggle(page) {
+  const renderText = "Original toggle paragraph.";
+  const matterId = "original_view";
+  const pagePng = testPngBuffer(6, 8);
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: pagePng });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-07T09:00:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "mutuality",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Mutuality",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: {
+      pages: [{
+        dpi: 180,
+        height: 2200,
+        image_url: `/api/matters/${matterId}/render-page/1`,
+        page_number: 1,
+        width: 1700,
+      }],
+      pdf_url: `/api/matters/${matterId}/render-pdf`,
+      source_label: "Converted DOCX",
+      status: "ready",
+    },
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate((payload) => {
+    renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+  await page.waitForSelector("#studioDocumentRender:not([hidden])");
+
+  // Original view: the faithful page-image surface is the focus and the text
+  // reconstruction is suppressed.
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector('[data-original-surface][data-render-status="ready"]');
+  assert.equal(await page.locator('[data-original-surface] .review-render-page img').count(), 1);
+  assert.equal(await page.locator("#studioDocumentRender .studio-doc-paragraph").count(), 0);
+  assert.equal(await page.locator("#studioDocumentRender [data-editable-paragraph-id]").count(), 0);
+  assert.equal(await page.locator('[data-original-surface][aria-pressed]').count(), 0);
+  assert.equal(await page.locator('[data-view-mode="original"]').getAttribute("aria-pressed"), "true");
+
+  // Switching back to Redline restores the editable text view.
+  await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
+  await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
+  assert.equal(await page.locator('[data-original-surface]').count(), 0);
+  await assertTextContains(page.locator("#studioDocumentRender"), renderText);
+
+  // Graceful fallback: no render available (DOCX without a document server).
+  await page.evaluate((payload) => {
+    state.selectedMatter = null;
+    renderResult({ ...payload, document_render: null }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector(".review-original-empty");
+  await assertTextContains(page.locator(".review-original-empty"), "High-fidelity preview isn't available here");
+  assert.equal(await page.locator("#studioDocumentRender .studio-doc-paragraph").count(), 0);
+
+  // The fallback button returns to the structured view (and re-renders text).
+  await page.locator(".review-original-fallback-button").click();
+  await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
+  assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "true");
+  await assertTextContains(page.locator("#studioDocumentRender"), renderText);
+
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+}
+
+async function testRichDocumentStructureRendering(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+
+  // Paragraphs carrying the extractor's additive structure metadata: a heading
+  // with run-level bold/italic/underline, a numbered list item, and a table cell.
+  const headingText = "Confidential Information Bold italic underlined";
+  const reviewResult = {
+    checked_at: "2026-06-07T10:00:00+01:00",
+    clauses: [{
+      decision: "fail",
+      evidence_paragraphs: [{ id: "p1", index: 1, source_index: 1, text: headingText }],
+      id: "confidential_information",
+      issue_label: "Present but wrong",
+      matched_paragraph_ids: ["p1"],
+      name: "Confidential Information",
+      needs_review: false,
+      passes: false,
+      reason: "The definition is too narrow.",
+      review_state: { requires_redline: true, state: "check" },
+      status: "check",
+    }],
+    overall_status: "needs_redline",
+    paragraphs: [
+      {
+        id: "p1",
+        index: 1,
+        source_index: 1,
+        text: headingText,
+        heading_level: 1,
+        style_name: "heading 1",
+        runs: [
+          { text: "Confidential Information ", bold: false, italic: false, underline: false },
+          { text: "Bold", bold: true, italic: false, underline: false },
+          { text: " ", bold: false, italic: false, underline: false },
+          { text: "italic", bold: false, italic: true, underline: false },
+          { text: " ", bold: false, italic: false, underline: false },
+          { text: "underlined", bold: false, italic: false, underline: true },
+        ],
+      },
+      {
+        id: "p2",
+        index: 2,
+        source_index: 2,
+        text: "First numbered obligation.",
+        numbering: { num_id: "1", level: 0, label: "1." },
+        structure_label: "1.",
+      },
+      {
+        id: "p3",
+        index: 3,
+        source_index: 3,
+        text: "Signature table cell text.",
+        table: { table_index: 1, row_index: 1, cell_index: 1 },
+      },
+    ],
+    redline_edits: [{
+      action: "replace_paragraph",
+      action_label: "Replace paragraph",
+      clause_id: "confidential_information",
+      id: "rich-redline-confidential-information",
+      original_text: headingText,
+      paragraph_id: "p1",
+      paragraph_index: 1,
+      replacement_text: "Confidential Information means all non-public information.",
+      status: "proposed",
+    }],
+    requirements_failed: 1,
+    requirements_needs_review: 0,
+    requirements_passed: 0,
+  };
+
+  await page.evaluate((payload) => {
+    renderResult(payload, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+  await page.waitForSelector("#studioDocumentRender:not([hidden])");
+
+  // Run-level formatting renders inside the editable body without changing its id.
+  const p1 = page.locator('[data-paragraph-id="p1"]');
+  assert.equal(await p1.locator('[data-editable-paragraph-id="p1"]').count(), 1);
+  assert.equal(await p1.locator("strong").first().innerText(), "Bold");
+  assert.equal(await p1.locator("em").first().innerText(), "italic");
+  assert.equal(await p1.locator("u").first().innerText(), "underlined");
+  // The flat text round-trips: innerText still equals the authoritative text.
+  assert.equal(
+    normalizeWhitespace(await p1.locator('[data-editable-paragraph-id="p1"]').innerText()),
+    headingText,
+  );
+
+  // Heading typography class is applied to the frame.
+  assert.ok(await p1.evaluate((node) => node.classList.contains("doc-heading") && node.classList.contains("doc-heading-1")));
+
+  // List paragraph indents and exposes its captured marker.
+  const p2 = page.locator('[data-paragraph-id="p2"]');
+  assert.ok(await p2.evaluate((node) => node.classList.contains("doc-list")));
+  assert.equal(await p2.getAttribute("data-structure-label"), "1.");
+
+  // Table-cell paragraph gets the safe bordered treatment and keeps its hooks.
+  const p3 = page.locator('[data-paragraph-id="p3"]');
+  assert.ok(await p3.evaluate((node) => node.classList.contains("doc-table-cell")));
+  assert.equal(await p3.getAttribute("data-table-index"), "1");
+  assert.equal(await p3.locator('[data-editable-paragraph-id="p3"]').count(), 1);
+
+  // HARD GUARD: clause selection still works after the richer rendering.
+  await p1.click();
+  await page.waitForSelector('[data-paragraph-id="p1"].selected');
+  assert.equal(await page.evaluate(() => state.selectedReviewClauseId), "confidential_information");
+
+  // HARD GUARD: the backend redline still anchors and previews on p1.
+  await assertRedlinePreview(p1, {
+    originalText: "Confidential Information Bold italic underlined",
+    insertedText: "non-public information",
+    editableCount: 1,
+  });
+  assert.equal(await p1.locator('[data-redline-edit-id="rich-redline-confidential-information"]').count(), 0);
+  assert.equal(
+    await page.evaluate(() => effectiveReviewRedlines().some((edit) => edit.paragraph_id === "p1")),
+    true,
+  );
+
+  // HARD GUARD: the per-paragraph comment composer still opens on a rich paragraph.
+  await page.evaluate(() => {
+    const paragraph = document.querySelector('[data-paragraph-id="p2"]');
+    const target = paragraph.querySelector('[data-editable-paragraph-id="p2"]') || paragraph;
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
+    const textNode = walker.nextNode();
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, Math.min(textNode.nodeValue.length, 5));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForSelector('[data-paragraph-id="p2"].has-selection .paragraph-comment-add');
+  await page.locator('[data-paragraph-id="p2"] .paragraph-comment-add').click();
+  await page.waitForSelector('[data-paragraph-id="p2"] .paragraph-comment-composer');
+  await assertTextContains(page.locator('[data-paragraph-id="p2"] .paragraph-comment-composer'), "SELECTED TEXT COMMENT");
 }
 
 async function testStructuredEvidenceAndRationale(page) {

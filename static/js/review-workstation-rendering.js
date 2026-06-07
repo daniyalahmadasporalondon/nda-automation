@@ -1907,6 +1907,16 @@ function renderStudioDocumentHighlights() {
     return;
   }
   const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
+
+  if (viewMode === VIEW_MODE_ORIGINAL) {
+    // "Original" is the faithful page-image view: show the rendered surface
+    // full-width as the focus and suppress the text reconstruction entirely.
+    studioDocumentRender.innerHTML = renderOriginalDocumentSurface(state.reviewDocumentRender);
+    bindOriginalViewFallbackControls();
+    showStudioDocumentRender();
+    return;
+  }
+
   const documentHtml = renderReviewDocument({
     clauses: state.reviewClauses,
     comments: currentReviewComments(),
@@ -1929,6 +1939,14 @@ function renderStudioDocumentHighlights() {
   bindParagraphCommentControls(studioDocumentRender);
 
   showStudioDocumentRender();
+}
+
+function bindOriginalViewFallbackControls() {
+  studioDocumentRender.querySelectorAll("[data-original-fallback-view-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setDocumentViewMode(button.dataset.originalFallbackViewMode || VIEW_MODE_REDLINE, { render: true });
+    });
+  });
 }
 
 function reviewDocumentRenderState(result) {
@@ -2169,6 +2187,76 @@ function renderPdfDocumentSurface(renderState) {
       <div class="review-pdf-status">
         <strong>${escapeHtml(status === "error" ? "PDF preview unavailable" : "PDF preview loading")}</strong>
         <span>${escapeHtml(message)}</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderOriginalDocumentSurface(renderState) {
+  const status = renderState?.status || "";
+  const pages = Array.isArray(renderState?.pages) ? renderState.pages : [];
+  const pdfUrl = renderState?.pdfUrl || "";
+  const pageLabel = renderState?.pageCount
+    ? `${renderState.pageCount} ${renderState.pageCount === 1 ? "page" : "pages"}`
+    : "";
+  const meta = [renderState?.sourceLabel, pageLabel].filter(Boolean).join(" · ");
+
+  if (status === "ready" && pages.length) {
+    return `
+      <section class="review-original-surface review-page-surface ready" data-review-pdf-surface data-review-render-surface data-original-surface data-render-status="ready" aria-label="Original document preview">
+        <div class="review-pdf-status">
+          <strong>${escapeHtml(meta || "Original document")}</strong>
+          <span>Exact document preview</span>
+        </div>
+        <div class="review-render-pages" data-review-render-pages>
+          ${pages.map((page, index) => renderDocumentPageImage(page, index, pages.length, renderState)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  if (status === "ready" && pdfUrl) {
+    return `
+      <section class="review-original-surface ready" data-review-pdf-surface data-original-surface data-render-status="ready" aria-label="Original document preview">
+        <div class="review-pdf-status">
+          <strong>${escapeHtml(meta || "Original document")}</strong>
+          <span>Exact document preview</span>
+        </div>
+        <iframe class="review-pdf-frame review-original-frame" src="${escapeHtml(pdfUrl)}" title="${escapeHtml(renderState?.sourceLabel || "Original document")}"></iframe>
+      </section>
+    `;
+  }
+
+  return renderOriginalUnavailableFallback(renderState, status);
+}
+
+// Graceful "Original" fallback: when no faithful page-image render exists (DOCX
+// with no document server, or a render that is still pending or failed), show a
+// friendly explanation and a button back to the structured Redline view — never
+// a blank or broken surface.
+function renderOriginalUnavailableFallback(renderState, status) {
+  const loading = status === "loading";
+  const errored = status === "error";
+  const title = loading
+    ? "Preparing the high-fidelity preview"
+    : "High-fidelity preview isn't available here";
+  let message;
+  if (loading) {
+    message = "The document server is rendering the exact page images. This view will update when they are ready.";
+  } else if (errored) {
+    const detail = stringValue(renderState?.error);
+    message = detail
+      ? `${detail} Showing the structured view instead.`
+      : "The document server could not render this document. Showing the structured view instead.";
+  } else {
+    message = "The document server isn't running, so the exact page images can't be shown. Showing the structured view instead.";
+  }
+  return `
+    <section class="review-original-surface review-original-empty ${escapeHtml(status || "unavailable")}" data-review-pdf-surface data-original-surface data-render-status="${escapeHtml(status || "unavailable")}" aria-label="Original document preview status">
+      <div class="review-original-empty-body">
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(message)}</p>
+        <button type="button" class="review-original-fallback-button" data-original-fallback-view-mode="redline">Show structured view</button>
       </div>
     </section>
   `;
