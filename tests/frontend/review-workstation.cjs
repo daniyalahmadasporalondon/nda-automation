@@ -54,6 +54,7 @@ const tests = [
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["renders page image preview with text fallback", testRenderedPageImagePreview],
   ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
+  ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
@@ -1382,6 +1383,226 @@ async function testOriginalViewToggle(page) {
   await assertTextContains(page.locator("#studioDocumentRender"), renderText);
 
   await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+}
+
+// Interactive PDF markup on the Original page-image view: existing annotations
+// render on the right page, a new comment + highlight POST normalized rects, a
+// comment delete fires DELETE and removes the pin, and Download hits
+// /marked-up-pdf. All endpoints are mocked with page.route.
+async function testPdfMarkupOriginalView(page) {
+  const renderText = "Markup target paragraph.";
+  const matterId = "markup_matter";
+  const pagePng = testPngBuffer(6, 8);
+
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: pagePng });
+  });
+
+  // Server-stored annotations: one comment on page 1, one highlight on page 1.
+  const storedAnnotations = [
+    {
+      id: "ann-comment-1",
+      page: 1,
+      type: "comment",
+      rect: { x: 0.25, y: 0.3, w: 0, h: 0 },
+      text: "Existing reviewer note",
+      author: "Reviewer",
+      created_at: "2026-06-07T10:00:00+01:00",
+    },
+    {
+      id: "ann-highlight-1",
+      page: 1,
+      type: "highlight",
+      rect: { x: 0.1, y: 0.6, w: 0.4, h: 0.08 },
+      color: "rgba(250, 204, 21, 0.4)",
+    },
+  ];
+
+  const postedBodies = [];
+  const deletedIds = [];
+  let markedUpPdfRequested = false;
+  let createdSeq = 0;
+
+  await page.route(`**/api/matters/${matterId}/pdf-annotations`, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      const body = request.postDataJSON();
+      postedBodies.push(body);
+      createdSeq += 1;
+      const annotation = {
+        id: `ann-new-${createdSeq}`,
+        page: body.page,
+        type: body.type,
+        rect: body.rect,
+        text: body.text || "",
+        color: body.color || "",
+        author: "Reviewer",
+        created_at: "2026-06-07T11:00:00+01:00",
+      };
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ annotation }),
+      });
+      return;
+    }
+    // GET
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ annotations: storedAnnotations }),
+    });
+  });
+
+  await page.route(`**/api/matters/${matterId}/pdf-annotations/*`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      const url = route.request().url();
+      deletedIds.push(url.split("/").pop());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.route(`**/api/matters/${matterId}/marked-up-pdf`, async (route) => {
+    markedUpPdfRequested = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/pdf",
+      body: Buffer.from("%PDF-1.4 marked up"),
+    });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-07T09:00:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "mutuality",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Mutuality",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: {
+      pages: [{
+        dpi: 180,
+        height: 2200,
+        image_url: `/api/matters/${matterId}/render-page/1`,
+        page_number: 1,
+        width: 1700,
+      }],
+      pdf_url: `/api/matters/${matterId}/render-pdf`,
+      source_label: "Original PDF",
+      status: "ready",
+    },
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate((payload) => {
+    // A loaded PDF matter so the markup controller mounts (it gates on an id).
+    state.selectedMatter = { id: payload.matterId, source_filename: "agreement.pdf" };
+    renderResult(payload.reviewResult, payload.reviewResult.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, { matterId, reviewResult });
+  await page.waitForSelector("#studioDocumentRender:not([hidden])");
+
+  // Enter the Original view -> markup toolbar mounts and stored annotations load.
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector('[data-original-surface][data-render-status="ready"]');
+  await page.waitForSelector("[data-pdf-markup-toolbar]");
+
+  // Both existing overlays render on page 1 at sensible positions.
+  await page.waitForSelector('[data-annotation-id="ann-comment-1"]');
+  await page.waitForSelector('[data-annotation-id="ann-highlight-1"]');
+  const pageImageBox = await page.locator('[data-review-render-page="1"] .review-render-page-image').boundingBox();
+  const pinBox = await page.locator('[data-annotation-id="ann-comment-1"]').boundingBox();
+  // The comment pin sits near x=0.25,y=0.3 of the page image (pin is anchored at
+  // its bottom-left, so compare against the page-relative point).
+  const pinRelX = (pinBox.x + pinBox.width / 2 - pageImageBox.x) / pageImageBox.width;
+  assert.ok(pinRelX > 0.15 && pinRelX < 0.35, `pin x ${pinRelX} should track 0.25`);
+  const highlightBox = await page.locator('[data-annotation-id="ann-highlight-1"]').boundingBox();
+  const highlightRelX = (highlightBox.x - pageImageBox.x) / pageImageBox.width;
+  assert.ok(highlightRelX > 0.04 && highlightRelX < 0.18, `highlight x ${highlightRelX} should track 0.1`);
+
+  // --- Add a comment: select the Comment tool, click the page, type, confirm.
+  await page.locator('[data-pdf-markup-tool="comment"]').click();
+  assert.equal(await page.locator('[data-pdf-markup-tool="comment"]').getAttribute("aria-pressed"), "true");
+  const commentClickX = pageImageBox.x + pageImageBox.width * 0.5;
+  const commentClickY = pageImageBox.y + pageImageBox.height * 0.4;
+  await page.mouse.click(commentClickX, commentClickY);
+  await page.waitForSelector("[data-pdf-markup-composer]");
+  await page.locator("[data-pdf-markup-comment-input]").fill("Fresh comment from test");
+  await page.locator("[data-pdf-markup-comment-confirm]").click();
+  await page.waitForSelector('[data-annotation-id="ann-new-1"]');
+
+  const commentPost = postedBodies.find((body) => body.type === "comment");
+  assert.ok(commentPost, "a comment was POSTed");
+  assert.equal(commentPost.type, "comment");
+  assert.equal(commentPost.text, "Fresh comment from test");
+  assert.equal(commentPost.page, 1);
+  assert.ok(commentPost.rect.x >= 0 && commentPost.rect.x <= 1, "comment rect.x normalized");
+  assert.ok(commentPost.rect.y >= 0 && commentPost.rect.y <= 1, "comment rect.y normalized");
+  assert.ok(Math.abs(commentPost.rect.w) < 1e-6 && Math.abs(commentPost.rect.h) < 1e-6, "comment is a point");
+  assert.ok(Math.abs(commentPost.rect.x - 0.5) < 0.1, `comment rect.x ${commentPost.rect.x} tracks the click`);
+
+  // --- Add a highlight: select the Highlight tool, press-drag a box.
+  await page.locator('[data-pdf-markup-tool="highlight"]').click();
+  assert.equal(await page.locator('[data-pdf-markup-tool="highlight"]').getAttribute("aria-pressed"), "true");
+  const dragStartX = pageImageBox.x + pageImageBox.width * 0.2;
+  const dragStartY = pageImageBox.y + pageImageBox.height * 0.7;
+  const dragEndX = pageImageBox.x + pageImageBox.width * 0.6;
+  const dragEndY = pageImageBox.y + pageImageBox.height * 0.8;
+  await page.mouse.move(dragStartX, dragStartY);
+  await page.mouse.down();
+  await page.mouse.move((dragStartX + dragEndX) / 2, (dragStartY + dragEndY) / 2);
+  await page.mouse.move(dragEndX, dragEndY);
+  await page.mouse.up();
+  await page.waitForSelector('[data-annotation-id="ann-new-2"]');
+
+  const highlightPost = postedBodies.find((body) => body.type === "highlight");
+  assert.ok(highlightPost, "a highlight was POSTed");
+  assert.equal(highlightPost.type, "highlight");
+  assert.equal(highlightPost.page, 1);
+  assert.ok(highlightPost.rect.w > 0 && highlightPost.rect.h > 0, "highlight has a non-zero box");
+  assert.ok(highlightPost.rect.w <= 1 && highlightPost.rect.h <= 1, "highlight box normalized");
+  assert.ok(Math.abs(highlightPost.rect.x - 0.2) < 0.1, `highlight rect.x ${highlightPost.rect.x} tracks the drag start`);
+
+  // --- Delete the existing comment via its popover.
+  await page.locator('[data-annotation-id="ann-comment-1"]').click();
+  await page.waitForSelector('[data-pdf-markup-popover="ann-comment-1"]');
+  await assertTextContains(page.locator('[data-pdf-markup-popover="ann-comment-1"]'), "Existing reviewer note");
+  await page.locator("[data-pdf-markup-popover-delete]").click();
+  await page.waitForSelector('[data-annotation-id="ann-comment-1"]', { state: "detached" });
+  assert.deepEqual(deletedIds, ["ann-comment-1"]);
+
+  // --- Download the marked-up PDF.
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("[data-pdf-markup-download]").click();
+  const download = await downloadPromise;
+  assert.ok(markedUpPdfRequested, "the marked-up PDF endpoint was hit");
+  assert.match(await download.suggestedFilename(), /marked-up\.pdf$/);
+
+  // --- Leaving the Original view tears down the toolbar/overlays.
+  await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
+  await page.waitForSelector("[data-pdf-markup-toolbar]", { state: "detached" });
+  assert.equal(await page.locator("[data-annotation-id]").count(), 0);
+
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+  await page.unroute(`**/api/matters/${matterId}/pdf-annotations`);
+  await page.unroute(`**/api/matters/${matterId}/pdf-annotations/*`);
+  await page.unroute(`**/api/matters/${matterId}/marked-up-pdf`);
 }
 
 async function testRichDocumentStructureRendering(page) {

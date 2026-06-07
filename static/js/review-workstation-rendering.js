@@ -1898,11 +1898,13 @@ function renderStudioDocumentHighlights() {
   if (!studioDocumentRender) return;
 
   if (!state.reviewClauses.length) {
+    notifyPdfMarkupLeaveOriginal();
     showStudioSourceEditor();
     return;
   }
 
   if (!state.reviewParagraphs.length) {
+    notifyPdfMarkupLeaveOriginal();
     showStudioSourceEditor();
     return;
   }
@@ -1914,8 +1916,15 @@ function renderStudioDocumentHighlights() {
     studioDocumentRender.innerHTML = renderOriginalDocumentSurface(state.reviewDocumentRender);
     bindOriginalViewFallbackControls();
     showStudioDocumentRender();
+    // Overlay the interactive PDF markup layer (toolbar + annotations) on the
+    // freshly-painted page-image surface. The controller self-gates to a matter
+    // being loaded and re-loads only when the matter changes.
+    notifyPdfMarkupOriginalRendered();
     return;
   }
+  // Any non-Original render means we have left the Original view: drop the
+  // markup toolbar/overlays so they never bleed into the other modes.
+  notifyPdfMarkupLeaveOriginal();
 
   const documentHtml = renderReviewDocument({
     clauses: state.reviewClauses,
@@ -1947,6 +1956,21 @@ function bindOriginalViewFallbackControls() {
       setDocumentViewMode(button.dataset.originalFallbackViewMode || VIEW_MODE_REDLINE, { render: true });
     });
   });
+}
+
+// Bridges to the interactive PDF markup controller (constructed in app.js).
+// Guarded so the rendering module stays usable even if the controller is absent
+// (e.g. an isolated render unit test that does not boot the full app).
+function notifyPdfMarkupOriginalRendered() {
+  if (typeof pdfMarkupController !== "undefined" && pdfMarkupController) {
+    pdfMarkupController.onOriginalSurfaceRendered();
+  }
+}
+
+function notifyPdfMarkupLeaveOriginal() {
+  if (typeof pdfMarkupController !== "undefined" && pdfMarkupController) {
+    pdfMarkupController.onLeaveOriginal();
+  }
 }
 
 function reviewDocumentRenderState(result) {

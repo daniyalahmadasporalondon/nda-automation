@@ -2349,6 +2349,235 @@ h3 {
   filter: brightness(1.05);
 }
 
+/* ---- Interactive PDF markup (Original view annotation layer) ------------- */
+
+.pdf-markup-toolbar {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: var(--r-sm, 8px);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--text-font);
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+
+.pdf-markup-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pdf-markup-tool {
+  background: #f1f5f9;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+}
+
+.pdf-markup-tool:hover {
+  border-color: rgba(79, 27, 179, 0.5);
+}
+
+.pdf-markup-tool.active,
+.pdf-markup-tool[aria-pressed="true"] {
+  background: var(--brand, #4f1bb3);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+.pdf-markup-download {
+  background: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+}
+
+.pdf-markup-download:hover {
+  border-color: rgba(79, 27, 179, 0.5);
+}
+
+.pdf-markup-download:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* The page-image host becomes the positioning context for overlays. */
+.review-render-page-image.pdf-markup-host {
+  position: relative;
+}
+
+.review-render-page-image.pdf-markup-host.pdf-markup-tool-comment {
+  cursor: crosshair;
+}
+
+.pdf-markup-layer {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+
+/* Only intercept pointer events while a draw tool is active. */
+.pdf-markup-layer.interactive {
+  pointer-events: auto;
+}
+
+.pdf-markup-overlay {
+  box-sizing: border-box;
+  pointer-events: auto;
+  position: absolute;
+}
+
+.pdf-markup-highlight {
+  background: var(--pdf-markup-color, rgba(250, 204, 21, 0.38));
+  border: 1px solid rgba(202, 138, 4, 0.55);
+  border-radius: 2px;
+}
+
+.pdf-markup-strikethrough {
+  background: transparent;
+  border: 1px dashed rgba(220, 38, 38, 0.35);
+}
+
+.pdf-markup-strikethrough .pdf-markup-strike-line {
+  background: var(--pdf-markup-color, rgba(220, 38, 38, 0.85));
+  height: 2px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.pdf-markup-preview {
+  opacity: 0.75;
+}
+
+.pdf-markup-delete {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.85);
+  border: none;
+  border-radius: 50%;
+  color: #ffffff;
+  cursor: pointer;
+  display: none;
+  font-size: 13px;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  position: absolute;
+  right: -9px;
+  top: -9px;
+  width: 18px;
+}
+
+.pdf-markup-overlay:hover .pdf-markup-delete,
+.pdf-markup-overlay:focus-within .pdf-markup-delete {
+  display: flex;
+}
+
+.pdf-markup-pin {
+  align-items: center;
+  background: var(--brand, #4f1bb3);
+  border: 2px solid #ffffff;
+  border-radius: 50% 50% 50% 2px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.4);
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  font-size: 11px;
+  height: 22px;
+  justify-content: center;
+  pointer-events: auto;
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: 22px;
+}
+
+.pdf-markup-composer,
+.pdf-markup-popover {
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.8);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.22);
+  font-family: var(--text-font);
+  max-width: 260px;
+  padding: 10px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 5;
+}
+
+.pdf-markup-composer-input {
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  border-radius: 6px;
+  box-sizing: border-box;
+  font-family: var(--text-font);
+  font-size: 12px;
+  padding: 6px;
+  resize: vertical;
+  width: 220px;
+}
+
+.pdf-markup-composer-actions,
+.pdf-markup-popover-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.pdf-markup-composer-confirm,
+.pdf-markup-popover-delete {
+  background: var(--brand, #4f1bb3);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+}
+
+.pdf-markup-composer-cancel {
+  background: #f1f5f9;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+}
+
+.pdf-markup-popover-delete {
+  background: #dc2626;
+}
+
+.pdf-markup-popover-text {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .review-fallback-divider {
   align-items: center;
   color: var(--ink-soft);
