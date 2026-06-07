@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import threading
 from typing import Any
 
@@ -97,6 +98,16 @@ DEFAULT_GMAIL_SETTINGS = {
     "last_sync_skipped_count": 0,
     "sync_history": [],
 }
+DEFAULT_DRIVE_SETTINGS = {
+    "enabled": False,
+    "folder_id": "",
+    "folder_name": "",
+}
+MAX_DRIVE_FOLDER_ID_LENGTH = 256
+MAX_DRIVE_FOLDER_NAME_LENGTH = 200
+# Google Drive ids are URL-safe base64-ish tokens; restrict to that alphabet so a
+# stored folder id can only ever be a plain id (never a path, URL or traversal).
+_DRIVE_FOLDER_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 DEFAULT_AI_SETTINGS = {
     "enabled": None,
     "provider": "",
@@ -128,6 +139,14 @@ def gmail_settings() -> dict[str, Any]:
     if not isinstance(gmail, dict):
         gmail = {}
     return gmail_settings_from_payload(gmail)
+
+
+def drive_settings() -> dict[str, Any]:
+    settings = _load_settings()
+    drive = settings.get("drive")
+    if not isinstance(drive, dict):
+        drive = {}
+    return drive_settings_from_payload(drive)
 
 
 def ai_settings() -> dict[str, Any]:
@@ -265,9 +284,32 @@ def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return gmail_settings_from_payload(settings["gmail"])
 
 
+def update_drive_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {
+        key: _clean_drive_setting(key, value)
+        for key, value in updates.items()
+        if _valid_drive_setting(key, value)
+    }
+    if not cleaned:
+        return drive_settings()
+
+    with _locked_settings():
+        settings = _load_settings_unlocked()
+        drive = settings.get("drive")
+        if not isinstance(drive, dict):
+            drive = {}
+        settings["drive"] = {**drive_settings_from_payload(drive), **cleaned}
+        _save_settings_unlocked(settings)
+        return drive_settings_from_payload(settings["drive"])
+
+
 def gmail_role_enabled(role: str) -> bool:
     key = f"{role}_enabled"
     return gmail_settings().get(key, True)
+
+
+def drive_enabled() -> bool:
+    return bool(drive_settings().get("enabled", DEFAULT_DRIVE_SETTINGS["enabled"]))
 
 
 def gmail_inbound_search_terms() -> list[str]:
@@ -368,6 +410,14 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def drive_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(payload.get("enabled", DEFAULT_DRIVE_SETTINGS["enabled"])),
+        "folder_id": _clean_drive_folder_id(payload.get("folder_id")),
+        "folder_name": _clean_drive_folder_name(payload.get("folder_name")),
+    }
+
+
 def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     enabled = payload.get("enabled", DEFAULT_AI_SETTINGS["enabled"])
     if not isinstance(enabled, bool):
@@ -458,6 +508,49 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
     if key == "sync_frequency":
         return isinstance(value, str) and value in GMAIL_SYNC_FREQUENCIES
     return False
+
+
+def _valid_drive_setting(key: str, value: Any) -> bool:
+    if key == "enabled":
+        return isinstance(value, bool)
+    if key in ("folder_id", "folder_name"):
+        return isinstance(value, str)
+    return False
+
+
+def _clean_drive_setting(key: str, value: Any) -> Any:
+    if key == "enabled":
+        return bool(value)
+    if key == "folder_id":
+        return _clean_drive_folder_id(value)
+    if key == "folder_name":
+        return _clean_drive_folder_name(value)
+    return value
+
+
+def _clean_drive_folder_id(value: object) -> str:
+    """Normalise a stored Drive folder id.
+
+    The folder id is stored verbatim and only ever passed to the Drive API
+    ``parents`` field; reject anything that is not a plain id token (no path
+    traversal, whitespace, slashes or URLs) so it can never be interpolated into
+    a filesystem path or another request.
+    """
+    folder_id = str(value or "").strip()
+    if not folder_id:
+        return ""
+    if len(folder_id) > MAX_DRIVE_FOLDER_ID_LENGTH:
+        raise AppSettingsError("Drive folder id is too long.")
+    if not _DRIVE_FOLDER_ID_PATTERN.fullmatch(folder_id):
+        raise AppSettingsError(
+            "Drive folder id must be the plain Drive folder id (letters, digits, '-' and '_' only)."
+        )
+    return folder_id
+
+
+def _clean_drive_folder_name(value: object) -> str:
+    name = " ".join(str(value or "").split())
+    return name[:MAX_DRIVE_FOLDER_NAME_LENGTH]
 
 
 def gmail_search_terms_from_payload(value: object, *, fallback: list[str] | None = None) -> list[str]:

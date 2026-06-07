@@ -68,6 +68,7 @@ from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import approval as approval_routes
 from .routes import auth as auth_routes
+from .routes import drive as drive_routes
 from .routes import entities as entity_routes
 from .routes import generation as generation_routes
 from .routes import gmail as gmail_routes
@@ -202,6 +203,9 @@ _GET_EXACT_ROUTES = {
     "/api/gmail/status": gmail_routes.handle_gmail_status,
     "/auth/gmail/start": gmail_routes.handle_gmail_connect_start,
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
+    "/api/drive/status": drive_routes.handle_drive_status,
+    "/auth/drive/start": drive_routes.handle_drive_connect_start,
+    "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
     "/api/matters/export": admin_routes.handle_matter_backup,
@@ -228,6 +232,8 @@ _POST_EXACT_ROUTES = {
     "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
     "/api/gmail/settings": gmail_routes.handle_gmail_settings_update,
     "/api/gmail/disconnect": gmail_routes.handle_gmail_disconnect,
+    "/api/drive/upload-matter": drive_routes.handle_drive_upload_matter,
+    "/api/admin/drive-settings": drive_routes.handle_drive_settings_update,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,

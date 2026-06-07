@@ -130,10 +130,12 @@ GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 ROLE_TOKEN_ENV = {
     "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
     "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
+    "drive": "NDA_DRIVE_TOKEN_PATH",
 }
 ROLE_LOCAL_TOKEN_FILENAME = {
     "inbound": "inbound-token.json",
     "outbound": "outbound-token.json",
+    "drive": "drive-token.json",
 }
 GMAIL_OAUTH_REDIRECT_URI_ENV = "NDA_GMAIL_OAUTH_REDIRECT_URI"
 GMAIL_OAUTH_AUTH_URL = google_identity.GOOGLE_AUTH_URL
@@ -141,6 +143,9 @@ GMAIL_OAUTH_TOKEN_URL = google_identity.GOOGLE_TOKEN_URL
 GMAIL_OAUTH_SCOPES_BY_ROLE = {
     "inbound": ("https://www.googleapis.com/auth/gmail.readonly",),
     "outbound": ("https://www.googleapis.com/auth/gmail.send",),
+    # Least-privilege Drive access: drive.file lets the app touch only the files
+    # it creates, never the user's whole Drive. Used by the Save-to-Drive flow.
+    "drive": ("https://www.googleapis.com/auth/drive.file",),
 }
 _TOKEN_LOCK = threading.RLock()
 _PROFILE_CACHE_LOCK = threading.RLock()
