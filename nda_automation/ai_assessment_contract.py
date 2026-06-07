@@ -152,11 +152,16 @@ def validate_ai_clause_assessment(
         if schema_version != AI_ASSESSMENT_CONTRACT_VERSION:
             errors.append(f"{location}: schema_version must be {AI_ASSESSMENT_CONTRACT_VERSION}")
 
-    paragraph_by_id = {
-        str(paragraph.get("id") or ""): str(paragraph.get("text") or "")
+    # Preserve packet order: the reviewed paragraphs arrive as an ordered list,
+    # and document-wide grounding needs a STABLE, deterministic concatenation. An
+    # ordered list of (id, text) is the source of truth; paragraph_by_id is the
+    # by-id lookup derived from it.
+    ordered_paragraphs = [
+        (str(paragraph.get("id") or ""), str(paragraph.get("text") or ""))
         for paragraph in paragraphs
         if str(paragraph.get("id") or "")
-    }
+    ]
+    paragraph_by_id = dict(ordered_paragraphs)
     valid_clause_id_set = {str(clause_id).strip() for clause_id in valid_clause_ids if str(clause_id).strip()}
 
     clause_id = _required_text(assessment, "clause_id", location, errors)
@@ -168,7 +173,7 @@ def validate_ai_clause_assessment(
     rationale = _required_text(assessment, "rationale", location, errors)
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
-    evidence = _validated_evidence(assessment, paragraph_by_id, location, errors)
+    evidence = _validated_evidence(assessment, paragraph_by_id, ordered_paragraphs, location, errors)
     proposed_redline = _validated_proposed_redline(
         assessment,
         paragraph_by_id,
@@ -299,6 +304,7 @@ def _required_bool(assessment: Mapping[str, Any], key: str, location: str, error
 def _validated_evidence(
     assessment: Mapping[str, Any],
     paragraph_by_id: Mapping[str, str],
+    ordered_paragraphs: Sequence[tuple[str, str]],
     location: str,
     errors: list[str],
 ) -> list[dict[str, str]]:
@@ -325,25 +331,149 @@ def _validated_evidence(
             continue
         if not relevance:
             errors.append(f"{item_location}: relevance is required")
-        if paragraph_id:
-            paragraph_text = paragraph_by_id.get(paragraph_id)
-            if paragraph_text is None:
-                errors.append(f"{item_location}: paragraph_id does not exist: {paragraph_id}")
-                continue
-            if not _quote_appears_in_text(quote, paragraph_text):
-                errors.append(f"{item_location}: quote does not appear in paragraph {paragraph_id}")
-                continue
-        else:
-            matching_paragraph_ids = _paragraph_ids_for_quote(quote, paragraph_by_id)
-            if not matching_paragraph_ids:
-                errors.append(f"{item_location}: quote does not appear in any reviewed paragraph")
-                continue
-            if len(matching_paragraph_ids) > 1:
-                errors.append(f"{item_location}: quote matches multiple reviewed paragraphs; provide paragraph_id")
-                continue
-            paragraph_id = matching_paragraph_ids[0]
-        cleaned.append({"paragraph_id": paragraph_id, "quote": quote, "relevance": relevance})
+
+        # The cited paragraph still must exist if the model named one: a
+        # paragraph_id pointing nowhere is a structural error (the model invented
+        # an id), distinct from a quote that simply spans paragraph boundaries.
+        if paragraph_id and paragraph_id not in paragraph_by_id:
+            errors.append(f"{item_location}: paragraph_id does not exist: {paragraph_id}")
+            continue
+
+        # Grounding precedence (a -> b/c -> d -> e):
+        #   a. grounds in the cited paragraph -> keep paragraph_id.
+        #   b/c. else grounds DOCUMENT-WIDE (whole-quote or ellipsis-split span)
+        #        -> re-anchor paragraph_id to the reviewed paragraph that holds
+        #           the first segment.
+        #   e. grounds nowhere -> a genuine fabrication: DROP this single item
+        #      (do not raise, do not crash the document) and let GATE 2 downgrade
+        #      the now-less-supported finding.
+        resolved_id, error = _ground_evidence_quote(
+            quote, paragraph_id, paragraph_by_id, ordered_paragraphs, item_location
+        )
+        if error is not None:
+            # Structural ambiguity, not a span: a short quote-only phrase that
+            # recurs whole in several paragraphs is genuinely ambiguous; keep the
+            # long-standing "provide paragraph_id" guard rather than guessing.
+            errors.append(error)
+            continue
+        if resolved_id is None:
+            # Fabricated quote: omit it like a skipped item. A non-pass finding
+            # that ends with zero grounded evidence is forced to human review by
+            # the evidence-grounding resilience layer (GATE 2), never a silent
+            # pass; this keeps the whole-document review alive instead of raising.
+            continue
+        cleaned.append({"paragraph_id": resolved_id, "quote": quote, "relevance": relevance})
     return cleaned
+
+
+def _ground_evidence_quote(
+    quote: str,
+    cited_paragraph_id: str,
+    paragraph_by_id: Mapping[str, str],
+    ordered_paragraphs: Sequence[tuple[str, str]],
+    item_location: str,
+) -> tuple[str | None, str | None]:
+    """Resolve a quote to a grounding paragraph_id.
+
+    Returns ``(paragraph_id, None)`` when the quote grounds, ``(None, None)`` when
+    it grounds nowhere (a fabrication to be dropped), or ``(None, error)`` when it
+    is a structurally ambiguous quote-only phrase the model must disambiguate.
+
+    (a) When the model cites a paragraph and the quote is a substring of it, keep
+    that id. (b/c) Otherwise check the whole document (paragraph texts joined in
+    packet order) for the quote as a contiguous span or as ellipsis-elided
+    segments that appear in order. (d) On a document-wide match, re-anchor to the
+    first reviewed paragraph (packet order) whose text contains the quote's first
+    segment, so evidence still points at a real containing paragraph for redline
+    anchoring.
+    """
+    # (a) Grounds directly in the paragraph the model cited.
+    if cited_paragraph_id:
+        cited_text = paragraph_by_id.get(cited_paragraph_id)
+        if cited_text is not None and _quote_appears_in_text(quote, cited_text):
+            return cited_paragraph_id, None
+    else:
+        # The model cited no paragraph. If the quote sits WHOLE inside one or more
+        # single paragraphs, the existing precision guards apply: exactly one ->
+        # accept it; several -> ambiguous, demand a paragraph_id. Only a quote that
+        # fits NO single paragraph (i.e. it spans boundaries) falls through to the
+        # document-wide span grounding below.
+        single_paragraph_ids = _paragraph_ids_for_quote(quote, paragraph_by_id)
+        if len(single_paragraph_ids) == 1:
+            return single_paragraph_ids[0], None
+        if len(single_paragraph_ids) > 1:
+            return None, f"{item_location}: quote matches multiple reviewed paragraphs; provide paragraph_id"
+
+    # (b/c) Document-wide grounding: the quote is real document text that crosses
+    # the extractor's fine-grained paragraph boundaries (a full sentence, a whole
+    # signature block) and may elide its middle with ``...``.
+    doc_text = _document_text(ordered_paragraphs)
+    if _quote_appears_in_text(quote, doc_text) or _ellipsis_segments_appear_in_order(quote, doc_text):
+        # (d) Re-anchor to the first reviewed paragraph (packet order) that
+        # contains the quote's first segment, deterministically.
+        first_segment = _first_quote_segment(quote)
+        anchor_id = _first_paragraph_containing(first_segment, ordered_paragraphs)
+        if anchor_id is not None:
+            return anchor_id, None
+        # Defensive: the span grounds across paragraphs but no single paragraph
+        # holds the first segment whole (it too crosses a boundary). Anchor to the
+        # first reviewed paragraph so the citation still points somewhere real.
+        if ordered_paragraphs:
+            return ordered_paragraphs[0][0], None
+
+    # (e) Grounds nowhere, even document-wide: a genuine fabrication.
+    return None, None
+
+
+def _document_text(ordered_paragraphs: Sequence[tuple[str, str]]) -> str:
+    return "\n".join(text for _paragraph_id, text in ordered_paragraphs)
+
+
+def _first_paragraph_containing(
+    segment: str,
+    ordered_paragraphs: Sequence[tuple[str, str]],
+) -> str | None:
+    if not segment:
+        return None
+    for paragraph_id, paragraph_text in ordered_paragraphs:
+        if _quote_appears_in_text(segment, paragraph_text):
+            return paragraph_id
+    return None
+
+
+def _first_quote_segment(quote: str) -> str:
+    for segment in _ellipsis_split(quote):
+        if segment.strip():
+            return segment
+    return quote
+
+
+def _ellipsis_split(quote: str) -> list[str]:
+    # Split on a literal ``...`` or the ellipsis glyph; the model uses either to
+    # elide the middle of a span it is quoting.
+    return [segment for segment in re.split(r"\.\.\.|…", str(quote or ""))]
+
+
+def _ellipsis_segments_appear_in_order(quote: str, text: str) -> bool:
+    """True when the quote's ellipsis-separated segments all appear, in order.
+
+    Each non-empty segment must be found at or after the previous match position
+    in the normalized text, so an elided span grounds without the elided middle.
+    """
+    segments = [segment for segment in _ellipsis_split(quote) if segment.strip()]
+    if len(segments) < 2:
+        return False
+    normalized_text = _normalize_quote_text(text)
+    position = 0
+    for segment in segments:
+        normalized_segment = _normalize_quote_text(segment)
+        if not normalized_segment:
+            continue
+        found = normalized_text.find(normalized_segment, position)
+        if found < 0:
+            return False
+        position = found + len(normalized_segment)
+    return True
 
 
 def _validated_proposed_redline(
@@ -421,5 +551,46 @@ def _quote_appears_in_text(quote: str, text: str) -> bool:
     return bool(normalized_quote and normalized_quote in normalized_text)
 
 
+# Typographic glyphs an inbound real DOCX carries (curly quotes, dash variants,
+# ellipsis char, non-breaking/thin spaces) that the model may echo straight while
+# the extracted paragraph holds a different glyph for the same character. Folding
+# them to a canonical ASCII form BEFORE whitespace-collapse + lowercase makes
+# grounding robust without weakening the "the quote is real text" guarantee.
+_QUOTE_GLYPH_TRANSLATION = {
+    # Curly / typographic single quotes and primes -> straight apostrophe.
+    ord("‘"): "'",  # left single quotation mark
+    ord("’"): "'",  # right single quotation mark
+    ord("‚"): "'",  # single low-9 quotation mark
+    ord("‛"): "'",  # single high-reversed-9 quotation mark
+    ord("′"): "'",  # prime
+    # Curly / typographic double quotes -> straight double quote.
+    ord("“"): '"',  # left double quotation mark
+    ord("”"): '"',  # right double quotation mark
+    ord("„"): '"',  # double low-9 quotation mark
+    ord("‟"): '"',  # double high-reversed-9 quotation mark
+    ord("″"): '"',  # double prime
+    # Dash variants (en, em, figure, minus, hyphen variants) -> ASCII hyphen.
+    ord("‐"): "-",  # hyphen
+    ord("‑"): "-",  # non-breaking hyphen
+    ord("‒"): "-",  # figure dash
+    ord("–"): "-",  # en dash
+    ord("—"): "-",  # em dash
+    ord("―"): "-",  # horizontal bar
+    ord("−"): "-",  # minus sign
+    # Ellipsis char -> three ASCII dots (keeps ellipsis-split logic uniform).
+    ord("…"): "...",  # horizontal ellipsis
+    # Non-breaking / thin / narrow spaces -> plain space (whitespace-collapsed next).
+    ord(" "): " ",  # no-break space
+    ord(" "): " ",  # figure space
+    ord(" "): " ",  # thin space
+    ord(" "): " ",  # narrow no-break space
+}
+
+
+def _fold_typographic_glyphs(value: str) -> str:
+    return str(value or "").translate(_QUOTE_GLYPH_TRANSLATION)
+
+
 def _normalize_quote_text(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    folded = _fold_typographic_glyphs(value)
+    return re.sub(r"\s+", " ", folded).strip().lower()
