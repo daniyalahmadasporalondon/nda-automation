@@ -238,6 +238,19 @@ const reviewStructureController = createContractStructureController({
   state,
   root: studioDetailPanel,
 });
+// Interactive PDF markup overlay for the review workstation's Original view.
+// It mounts only while the Original page-image surface is shown and a matter is
+// loaded; the render funnel (renderStudioDocumentHighlights) drives its
+// onOriginalSurfaceRendered / onLeaveOriginal lifecycle.
+const pdfMarkupController = createPdfMarkupController({
+  state,
+  downloadBlob,
+  // escapeHtml is resolved lazily inside the controller (via window.escapeHtml)
+  // because it is bridged by a deferred module that runs after this load-time
+  // construction; passing it here would capture an undefined reference.
+  getSurfaceRoot: () => studioDocumentRender?.querySelector("[data-original-surface]") || null,
+  matterIsPdf: () => Boolean(state.selectedMatter?.id),
+});
 
 setupSourceEditors();
 setupReviewWorkstationActions();
