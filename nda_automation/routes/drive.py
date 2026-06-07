@@ -7,7 +7,8 @@ Mirrors the Gmail outbound routes (``routes/gmail.py``) but for Google Drive:
   flow, role fixed to ``"drive"`` (least-privilege ``drive.file`` scope). Reuses
   the same ``oauth_state`` + token exchange + ``save_user_gmail_oauth_token`` as
   the Gmail connect flow.
-* ``POST /api/drive/upload-matter`` — push a matter's final NDA into Drive.
+* ``POST /api/drive/upload-matter`` — SYNC a matter's whole artifact set into a
+  structured per-matter Drive folder (Drive v2).
 * ``POST /api/admin/drive-settings`` — admin-only upload-folder + enable config.
 
 Matter ownership is validated exactly like ``send-redline`` via
@@ -22,7 +23,6 @@ from urllib.parse import parse_qs, urlparse
 from .. import (
     app_settings,
     artifact_registry,
-    artifact_service,
     drive_integration,
     gmail_integration,
     matter_store,
@@ -33,17 +33,7 @@ from .. import (
 from .common import request_owner_user_id, require_admin
 from .gmail import gmail_owner_user_id
 
-# Role preference for the document to upload: a reviewed export is the most
-# authoritative, then a freshly generated NDA, then the original counterparty
-# document. ``upload-matter`` resolves the best available unless the caller pins
-# an explicit role.
-DRIVE_ROLE_PREFERENCE = (
-    artifact_registry.ROLE_REVIEWED,
-    artifact_registry.ROLE_GENERATED,
-    artifact_registry.ROLE_ORIGINAL,
-)
 DRIVE_CONNECT_URL = "/auth/drive/start"
-MAX_DRIVE_FILENAME_SUBJECT_CHARS = 120
 
 
 def handle_drive_status(handler, *, send_body: bool = True) -> None:
@@ -123,6 +113,13 @@ def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
 
 
 def handle_drive_upload_matter(handler) -> None:
+    """Sync a matter's whole artifact set into a structured Drive folder (v2).
+
+    Mirrors :func:`artifact_registry.matter_artifacts` into a per-matter folder
+    tree (``{root}/{counterparty}/{matter}/``) with grammar-named files plus a
+    ``metadata/matter_summary.json``. Idempotent: re-running uploads only NEW
+    artifacts and creates no duplicate folders/files.
+    """
     telemetry.increment("drive_upload_requests")
     payload = handler._read_json_payload()
     if payload is None:
@@ -135,12 +132,6 @@ def handle_drive_upload_matter(handler) -> None:
         return
     matter_id = matter_id.strip()
 
-    requested_role = _requested_role(payload.get("role"))
-    if requested_role is _INVALID_ROLE:
-        telemetry.increment("drive_upload_failed")
-        handler._send_json({"error": "Unsupported Drive upload role."}, status=400)
-        return
-
     owner_user_id = request_owner_user_id(handler)
     drive_token_owner_user_id = gmail_owner_user_id(handler)
 
@@ -152,43 +143,29 @@ def handle_drive_upload_matter(handler) -> None:
 
     if not drive_integration.drive_connected(drive_token_owner_user_id):
         telemetry.increment("drive_upload_failed")
-        handler._send_json(
-            {
-                "error": "Google Drive is not connected.",
-                "needs_connect": True,
-                "connect_url": DRIVE_CONNECT_URL,
-            },
-            status=409,
-        )
+        handler._send_json(_needs_connect_payload(), status=409)
         return
 
-    resolved = _resolve_matter_document(matter, matter_id, requested_role, owner_user_id=owner_user_id)
-    if resolved is None:
+    if not artifact_registry.matter_artifacts(matter):
         telemetry.increment("drive_upload_failed")
         handler._send_json({"error": "Matter has no document to save to Drive."}, status=400)
         return
-    file_bytes, filename = resolved
 
     settings = app_settings.drive_settings()
-    folder_id = str(settings.get("folder_id") or "")
+    root_folder_id = str(settings.get("folder_id") or "")
+    synced_at = datetime.now(timezone.utc).isoformat()
 
     try:
-        uploaded = drive_integration.upload_docx_to_drive(
-            file_bytes=file_bytes,
-            filename=filename,
-            folder_id=folder_id,
+        synced = drive_integration.sync_matter_folder(
+            matter=matter,
+            matter_id=matter_id,
             owner_user_id=drive_token_owner_user_id,
+            root_folder_id=root_folder_id,
+            synced_at=synced_at,
         )
     except drive_integration.DriveNotConnectedError:
         telemetry.increment("drive_upload_failed")
-        handler._send_json(
-            {
-                "error": "Google Drive is not connected.",
-                "needs_connect": True,
-                "connect_url": DRIVE_CONNECT_URL,
-            },
-            status=409,
-        )
+        handler._send_json(_needs_connect_payload(), status=409)
         return
     except drive_integration.DriveRateLimitError as error:
         telemetry.increment("drive_upload_failed")
@@ -200,24 +177,25 @@ def handle_drive_upload_matter(handler) -> None:
         handler._send_json({"error": str(error)}, status=502)
         return
 
+    drive_block = {
+        "matter_folder_id": synced["matter_folder_id"],
+        "matter_folder_url": synced["matter_folder_url"],
+        "synced_at": synced_at,
+        "artifacts": synced["artifacts"],
+    }
     updated_matter = matter_store.update_matter_fields(
         matter_id,
-        {
-            "last_drive_file_id": uploaded.get("file_id", ""),
-            "last_drive_web_link": uploaded.get("web_link", ""),
-            "last_drive_filename": uploaded.get("filename", ""),
-            "last_drive_folder_id": uploaded.get("folder_id", ""),
-            "last_drive_uploaded_at": datetime.now(timezone.utc).isoformat(),
-        },
+        {"drive": drive_block},
         owner_user_id=owner_user_id,
     )
     if updated_matter is None:
         updated_matter = matter
 
     telemetry.increment("drive_upload_succeeded")
+    telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
     handler._send_json(
         {
-            "uploaded": uploaded,
+            "drive": synced,
             "matter": matter_view.public_matter(updated_matter),
         }
     )
@@ -272,55 +250,12 @@ def handle_drive_settings_update(handler) -> None:
 
 
 # --- helpers ---------------------------------------------------------------
-_INVALID_ROLE = object()
-
-
-def _requested_role(value: object) -> object:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        return _INVALID_ROLE
-    role = value.strip().lower()
-    if not role:
-        return None
-    if role in DRIVE_ROLE_PREFERENCE:
-        return role
-    return _INVALID_ROLE
-
-
-def _resolve_matter_document(matter, matter_id, requested_role, *, owner_user_id=""):
-    """Find the best document for the matter and return ``(bytes, filename)``.
-
-    With an explicit ``requested_role`` only that role is tried; otherwise the
-    preference order reviewed > generated > original is walked. Returns ``None``
-    when no artifact with usable bytes exists.
-    """
-    roles = (requested_role,) if requested_role else DRIVE_ROLE_PREFERENCE
-    for role in roles:
-        artifact = artifact_registry.latest_artifact_for_role(matter, role)
-        if artifact is None:
-            continue
-        file_bytes = artifact_service.get_artifact_bytes(
-            matter_id,
-            artifact.id,
-            owner_user_id=owner_user_id,
-        )
-        if not file_bytes:
-            continue
-        filename = str(artifact.name or "").strip() or _fallback_filename(matter)
-        return file_bytes, filename
-    return None
-
-
-def _fallback_filename(matter) -> str:
-    subject = (
-        str(matter.get("counterparty") or "")
-        or str(matter.get("subject") or "")
-        or str(matter.get("sender") or "")
-    ).strip()
-    subject = " ".join(subject.split())[:MAX_DRIVE_FILENAME_SUBJECT_CHARS]
-    label = subject or "NDA"
-    return f"NDA - {label}.docx" if subject else "NDA.docx"
+def _needs_connect_payload() -> dict:
+    return {
+        "error": "Google Drive is not connected.",
+        "needs_connect": True,
+        "connect_url": DRIVE_CONNECT_URL,
+    }
 
 
 def _record_drive_settings_audit(previous: dict, current: dict) -> None:

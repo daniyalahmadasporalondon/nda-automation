@@ -70,6 +70,7 @@ PUBLIC_MATTER_FIELDS = {
     "board_column",
     "created_at",
     "document_title",
+    "drive",
     "gmail_account",
     "gmail_attachment_selector",
     "gmail_attachment_selector_confidence",
