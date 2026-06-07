@@ -63,7 +63,12 @@ class _FakeAbout:
 
 
 class FakeDriveService:
-    """Records the create call args; never touches the network."""
+    """Records the create call args; never touches the network.
+
+    The v1 (flat) fake — its ``files().create`` always succeeds and ignores any
+    pre-existing state. The v2 :class:`FakeDriveV2Service` models folders + a
+    files list so idempotency can be tested.
+    """
 
     def __init__(self, *, file_result=None, about_result=None, error=None):
         self.recorder = {"create_calls": []}
@@ -81,6 +86,110 @@ class FakeDriveService:
 
     def about(self):
         return _FakeAbout(self._about_result)
+
+
+# --- Drive v2 fake: models a folder/file tree so idempotency is testable ----
+class _FakeFilesV2:
+    """A files() resource backed by an in-memory store keyed by (name, parents)."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def list(self, *, q, fields, pageSize=1, spaces="drive"):  # noqa: N803
+        self._store["list_calls"].append(q)
+        matches = [
+            {"id": fid, "name": rec["name"], "webViewLink": rec["web_link"]}
+            for fid, rec in self._store["files"].items()
+            if _query_matches(q, rec)
+        ]
+        return _FakeExecutable({"files": matches[:pageSize]})
+
+    def create(self, *, body, fields, media_body=None):  # noqa: N803
+        self._store["create_calls"].append({"body": body, "has_media": media_body is not None})
+        self._store["_seq"] += 1
+        file_id = f"id_{self._store['_seq']}"
+        parents = body.get("parents") or [""]
+        record = {
+            "name": body["name"],
+            "mimeType": body.get("mimeType", ""),
+            "parent": parents[0],
+            "web_link": f"https://drive.google.com/file/d/{file_id}/view",
+            "is_folder": body.get("mimeType") == drive_integration.FOLDER_MIME,
+        }
+        self._store["files"][file_id] = record
+        return _FakeExecutable({"id": file_id, "webViewLink": record["web_link"]})
+
+
+class _FakeAboutV2:
+    def get(self, *, fields):
+        return _FakeExecutable({"user": {"emailAddress": "owner@example.com"}})
+
+
+def _query_matches(q, record):
+    """A minimal evaluator for the q= clauses this module emits.
+
+    The module only ever emits AND-joined clauses of these shapes:
+      mimeType='...'         (folder lookups only)
+      name='<escaped>'       (always; single quotes backslash-escaped)
+      '<id>' in parents      (when a parent is scoped)
+      trashed=false          (always)
+    """
+    if "trashed=false" not in q:
+        return False
+    if f"name='{_escape(record['name'])}'" not in q:
+        return False
+    if "in parents" in q and f"'{_escape(record['parent'])}' in parents" not in q:
+        return False
+    wants_folder = f"mimeType='{drive_integration.FOLDER_MIME}'" in q
+    if wants_folder != record["is_folder"]:
+        return False
+    return True
+
+
+def _escape(value):
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+class FakeDriveV2Service:
+    """A stateful fake Drive: folders + files, so idempotency is verifiable."""
+
+    def __init__(self):
+        self.store = {
+            "files": {},
+            "create_calls": [],
+            "list_calls": [],
+            "_seq": 0,
+        }
+
+    def files(self):
+        return _FakeFilesV2(self.store)
+
+    def about(self):
+        return _FakeAboutV2()
+
+    # --- assertions helpers ---
+    def folder_names(self):
+        return sorted(rec["name"] for rec in self.store["files"].values() if rec["is_folder"])
+
+    def file_records(self):
+        return [rec for rec in self.store["files"].values() if not rec["is_folder"]]
+
+    def file_names(self):
+        return sorted(rec["name"] for rec in self.file_records())
+
+    def folder_create_count(self):
+        return sum(
+            1
+            for call in self.store["create_calls"]
+            if call["body"].get("mimeType") == drive_integration.FOLDER_MIME
+        )
+
+    def file_create_count(self):
+        return sum(
+            1
+            for call in self.store["create_calls"]
+            if call["body"].get("mimeType") != drive_integration.FOLDER_MIME
+        )
 
 
 def _make_rate_limit_error():
@@ -182,6 +291,199 @@ class DriveIntegrationModuleTests(unittest.TestCase):
         ):
             with self.assertRaises(drive_integration.DriveNotConnectedError):
                 drive_integration._drive_service("user-1")
+
+
+# --- Drive v2 structured-filing tests (pure, faked Drive) ------------------
+class DriveV2IntegrationTests(unittest.TestCase):
+    def test_find_or_create_folder_is_idempotent(self):
+        fake = FakeDriveV2Service()
+        first = drive_integration.find_or_create_folder(
+            name="NDAs", parent_id="", service=fake
+        )
+        # A second call with the same name+parent returns the existing id; no new
+        # folder is created.
+        second = drive_integration.find_or_create_folder(
+            name="NDAs", parent_id="", service=fake
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(fake.folder_create_count(), 1)
+
+    def test_find_or_create_folder_scopes_by_parent(self):
+        fake = FakeDriveV2Service()
+        root = drive_integration.find_or_create_folder(name="NDAs", service=fake)
+        # Same name but a different parent => a distinct folder is created.
+        child_a = drive_integration.find_or_create_folder(name="Acme", parent_id=root, service=fake)
+        child_b = drive_integration.find_or_create_folder(name="Acme", parent_id="other", service=fake)
+        self.assertNotEqual(child_a, child_b)
+        self.assertEqual(fake.folder_create_count(), 3)
+
+    def test_query_value_escaping_blocks_quote_injection(self):
+        # Every single quote in the value is backslash-escaped, so no quote can
+        # terminate the surrounding string literal and inject a new query clause.
+        escaped = drive_integration._escape_drive_query_value("o'brien' or trashed=true")
+        # No unescaped single quote survives: each "'" is preceded by a backslash.
+        for i, ch in enumerate(escaped):
+            if ch == "'":
+                self.assertEqual(escaped[i - 1], "\\")
+        self.assertEqual(escaped.count("\\'"), 2)
+        # Backslashes are escaped first so a trailing backslash can't escape the
+        # closing quote of the literal.
+        self.assertEqual(drive_integration._escape_drive_query_value("a\\"), "a\\\\")
+
+    def test_upload_or_replace_file_idempotent_by_name(self):
+        fake = FakeDriveV2Service()
+        folder = drive_integration.find_or_create_folder(name="NDAs", service=fake)
+        first = drive_integration.upload_or_replace_file(
+            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+        )
+        self.assertTrue(first["created"])
+        second = drive_integration.upload_or_replace_file(
+            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+        )
+        self.assertFalse(second["created"])
+        self.assertEqual(first["file_id"], second["file_id"])
+        self.assertEqual(fake.file_create_count(), 1)
+
+    def test_sync_uses_grammar_filenames_and_correct_mimetypes(self):
+        fake = FakeDriveV2Service()
+        matter = {
+            "id": "matter_abc",
+            "created_at": "2026-06-07T10:00:00+00:00",
+            "gmail_thread_id": "thread_99",
+            "subject": "Acme NDA",
+            "artifacts": [
+                {"id": "a1", "actor": "counterparty", "role": "original", "version": 1, "ext": "docx"},
+                {"id": "a2", "actor": "ai", "role": "redline", "version": 1, "ext": "docx"},
+                {"id": "a3", "actor": "human", "role": "reviewed", "version": 1, "ext": "pdf"},
+                {"id": "a4", "actor": "aspora_technology", "role": "generated", "version": 1, "ext": "docx"},
+            ],
+        }
+        byte_map = {"a1": b"orig", "a2": b"redline", "a3": b"reviewed", "a4": b"generated"}
+
+        def fake_bytes(matter_id, artifact_id, *, owner_user_id=""):
+            return byte_map[artifact_id]
+
+        result = drive_integration.sync_matter_folder(
+            matter=matter,
+            matter_id="matter_abc",
+            synced_at="2026-06-07T11:00:00+00:00",
+            service=fake,
+            get_artifact_bytes=fake_bytes,
+        )
+        names = fake.file_names()
+        self.assertIn("01_counterparty_original_v1.docx", names)
+        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
+        self.assertIn("03_legal_reviewed_v1.pdf", names)   # human -> legal, pdf ext
+        self.assertIn("04_aspora_draft_v1.docx", names)    # entity slug -> aspora, generated -> draft
+        # The pdf artifact was uploaded with the pdf mimetype.
+        pdf_creates = [
+            c for c in fake.store["create_calls"]
+            if c["body"].get("name") == "03_legal_reviewed_v1.pdf"
+        ]
+        self.assertEqual(len(pdf_creates), 1)
+        self.assertEqual(result["total_count"], 4)
+        self.assertEqual(result["synced_count"], 4)
+
+    def test_sync_writes_matter_summary_with_links(self):
+        fake = FakeDriveV2Service()
+        matter = {
+            "id": "matter_x",
+            "created_at": "2026-06-07T10:00:00+00:00",
+            "gmail_thread_id": "",
+            "subject": "Globex Mutual NDA",
+            "artifacts": [
+                {"id": "a1", "actor": "counterparty", "role": "original", "version": 1, "ext": "docx"},
+            ],
+        }
+
+        def fake_bytes(matter_id, artifact_id, *, owner_user_id=""):
+            return b"orig"
+
+        drive_integration.sync_matter_folder(
+            matter=matter,
+            matter_id="matter_x",
+            synced_at="2026-06-07T11:00:00+00:00",
+            service=fake,
+            get_artifact_bytes=fake_bytes,
+        )
+        summary_call = [
+            c for c in fake.store["create_calls"]
+            if c["body"].get("name") == "matter_summary.json"
+        ]
+        self.assertEqual(len(summary_call), 1)
+        self.assertTrue(summary_call[0]["has_media"])
+        # The summary content is exercised through the public helper.
+        summary = drive_integration._matter_summary(
+            matter=matter,
+            matter_id="matter_x",
+            counterparty="Globex Mutual NDA",
+            matter_folder_url="https://drive.google.com/drive/folders/id_3",
+            synced_at="2026-06-07T11:00:00+00:00",
+            artifact_records=[
+                {
+                    "artifact_id": "a1", "sequence": 1, "actor": "counterparty",
+                    "role": "original", "version": 1,
+                    "filename": "01_counterparty_original_v1.docx",
+                    "drive_file_id": "id_99", "drive_file_url": "https://x/99",
+                    "based_on_artifact_id": "", "created_at": "",
+                }
+            ],
+        )
+        self.assertEqual(summary["matter_id"], "matter_x")
+        self.assertEqual(summary["counterparty"], "Globex Mutual NDA")
+        self.assertEqual(summary["matter_folder_url"], "https://drive.google.com/drive/folders/id_3")
+        self.assertEqual(len(summary["artifacts"]), 1)
+        self.assertEqual(summary["artifacts"][0]["drive_file_id"], "id_99")
+        self.assertIn("workflow_state", summary)
+
+    def test_counterparty_prefers_generation_manifest(self):
+        matter = {
+            "id": "m",
+            "subject": "RE: random thread subject",
+            "artifacts": [
+                {
+                    "id": "a1", "actor": "aspora", "role": "generated", "version": 1, "ext": "docx",
+                    "metadata": {"generation": {"counterparty_name": "Acme Robotics Ltd"}},
+                }
+            ],
+        }
+        self.assertEqual(drive_integration.derive_counterparty(matter), "Acme Robotics Ltd")
+
+    def test_counterparty_falls_back_to_subject_then_unknown(self):
+        self.assertEqual(
+            drive_integration.derive_counterparty({"id": "m", "subject": "Globex NDA"}),
+            "Globex NDA",
+        )
+        self.assertEqual(
+            drive_integration.derive_counterparty({"id": "m", "subject": ""}),
+            "Unknown Counterparty",
+        )
+
+    def test_matter_folder_name_grammar(self):
+        matter = {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00", "gmail_thread_id": "thr_1"}
+        name = drive_integration.derive_matter_folder_name(matter, "matter_z", "Acme")
+        self.assertEqual(name, "2026-06-07 - Acme - thr_1")
+        # No thread id -> matter id keys the folder.
+        name2 = drive_integration.derive_matter_folder_name(
+            {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00"}, "matter_z", "Acme"
+        )
+        self.assertEqual(name2, "2026-06-07 - Acme - matter_z")
+
+    def test_folder_names_are_drive_safe(self):
+        # Slashes and control chars are neutralised so a name cannot escape the path.
+        self.assertEqual(
+            drive_integration.derive_counterparty({"id": "m", "subject": "Ac/me\\Corp"}),
+            "Ac me Corp",
+        )
+
+    def test_sync_raises_when_no_artifacts(self):
+        with self.assertRaises(drive_integration.DriveIntegrationError):
+            drive_integration.sync_matter_folder(
+                matter={"id": "m", "artifacts": []},
+                matter_id="m",
+                service=FakeDriveV2Service(),
+                get_artifact_bytes=lambda *a, **k: b"",
+            )
 
 
 # --- app_settings drive settings tests -------------------------------------
@@ -293,8 +595,12 @@ class DriveRouteTests(unittest.TestCase):
         )
 
     def _make_matter_with_roles(self, roles, *, owner_user_id=""):
-        """Create a matter and register one artifact per (role, bytes) pair."""
-        first_role, first_bytes = roles[0]
+        """Create a matter and register one artifact per role spec.
+
+        A role spec is ``(role, bytes)`` (actor defaults to ``human``) or
+        ``(role, bytes, actor)`` to pin the producing actor.
+        """
+        first_bytes = roles[0][1]
         matter = matter_store.create_matter(
             source_filename="counterparty.docx",
             document_bytes=first_bytes,
@@ -305,11 +611,13 @@ class DriveRouteTests(unittest.TestCase):
             owner_user_id=owner_user_id,
         )
         matter_id = matter["id"]
-        for role, document_bytes in roles:
+        for spec in roles:
+            role, document_bytes = spec[0], spec[1]
+            actor = spec[2] if len(spec) > 2 else "human"
             artifact_service.add_artifact(
                 matter_id,
                 source="generated",
-                actor="human",
+                actor=actor,
                 role=role,
                 document_bytes=document_bytes,
                 owner_user_id=owner_user_id,
@@ -360,15 +668,15 @@ class DriveRouteTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("no document", payload["error"].lower())
 
-    def test_upload_matter_prefers_reviewed_over_generated_over_original(self):
-        fake = FakeDriveService()
+    def test_upload_matter_syncs_full_tree_and_returns_v2_contract(self):
+        fake = FakeDriveV2Service()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 matter_id = self._make_matter_with_roles([
-                    ("original", b"ORIGINAL bytes"),
-                    ("generated", b"GENERATED bytes"),
-                    ("reviewed", b"REVIEWED bytes"),
+                    ("original", b"ORIGINAL bytes", "counterparty"),
+                    ("redline", b"REDLINE bytes", "ai"),
+                    ("reviewed", b"REVIEWED bytes", "human"),
                 ])
                 with patch.object(drive_integration, "drive_connected", return_value=True):
                     with patch.object(drive_integration, "_drive_service", return_value=fake):
@@ -376,47 +684,121 @@ class DriveRouteTests(unittest.TestCase):
                             "POST", "/api/drive/upload-matter", {"matter_id": matter_id}
                         )
         self.assertEqual(status, 200)
-        # Reviewed wins: the bytes uploaded are the reviewed artifact's.
-        media = fake.recorder["create_calls"][0]["media_body"]
-        uploaded_bytes = media.getbytes(0, media.size())
-        self.assertEqual(uploaded_bytes, b"REVIEWED bytes")
-        self.assertEqual(payload["uploaded"]["file_id"], "file_123")
-        self.assertIn("matter", payload)
+        drive = payload["drive"]
+        # Response contract shape.
+        self.assertEqual(
+            set(drive.keys()),
+            {"matter_folder_id", "matter_folder_url", "synced_count", "total_count", "artifacts"},
+        )
+        self.assertEqual(drive["total_count"], 3)
+        self.assertEqual(drive["synced_count"], 3)
+        self.assertTrue(drive["matter_folder_url"].startswith("https://drive.google.com/drive/folders/"))
+        # Per-artifact records carry the drive ids + grammar filenames.
+        for record in drive["artifacts"]:
+            self.assertEqual(
+                set(record.keys()),
+                {
+                    "artifact_id", "sequence", "actor", "role", "version",
+                    "filename", "drive_file_id", "drive_file_url",
+                    "based_on_artifact_id", "created_at",
+                },
+            )
+            self.assertTrue(record["drive_file_id"])
+        # The matter "drive" block is persisted + surfaced on the public matter.
+        self.assertIn("drive", payload["matter"])
+        self.assertEqual(payload["matter"]["drive"]["matter_folder_id"], drive["matter_folder_id"])
+        # The full {root}/{counterparty}/{matter}/metadata tree was created.
+        self.assertIn(drive_integration.DEFAULT_ROOT_FOLDER_NAME, fake.folder_names())
+        self.assertIn("metadata", fake.folder_names())
+        self.assertEqual(fake.folder_create_count(), 4)  # NDAs, counterparty, matter, metadata
+        # 3 artifacts + matter_summary.json = 4 files.
+        self.assertEqual(fake.file_create_count(), 4)
+        self.assertIn("matter_summary.json", fake.file_names())
+        # Grammar filenames with the display vocabulary (ai->agent, human->legal).
+        names = fake.file_names()
+        self.assertIn("01_counterparty_original_v1.docx", names)
+        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
+        self.assertIn("03_legal_reviewed_v1.docx", names)  # human -> legal
         self.assertEqual(telemetry.snapshot()["counters"].get("drive_upload_succeeded"), 1)
+        self.assertEqual(telemetry.snapshot()["counters"].get("drive_files_synced"), 3)
 
-    def test_upload_matter_explicit_role_overrides_preference(self):
-        fake = FakeDriveService()
+    def test_resync_uploads_only_new_artifacts_no_duplicate_folders(self):
+        fake = FakeDriveV2Service()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 matter_id = self._make_matter_with_roles([
                     ("original", b"ORIGINAL bytes"),
-                    ("reviewed", b"REVIEWED bytes"),
                 ])
                 with patch.object(drive_integration, "drive_connected", return_value=True):
                     with patch.object(drive_integration, "_drive_service", return_value=fake):
-                        status, _payload, _headers = self.request(
-                            "POST",
-                            "/api/drive/upload-matter",
-                            {"matter_id": matter_id, "role": "original"},
+                        status1, payload1, _ = self.request(
+                            "POST", "/api/drive/upload-matter", {"matter_id": matter_id}
                         )
-        self.assertEqual(status, 200)
-        media = fake.recorder["create_calls"][0]["media_body"]
-        uploaded_bytes = media.getbytes(0, media.size())
-        self.assertEqual(uploaded_bytes, b"ORIGINAL bytes")
+                        folders_after_first = fake.folder_create_count()
+                        files_after_first = fake.file_create_count()
+                        # Re-sync the SAME matter: idempotent, no new folders/files.
+                        status2, payload2, _ = self.request(
+                            "POST", "/api/drive/upload-matter", {"matter_id": matter_id}
+                        )
+        self.assertEqual(status1, 200)
+        self.assertEqual(status2, 200)
+        self.assertEqual(payload1["drive"]["synced_count"], 1)
+        # Second sync uploads nothing new.
+        self.assertEqual(payload2["drive"]["synced_count"], 0)
+        self.assertEqual(fake.folder_create_count(), folders_after_first)  # no duplicate folders
+        self.assertEqual(fake.file_create_count(), files_after_first)  # no duplicate files
+        # Same matter folder both times.
+        self.assertEqual(
+            payload1["drive"]["matter_folder_id"], payload2["drive"]["matter_folder_id"]
+        )
 
-    def test_upload_matter_unknown_role_returns_400(self):
+    def test_resync_after_new_artifact_uploads_only_the_new_one(self):
+        fake = FakeDriveV2Service()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                owner = ""
+                matter_id = self._make_matter_with_roles([("original", b"ORIGINAL bytes")])
+                with patch.object(drive_integration, "drive_connected", return_value=True):
+                    with patch.object(drive_integration, "_drive_service", return_value=fake):
+                        self.request("POST", "/api/drive/upload-matter", {"matter_id": matter_id})
+                        files_after_first = fake.file_create_count()
+                        # Register a NEW artifact, then re-sync.
+                        artifact_service.add_artifact(
+                            matter_id,
+                            source="generated",
+                            actor="human",
+                            role="reviewed",
+                            document_bytes=b"REVIEWED bytes",
+                            owner_user_id=owner,
+                        )
+                        _status, payload2, _ = self.request(
+                            "POST", "/api/drive/upload-matter", {"matter_id": matter_id}
+                        )
+        # Only the new reviewed artifact uploaded (matter_summary.json is replaced
+        # idempotently by name, so it is not re-created).
+        self.assertEqual(payload2["drive"]["synced_count"], 1)
+        self.assertEqual(payload2["drive"]["total_count"], 2)
+        self.assertEqual(fake.file_create_count(), files_after_first + 1)
+
+    def test_upload_matter_drops_unsupported_role_param_harmlessly(self):
+        # The v1 role-override param is gone; an unexpected "role" is ignored and
+        # the full sync still runs (no 400).
+        fake = FakeDriveV2Service()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 matter_id = self._make_matter_with_roles([("original", b"orig")])
-                status, payload, _headers = self.request(
-                    "POST",
-                    "/api/drive/upload-matter",
-                    {"matter_id": matter_id, "role": "bogus"},
-                )
-        self.assertEqual(status, 400)
-        self.assertIn("role", payload["error"].lower())
+                with patch.object(drive_integration, "drive_connected", return_value=True):
+                    with patch.object(drive_integration, "_drive_service", return_value=fake):
+                        status, payload, _ = self.request(
+                            "POST",
+                            "/api/drive/upload-matter",
+                            {"matter_id": matter_id, "role": "bogus"},
+                        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["drive"]["total_count"], 1)
 
     def test_drive_status_reports_folder_and_enabled(self):
         with tempfile.TemporaryDirectory() as data_dir:

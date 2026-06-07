@@ -48,6 +48,7 @@ GMAIL_METADATA_FIELDS = (
 )
 MATTER_UPDATE_FIELDS = {
     "board_column",
+    "drive",
     "human_reviewed",
     "last_outbound_account",
     "last_outbound_at",
