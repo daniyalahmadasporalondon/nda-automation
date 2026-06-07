@@ -71,7 +71,8 @@ const tests = [
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
-  ["saves a matter NDA to Google Drive from the inspector", testRepositorySaveToDriveSuccess],
+  ["syncs a matter's artifacts to its Drive folder from the inspector", testRepositorySaveToDriveSuccess],
+  ["shows the up-to-date message when no Drive files needed syncing", testRepositorySaveToDriveUpToDate],
   ["prompts to connect Drive when the matter NDA upload is unauthorized", testRepositorySaveToDriveNotConnected],
   ["renders the admin Drive connect status and saves folder settings", testAdminDriveSection],
   ["sends review redline email from editable composer", testReviewOutboundSendModal],
@@ -2785,17 +2786,45 @@ async function testRepositorySaveToDriveSuccess(page) {
   const matter = driveMatter();
   let capturedUploadPayload = null;
   await routeDriveBoard(page, matter);
+  // Drive v2: the endpoint SYNCS the matter's artifact history into a per-matter
+  // folder and returns a folder link + the list of synced files.
   await page.route("**/api/drive/upload-matter", async (route) => {
     capturedUploadPayload = route.request().postDataJSON();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        uploaded: {
-          file_id: "drive_file_123",
-          filename: "Counterparty-NDA.docx",
-          folder_id: "folder_abc",
-          web_link: "https://drive.google.com/file/d/drive_file_123/view",
+        drive: {
+          matter_folder_id: "folder_matter_drive",
+          matter_folder_url: "https://drive.google.com/drive/folders/folder_matter_drive",
+          synced_count: 2,
+          total_count: 3,
+          artifacts: [
+            {
+              artifact_id: "art_1",
+              sequence: 1,
+              actor: "counterparty",
+              role: "original",
+              version: 1,
+              filename: "Counterparty NDA.docx",
+              drive_file_id: "drive_file_1",
+              drive_file_url: "https://drive.google.com/file/d/drive_file_1/view",
+              based_on_artifact_id: null,
+              created_at: "2026-05-31T12:00:00+00:00",
+            },
+            {
+              artifact_id: "art_2",
+              sequence: 2,
+              actor: "reviewer",
+              role: "reviewed",
+              version: 1,
+              filename: "Counterparty NDA (redline).docx",
+              drive_file_id: "drive_file_2",
+              drive_file_url: "https://drive.google.com/file/d/drive_file_2/view",
+              based_on_artifact_id: "art_1",
+              created_at: "2026-06-01T09:00:00+00:00",
+            },
+          ],
         },
         matter: { ...matter, board_column: "gmail_demo" },
       }),
@@ -2812,17 +2841,82 @@ async function testRepositorySaveToDriveSuccess(page) {
   const uploadRequest = page.waitForRequest((request) => request.url().endsWith("/api/drive/upload-matter"));
   await panel.getByRole("button", { name: "Save to Drive" }).click();
   await uploadRequest;
-  await waitForText(page, "#repositoryMatterPanel", "Saved to Drive");
+  await waitForText(page, "#repositoryMatterPanel", "Synced 2 files to Drive");
 
   assert.deepEqual(capturedUploadPayload, { matter_id: "matter_drive" });
-  const link = panel.locator(".repository-detail-message a.repository-detail-link");
-  assert.equal(await link.count(), 1);
+
+  // Prominent "Open matter folder" link -> matter_folder_url, new tab + noopener.
+  const folderLink = panel.locator(".repository-detail-message a.repository-drive-folder-link");
+  assert.equal(await folderLink.count(), 1);
   assert.equal(
-    await link.getAttribute("href"),
-    "https://drive.google.com/file/d/drive_file_123/view",
+    await folderLink.getAttribute("href"),
+    "https://drive.google.com/drive/folders/folder_matter_drive",
   );
-  assert.equal(await link.getAttribute("target"), "_blank");
-  await assertTextContains(link, "Counterparty-NDA.docx");
+  assert.equal(await folderLink.getAttribute("target"), "_blank");
+  assert.equal(await folderLink.getAttribute("rel"), "noopener");
+  await assertTextContains(folderLink, "Open matter folder");
+
+  // Compact per-file list: filename -> drive_file_url for each synced artifact.
+  const fileLinks = panel.locator(".repository-detail-message a.repository-drive-file-link");
+  assert.equal(await fileLinks.count(), 2);
+  assert.equal(
+    await fileLinks.nth(0).getAttribute("href"),
+    "https://drive.google.com/file/d/drive_file_1/view",
+  );
+  await assertTextContains(fileLinks.nth(0), "Counterparty NDA.docx");
+  assert.equal(
+    await fileLinks.nth(1).getAttribute("href"),
+    "https://drive.google.com/file/d/drive_file_2/view",
+  );
+  await assertTextContains(fileLinks.nth(1), "Counterparty NDA (redline).docx");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/matter_drive");
+  await page.unroute("**/api/drive/upload-matter");
+}
+
+async function testRepositorySaveToDriveUpToDate(page) {
+  const matter = driveMatter();
+  await routeDriveBoard(page, matter);
+  // synced_count == 0: nothing new to upload; the folder is already current.
+  await page.route("**/api/drive/upload-matter", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        drive: {
+          matter_folder_id: "folder_matter_drive",
+          matter_folder_url: "https://drive.google.com/drive/folders/folder_matter_drive",
+          synced_count: 0,
+          total_count: 3,
+          artifacts: [],
+        },
+        matter: { ...matter, board_column: "gmail_demo" },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  const panel = page.locator("#repositoryMatterPanel");
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+
+  const uploadRequest = page.waitForRequest((request) => request.url().endsWith("/api/drive/upload-matter"));
+  await panel.getByRole("button", { name: "Save to Drive" }).click();
+  await uploadRequest;
+  await waitForText(page, "#repositoryMatterPanel", "Matter folder up to date");
+
+  // Still offers the folder link, but no per-file list when nothing synced.
+  const folderLink = panel.locator(".repository-detail-message a.repository-drive-folder-link");
+  assert.equal(await folderLink.count(), 1);
+  assert.equal(
+    await folderLink.getAttribute("href"),
+    "https://drive.google.com/drive/folders/folder_matter_drive",
+  );
+  assert.equal(await panel.locator(".repository-detail-message a.repository-drive-file-link").count(), 0);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
@@ -2942,6 +3036,10 @@ async function testAdminDriveSection(page) {
   await page.waitForSelector("#adminDrivePanel:not([hidden])");
   await waitForText(page, "#adminDriveOverall", "NOT CONNECTED");
   await assertTextContains(page.locator("#adminDrivePanel"), "Google Drive uploads");
+  // Drive v2 relabel: the folder setting is the optional NDAs root + helper copy.
+  // The subsection <h3> is CSS-uppercased, so match the rendered text.
+  await assertTextContains(page.locator("#adminDrivePanel"), "NDAS ROOT FOLDER (OPTIONAL)");
+  await assertTextContains(page.locator('[data-admin-drive="folder-help"]'), "{counterparty}/{matter}");
   const connectButton = page.locator("#adminDriveConnectPanel a.integration-connection-action");
   assert.equal(await connectButton.count(), 1);
   assert.equal(await connectButton.getAttribute("href"), "/auth/drive/start");
@@ -2954,7 +3052,7 @@ async function testAdminDriveSection(page) {
   const settingsRequest = page.waitForRequest((request) => request.url().endsWith("/api/admin/drive-settings"));
   await page.locator("#adminDriveFolderSaveButton").click();
   await settingsRequest;
-  await waitForText(page, "#adminDrivePanel", "Target Drive folder saved.");
+  await waitForText(page, "#adminDrivePanel", "NDAs root folder saved.");
   assert.deepEqual(driveSettingsPayloads[driveSettingsPayloads.length - 1], {
     folder_id: "folder_xyz",
     folder_name: "Signed NDAs",

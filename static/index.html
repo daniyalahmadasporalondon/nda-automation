@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260607a">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260607b">
+    <link rel="stylesheet" href="/static/styles.css?v=20260607c">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
     <div class="app-shell">
@@ -1296,14 +1296,15 @@
                   </section>
 
                   <section class="integration-subsection">
-                    <h3>Target folder</h3>
+                    <h3>NDAs root folder (optional)</h3>
+                    <p class="integration-subsection-help" data-admin-drive="folder-help">Each matter syncs into its own subfolder under this root, organised as {counterparty}/{matter}. Leave blank to create an "NDAs" folder in My Drive.</p>
                     <form class="integration-search-form" id="adminDriveFolderForm">
-                      <label for="adminDriveFolderIdInput">Folder ID</label>
+                      <label for="adminDriveFolderIdInput">Root folder ID</label>
                       <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
-                      <label for="adminDriveFolderNameInput">Folder name (optional)</label>
-                      <input id="adminDriveFolderNameInput" type="text" autocomplete="off" spellcheck="false" placeholder="Display name for the folder">
+                      <label for="adminDriveFolderNameInput">Root folder name (optional)</label>
+                      <input id="adminDriveFolderNameInput" type="text" autocomplete="off" spellcheck="false" placeholder="Display name for the root folder">
                       <div class="integration-search-actions">
-                        <p data-admin-drive="folder-message">Uploads land in this folder when set.</p>
+                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set.</p>
                         <button class="secondary" id="adminDriveFolderSaveButton" type="submit">Save folder</button>
                       </div>
                     </form>
@@ -1319,7 +1320,7 @@
                       <dd data-admin-drive="account">Checking</dd>
                     </div>
                     <div>
-                      <dt>Target folder</dt>
+                      <dt>NDAs root folder</dt>
                       <dd data-admin-drive="folder">Checking</dd>
                     </div>
                   </dl>
@@ -1554,12 +1555,12 @@
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260606b"></script>
     <script src="/static/js/redline-rendering.js?v=20260606a"></script>
-    <script src="/static/js/repository-api.js?v=20260607a"></script>
+    <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
     <script src="/static/js/repository-send.js"></script>
     <script src="/static/js/repository-detail.js?v=20260607a"></script>
-    <script src="/static/js/repository-actions.js?v=20260607a"></script>
+    <script src="/static/js/repository-actions.js?v=20260607c"></script>
     <script src="/static/js/repository.js?v=20260607a"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
@@ -1568,7 +1569,7 @@
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
-    <script src="/static/js/admin-drive.js?v=20260607a"></script>
+    <script src="/static/js/admin-drive.js?v=20260607c"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
