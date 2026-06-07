@@ -115,10 +115,12 @@ def build_ai_first_review_result(
         if isinstance(clause, dict) and str(clause.get("id") or "").strip()
     ]
     playbook_clause_ids = [str(clause.get("id") or "") for clause in playbook_clauses]
+    playbook_clauses_by_id = {str(clause.get("id") or ""): clause for clause in playbook_clauses}
     assessment_by_clause_id = validate_ai_clause_assessments(
         assessments,
         valid_clause_ids=playbook_clause_ids,
         paragraphs=document_paragraphs,
+        playbook_clauses_by_id=playbook_clauses_by_id,
     )
     contract_structure = build_contract_structure(document_paragraphs)
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)

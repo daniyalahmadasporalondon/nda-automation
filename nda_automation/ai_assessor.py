@@ -361,11 +361,12 @@ def _validate_ai_assessment_response(
     assert isinstance(response, Mapping)
     raw_assessments = response.get("assessments")
     assert isinstance(raw_assessments, list)
-    clause_ids = [
-        str(clause.get("id") or "")
+    playbook_clauses_by_id = {
+        str(clause.get("id") or ""): clause
         for clause in playbook.get("clauses", [])
         if isinstance(clause, Mapping) and str(clause.get("id") or "")
-    ]
+    }
+    clause_ids = list(playbook_clauses_by_id)
     packet_paragraphs = [
         paragraph
         for paragraph in packet.get("paragraphs", [])
@@ -376,6 +377,7 @@ def _validate_ai_assessment_response(
             raw_assessments,
             valid_clause_ids=clause_ids,
             paragraphs=packet_paragraphs,
+            playbook_clauses_by_id=playbook_clauses_by_id,
         )
     except AIAssessmentContractError as error:
         raise AIAssessorError(str(error)) from error
