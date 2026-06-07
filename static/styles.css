@@ -4201,6 +4201,28 @@ button.active-clause-status:hover {
   line-height: 1.45;
 }
 
+.assessment-evidence-quotes {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.assessment-evidence-quote {
+  border-left: 2px solid var(--border);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding-left: 10px;
+}
+
+.assessment-evidence-ref {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  margin-right: 2px;
+}
+
 .evidence-signal-list {
   display: grid;
   gap: 7px;

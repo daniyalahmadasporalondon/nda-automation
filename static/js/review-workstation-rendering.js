@@ -1142,30 +1142,19 @@ function renderEvidenceSignalsBlock(clause) {
   const records = Array.isArray(clause?.structured_evidence)
     ? clause.structured_evidence.filter((record) => record && record.paragraph_id)
     : [];
-  if (!records.length) return "";
+  const quotes = records
+    .slice(0, 5)
+    .map((record) => ({
+      ref: String(record.paragraph_index || record.source_index || record.paragraph_id || "").trim(),
+      text: String(record.matched_text || record.text || "").trim(),
+    }))
+    .filter((quote) => quote.text);
+  if (!quotes.length) return "";
   return `
-      <div class="evidence-signal-list assessment-evidence-signals">
-        ${records.slice(0, 5).map((record) => {
-          const terms = Array.isArray(record.matched_terms)
-            ? record.matched_terms.filter(Boolean).slice(0, 5)
-            : [];
-          const paragraphLabel = record.paragraph_index || record.source_index || record.paragraph_id;
-          const signal = record.signal_type || record.decision || "evidence";
-          const bucket = record.rule_bucket || record.issue_type || "none";
-          const reasonCode = record.reason_code || "";
-          const matchedText = record.matched_text || record.text || "";
-          return `
-            <article class="evidence-signal-item">
-              <header>
-                <strong>${escapeHtml(signal)}</strong>
-                <span>Paragraph ${escapeHtml(paragraphLabel)} · ${escapeHtml(bucket)}</span>
-              </header>
-              <p>${escapeHtml(matchedText)}</p>
-              ${reasonCode ? `<div class="evidence-signal-terms"><span>${escapeHtml(reasonCode)}</span></div>` : ""}
-              ${terms.length ? `<div class="evidence-signal-terms">${terms.map((term) => `<span>${escapeHtml(term)}</span>`).join("")}</div>` : ""}
-            </article>
-          `;
-        }).join("")}
+      <div class="assessment-evidence-quotes">
+        ${quotes.map((quote) => `
+          <p class="assessment-evidence-quote">${quote.ref ? `<span class="assessment-evidence-ref">¶${escapeHtml(quote.ref)}</span> ` : ""}${escapeHtml(quote.text)}</p>
+        `).join("")}
       </div>
   `;
 }
