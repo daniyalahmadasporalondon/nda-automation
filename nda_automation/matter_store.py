@@ -57,6 +57,7 @@ MATTER_UPDATE_FIELDS = {
     "last_outbound_subject",
     "last_outbound_thread_id",
     "last_outbound_to",
+    "pdf_annotations",
     "status",
 }
 

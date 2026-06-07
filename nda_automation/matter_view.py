@@ -89,6 +89,7 @@ PUBLIC_MATTER_FIELDS = {
     "matter_timeline",
     "message_snippet",
     "next_action",
+    "pdf_annotations",
     "received_at",
     "requirements_failed",
     "requirements_needs_review",

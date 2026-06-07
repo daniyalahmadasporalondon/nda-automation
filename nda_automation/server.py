@@ -73,6 +73,7 @@ from .routes import entities as entity_routes
 from .routes import generation as generation_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
+from .routes import pdf_markup as pdf_markup_routes
 from .routes import playbook as playbook_routes
 from .routes import review as review_routes
 from .routes import send_document as send_document_routes
@@ -305,6 +306,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/reviewed-docx"):
             approval_routes.handle_matter_reviewed_docx(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
+            pdf_markup_routes.handle_pdf_annotations_list(self, path, send_body=send_body)
+            return
+        if path.startswith("/api/matters/") and path.endswith("/marked-up-pdf"):
+            pdf_markup_routes.handle_marked_up_pdf(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/"):
             matter_routes.handle_matter_detail(self, path, send_body=send_body)
             return
@@ -368,6 +375,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/approve"):
                 approval_routes.handle_matter_approve(self, path)
                 return
+            if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
+                pdf_markup_routes.handle_pdf_annotation_create(self, path)
+                return
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
             self._send_playbook_template_error()
@@ -390,6 +400,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             handler = _DELETE_EXACT_ROUTES.get(path)
             if handler is not None:
                 handler(self)
+                return
+            if path.startswith("/api/matters/") and "/pdf-annotations/" in path:
+                pdf_markup_routes.handle_pdf_annotation_delete(self, path)
                 return
             if path.startswith("/api/matters/"):
                 matter_routes.handle_matter_delete(self, path)
