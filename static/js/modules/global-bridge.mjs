@@ -29,6 +29,15 @@ import {
 } from "./send-document.mjs";
 import { createDraftIntake } from "./draft-intake.mjs";
 import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
+import {
+  DASHBOARD_SEARCH_CHIPS,
+  chipById,
+  filterMattersByStatus,
+  filterMattersByText,
+  matterStatusLabel,
+  matterTitle,
+  runChip,
+} from "./dashboard-search.mjs";
 
 Object.assign(window, {
   clauseStatus,
@@ -58,4 +67,16 @@ Object.assign(window, {
   // load time, so the deferred-module availability is safe.
   createGenerationApi,
   GenerationUnavailableError,
+  // Dashboard smart-search (v1, deterministic). The DOM controller is a classic
+  // script built at app.js load time; it reads these pure filters lazily at
+  // runtime (inside handlers), so the deferred-module availability is safe.
+  DashboardSearch: {
+    DASHBOARD_SEARCH_CHIPS,
+    chipById,
+    filterMattersByStatus,
+    filterMattersByText,
+    matterStatusLabel,
+    matterTitle,
+    runChip,
+  },
 });

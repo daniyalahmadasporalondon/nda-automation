@@ -46,6 +46,16 @@ import {
   resolveFirstName,
 } from "../../static/js/modules/greeting.mjs";
 import {
+  DASHBOARD_SEARCH_CHIPS,
+  chipById,
+  filterMattersByStatus,
+  filterMattersByText,
+  matterStatus,
+  matterStatusLabel,
+  matterTitle,
+  runChip,
+} from "../../static/js/modules/dashboard-search.mjs";
+import {
   buildSendDocumentPayload,
   isSupportedSendFilename,
   isValidRecipientEmail,
@@ -835,3 +845,82 @@ await createGenerationApi({
   },
 }).generateNda(generationPayload);
 assert.equal(customUrlCalls[0], "/api/v2/generate-nda");
+
+// --- Dashboard smart-search (v1, deterministic) -----------------------------
+const dashboardMatters = [
+  {
+    id: "m_pending",
+    subject: "Acme Mutual NDA",
+    sender: "legal@acme.example",
+    workflow_state: { status: "awaiting_approval", label: "Awaiting approval" },
+  },
+  {
+    id: "m_sent",
+    subject: "Globex One-Way NDA",
+    sender: "deals@globex.example",
+    workflow_state: { status: "sent_awaiting_counterparty", label: "Awaiting signature" },
+  },
+  {
+    id: "m_reviewing",
+    subject: "Initech Confidentiality Agreement",
+    sender: "ip@initech.example",
+    workflow_state: { status: "ai_reviewing", label: "AI reviewing" },
+  },
+];
+
+// The two solid v1 chips exist and target the right workflow_state statuses.
+assert.equal(DASHBOARD_SEARCH_CHIPS.length, 2);
+assert.deepEqual(
+  DASHBOARD_SEARCH_CHIPS.map((chip) => chip.id),
+  ["pending_approval", "awaiting_signature"],
+);
+assert.equal(chipById("pending_approval").status, "awaiting_approval");
+assert.equal(chipById("awaiting_signature").status, "sent_awaiting_counterparty");
+assert.equal(chipById("nope"), null);
+
+// Status filter is an EXACT match on workflow_state.status.
+assert.deepEqual(
+  filterMattersByStatus(dashboardMatters, "awaiting_approval").map((m) => m.id),
+  ["m_pending"],
+);
+assert.deepEqual(
+  filterMattersByStatus(dashboardMatters, "sent_awaiting_counterparty").map((m) => m.id),
+  ["m_sent"],
+);
+assert.deepEqual(filterMattersByStatus(dashboardMatters, "fully_signed"), []);
+assert.deepEqual(filterMattersByStatus(dashboardMatters, ""), []);
+
+// runChip drives the chip's backing status filter over the real matters.
+assert.deepEqual(
+  runChip(dashboardMatters, chipById("pending_approval")).map((m) => m.id),
+  ["m_pending"],
+);
+assert.deepEqual(
+  runChip(dashboardMatters, chipById("awaiting_signature")).map((m) => m.id),
+  ["m_sent"],
+);
+
+// Free-text keyword filter matches subject/sender/status; empty query -> [].
+assert.deepEqual(filterMattersByText(dashboardMatters, "acme").map((m) => m.id), ["m_pending"]);
+assert.deepEqual(filterMattersByText(dashboardMatters, "GLOBEX").map((m) => m.id), ["m_sent"]); // case-insensitive
+assert.deepEqual(filterMattersByText(dashboardMatters, "globex@example"), []); // no match -> empty, never fabricated
+assert.deepEqual(filterMattersByText(dashboardMatters, "nda").map((m) => m.id), ["m_pending", "m_sent"]);
+assert.deepEqual(filterMattersByText(dashboardMatters, "deals@globex.example").map((m) => m.id), ["m_sent"]); // sender
+assert.deepEqual(filterMattersByText(dashboardMatters, "reviewing").map((m) => m.id), ["m_reviewing"]); // status token
+// Multiple terms are ANDed.
+assert.deepEqual(filterMattersByText(dashboardMatters, "globex nda").map((m) => m.id), ["m_sent"]);
+assert.deepEqual(filterMattersByText(dashboardMatters, "acme globex"), []);
+assert.deepEqual(filterMattersByText(dashboardMatters, "   "), []);
+assert.deepEqual(filterMattersByText(dashboardMatters, ""), []);
+// Non-array input is tolerated.
+assert.deepEqual(filterMattersByText(null, "acme"), []);
+assert.deepEqual(filterMattersByStatus(undefined, "awaiting_approval"), []);
+
+// Status + title helpers used by the result rows.
+assert.equal(matterStatus(dashboardMatters[0]), "awaiting_approval");
+assert.equal(matterStatus({ status: "sending" }), "sending"); // flat fallback
+assert.equal(matterStatus({}), "");
+assert.equal(matterStatusLabel(dashboardMatters[0]), "Awaiting approval"); // prefers backend label
+assert.equal(matterStatusLabel({ workflow_state: { status: "send_failed" } }), "Send Failed"); // title-cased fallback
+assert.equal(matterTitle(dashboardMatters[1]), "Globex One-Way NDA");
+assert.equal(matterTitle({}), "Untitled NDA");

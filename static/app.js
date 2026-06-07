@@ -75,6 +75,24 @@ const repositoryController = createRepositoryController({
   showMatterReviewLoadError,
   reviewErrorFromPayload,
 });
+// Dashboard smart-search (v1, deterministic). Reads the same state.matters the
+// Repository tab loads and reuses repositoryController.openMatter so a result
+// click opens the matter exactly as the board does.
+const dashboardSearchController = createDashboardSearchController({
+  root: document.querySelector("[data-dashboard-search]"),
+  input: document.querySelector("#dashboardSearchInput"),
+  form: document.querySelector("#dashboardSearchForm"),
+  chipList: document.querySelector("#dashboardSearchChips"),
+  resultsList: document.querySelector("#dashboardSearchResults"),
+  resultsStatus: document.querySelector("#dashboardSearchResultsStatus"),
+  getMatters: () => state.matters,
+  openMatter: (matterId) => {
+    // Reuse the repository open-matter flow, then surface the Repository tab so
+    // the opened matter's detail panel is visible.
+    repositoryController.openMatter(matterId);
+    activateTab("repository");
+  },
+});
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,
@@ -264,7 +282,11 @@ const emptyState = () => {
 
 emptyState();
 playbookController.loadPlaybook();
-repositoryController.loadMatters();
+// Refresh any active dashboard-search results once the matter list resolves so
+// a search run before data loaded picks up the real matters.
+Promise.resolve(repositoryController.loadMatters()).then(() => {
+  dashboardSearchController.refresh();
+});
 repositoryController.loadGmailStatus();
 authSessionController.load();
 adminAiController.load();
@@ -571,6 +593,9 @@ function activateTab(tabName) {
     loadDashboardAiHealth();
     loadDashboardDriveHealth();
     renderDashboardEmailHealth(state.gmailStatus);
+    // Re-run any active search against the freshest matters when returning to
+    // the dashboard (the Repository tab may have loaded/changed the list).
+    dashboardSearchController.refresh();
   }
   if (tabName === "generator") {
     // Load the signing-entity registry on first activation and render the
