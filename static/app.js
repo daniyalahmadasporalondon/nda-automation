@@ -256,6 +256,7 @@ repositoryController.loadGmailStatus();
 authSessionController.load();
 adminAiController.load();
 loadDashboardAiHealth();
+loadDashboardDriveHealth();
 adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
@@ -555,6 +556,7 @@ function activateTab(tabName) {
   setActiveTab(tabName);
   if (tabName === "dashboard") {
     loadDashboardAiHealth();
+    loadDashboardDriveHealth();
     renderDashboardEmailHealth(state.gmailStatus);
   }
   if (tabName === "generator") {
@@ -673,6 +675,27 @@ function renderDashboardEmailHealth(gmailStatus = null) {
   renderDashboardHealth("email", {
     tone: "blocked",
   });
+}
+
+async function loadDashboardDriveHealth() {
+  if (!dashboardHealthItems.length) return;
+  renderDashboardHealth("drive", { tone: "checking" });
+  try {
+    const response = await fetch("/api/drive/status");
+    const payload = await response.json();
+    if (!response.ok) throw new Error("Drive status could not load");
+    renderDashboardDriveHealth(payload);
+  } catch (error) {
+    renderDashboardHealth("drive", { tone: "blocked" });
+  }
+}
+
+function renderDashboardDriveHealth(status = {}) {
+  if (!dashboardHealthItems.length) return;
+  // Drive is an OPTIONAL export integration: connected -> ready (green); not
+  // connected -> warning (amber, "available but not set up") rather than blocked,
+  // since an unconfigured optional feature is not an error.
+  renderDashboardHealth("drive", { tone: status.connected === true ? "ready" : "warning" });
 }
 
 function renderDashboardHealth(kind, { tone }) {

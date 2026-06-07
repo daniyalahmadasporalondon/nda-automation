@@ -320,15 +320,21 @@ async function testAccessibleControlState(page) {
   assert.doesNotMatch(dashboardHealthText, /Ready|Partial|OpenRouter review available|Gmail receive and send are available|Inbound ready/i);
   assert.equal(await page.locator('[data-dashboard-health="ai"]').evaluate((node) => node.classList.contains("ready")), true);
   assert.equal(await page.locator('[data-dashboard-health="email"]').evaluate((node) => node.classList.contains("warning")), true);
+  // Drive is an optional integration: not connected in the harness -> warning (amber), not blocked.
+  await page.waitForFunction(() => document.querySelector('[data-dashboard-health="drive"]')?.classList.contains("warning"));
+  await assertTextContains(page.locator('[data-dashboard-health="drive"]'), "Drive");
+  assert.equal(await page.locator('[data-dashboard-health="drive"]').evaluate((node) => node.classList.contains("warning")), true);
   const dashboardHealthLayout = await page.evaluate(() => {
     const ai = document.querySelector('[data-dashboard-health="ai"]').getBoundingClientRect();
     const email = document.querySelector('[data-dashboard-health="email"]').getBoundingClientRect();
+    const drive = document.querySelector('[data-dashboard-health="drive"]').getBoundingClientRect();
     return {
-      sameRow: Math.abs(ai.top - email.top) <= 2,
+      sameRow: Math.abs(ai.top - email.top) <= 2 && Math.abs(email.top - drive.top) <= 2,
       emailAfterAi: email.left > ai.left,
+      driveAfterEmail: drive.left > email.left,
     };
   });
-  assert.deepEqual(dashboardHealthLayout, { sameRow: true, emailAfterAi: true });
+  assert.deepEqual(dashboardHealthLayout, { sameRow: true, emailAfterAi: true, driveAfterEmail: true });
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 0);
