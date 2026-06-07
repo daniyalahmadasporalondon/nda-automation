@@ -274,11 +274,12 @@ const RepositoryActions = (() => {
       }
     }
 
-    // Upload the matter's NDA to Google Drive. Mirrors exportMatter/sendRedline:
-    // disable the button, call the api, then surface the outcome in the panel.
-    // The api wrapper does NOT throw on 409 (not connected) - it returns the raw
-    // status/payload so we can render a Connect Google Drive affordance whose
-    // link navigates to the OAuth consent flow (connect_url) instead of an error.
+    // Sync the matter's artifact history to its per-matter Google Drive folder
+    // (Drive v2). Mirrors exportMatter/sendRedline: disable the button, call the
+    // api, then surface the outcome in the panel. The api wrapper does NOT throw
+    // on 409 (not connected) - it returns the raw status/payload so we can render
+    // a Connect Google Drive affordance whose link navigates to the OAuth consent
+    // flow (connect_url) instead of an error.
     async function saveMatterToDrive(matter) {
       if (!matter?.id) return;
       setPendingSendMatterId(null);
@@ -287,27 +288,18 @@ const RepositoryActions = (() => {
       setPanelMessage("");
       if (driveButton) {
         driveButton.disabled = true;
-        driveButton.textContent = "Saving";
+        driveButton.textContent = "Syncing";
       }
       try {
         const result = await api.saveMatterToDrive(matter.id);
         const payload = result?.payload || {};
         if (result?.ok) {
-          const uploaded = payload.uploaded || {};
           if (payload.matter?.id) {
             replaceMatter(payload.matter);
             renderBoard();
             renderDetailPanel(payload.matter);
           }
-          const webLink = String(uploaded.web_link || "");
-          const filename = String(uploaded.filename || matter.source_filename || "NDA");
-          if (webLink) {
-            setPanelMessageHtml(
-              `Saved to Drive: <a class="repository-detail-link" href="${escapeHtml(webLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(filename)}</a>`,
-            );
-          } else {
-            setPanelMessage(`Saved ${filename} to Drive.`);
-          }
+          setPanelMessageHtml(driveSyncSuccessHtml(payload.drive || {}));
           return;
         }
         if (result?.status === 409 && payload.needs_connect) {
@@ -327,6 +319,39 @@ const RepositoryActions = (() => {
           driveButton.textContent = "Save to Drive";
         }
       }
+    }
+
+    // Build the trusted-HTML confirmation for a Drive v2 sync: a folder-level
+    // summary, a prominent "Open matter folder" link, and a compact per-file list
+    // (filename -> drive_file_url). Every untrusted value (URLs, filenames) is run
+    // through escapeHtml before it reaches the innerHTML seam.
+    function driveSyncSuccessHtml(drive) {
+      const syncedCount = Number(drive.synced_count) || 0;
+      const folderUrl = String(drive.matter_folder_url || "");
+      const summary = syncedCount > 0
+        ? `Synced ${syncedCount} file${syncedCount === 1 ? "" : "s"} to Drive.`
+        : "Matter folder up to date.";
+      const parts = [`<span class="repository-drive-summary">${escapeHtml(summary)}</span>`];
+      if (folderUrl) {
+        parts.push(
+          `<a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open matter folder</a>`,
+        );
+      }
+      const artifacts = Array.isArray(drive.artifacts) ? drive.artifacts : [];
+      const fileItems = artifacts
+        .map((artifact) => {
+          const filename = String(artifact?.filename || "Untitled file");
+          const fileUrl = String(artifact?.drive_file_url || "");
+          if (fileUrl) {
+            return `<li><a class="repository-detail-link repository-drive-file-link" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">${escapeHtml(filename)}</a></li>`;
+          }
+          return `<li><span class="repository-drive-file-name">${escapeHtml(filename)}</span></li>`;
+        })
+        .join("");
+      if (fileItems) {
+        parts.push(`<ul class="repository-drive-file-list">${fileItems}</ul>`);
+      }
+      return parts.join(" ");
     }
 
     async function markMatterRedlineReady(matter) {

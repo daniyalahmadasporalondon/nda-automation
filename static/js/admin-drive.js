@@ -70,8 +70,8 @@ const AdminDriveView = (() => {
         if (!response.ok) throw reviewErrorFromPayload(payload, "Drive folder could not save");
         applyDriveSettings(payload.drive || {});
         setFact("folder-message", folderId
-          ? "Target Drive folder saved."
-          : "Cleared the target folder. Uploads go to the Drive root.");
+          ? "NDAs root folder saved. Per-matter subfolders are created inside it."
+          : "Cleared the root folder. An \"NDAs\" folder is created in My Drive.");
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         setFact("folder-message", error.message || "Drive folder could not save");
@@ -124,7 +124,7 @@ const AdminDriveView = (() => {
                 <dd>${escapeHtml(status.account || "Connected account")}</dd>
               </div>
               <div>
-                <dt>Target folder</dt>
+                <dt>NDAs root folder</dt>
                 <dd>${escapeHtml(folderLabel(status.folder))}</dd>
               </div>
             </dl>
@@ -202,11 +202,11 @@ const AdminDriveView = (() => {
     }
 
     function folderLabel(folder) {
-      if (!folder) return "Drive root (no folder set)";
+      if (!folder) return "My Drive / NDAs (no root folder set)";
       const name = String(folder.name || "").trim();
       const id = String(folder.id || "").trim();
       if (name && id) return `${name} (${id})`;
-      return name || id || "Drive root (no folder set)";
+      return name || id || "My Drive / NDAs (no root folder set)";
     }
 
     function connectUrl(status) {

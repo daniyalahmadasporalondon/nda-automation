@@ -728,6 +728,28 @@
   text-decoration: none;
 }
 
+.repository-drive-summary {
+  display: block;
+  font-weight: 700;
+}
+
+.repository-drive-folder-link {
+  display: inline-block;
+  margin-top: 4px;
+}
+
+.repository-drive-file-list {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.repository-drive-file-list li {
+  margin: 0;
+}
+
 .repository-send-composer {
   display: grid;
   gap: 10px;
