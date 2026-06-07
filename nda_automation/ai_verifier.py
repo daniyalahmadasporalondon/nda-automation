@@ -34,6 +34,7 @@ import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
+from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
@@ -285,6 +286,12 @@ def _rewrite_decision(
     clause["decision"] = new_decision
     clause["passes"] = new_decision == CLAUSE_DECISION_PASS
     clause["needs_review"] = new_decision == CLAUSE_DECISION_REVIEW
+    if new_decision == CLAUSE_DECISION_PASS:
+        # The verifier cleared the finding: the clause now passes, so it carries no
+        # issue. Reset the (now stale) fail issue_type/label, otherwise the reason
+        # code re-derived from it inherits e.g. "present_but_wrong" on a passed clause.
+        clause["issue_type"] = ISSUE_TYPE_NONE
+        clause["issue_label"] = ISSUE_TYPE_LABELS.get(ISSUE_TYPE_NONE, "")
     clause["decision_source"] = "ai_verifier"
     clause["status"] = _status_for_decision(clause, new_decision)
     clause["decision_reason"] = reason
