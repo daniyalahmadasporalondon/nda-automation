@@ -217,8 +217,11 @@ const AdminDriveView = (() => {
     }
 
     function connectUrl(status) {
-      const url = String(status?.connect_url || "/auth/drive/start");
-      return url || "/auth/drive/start";
+      // Drive is part of the unified Google connection now, so connect through the
+      // shared /auth/gmail/start (role=all) flow: it uses the already-registered
+      // Gmail callback (no /auth/drive/callback to register), grants Gmail + Drive
+      // in one consent, and shows the account chooser. Avoids redirect_uri_mismatch.
+      return String(status?.connect_url || "/auth/gmail/start");
     }
 
     return { load };
