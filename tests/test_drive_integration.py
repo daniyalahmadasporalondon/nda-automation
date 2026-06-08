@@ -211,10 +211,13 @@ class DriveIntegrationModuleTests(unittest.TestCase):
             gmail_integration.GMAIL_OAUTH_SCOPES_BY_ROLE["drive"],
             ("https://www.googleapis.com/auth/drive.file",),
         )
-        # The drive role resolves to exactly itself and is NOT swept into "all"
-        # (connecting Gmail must never grant Drive, and vice versa).
+        # The standalone drive role resolves to exactly itself, while the unified
+        # "all" connect sweeps Drive in so one Google consent grants Gmail + Drive.
         self.assertEqual(gmail_integration._gmail_oauth_roles_for_role("drive"), ("drive",))
-        self.assertEqual(gmail_integration._gmail_oauth_roles_for_role("all"), ("inbound", "outbound"))
+        self.assertEqual(
+            gmail_integration._gmail_oauth_roles_for_role("all"),
+            ("inbound", "outbound", "drive"),
+        )
         self.assertNotIn(
             "https://www.googleapis.com/auth/drive",
             gmail_integration._gmail_oauth_scopes_for_role("drive"),

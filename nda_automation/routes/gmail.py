@@ -42,6 +42,7 @@ def handle_gmail_connect_start(handler, *, send_body: bool = True) -> None:
             redirect_uri=_gmail_redirect_uri(handler),
             role=role,
             state=state,
+            login_hint=str((getattr(handler, "current_user", None) or {}).get("email") or ""),
         )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
@@ -82,6 +83,13 @@ def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
         app_settings.update_gmail_settings({"inbound_enabled": True, "outbound_enabled": True})
     except Exception:  # pragma: no cover - enabling is best-effort, never blocks connect
         pass
+    # The unified "all" connect also grants Drive (drive.file); enable Drive too so
+    # one click lands Gmail AND Drive active.
+    if "drive" in connected_roles:
+        try:
+            app_settings.update_drive_settings({"enabled": True})
+        except Exception:  # pragma: no cover - best-effort
+            pass
     next_path = str(state_record.get("next_path") or "/")
     handler._send_redirect(
         next_path,

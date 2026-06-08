@@ -3365,7 +3365,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(callback_status, 302)
         self.assertEqual(callback_payload, b"")
         self.assertEqual(callback_headers["Location"], "/api/gmail/status")
-        self.assertEqual(callback_headers["X-Gmail-Connected-Roles"], "inbound,outbound")
+        self.assertEqual(callback_headers["X-Gmail-Connected-Roles"], "inbound,outbound,drive")
         exchange_code.assert_called_once_with(
             "gmail-code",
             redirect_uri="https://nda.example.com/auth/gmail/callback",

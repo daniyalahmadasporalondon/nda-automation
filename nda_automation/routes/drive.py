@@ -80,6 +80,7 @@ def handle_drive_connect_start(handler, *, send_body: bool = True) -> None:
             redirect_uri=_drive_redirect_uri(handler),
             role="drive",
             state=state,
+            login_hint=str((getattr(handler, "current_user", None) or {}).get("email") or ""),
         )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)

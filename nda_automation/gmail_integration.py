@@ -1024,19 +1024,30 @@ def _token_path_for_role(role: str, owner_user_id: str = "") -> Path:
     )
 
 
-def build_gmail_authorization_url(*, redirect_uri: str, state: str, role: str = "all") -> str:
+def build_gmail_authorization_url(
+    *, redirect_uri: str, state: str, role: str = "all", login_hint: str = ""
+) -> str:
     if not google_identity.google_oauth_configured():
         raise GmailIntegrationError("Google OAuth is not configured.")
-    query = urllib.parse.urlencode({
+    params = {
         "access_type": "offline",
         "client_id": google_identity.google_client_id(),
         "include_granted_scopes": "true",
-        "prompt": "consent",
+        # `select_account` forces Google to show the account chooser every time, so
+        # the operator can pick the right account (e.g. work vs personal) instead of
+        # Google silently reusing the browser's active session. `consent` keeps the
+        # refresh token coming back. Without `select_account`, connecting Drive can
+        # land on whatever Google account the browser happens to be signed into.
+        "prompt": "select_account consent",
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": " ".join(_gmail_oauth_scopes_for_role(role)),
         "state": state,
-    })
+    }
+    # Pre-select the signed-in app account so the chooser highlights the right one.
+    if login_hint:
+        params["login_hint"] = login_hint
+    query = urllib.parse.urlencode(params)
     return f"{GMAIL_OAUTH_AUTH_URL}?{query}"
 
 
@@ -1135,7 +1146,10 @@ def _gmail_oauth_scopes_for_role(role: str) -> tuple[str, ...]:
 def _gmail_oauth_roles_for_role(role: str) -> tuple[str, ...]:
     normalized_role = str(role or "all").strip().lower()
     if normalized_role in {"all", "both"}:
-        return ("inbound", "outbound")
+        # One Google connection covers everything: a single consent grants Gmail
+        # (readonly + send + metadata) AND Drive (drive.file), and saves all three
+        # role tokens. So "Connect Gmail" connects Drive in the same click.
+        return ("inbound", "outbound", "drive")
     if normalized_role in GMAIL_OAUTH_SCOPES_BY_ROLE:
         return (normalized_role,)
     raise GmailIntegrationError("Unsupported Gmail OAuth role.")
