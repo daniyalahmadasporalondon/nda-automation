@@ -106,6 +106,24 @@ const dashboardSearchController = createDashboardSearchController({
   // controller falls back to the v1 keyword filter, so the box always works.
   searchIntent: (query) => searchIntentForQuery(query),
 });
+// In-app toast notifications for newly-arrived inbound NDAs. Fed by the matter
+// list: the Repository poll feeds it via observe(state.matters), and on every
+// other tab a lightweight poll() fetches /api/matters itself. The first feed
+// seeds silently so the existing inbox never floods on load.
+const notificationsController = createNotificationsController({
+  container: document.querySelector("#toastStack"),
+  openMatter: (matterId) => {
+    repositoryController.openMatter(matterId);
+    activateTab("repository");
+  },
+  openRepository: () => activateTab("repository"),
+  fetchMatters: async () => {
+    const response = await fetch("/api/matters");
+    if (!response.ok) return [];
+    const payload = await response.json();
+    return Array.isArray(payload.matters) ? payload.matters : [];
+  },
+});
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,
@@ -298,6 +316,9 @@ playbookController.loadPlaybook();
 // a search run before data loaded picks up the real matters.
 Promise.resolve(repositoryController.loadMatters()).then(() => {
   dashboardSearchController.refresh();
+  // Silent seed: record the inbox already present at load so only genuinely new
+  // inbound NDAs toast during the session.
+  notificationsController.observe(state.matters);
 });
 repositoryController.loadGmailStatus();
 authSessionController.load();
@@ -307,8 +328,14 @@ loadDashboardDriveHealth();
 adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
-    repositoryController.loadMatters();
+    Promise.resolve(repositoryController.loadMatters()).then(() => {
+      notificationsController.observe(state.matters);
+    });
     repositoryController.loadGmailStatus();
+  } else {
+    // On any non-Repository tab the board isn't refreshed, so the notifier polls
+    // the matter list itself to keep new-inbound toasts flowing app-wide.
+    notificationsController.poll();
   }
 }, REPOSITORY_REFRESH_INTERVAL_MS);
 
@@ -626,7 +653,9 @@ function activateTab(tabName) {
     requestAnimationFrame(resizeSourceEditors);
   }
   if (tabName === "repository") {
-    repositoryController.loadMatters();
+    Promise.resolve(repositoryController.loadMatters()).then(() => {
+      notificationsController.observe(state.matters);
+    });
     repositoryController.loadGmailStatus();
   }
   if (tabName === "playbook") {

@@ -100,6 +100,7 @@ const tests = [
   ["renders the AI review health panel with status banner and metrics", testAdminHealthPanel],
   ["filters dashboard matters with the smart-search chips and opens a result", testDashboardSmartSearch],
   ["translates a natural-language query into a filter and falls back to keyword search", testDashboardSmartSearchV2],
+  ["pops an in-app toast when a new inbound NDA arrives", testInboundNotificationToast],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -5927,6 +5928,10 @@ async function testDashboardSmartSearch(page) {
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
   await assertTextContains(searchSection, "What are you looking for?");
+  // Regression guard: the dashboard view owns its own vertical scroll, so a long
+  // results list scrolls instead of being clipped by the fixed app-shell frame.
+  const dashboardOverflowY = await page.locator("#dashboardView").evaluate((node) => getComputedStyle(node).overflowY);
+  assert.equal(dashboardOverflowY, "auto");
   const pendingChip = page.locator('[data-dashboard-search-chip="pending_approval"]');
   const signatureChip = page.locator('[data-dashboard-search-chip="awaiting_signature"]');
   await assertTextContains(pendingChip, "pending approval");
@@ -6277,6 +6282,97 @@ async function testDashboardSmartSearchV2(page) {
     0,
     `expected no console errors from the v2 dashboard search, got: ${unexpectedErrors.join(" | ")}`,
   );
+}
+
+// A new inbound NDA arriving in the matter list pops a top-right toast. The inbox
+// already present at load is seeded SILENTLY (no toast); only genuinely new arrivals
+// during the session toast, and clicking one opens that matter for review.
+async function testInboundNotificationToast(page) {
+  const matters = [
+    {
+      id: "m_inbound_seed",
+      subject: "Seedco Mutual NDA",
+      sender: "legal@seedco.example",
+      board_column: "in_review",
+      source_type: "gmail_inbound",
+      counterparty: "Seedco Ltd",
+      created_at: "2026-06-05T09:00:00+00:00",
+      workflow_state: { status: "ai_reviewing", label: "AI reviewing" },
+    },
+  ];
+  const newInbound = {
+    id: "m_inbound_new",
+    subject: "Acme Mutual NDA",
+    sender: "legal@acme.example",
+    board_column: "in_review",
+    source_type: "gmail_inbound",
+    counterparty: "Acme Robotics Ltd",
+    attachment_filename: "Mutual NDA - Acme.docx",
+    created_at: "2026-06-07T15:30:00+00:00",
+    workflow_state: { status: "ai_reviewing", label: "AI reviewing" },
+  };
+
+  await page.route("**/api/matters", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/matters") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters }) });
+  });
+  await page.route("**/api/matters/*", async (route) => {
+    const url = new URL(route.request().url());
+    const matterId = decodeURIComponent(url.pathname.split("/").pop());
+    const matter = matters.find((item) => item.id === matterId);
+    if (!matter) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+  });
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true } } }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  // Activate Repository so loadMatters resolves and the notifier seeds {seed}
+  // SILENTLY. The seed matter's card confirms the seeding observe has run.
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  assert.equal(await page.locator("#toastStack .toast").count(), 0);
+
+  // A new inbound NDA arrives, then the matter list refreshes (tab re-activation
+  // stands in for the 15s poll). Only the NEW matter should toast.
+  matters.push(newInbound);
+  await page.getByRole("tab", { name: "Dashboard" }).click();
+  await page.getByRole("tab", { name: "Repository" }).click();
+
+  const toast = page.locator("#toastStack .toast");
+  await toast.first().waitFor({ state: "visible" });
+  assert.equal(await toast.count(), 1);
+  await assertTextContains(toast.first(), "New NDA from Acme Robotics Ltd");
+  await assertTextContains(toast.first(), "Mutual NDA - Acme.docx");
+  await assertTextContains(toast.first(), "Click to review");
+  // Layout guard: the card must grow to fit title + filename + meta. The global
+  // `button { height: 32px }` once clipped the open-button to one line (innerText
+  // still passed, but the card was visually cut), so assert a multi-line height.
+  const cardHeight = await toast.first().evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(cardHeight >= 50, `toast card should fit its content; got ${cardHeight}px`);
+
+  // Clicking the toast opens that matter for review and dismisses the toast.
+  await toast.first().locator("[data-toast-open]").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "Acme");
+  await page.waitForFunction(() => document.querySelectorAll("#toastStack .toast").length === 0);
+
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/matters/*");
+  await page.unroute("**/api/gmail/status");
 }
 
 async function assertTextContains(locator, expected) {
