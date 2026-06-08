@@ -17,6 +17,7 @@ Matter ownership is validated exactly like ``send-redline`` via
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -34,6 +35,9 @@ from .common import request_owner_user_id, require_admin
 from .gmail import gmail_owner_user_id
 
 DRIVE_CONNECT_URL = "/auth/drive/start"
+# Drive has its OWN OAuth callback path. It must not reuse the Gmail redirect
+# (NDA_GMAIL_OAUTH_REDIRECT_URI), which points at /auth/gmail/callback.
+DRIVE_OAUTH_REDIRECT_URI_ENV = "NDA_DRIVE_OAUTH_REDIRECT_URI"
 
 
 def handle_drive_status(handler, *, send_body: bool = True) -> None:
@@ -313,7 +317,13 @@ def _record_drive_settings_audit(previous: dict, current: dict) -> None:
 
 
 def _drive_redirect_uri(handler) -> str:
-    configured = gmail_integration.configured_gmail_redirect_uri()
+    # Use a Drive-specific configured redirect if provided, otherwise build the
+    # Drive callback from the request. NEVER fall back to the Gmail-configured
+    # redirect: that points at /auth/gmail/callback, which would route the Drive
+    # consent to the Gmail handler and reject it (the OAuth state purpose is
+    # "drive", but the Gmail callback only accepts "gmail"), so Drive could never
+    # connect on a deployment that sets NDA_GMAIL_OAUTH_REDIRECT_URI.
+    configured = os.environ.get(DRIVE_OAUTH_REDIRECT_URI_ENV, "").strip()
     if configured:
         return configured
     return f"{_request_base_url(handler)}/auth/drive/callback"
