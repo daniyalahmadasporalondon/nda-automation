@@ -142,7 +142,15 @@ GMAIL_OAUTH_AUTH_URL = google_identity.GOOGLE_AUTH_URL
 GMAIL_OAUTH_TOKEN_URL = google_identity.GOOGLE_TOKEN_URL
 GMAIL_OAUTH_SCOPES_BY_ROLE = {
     "inbound": ("https://www.googleapis.com/auth/gmail.readonly",),
-    "outbound": ("https://www.googleapis.com/auth/gmail.send",),
+    # gmail.send authorizes sending, but resolving the outbound account (and its
+    # readiness) reads emailAddress from Gmail's users.getProfile -- which gmail.send
+    # alone does NOT permit. Add gmail.metadata, the least-privilege read scope that
+    # allows getProfile (headers/labels metadata only, never message bodies), so the
+    # outbound account resolves instead of showing "Account: Not resolved".
+    "outbound": (
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.metadata",
+    ),
     # Least-privilege Drive access: drive.file lets the app touch only the files
     # it creates, never the user's whole Drive. Used by the Save-to-Drive flow.
     "drive": ("https://www.googleapis.com/auth/drive.file",),
