@@ -416,6 +416,50 @@ def test_public_matter_exposes_artifact_view_and_current_pointer():
     assert "stored_filename" not in redline_view
     # The earlier original is not current.
     assert next(a for a in view if a["role"] == "original")["is_current"] is False
+    # The lineage fields the dashboard "Relationships" view orders/labels by are all
+    # present on every node: role, version, based_on_artifact_id, actor, created_at.
+    for node in view:
+        for key in ("role", "version", "based_on_artifact_id", "actor", "created_at"):
+            assert key in node, key
+    assert redline_view["actor"] == "ai"
+    assert isinstance(redline_view["created_at"], str)
+
+
+def test_public_matter_counterparty_prefers_generation_manifest():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    # Subject says one thing; the generation manifest is the authoritative name.
+    matter = _seed_matter(repo, intake_metadata={"subject": "RE: some thread"})
+    artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="generated",
+        document_bytes=b"gen", repository=repo,
+        metadata={"generation": {"counterparty_name": "Acme Robotics Ltd"}},
+    )
+    public = public_matter(repo.get_matter(matter["id"]))
+    # The generated NDA's manifest name is the EXACT counterparty (beats the subject).
+    assert public["counterparty"] == "Acme Robotics Ltd"
+
+
+def test_public_matter_counterparty_derives_from_subject_for_inbound():
+    from nda_automation.matter_view import public_matter
+
+    repo = InMemoryMatterRepository()
+    # Inbound matter (no generation manifest) -> best-effort subject-derived name.
+    matter = _seed_matter(repo, intake_metadata={"subject": "NDA from Globex Ltd"})
+    public = public_matter(repo.get_matter(matter["id"]))
+    assert public["counterparty"] == "NDA from Globex Ltd"
+
+
+def test_public_matter_counterparty_unknown_fallback():
+    from nda_automation.matter_view import public_matter
+
+    # A matter dict with neither a generation manifest nor a usable subject collapses
+    # to the honest "Unknown Counterparty" fallback. (A repository-built matter always
+    # back-fills a subject from the filename, so the empty case is exercised at the
+    # raw-dict contract level — that's where the fallback actually fires.)
+    public = public_matter({"id": "m_unknown", "subject": ""})
+    assert public["counterparty"] == "Unknown Counterparty"
 
 
 def test_public_matter_omits_artifact_keys_when_no_registry():

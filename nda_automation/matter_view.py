@@ -20,6 +20,7 @@ class PublicMatter(TypedDict, total=False):
     attachment_filename: str
     board_column: str
     can_send_redline: bool
+    counterparty: str
     created_at: str
     current_artifact_id: str
     document_title: str
@@ -145,6 +146,12 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     workflow = workflow_state(matter)
     public["workflow_state"] = workflow
     public["next_action"] = workflow["next_action"]["label"]
+    # A derived, best-available counterparty name so the dashboard can group/find
+    # matters by who they're with. For a generated NDA this is the exact manifest
+    # company name; for an inbound matter it's the cleaned email subject; otherwise
+    # "Unknown Counterparty". One source of truth: artifact_registry.derive_counterparty
+    # (the same name drive_integration files under), so the UI and Drive never drift.
+    public["counterparty"] = artifact_registry.derive_counterparty(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
     # projection -- provenance the UI needs, never the storage internals

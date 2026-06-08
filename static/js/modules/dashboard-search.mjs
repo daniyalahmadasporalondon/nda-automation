@@ -15,10 +15,23 @@
 // (summaryEndpoint / formatSummaryResult / summaryErrorMessage / SUMMARY_LABEL);
 // the DOM controller in static/js/dashboard-search.js consumes them.
 //
-// STILL DEFERRED (need backend work we don't have yet):
-//   * "Find documents linked to a counterparty" -> counterparty data is weak for
-//        inbound matters; matching would be noisy/misleading.
-//   * "Show how documents relate"             -> needs artifact-lineage rendering.
+// v2 SHIPPED: natural-language free text -> a validated structured filter spec
+// (validateFilterSpec) applied deterministically over the real matters
+// (applyFilterSpec). The AI only ever produces a filter spec; the document list is
+// always real.
+//
+// v3 SHIPPED (DETERMINISTIC, NO AI — structured-data views):
+//   * "Find documents linked to a counterparty" -> a chip that GROUPS the real
+//     matters by their derived `counterparty` name (groupMattersByCounterparty).
+//     Honest UX: the name is best-available — exact for generated NDAs (from the
+//     generation manifest), best-effort for inbound (derived from the email
+//     subject). We show it as-is and never imply false precision; undeterminable
+//     names land in an "Unknown Counterparty" bucket that always sorts last.
+//   * "Show how documents relate" -> a per-result "Relationships" affordance that
+//     renders that matter's DOCUMENT LINEAGE (buildArtifactLineage) — the artifact
+//     version chain ordered by lineage (original -> redline/reviewed/generated ->
+//     counter), each node labelled with role/version/actor/date, the current
+//     artifact marked. A purely factual structured view, never AI.
 
 // The two solid v1 chips, each backed by a real workflow_state.status value.
 // `status` is matched exactly against matter.workflow_state.status.
@@ -35,6 +48,14 @@ const DASHBOARD_SEARCH_CHIPS = [
     kind: "status",
     // The sent-out / waiting-on-the-other-side phase.
     status: "sent_awaiting_counterparty",
+  },
+  {
+    // v3: not a status filter — this chip GROUPS every matter by its derived
+    // counterparty name. The controller branches on kind === "group" to render
+    // section headers (groupMattersByCounterparty) instead of a flat result list.
+    id: "by_counterparty",
+    label: "Find documents by counterparty",
+    kind: "group",
   },
 ];
 
@@ -374,18 +395,204 @@ function applyFilterSpec(matters, rawSpec, now = Date.now()) {
   return results;
 }
 
+// --------------------------------------------------------------------------- //
+// v3 "Find documents linked to a counterparty" — pure grouping (no DOM).
+// --------------------------------------------------------------------------- //
+
+// The honest fallback label, mirroring the backend's derive_counterparty: a matter
+// with no usable counterparty lands here. Kept identical so the bucket header reads
+// the same wherever the name is surfaced.
+const COUNTERPARTY_UNKNOWN = "Unknown Counterparty";
+
+// The best-available counterparty name for one matter. The backend's public_matter
+// already derives this into matter.counterparty (exact for generated NDAs, subject-
+// derived for inbound). We read that field as-is — no re-derivation, no cleverness —
+// and only fall back to the honest "Unknown Counterparty" bucket when it's blank, so
+// we never imply a precision the data doesn't have.
+function matterCounterparty(matter) {
+  const name = matter && matter.counterparty != null ? String(matter.counterparty).trim() : "";
+  return name || COUNTERPARTY_UNKNOWN;
+}
+
+// Group real matters by their derived counterparty name into ORDERED groups.
+//
+// Returns: [{ counterparty, matters: [...] }, ...]. Grouping is exact on the
+// best-available name (matterCounterparty). Group order is deterministic: by first
+// appearance of each counterparty in the input (stable, predictable — no ranking),
+// EXCEPT the "Unknown Counterparty" bucket which always sorts LAST, because an
+// undeterminable name is the weakest signal and shouldn't head the list. Within a
+// group, matters keep their input order. A non-array input yields []; we never
+// fabricate a group or a matter.
+function groupMattersByCounterparty(matters) {
+  const list = Array.isArray(matters) ? matters : [];
+  const order = [];
+  const byName = new Map();
+  for (const matter of list) {
+    const name = matterCounterparty(matter);
+    if (!byName.has(name)) {
+      byName.set(name, []);
+      order.push(name);
+    }
+    byName.get(name).push(matter);
+  }
+  const named = order.filter((name) => name !== COUNTERPARTY_UNKNOWN);
+  const groups = named.map((name) => ({ counterparty: name, matters: byName.get(name) }));
+  if (byName.has(COUNTERPARTY_UNKNOWN)) {
+    groups.push({ counterparty: COUNTERPARTY_UNKNOWN, matters: byName.get(COUNTERPARTY_UNKNOWN) });
+  }
+  return groups;
+}
+
+// --------------------------------------------------------------------------- //
+// v3 "Show how documents relate" — pure artifact-lineage builder (no DOM).
+// --------------------------------------------------------------------------- //
+
+// A friendly title-case label for an artifact role token ("redline" -> "Redline").
+function lineageRoleLabel(role) {
+  const token = String(role || "").trim();
+  if (!token) return "Document";
+  return token
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+// A friendly label for the actor that produced an artifact ("ai" -> "AI agent").
+// Mirrors the spirit of drive_integration.ACTOR_DISPLAY but stays display-only and
+// tolerant: an unknown actor passes through title-cased, an empty one is dropped.
+function lineageActorLabel(actor) {
+  const token = String(actor || "").trim().toLowerCase();
+  const map = {
+    counterparty: "Counterparty",
+    ai: "AI agent",
+    human: "Legal reviewer",
+    aspora: "Aspora",
+    system: "System",
+  };
+  if (!token) return "";
+  return map[token] || (token.charAt(0).toUpperCase() + token.slice(1));
+}
+
+// Build a matter's DOCUMENT LINEAGE: the artifact version chain ordered by lineage,
+// built DETERMINISTICALLY from matter.artifacts (role + version + based_on_artifact_id).
+//
+// Returns ordered nodes: [{ id, role, roleLabel, version, actor, actorLabel, date,
+// basedOnArtifactId, isCurrent }, ...]. Ordering walks the based_on_artifact_id
+// chains from their roots: roots (no/unknown parent) come first, ordered by
+// (version, created_at, original-registration index); each child is emitted right
+// after its parent. This yields the natural reading order (original ->
+// redline/reviewed/generated -> sent -> counter) without hard-coding role positions,
+// so it stays correct for any future role. A node whose parent isn't on the matter is
+// treated as a root (lineage never dangles). The current_artifact_id is flagged via
+// is_current on the projected node (already set by matter_artifacts_view); we also
+// recompute it from matter.current_artifact_id defensively. Zero or one artifact
+// returns that 0/1-length list as-is — the controller shows the friendly
+// "No earlier versions yet." for fewer than two nodes. We NEVER fabricate a node.
+function buildArtifactLineage(matter) {
+  const raw = matter && Array.isArray(matter.artifacts) ? matter.artifacts : [];
+  const currentId = matter && matter.current_artifact_id != null
+    ? String(matter.current_artifact_id)
+    : "";
+  // Project each artifact to a stable node, remembering its registration index so the
+  // ordering is fully deterministic even when versions/timestamps tie.
+  const nodes = raw
+    .filter((artifact) => artifact && typeof artifact === "object")
+    .map((artifact, index) => {
+      const id = String(artifact.id || "");
+      const role = String(artifact.role || "");
+      const actor = String(artifact.actor || "");
+      const version = Number.isFinite(Number(artifact.version)) ? Number(artifact.version) : 0;
+      const basedOn = String(artifact.based_on_artifact_id || "");
+      const date = String(artifact.created_at || "");
+      const isCurrent = artifact.is_current === true || (currentId !== "" && id === currentId);
+      return {
+        id,
+        role,
+        roleLabel: lineageRoleLabel(role),
+        version,
+        actor,
+        actorLabel: lineageActorLabel(actor),
+        date,
+        basedOnArtifactId: basedOn,
+        isCurrent,
+        _index: index,
+      };
+    });
+  if (nodes.length <= 1) {
+    return nodes.map((node) => stripLineageInternal(node));
+  }
+
+  // Index nodes by id and bucket children under their parent id.
+  const byId = new Map();
+  for (const node of nodes) {
+    if (node.id) byId.set(node.id, node);
+  }
+  const childrenOf = new Map();
+  const roots = [];
+  for (const node of nodes) {
+    const parentId = node.basedOnArtifactId;
+    // A node is a root when it has no parent OR its parent isn't an artifact of this
+    // matter (a dangling reference is treated as a root, never dropped).
+    if (parentId && byId.has(parentId)) {
+      if (!childrenOf.has(parentId)) childrenOf.set(parentId, []);
+      childrenOf.get(parentId).push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const tieBreak = (a, b) => {
+    if (a.version !== b.version) return a.version - b.version;
+    const aDate = Date.parse(a.date) || 0;
+    const bDate = Date.parse(b.date) || 0;
+    if (aDate !== bDate) return aDate - bDate;
+    return a._index - b._index;
+  };
+  roots.sort(tieBreak);
+  for (const kids of childrenOf.values()) kids.sort(tieBreak);
+
+  // Depth-first from each root, emitting a parent immediately before its children, so
+  // a derived doc always reads right after the doc it was based on. A `seen` guard
+  // makes a malformed cyclic chain terminate instead of looping forever.
+  const ordered = [];
+  const seen = new Set();
+  const visit = (node) => {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    ordered.push(node);
+    for (const child of childrenOf.get(node.id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  // Any node not reached (e.g. an orphan inside a cycle) is appended in registration
+  // order so it's never silently lost.
+  for (const node of nodes) if (!seen.has(node)) visit(node);
+
+  return ordered.map((node) => stripLineageInternal(node));
+}
+
+// Drop the internal ordering index from a lineage node before it leaves the builder.
+function stripLineageInternal(node) {
+  const { _index, ...rest } = node;
+  return rest;
+}
+
 export {
+  COUNTERPARTY_UNKNOWN,
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
   SEARCH_INTENT_ENDPOINT,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
   applyFilterSpec,
+  buildArtifactLineage,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
   filterSpecIsEmpty,
   formatSummaryResult,
+  groupMattersByCounterparty,
+  matterCounterparty,
   matterHaystack,
   matterStatus,
   matterStatusLabel,

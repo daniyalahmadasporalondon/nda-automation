@@ -452,36 +452,14 @@ def _resolve_root_folder(
     )
 
 
-def derive_counterparty(matter: dict[str, Any]) -> str:
-    """Best-available counterparty name for a matter, Drive-safe.
-
-    Preference: (1) a generated NDA's manifest ``counterparty_name`` (stored on the
-    generated artifact's metadata), (2) the matter's cleaned ``subject``, (3)
-    ``"Unknown Counterparty"``. The result is sanitised for Drive (control chars
-    and path separators stripped) but kept human-readable (spaces preserved).
-    """
-    manifest_name = _counterparty_from_generation(matter)
-    candidate = manifest_name or str(matter.get("subject") or "").strip()
-    cleaned = _drive_safe_name(candidate)
-    return cleaned or "Unknown Counterparty"
-
-
-def _counterparty_from_generation(matter: dict[str, Any]) -> str:
-    """Pull the counterparty company name from a generated artifact's manifest.
-
-    Generated NDAs stash the generation manifest on the artifact's
-    ``metadata['generation']`` (the matter-level intake_metadata drops unknown
-    keys, so the artifact metadata is the reliable source). Returns the manifest's
-    ``counterparty_name`` when present.
-    """
-    for artifact in artifact_registry.matter_artifacts(matter):
-        metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
-        generation = metadata.get("generation")
-        if isinstance(generation, dict):
-            name = str(generation.get("counterparty_name") or "").strip()
-            if name:
-                return name
-    return ""
+# The counterparty-name derivation lives in :mod:`artifact_registry` (a neutral
+# leaf module that already owns artifact metadata) so the Drive filing layer and
+# the UI's public_matter view read the SAME best-available name from ONE source of
+# truth. Re-exported here under its historical name for callers in this module and
+# any importers of ``drive_integration.derive_counterparty``. Folder naming is
+# unchanged: ``_counterparty_safe_name`` in the registry is the same sanitiser as
+# this module's ``_drive_safe_name``, so the derived counterparty is byte-identical.
+derive_counterparty = artifact_registry.derive_counterparty
 
 
 def derive_matter_folder_name(matter: dict[str, Any], matter_id: str, counterparty: str) -> str:

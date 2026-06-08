@@ -276,6 +276,66 @@ def set_current_artifact(matter: dict[str, Any], artifact_id: str) -> str:
     return artifact_id
 
 
+# --- counterparty derivation ----------------------------------------------
+# The single source of truth for "who is the counterparty on this matter?". It
+# lives here (a leaf module that already owns artifact metadata) so both the
+# Drive filing layer and the UI view read the SAME best-available name without an
+# import cycle. ``drive_integration`` re-exports ``derive_counterparty`` for
+# backward compatibility; ``matter_view`` imports it for the public_matter field.
+COUNTERPARTY_UNKNOWN = "Unknown Counterparty"
+
+
+def derive_counterparty(matter: dict[str, Any]) -> str:
+    """Best-available counterparty name for a matter, display/Drive-safe.
+
+    Preference: (1) a generated NDA's manifest ``counterparty_name`` (stored on the
+    generated artifact's metadata), (2) the matter's cleaned ``subject``, (3)
+    ``"Unknown Counterparty"``. The result is sanitised (control chars and path
+    separators stripped) but kept human-readable (spaces preserved). For inbound
+    matters this is a best-effort name derived from the email subject, not an exact
+    legal entity — callers should present it as-is and not imply false precision.
+    """
+    manifest_name = counterparty_from_generation(matter)
+    candidate = manifest_name or str(matter.get("subject") or "").strip()
+    cleaned = _counterparty_safe_name(candidate)
+    return cleaned or COUNTERPARTY_UNKNOWN
+
+
+def counterparty_from_generation(matter: dict[str, Any]) -> str:
+    """Pull the counterparty company name from a generated artifact's manifest.
+
+    Generated NDAs stash the generation manifest on the artifact's
+    ``metadata['generation']`` (the matter-level intake_metadata drops unknown
+    keys, so the artifact metadata is the reliable source). Returns the manifest's
+    ``counterparty_name`` when present.
+    """
+    for artifact in matter_artifacts(matter):
+        metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
+        generation = metadata.get("generation")
+        if isinstance(generation, dict):
+            name = str(generation.get("counterparty_name") or "").strip()
+            if name:
+                return name
+    return ""
+
+
+def _counterparty_safe_name(value: object) -> str:
+    """Sanitise a counterparty display name: strip control chars + path separators.
+
+    Keeps the name human-readable (spaces and most punctuation preserved) but
+    removes characters that break a Drive path or a local mirror: slashes,
+    backslashes, NUL/control characters. Collapses whitespace and trims.
+    """
+    text = str(value or "")
+    cleaned = []
+    for ch in text:
+        if ch in ("/", "\\", "\x00") or ord(ch) < 32:
+            cleaned.append(" ")
+        else:
+            cleaned.append(ch)
+    return " ".join("".join(cleaned).split()).strip()
+
+
 # --- helpers ---------------------------------------------------------------
 def hash_bytes(document_bytes: bytes) -> str:
     return hashlib.sha256(document_bytes).hexdigest()

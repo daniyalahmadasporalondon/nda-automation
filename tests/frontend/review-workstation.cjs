@@ -5813,20 +5813,39 @@ async function testDashboardSmartSearch(page) {
       subject: "Acme Mutual NDA",
       sender: "legal@acme.example",
       board_column: "in_review",
+      // v3: a derived counterparty (here exact, from a generated NDA's manifest) plus
+      // a multi-artifact lineage so the Relationships expander has a real chain.
+      counterparty: "Acme Robotics Ltd",
+      current_artifact_id: "a_pending_reviewed",
       workflow_state: { status: "awaiting_approval", label: "Awaiting approval" },
+      artifacts: [
+        { id: "a_pending_original", role: "original", version: 1, actor: "counterparty", based_on_artifact_id: "", created_at: "2026-06-01T09:00:00+00:00", is_current: false },
+        { id: "a_pending_redline", role: "redline", version: 1, actor: "ai", based_on_artifact_id: "a_pending_original", created_at: "2026-06-02T10:00:00+00:00", is_current: false },
+        { id: "a_pending_reviewed", role: "reviewed", version: 1, actor: "human", based_on_artifact_id: "a_pending_redline", created_at: "2026-06-03T11:00:00+00:00", is_current: true },
+      ],
     },
     {
       id: "m_sent",
       subject: "Globex One-Way NDA",
       sender: "deals@globex.example",
       board_column: "sent",
+      // Same counterparty as a second Acme matter below would group together; this one
+      // is its own counterparty and carries a single artifact (no earlier versions).
+      counterparty: "Globex Ltd",
+      current_artifact_id: "a_sent_original",
       workflow_state: { status: "sent_awaiting_counterparty", label: "Awaiting signature" },
+      artifacts: [
+        { id: "a_sent_original", role: "original", version: 1, actor: "counterparty", based_on_artifact_id: "", created_at: "2026-06-04T09:00:00+00:00", is_current: true },
+      ],
     },
     {
       id: "m_reviewing",
       subject: "Initech Confidentiality Agreement",
       sender: "ip@initech.example",
       board_column: "in_review",
+      // A second matter sharing the Acme counterparty so the grouping chip renders a
+      // counterparty header with two documents under it.
+      counterparty: "Acme Robotics Ltd",
       workflow_state: { status: "ai_reviewing", label: "AI reviewing" },
     },
   ];
@@ -5991,6 +6010,76 @@ async function testDashboardSmartSearch(page) {
   await assertTextContains(
     page.locator('[data-dashboard-search-summary-for="m_sent"]'),
     "Summary unavailable right now.",
+  );
+
+  // --- "Find documents by counterparty" (v3 grouping chip) ------------------
+  // The chip groups every loaded matter under quiet counterparty-name headers, each
+  // reusing the standard result rows. Honest UX: the header is the derived name as-is.
+  const byCounterpartyChip = page.locator('[data-dashboard-search-chip="by_counterparty"]');
+  await assertTextContains(byCounterpartyChip, "by counterparty");
+  await byCounterpartyChip.click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults .dashboard-search-group").length === 2,
+  );
+  const groupNames = await page.$$eval(
+    "#dashboardSearchResults .dashboard-search-group-name",
+    (nodes) => nodes.map((n) => n.textContent.trim()),
+  );
+  // Two counterparties: Acme (first appearance) then Globex. Names shown as-is.
+  assert.deepEqual(groupNames, ["Acme Robotics Ltd", "Globex Ltd"]);
+  // The Acme group lists its two matters; both standard rows are present under it.
+  const acmeGroup = page.locator("#dashboardSearchResults .dashboard-search-group").first();
+  await assertTextContains(acmeGroup, "Acme Mutual NDA");
+  await assertTextContains(acmeGroup, "Initech Confidentiality Agreement");
+  assert.equal(
+    await acmeGroup.locator("[data-dashboard-search-open]").count(),
+    2,
+    "expected the Acme counterparty group to list both of its matters",
+  );
+  assert.equal(await byCounterpartyChip.getAttribute("aria-pressed"), "true");
+
+  // --- "Show how documents relate" (v3 Relationships expander) ---------------
+  // The per-row Relationships affordance expands that matter's document lineage inline
+  // as a factual timeline — built from the matter's own artifacts, NOT an AI call.
+  const pendingRelationships = page.locator('[data-dashboard-search-relationships="m_pending"]').first();
+  await pendingRelationships.click();
+  const lineagePanel = page.locator('[data-dashboard-search-lineage-for="m_pending"]').first();
+  await page.waitForFunction(
+    () => {
+      const panel = document.querySelector('[data-dashboard-search-lineage-for="m_pending"]');
+      return panel && !panel.hidden && panel.querySelectorAll(".dashboard-search-lineage-node").length === 3;
+    },
+  );
+  // Ordered root -> derived (original -> redline -> reviewed), with the current
+  // artifact marked and the actors labelled. This is a structured view, not AI.
+  const lineageRoles = await page.$$eval(
+    '[data-dashboard-search-lineage-for="m_pending"] .dashboard-search-lineage-role',
+    (nodes) => nodes.map((n) => n.textContent.replace(/\s+/g, " ").trim()),
+  );
+  assert.match(lineageRoles[0], /^Original/);
+  assert.match(lineageRoles[1], /^Redline/);
+  assert.match(lineageRoles[2], /Reviewed/);
+  // Exactly the reviewed (current) node carries the "Current" marker.
+  assert.equal(
+    await lineagePanel.locator(".dashboard-search-lineage-current").count(),
+    1,
+    "expected exactly one artifact flagged as current in the lineage",
+  );
+  await assertTextContains(lineagePanel, "Legal reviewer"); // human actor label
+  // Re-clicking Relationships collapses the panel (toggle off).
+  await pendingRelationships.click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-dashboard-search-lineage-for="m_pending"]')?.hidden === true,
+  );
+
+  // A single-artifact matter shows the friendly "No earlier versions yet." line.
+  const sentRelationships = page.locator('[data-dashboard-search-relationships="m_sent"]').first();
+  await sentRelationships.click();
+  await page.waitForFunction(
+    () => {
+      const panel = document.querySelector('[data-dashboard-search-lineage-for="m_sent"]');
+      return panel && !panel.hidden && /No earlier versions yet\./.test(panel.innerText);
+    },
   );
 
   await page.unroute("**/api/matters");

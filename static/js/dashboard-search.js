@@ -1,4 +1,5 @@
-// Dashboard smart-search controller — v1.1 (deterministic search + AI summary).
+// Dashboard smart-search controller — v3 (deterministic search + AI summary +
+// counterparty grouping + document-lineage view).
 //
 // Wires the dashboard search panel: a free-text input + submit arrow, two quick
 // status chips, and a results list. Every result is a real matter from
@@ -13,6 +14,15 @@
 // grounded AI summary inline, in an expandable panel clearly LABELED "AI summary"
 // so it is never mistaken for verified fact. On any failure it shows the friendly
 // "Summary unavailable right now." message — never a stack trace.
+//
+// v3 adds two DETERMINISTIC, structured-data views (NO AI):
+//   * a "Find documents by counterparty" chip that renders the real matters grouped
+//     under quiet counterparty-name section headers (groupMattersByCounterparty),
+//     each reusing the standard result rows + openMatter + Summarize.
+//   * a per-row "Relationships" affordance that expands that matter's DOCUMENT
+//     LINEAGE inline as a clean timeline (buildArtifactLineage) — purely a factual
+//     view of the matter's own artifacts, with the current version marked, and a
+//     friendly "No earlier versions yet." for a single-artifact matter.
 const DashboardSearchView = (() => {
   // Resolve the bridged pure filters lazily — the .mjs bridge (global-bridge)
   // is a deferred module that runs after this classic script loads, so we only
@@ -97,6 +107,53 @@ const DashboardSearchView = (() => {
         .join("");
     }
 
+    // The markup for ONE result row (open-matter button + Summarize + Relationships
+    // affordances + their collapsed inline panels). Shared by the flat result list
+    // and the v3 counterparty-grouped view so every row behaves identically.
+    function resultItemMarkup(matter) {
+      const { matterTitle, matterStatusLabel } = lib();
+      const title = matterTitle ? matterTitle(matter) : (matter.subject || "Untitled NDA");
+      const statusLabel = matterStatusLabel ? matterStatusLabel(matter) : "";
+      const statusMarkup = statusLabel
+        ? `<span class="dashboard-search-result-status">${escapeHtml(statusLabel)}</span>`
+        : "";
+      const id = escapeHtml(matter.id);
+      // The Summarize affordance is only rendered when a summarizer was wired
+      // in. The collapsed panel below the row holds the inline AI summary.
+      const summarizeMarkup = typeof summarizeMatter === "function"
+        ? `<button type="button" class="dashboard-search-result-summarize" ` +
+          `data-dashboard-search-summarize="${id}">Summarize</button>`
+        : "";
+      // v3: a per-row "Relationships" affordance that expands the matter's document
+      // lineage inline. Always available (it reads structured data the app already
+      // has; no AI, no network). Its panel is clearly a factual structured view.
+      const relationshipsMarkup =
+        `<button type="button" class="dashboard-search-result-relationships" ` +
+        `data-dashboard-search-relationships="${id}" aria-expanded="false">Relationships</button>`;
+      const summaryPanel = typeof summarizeMatter === "function"
+        ? `<div class="dashboard-search-result-summary" ` +
+          `data-dashboard-search-summary-for="${id}" hidden></div>`
+        : "";
+      const lineagePanel =
+        `<div class="dashboard-search-result-lineage" ` +
+        `data-dashboard-search-lineage-for="${id}" hidden></div>`;
+      return (
+        `<li class="dashboard-search-result">` +
+        `<div class="dashboard-search-result-row">` +
+        `<button type="button" class="dashboard-search-result-button" ` +
+        `data-dashboard-search-open="${id}">` +
+        `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
+        statusMarkup +
+        `</button>` +
+        summarizeMarkup +
+        relationshipsMarkup +
+        `</div>` +
+        summaryPanel +
+        lineagePanel +
+        `</li>`
+      );
+    }
+
     function renderResults(results, { emptyMessage }) {
       if (!resultsList) return;
       if (!results.length) {
@@ -113,34 +170,48 @@ const DashboardSearchView = (() => {
         const noun = results.length === 1 ? "document" : "documents";
         resultsStatus.textContent = `${results.length} ${noun}`;
       }
-      const { matterTitle, matterStatusLabel } = lib();
       resultsList.hidden = false;
-      resultsList.innerHTML = results
-        .map((matter) => {
-          const title = matterTitle ? matterTitle(matter) : (matter.subject || "Untitled NDA");
-          const statusLabel = matterStatusLabel ? matterStatusLabel(matter) : "";
-          const statusMarkup = statusLabel
-            ? `<span class="dashboard-search-result-status">${escapeHtml(statusLabel)}</span>`
-            : "";
-          const id = escapeHtml(matter.id);
-          // The Summarize affordance is only rendered when a summarizer was wired
-          // in. The collapsed panel below the row holds the inline AI summary.
-          const summarizeMarkup = typeof summarizeMatter === "function"
-            ? `<button type="button" class="dashboard-search-result-summarize" ` +
-              `data-dashboard-search-summarize="${id}">Summarize</button>` +
-              `<div class="dashboard-search-result-summary" ` +
-              `data-dashboard-search-summary-for="${id}" hidden></div>`
-            : "";
+      resultsList.innerHTML = results.map((matter) => resultItemMarkup(matter)).join("");
+    }
+
+    // v3 "Find documents linked to a counterparty": render the real matters grouped
+    // under quiet counterparty-name section headers. Each group lists that
+    // counterparty's matters using the SAME result rows (open + Summarize +
+    // Relationships) as the flat list. Honest UX: the header shows the derived name
+    // as-is (exact for generated NDAs, subject-derived for inbound) — we don't dress
+    // it up as a verified legal entity.
+    function renderGroupedByCounterparty() {
+      if (!resultsList) return;
+      const group = (lib().groupMattersByCounterparty || (() => []))(matters());
+      const total = group.reduce((sum, entry) => sum + entry.matters.length, 0);
+      if (!total) {
+        resultsList.innerHTML = "";
+        resultsList.hidden = true;
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = "No documents yet.";
+        }
+        return;
+      }
+      if (resultsStatus) {
+        resultsStatus.hidden = false;
+        const docNoun = total === 1 ? "document" : "documents";
+        const cpNoun = group.length === 1 ? "counterparty" : "counterparties";
+        resultsStatus.textContent = `${total} ${docNoun} across ${group.length} ${cpNoun}`;
+      }
+      resultsList.hidden = false;
+      resultsList.innerHTML = group
+        .map((entry) => {
+          const count = entry.matters.length;
+          const noun = count === 1 ? "document" : "documents";
+          const rows = entry.matters.map((matter) => resultItemMarkup(matter)).join("");
           return (
-            `<li class="dashboard-search-result">` +
-            `<div class="dashboard-search-result-row">` +
-            `<button type="button" class="dashboard-search-result-button" ` +
-            `data-dashboard-search-open="${id}">` +
-            `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
-            statusMarkup +
-            `</button>` +
-            summarizeMarkup +
-            `</div>` +
+            `<li class="dashboard-search-group">` +
+            `<p class="dashboard-search-group-header">` +
+            `<span class="dashboard-search-group-name">${escapeHtml(entry.counterparty)}</span>` +
+            `<span class="dashboard-search-group-count">${count} ${noun}</span>` +
+            `</p>` +
+            `<ul class="dashboard-search-results dashboard-search-group-results">${rows}</ul>` +
             `</li>`
           );
         })
@@ -269,6 +340,12 @@ const DashboardSearchView = (() => {
       searchRunToken += 1;
       setInterpreted("");
       renderChips();
+      // v3: the "Find documents by counterparty" chip groups every matter instead of
+      // filtering by status. Branch on its kind so its rendering path is distinct.
+      if (chip.kind === "group") {
+        renderGroupedByCounterparty();
+        return;
+      }
       const results = (lib().runChip || (() => []))(matters(), chip);
       renderResults(results, { emptyMessage: "No documents are in this stage right now." });
     }
@@ -317,6 +394,10 @@ const DashboardSearchView = (() => {
         const chip = (lib().chipById || (() => null))(activeChipId);
         if (!chip) {
           reset();
+          return;
+        }
+        if (chip.kind === "group") {
+          renderGroupedByCounterparty();
           return;
         }
         const results = (lib().runChip || (() => []))(matters(), chip);
@@ -392,6 +473,90 @@ const DashboardSearchView = (() => {
       }
     }
 
+    // v3 "Show how documents relate": render a matter's DOCUMENT LINEAGE inline as a
+    // clean factual timeline — the artifact version chain (original ->
+    // redline/reviewed/generated -> counter) built deterministically from the
+    // matter's own artifacts. NOT an AI view: it's structured data the app already
+    // has. Fewer than two artifacts -> a friendly "No earlier versions yet." line.
+    function renderLineagePanel(panel, matter) {
+      if (!panel) return;
+      const build = lib().buildArtifactLineage || (() => []);
+      const nodes = build(matter);
+      panel.hidden = false;
+      if (!nodes.length || nodes.length < 2) {
+        panel.innerHTML =
+          `<p class="dashboard-search-lineage-label">Document history</p>` +
+          `<p class="dashboard-search-lineage-empty">No earlier versions yet.</p>`;
+        return;
+      }
+      const items = nodes
+        .map((node) => {
+          const roleLabel = escapeHtml(node.roleLabel || "Document");
+          const versionLabel = Number(node.version) > 0 ? `v${escapeHtml(node.version)}` : "";
+          const metaBits = [];
+          if (node.actorLabel) metaBits.push(escapeHtml(node.actorLabel));
+          const when = formatLineageDate(node.date);
+          if (when) metaBits.push(when);
+          const meta = metaBits.length
+            ? `<span class="dashboard-search-lineage-meta">${metaBits.join(" · ")}</span>`
+            : "";
+          const currentBadge = node.isCurrent
+            ? `<span class="dashboard-search-lineage-current">Current</span>`
+            : "";
+          const versionMarkup = versionLabel
+            ? `<span class="dashboard-search-lineage-version">${versionLabel}</span>`
+            : "";
+          return (
+            `<li class="dashboard-search-lineage-node${node.isCurrent ? " is-current" : ""}">` +
+            `<span class="dashboard-search-lineage-dot" aria-hidden="true"></span>` +
+            `<span class="dashboard-search-lineage-body">` +
+            `<span class="dashboard-search-lineage-role">${roleLabel}${versionMarkup}${currentBadge}</span>` +
+            meta +
+            `</span>` +
+            `</li>`
+          );
+        })
+        .join("");
+      panel.innerHTML =
+        `<p class="dashboard-search-lineage-label">Document history</p>` +
+        `<ol class="dashboard-search-lineage-list">${items}</ol>`;
+    }
+
+    // A short human date for a lineage node. Reuses the app's formatMatterDate when
+    // present (consistent wording across the UI); else falls back to the YYYY-MM-DD
+    // prefix of the ISO timestamp. Returns "" for an unparseable/empty stamp.
+    function formatLineageDate(stamp) {
+      const value = String(stamp || "").trim();
+      if (!value) return "";
+      if (typeof window.formatMatterDate === "function") {
+        const formatted = window.formatMatterDate(value);
+        if (formatted) return escapeHtml(formatted);
+      }
+      const isoDate = value.slice(0, 10);
+      return /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? escapeHtml(isoDate) : "";
+    }
+
+    // Toggle a matter's inline lineage panel. Purely local — no network, no AI — so
+    // it just builds + renders (or collapses) the structured view.
+    function runRelationships(matterId, button) {
+      if (!matterId) return;
+      const panel = resultsList?.querySelector(
+        `[data-dashboard-search-lineage-for="${cssEscape(matterId)}"]`,
+      );
+      if (!panel) return;
+      // Toggle off an already-open panel.
+      if (!panel.hidden) {
+        panel.hidden = true;
+        panel.innerHTML = "";
+        if (button) button.setAttribute("aria-expanded", "false");
+        return;
+      }
+      const matter = matters().find((m) => String(m?.id) === String(matterId));
+      if (!matter) return;
+      if (button) button.setAttribute("aria-expanded", "true");
+      renderLineagePanel(panel, matter);
+    }
+
     // Minimal CSS.escape fallback for the attribute selector (matter ids are
     // server-issued "matter_<hex>", but stay defensive).
     function cssEscape(value) {
@@ -424,6 +589,11 @@ const DashboardSearchView = (() => {
       const summarizeButton = event.target.closest("[data-dashboard-search-summarize]");
       if (summarizeButton) {
         runSummarize(summarizeButton.dataset.dashboardSearchSummarize, summarizeButton);
+        return;
+      }
+      const relationshipsButton = event.target.closest("[data-dashboard-search-relationships]");
+      if (relationshipsButton) {
+        runRelationships(relationshipsButton.dataset.dashboardSearchRelationships, relationshipsButton);
         return;
       }
       const button = event.target.closest("[data-dashboard-search-open]");

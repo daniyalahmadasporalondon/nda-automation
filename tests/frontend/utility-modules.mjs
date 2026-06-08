@@ -46,16 +46,19 @@ import {
   resolveFirstName,
 } from "../../static/js/modules/greeting.mjs";
 import {
+  COUNTERPARTY_UNKNOWN,
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
   applyFilterSpec,
+  buildArtifactLineage,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
   filterSpecIsEmpty,
   formatSummaryResult,
+  groupMattersByCounterparty,
   matterStatus,
   matterStatusLabel,
   matterTitle,
@@ -877,15 +880,21 @@ const dashboardMatters = [
   },
 ];
 
-// The two solid v1 chips exist and target the right workflow_state statuses.
-assert.equal(DASHBOARD_SEARCH_CHIPS.length, 2);
+// The two solid v1 status chips plus the v3 counterparty-grouping chip.
+assert.equal(DASHBOARD_SEARCH_CHIPS.length, 3);
 assert.deepEqual(
   DASHBOARD_SEARCH_CHIPS.map((chip) => chip.id),
-  ["pending_approval", "awaiting_signature"],
+  ["pending_approval", "awaiting_signature", "by_counterparty"],
 );
 assert.equal(chipById("pending_approval").status, "awaiting_approval");
 assert.equal(chipById("awaiting_signature").status, "sent_awaiting_counterparty");
 assert.equal(chipById("nope"), null);
+// The v1 chips are exact status filters; the v3 chip is a grouping view, not a status.
+assert.equal(chipById("pending_approval").kind, "status");
+assert.equal(chipById("by_counterparty").kind, "group");
+assert.equal(chipById("by_counterparty").status, undefined);
+// runChip is for status chips only — the group chip returns [] (it has its own path).
+assert.deepEqual(runChip(dashboardMatters, chipById("by_counterparty")), []);
 
 // Status filter is an EXACT match on workflow_state.status.
 assert.deepEqual(
@@ -1078,3 +1087,112 @@ assert.deepEqual(applyFilterSpec(specMatters, { status: "made_up_status" }, NOW)
 assert.deepEqual(applyFilterSpec([{ id: "undated", workflow_state: {} }], { min_age_days: 1 }, NOW), []);
 // Non-array input is tolerated.
 assert.deepEqual(applyFilterSpec(null, { status: "approved" }, NOW), []);
+
+// --- Dashboard smart-search v3: groupMattersByCounterparty (grouping view) ---
+// Each matter carries a derived `counterparty` (from public_matter). Grouping is
+// exact on that best-available name; group order is by first appearance, and the
+// "Unknown Counterparty" bucket always sorts LAST.
+const cpMatters = [
+  { id: "m1", counterparty: "Acme Robotics Ltd", subject: "Acme NDA" },
+  { id: "m2", counterparty: "Globex Ltd", subject: "Globex NDA" },
+  { id: "m3", counterparty: "Acme Robotics Ltd", subject: "Acme NDA round 2" },
+  { id: "m4", subject: "stray inbound" }, // no counterparty -> unknown bucket
+  { id: "m5", counterparty: "  ", subject: "blank cp" }, // blank trims -> unknown bucket
+  { id: "m6", counterparty: "Globex Ltd", subject: "Globex addendum" },
+];
+const cpGroups = groupMattersByCounterparty(cpMatters);
+// Named groups in first-appearance order, then the unknown bucket last.
+assert.deepEqual(
+  cpGroups.map((g) => g.counterparty),
+  ["Acme Robotics Ltd", "Globex Ltd", COUNTERPARTY_UNKNOWN],
+);
+// Matters keep input order within each group; grouping is exact on the name.
+assert.deepEqual(cpGroups[0].matters.map((m) => m.id), ["m1", "m3"]);
+assert.deepEqual(cpGroups[1].matters.map((m) => m.id), ["m2", "m6"]);
+assert.deepEqual(cpGroups[2].matters.map((m) => m.id), ["m4", "m5"]); // blank + missing
+assert.equal(COUNTERPARTY_UNKNOWN, "Unknown Counterparty");
+// All matters with a name -> no unknown bucket at all.
+const namedOnly = groupMattersByCounterparty([
+  { id: "a", counterparty: "Initech" },
+  { id: "b", counterparty: "Initech" },
+]);
+assert.deepEqual(namedOnly.map((g) => g.counterparty), ["Initech"]);
+assert.deepEqual(namedOnly[0].matters.map((m) => m.id), ["a", "b"]);
+// Empty / non-array input -> no groups, never fabricated.
+assert.deepEqual(groupMattersByCounterparty([]), []);
+assert.deepEqual(groupMattersByCounterparty(null), []);
+// Only-unknown input still yields exactly the unknown bucket.
+const unknownOnly = groupMattersByCounterparty([{ id: "x" }, { id: "y", counterparty: "" }]);
+assert.deepEqual(unknownOnly.map((g) => g.counterparty), [COUNTERPARTY_UNKNOWN]);
+assert.deepEqual(unknownOnly[0].matters.map((m) => m.id), ["x", "y"]);
+
+// --- Dashboard smart-search v3: buildArtifactLineage (document lineage chain) ---
+// A matter's artifacts ordered by lineage (root -> derived), each labelled with
+// role/version/actor/date, the current artifact marked. Built ONLY from the
+// matter's own artifacts — no fabrication.
+const lineageMatter = {
+  id: "m_lineage",
+  current_artifact_id: "a_reviewed",
+  artifacts: [
+    // Deliberately NOT in lineage order in the source list, to prove the builder
+    // reorders by based_on_artifact_id rather than trusting input order.
+    { id: "a_redline", role: "redline", version: 1, actor: "ai", based_on_artifact_id: "a_original", created_at: "2026-06-02T10:00:00+00:00", is_current: false },
+    { id: "a_original", role: "original", version: 1, actor: "counterparty", based_on_artifact_id: "", created_at: "2026-06-01T09:00:00+00:00", is_current: false },
+    { id: "a_reviewed", role: "reviewed", version: 1, actor: "human", based_on_artifact_id: "a_redline", created_at: "2026-06-03T11:00:00+00:00", is_current: true },
+  ],
+};
+const lineage = buildArtifactLineage(lineageMatter);
+// Ordered root -> derived: original -> redline -> reviewed (follows based_on chain).
+assert.deepEqual(lineage.map((n) => n.id), ["a_original", "a_redline", "a_reviewed"]);
+assert.deepEqual(lineage.map((n) => n.role), ["original", "redline", "reviewed"]);
+// Labels are friendly; actor mapped; current flag set from current_artifact_id.
+assert.equal(lineage[0].roleLabel, "Original");
+assert.equal(lineage[1].actorLabel, "AI agent");
+assert.equal(lineage[2].roleLabel, "Reviewed");
+assert.equal(lineage[2].actorLabel, "Legal reviewer");
+assert.deepEqual(lineage.map((n) => n.isCurrent), [false, false, true]);
+assert.equal(lineage[2].version, 1);
+assert.equal(lineage[0].date, "2026-06-01T09:00:00+00:00");
+// is_current is honoured even when current_artifact_id is absent on the matter.
+const flaggedOnly = buildArtifactLineage({
+  id: "m_flag",
+  artifacts: [
+    { id: "a1", role: "original", version: 1, based_on_artifact_id: "" },
+    { id: "a2", role: "redline", version: 1, based_on_artifact_id: "a1", is_current: true },
+  ],
+});
+assert.deepEqual(flaggedOnly.map((n) => n.isCurrent), [false, true]);
+// Two roots at the same level order by version then date then registration index.
+const twoRoots = buildArtifactLineage({
+  id: "m_roots",
+  artifacts: [
+    { id: "gen_v2", role: "generated", version: 2, based_on_artifact_id: "", created_at: "2026-06-05T00:00:00Z" },
+    { id: "gen_v1", role: "generated", version: 1, based_on_artifact_id: "", created_at: "2026-06-04T00:00:00Z" },
+  ],
+});
+assert.deepEqual(twoRoots.map((n) => n.id), ["gen_v1", "gen_v2"]); // v1 before v2
+// A based_on pointing at a non-existent artifact is treated as a root (never dropped).
+const dangling = buildArtifactLineage({
+  id: "m_dangle",
+  artifacts: [
+    { id: "only", role: "counter", version: 1, based_on_artifact_id: "missing_parent" },
+    { id: "root", role: "original", version: 1, based_on_artifact_id: "" },
+  ],
+});
+assert.deepEqual(dangling.map((n) => n.id).sort(), ["only", "root"]);
+assert.equal(dangling.length, 2); // both surfaced, nothing lost
+// Empty / single-artifact matters: the builder returns the 0/1-length list as-is so
+// the controller shows the friendly "No earlier versions yet." for fewer than two.
+assert.deepEqual(buildArtifactLineage({ id: "m_empty", artifacts: [] }), []);
+assert.deepEqual(buildArtifactLineage({ id: "m_none" }), []);
+const single = buildArtifactLineage({
+  id: "m_single",
+  current_artifact_id: "solo",
+  artifacts: [{ id: "solo", role: "original", version: 1, actor: "counterparty", is_current: true }],
+});
+assert.equal(single.length, 1);
+assert.equal(single[0].id, "solo");
+assert.equal(single[0].isCurrent, true);
+// The internal ordering index is not leaked on the returned nodes.
+assert.ok(!("_index" in single[0]));
+assert.ok(!("_index" in lineage[0]));
