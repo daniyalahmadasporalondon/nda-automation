@@ -784,8 +784,9 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Environment: NDA_GMAIL_OUTBOUND_TOKEN_PATH");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Ready for scheduled sync.");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Ready to send redlines.");
-  assert.equal(await page.locator("#adminGmailInboundToggle").getAttribute("aria-checked"), "true");
-  assert.equal(await page.locator("#adminGmailOutboundToggle").getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator("#adminGmailEnabledToggle").getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator("#adminGmailInboundToggle").count(), 0);
+  assert.equal(await page.locator("#adminGmailOutboundToggle").count(), 0);
   assert.equal(await page.locator('[data-gmail-frequency="manual"]').count(), 0);
   assert.equal(await page.locator('[data-gmail-frequency="10_minutes"]').getAttribute("aria-pressed"), "true");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "SYNC FREQUENCY");
@@ -794,9 +795,9 @@ async function testPlaybookAdminEditor(page) {
   await page.waitForFunction(() => document.querySelector('[data-gmail-frequency="30_minutes"]')?.getAttribute("aria-pressed") === "true");
   assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_frequency: "30_minutes" });
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Every 30 minutes.");
-  await page.locator("#adminGmailInboundToggle").click();
-  await page.waitForFunction(() => document.querySelector("#adminGmailInboundToggle")?.getAttribute("aria-checked") === "false");
-  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { inbound_enabled: false });
+  await page.locator("#adminGmailEnabledToggle").click();
+  await page.waitForFunction(() => document.querySelector("#adminGmailEnabledToggle")?.getAttribute("aria-checked") === "false");
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { inbound_enabled: false, outbound_enabled: false });
   assert.equal(await page.locator("#adminGmailSyncButton").count(), 0);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
@@ -4078,7 +4079,14 @@ async function testUserGmailSessionControls(page) {
   await page.locator('[data-admin-section="email"]').click();
   await waitForText(page, "#adminGmailSyncHistory", "4 imported / 0 skipped");
   await assertTextContains(page.locator("#adminGmailSetupPanel"), "User Gmail: alice@example.com");
-  await assertTextContains(page.locator("#adminGmailSetupPanel"), "Disconnect inbound");
+  // Inbound + outbound are a single Gmail login: the Admin panel exposes ONE
+  // unified Disconnect Gmail control (role="all"), not a per-role button each.
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "Disconnect Gmail");
+  assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 1);
+  assert.equal(
+    await page.locator('#adminGmailSetupPanel [data-gmail-disconnect-role="all"]').count(),
+    1,
+  );
   await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
 
   const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));

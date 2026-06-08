@@ -7498,6 +7498,14 @@ body.modal-open {
   justify-content: flex-end;
 }
 
+/* One shared Gmail login serves both inbound + outbound, so its Connect/Disconnect
+   action sits as a footer beneath the two read-only role rows rather than per-row. */
+.integration-connection-actions-unified {
+  border-top: 1px solid var(--border-soft, var(--border-strong));
+  margin-top: 2px;
+  padding-top: 10px;
+}
+
 .integration-connection-action {
   align-items: center;
   background: var(--brand);

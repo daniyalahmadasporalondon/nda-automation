@@ -74,8 +74,7 @@ const AdminIntegrationsView = (() => {
     gmailRecentSend,
     gmailRefreshButton,
     gmailSetupPanel,
-    gmailInboundToggle,
-    gmailOutboundToggle,
+    gmailToggle,
     gmailFrequencyControl,
     gmailSearchForm,
     gmailSearchTermsInput,
@@ -84,8 +83,7 @@ const AdminIntegrationsView = (() => {
     reviewErrorFromPayload,
   }) {
     gmailRefreshButton?.addEventListener("click", load);
-    gmailInboundToggle?.addEventListener("click", () => updateGmailToggle("inbound"));
-    gmailOutboundToggle?.addEventListener("click", () => updateGmailToggle("outbound"));
+    gmailToggle?.addEventListener("click", () => updateGmailToggle());
     gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
       button.addEventListener("click", () => updateGmailFrequency(button.dataset.gmailFrequency || DEFAULT_FREQUENCY));
     });
@@ -117,17 +115,21 @@ const AdminIntegrationsView = (() => {
       }
     }
 
-    async function updateGmailToggle(role) {
-      const current = state.gmailStatus?.[role] || {};
-      const nextEnabled = current.enabled === false;
-      const payloadKey = `${role}_enabled`;
+    async function updateGmailToggle() {
+      // Inbound + outbound are one Gmail system, so the single toggle flips both
+      // role flags together (the backend still gates each role separately under
+      // the hood). On only when both are on: a tap from on -> off disables both;
+      // from off or a mixed state -> on enables both.
+      const inboundOn = state.gmailStatus?.inbound?.enabled !== false;
+      const outboundOn = state.gmailStatus?.outbound?.enabled !== false;
+      const nextEnabled = !(inboundOn && outboundOn);
       setToggleDisabled(true);
       setOverall("Saving", "pending");
       try {
         const response = await fetch("/api/gmail/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [payloadKey]: nextEnabled }),
+          body: JSON.stringify({ inbound_enabled: nextEnabled, outbound_enabled: nextEnabled }),
         });
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail setting could not save");
@@ -250,7 +252,8 @@ const AdminIntegrationsView = (() => {
         { account: status.inbound || {}, id: "inbound", title: "Inbound connection" },
         { account: status.outbound || {}, id: "outbound", title: "Outbound connection" },
       ];
-      gmailSetupPanel.innerHTML = roles.map((role) => renderConnectionRow(role)).join("");
+      const rows = roles.map((role) => renderConnectionRow(role)).join("");
+      gmailSetupPanel.innerHTML = rows + renderUnifiedGmailActions(status);
     }
 
     function renderConnectionRow(role) {
@@ -280,7 +283,6 @@ const AdminIntegrationsView = (() => {
               <dd>${escapeHtml(connectionNextStep(role.id, account, token))}</dd>
             </div>
           </dl>
-          ${connectionActions(role.id, account)}
         </div>
       `;
     }
@@ -389,10 +391,9 @@ const AdminIntegrationsView = (() => {
     function renderToggleControls(status) {
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
-      renderToggle(gmailInboundToggle, inbound.enabled !== false);
-      renderToggle(gmailOutboundToggle, outbound.enabled !== false);
-      setFact("inbound-enabled-copy", inbound.enabled === false ? "Off" : "On");
-      setFact("outbound-enabled-copy", outbound.enabled === false ? "Off" : "On");
+      const enabled = inbound.enabled !== false && outbound.enabled !== false;
+      renderToggle(gmailToggle, enabled);
+      setFact("enabled-copy", enabled ? "On" : "Off");
     }
 
     function renderToggle(button, enabled) {
@@ -403,9 +404,7 @@ const AdminIntegrationsView = (() => {
     }
 
     function setToggleDisabled(disabled) {
-      [gmailInboundToggle, gmailOutboundToggle].forEach((button) => {
-        if (button) button.disabled = disabled;
-      });
+      if (gmailToggle) gmailToggle.disabled = disabled;
     }
 
     function renderFrequencyControl(syncFrequency) {
@@ -511,15 +510,31 @@ const AdminIntegrationsView = (() => {
     return account?.error || "Reconnect Gmail and refresh status.";
   }
 
-  function connectionActions(role, account) {
+  function isUserConnected(account) {
+    return account?.token?.source === "user_data" && account?.token?.configured === true;
+  }
+
+  // Inbound and outbound share a single Gmail login: one OAuth consent grants
+  // gmail.readonly + gmail.send + gmail.metadata and the backend saves both role
+  // tokens from that single grant (role="all"). So the Admin panel exposes ONE
+  // Connect/Disconnect Gmail action, not a per-role button each -- the per-role
+  // rows above stay as read-only status so the single login's coverage is visible.
+  function renderUnifiedGmailActions(status) {
+    if (!status || status.user_scoped !== true) return "";
+    const inbound = status.inbound || {};
+    const outbound = status.outbound || {};
+    const connected = isUserConnected(inbound) || isUserConnected(outbound);
+    const needsConnect = inbound.ready !== true || outbound.ready !== true;
+    const connectUrl = status.connect_url || "/auth/gmail/start";
     const actions = [];
-    if (account?.connect_url && account?.ready !== true) {
-      actions.push(`<a class="integration-connection-action" href="${escapeHtml(withNext(account.connect_url))}">Connect ${escapeHtml(role)}</a>`);
+    if (connectUrl && needsConnect) {
+      const label = connected ? "Reconnect Gmail" : "Connect Gmail";
+      actions.push(`<a class="integration-connection-action" href="${escapeHtml(withNext(connectUrl))}">${escapeHtml(label)}</a>`);
     }
-    if (account?.token?.source === "user_data" && account?.token?.configured === true) {
-      actions.push(`<button class="integration-connection-action secondary" type="button" data-gmail-disconnect-role="${escapeHtml(role)}">Disconnect ${escapeHtml(role)}</button>`);
+    if (connected) {
+      actions.push('<button class="integration-connection-action secondary" type="button" data-gmail-disconnect-role="all">Disconnect Gmail</button>');
     }
-    return actions.length ? `<div class="integration-connection-actions">${actions.join("")}</div>` : "";
+    return actions.length ? `<div class="integration-connection-actions integration-connection-actions-unified">${actions.join("")}</div>` : "";
   }
 
   function withNext(url) {
