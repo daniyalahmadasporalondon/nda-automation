@@ -75,6 +75,13 @@ def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
+    # A fresh connection should land active: the single Gmail toggle treats
+    # "connected" as "on", so enable both roles (best-effort) rather than leaving
+    # the integration paused from a previous disable.
+    try:
+        app_settings.update_gmail_settings({"inbound_enabled": True, "outbound_enabled": True})
+    except Exception:  # pragma: no cover - enabling is best-effort, never blocks connect
+        pass
     next_path = str(state_record.get("next_path") or "/")
     handler._send_redirect(
         next_path,

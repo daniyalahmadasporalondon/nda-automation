@@ -116,12 +116,27 @@ const AdminIntegrationsView = (() => {
     }
 
     async function updateGmailToggle() {
-      // Inbound + outbound are one Gmail system, so the single toggle flips both
-      // role flags together (the backend still gates each role separately under
-      // the hood). On only when both are on: a tap from on -> off disables both;
-      // from off or a mixed state -> on enables both.
-      const inboundOn = state.gmailStatus?.inbound?.enabled !== false;
-      const outboundOn = state.gmailStatus?.outbound?.enabled !== false;
+      const status = state.gmailStatus || {};
+      // The single toggle IS the whole Gmail control. For a signed-in user's
+      // OAuth connection: On launches the Google connect flow, Off disconnects
+      // (removes the token). A fresh connect lands enabled, so there is nothing
+      // else to flip.
+      if (status.user_scoped === true) {
+        const connected = isUserConnected(status.inbound) || isUserConnected(status.outbound);
+        if (connected) {
+          await disconnectGmailRole("all", gmailToggle);
+          return;
+        }
+        // Hand off to the Google consent screen; the callback returns the page
+        // connected + enabled, so the toggle comes back On.
+        const connectUrl = status.connect_url || "/auth/gmail/start";
+        window.location.href = withNext(connectUrl);
+        return;
+      }
+      // Env / shared-token mode (no OAuth flow): fall back to pausing/resuming
+      // both role flags together.
+      const inboundOn = status.inbound?.enabled !== false;
+      const outboundOn = status.outbound?.enabled !== false;
       const nextEnabled = !(inboundOn && outboundOn);
       setToggleDisabled(true);
       setOverall("Saving", "pending");
@@ -252,8 +267,10 @@ const AdminIntegrationsView = (() => {
         { account: status.inbound || {}, id: "inbound", title: "Inbound connection" },
         { account: status.outbound || {}, id: "outbound", title: "Outbound connection" },
       ];
+      // The Gmail toggle above is the single connect/disconnect control, so the
+      // setup panel shows the per-role rows as read-only status only.
       const rows = roles.map((role) => renderConnectionRow(role)).join("");
-      gmailSetupPanel.innerHTML = rows + renderUnifiedGmailActions(status);
+      gmailSetupPanel.innerHTML = rows;
     }
 
     function renderConnectionRow(role) {
@@ -391,9 +408,13 @@ const AdminIntegrationsView = (() => {
     function renderToggleControls(status) {
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
-      const enabled = inbound.enabled !== false && outbound.enabled !== false;
-      renderToggle(gmailToggle, enabled);
-      setFact("enabled-copy", enabled ? "On" : "Off");
+      // For a signed-in user the toggle reflects the connection itself (On =
+      // connected). In env/shared-token mode it reflects the enabled flags.
+      const on = status.user_scoped === true
+        ? (isUserConnected(inbound) || isUserConnected(outbound))
+        : (inbound.enabled !== false && outbound.enabled !== false);
+      renderToggle(gmailToggle, on);
+      setFact("enabled-copy", on ? "On" : "Off");
     }
 
     function renderToggle(button, enabled) {
@@ -512,29 +533,6 @@ const AdminIntegrationsView = (() => {
 
   function isUserConnected(account) {
     return account?.token?.source === "user_data" && account?.token?.configured === true;
-  }
-
-  // Inbound and outbound share a single Gmail login: one OAuth consent grants
-  // gmail.readonly + gmail.send + gmail.metadata and the backend saves both role
-  // tokens from that single grant (role="all"). So the Admin panel exposes ONE
-  // Connect/Disconnect Gmail action, not a per-role button each -- the per-role
-  // rows above stay as read-only status so the single login's coverage is visible.
-  function renderUnifiedGmailActions(status) {
-    if (!status || status.user_scoped !== true) return "";
-    const inbound = status.inbound || {};
-    const outbound = status.outbound || {};
-    const connected = isUserConnected(inbound) || isUserConnected(outbound);
-    const needsConnect = inbound.ready !== true || outbound.ready !== true;
-    const connectUrl = status.connect_url || "/auth/gmail/start";
-    const actions = [];
-    if (connectUrl && needsConnect) {
-      const label = connected ? "Reconnect Gmail" : "Connect Gmail";
-      actions.push(`<a class="integration-connection-action" href="${escapeHtml(withNext(connectUrl))}">${escapeHtml(label)}</a>`);
-    }
-    if (connected) {
-      actions.push('<button class="integration-connection-action secondary" type="button" data-gmail-disconnect-role="all">Disconnect Gmail</button>');
-    }
-    return actions.length ? `<div class="integration-connection-actions integration-connection-actions-unified">${actions.join("")}</div>` : "";
   }
 
   function withNext(url) {

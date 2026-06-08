@@ -4080,14 +4080,11 @@ async function testUserGmailSessionControls(page) {
   await page.locator('[data-admin-section="email"]').click();
   await waitForText(page, "#adminGmailSyncHistory", "4 imported / 0 skipped");
   await assertTextContains(page.locator("#adminGmailSetupPanel"), "User Gmail: alice@example.com");
-  // Inbound + outbound are a single Gmail login: the Admin panel exposes ONE
-  // unified Disconnect Gmail control (role="all"), not a per-role button each.
-  await assertTextContains(page.locator("#adminGmailSetupPanel"), "Disconnect Gmail");
-  assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 1);
-  assert.equal(
-    await page.locator('#adminGmailSetupPanel [data-gmail-disconnect-role="all"]').count(),
-    1,
-  );
+  // The single Gmail toggle is now the whole connect/disconnect control: it reads
+  // On when connected, and there are no separate Connect/Disconnect buttons in the
+  // setup panel (the per-role rows stay as read-only status).
+  assert.equal(await page.locator("#adminGmailEnabledToggle").getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 0);
   await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
 
   const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));
