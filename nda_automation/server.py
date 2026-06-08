@@ -235,6 +235,7 @@ _POST_EXACT_ROUTES = {
     "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
     "/api/gmail/settings": gmail_routes.handle_gmail_settings_update,
     "/api/gmail/disconnect": gmail_routes.handle_gmail_disconnect,
+    "/api/drive/disconnect": drive_routes.handle_drive_disconnect,
     "/api/drive/upload-matter": drive_routes.handle_drive_upload_matter,
     "/api/admin/drive-settings": drive_routes.handle_drive_settings_update,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,

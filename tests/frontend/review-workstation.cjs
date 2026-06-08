@@ -3495,10 +3495,10 @@ async function testAdminDriveSection(page) {
   // The subsection <h3> is CSS-uppercased, so match the rendered text.
   await assertTextContains(page.locator("#adminDrivePanel"), "NDAS ROOT FOLDER (OPTIONAL)");
   await assertTextContains(page.locator('[data-admin-drive="folder-help"]'), "{counterparty}/{matter}");
-  const connectButton = page.locator("#adminDriveConnectPanel a.integration-connection-action");
-  assert.equal(await connectButton.count(), 1);
-  assert.equal(await connectButton.getAttribute("href"), "/auth/drive/start");
-  await assertTextContains(connectButton, "Connect Google Drive");
+  // The Drive toggle is now the whole connect/disconnect control: there is no
+  // separate Connect button, and the toggle reads Off while disconnected.
+  assert.equal(await page.locator("#adminDriveConnectPanel a.integration-connection-action").count(), 0);
+  assert.equal(await page.locator("#adminDriveEnabledToggle").getAttribute("aria-checked"), "false");
   await assertTextContains(page.locator("#adminDriveFacts"), "Not connected");
 
   // Save a target folder; assert the POST payload.

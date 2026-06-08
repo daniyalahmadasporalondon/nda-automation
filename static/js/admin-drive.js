@@ -30,25 +30,35 @@ const AdminDriveView = (() => {
       }
     }
 
+    // The single Drive toggle IS the whole control: On launches the Google
+    // connect flow, Off disconnects (removes the Drive token). A fresh connect
+    // lands enabled, so there is nothing else to flip.
     async function updateDriveEnabled() {
-      const nextEnabled = state.driveStatus?.enabled !== true;
-      setToggleDisabled(true);
-      setOverall("Saving", "pending");
-      try {
-        const response = await fetch("/api/admin/drive-settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: nextEnabled }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Drive setting could not save");
-        applyDriveSettings(payload.drive || {});
-      } catch (error) {
-        setOverall(error.message || "Save failed", "blocked");
-        renderToggle(state.driveStatus?.enabled === true);
-      } finally {
-        setToggleDisabled(false);
+      const connected = state.driveStatus?.connected === true;
+      if (connected) {
+        setToggleDisabled(true);
+        setOverall("Disconnecting", "pending");
+        try {
+          const response = await fetch("/api/drive/disconnect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          const payload = await response.json();
+          if (!response.ok) throw reviewErrorFromPayload(payload, "Drive disconnect failed");
+          await load();
+        } catch (error) {
+          setOverall(error.message || "Disconnect failed", "blocked");
+          renderToggle(state.driveStatus?.connected === true);
+        } finally {
+          setToggleDisabled(false);
+        }
+        return;
       }
+      // On = connect: hand off to the Google consent screen, returning here after.
+      const url = connectUrl(state.driveStatus || {});
+      const separator = url.includes("?") ? "&" : "?";
+      window.location.href = `${url}${separator}next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
     }
 
     async function saveFolderSettings(event) {
@@ -97,15 +107,15 @@ const AdminDriveView = (() => {
     function renderDrive(status = {}) {
       state.driveStatus = status;
       const connected = status.connected === true;
-      const enabled = status.enabled === true;
-      setOverall(connected ? (enabled ? "Connected" : "Connected - off") : "Not connected", connected ? (enabled ? "ready" : "pending") : "blocked");
-      renderToggle(enabled);
+      // The toggle now reflects the connection itself (On = connected).
+      setOverall(connected ? "Connected" : "Not connected", connected ? "ready" : "blocked");
+      renderToggle(connected);
       renderConnect(status);
       renderFolderForm(status.folder || null);
       setFact("connection", connected ? "Connected" : "Not connected");
       setFact("account", status.account || (connected ? "Connected account" : "No account connected"));
       setFact("folder", folderLabel(status.folder));
-      setFact("enabled-copy", enabled ? "On" : "Off");
+      setFact("enabled-copy", connected ? "On" : "Off");
     }
 
     function renderConnect(status) {
@@ -145,12 +155,9 @@ const AdminDriveView = (() => {
             </div>
             <div>
               <dt>Next step</dt>
-              <dd>Connect a Google account to enable Drive uploads.</dd>
+              <dd>Turn the Drive toggle on to connect a Google account.</dd>
             </div>
           </dl>
-          <div class="integration-connection-actions">
-            <a class="integration-connection-action" id="adminDriveConnectButton" href="${escapeHtml(connectUrl(status))}">Connect Google Drive</a>
-          </div>
         </div>
       `;
     }
@@ -168,7 +175,7 @@ const AdminDriveView = (() => {
       setFact("enabled-copy", "Unknown");
       setFact("folder-message", message);
       renderConnect(state.driveStatus || {});
-      renderToggle(state.driveStatus?.enabled === true);
+      renderToggle(state.driveStatus?.connected === true);
     }
 
     function renderToggle(enabled) {

@@ -104,12 +104,41 @@ def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
+    # A fresh connection lands active: the single Drive toggle treats "connected"
+    # as "on", so enable the Drive feature (best-effort) instead of leaving it off.
+    try:
+        app_settings.update_drive_settings({"enabled": True})
+    except Exception:  # pragma: no cover - enabling is best-effort, never blocks connect
+        pass
     next_path = str(state_record.get("next_path") or "/")
     handler._send_redirect(
         next_path,
         headers={"X-Drive-Connected": "1"},
         send_body=send_body,
     )
+
+
+def handle_drive_disconnect(handler) -> None:
+    """Remove the signed-in user's Drive OAuth token (the toggle's Off action).
+
+    The Drive token is stored under the ``"drive"`` role via the Gmail credential
+    machinery, so disconnecting reuses ``disconnect_user_gmail(role="drive")``.
+    """
+    owner_user_id = gmail_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json({"error": "Sign in with Google before disconnecting Drive."}, status=403)
+        return
+    try:
+        removed = gmail_integration.disconnect_user_gmail(owner_user_id, role="drive")
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    # Off also turns the Drive feature off so a later reconnect starts clean.
+    try:
+        app_settings.update_drive_settings({"enabled": False})
+    except Exception:  # pragma: no cover - best-effort
+        pass
+    handler._send_json({"disconnected": removed})
 
 
 def handle_drive_upload_matter(handler) -> None:
