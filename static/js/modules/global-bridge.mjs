@@ -31,17 +31,22 @@ import { createDraftIntake } from "./draft-intake.mjs";
 import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
+  NULL_FILTER_SPEC,
+  SEARCH_INTENT_ENDPOINT,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
+  applyFilterSpec,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
+  filterSpecIsEmpty,
   formatSummaryResult,
   matterStatusLabel,
   matterTitle,
   runChip,
   summaryEndpoint,
   summaryErrorMessage,
+  validateFilterSpec,
 } from "./dashboard-search.mjs";
 
 Object.assign(window, {
@@ -77,16 +82,21 @@ Object.assign(window, {
   // runtime (inside handlers), so the deferred-module availability is safe.
   DashboardSearch: {
     DASHBOARD_SEARCH_CHIPS,
+    NULL_FILTER_SPEC,
+    SEARCH_INTENT_ENDPOINT,
     SUMMARY_LABEL,
     SUMMARY_UNAVAILABLE_MESSAGE,
+    applyFilterSpec,
     chipById,
     filterMattersByStatus,
     filterMattersByText,
+    filterSpecIsEmpty,
     formatSummaryResult,
     matterStatusLabel,
     matterTitle,
     runChip,
     summaryEndpoint,
     summaryErrorMessage,
+    validateFilterSpec,
   },
 });

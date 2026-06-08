@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260607k">
+    <link rel="stylesheet" href="/static/styles.css?v=20260608a">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -109,6 +109,7 @@
               <div class="dashboard-search-chips" id="dashboardSearchChips" role="group" aria-label="Quick filters"></div>
             </form>
             <div class="dashboard-search-results-shell">
+              <p class="dashboard-search-interpreted" id="dashboardSearchInterpreted" aria-live="polite" hidden></p>
               <p class="dashboard-search-results-status" id="dashboardSearchResultsStatus" role="status" aria-live="polite" hidden></p>
               <ul class="dashboard-search-results" id="dashboardSearchResults" aria-label="Search results" hidden></ul>
             </div>
@@ -1582,7 +1583,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260607b"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260608a"></script>
     <script src="/static/js/redline-rendering.js?v=20260607e"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
@@ -1609,7 +1610,7 @@
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/pdf-markup.js?v=20260607f"></script>
     <script src="/static/js/app-state.js?v=20260607g"></script>
-    <script src="/static/js/dashboard-search.js?v=20260607b"></script>
-    <script src="/static/app.js?v=20260607h"></script>
+    <script src="/static/js/dashboard-search.js?v=20260608a"></script>
+    <script src="/static/app.js?v=20260608a"></script>
   </body>
 </html>

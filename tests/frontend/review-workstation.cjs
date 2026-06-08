@@ -99,6 +99,7 @@ const tests = [
   ["honours the reduced-motion preference", testReducedMotionPreference],
   ["renders the AI review health panel with status banner and metrics", testAdminHealthPanel],
   ["filters dashboard matters with the smart-search chips and opens a result", testDashboardSmartSearch],
+  ["translates a natural-language query into a filter and falls back to keyword search", testDashboardSmartSearchV2],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -6017,6 +6018,167 @@ async function testDashboardSmartSearch(page) {
     unexpectedErrors.length,
     0,
     `expected no console errors from the dashboard search, got: ${unexpectedErrors.join(" | ")}`,
+  );
+}
+
+// v2: the free-text box becomes a natural-language query. We mock /search-intent so
+// no AI/network is involved. THE GOLDEN RULE under test: the mock returns ONLY a
+// structured filter spec (never matters); the CLIENT validates + applies it to the
+// real state.matters and shows the interpreted line. We then exercise the
+// fall-back-to-keyword path (a {fallback:true} signal) so the box always works.
+async function testDashboardSmartSearchV2(page) {
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => consoleErrors.push(String(error)));
+
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  const matters = [
+    {
+      id: "m_old_review",
+      subject: "Acme Mutual NDA",
+      sender: "legal@acme.example",
+      board_column: "in_review",
+      created_at: daysAgo(30),
+      requirements_failed: 2,
+      requirements_needs_review: 0,
+      workflow_state: { status: "review_failed", phase: "review", label: "Review failed", needs_attention: true, human_gate: false },
+    },
+    {
+      id: "m_fresh_review",
+      subject: "Globex One-Way NDA",
+      sender: "deals@globex.example",
+      board_column: "in_review",
+      created_at: daysAgo(1),
+      requirements_failed: 0,
+      requirements_needs_review: 0,
+      workflow_state: { status: "ai_reviewing", phase: "review", label: "AI reviewing", needs_attention: false, human_gate: false },
+    },
+    {
+      id: "m_sent",
+      subject: "Initech Confidentiality Agreement",
+      sender: "ip@initech.example",
+      board_column: "sent",
+      created_at: daysAgo(5),
+      requirements_failed: 0,
+      requirements_needs_review: 0,
+      workflow_state: { status: "sent_awaiting_counterparty", phase: "sent", label: "Awaiting signature", needs_attention: false, human_gate: true },
+    },
+  ];
+  await page.route("**/api/matters", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/matters") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters }) });
+  });
+
+  // The search-intent endpoint. The model's only output is a structured filter
+  // spec (or a {fallback:true} signal) — NEVER matters. The first query maps to a
+  // real filter; the second query triggers the graceful fallback.
+  const intentRequests = [];
+  await page.route("**/api/dashboard/search-intent", async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    intentRequests.push(body.query);
+    if (/fall ?back|globex/i.test(body.query || "")) {
+      // Simulate AI degradation: the box must fall back to v1 keyword search.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ filters: null, fallback: true, reason: "ai_unavailable" }),
+      });
+      return;
+    }
+    // A validated spec: matters stuck in review for over a week. The CLIENT applies
+    // it to the real matters — only m_old_review qualifies (30 days old, in review).
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filters: {
+          status: null,
+          phase: "review",
+          needs_attention: null,
+          human_gate: null,
+          has_issues: null,
+          text: null,
+          min_age_days: 7,
+          sort: null,
+        },
+        interpreted: "In review · older than 7 days",
+      }),
+    });
+  });
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true } } }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  const searchSection = page.locator("[data-dashboard-search]");
+  await searchSection.waitFor({ state: "visible" });
+
+  // --- Natural-language query -> AI-translated filter applied to real matters ---
+  await page.fill("#dashboardSearchInput", "anything stuck in review for more than a week");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  // The interpreted line shows HOW the query was read ("Showing: <interpreted>").
+  await page.waitForFunction(
+    () => document.querySelector("#dashboardSearchInterpreted")?.innerText.includes("In review · older than 7 days"),
+  );
+  await assertTextContains(page.locator("#dashboardSearchInterpreted"), "Showing: In review · older than 7 days");
+  // The validated spec is applied to the REAL matters: exactly the old, in-review
+  // matter survives (the fresh one is younger than 7 days; the sent one is not in
+  // review). The result is a real matter, never fabricated.
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
+  );
+  const results = page.locator("#dashboardSearchResults [data-dashboard-search-open]");
+  assert.equal(await results.count(), 1);
+  assert.equal(await results.first().getAttribute("data-dashboard-search-open"), "m_old_review");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
+  assert.ok(intentRequests.length >= 1, "expected a POST to the search-intent endpoint");
+
+  // --- Fallback path: AI degrades -> v1 deterministic keyword search runs --------
+  // "globex" triggers the {fallback:true} signal; the box must still work, filtering
+  // by keyword. The interpreted line is hidden on the fallback path.
+  await page.fill("#dashboardSearchInput", "globex");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForFunction(
+    () => document.querySelector("#dashboardSearchResults")?.innerText.includes("Globex One-Way NDA"),
+  );
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Globex One-Way NDA");
+  // Exactly the keyword match surfaces (not the AI-filter result), and the
+  // interpreted line is cleared since this is the v1 fallback.
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
+  );
+  assert.equal(await page.locator("#dashboardSearchInterpreted").isHidden(), true);
+
+  // The two v1 chips still work unchanged.
+  await page.locator('[data-dashboard-search-chip="awaiting_signature"]').click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
+  );
+  assert.equal(
+    await page.locator("#dashboardSearchResults [data-dashboard-search-open]").first().getAttribute("data-dashboard-search-open"),
+    "m_sent",
+  );
+
+  await page.unroute("**/api/matters");
+  await page.unroute("**/api/dashboard/search-intent");
+  await page.unroute("**/api/gmail/status");
+
+  const unexpectedErrors = consoleErrors.filter((text) => !/escapeHtml is not defined/.test(text));
+  assert.equal(
+    unexpectedErrors.length,
+    0,
+    `expected no console errors from the v2 dashboard search, got: ${unexpectedErrors.join(" | ")}`,
   );
 }
 

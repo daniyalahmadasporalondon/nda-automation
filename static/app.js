@@ -85,6 +85,7 @@ const dashboardSearchController = createDashboardSearchController({
   chipList: document.querySelector("#dashboardSearchChips"),
   resultsList: document.querySelector("#dashboardSearchResults"),
   resultsStatus: document.querySelector("#dashboardSearchResultsStatus"),
+  interpretedLine: document.querySelector("#dashboardSearchInterpreted"),
   getMatters: () => state.matters,
   openMatter: (matterId) => {
     // Reuse the repository open-matter flow, then surface the Repository tab so
@@ -98,6 +99,12 @@ const dashboardSearchController = createDashboardSearchController({
   // the backend returns a friendly error the controller renders verbatim.
   summarizeMatter: (matterId) =>
     summarizeMatterById(matterId),
+  // v2 async seam: translate a natural-language query into a structured filter
+  // spec via the AI endpoint. The model NEVER sees matters — only the query — and
+  // the spec is validated server-side; the controller validates + applies it to
+  // the real state.matters deterministically. On any failure/fallback the
+  // controller falls back to the v1 keyword filter, so the box always works.
+  searchIntent: (query) => searchIntentForQuery(query),
 });
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
@@ -687,6 +694,37 @@ async function summarizeMatterById(matterId) {
   } catch (networkError) {
     // A transport failure is just another "unavailable" — let the controller show
     // the friendly message rather than surfacing the raw error.
+    return { ok: false, payload: {} };
+  }
+}
+
+// POST a natural-language query to the v2 search-intent endpoint and return
+// {ok, payload}. The backend translates the query into a VALIDATED structured
+// filter spec (or a {fallback:true} signal on AI degradation) — it never returns
+// matters. The controller applies the spec to the real state.matters itself; on a
+// non-OK response / fallback / network failure it falls back to v1 keyword search.
+// Never throws (degradation is a normal, expected path).
+async function searchIntentForQuery(query) {
+  const lib = window.DashboardSearch || {};
+  const url = typeof lib.SEARCH_INTENT_ENDPOINT === "string"
+    ? lib.SEARCH_INTENT_ENDPOINT
+    : "/api/dashboard/search-intent";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: String(query == null ? "" : query) }),
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      payload = {};
+    }
+    return { ok: response.ok, payload };
+  } catch (networkError) {
+    // A transport failure just means "use the v1 keyword fallback" — never surface
+    // the raw error.
     return { ok: false, payload: {} };
   }
 }

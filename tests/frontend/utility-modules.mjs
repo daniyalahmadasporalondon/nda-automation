@@ -47,11 +47,14 @@ import {
 } from "../../static/js/modules/greeting.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
+  NULL_FILTER_SPEC,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
+  applyFilterSpec,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
+  filterSpecIsEmpty,
   formatSummaryResult,
   matterStatus,
   matterStatusLabel,
@@ -59,6 +62,7 @@ import {
   runChip,
   summaryEndpoint,
   summaryErrorMessage,
+  validateFilterSpec,
 } from "../../static/js/modules/dashboard-search.mjs";
 import {
   buildSendDocumentPayload,
@@ -960,3 +964,117 @@ assert.equal(summaryErrorMessage({ error: "Summary unavailable right now." }), "
 assert.equal(summaryErrorMessage({}), "Summary unavailable right now.");
 assert.equal(summaryErrorMessage(null), "Summary unavailable right now.");
 assert.equal(summaryErrorMessage({ error: "  Custom backend message  " }), "Custom backend message");
+
+// --- Dashboard smart-search v2: validateFilterSpec (client-side schema gate) ---
+// Mirrors the backend validator (defense in depth): out-of-enum values are dropped,
+// ints are clamped, bools are coerced, unknown keys ignored.
+const validSpec = validateFilterSpec({
+  status: "awaiting_approval",
+  phase: "review",
+  needs_attention: true,
+  human_gate: false,
+  has_issues: true,
+  text: "Acme",
+  min_age_days: 5,
+  sort: "oldest",
+  bogus: "x", // unknown key dropped
+});
+assert.deepEqual(validSpec, {
+  status: "awaiting_approval",
+  phase: "review",
+  needs_attention: true,
+  human_gate: false,
+  has_issues: true,
+  text: "Acme",
+  min_age_days: 5,
+  sort: "oldest",
+});
+// Out-of-enum status/phase/sort are dropped to null.
+assert.equal(validateFilterSpec({ status: "made_up" }).status, null);
+assert.equal(validateFilterSpec({ phase: "shipping" }).phase, null);
+assert.equal(validateFilterSpec({ sort: "sideways" }).sort, null);
+// Status match is case-insensitive + trimmed.
+assert.equal(validateFilterSpec({ status: "  Awaiting_Approval " }).status, "awaiting_approval");
+// Non-bool flags are dropped, never coerced (a truthy string must NOT become true).
+assert.equal(validateFilterSpec({ needs_attention: "yes" }).needs_attention, null);
+assert.equal(validateFilterSpec({ human_gate: 1 }).human_gate, null);
+// min_age_days clamps + rejects: 0/negative disable, over-ceiling clamps, bool != int.
+assert.equal(validateFilterSpec({ min_age_days: 99999 }).min_age_days, 365);
+assert.equal(validateFilterSpec({ min_age_days: 7 }).min_age_days, 7);
+assert.equal(validateFilterSpec({ min_age_days: 0 }).min_age_days, null);
+assert.equal(validateFilterSpec({ min_age_days: -3 }).min_age_days, null);
+assert.equal(validateFilterSpec({ min_age_days: true }).min_age_days, null);
+assert.equal(validateFilterSpec({ min_age_days: "9" }).min_age_days, 9);
+assert.equal(validateFilterSpec({ min_age_days: "lots" }).min_age_days, null);
+// text is capped + blank collapses to null.
+assert.equal(validateFilterSpec({ text: "x".repeat(1000) }).text.length, 200);
+assert.equal(validateFilterSpec({ text: "   " }).text, null);
+// A non-object collapses to the all-null spec, and empty-detection works.
+assert.deepEqual(validateFilterSpec("not a dict"), { ...NULL_FILTER_SPEC });
+assert.equal(filterSpecIsEmpty(validateFilterSpec(null)), true);
+assert.equal(filterSpecIsEmpty(validateFilterSpec({ status: "approved" })), false);
+
+// --- Dashboard smart-search v2: applyFilterSpec (deterministic AND over matters) ---
+const NOW = Date.parse("2026-06-08T00:00:00Z");
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+const specMatters = [
+  {
+    id: "m_old_pending",
+    subject: "Acme Mutual NDA",
+    sender: "legal@acme.example",
+    created_at: daysAgo(30),
+    requirements_failed: 2,
+    requirements_needs_review: 0,
+    workflow_state: { status: "awaiting_approval", phase: "approval", needs_attention: false, human_gate: true },
+  },
+  {
+    id: "m_fresh_review",
+    subject: "Globex One-Way NDA",
+    sender: "deals@globex.example",
+    created_at: daysAgo(1),
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    workflow_state: { status: "ai_reviewing", phase: "review", needs_attention: false, human_gate: false },
+  },
+  {
+    id: "m_stuck_attention",
+    subject: "Initech Confidentiality Agreement",
+    sender: "ip@initech.example",
+    created_at: daysAgo(10),
+    requirements_failed: 0,
+    requirements_needs_review: 1,
+    workflow_state: { status: "review_failed", phase: "review", needs_attention: true, human_gate: false },
+  },
+];
+const ids = (list) => list.map((m) => m.id);
+
+// Empty spec -> [] (the controller shows the idle hint, mirroring filterMattersByText).
+assert.deepEqual(applyFilterSpec(specMatters, NULL_FILTER_SPEC, NOW), []);
+assert.deepEqual(applyFilterSpec(specMatters, {}, NOW), []);
+// Each dimension on its own.
+assert.deepEqual(ids(applyFilterSpec(specMatters, { status: "awaiting_approval" }, NOW)), ["m_old_pending"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { phase: "review" }, NOW)), ["m_fresh_review", "m_stuck_attention"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { needs_attention: true }, NOW)), ["m_stuck_attention"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { needs_attention: false }, NOW)), ["m_old_pending", "m_fresh_review"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { human_gate: true }, NOW)), ["m_old_pending"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { has_issues: true }, NOW)), ["m_old_pending", "m_stuck_attention"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { has_issues: false }, NOW)), ["m_fresh_review"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { text: "globex" }, NOW)), ["m_fresh_review"]);
+// min_age_days: only matters older than N days (the 30d and 10d ones for N=7).
+assert.deepEqual(ids(applyFilterSpec(specMatters, { min_age_days: 7 }, NOW)), ["m_old_pending", "m_stuck_attention"]);
+// AND-combination: review phase AND has_issues AND older than 7 days -> only m_stuck.
+assert.deepEqual(
+  ids(applyFilterSpec(specMatters, { phase: "review", has_issues: true, min_age_days: 7 }, NOW)),
+  ["m_stuck_attention"],
+);
+// sort: oldest-first / newest-first by created_at.
+assert.deepEqual(ids(applyFilterSpec(specMatters, { phase: "review", sort: "oldest" }, NOW)), ["m_stuck_attention", "m_fresh_review"]);
+assert.deepEqual(ids(applyFilterSpec(specMatters, { phase: "review", sort: "newest" }, NOW)), ["m_fresh_review", "m_stuck_attention"]);
+// Bad spec is re-validated inside applyFilterSpec: an out-of-enum status drops to
+// null, so a spec that is otherwise empty applies nothing (never a fabricated set).
+assert.deepEqual(applyFilterSpec(specMatters, { status: "made_up_status" }, NOW), []);
+// A matter with no usable timestamp is excluded by a min_age_days filter (never
+// silently included).
+assert.deepEqual(applyFilterSpec([{ id: "undated", workflow_state: {} }], { min_age_days: 1 }, NOW), []);
+// Non-array input is tolerated.
+assert.deepEqual(applyFilterSpec(null, { status: "approved" }, NOW), []);

@@ -39,6 +39,9 @@ const DashboardSearchView = (() => {
     chipList,
     resultsList,
     resultsStatus,
+    // v2: the "Showing: <interpreted>" line that explains how the AI read the
+    // query. Optional — absent on an old cached page; the box still works.
+    interpretedLine,
     getMatters,
     openMatter,
     // Async seam: POST to the summary endpoint and resolve the parsed JSON body
@@ -46,6 +49,12 @@ const DashboardSearchView = (() => {
     // and the fetch is mockable. Optional — when absent the Summarize affordance is
     // simply not rendered.
     summarizeMatter,
+    // v2 async seam: POST a natural-language query to the search-intent endpoint
+    // and resolve {ok, payload}. payload is either {filters, interpreted} (apply the
+    // validated spec) or {fallback:true} (use v1 keyword search). Lives in app.js so
+    // this controller stays DOM-only and the fetch is mockable. Optional — when
+    // absent free-text uses the v1 deterministic keyword filter directly.
+    searchIntent,
   }) {
     if (!root) {
       // Dashboard search markup is absent (e.g. an old cached page) — no-op.
@@ -57,6 +66,15 @@ const DashboardSearchView = (() => {
     let activeMode = "idle";
     let activeChipId = "";
     let activeQuery = "";
+    // The last validated filter spec + interpreted line an AI text search applied,
+    // so a background matter reload can re-apply it deterministically WITHOUT a
+    // fresh AI call (no flicker, no extra network). Null when the active text search
+    // is the v1 keyword fallback.
+    let activeSpec = null;
+    let activeInterpreted = "";
+    // Monotonic token so a slow AI translation that resolves AFTER a newer
+    // submit/reset can't clobber the current results (last-write-wins).
+    let searchRunToken = 0;
 
     function matters() {
       const list = typeof getMatters === "function" ? getMatters() : [];
@@ -129,8 +147,38 @@ const DashboardSearchView = (() => {
         .join("");
     }
 
-    // Run the free-text keyword filter. An empty query resets to idle.
-    function runTextSearch() {
+    // Set (or clear) the "Showing: <interpreted>" line that explains how the AI
+    // read the query. Hidden whenever there's nothing to explain (idle, chips, or
+    // the v1 keyword fallback path).
+    function setInterpreted(text) {
+      if (!interpretedLine) return;
+      const value = String(text || "").trim();
+      if (!value) {
+        interpretedLine.hidden = true;
+        interpretedLine.textContent = "";
+        return;
+      }
+      interpretedLine.hidden = false;
+      interpretedLine.textContent = `Showing: ${value}`;
+    }
+
+    // The v1 deterministic keyword filter — the always-available fallback. Used
+    // directly when no AI seam is wired, and as the graceful fallback whenever the
+    // AI endpoint returns {fallback:true}, errors, or yields an empty spec.
+    function renderKeywordResults(query) {
+      activeSpec = null;
+      activeInterpreted = "";
+      const results = (lib().filterMattersByText || (() => []))(matters(), query);
+      setInterpreted("");
+      renderResults(results, { emptyMessage: "No documents match your search." });
+    }
+
+    // Run the free-text search. v2: translate the natural-language query into a
+    // validated structured filter spec via the AI seam, apply it to the REAL
+    // matters deterministically, and show the interpreted line. On any
+    // failure/fallback/empty-spec, fall back to the v1 keyword filter so the box
+    // always works. An empty query resets to idle.
+    async function runTextSearch() {
       const query = input ? input.value : "";
       if (!String(query).trim()) {
         reset();
@@ -140,8 +188,68 @@ const DashboardSearchView = (() => {
       activeChipId = "";
       activeQuery = query;
       renderChips();
-      const results = (lib().filterMattersByText || (() => []))(matters(), query);
-      renderResults(results, { emptyMessage: "No documents match your search." });
+
+      // No AI seam wired -> v1 keyword search directly.
+      if (typeof searchIntent !== "function") {
+        renderKeywordResults(query);
+        return;
+      }
+
+      const token = ++searchRunToken;
+      // Brief "Interpreting…" loading state while the translation is in flight.
+      setInterpreted("");
+      if (resultsStatus) {
+        resultsStatus.hidden = false;
+        resultsStatus.textContent = "Interpreting…";
+      }
+      if (resultsList) {
+        resultsList.hidden = true;
+        resultsList.innerHTML = "";
+      }
+
+      let outcome = null;
+      try {
+        outcome = await searchIntent(query);
+      } catch (error) {
+        outcome = null;
+      }
+      // A newer submit/reset superseded this run — drop the stale result.
+      if (token !== searchRunToken) return;
+
+      const payload = outcome && outcome.payload ? outcome.payload : {};
+      const ok = !!(outcome && outcome.ok);
+      const spec = ok && payload && payload.filters != null ? payload.filters : null;
+
+      // Fallback signal, error, or no spec -> v1 keyword search.
+      if (!ok || payload.fallback === true || spec == null) {
+        renderKeywordResults(query);
+        return;
+      }
+
+      const validate = lib().validateFilterSpec;
+      const apply = lib().applyFilterSpec;
+      const validated = typeof validate === "function" ? validate(spec) : spec;
+      const isEmpty = lib().filterSpecIsEmpty;
+      // An all-null spec means the query didn't map to any dimension — the AI
+      // couldn't structure it, so honor the user's words via v1 keyword search.
+      if (typeof isEmpty === "function" && isEmpty(validated)) {
+        renderKeywordResults(query);
+        return;
+      }
+      if (typeof apply !== "function") {
+        renderKeywordResults(query);
+        return;
+      }
+
+      // Remember the validated spec so a background matter reload re-applies it
+      // deterministically (no fresh AI call, no flicker).
+      activeSpec = validated;
+      activeInterpreted = String(payload.interpreted || "");
+      const results = apply(matters(), validated);
+      // Prefer the server's interpreted line; else describe nothing (the spec is
+      // still applied — we just don't have a phrase for it).
+      setInterpreted(activeInterpreted);
+      renderResults(results, { emptyMessage: "No documents match this filter." });
     }
 
     // Run a quick chip's backing status filter.
@@ -157,6 +265,9 @@ const DashboardSearchView = (() => {
       activeChipId = chipId;
       activeQuery = "";
       if (input) input.value = "";
+      // A chip win supersedes any in-flight AI translation.
+      searchRunToken += 1;
+      setInterpreted("");
       renderChips();
       const results = (lib().runChip || (() => []))(matters(), chip);
       renderResults(results, { emptyMessage: "No documents are in this stage right now." });
@@ -166,6 +277,11 @@ const DashboardSearchView = (() => {
       activeMode = "idle";
       activeChipId = "";
       activeQuery = "";
+      activeSpec = null;
+      activeInterpreted = "";
+      // Supersede any in-flight AI translation so a late resolve can't repopulate.
+      searchRunToken += 1;
+      setInterpreted("");
       renderChips();
       if (resultsList) {
         resultsList.innerHTML = "";
@@ -184,6 +300,16 @@ const DashboardSearchView = (() => {
       if (activeMode === "text") {
         if (input && !String(input.value).trim()) {
           reset();
+          return;
+        }
+        // If an AI text search already produced a validated spec, re-apply it to
+        // the fresh matters deterministically — no new AI call, no flicker. Only
+        // re-run the (async) translation when there's no remembered spec (e.g. the
+        // active text search was the v1 keyword fallback).
+        if (activeSpec && typeof lib().applyFilterSpec === "function") {
+          const results = lib().applyFilterSpec(matters(), activeSpec);
+          setInterpreted(activeInterpreted);
+          renderResults(results, { emptyMessage: "No documents match this filter." });
           return;
         }
         runTextSearch();

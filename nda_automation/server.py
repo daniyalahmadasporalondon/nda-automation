@@ -68,6 +68,7 @@ from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import approval as approval_routes
 from .routes import auth as auth_routes
+from .routes import dashboard as dashboard_routes
 from .routes import drive as drive_routes
 from .routes import entities as entity_routes
 from .routes import generation as generation_routes
@@ -228,6 +229,7 @@ _POST_EXACT_ROUTES = {
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/generate-nda": generation_routes.handle_generate_nda,
+    "/api/dashboard/search-intent": dashboard_routes.handle_dashboard_search_intent,
     "/api/send-document": _handle_send_document_post,
     "/api/gmail/import": gmail_routes.handle_gmail_import,
     "/api/gmail/send-redline": gmail_routes.handle_gmail_send_redline,
