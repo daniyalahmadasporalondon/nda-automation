@@ -372,12 +372,6 @@ function createFillController({ state, root, rerenderDocument }) {
           <select data-fill-address>${addressOptions}</select>
         </label>`;
     }
-    const bundle = entity
-      ? `<dl class="fill-bundle-grid">
-          <div><dt>Name</dt><dd>${escape(targetName() || "—")}</dd></div>
-          <div><dt>Registered office</dt><dd>${escape(targetAddress() || "—")}</dd></div>
-        </dl>`
-      : '<p class="fill-bundle-empty">Pick the Aspora entity to insert / replace with.</p>';
     return `
       <section class="fill-picker" aria-label="Aspora entity">
         <div class="fill-picker-fields">
@@ -387,7 +381,6 @@ function createFillController({ state, root, rerenderDocument }) {
           </label>
           ${addressField}
         </div>
-        ${bundle}
       </section>`;
   }
 

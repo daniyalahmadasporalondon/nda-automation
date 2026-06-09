@@ -3803,37 +3803,6 @@ textarea::placeholder {
   flex: 1 1 auto;
 }
 
-.fill-bundle-grid {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
-
-.fill-bundle-grid > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.fill-bundle-grid dt {
-  color: var(--ink-soft);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.fill-bundle-grid dd {
-  font-size: 13px;
-  margin: 0;
-}
-
-.fill-bundle-empty {
-  color: var(--ink-soft);
-  font-size: 12px;
-  margin: 0;
-}
-
 .fill-applied {
   align-items: center;
   background: #f4f7ff;
