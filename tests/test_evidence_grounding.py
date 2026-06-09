@@ -5,11 +5,14 @@ from nda_automation.evidence_grounding import (
     GROUNDING_GROUNDED,
     GROUNDING_UNGROUNDED,
     UNGROUNDED_REASON_CODE,
+    UNGROUNDED_REVIEW_CAVEAT,
+    UNGROUNDED_REVIEW_REASON,
     build_citation,
     build_grounding,
     classify_grounding,
     downgrade_ungrounded_finding,
     refinalize_clause_grounding,
+    ungrounded_review_reason,
 )
 
 
@@ -176,6 +179,45 @@ class DowngradeUngroundedFindingTests(unittest.TestCase):
             reason_codes=[UNGROUNDED_REASON_CODE, "ai_first_fail"],
         )
         self.assertEqual(downgrade["reason_codes"].count(UNGROUNDED_REASON_CODE), 1)
+
+    def test_downgraded_reason_leads_with_substance_then_caveat(self):
+        downgrade = downgrade_ungrounded_finding(
+            decision="pass",
+            issue_type="none",
+            blocks_send=False,
+            reason_codes=["ai_first_pass"],
+            substantive_reason="The definition is appropriately broad",
+        )
+        # The model's own concern leads, the honest caveat follows, and the wording
+        # never claims the document lacks the text.
+        self.assertEqual(
+            downgrade["reason"],
+            f"The definition is appropriately broad. {UNGROUNDED_REVIEW_CAVEAT}",
+        )
+        self.assertNotIn("quotable text from the document", downgrade["reason"])
+
+    def test_downgraded_reason_falls_back_when_no_substance(self):
+        downgrade = downgrade_ungrounded_finding(
+            decision="fail",
+            issue_type="present_but_wrong",
+            blocks_send=False,
+            reason_codes=["ai_first_fail"],
+            substantive_reason="   ",
+        )
+        self.assertEqual(downgrade["reason"], UNGROUNDED_REVIEW_REASON)
+
+    def test_ungrounded_review_reason_composition(self):
+        self.assertEqual(
+            ungrounded_review_reason("The term is too long"),
+            f"The term is too long. {UNGROUNDED_REVIEW_CAVEAT}",
+        )
+        # Already-punctuated substance is not double-punctuated.
+        self.assertEqual(
+            ungrounded_review_reason("The term is too long."),
+            f"The term is too long. {UNGROUNDED_REVIEW_CAVEAT}",
+        )
+        # No substance -> standalone reason.
+        self.assertEqual(ungrounded_review_reason(""), UNGROUNDED_REVIEW_REASON)
 
 
 class RefinalizeClauseGroundingTests(unittest.TestCase):

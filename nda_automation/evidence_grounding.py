@@ -47,10 +47,37 @@ CLAUSE_TYPE_PROHIBITED = "prohibited"
 # grounded in the document text.
 UNGROUNDED_REASON_CODE = "ungrounded_finding"
 
-UNGROUNDED_REVIEW_REASON = (
-    "This finding was escalated for human review because the AI assessment did "
-    "not ground it in any quotable text from the document."
+# Honest caveat appended after a downgraded finding's own substantive concern. It
+# states the AI could not tie its read to a specific quote (NOT that the document
+# lacks the text) and tells the reviewer what to do next.
+UNGROUNDED_REVIEW_CAVEAT = (
+    "The AI could not tie this to a specific quote in the document, so it could not "
+    "be auto-verified and needs human review. Confirm against the clause text before sending."
 )
+
+# Standalone reason used when a downgraded finding carried no substantive text to lead with.
+UNGROUNDED_REVIEW_REASON = (
+    "The AI flagged this clause for review but did not cite a specific quote to support "
+    "it, so it needs human review. Confirm against the clause text in the document before sending."
+)
+
+
+def ungrounded_review_reason(substantive_reason: str = "") -> str:
+    """Compose the reviewer-facing reason for a finding downgraded for lack of grounding.
+
+    Leads with the model's own substantive concern (so the reviewer sees WHAT the AI
+    thought) and appends an honest caveat that it could not be tied to a quote. Falls
+    back to a standalone caveat when no substance survived. The wording deliberately
+    never claims the document lacks the text -- it only states the AI did not cite a
+    quote, which is the actual failure being surfaced.
+    """
+
+    substantive = " ".join((substantive_reason or "").split()).strip()
+    if not substantive or substantive == UNGROUNDED_REVIEW_REASON:
+        return UNGROUNDED_REVIEW_REASON
+    if substantive[-1] not in ".!?":
+        substantive += "."
+    return f"{substantive} {UNGROUNDED_REVIEW_CAVEAT}"
 
 
 def classify_grounding(
@@ -199,6 +226,7 @@ def downgrade_ungrounded_finding(
     issue_type: str,
     blocks_send: bool,
     reason_codes: Sequence[str],
+    substantive_reason: str = "",
 ) -> dict[str, Any]:
     """Return the fields that replace a finding the model failed to ground.
 
@@ -235,7 +263,7 @@ def downgrade_ungrounded_finding(
         "reason_codes": cleaned_codes,
         "downgraded": True,
         "downgraded_from": decision,
-        "reason": UNGROUNDED_REVIEW_REASON,
+        "reason": ungrounded_review_reason(substantive_reason),
     }
 
 

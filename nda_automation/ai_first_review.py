@@ -302,6 +302,7 @@ def _clause_result_from_assessment(
             issue_type=issue_type,
             blocks_send=blocks_send,
             reason_codes=reason_codes,
+            substantive_reason=reason,
         )
         decision = downgrade["decision"]
         issue_type = downgrade["issue_type"]

@@ -68,7 +68,7 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("absent prohibited clauses", instructions)
         self.assertIn("reviewer-facing assessment commentary", instructions)
         self.assertIn("Ground every present-clause verdict in a quote", instructions)
-        self.assertIn("ungrounded pass will be downgraded to review", instructions)
+        self.assertIn("ungrounded verdict on a present clause is escalated to human review", instructions)
         self.assertIn("2 to 4 concise sentences", instructions)
         self.assertIn("specific to the cited document text", instructions)
         self.assertIn("pass", packet["decision_policy"])

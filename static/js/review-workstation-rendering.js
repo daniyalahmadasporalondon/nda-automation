@@ -1022,7 +1022,7 @@ function renderClauseCitationBlock(clause) {
     return `
       <div class="studio-detail-block clause-citation-block ungrounded">
         <small>Based on</small>
-        <p>The AI assessment did not ground this finding in any quotable text, so it was escalated for human review.</p>
+        <p>No supporting quote was cited for this finding, so it could not be auto-verified. Confirm against the clause text in the document before sending.</p>
         ${confidence}
       </div>
     `;

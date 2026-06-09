@@ -4,7 +4,7 @@ Status: active
 
 Owner: evidence
 
-Last updated: 2026-06-05
+Last updated: 2026-06-09
 
 ## Purpose
 
@@ -69,9 +69,11 @@ an unclear clause cannot slip through unseen.
 ## Every verdict is grounded in the document
 
 A finding about clause text must quote the text it relies on. The system enforces
-this: a pass or a "present but wrong" finding that cannot cite a supporting quote
-is not trusted and is downgraded to **review**. There are only two verdicts that
-legitimately have no quote, because there is nothing to quote:
+this: any verdict on a clause that is present in the document (pass, fail, or
+review) that cannot cite a supporting quote is not trusted — a pass or "present but
+wrong" finding is downgraded to **review**, and an ungrounded review is flagged for
+the same human attention. There are only two verdicts that legitimately have no
+quote, because there is nothing to quote:
 
 - a **required clause that is missing** (the absence is the finding), and
 - a **prohibited clause that is absent** (you cannot quote text that is not there).

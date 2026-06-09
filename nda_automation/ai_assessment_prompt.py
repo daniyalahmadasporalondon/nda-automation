@@ -10,7 +10,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 6
+AI_ASSESSMENT_PROMPT_VERSION = 7
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -61,7 +61,7 @@ AI_ASSESSMENT_REASONING_STEPS = [
         "prohibition can sit beside freedom-preserving language in the same paragraph; judge each obligation on its own."
     ),
     "Apply: check the read meaning against this clause's playbook criteria and approved options, not against your priors.",
-    "Cite: select the exact quote span from the located paragraph that drives the decision; do not paraphrase it.",
+    "Cite: select the exact quote span from the located paragraph that drives the decision; do not paraphrase it. If you located the clause you have text to quote, so cite it even when you choose review (quote the ambiguous or conflicting span).",
     (
         "Decide: pass only if the criteria are satisfied, fail only if they are clearly violated, and review when the "
         "text is ambiguous, conflicting, conditional, or the evidence is incomplete. When unsure between two verdicts, "
@@ -103,9 +103,11 @@ AI_ASSESSMENT_INSTRUCTIONS = [
     "For absent prohibited clauses, return decision pass with issue_type none; evidence may be empty when no direct quote can prove absence.",
     "For pass and fail decisions supported by text, cite exact quote text from supplied paragraph ids.",
     (
-        "Ground every present-clause verdict in a quote: a pass on a required clause, and any present_but_wrong "
-        "finding, must cite at least one exact quote from the document. The only quote-less verdicts are a missing "
-        "required clause and an absent prohibited clause. An ungrounded pass will be downgraded to review."
+        "Ground every present-clause verdict in a quote: any verdict on a clause you located (pass, fail, or "
+        "review) must cite at least one exact quote from the document. The only quote-less verdicts are a missing "
+        "required clause and an absent prohibited clause. If you cannot produce a supporting quote you have not "
+        "actually located the clause, so re-do the locate step instead of emitting an unquoted verdict. An "
+        "ungrounded verdict on a present clause is escalated to human review and blocks sending, so always cite."
     ),
     "Never cite a quote unless the exact quote appears in the cited paragraph.",
     "For Governing Law, choose proposed_redline.jurisdiction only from the rule approved_options list.",
