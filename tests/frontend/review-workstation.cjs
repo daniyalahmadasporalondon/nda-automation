@@ -958,9 +958,8 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "Parent section-2");
   await assertTextContains(reviewPanel, "Parent section-6");
   await assertTextContains(reviewPanel, "Parent section-9");
-  await assertTextContains(reviewPanel, "clause:1");
-  await assertTextContains(reviewPanel, "clause:1a");
-  await assertTextContains(reviewPanel, "section:10b");
+  // The Resolver-aliases panel was removed from the Structure tab (internal debug
+  // noise, not user-relevant); the section map + resolved references stay.
   await assertTextContains(reviewPanel, "RESOLVED REFERENCES");
   await assertTextContains(reviewPanel, "Clauses 1, 1A, 2 and IV");
   await assertTextContains(reviewPanel, "Clause 1, Clause 1A, Clause 2, Clause IV");

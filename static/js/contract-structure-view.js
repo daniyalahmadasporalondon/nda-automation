@@ -13,7 +13,6 @@ function createContractStructureController({ state, root }) {
     if (!root) return;
     const structure = effectiveStructure();
     const sections = Array.isArray(structure?.sections) ? structure.sections : [];
-    const aliases = Array.isArray(structure?.aliases) ? structure.aliases : [];
     const resolver = effectiveReferenceResolver(structure);
     const references = Array.isArray(resolver?.references) ? resolver.references : [];
     const resolverStats = resolver?.stats || {};
@@ -51,7 +50,6 @@ function createContractStructureController({ state, root }) {
       </section>
 
       ${renderReferences(references)}
-      ${renderAliases(aliases)}
     `;
   }
 
@@ -112,20 +110,6 @@ function createContractStructureController({ state, root }) {
           </small>
         </div>
       </article>
-    `;
-  }
-
-  function renderAliases(aliases) {
-    if (!aliases.length) return "";
-    return `
-      <section class="structure-aliases" aria-label="Structure aliases">
-        <h2>Resolver aliases</h2>
-        <div>
-          ${aliases.slice(0, 18).map((alias) => `
-            <span class="structure-alias-chip">${escapeHtml(alias.key || "")}</span>
-          `).join("")}
-        </div>
-      </section>
     `;
   }
 
