@@ -34,10 +34,12 @@ GOVERNING_LAW_INPUT_ALIASES = {
     "england and wales": ("english",),
     "india": ("indian",),
     "difc": ("dubai international financial centre", "dubai international financial center"),
+    "ontario, canada": ("ontario", "canadian", "canada"),
 }
 APPROVED_GOVERNING_LAW_ENTITY_PREFIXES = {
     "delaware": ("state", "commonwealth"),
     "india": ("republic",),
+    "ontario, canada": ("province",),
 }
 UNCLEAR_GOVERNING_LAW_CANDIDATE_PATTERN = (
     r"(?:\[[^\]]*\]|_{2,}|\btbd\b|\bto\s+be\s+(?:agreed|determined|selected|inserted)\b|"

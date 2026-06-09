@@ -282,7 +282,9 @@
         "England and Wales",
         "DIFC",
         "Delaware",
-        "India"
+        "India",
+        "Ontario",
+        "Canada"
       ],
       "taxonomy_groups": [
         "dispute_framework",
@@ -304,7 +306,7 @@
             "id": "approved_governing_law",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The governing-law clause names India, Delaware, England and Wales, or DIFC.",
+            "description": "The governing-law clause names India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
             "redline_action": "no_change"
           }
         ],
@@ -377,7 +379,7 @@
           }
         ]
       },
-      "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, or the DIFC."
+      "acceptable_language": "This Agreement shall be governed by the laws of England and Wales, India, Delaware, the DIFC, or the Province of Ontario and the federal laws of Canada applicable therein."
     },
     {
       "id": "term_and_survival",

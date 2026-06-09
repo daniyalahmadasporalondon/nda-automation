@@ -955,6 +955,27 @@ class CheckerTests(unittest.TestCase):
                 self.assertEqual(governing_law["reason"], "Approved governing law found.")
                 self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p1"])
 
+    def test_governing_law_accepts_ontario_canada_forms(self):
+        examples = [
+            "This Agreement shall be governed by the laws of Ontario.",
+            "This Agreement shall be governed by Ontario law.",
+            "This Agreement shall be governed by the laws of the Province of Ontario.",
+            "This Agreement shall be governed by Canadian law.",
+            "This Agreement shall be governed by the laws of Canada.",
+            "This Agreement shall be governed by the laws of the Province of Ontario "
+            "and the federal laws of Canada applicable therein.",
+        ]
+
+        for text in examples:
+            with self.subTest(text=text):
+                result = review_nda(text)
+                governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+
+                self.assertEqual(governing_law["status"], "match")
+                self.assertTrue(governing_law["passes"])
+                self.assertEqual(governing_law["decision"], "pass")
+                self.assertEqual(governing_law["reason"], "Approved governing law found.")
+
     def test_governing_law_accepts_india_with_new_delhi_forum_selection(self):
         result = review_nda(
             "GOVERNING LAW AND JURISDICTION: This Agreement shall be governed by and interpreted in "

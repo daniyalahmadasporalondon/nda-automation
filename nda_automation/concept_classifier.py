@@ -103,7 +103,7 @@ CONCEPT_DEFINITIONS: Dict[str, Dict[str, object]] = {
         "patterns": [
             r"\bgoverning\s+law\b",
             r"\bgoverned\s+by\s+the\s+laws?\b",
-            r"\blaws?\s+of\b.{0,80}\b(?:india|delaware|england|wales|difc)\b",
+            r"\blaws?\s+of\b.{0,80}\b(?:india|delaware|england|wales|difc|ontario|canada)\b",
         ],
     },
     "execution": {
