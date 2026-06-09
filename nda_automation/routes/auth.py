@@ -22,36 +22,108 @@ def handle_auth_status(handler, *, send_body: bool = True) -> None:
     )
 
 
-def handle_login_page(handler, *, send_body: bool = True) -> None:
-    if google_identity.google_oauth_configured():
-        action = '<a class="login-button" href="/auth/google/start">Continue with Google</a>'
-    else:
-        action = "<p>Google login is not configured for this deployment.</p>"
-    handler._send_html(
-        f"""<!doctype html>
+_GOOGLE_G_SVG = (
+    '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">'
+    '<path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>'
+    '<path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>'
+    '<path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>'
+    '<path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>'
+    "</svg>"
+)
+
+# Split-screen login: a purple brand panel (left) + the Google sign-in (right).
+# Self-contained (the login page does not load the app's styles.css). __ACTION__
+# is replaced with the Continue-with-Google button or a not-configured notice.
+_LOGIN_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NDA Automation Login</title>
+  <title>Sign in &middot; Aspora NDA</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7f7fb; color: #202124; }}
-    main {{ width: min(420px, calc(100vw - 32px)); background: #fff; border: 1px solid #dfe1e5; border-radius: 8px; padding: 28px; box-shadow: 0 18px 40px rgba(60, 64, 67, .12); }}
-    h1 {{ font-size: 24px; margin: 0 0 8px; }}
-    p {{ color: #5f6368; line-height: 1.45; }}
-    .login-button {{ display: inline-flex; align-items: center; justify-content: center; margin-top: 12px; height: 44px; padding: 0 18px; border-radius: 6px; background: #1a73e8; color: #fff; text-decoration: none; font-weight: 600; }}
+    @font-face { font-family: "Inter"; font-display: swap; font-weight: 100 900; src: url("/static/assets/fonts/InterVariable.woff2") format("woff2"); }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #170a33;
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+      min-height: 100vh;
+    }
+    .brand {
+      position: relative;
+      overflow: hidden;
+      color: #fff;
+      padding: 52px 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background:
+        radial-gradient(110% 70% at 0% 0%, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 46%),
+        linear-gradient(150deg, #3d1293 0%, #5424c9 52%, #7c3aed 100%);
+    }
+    .brand-logo img { height: 30px; width: auto; display: block; filter: brightness(0) invert(1); }
+    .brand-copy h2 { font-size: 40px; line-height: 1.1; font-weight: 750; letter-spacing: -0.02em; margin: 0 0 20px; max-width: 13ch; }
+    .brand-copy p { font-size: 16.5px; line-height: 1.55; color: rgba(255, 255, 255, 0.74); margin: 0; max-width: 44ch; }
+    .brand-footer { font-size: 13px; color: rgba(255, 255, 255, 0.6); }
+    .login { display: grid; place-items: center; padding: 48px; background: #ffffff; }
+    .login-inner { width: min(380px, 100%); }
+    .login h1 { font-size: 30px; font-weight: 760; letter-spacing: -0.01em; margin: 0 0 8px; }
+    .login .sub { color: #5d5470; font-size: 15px; line-height: 1.5; margin: 0 0 30px; }
+    .google-btn {
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+      width: 100%; height: 50px; border: 0; border-radius: 13px;
+      background: #5b2bd6; color: #fff; font-weight: 700; font-size: 15px;
+      text-decoration: none; cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease;
+    }
+    .google-btn:hover { background: #6a3ee0; }
+    .google-btn:active { transform: translateY(1px); }
+    .google-btn .g { width: 26px; height: 26px; border-radius: 7px; background: #fff; display: grid; place-items: center; }
+    .help { margin: 20px 0 0; font-size: 13.5px; color: #8e869e; }
+    .help a { color: #5b2bd6; text-decoration: none; font-weight: 600; }
+    .not-configured { color: #b42318; font-size: 14px; line-height: 1.5; }
+    @media (max-width: 880px) {
+      body { grid-template-columns: 1fr; }
+      .brand { display: none; }
+      .login { min-height: 100vh; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>NDA Automation</h1>
-    <p>Sign in to access your matter workspace.</p>
-    {action}
-  </main>
+  <section class="brand">
+    <div class="brand-logo">
+      <img src="/static/assets/aspora-logo.png" alt="Aspora">
+    </div>
+    <div class="brand-copy">
+      <h2>AI-first NDA review, end to end.</h2>
+      <p>Import, review against your playbook, redline, and send. Every NDA in one workspace, reviewed in minutes.</p>
+    </div>
+    <div class="brand-footer">&copy; 2026 Aspora &middot; All rights reserved</div>
+  </section>
+  <section class="login">
+    <div class="login-inner">
+      <h1>Sign in</h1>
+      <p class="sub">Welcome back. Sign in with your Aspora Google account.</p>
+      __ACTION__
+      <p class="help">Need access? Ask your Aspora admin.</p>
+    </div>
+  </section>
 </body>
-</html>""",
-        send_body=send_body,
-    )
+</html>"""
+
+
+def handle_login_page(handler, *, send_body: bool = True) -> None:
+    if google_identity.google_oauth_configured():
+        action = (
+            '<a class="google-btn" href="/auth/google/start">'
+            '<span class="g">' + _GOOGLE_G_SVG + "</span>"
+            "Continue with Google</a>"
+        )
+    else:
+        action = '<p class="not-configured">Google login is not configured for this deployment.</p>'
+    handler._send_html(_LOGIN_PAGE_HTML.replace("__ACTION__", action), send_body=send_body)
 
 
 def handle_google_start(handler, *, send_body: bool = True) -> None:

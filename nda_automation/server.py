@@ -283,6 +283,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if public_handler is not None:
             public_handler(self, send_body=send_body)
             return
+        # Static assets (CSS/JS/fonts/logo) are the app shell, identical for every
+        # user and shipped to every authenticated client anyway. Serve them before
+        # the auth gate so the PUBLIC login page can load its own logo and font;
+        # otherwise unauthenticated asset requests 302-redirect to /login.
+        if path.startswith("/static/"):
+            requested = (STATIC_DIR / path.removeprefix("/static/")).resolve()
+            if STATIC_DIR not in requested.parents or not requested.is_file():
+                self._send_json({"error": "Not found"}, status=404, send_body=send_body)
+                return
+            self._send_file(requested, send_body=send_body)
+            return
         if not self._authorize_request(send_body=send_body, path=path):
             return
         if not self._rate_limit_request("GET", path, send_body=send_body):
@@ -317,13 +328,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/matters/"):
             matter_routes.handle_matter_detail(self, path, send_body=send_body)
-            return
-        if path.startswith("/static/"):
-            requested = (STATIC_DIR / path.removeprefix("/static/")).resolve()
-            if STATIC_DIR not in requested.parents or not requested.is_file():
-                self._send_json({"error": "Not found"}, status=404, send_body=send_body)
-                return
-            self._send_file(requested, send_body=send_body)
             return
         if path.startswith("/exports/"):
             if export_service.EXPORTS_DIR is None:
