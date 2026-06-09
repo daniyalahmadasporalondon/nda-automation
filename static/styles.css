@@ -3970,8 +3970,61 @@ textarea::placeholder {
 
 .fill-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
   margin-top: 14px;
+}
+
+.fill-ai {
+  align-items: center;
+  background: var(--violet-bg, #f1ecfe);
+  border: 1px solid var(--violet-border, #d6c8fb);
+  border-radius: var(--r-sm, 8px);
+  color: var(--violet-ink, #5b2bd6);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  padding: 8px 12px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.fill-ai:hover:not(:disabled) {
+  background: #e7defc;
+}
+
+.fill-ai:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.fill-ai-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.fill-ai-party {
+  background: var(--violet-bg, #f1ecfe);
+  border: 1px solid var(--violet-border, #d6c8fb);
+  border-radius: var(--r-sm, 8px);
+  color: var(--ink, #1f1733);
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 8px 10px;
+}
+
+.fill-ai-error {
+  background: var(--amber-bg, #fdf3e2);
+  border: 1px solid var(--amber-border, #f3d9a8);
+  border-radius: var(--r-sm, 8px);
+  color: var(--amber-ink, #8a5a17);
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 8px 10px;
 }
 
 .studio-card {

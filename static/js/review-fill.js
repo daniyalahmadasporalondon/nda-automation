@@ -32,6 +32,13 @@ function createFillController({ state, root, rerenderDocument }) {
   // same coupled entity+address+law helpers the generator uses.
   let pick = null;
 
+  // AI blank-linking pass state: the detected Aspora party, a soft error to
+  // surface, and an in-flight guard. Populated by suggestWithAI(); the tool
+  // stays fully usable on the keyword heuristic when AI is unavailable.
+  let aiParty = null;
+  let aiError = "";
+  let aiBusy = false;
+
   // Per-blank working state, keyed by blank id: { value, field, mode, enabled }.
   // Survives re-renders so the user's overrides/toggles aren't lost when the
   // panel repaints (e.g. after picking an entity).
@@ -245,6 +252,7 @@ function createFillController({ state, root, rerenderDocument }) {
     const blanks = detectBlanks();
     root.innerHTML = `
       ${renderEntityPicker()}
+      ${renderAiStatus()}
       ${renderAppliedSummary()}
       ${blanks.length ? renderBlanksList(blanks) : '<div class="fill-empty">No blanks detected in this document.</div>'}
       ${blanks.length ? renderActions() : ""}
@@ -360,9 +368,22 @@ function createFillController({ state, root, rerenderDocument }) {
   function renderActions() {
     return `
       <div class="fill-actions">
+        <button type="button" class="fill-ai" data-fill-ai${aiBusy ? " disabled" : ""}>${aiBusy ? "Analyzing…" : "✨ Suggest with AI"}</button>
         <button type="button" class="fill-apply" data-fill-apply>Apply fills</button>
       </div>
     `;
+  }
+
+  // Surfaces the AI pass result: the detected Aspora party, plus any soft error
+  // (the tool still works on the keyword heuristic when AI is unavailable).
+  function renderAiStatus() {
+    const parts = [];
+    if (aiParty && aiParty.name) {
+      const note = aiParty.note ? ` — ${escape(aiParty.note)}` : "";
+      parts.push(`<div class="fill-ai-party">AI read this as <strong>${escape(aiParty.name)}</strong> being the Aspora side${note}. Rows are pre-filled for that party only.</div>`);
+    }
+    if (aiError) parts.push(`<div class="fill-ai-error">${escape(aiError)}</div>`);
+    return parts.length ? `<div class="fill-ai-status" role="status">${parts.join("")}</div>` : "";
   }
 
   function renderAppliedSummary() {
@@ -440,6 +461,97 @@ function createFillController({ state, root, rerenderDocument }) {
 
     root.querySelector("[data-fill-apply]")?.addEventListener("click", () => applyFills(blanks));
     root.querySelector("[data-fill-clear]")?.addEventListener("click", () => clearFills());
+    root.querySelector("[data-fill-ai]")?.addEventListener("click", () => suggestWithAI(blanks));
+  }
+
+  // ── AI suggest ──────────────────────────────────────────────────────────────
+  // Sends the document + detected blanks + chosen entity to the backend AI pass,
+  // which identifies the Aspora party and classifies each blank (field + whether
+  // it belongs to Aspora + whether to fill it). Merges the result into the
+  // per-blank working state. Entity-field values come from OUR registry (via
+  // valueForField), never the model's echo. Degrades to the keyword heuristic on
+  // any error or when AI isn't configured — never blocks manual filling.
+  const AI_ENTITY_FIELDS = new Set([
+    "legal_name", "registered_office", "incorporation_jurisdiction",
+    "governing_law", "signatory_name", "signatory_title",
+  ]);
+
+  function suggestWithAI(blanks) {
+    api();
+    const entity = entityApi.selectedEntity(pick);
+    if (!entity) {
+      aiParty = null;
+      aiError = "Pick an Aspora entity first, then run AI suggest.";
+      render();
+      return;
+    }
+    if (aiBusy) return;
+    aiBusy = true;
+    aiError = "";
+    render();
+
+    const documentText = (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [])
+      .map((paragraph) => String(paragraph?.text || ""))
+      .join("\n\n");
+    const payloadBlanks = blanks.map((blank) => ({
+      id: blank.id,
+      paragraph_id: blank.paragraph_id,
+      find: blank.find,
+      context: blank.context,
+    }));
+
+    fetch("/api/fill-suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entity_id: entity.id, document_text: documentText, blanks: payloadBlanks }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        aiBusy = false;
+        const status = data && data.status;
+        if (status === "not_configured") {
+          aiParty = null;
+          aiError = "AI suggestions aren't configured here — showing keyword guesses.";
+          render();
+          return;
+        }
+        if (!data || status !== "ok") {
+          aiError = "AI suggestion failed — showing keyword guesses.";
+          render();
+          return;
+        }
+        aiParty = data.aspora_party || null;
+        const byId = new Map(blanks.map((blank) => [blank.id, blank]));
+        (Array.isArray(data.classifications) ? data.classifications : []).forEach((item) => {
+          const blank = byId.get(item && item.blank_id);
+          if (!blank) return;
+          const work = workingFor(blank);
+          const fill = item.fill !== false;
+          work.enabled = fill;
+          if (!fill) {
+            // AI skipped this blank (the counterparty's, a bare signature line, or
+            // an instruction note): clear any guess so no Aspora data leaks in.
+            work.field = "custom";
+            work.value = "";
+            work.dirty = false;
+            return;
+          }
+          // Map the backend's field ids onto the picker's: the backend emits
+          // "date"/"other" where the picker only offers "custom".
+          const field = AI_ENTITY_FIELDS.has(item.field) ? item.field : "custom";
+          work.field = field;
+          // The server's value is authoritative — the registry value for entity
+          // fields, a document-grounded literal for custom.
+          work.value = String(item.value || "");
+          work.dirty = field === "custom" ? Boolean(work.value) : false;
+        });
+        render();
+      })
+      .catch(() => {
+        aiBusy = false;
+        aiError = "AI suggestion failed — showing keyword guesses.";
+        render();
+      });
   }
 
   // ── Apply ─────────────────────────────────────────────────────────────────
