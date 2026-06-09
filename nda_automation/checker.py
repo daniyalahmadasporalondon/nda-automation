@@ -70,7 +70,11 @@ from .decision_arbiter import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
-REVIEW_ENGINE_VERSION = 7
+# Bump whenever the review pipeline's OUTPUT changes (engine logic, the AI
+# assessment prompt, or how a finding is worded) so stored reviews are flagged
+# stale and re-run on Refresh Review. v8: AI-first prompt hardening (v7) + the
+# reworded ungrounded-escalation message.
+REVIEW_ENGINE_VERSION = 8
 AUDIT_TRACE_VERSION = 1
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
