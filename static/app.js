@@ -55,6 +55,16 @@ const clauseDetail = document.querySelector("#clauseDetail");
 const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
 const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE });
+
+// Inspector view config — declared early (before the controllers and any init-time
+// render that calls updateReviewInspectorTabs()) so REVIEW_INSPECTOR_VIEWS is never
+// referenced in its temporal dead zone, which would halt the whole script at load.
+const REVIEW_INSPECTOR_VIEWS = ["clause", "structure", "fill"];
+const REVIEW_INSPECTOR_TITLES = {
+  clause: "Selected Clause",
+  structure: "Contract Structure",
+  fill: "Fill Blanks",
+};
 let pendingReviewSendMatterId = null;
 let authSessionController;
 let adminAiController;
@@ -285,6 +295,23 @@ const playbookController = createPlaybookController({
 const reviewStructureController = createContractStructureController({
   state,
   root: studioDetailPanel,
+});
+// Inbound-fill tool: the 3rd inspector tab. It scans the loaded paragraphs for
+// blanks, lets the user choose an Aspora entity + address, and fill each blank
+// either CLEAN (rewrites the paragraph text + advances the manual-redline
+// baseline so no tracked redline is double-emitted) or TRACKED (left for the
+// backend to render as a tracked change via the `fills` export payload). Reuses
+// the same /api/signing-entities feed (with embedded mirror fallback) the
+// generator's entity picker uses.
+const reviewFillController = createFillController({
+  state,
+  root: studioDetailPanel,
+  // Re-render the document viewer + source after a CLEAN fill mutates paragraph
+  // text/baseline, so the filled text is immediately visible.
+  rerenderDocument: () => {
+    syncReviewSourceFromParagraphs();
+    renderStudioDocumentHighlights();
+  },
 });
 // Interactive PDF markup overlay for the review workstation's Original view.
 // It mounts only while the Original page-image surface is shown and a matter is
@@ -889,14 +916,18 @@ function activateAdminSection(sectionName) {
   }
 }
 
+function normalizeReviewInspectorView(viewName) {
+  return REVIEW_INSPECTOR_VIEWS.includes(viewName) ? viewName : "clause";
+}
+
 function setReviewInspectorView(viewName) {
-  state.reviewInspectorView = viewName === "structure" ? "structure" : "clause";
+  state.reviewInspectorView = normalizeReviewInspectorView(viewName);
   updateReviewInspectorTabs();
   renderStudioDetail();
 }
 
 function updateReviewInspectorTabs() {
-  const selectedView = state.reviewInspectorView === "structure" ? "structure" : "clause";
+  const selectedView = normalizeReviewInspectorView(state.reviewInspectorView);
   reviewInspectorButtons.forEach((button) => {
     const active = button.dataset.reviewInspector === selectedView;
     button.classList.toggle("active", active);
@@ -904,7 +935,7 @@ function updateReviewInspectorTabs() {
     button.tabIndex = active ? 0 : -1;
   });
   if (studioInspectorTitle) {
-    studioInspectorTitle.textContent = selectedView === "structure" ? "Contract Structure" : "Selected Clause";
+    studioInspectorTitle.textContent = REVIEW_INSPECTOR_TITLES[selectedView] || REVIEW_INSPECTOR_TITLES.clause;
   }
 }
 

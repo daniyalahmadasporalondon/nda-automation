@@ -125,7 +125,21 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
         return output.getvalue()
 
 
-def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -> bytes:
+def build_source_redline_docx(
+    source_docx: bytes,
+    review_result: ReviewResult,
+    *,
+    clean_fills: object = None,
+) -> bytes:
+    """Build the redlined source DOCX.
+
+    ``clean_fills`` (optional) are inbound-NDA clean fills: blank-replacements
+    baked into the base document as REAL text BEFORE any tracked redline is
+    applied, so they become part of the source text (no tracked-change markup).
+    See :mod:`nda_automation.fill_export`. They are validated/sanitised by the
+    caller and applied here against the same freshly-parsed ``document_root`` the
+    redlines use, so clean fills and redlines agree on the source paragraph model.
+    """
     try:
         validate_docx_bytes_before_open(source_docx)
         with ZipFile(BytesIO(source_docx), "r") as source_archive:
@@ -137,6 +151,12 @@ def build_source_redline_docx(source_docx: bytes, review_result: ReviewResult) -
                 part_name="word/document.xml",
             )
             _strip_paragraph_property_revisions(document_root)
+            if clean_fills:
+                # Bake clean fills into the base text FIRST, then apply tracked
+                # redlines on top so they layer over the filled document.
+                from .fill_export import apply_clean_fills_to_source_document  # noqa: PLC0415
+
+                apply_clean_fills_to_source_document(document_root, list(clean_fills), review_result)
             _apply_redline_edits_to_source_document(
                 document_root,
                 review_result.get("redline_edits", []),

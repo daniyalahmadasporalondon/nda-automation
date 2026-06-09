@@ -35,6 +35,11 @@ const AppState = (() => {
       reviewResolution: null,
       approveServerBlocks: [],
       reviewInspectorView: "clause",
+      // Inbound-fill tool: records the blanks the user has filled with Aspora
+      // entity values. Each entry: { id, paragraph_id, find, value, field, mode }
+      // (mode = "clean" | "tracked"). The export payload carries the
+      // {paragraph_id, find, value, mode} subset as a top-level `fills` array.
+      filledBlanks: [],
       documentViewMode,
     };
   }
