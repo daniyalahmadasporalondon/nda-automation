@@ -52,7 +52,7 @@ class AIAssessmentPromptTests(unittest.TestCase):
 
         self.assertEqual(
             [option["value"] for option in governing_law["rules"]["approved_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
         self.assertEqual(
             [option["value"] for option in governing_law["rules"]["approved_options"] if option.get("default")],

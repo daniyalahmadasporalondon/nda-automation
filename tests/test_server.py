@@ -470,7 +470,15 @@ class ServerTests(unittest.TestCase):
         entity_ids = {entity["id"] for entity in authed_payload["entities"]}
         self.assertEqual(
             entity_ids,
-            {"aspora_technology", "vance_money", "real_transfer", "vance_techlabs"},
+            {
+                "aspora_technology",
+                "vance_money",
+                "real_transfer",
+                "vance_techlabs",
+                "nesse_technologies",
+                "vance_technologies",
+                "aspora_financial_services",
+            },
         )
         # The live playbook maps cleanly, so every entity is drift-free.
         self.assertTrue(
@@ -6493,7 +6501,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(governing_law_redline["paragraph_id"], "p1")
         self.assertEqual(
             [option["label"] for option in governing_law_redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
 
     def test_text_review_returns_insert_redlines_for_missing_clauses(self):
@@ -6509,7 +6517,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn("England and Wales", redlines_by_clause["governing_law"]["insert_text"])
         self.assertEqual(
             [option["label"] for option in redlines_by_clause["governing_law"]["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
         self.assertEqual(redlines_by_clause["term_and_survival"]["action"], "insert_after_paragraph")
         self.assertIn("up to five years", redlines_by_clause["term_and_survival"]["insert_text"])

@@ -10,6 +10,9 @@ EXPECTED_ENTITY_IDS = {
     "vance_money",
     "real_transfer",
     "vance_techlabs",
+    "nesse_technologies",
+    "vance_technologies",
+    "aspora_financial_services",
 }
 
 # The mapping every entity bundle relies on. These ids must exist in the live
@@ -19,11 +22,14 @@ EXPECTED_LAW_MAPPING = {
     "vance_money": "delaware",
     "real_transfer": "england_and_wales",
     "vance_techlabs": "difc",
+    "nesse_technologies": "ontario_canada",
+    "vance_technologies": "england_and_wales",
+    "aspora_financial_services": "india",
 }
 
 
 class EntityRegistryBundleTests(unittest.TestCase):
-    def test_registers_the_four_signing_entities(self):
+    def test_registers_the_signing_entities(self):
         ids = {entity["id"] for entity in er.list_entities()}
         self.assertEqual(ids, EXPECTED_ENTITY_IDS)
 
@@ -109,6 +115,9 @@ class EntityRegistryBundleTests(unittest.TestCase):
                 "vance_money": "Delaware",
                 "real_transfer": "England and Wales",
                 "vance_techlabs": "DIFC",
+                "nesse_technologies": "Ontario, Canada",
+                "vance_technologies": "England and Wales",
+                "aspora_financial_services": "India",
             },
         )
 
@@ -200,7 +209,7 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
         # playbook positions.
         self.assertEqual(
             set(payload["playbook_option_ids"]),
-            {"india", "delaware", "england_and_wales", "difc"},
+            {"india", "delaware", "england_and_wales", "difc", "ontario_canada"},
         )
         self.assertTrue(
             all(row["matches_playbook"] for row in payload["law_mapping"])
@@ -208,7 +217,7 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
 
     def test_payload_without_playbook_still_returns_entities(self):
         payload = er.signing_entities_payload(None)
-        self.assertEqual(len(payload["entities"]), 4)
+        self.assertEqual(len(payload["entities"]), 7)
         self.assertEqual(payload["playbook_option_ids"], [])
         # No playbook means no drift verdict per row.
         self.assertNotIn("matches_playbook", payload["law_mapping"][0])
@@ -232,7 +241,7 @@ class SigningEntitiesRouteTests(unittest.TestCase):
         handler = _FakeHandler()
         entity_routes.handle_signing_entities(handler)
         self.assertEqual(handler.status, 200)
-        self.assertEqual(len(handler.response["entities"]), 4)
+        self.assertEqual(len(handler.response["entities"]), 7)
         self.assertTrue(
             all(row["matches_playbook"] for row in handler.response["law_mapping"])
         )
@@ -248,7 +257,7 @@ class SigningEntitiesRouteTests(unittest.TestCase):
         ):
             entity_routes.handle_signing_entities(handler)
         self.assertEqual(handler.status, 200)
-        self.assertEqual(len(handler.response["entities"]), 4)
+        self.assertEqual(len(handler.response["entities"]), 7)
         self.assertEqual(handler.response["playbook_option_ids"], [])
 
 

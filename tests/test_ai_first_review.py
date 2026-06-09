@@ -111,7 +111,7 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertIn("inline_diff_operations", redline)
         self.assertEqual(
             [option["label"] for option in redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
         self.assertEqual(
             [option["label"] for option in redline["template_options"] if option.get("selected")],

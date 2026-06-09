@@ -150,6 +150,74 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
         "incorporation_jurisdiction": "DIFC",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
+    {
+        "id": "nesse_technologies",
+        "legal_name": "Nesse Technologies Inc",
+        "short_name": "Nesse Technologies",
+        "addresses": [
+            {
+                "id": "registered",
+                "label": "Registered office",
+                "lines": [
+                    "151 Yonge Street, 11th Floor",
+                    "Toronto, Ontario M5C 2W7",
+                    "Canada",
+                ],
+                "country": "Canada",
+                "default": True,
+            },
+        ],
+        "governing_law": {"playbook_option_id": "ontario_canada", "label": "Ontario, Canada"},
+        "jurisdiction": "Courts of Ontario, Canada",
+        "incorporation_jurisdiction": "Ontario, Canada",
+        "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
+    },
+    {
+        "id": "vance_technologies",
+        "legal_name": "Vance Technologies Limited",
+        "short_name": "Vance Technologies",
+        "addresses": [
+            {
+                "id": "registered",
+                "label": "Registered office",
+                "lines": [
+                    "Profile West, 950 Great West Road",
+                    "Suite 2, First Floor",
+                    "Brentford, TW8 9ES",
+                    "United Kingdom",
+                ],
+                "country": "United Kingdom",
+                "default": True,
+            },
+        ],
+        "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
+        "jurisdiction": "Courts of England and Wales",
+        "incorporation_jurisdiction": "England and Wales",
+        "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
+    },
+    {
+        "id": "aspora_financial_services",
+        "legal_name": "Aspora Financial Services (IFSC) Private Limited",
+        "short_name": "Aspora Financial Services",
+        "addresses": [
+            {
+                "id": "registered",
+                "label": "Registered office",
+                "lines": [
+                    "Cabin No. 03-05, 3rd floor",
+                    "Flexone, Building 15C2",
+                    "Gift City, Gandhi Nagar",
+                    "Gandhi Nagar- 382050, Gujarat",
+                ],
+                "country": "India",
+                "default": True,
+            },
+        ],
+        "governing_law": {"playbook_option_id": "india", "label": "India"},
+        "jurisdiction": "Courts of India",
+        "incorporation_jurisdiction": "India",
+        "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
+    },
 ]
 
 # Human-readable notes for the two entities whose jurisdiction needed a judgement

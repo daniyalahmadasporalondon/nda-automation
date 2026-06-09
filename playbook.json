@@ -256,22 +256,24 @@
     {
       "id": "governing_law",
       "name": "Governing Law",
-      "requirement": "Governing law must be India, Delaware, England and Wales, or DIFC.",
+      "requirement": "Governing law must be India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
       "type": "required",
       "preferred_position": "The governing law is one of the approved jurisdictions, preferably England and Wales unless the matter context supports another approved option.",
-      "check_trigger": "The governing law is missing, unclear, or names a jurisdiction outside India, Delaware, England and Wales, or DIFC.",
+      "check_trigger": "The governing law is missing, unclear, or names a jurisdiction outside India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
       "approved_laws": [
         "India",
         "Delaware",
         "England and Wales",
-        "DIFC"
+        "DIFC",
+        "Ontario, Canada"
       ],
       "preferred_law": "England and Wales",
       "law_phrases": {
         "India": "India",
         "Delaware": "Delaware",
         "England and Wales": "England and Wales",
-        "DIFC": "the DIFC"
+        "DIFC": "the DIFC",
+        "Ontario, Canada": "Province of Ontario and the federal laws of Canada applicable therein"
       },
       "search_terms": [
         "governing law",
@@ -365,6 +367,12 @@
             "id": "difc",
             "label": "DIFC",
             "value": "DIFC",
+            "default": false
+          },
+          {
+            "id": "ontario_canada",
+            "label": "Ontario, Canada",
+            "value": "Ontario, Canada",
             "default": false
           }
         ]

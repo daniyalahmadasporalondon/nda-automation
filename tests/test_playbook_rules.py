@@ -80,7 +80,7 @@ class PlaybookRulesTests(unittest.TestCase):
         options = governing_law["rules"]["approved_options"]
 
         self.assertEqual([option["value"] for option in options], governing_law["approved_laws"])
-        self.assertEqual([option["label"] for option in options], ["India", "Delaware", "England and Wales", "DIFC"])
+        self.assertEqual([option["label"] for option in options], ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"])
         self.assertEqual([option["value"] for option in options if option.get("default")], ["England and Wales"])
 
     def test_playbook_rules_for_ai_exposes_assessment_schema_and_clause_rules(self):

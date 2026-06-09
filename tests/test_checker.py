@@ -1677,7 +1677,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(governing_law["matched_paragraph_ids"], ["p1"])
         self.assertEqual(governing_law["issue_type"], "present_but_wrong")
         self.assertEqual(governing_law["issue_label"], "Present but wrong")
-        self.assertIn("India, Delaware, England and Wales, or DIFC", governing_law["what_to_fix"])
+        self.assertIn("India, Delaware, England and Wales, DIFC, or Ontario, Canada", governing_law["what_to_fix"])
         governing_law_redline = self.redline_for_clause(result, "governing_law")
         self.assertEqual(governing_law_redline["action"], "replace_paragraph")
         self.assertEqual(governing_law_redline["clause_id"], "governing_law")
@@ -1700,7 +1700,7 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(
             [option["label"] for option in governing_law_redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
         self.assertTrue(
             all(option["inline_diff_operations"] for option in governing_law_redline["template_options"])
@@ -1717,6 +1717,7 @@ class CheckerTests(unittest.TestCase):
                 "This Agreement shall be governed by the laws of Delaware.",
                 "This Agreement shall be governed by the laws of England and Wales.",
                 "This Agreement shall be governed by the laws of the DIFC.",
+                "This Agreement shall be governed by the laws of Province of Ontario and the federal laws of Canada applicable therein.",
             ],
         )
 
@@ -2325,7 +2326,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(redline["insert_text"], "This Agreement shall be governed by the laws of England and Wales.")
         self.assertEqual(
             [option["label"] for option in redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC"],
+            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
         )
 
     def test_missing_required_redlines_anchor_before_signature_blocks(self):

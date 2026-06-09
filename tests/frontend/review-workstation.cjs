@@ -4617,7 +4617,7 @@ async function testClauseDecisionControls(page) {
   await governingLawCard.click();
   assert.deepEqual(
     await detailPanel.locator(".redline-option strong").evaluateAll((nodes) => nodes.map((node) => node.innerText.trim())),
-    ["India", "Delaware", "England and Wales", "DIFC"],
+    ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
   );
   await detailPanel.locator('[data-redline-option-id="governing_law_difc"]').click();
   await assertTextContains(detailPanel.locator(".redline-option.selected"), "DIFC");
