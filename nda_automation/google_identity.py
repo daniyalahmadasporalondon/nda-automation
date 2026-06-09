@@ -36,17 +36,33 @@ def configured_redirect_uri() -> str:
     return os.environ.get(GOOGLE_OAUTH_REDIRECT_URI_ENV, "").strip()
 
 
-def build_google_authorization_url(*, redirect_uri: str, state: str) -> str:
+def build_google_authorization_url(
+    *,
+    redirect_uri: str,
+    state: str,
+    scopes: tuple[str, ...] | list[str] = GOOGLE_IDENTITY_SCOPES,
+    access_type: str = "",
+    prompt: str = "select_account",
+    login_hint: str = "",
+) -> str:
     client_id = google_client_id()
     if not client_id:
         raise GoogleIdentityError("Google OAuth client ID is not configured.")
-    query = urllib.parse.urlencode({
+    params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(GOOGLE_IDENTITY_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
-    })
+        "prompt": prompt,
+    }
+    # access_type=offline (with prompt=consent) is needed to get a refresh token
+    # when the login also grants Gmail/Drive, so background sync keeps working.
+    if access_type:
+        params["access_type"] = access_type
+    if login_hint:
+        params["login_hint"] = login_hint
+    query = urllib.parse.urlencode(params)
     return f"{GOOGLE_AUTH_URL}?{query}"
 
 

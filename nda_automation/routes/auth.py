@@ -4,7 +4,7 @@ from http.cookies import SimpleCookie
 import os
 from urllib.parse import parse_qs, urlparse
 
-from .. import google_identity, user_store
+from .. import app_settings, gmail_integration, google_identity, user_store
 from ..http_auth import _basic_auth_credentials, _basic_auth_matches
 
 
@@ -62,7 +62,21 @@ def handle_google_start(handler, *, send_body: bool = True) -> None:
     next_path = query.get("next", ["/"])[0]
     state = user_store.create_login_state(next_path=next_path)
     redirect_uri = _google_redirect_uri(handler)
-    auth_url = google_identity.build_google_authorization_url(redirect_uri=redirect_uri, state=state)
+    # One Google sign-in covers login (identity) AND Gmail+Drive access: request
+    # the identity scopes plus the unified connect scopes, with offline access so
+    # the callback can save a refresh token. The user grants everything once
+    # instead of logging in and then separately connecting Gmail.
+    connect_scopes = gmail_integration._gmail_oauth_scopes_for_role("all")
+    scopes = list(google_identity.GOOGLE_IDENTITY_SCOPES) + [
+        scope for scope in connect_scopes if scope not in google_identity.GOOGLE_IDENTITY_SCOPES
+    ]
+    auth_url = google_identity.build_google_authorization_url(
+        redirect_uri=redirect_uri,
+        state=state,
+        scopes=scopes,
+        access_type="offline",
+        prompt="select_account consent",
+    )
     handler._send_redirect(
         auth_url,
         headers={"Set-Cookie": _state_cookie(handler, state)},
@@ -92,6 +106,19 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
     except (google_identity.GoogleIdentityError, user_store.UserStoreError) as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
+
+    # The single sign-in also granted Gmail + Drive; persist those tokens so the
+    # user is connected without a second consent. Best-effort: login must still
+    # succeed even if no usable token came back (then the user can reconnect from
+    # Admin), so any failure here is swallowed.
+    owner_user_id = str(user.get("id") or "")
+    try:
+        connected_roles = gmail_integration.save_user_gmail_oauth_token(owner_user_id, token_response, role="all")
+        app_settings.update_gmail_settings({"inbound_enabled": True, "outbound_enabled": True})
+        if "drive" in connected_roles:
+            app_settings.update_drive_settings({"enabled": True})
+    except Exception:  # pragma: no cover - connect-side save is best-effort
+        pass
 
     next_path = str(state_record.get("next_path") or "/")
     handler._send_redirect(

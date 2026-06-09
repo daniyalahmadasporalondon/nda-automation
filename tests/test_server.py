@@ -563,6 +563,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(parsed_start.netloc, "accounts.google.com")
         self.assertEqual(parse_qs(parsed_start.query)["client_id"], ["google-client"])
         self.assertEqual(parse_qs(parsed_start.query)["redirect_uri"], ["http://127.0.0.1/auth/google/callback"])
+        # The single sign-in requests identity AND the unified Gmail+Drive scopes.
+        login_scope = parse_qs(parsed_start.query)["scope"][0]
+        self.assertIn("openid", login_scope)
+        self.assertIn("https://www.googleapis.com/auth/gmail.readonly", login_scope)
+        self.assertIn("https://www.googleapis.com/auth/drive.file", login_scope)
         self.assertEqual(callback_status, 302)
         self.assertEqual(callback_payload, b"")
         self.assertEqual(callback_headers["Location"], "/api/matters")
