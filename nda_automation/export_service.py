@@ -9,6 +9,7 @@ from . import telemetry
 from .durable_io import fsync_parent_directory
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
+    REDLINE_FORMAT_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
@@ -111,10 +112,12 @@ def clean_review_comments(review_comments: object) -> list[dict]:
             "id": str(comment.get("id") or f"comment-{clause_id or paragraph_id}").strip()[:160],
             "text": text,
         }
-        for key in ("clause_id", "clause_name", "paragraph_id", "author", "created_at", "scope", "selected_text"):
+        for key in ("clause_id", "clause_name", "paragraph_id", "parent_id", "author", "created_at", "scope", "selected_text"):
             value = str(comment.get(key) or "").strip()
             if value:
                 clean_comment[key] = value[:1000 if key == "selected_text" else 240]
+        if bool(comment.get("resolved")):
+            clean_comment["resolved"] = True
         _copy_comment_indexes(comment, clean_comment)
         _copy_comment_offsets(comment, clean_comment)
         cleaned.append(clean_comment)
@@ -125,7 +128,10 @@ def clean_manual_export_redline(redline: object) -> dict | None:
     if not isinstance(redline, dict):
         return None
 
-    common = _clean_export_redline_contract(redline, {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH})
+    common = _clean_export_redline_contract(
+        redline,
+        {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH, REDLINE_FORMAT_PARAGRAPH},
+    )
     if common is None:
         return None
 
@@ -137,17 +143,100 @@ def clean_manual_export_redline(redline: object) -> dict | None:
         "clause_id": "manual_viewer_edit",
         "status": "proposed",
         "action": action,
-        "action_label": "Remove paragraph" if action == REDLINE_DELETE_PARAGRAPH else "Replace paragraph",
+        "action_label": _MANUAL_REDLINE_ACTION_LABELS.get(action, "Replace paragraph"),
         "paragraph_id": paragraph_id,
         "original_text": common["original_text"],
         "replacement_text": common["replacement_text"],
     }
+
+    if action == REDLINE_FORMAT_PARAGRAPH:
+        cleaned["format_ops"] = _clean_format_ops(redline.get("format_ops"), common["original_text"])
 
     _copy_redline_indexes(redline, cleaned)
     source_part = str(redline.get("source_part") or "").strip()
     if source_part:
         cleaned["source_part"] = source_part
     return cleaned
+
+
+_MANUAL_REDLINE_ACTION_LABELS = {
+    REDLINE_REPLACE_PARAGRAPH: "Replace paragraph",
+    REDLINE_DELETE_PARAGRAPH: "Remove paragraph",
+    REDLINE_FORMAT_PARAGRAPH: "Format paragraph",
+}
+
+MAX_FORMAT_OPS = 200
+MAX_FONT_NAME_CHARS = 120
+_FORMAT_OP_SCOPES = {"paragraph", "run"}
+_FORMAT_OP_PROPERTIES = {"alignment", "font", "bold", "italic"}
+_FORMAT_OP_ALIGNMENTS = {"left", "center", "right", "justify"}
+
+
+def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
+    """Sanitise the untrusted ``format_ops`` array from the export payload.
+
+    The frontend sends these; treat every field as hostile. We clamp ``scope`` and
+    ``property`` to known enums, alignment values to the four Word justifications,
+    font names to a bounded string, and run ``start``/``end`` to valid offsets into
+    the (equal) paragraph text. Unknown keys and unrecognised ops are dropped, and
+    the op count is capped."""
+    if not isinstance(format_ops, list):
+        return []
+
+    text_length = len(original_text)
+    cleaned: list[dict] = []
+    for op in format_ops[:MAX_FORMAT_OPS]:
+        if not isinstance(op, dict):
+            continue
+        scope = str(op.get("scope") or "").strip().lower()
+        if scope not in _FORMAT_OP_SCOPES:
+            continue
+        prop = str(op.get("property") or "").strip().lower()
+        if prop not in _FORMAT_OP_PROPERTIES:
+            continue
+
+        clean_op: dict = {"scope": scope, "property": prop}
+        if prop == "alignment":
+            to_value = _clean_alignment_value(op.get("to"))
+            if to_value is None:
+                continue
+            clean_op["to"] = to_value
+            from_value = _clean_alignment_value(op.get("from"))
+            if from_value is not None:
+                clean_op["from"] = from_value
+        elif prop == "font":
+            clean_op["to"] = str(op.get("to") or "").strip()[:MAX_FONT_NAME_CHARS]
+            clean_op["from"] = str(op.get("from") or "").strip()[:MAX_FONT_NAME_CHARS]
+        else:
+            # bold/italic: carry the truthy intent through for the later inline
+            # milestone; the paragraph emitter ignores run-scope ops for now.
+            clean_op["to"] = bool(op.get("to"))
+            clean_op["from"] = bool(op.get("from"))
+
+        if scope == "run":
+            offsets = _clean_run_offsets(op.get("start"), op.get("end"), text_length)
+            if offsets is None:
+                continue
+            clean_op["start"], clean_op["end"] = offsets
+
+        cleaned.append(clean_op)
+    return cleaned
+
+
+def _clean_alignment_value(value: object) -> str | None:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in _FORMAT_OP_ALIGNMENTS else None
+
+
+def _clean_run_offsets(start: object, end: object, text_length: int) -> tuple[int, int] | None:
+    try:
+        start_index = int(start)
+        end_index = int(end)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if start_index < 0 or end_index < start_index or end_index > text_length:
+        return None
+    return start_index, end_index
 
 
 def _server_redline_with_submitted_decision(server_redline: dict, submitted_redline: dict) -> dict:
@@ -307,18 +396,28 @@ def _clean_export_redline_contract(redline: dict, allowed_actions: set[str]) -> 
     replacement_text = str(redline.get("replacement_text") or "").strip()
     anchor_text = str(redline.get("anchor_text") or "").strip()
     insert_text = str(redline.get("insert_text") or "").strip()
-    if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH} and not original_text.strip():
+    # A format_paragraph redline leaves the TEXT unchanged (original == replacement),
+    # so the empty-replacement reject must not fire for it -- require non-empty
+    # original_text instead, and echo it back as the (equal) replacement_text.
+    if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH, REDLINE_FORMAT_PARAGRAPH} and not original_text.strip():
         return None
     if action == REDLINE_REPLACE_PARAGRAPH and not replacement_text.strip():
         return None
     if action == REDLINE_INSERT_AFTER_PARAGRAPH and not insert_text.strip():
         return None
 
+    if action == REDLINE_DELETE_PARAGRAPH:
+        cleaned_replacement_text = ""
+    elif action == REDLINE_FORMAT_PARAGRAPH:
+        cleaned_replacement_text = original_text
+    else:
+        cleaned_replacement_text = replacement_text
+
     return {
         "action": action,
         "paragraph_id": paragraph_id,
         "original_text": original_text,
-        "replacement_text": "" if action == REDLINE_DELETE_PARAGRAPH else replacement_text,
+        "replacement_text": cleaned_replacement_text,
         "anchor_text": anchor_text,
         "insert_text": insert_text,
     }

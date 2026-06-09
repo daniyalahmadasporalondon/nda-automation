@@ -355,7 +355,7 @@ function createFillController({ state, root, rerenderDocument }) {
     const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
     if (!paragraphs.length) {
       clearDocHighlights();
-      root.innerHTML = '<div class="fill-empty">Load or review an NDA to scan it for Aspora name &amp; address slots.</div>';
+      root.innerHTML = '<div class="fill-body"><div class="fill-empty">Load or review an NDA to scan it for Aspora name &amp; address slots.</div></div>';
       return;
     }
 
@@ -364,11 +364,13 @@ function createFillController({ state, root, rerenderDocument }) {
     const hasTarget = Boolean(targetEntity());
 
     root.innerHTML = `
-      ${renderEntityPicker()}
-      ${renderAppliedSummary()}
-      ${renderSection("Insert into blanks", inserts)}
-      ${renderSection("Replace existing Aspora identity", replacements)}
-      ${(inserts.length || replacements.length) ? renderActions() : '<div class="fill-empty">No name or address blanks — and no existing Aspora identity — found in this document.</div>'}
+      <div class="fill-body">
+        ${renderEntityPicker()}
+        ${renderAppliedSummary()}
+        ${renderSection("Insert into blanks", inserts)}
+        ${renderSection("Replace existing Aspora identity", replacements)}
+        ${(inserts.length || replacements.length) ? renderActions() : '<div class="fill-empty">No name or address blanks — and no existing Aspora identity — found in this document.</div>'}
+      </div>
     `;
     const candidates = inserts.concat(replacements);
     bindControls(candidates);

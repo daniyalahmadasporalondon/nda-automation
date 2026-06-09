@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260609s">
+    <link rel="stylesheet" href="/static/styles.css?v=20260609z12">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -315,6 +315,40 @@
                     </button>
                   </div>
                 </div>
+              </div>
+              <div class="studio-format-toolbar" id="studioFormatToolbar" role="toolbar" aria-label="Text formatting">
+                <label class="fmt-font">
+                  <span class="sr-only">Font</span>
+                  <select id="studioFontSelect" aria-label="Font">
+                    <option value="">Default font</option>
+                    <option value="Calibri">Calibri</option>
+                    <option value="Arial">Arial</option>
+                    <option value="Times New Roman">Times New Roman</option>
+                    <option value="Georgia">Georgia</option>
+                    <option value="Cambria">Cambria</option>
+                    <option value="Garamond">Garamond</option>
+                    <option value="Verdana">Verdana</option>
+                    <option value="Tahoma">Tahoma</option>
+                    <option value="Trebuchet MS">Trebuchet MS</option>
+                    <option value="Courier New">Courier New</option>
+                  </select>
+                </label>
+                <span class="fmt-sep" aria-hidden="true"></span>
+                <button class="fmt-btn fmt-btn-bold" id="studioFormatBold" type="button" aria-label="Bold" title="Bold" aria-pressed="false">B</button>
+                <button class="fmt-btn fmt-btn-italic" id="studioFormatItalic" type="button" aria-label="Italic" title="Italic" aria-pressed="false">I</button>
+                <span class="fmt-sep" aria-hidden="true"></span>
+                <button class="fmt-btn" id="studioAlignLeft" type="button" aria-label="Align left" title="Align left" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h10M4 18h13"/></svg>
+                </button>
+                <button class="fmt-btn" id="studioAlignCenter" type="button" aria-label="Align center" title="Align center" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M7 12h10M6 18h12"/></svg>
+                </button>
+                <button class="fmt-btn" id="studioAlignRight" type="button" aria-label="Align right" title="Align right" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M10 12h10M7 18h13"/></svg>
+                </button>
+                <button class="fmt-btn" id="studioAlignJustify" type="button" aria-label="Justify" title="Justify" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+                </button>
               </div>
               <div class="studio-page-wrap">
                 <div class="studio-page">
@@ -1579,7 +1613,7 @@
       runs before any user interaction; all consumers call these at runtime.
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260608b"></script>
-    <script src="/static/js/redline-rendering.js?v=20260607e"></script>
+    <script src="/static/js/redline-rendering.js?v=20260609z11"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
@@ -1596,13 +1630,14 @@
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/admin-drive.js?v=20260607c"></script>
     <script src="/static/js/contract-structure-view.js"></script>
-    <script src="/static/js/review-fill.js?v=20260609q"></script>
+    <script src="/static/js/review-fill.js?v=20260609v"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260609a"></script>
-    <script src="/static/js/review-workstation-source.js?v=20260604a"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260609s"></script>
-    <script src="/static/js/review-workstation-viewer.js?v=20260609q"></script>
+    <script src="/static/js/review-workstation-source.js?v=20260609z10"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260609z10"></script>
+    <script src="/static/js/review-workstation-format.js?v=20260609z13"></script>
+    <script src="/static/js/review-workstation-viewer.js?v=20260609z14"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/pdf-markup.js?v=20260607f"></script>
     <script src="/static/js/app-state.js?v=20260609a"></script>

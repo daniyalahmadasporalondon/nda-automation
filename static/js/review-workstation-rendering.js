@@ -38,6 +38,11 @@ function snapshotReviewParagraphs(paragraphs) {
     };
     if (paragraph.source_index !== undefined) snapshot.source_index = paragraph.source_index;
     if (paragraph.source_part !== undefined) snapshot.source_part = paragraph.source_part;
+    // Capture paragraph-level formatting so a format-only change (alignment/font
+    // with identical text) is diffable against this baseline.
+    if (paragraph.alignment !== undefined) snapshot.alignment = paragraph.alignment;
+    if (paragraph.font !== undefined) snapshot.font = paragraph.font;
+    if (Array.isArray(paragraph.runs)) snapshot.runs = paragraph.runs.map((run) => ({ ...run }));
     return snapshot;
   });
 }
@@ -504,7 +509,20 @@ function setSelectedTextReviewComment(paragraphId, selectionInfo, text) {
   });
 }
 
+// Snapshot the whole comment set onto the shared viewer undo stack before a
+// discrete comment change, so the Undo button reverts add / edit / reply /
+// resolve / delete just like it reverts text edits. (Clause-lane comments are
+// keystroke-driven and keep native textarea undo, so they are not snapshotted.)
+function pushReviewCommentsHistory() {
+  if (typeof pushReviewEditHistoryEntry !== "function") return;
+  pushReviewEditHistoryEntry({
+    type: "review_comments",
+    snapshot: normalizeReviewComments(state.reviewComments).map((comment) => ({ ...comment })),
+  });
+}
+
 function upsertReviewComment(comment) {
+  pushReviewCommentsHistory();
   const trimmedText = String(comment.text || "").trim();
   state.reviewComments = normalizeReviewComments(state.reviewComments).filter((item) => item.id !== comment.id);
   if (trimmedText) {
@@ -788,6 +806,7 @@ function applyGoverningLawRedline(lawPhrase, lawLabel) {
     pushReviewEditHistoryEntry({ paragraphId: para.id, previousText: para.text, type: "paragraph_text" });
   }
   para.text = newText;
+  para.clauseRedlineWholeParagraph = true;  // keep this clause redline whole-paragraph
   if (typeof syncReviewSourceFromParagraphs === "function") syncReviewSourceFromParagraphs();
   if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
   if (typeof markSourceEdited === "function") markSourceEdited("Governing law redline", { preserveSourceDocument: true });
@@ -1636,15 +1655,7 @@ function bindParagraphCommentControls(container) {
   container.querySelectorAll("[data-add-paragraph-comment-id]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      const paragraphId = button.dataset.addParagraphCommentId;
-      const existing = normalizeReviewComments(state.reviewComments)
-        .find((comment) => comment.scope === "paragraph" && comment.paragraph_id === paragraphId);
-      openParagraphCommentComposer({
-        existingText: existing?.text || "",
-        onSave: (text) => setParagraphReviewComment(paragraphId, text),
-        paragraphId,
-        title: "Paragraph comment",
-      });
+      openCommentCard(button.dataset.addParagraphCommentId, { compose: "paragraph" });
     });
   });
   container.querySelectorAll("[data-add-selection-comment-id]").forEach((button) => {
@@ -1652,30 +1663,32 @@ function bindParagraphCommentControls(container) {
       event.stopPropagation();
       const paragraphId = button.dataset.addSelectionCommentId;
       const selectionInfo = selectedTextInParagraph(paragraphId);
-      if (!selectionInfo?.selectedText) {
-        setFileMeta("Select text in this paragraph before adding a selected-text comment");
+      if (selectionInfo?.selectedText) {
+        // Selected text -> start a new selection-scoped comment.
+        openCommentCard(paragraphId, { compose: "selection", selectionInfo });
         return;
       }
-      const existing = normalizeReviewComments(state.reviewComments)
-        .find((comment) => (
-          comment.scope === "selection"
-          && comment.paragraph_id === paragraphId
-          && Number(comment.selection_start) === Number(selectionInfo.startOffset)
-          && Number(comment.selection_end) === Number(selectionInfo.endOffset)
-        ));
-      openParagraphCommentComposer({
-        existingText: existing?.text || "",
-        onSave: (text) => setSelectedTextReviewComment(paragraphId, selectionInfo, text),
-        paragraphId,
-        selectedText: selectionInfo.selectedText,
-        title: "Selected text comment",
-      });
+      // No active selection: never a dead end. Open existing threads if there
+      // are any, otherwise compose a paragraph-level comment.
+      if (paragraphCommentThreads(paragraphId).length) {
+        openCommentCard(paragraphId, { mode: "read" });
+      } else {
+        openCommentCard(paragraphId, { compose: "paragraph" });
+      }
+    });
+  });
+  // Clicking the comment-count badge opens the thread(s) for read / edit / reply / resolve.
+  container.querySelectorAll("[data-edit-paragraph-comments-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openCommentCard(button.dataset.editParagraphCommentsId, { mode: "read" });
     });
   });
 }
 
 function closeParagraphCommentComposers() {
-  studioDocumentRender?.querySelectorAll(".paragraph-comment-composer").forEach((composer) => {
+  detachCommentCardListeners();
+  studioDocumentRender?.querySelectorAll(".paragraph-comment-composer, .comment-thread-card").forEach((composer) => {
     composer.closest(".studio-doc-paragraph")?.classList.remove("has-comment-composer");
     composer.remove();
   });
@@ -1688,85 +1701,513 @@ function clearSelectionCommentAffordances() {
   });
 }
 
-function openParagraphCommentComposer({
-  existingText = "",
-  onSave,
-  paragraphId,
-  selectedText = "",
-  title,
-}) {
+// ---- Word-style comment threads -------------------------------------------
+// A "thread" is one root comment (no parent_id) plus its replies (parent_id ===
+// root.id). The card shows every thread anchored to a paragraph, each with the
+// author, the text, an Edit/Delete menu, a Resolve toggle and a reply box.
+
+const COMMENT_KEBAB_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>';
+const COMMENT_CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>';
+const COMMENT_SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
+
+let commentCardOutsideHandler = null;
+let commentCardResizeHandler = null;
+
+function detachCommentCardListeners() {
+  if (commentCardOutsideHandler) {
+    document.removeEventListener("mousedown", commentCardOutsideHandler, true);
+    commentCardOutsideHandler = null;
+  }
+  if (commentCardResizeHandler) {
+    window.removeEventListener("resize", commentCardResizeHandler);
+    commentCardResizeHandler = null;
+  }
+}
+
+// Word docks comments in the page margin. Our document page is a centred,
+// max-width column inside a full-width panel, so on a wide view there is a grey
+// gutter on either side. When the right gutter is wide enough we float the card
+// into it (absolutely, relative to its paragraph, so it scrolls in step and
+// never pushes the text); otherwise we leave it inline beneath the paragraph.
+const COMMENT_CARD_MARGIN_GAP = 14;
+const COMMENT_CARD_MIN_MARGIN_WIDTH = 120;
+const COMMENT_CARD_MAX_WIDTH = 340;
+
+function dockCommentCardInMargin(card, paragraph) {
+  const page = paragraph.closest(".studio-page");
+  const wrap = paragraph.closest(".studio-page-wrap");
+  const resetInline = () => {
+    card.classList.remove("is-margin-docked");
+    card.style.position = "";
+    card.style.top = "";
+    card.style.left = "";
+    card.style.width = "";
+    card.style.marginTop = "";
+  };
+  if (!page || !wrap) { resetInline(); return false; }
+
+  const pageRect = page.getBoundingClientRect();
+  const wrapStyle = window.getComputedStyle(wrap);
+  const wrapPadRight = parseFloat(wrapStyle.paddingRight) || 0;
+  const wrapInnerRight = wrap.getBoundingClientRect().right - wrapPadRight;
+  const rightGutter = wrapInnerRight - pageRect.right;
+  if (rightGutter < COMMENT_CARD_MIN_MARGIN_WIDTH + COMMENT_CARD_MARGIN_GAP) {
+    resetInline();
+    return false;
+  }
+
+  const cardWidth = Math.min(COMMENT_CARD_MAX_WIDTH, rightGutter - COMMENT_CARD_MARGIN_GAP - 8);
+  const paraRect = paragraph.getBoundingClientRect();
+  card.classList.add("is-margin-docked");
+  card.style.position = "absolute";
+  card.style.top = "0px";
+  card.style.left = `${Math.round(pageRect.right + COMMENT_CARD_MARGIN_GAP - paraRect.left)}px`;
+  card.style.width = `${Math.round(cardWidth)}px`;
+  card.style.marginTop = "0";
+  return true;
+}
+
+function paragraphCommentThreads(paragraphId) {
+  // Clause-scoped comments may also carry a paragraph_id (their clause's anchor
+  // paragraph); they belong to the clause lane, not the in-document thread card.
+  const all = normalizeReviewComments(state.reviewComments)
+    .filter((comment) => comment.paragraph_id === paragraphId && !comment.clause_id);
+  const byCreated = (a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""));
+  return all
+    .filter((comment) => !comment.parent_id)
+    .sort(byCreated)
+    .map((root) => ({
+      root,
+      replies: all.filter((comment) => comment.parent_id === root.id).sort(byCreated),
+    }));
+}
+
+function commentAuthorName(comment) {
+  return String(comment?.author || "Reviewer").trim() || "Reviewer";
+}
+
+function commentAuthorInitials(comment) {
+  const name = commentAuthorName(comment);
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("");
+  return (initials || name[0] || "R").toUpperCase();
+}
+
+function formatCommentTimestamp(value) {
+  const iso = String(value || "").trim();
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    return `${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  } catch (error) {
+    return iso;
+  }
+}
+
+function nextCommentReplyId(rootId) {
+  const base = `comment-reply-${rootId}-`;
+  let max = 0;
+  normalizeReviewComments(state.reviewComments).forEach((comment) => {
+    if (typeof comment.id === "string" && comment.id.startsWith(base)) {
+      const value = Number(comment.id.slice(base.length));
+      if (Number.isFinite(value) && value > max) max = value;
+    }
+  });
+  return `${base}${max + 1}`;
+}
+
+function addCommentReply(rootId, text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  const root = normalizeReviewComments(state.reviewComments).find((comment) => comment.id === rootId);
+  if (!root) return;
+  upsertReviewComment({
+    ...reviewCommentTargetForParagraph(root.paragraph_id),
+    author: "Reviewer",
+    created_at: new Date().toISOString(),
+    id: nextCommentReplyId(rootId),
+    parent_id: rootId,
+    scope: "reply",
+    text: trimmed,
+  });
+}
+
+function editReviewCommentText(commentId, text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  const existing = normalizeReviewComments(state.reviewComments).find((comment) => comment.id === commentId);
+  if (!existing) return;
+  upsertReviewComment({ ...existing, text: trimmed });
+}
+
+function removeReviewCommentThread(commentId) {
+  const all = normalizeReviewComments(state.reviewComments);
+  const target = all.find((comment) => comment.id === commentId);
+  if (!target) return;
+  pushReviewCommentsHistory();
+  const removeIds = new Set([commentId]);
+  if (!target.parent_id) {
+    // Deleting a thread root removes its replies too.
+    all.forEach((comment) => {
+      if (comment.parent_id === commentId) removeIds.add(comment.id);
+    });
+  }
+  state.reviewComments = all.filter((comment) => !removeIds.has(comment.id));
+  markRedlineDraftDirty();
+  renderStudioDocumentHighlights();
+  renderStudioClauseLane();
+  updateExportButtonState();
+}
+
+function toggleReviewCommentResolved(rootId) {
+  const existing = normalizeReviewComments(state.reviewComments).find((comment) => comment.id === rootId);
+  if (!existing) return;
+  upsertReviewComment({ ...existing, resolved: !existing.resolved });
+}
+
+// Highlight only the specific commented words in the document. Walks the
+// paragraph's editable text nodes (the same textContent-offset model the app
+// uses for selection restore via editableTextPositionForOffset), validates the
+// stored offsets against selected_text, and wraps exactly that span in a purple
+// <mark>. Re-applied on every render; the paragraph background is untouched.
+function normalizeCommentWS(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function applyCommentTextHighlights() {
+  if (!studioDocumentRender) return;
+  const activeEditable = document.activeElement?.closest?.("[data-editable-paragraph-id]");
+  normalizeReviewComments(state.reviewComments)
+    .filter((comment) => comment.paragraph_id && !comment.clause_id && !comment.parent_id)
+    .forEach((comment) => {
+      const paragraph = studioDocumentRender.querySelector(
+        `[data-paragraph-id="${cssEscape(comment.paragraph_id)}"]`,
+      );
+      const editable = paragraph?.querySelector("[data-editable-paragraph-id]");
+      if (!editable || editable === activeEditable) return;
+      highlightCommentRange(editable, comment);
+    });
+}
+
+function highlightCommentRange(editable, comment) {
+  const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let fullText = "";
+  let node;
+  while ((node = walker.nextNode())) {
+    nodes.push({ node, start: fullText.length });
+    fullText += node.textContent;
+  }
+  if (!fullText) return;
+
+  const selected = String(comment.selected_text || "");
+  let start = -1;
+  let end = -1;
+  if (comment.scope === "selection" || selected) {
+    const storedStart = Number(comment.selection_start);
+    const storedEnd = Number(comment.selection_end);
+    if (
+      Number.isFinite(storedStart) && Number.isFinite(storedEnd)
+      && storedStart >= 0 && storedEnd > storedStart && storedEnd <= fullText.length
+      && (!selected || normalizeCommentWS(fullText.slice(storedStart, storedEnd)) === normalizeCommentWS(selected))
+    ) {
+      start = storedStart;
+      end = storedEnd;
+    } else if (selected) {
+      const idx = fullText.indexOf(selected);
+      if (idx >= 0) {
+        start = idx;
+        end = idx + selected.length;
+      }
+    }
+  } else {
+    // Paragraph-scope comment with no specific range: highlight the whole text.
+    start = 0;
+    end = fullText.length;
+  }
+  if (start < 0 || end <= start) return;
+
+  nodes.forEach(({ node: textNode, start: nodeStart }) => {
+    const nodeEnd = nodeStart + textNode.textContent.length;
+    const from = Math.max(start, nodeStart);
+    const to = Math.min(end, nodeEnd);
+    if (to <= from) return;
+    try {
+      const range = document.createRange();
+      range.setStart(textNode, from - nodeStart);
+      range.setEnd(textNode, to - nodeStart);
+      const mark = document.createElement("mark");
+      mark.className = "comment-word-highlight";
+      range.surroundContents(mark);
+    } catch (error) {
+      /* a range that can't be wrapped is skipped rather than throwing */
+    }
+  });
+}
+
+function openCommentCard(paragraphId, opts = {}) {
   const paragraph = studioDocumentRender?.querySelector(
     `[data-paragraph-id="${cssEscape(paragraphId)}"]`,
   );
-  if (!paragraph || typeof onSave !== "function") return;
+  if (!paragraph) return;
 
   clearSelectionCommentAffordances();
   closeParagraphCommentComposers();
   paragraph.classList.add("has-comment-composer");
 
-  const composer = document.createElement("div");
-  composer.className = "paragraph-comment-composer";
-  composer.setAttribute("contenteditable", "false");
-  composer.addEventListener("click", (event) => event.stopPropagation());
+  const card = document.createElement("div");
+  card.className = "comment-thread-card";
+  card.setAttribute("contenteditable", "false");
+  card.addEventListener("click", (event) => event.stopPropagation());
 
-  const label = document.createElement("label");
-  const inputId = `paragraph-comment-input-${Date.now()}`;
-  label.setAttribute("for", inputId);
-  label.textContent = title || "Comment";
-  composer.append(label);
+  const threads = paragraphCommentThreads(paragraphId);
+  threads.forEach(({ root, replies }) => {
+    card.append(buildCommentThread(paragraphId, root, replies));
+  });
 
-  if (selectedText) {
-    const excerpt = document.createElement("p");
-    excerpt.className = "paragraph-comment-selection";
-    excerpt.textContent = selectedText;
-    composer.append(excerpt);
+  const composeScope = opts.compose;
+  if (composeScope || threads.length === 0) {
+    card.append(buildCommentComposeBox(paragraphId, composeScope || "paragraph", opts.selectionInfo || null));
   }
 
+  paragraph.append(card);
+
+  const docked = dockCommentCardInMargin(card, paragraph);
+
+  detachCommentCardListeners();
+  commentCardOutsideHandler = (event) => {
+    if (!card.contains(event.target)) closeParagraphCommentComposers();
+  };
+  document.addEventListener("mousedown", commentCardOutsideHandler, true);
+  if (docked) {
+    commentCardResizeHandler = () => dockCommentCardInMargin(card, paragraph);
+    window.addEventListener("resize", commentCardResizeHandler);
+  }
+
+  requestAnimationFrame(() => {
+    const focusTarget = card.querySelector(composeScope ? ".comment-compose-input" : ".comment-reply-input");
+    if (composeScope && focusTarget) focusTarget.focus({ preventScroll: true });
+  });
+}
+
+function buildCommentThread(paragraphId, root, replies) {
+  const thread = document.createElement("div");
+  thread.className = "comment-thread";
+  if (root.resolved) thread.classList.add("resolved");
+
+  thread.append(buildCommentEntry(paragraphId, root, true));
+  replies.forEach((reply) => thread.append(buildCommentEntry(paragraphId, reply, false)));
+
+  const replyBox = document.createElement("div");
+  replyBox.className = "comment-reply-box";
+  const replyInput = document.createElement("textarea");
+  replyInput.className = "comment-reply-input";
+  replyInput.rows = 1;
+  replyInput.placeholder = "Reply";
+  const replySend = document.createElement("button");
+  replySend.type = "button";
+  replySend.className = "comment-reply-send";
+  replySend.setAttribute("aria-label", "Send reply");
+  replySend.innerHTML = COMMENT_SEND_ICON;
+  const sendReply = () => {
+    const value = replyInput.value.trim();
+    if (!value) { replyInput.focus(); return; }
+    addCommentReply(root.id, value);
+    setFileMeta("Reply added");
+    openCommentCard(paragraphId, { mode: "read" });
+  };
+  replySend.addEventListener("click", (event) => { event.stopPropagation(); sendReply(); });
+  replyInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      sendReply();
+    }
+  });
+  replyBox.append(replyInput, replySend);
+  thread.append(replyBox);
+  return thread;
+}
+
+function buildCommentEntry(paragraphId, comment, isRoot) {
+  const entry = document.createElement("div");
+  entry.className = isRoot ? "comment-entry comment-entry-root" : "comment-entry comment-entry-reply";
+
+  const avatar = document.createElement("div");
+  avatar.className = "comment-avatar";
+  avatar.textContent = commentAuthorInitials(comment);
+  entry.append(avatar);
+
+  const body = document.createElement("div");
+  body.className = "comment-body";
+
+  const head = document.createElement("div");
+  head.className = "comment-head";
+  const author = document.createElement("span");
+  author.className = "comment-author";
+  author.textContent = commentAuthorName(comment);
+  const time = document.createElement("span");
+  time.className = "comment-time";
+  time.textContent = formatCommentTimestamp(comment.created_at);
+  head.append(author, time);
+
+  const entryActions = document.createElement("div");
+  entryActions.className = "comment-entry-actions";
+
+  if (isRoot) {
+    const resolveBtn = document.createElement("button");
+    resolveBtn.type = "button";
+    resolveBtn.className = comment.resolved ? "comment-resolve-btn is-resolved" : "comment-resolve-btn";
+    resolveBtn.title = comment.resolved ? "Reopen" : "Resolve";
+    resolveBtn.setAttribute("aria-label", resolveBtn.title);
+    resolveBtn.innerHTML = COMMENT_CHECK_ICON;
+    resolveBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const wasResolved = comment.resolved;
+      toggleReviewCommentResolved(comment.id);
+      setFileMeta(wasResolved ? "Comment reopened" : "Comment resolved");
+      openCommentCard(paragraphId, { mode: "read" });
+    });
+    entryActions.append(resolveBtn);
+  }
+
+  const menuWrap = document.createElement("div");
+  menuWrap.className = "comment-menu-wrap";
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button";
+  menuBtn.className = "comment-menu-btn";
+  menuBtn.setAttribute("aria-label", "Comment options");
+  menuBtn.innerHTML = COMMENT_KEBAB_ICON;
+  const menu = document.createElement("div");
+  menu.className = "comment-menu";
+  menu.hidden = true;
+  const editItem = document.createElement("button");
+  editItem.type = "button";
+  editItem.className = "comment-menu-item";
+  editItem.textContent = "Edit";
+  const deleteItem = document.createElement("button");
+  deleteItem.type = "button";
+  deleteItem.className = "comment-menu-item comment-menu-item-danger";
+  deleteItem.textContent = "Delete";
+  menu.append(editItem, deleteItem);
+  menuBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const wasHidden = menu.hidden;
+    entry.closest(".comment-thread-card")?.querySelectorAll(".comment-menu").forEach((other) => {
+      other.hidden = true;
+    });
+    menu.hidden = !wasHidden;
+  });
+  editItem.addEventListener("click", (event) => {
+    event.stopPropagation();
+    menu.hidden = true;
+    enterCommentEditMode(paragraphId, comment, body);
+  });
+  deleteItem.addEventListener("click", (event) => {
+    event.stopPropagation();
+    menu.hidden = true;
+    removeReviewCommentThread(comment.id);
+    setFileMeta("Comment removed");
+    if (paragraphCommentThreads(paragraphId).length) {
+      openCommentCard(paragraphId, { mode: "read" });
+    } else {
+      detachCommentCardListeners();
+    }
+  });
+  menuWrap.append(menuBtn, menu);
+  entryActions.append(menuWrap);
+  head.append(entryActions);
+  body.append(head);
+
+  const textEl = document.createElement("div");
+  textEl.className = "comment-text";
+  textEl.textContent = comment.text || "";
+  body.append(textEl);
+
+  entry.append(body);
+  return entry;
+}
+
+function enterCommentEditMode(paragraphId, comment, body) {
+  const textEl = body.querySelector(".comment-text");
+  if (!textEl) return;
+
+  const editor = document.createElement("div");
+  editor.className = "comment-edit";
   const input = document.createElement("textarea");
-  input.id = inputId;
-  input.className = "paragraph-comment-input";
-  input.rows = 3;
-  input.placeholder = "Write a comment for Word export";
-  input.value = existingText;
-  composer.append(input);
+  input.className = "comment-edit-input";
+  input.rows = 2;
+  input.value = comment.text || "";
 
-  const actions = document.createElement("div");
-  actions.className = "paragraph-comment-actions";
+  const row = document.createElement("div");
+  row.className = "comment-edit-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "comment-edit-save";
+  save.textContent = "Save";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "comment-edit-cancel";
+  cancel.textContent = "Cancel";
+  row.append(save, cancel);
+  editor.append(input, row);
+  textEl.replaceWith(editor);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 
-  const saveButton = document.createElement("button");
-  saveButton.className = "paragraph-comment-save";
-  saveButton.type = "button";
-  saveButton.textContent = "Save";
+  save.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const value = input.value.trim();
+    if (!value) { input.focus(); return; }
+    editReviewCommentText(comment.id, value);
+    setFileMeta("Comment updated");
+    openCommentCard(paragraphId, { mode: "read" });
+  });
+  cancel.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openCommentCard(paragraphId, { mode: "read" });
+  });
+}
 
-  const cancelButton = document.createElement("button");
-  cancelButton.className = "paragraph-comment-cancel";
-  cancelButton.type = "button";
-  cancelButton.textContent = "Cancel";
+function buildCommentComposeBox(paragraphId, scope, selectionInfo) {
+  const box = document.createElement("div");
+  box.className = "comment-compose";
 
-  actions.append(saveButton, cancelButton);
-  composer.append(actions);
-  paragraph.append(composer);
+  const input = document.createElement("textarea");
+  input.className = "comment-compose-input";
+  input.rows = 2;
+  input.placeholder = "Add a comment";
+  box.append(input);
 
-  cancelButton.addEventListener("click", (event) => {
+  const row = document.createElement("div");
+  row.className = "comment-compose-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "comment-compose-save";
+  save.textContent = "Comment";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "comment-compose-cancel";
+  cancel.textContent = "Cancel";
+  row.append(save, cancel);
+  box.append(row);
+
+  save.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const value = input.value.trim();
+    if (!value) { input.focus(); return; }
+    if (scope === "selection" && selectionInfo?.selectedText) {
+      setSelectedTextReviewComment(paragraphId, selectionInfo, value);
+    } else {
+      setParagraphReviewComment(paragraphId, value);
+    }
+    setFileMeta("Comment saved for Word export");
+    openCommentCard(paragraphId, { mode: "read" });
+  });
+  cancel.addEventListener("click", (event) => {
     event.stopPropagation();
     closeParagraphCommentComposers();
   });
-  saveButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const text = input.value.trim();
-    if (!text) {
-      setFileMeta("Write a comment before saving");
-      input.focus();
-      return;
-    }
-    onSave(text);
-    setFileMeta("Comment saved for Word export");
-  });
-
-  requestAnimationFrame(() => {
-    input.focus({ preventScroll: true });
-    input.setSelectionRange(input.value.length, input.value.length);
-  });
+  return box;
 }
 
 function selectedTextInParagraph(paragraphId) {
@@ -1917,7 +2358,9 @@ function renderStudioDocumentHighlights() {
     });
   });
   bindViewerParagraphEditing();
+  if (typeof bindFormatToolbar === "function") bindFormatToolbar();
   bindParagraphCommentControls(studioDocumentRender);
+  applyCommentTextHighlights();
 
   showStudioDocumentRender();
   notifyFillHighlights();

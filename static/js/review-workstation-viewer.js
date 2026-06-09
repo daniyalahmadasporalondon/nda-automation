@@ -130,6 +130,16 @@ function undoLastViewerEdit() {
     return;
   }
 
+  if (lastEdit.type === "review_comments") {
+    restoreReviewCommentsSnapshot(lastEdit);
+    return;
+  }
+
+  if (lastEdit.type === "paragraph_format") {
+    restoreParagraphFormat(lastEdit);
+    return;
+  }
+
   const paragraph = state.reviewParagraphs.find((item) => item.id === lastEdit.paragraphId);
   if (!paragraph) {
     updateReviewUndoButtonState();
@@ -143,6 +153,57 @@ function undoLastViewerEdit() {
   renderStudioDocumentHighlights();
   scheduleViewerReviewRefresh("Last viewer edit undone");
   updateExportButtonState();
+  updateReviewUndoButtonState();
+}
+
+function restoreReviewCommentsSnapshot(historyEntry) {
+  state.reviewComments = Array.isArray(historyEntry.snapshot)
+    ? historyEntry.snapshot.map((comment) => ({ ...comment }))
+    : [];
+  if (typeof closeParagraphCommentComposers === "function") closeParagraphCommentComposers();
+  markRedlineDraftDirty();
+  renderStudioDocumentHighlights();
+  if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
+  updateExportButtonState();
+  setFileMeta("Undid comment change");
+  updateReviewUndoButtonState();
+}
+
+function restoreParagraphFormat(historyEntry) {
+  const paragraph = state.reviewParagraphs.find(
+    (item) => String(item.id) === String(historyEntry.paragraphId),
+  );
+  if (!paragraph) {
+    updateReviewUndoButtonState();
+    return;
+  }
+  // Restore the exact prior formatting; delete the property when it didn't exist
+  // before, so the derived format_paragraph redline recomputes (or disappears).
+  if (historyEntry.hadAlignment) {
+    paragraph.alignment = historyEntry.previousAlignment;
+  } else {
+    delete paragraph.alignment;
+  }
+  if (historyEntry.hadFont) {
+    paragraph.font = historyEntry.previousFont;
+  } else {
+    delete paragraph.font;
+  }
+  // Inline (bold/italic/per-selection font) edits paragraph.runs; restore the
+  // prior run list (or delete it). Guard on the field existing so older entries
+  // without run state never clobber runs.
+  if (historyEntry.hadRuns) {
+    paragraph.runs = Array.isArray(historyEntry.previousRuns)
+      ? historyEntry.previousRuns.map((run) => ({ ...run }))
+      : [];
+  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadRuns")) {
+    delete paragraph.runs;
+  }
+  markRedlineDraftDirty();
+  renderStudioDocumentHighlights();
+  if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
+  updateExportButtonState();
+  setFileMeta("Undid formatting change");
   updateReviewUndoButtonState();
 }
 
@@ -210,13 +271,31 @@ function syncViewerParagraphEdit(editable) {
   const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
   if (!paragraph) return;
 
-  paragraph.text = editableParagraphText(editable);
+  // A free-form text edit invalidates any inline (bold/italic/per-selection-font)
+  // runs on this paragraph (their offsets tiled the OLD text). The runs are kept
+  // but go inert via the render/derive join==text guards, so the formatting drops
+  // out of the redline + export. Warn the user ONCE, on the first edit that breaks
+  // a previously-valid formatted run set, so the loss is explicit, not silent.
+  // (A text-undo restores the old text, re-tiles the runs, and the formatting
+  // reappears — so we deliberately do NOT delete the runs.)
+  const oldText = String(paragraph.text || "");
+  const newText = editableParagraphText(editable);
+  const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
+  const runsWereValid = runs && runs.map((run) => String(run?.text || "")).join("") === oldText;
+  const runsFormatted = runs && runs.some((run) => run && (run.bold || run.italic || String(run.font || "").trim()));
+  const droppedInlineFormat = newText !== oldText && runsWereValid && runsFormatted;
+
+  paragraph.text = newText;
+  paragraph.clauseRedlineWholeParagraph = false;  // free-form edit -> word-level diff
   syncReviewSourceFromParagraphs();
   updateManualRedlinePreview(editable, paragraph);
   markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
   scheduleViewerReviewRefresh("Document edited");
   updateExportButtonState();
+  if (droppedInlineFormat) {
+    setFileMeta("Inline formatting on this paragraph was cleared by the text edit");
+  }
 }
 
 function scheduleViewerReviewRefresh(message) {

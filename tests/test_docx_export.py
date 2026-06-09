@@ -18,6 +18,7 @@ from nda_automation.docx_export import (
     validate_docx_open_health,
 )
 from nda_automation.redline_xml import (
+    _apply_tracked_run_format,
     _needs_inline_space,
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
@@ -30,6 +31,7 @@ from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.review_document import align_document_paragraphs
 from nda_automation.redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
+    REDLINE_FORMAT_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
@@ -40,6 +42,8 @@ from tests.docx_redline_contract import (
 )
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+W14_NS = {"w14": "http://schemas.microsoft.com/office/word/2010/wordml"}
+W15_NS = {"w15": "http://schemas.microsoft.com/office/word/2012/wordml"}
 REL_NS = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
 STYLE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
 SETTINGS_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
@@ -49,6 +53,8 @@ DOCUMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordproce
 RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
 SETTINGS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+COMMENTS_EXTENDED_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
+COMMENTS_EXTENDED_RELATIONSHIP_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
 STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 INLINE_DIFF_VECTORS_PATH = Path(__file__).parent / "fixtures" / "inline_diff_vectors.json"
 # Generated from inline_diff_vectors.source.json; use generate_inline_diff_vectors.mjs.
@@ -125,6 +131,20 @@ def docx_comments(docx_bytes):
         comments_xml = archive.read("word/comments.xml").decode("utf-8")
         document_xml = archive.read("word/document.xml").decode("utf-8")
     return ET.fromstring(comments_xml), ET.fromstring(document_xml), comments_xml, document_xml
+
+
+def docx_comments_extended(docx_bytes):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        comments_extended_xml = archive.read("word/commentsExtended.xml").decode("utf-8")
+    return ET.fromstring(comments_extended_xml), comments_extended_xml
+
+
+def assert_every_xml_part_parses(testcase, docx_bytes):
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        testcase.assertIsNone(archive.testzip())
+        for name in archive.namelist():
+            if name.endswith(".xml") or name.endswith(".rels"):
+                ET.fromstring(archive.read(name))
 
 
 def relationship_targets(archive, relationship_part):
@@ -776,6 +796,813 @@ class DocxExportTests(unittest.TestCase):
             self.assertIsNotNone(run.find("w:rPr/w:b", W_NS), "replaced paragraph lost source bold formatting")
             self.assertIsNotNone(run.find("w:rPr/w:color", W_NS), "replaced paragraph lost source color formatting")
 
+    def test_source_redline_format_paragraph_emits_tracked_pprchange(self):
+        # A format_paragraph redline (alignment left->center AND font ->Arial)
+        # must emit the new pPr (jc=center, run-default rFonts=Arial) plus a
+        # pPrChange recording the from-state, with the paragraph TEXT untouched.
+        formatted_paragraph = (
+            '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:after="120"/></w:pPr>'
+            '<w:r><w:rPr><w:rFonts w:ascii="Aptos"/></w:rPr>'
+            "<w:t>This Agreement shall be governed by the laws of California.</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_text = "This Agreement shall be governed by the laws of California."
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {"scope": "paragraph", "property": "alignment", "from": "left", "to": "center"},
+                        {"scope": "paragraph", "property": "font", "from": "Aptos", "to": "Arial"},
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        # Package opens and every XML part parses.
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+        ppr = formatted.find("w:pPr", W_NS)
+        self.assertIsNotNone(ppr, "formatted paragraph lost its pPr")
+
+        # New (current) state: alignment centered, run-default font Arial.
+        self.assertEqual(ppr.find("w:jc", W_NS).get(f"{{{W_NS['w']}}}val"), "center")
+        rfonts = ppr.find("w:rPr/w:rFonts", W_NS)
+        self.assertIsNotNone(rfonts, "formatted paragraph lost its run-default rFonts")
+        self.assertEqual(rfonts.get(f"{{{W_NS['w']}}}ascii"), "Arial")
+        # Other existing pPr children are preserved.
+        self.assertIsNotNone(ppr.find("w:spacing", W_NS), "format redline dropped an unrelated pPr child")
+
+        # The tracked change: a pPrChange whose nested original pPr reflects the
+        # SOURCE alignment (left) and carries NO nested pPrChange of its own.
+        pprchange = ppr.find("w:pPrChange", W_NS)
+        self.assertIsNotNone(pprchange, "format redline did not emit a pPrChange")
+        self.assertTrue(str(pprchange.get(f"{{{W_NS['w']}}}id") or "").strip(), "pPrChange missing a revision id")
+        original_ppr = pprchange.find("w:pPr", W_NS)
+        self.assertIsNotNone(original_ppr, "pPrChange missing the original pPr")
+        self.assertEqual(original_ppr.find("w:jc", W_NS).get(f"{{{W_NS['w']}}}val"), "left")
+        self.assertIsNone(original_ppr.find("w:pPrChange", W_NS), "nested original pPr must not carry a stale pPrChange")
+
+        # The paragraph TEXT is unchanged: no tracked insert/delete on it.
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+        self.assertEqual(run_text(formatted), formatted_text)
+
+        # Content-coverage gate passes (a format redline only restyles; the source
+        # text is fully and faithfully covered).
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_source_redline_format_paragraph_emits_tracked_run_bold(self):
+        # A format_paragraph redline carrying a single run op (bold a slice of the
+        # paragraph) must split the run so the covered span carries <w:b/> plus an
+        # <w:rPrChange> recording the prior (un-bold) rPr, with text byte-identical.
+        formatted_text = "This Agreement shall be governed by the laws of California."
+        formatted_paragraph = (
+            "<w:p>"
+            '<w:r><w:rPr><w:rFonts w:ascii="Aptos"/></w:rPr>'
+            f"<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        # Bold the word "governed" (offsets into the concatenated paragraph text).
+        bold_start = formatted_text.index("governed")
+        bold_end = bold_start + len("governed")
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-run-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "bold",
+                            "start": bold_start,
+                            "end": bold_end,
+                            "from": False,
+                            "to": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        # Package opens and every XML part parses.
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+
+        # Paragraph text is byte-identical, with no tracked insert/delete.
+        self.assertEqual(run_text(formatted), formatted_text)
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+
+        # The runs split into before / covered / after, with text preserved exactly.
+        runs = formatted.findall("w:r", W_NS)
+        run_texts = ["".join(n.text or "" for n in r.findall("w:t", W_NS)) for r in runs]
+        self.assertEqual("".join(run_texts), formatted_text)
+        self.assertIn("governed", run_texts)
+        before = formatted_text[:bold_start]
+        after = formatted_text[bold_end:]
+        self.assertIn(before, run_texts)
+        self.assertIn(after, run_texts)
+
+        covered = next(r for r, t in zip(runs, run_texts) if t == "governed")
+        covered_rpr = covered.find("w:rPr", W_NS)
+        self.assertIsNotNone(covered_rpr, "covered run lost its rPr")
+        # New (current) state: <w:b/> present.
+        self.assertIsNotNone(covered_rpr.find("w:b", W_NS), "covered run did not gain <w:b/>")
+        # The from-state record: an rPrChange whose nested original rPr has NO <w:b/>
+        # and carries no nested rPrChange of its own.
+        rprchange = covered_rpr.find("w:rPrChange", W_NS)
+        self.assertIsNotNone(rprchange, "covered run did not emit an rPrChange")
+        self.assertTrue(
+            str(rprchange.get(f"{{{W_NS['w']}}}id") or "").strip(),
+            "rPrChange missing a revision id",
+        )
+        original_rpr = rprchange.find("w:rPr", W_NS)
+        self.assertIsNotNone(original_rpr, "rPrChange missing the original rPr")
+        self.assertIsNone(original_rpr.find("w:b", W_NS), "from-state rPr must not carry <w:b/>")
+        self.assertIsNone(
+            original_rpr.find("w:rPrChange", W_NS),
+            "nested original rPr must not carry a stale rPrChange",
+        )
+        # The before/after runs keep their original (un-bold) formatting.
+        before_run = next(r for r, t in zip(runs, run_texts) if t == before)
+        self.assertIsNone(before_run.find("w:rPr/w:b", W_NS), "before run must not be bold")
+        self.assertIsNone(before_run.find(".//w:rPrChange", W_NS), "before run must not be tracked")
+
+        # Content-coverage gate passes (a run-format redline only restyles).
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_source_redline_format_paragraph_mixes_paragraph_and_run_ops(self):
+        # One format_paragraph redline carrying BOTH a paragraph op (alignment) and a
+        # run op (italic a slice): the paragraph gains a pPrChange AND the covered run
+        # gains <w:i/> + an rPrChange, with the paragraph text untouched.
+        formatted_text = "The confidentiality obligations survive for three years."
+        formatted_paragraph = (
+            '<w:p><w:pPr><w:jc w:val="left"/></w:pPr>'
+            f"<w:r><w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        italic_start = formatted_text.index("survive")
+        italic_end = italic_start + len("survive")
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-mixed-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {"scope": "paragraph", "property": "alignment", "from": "left", "to": "center"},
+                        {
+                            "scope": "run",
+                            "property": "italic",
+                            "start": italic_start,
+                            "end": italic_end,
+                            "from": False,
+                            "to": True,
+                        },
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+
+        # Paragraph op landed: centered alignment + a pPrChange recording left.
+        ppr = formatted.find("w:pPr", W_NS)
+        self.assertIsNotNone(ppr, "formatted paragraph lost its pPr")
+        self.assertEqual(ppr.find("w:jc", W_NS).get(f"{{{W_NS['w']}}}val"), "center")
+        pprchange = ppr.find("w:pPrChange", W_NS)
+        self.assertIsNotNone(pprchange, "mixed redline did not emit a pPrChange")
+        self.assertEqual(
+            pprchange.find("w:pPr/w:jc", W_NS).get(f"{{{W_NS['w']}}}val"),
+            "left",
+        )
+
+        # Run op landed: the covered span carries <w:i/> + an rPrChange (no <w:i/> in
+        # the from-state), and the text is byte-identical with no ins/del.
+        self.assertEqual(run_text(formatted), formatted_text)
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+        runs = formatted.findall("w:r", W_NS)
+        run_texts = ["".join(n.text or "" for n in r.findall("w:t", W_NS)) for r in runs]
+        self.assertEqual("".join(run_texts), formatted_text)
+        covered = next(r for r, t in zip(runs, run_texts) if t == "survive")
+        covered_rpr = covered.find("w:rPr", W_NS)
+        self.assertIsNotNone(covered_rpr.find("w:i", W_NS), "covered run did not gain <w:i/>")
+        rprchange = covered_rpr.find("w:rPrChange", W_NS)
+        self.assertIsNotNone(rprchange, "covered run did not emit an rPrChange")
+        self.assertIsNone(
+            rprchange.find("w:rPr/w:i", W_NS),
+            "from-state rPr must not carry <w:i/>",
+        )
+
+        # Content-coverage gate passes.
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_source_redline_run_format_offsets_account_for_leading_whitespace(self):
+        # BUG 1A residual (offset-seam, strip): the frontend indexes into the STRIPPED
+        # paragraph text (docx_text._paragraph_text .strip()s it), but the non-split
+        # export path measured run-op offsets from the RAW <w:p>. A paragraph with
+        # leading whitespace shifted the <w:rPrChange> left (bolding "world" hit
+        # "llo w"). The format edit now redlines a verbatim source rebuilt from the
+        # stripped text, so the bold lands on exactly the selected word.
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            '<w:p><w:r><w:t xml:space="preserve">    Hello world</w:t></w:r></w:p>'
+            "</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_text = "Hello world"  # leading whitespace stripped in the FE space
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        self.assertEqual(formatted_text.index("world"), 6)
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-ws-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "bold",
+                            "start": 6,  # index of "world" in "Hello world"
+                            "end": 11,
+                            "from": False,
+                            "to": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:body/w:p", W_NS)
+            if "".join(
+                node.text or ""
+                for run in paragraph.findall("w:r", W_NS)
+                for node in run.findall("w:t", W_NS)
+            ).strip()
+            == formatted_text
+        )
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+        bold_runs = [
+            "".join(node.text or "" for node in run.findall("w:t", W_NS))
+            for run in formatted.findall("w:r", W_NS)
+            if run.find("w:rPr/w:b", W_NS) is not None
+        ]
+        # The bold + <w:rPrChange> cover EXACTLY "world" -- not a whitespace-shifted "llo w".
+        self.assertEqual(bold_runs, ["world"])
+
+    def test_source_redline_run_format_offsets_account_for_tab(self):
+        # BUG 1A (offset-seam, tab): the frontend's offset space renders <w:tab> as
+        # "\t" (docx_text._run_text), so a run-format op's start/end are measured over
+        # tab-aware text. The backend splitter must measure runs the same way -- before
+        # the fix it accumulated only the <w:t> bytes, so a tab BEFORE the selection
+        # shifted the <w:rPrChange> onto the wrong characters (and could run past end).
+        # Here the selected word lives in its own pure-<w:t> run after a tab run; the
+        # bold must land EXACTLY on it.
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            "<w:p>"
+            "<w:r><w:t>AB</w:t></w:r>"
+            "<w:r><w:tab/></w:r>"
+            "<w:r><w:t>CD</w:t></w:r>"
+            "</w:p></w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        # The tab-bearing paragraph's text in the FE offset space is "AB\tCD" (len 5).
+        formatted_text = "AB\tCD"
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        self.assertEqual(formatted_text.index("CD"), 3)  # tab counts as one char
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-tab-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "bold",
+                            "start": 3,  # index of "CD" in "AB\tCD"
+                            "end": 5,
+                            "from": False,
+                            "to": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def all_text(paragraph):
+            parts = []
+            for run in paragraph.findall("w:r", W_NS):
+                if run.find("w:tab", W_NS) is not None:
+                    parts.append("\t")
+                parts.append("".join(n.text or "" for n in run.findall("w:t", W_NS)))
+            return "".join(parts)
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:body/w:p", W_NS)
+            if all_text(paragraph) == formatted_text
+        )
+        # Text is byte-identical (tab preserved), no ins/del.
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+        self.assertIsNotNone(formatted.find("w:r/w:tab", W_NS), "tab must survive")
+
+        bold_runs = [
+            "".join(n.text or "" for n in run.findall("w:t", W_NS))
+            for run in formatted.findall("w:r", W_NS)
+            if run.find("w:rPr/w:b", W_NS) is not None
+        ]
+        # The bold + <w:rPrChange> cover EXACTLY "CD" -- not a tab-shifted "D".
+        self.assertEqual(bold_runs, ["CD"])
+        covered = next(
+            run
+            for run in formatted.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == "CD"
+        )
+        self.assertIsNotNone(covered.find("w:rPr/w:rPrChange", W_NS), "covered run must be tracked")
+        # The text before the selection ("AB") keeps its un-bold, untracked state.
+        before = next(
+            run
+            for run in formatted.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == "AB"
+        )
+        self.assertIsNone(before.find("w:rPr/w:b", W_NS), "AB must not be bold")
+        self.assertIsNone(before.find(".//w:rPrChange", W_NS), "AB must not be tracked")
+
+    def test_run_format_offsets_account_for_break(self):
+        # BUG 1A (offset-seam, break): the FE renders <w:br> as "\n" (docx_text._run_text)
+        # in the offset space the run-format start/end index into. Unlike a <w:tab>, the
+        # aligner treats a soft line break as a review-paragraph boundary, so a <w:br>
+        # never survives inside ONE review paragraph end-to-end -- this exercises the
+        # offset math directly at _apply_tracked_run_format (where the fix lives). A
+        # <w:br> in its own run BEFORE the selection must advance the running offset by
+        # one ("\n"); the bold then lands on exactly the selected <w:t> segment, not a
+        # shifted one. Before the fix the break contributed 0 and the op slipped left.
+        paragraph_xml = (
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:r><w:t>Line</w:t></w:r>"
+            "<w:r><w:br/></w:r>"
+            "<w:r><w:t>Next word</w:t></w:r>"
+            "</w:p>"
+        )
+        source_p = ET.fromstring(paragraph_xml)
+        # Offset space (mirror of docx_text._run_text): "Line" + "\n" + "Next word".
+        offset_text = "Line\nNext word"
+        bold_start = offset_text.index("word")  # 10: Line(4)+\n(1)+"Next "(5)
+        self.assertEqual(bold_start, 10)
+        bold_end = bold_start + len("word")
+        rebuilt, next_rev = _apply_tracked_run_format(
+            source_p,
+            [
+                {
+                    "scope": "run",
+                    "property": "bold",
+                    "start": bold_start,
+                    "end": bold_end,
+                    "from": False,
+                    "to": True,
+                }
+            ],
+            7,
+        )
+        self.assertEqual(next_rev, 8)  # exactly one revision consumed
+        # Break survives, text byte-identical, no ins/del.
+        self.assertIsNotNone(rebuilt.find("w:r/w:br", W_NS), "break must survive")
+        self.assertEqual(rebuilt.findall(".//w:ins", W_NS), [])
+        self.assertEqual(rebuilt.findall(".//w:del", W_NS), [])
+        bold_runs = [
+            "".join(n.text or "" for n in run.findall("w:t", W_NS))
+            for run in rebuilt.findall("w:r", W_NS)
+            if run.find("w:rPr/w:b", W_NS) is not None
+        ]
+        # The bold + <w:rPrChange> cover EXACTLY "word" -- the break did not shift it.
+        self.assertEqual(bold_runs, ["word"])
+        covered = next(
+            run
+            for run in rebuilt.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == "word"
+        )
+        self.assertIsNotNone(covered.find("w:rPr/w:rPrChange", W_NS), "covered run must be tracked")
+        # The preceding "Next " stays un-bold/untracked (op started at the right place).
+        prefix = next(
+            run
+            for run in rebuilt.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == "Next "
+        )
+        self.assertIsNone(prefix.find("w:rPr/w:b", W_NS), '"Next " must not be bold')
+        self.assertIsNone(prefix.find(".//w:rPrChange", W_NS), '"Next " must not be tracked')
+
+    def test_run_format_drops_op_past_end_of_offset_space(self):
+        # BUG 1A belt-and-braces: an op whose range exceeds the paragraph's offset-space
+        # length is clipped/dropped (fail safe) rather than silently mis-placed. Here
+        # the run text is "Hello" (len 5) but the op runs to 99 -- it must clip to the
+        # available "lo" tail, never index past the end.
+        paragraph_xml = (
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:r><w:t>Hello</w:t></w:r></w:p>"
+        )
+        source_p = ET.fromstring(paragraph_xml)
+        rebuilt, next_rev = _apply_tracked_run_format(
+            source_p,
+            [{"scope": "run", "property": "bold", "start": 3, "end": 99, "from": False, "to": True}],
+            1,
+        )
+        # Text intact; the bold clips to the in-range tail ("lo"), never past the end.
+        self.assertEqual(
+            "".join(n.text or "" for n in rebuilt.findall(".//w:t", W_NS)), "Hello"
+        )
+        bold_runs = [
+            "".join(n.text or "" for n in run.findall("w:t", W_NS))
+            for run in rebuilt.findall("w:r", W_NS)
+            if run.find("w:rPr/w:b", W_NS) is not None
+        ]
+        self.assertEqual(bold_runs, ["lo"])
+        # A fully out-of-range op is dropped entirely (no revision, no change).
+        rebuilt2, next_rev2 = _apply_tracked_run_format(
+            ET.fromstring(paragraph_xml),
+            [{"scope": "run", "property": "bold", "start": 50, "end": 99, "from": False, "to": True}],
+            1,
+        )
+        self.assertEqual(next_rev2, 1)
+        self.assertEqual(rebuilt2.findall(".//w:b", W_NS), [])
+        self.assertEqual(rebuilt2.findall(".//w:rPrChange", W_NS), [])
+
+    def test_source_redline_run_format_lands_on_correct_split_block(self):
+        # BUG 1B (split-block re-basing): one physical <w:p> holds two logical blocks
+        # split on a blank line. The frontend's run-format op offsets are relative to
+        # the SINGLE block's text. Before the fix the block-aware path applied them to
+        # the WHOLE physical <w:p>, so bolding "Second" (block-local {0,6}) landed the
+        # <w:rPrChange> on "First " in the FIRST block.
+        source_docx = make_source_docx_with_internal_blank_line_paragraph(
+            ["Alpha clause."], ["First block.", "Second one."]
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        self.assertEqual(extracted[-1]["text"], "First block.\n\nSecond one.")
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        aligned = align_document_paragraphs(extracted, source_text)
+        aligned_by_text = {str(paragraph["text"]): paragraph for paragraph in aligned}
+        first_block = aligned_by_text["First block."]
+        second_block = aligned_by_text["Second one."]
+        self.assertEqual(first_block["source_index"], second_block["source_index"])
+
+        # Bold "Second" -- block-local offsets into "Second one." (0..6).
+        review_result = {
+            "paragraphs": aligned,
+            "redline_edits": [
+                {
+                    "id": "fmt-block-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": second_block["id"],
+                    "paragraph_index": second_block["index"],
+                    "source_index": second_block["source_index"],
+                    "original_text": "Second one.",
+                    "replacement_text": "Second one.",
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "bold",
+                            "start": 0,
+                            "end": 6,  # "Second"
+                            "from": False,
+                            "to": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        def bold_runs(paragraph):
+            return [
+                "".join(n.text or "" for n in run.findall("w:t", W_NS))
+                for run in paragraph.findall("w:r", W_NS)
+                if run.find("w:rPr/w:b", W_NS) is not None
+            ]
+
+        first_paragraph = next(
+            p for p in document_root.findall(".//w:body/w:p", W_NS) if run_text(p) == "First block."
+        )
+        second_paragraph = next(
+            p for p in document_root.findall(".//w:body/w:p", W_NS) if run_text(p) == "Second one."
+        )
+        # The bold (and its rPrChange) land on the SECOND block's "Second"...
+        self.assertEqual(bold_runs(second_paragraph), ["Second"])
+        covered = next(
+            run
+            for run in second_paragraph.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == "Second"
+        )
+        self.assertIsNotNone(covered.find("w:rPr/w:rPrChange", W_NS))
+        # ...and the FIRST block is untouched -- no bold, no tracked rPrChange leaked.
+        self.assertEqual(bold_runs(first_paragraph), [])
+        self.assertEqual(first_paragraph.findall(".//w:rPrChange", W_NS), [])
+
+    def test_source_redline_run_format_enables_bold_on_explicit_off_run(self):
+        # BUG 2 (be-rprchange): a source run whose rPr already carries an explicit-off
+        # <w:b w:val="false"/> shows as un-bold in the FE (docx_text._toggle_property
+        # treats false/0/off/none as OFF), so enabling bold emits to:true. Before the
+        # fix _set_run_toggle only inserted a toggle when ABSENT, so the explicit-off
+        # val survived and the run stayed un-bold (a phantom no-op revision). The new
+        # <w:b/> must have NO falsy val, while the nested rPrChange original keeps the
+        # val="false" so Word can roll back.
+        formatted_text = "Heading text"
+        formatted_paragraph = (
+            "<w:p>"
+            '<w:r><w:rPr><w:b w:val="false"/></w:rPr>'
+            f"<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-falsy-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "bold",
+                            "start": 0,
+                            "end": len(formatted_text),
+                            "from": False,
+                            "to": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:body/w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+        covered = next(
+            run
+            for run in formatted.findall("w:r", W_NS)
+            if "".join(n.text or "" for n in run.findall("w:t", W_NS)) == formatted_text
+        )
+        covered_rpr = covered.find("w:rPr", W_NS)
+        new_bold = covered_rpr.find("w:b", W_NS)
+        self.assertIsNotNone(new_bold, "covered run did not gain <w:b/>")
+        # The new (current) <w:b/> is genuinely ON -- no falsy val survived.
+        self.assertNotIn(
+            (new_bold.get(f"{{{W_NS['w']}}}val") or new_bold.get("val") or "").strip().lower(),
+            {"false", "0", "off", "none"},
+        )
+        # And docx_text agrees the run now reads as bold.
+        self.assertTrue(docx_text._toggle_property(covered_rpr, "b"))
+        # The from-state record keeps the ACTUAL original (explicit-off) so Word rolls back.
+        rprchange = covered_rpr.find("w:rPrChange", W_NS)
+        self.assertIsNotNone(rprchange, "covered run did not emit an rPrChange")
+        original_rpr = rprchange.find("w:rPr", W_NS)
+        self.assertIsNotNone(original_rpr, "rPrChange missing the original rPr")
+        original_bold = original_rpr.find("w:b", W_NS)
+        self.assertIsNotNone(original_bold, "from-state must keep the original <w:b/>")
+        self.assertEqual(
+            (original_bold.get(f"{{{W_NS['w']}}}val") or original_bold.get("val") or "").strip().lower(),
+            "false",
+            "from-state <w:b/> must keep its explicit-off val for rollback",
+        )
+        # Text byte-identical, no ins/del.
+        self.assertEqual(run_text(formatted), formatted_text)
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+
     def test_export_content_coverage_passes_for_full_source_redline(self):
         source_docx = make_source_docx([
             "Intro paragraph.",
@@ -1057,6 +1884,235 @@ class DocxExportTests(unittest.TestCase):
         self.assertIn("Check whether a three-year term is required commercially.", comments_xml)
         self.assertEqual(len(comments_root.findall(".//w:comment", W_NS)), 1)
         self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
+
+    def test_source_docx_export_writes_resolved_threaded_comments(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result["review_comments"] = [
+            {
+                "id": "root-1",
+                "author": "Reviewer",
+                "clause_id": "governing_law",
+                "clause_name": "Governing Law",
+                "paragraph_id": "p2",
+                "text": "Should this be England and Wales instead?",
+                "resolved": True,
+            },
+            {
+                "id": "reply-1",
+                "parent_id": "root-1",
+                "author": "Counsel",
+                "paragraph_id": "p2",
+                "text": "Agreed, switching to England and Wales.",
+            },
+        ]
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        # The package opens as a zip and every XML part parses.
+        assert_docx_package_healthy(self, redlined_docx)
+        assert_every_xml_part_parses(self, redlined_docx)
+
+        comments_root, document_root, comments_xml, document_xml = docx_comments(redlined_docx)
+        comments_extended_root, comments_extended_xml = docx_comments_extended(redlined_docx)
+
+        # word/comments.xml has 2 <w:comment> entries, each with a <w:p> carrying a w14:paraId.
+        comments = comments_root.findall(".//w:comment", W_NS)
+        self.assertEqual(len(comments), 2)
+        para_ids = []
+        for comment in comments:
+            comment_para_ids = [
+                paragraph.attrib.get(f"{{{W14_NS['w14']}}}paraId")
+                for paragraph in comment.findall(".//w:p", W_NS)
+            ]
+            self.assertTrue(comment_para_ids and all(comment_para_ids))
+            for para_id in comment_para_ids:
+                self.assertRegex(para_id, r"^[0-9A-F]{8}$")
+            para_ids.append(comment_para_ids[0])
+        self.assertIn("Should this be England and Wales instead?", comments_xml)
+        self.assertIn("Agreed, switching to England and Wales.", comments_xml)
+
+        # Only the ROOT has the in-document range + a CommentReference run.
+        self.assertEqual(len(document_root.findall(".//w:commentRangeStart", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentRangeEnd", W_NS)), 1)
+        self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
+
+        # word/commentsExtended.xml has 2 <w15:commentEx>; the reply points at the
+        # root's paraId and both are done="1".
+        comment_ex = comments_extended_root.findall(".//w15:commentEx", W15_NS)
+        self.assertEqual(len(comment_ex), 2)
+        by_para_id = {entry.attrib.get(f"{{{W15_NS['w15']}}}paraId"): entry for entry in comment_ex}
+        root_para_id = self._root_comment_para_id(comments_root)
+        self.assertIn(root_para_id, by_para_id)
+        reply_entry = next(
+            entry
+            for entry in comment_ex
+            if entry.attrib.get(f"{{{W15_NS['w15']}}}paraIdParent")
+        )
+        self.assertEqual(reply_entry.attrib[f"{{{W15_NS['w15']}}}paraIdParent"], root_para_id)
+        for entry in comment_ex:
+            self.assertEqual(entry.attrib.get(f"{{{W15_NS['w15']}}}done"), "1")
+        # The root entry itself carries no paraIdParent.
+        self.assertNotIn(f"{{{W15_NS['w15']}}}paraIdParent", by_para_id[root_para_id].attrib)
+
+        # [Content_Types].xml + word/_rels/document.xml.rels register the new part.
+        content_type_overrides = docx_content_type_overrides(redlined_docx)
+        relationship_targets = docx_document_relationship_targets(redlined_docx)
+        self.assertEqual(
+            content_type_overrides["/word/commentsExtended.xml"], COMMENTS_EXTENDED_CONTENT_TYPE
+        )
+        self.assertEqual(
+            relationship_targets[COMMENTS_EXTENDED_RELATIONSHIP_TYPE], "commentsExtended.xml"
+        )
+
+    def test_review_report_docx_writes_resolved_threaded_comments(self):
+        result = review_nda(
+            "This Agreement shall be governed by the laws of California.\n\n"
+            "The confidentiality obligations survive for three years."
+        )
+        result["review_comments"] = [
+            {
+                "id": "root-1",
+                "author": "Reviewer",
+                "clause_id": "term_and_survival",
+                "clause_name": "Term and Survival",
+                "paragraph_id": "p2",
+                "text": "Is a three-year survival period acceptable?",
+                "resolved": True,
+            },
+            {
+                "id": "reply-1",
+                "parent_id": "root-1",
+                "author": "Counsel",
+                "paragraph_id": "p2",
+                "text": "Yes, three years is fine.",
+            },
+        ]
+
+        report_docx = build_review_report_docx(result)
+
+        assert_docx_package_healthy(self, report_docx, require_styles=True)
+        assert_every_xml_part_parses(self, report_docx)
+
+        comments_root, document_root, _comments_xml, _document_xml = docx_comments(report_docx)
+        comments_extended_root, _comments_extended_xml = docx_comments_extended(report_docx)
+        self.assertEqual(len(comments_root.findall(".//w:comment", W_NS)), 2)
+        # Only the root is anchored in the report body.
+        self.assertEqual(len(document_root.findall(".//w:commentReference", W_NS)), 1)
+        comment_ex = comments_extended_root.findall(".//w15:commentEx", W15_NS)
+        self.assertEqual(len(comment_ex), 2)
+        self.assertTrue(
+            any(entry.attrib.get(f"{{{W15_NS['w15']}}}paraIdParent") for entry in comment_ex)
+        )
+        for entry in comment_ex:
+            self.assertEqual(entry.attrib.get(f"{{{W15_NS['w15']}}}done"), "1")
+
+    def test_source_docx_export_marks_unresolved_thread_not_done(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result["review_comments"] = [
+            {
+                "id": "root-1",
+                "author": "Reviewer",
+                "paragraph_id": "p2",
+                "text": "Open question on governing law.",
+            },
+            {
+                # A stray resolved flag on a reply must NOT resolve the thread; only
+                # the root's resolved state drives done.
+                "id": "reply-1",
+                "parent_id": "root-1",
+                "author": "Counsel",
+                "paragraph_id": "p2",
+                "text": "Still thinking about it.",
+                "resolved": True,
+            },
+        ]
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_every_xml_part_parses(self, redlined_docx)
+        comments_extended_root, _xml = docx_comments_extended(redlined_docx)
+        comment_ex = comments_extended_root.findall(".//w15:commentEx", W15_NS)
+        self.assertEqual(len(comment_ex), 2)
+        for entry in comment_ex:
+            self.assertEqual(entry.attrib.get(f"{{{W15_NS['w15']}}}done"), "0")
+
+    def test_source_docx_export_appends_to_existing_comments_extended_part(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        existing_comments_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+            ' xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+            '<w:comment w:id="0" w:author="Prior" w:date="2024-01-01T00:00:00Z" w:initials="P">'
+            '<w:p w14:paraId="0ABCDEF0"><w:r><w:t>Pre-existing comment.</w:t></w:r></w:p>'
+            '</w:comment></w:comments>'
+        )
+        existing_comments_extended_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">'
+            '<w15:commentEx w15:paraId="0ABCDEF0" w15:done="0"/>'
+            '</w15:commentsEx>'
+        )
+        source_docx = replace_docx_parts(
+            source_docx,
+            {
+                "word/comments.xml": existing_comments_xml,
+                "word/commentsExtended.xml": existing_comments_extended_xml,
+            },
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+        result["review_comments"] = [
+            {
+                "id": "root-1",
+                "author": "Reviewer",
+                "paragraph_id": "p2",
+                "text": "A new top-level comment.",
+                "resolved": True,
+            }
+        ]
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_every_xml_part_parses(self, redlined_docx)
+        comments_root, _document_root, _comments_xml, _document_xml = docx_comments(redlined_docx)
+        comments_extended_root, _xml = docx_comments_extended(redlined_docx)
+        # Pre-existing comment is retained and the new one appended (no duplication).
+        self.assertEqual(len(comments_root.findall(".//w:comment", W_NS)), 2)
+        comment_ex = comments_extended_root.findall(".//w15:commentEx", W15_NS)
+        self.assertEqual(len(comment_ex), 2)
+        para_ids = [entry.attrib.get(f"{{{W15_NS['w15']}}}paraId") for entry in comment_ex]
+        self.assertIn("0ABCDEF0", para_ids)
+        # The single commentsExtended override/relationship is not duplicated.
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertEqual(archive.namelist().count("word/commentsExtended.xml"), 1)
+        content_type_overrides = docx_content_type_overrides(redlined_docx)
+        self.assertEqual(
+            content_type_overrides["/word/commentsExtended.xml"], COMMENTS_EXTENDED_CONTENT_TYPE
+        )
+
+    @staticmethod
+    def _root_comment_para_id(comments_root):
+        """The w14:paraId on the comment that the document anchors (the only one with
+        a commentRangeStart) is the thread root; here we resolve it via the comment
+        whose w:id is 0 -- the first/root comment appended in the build."""
+        for comment in comments_root.findall(".//w:comment", W_NS):
+            if comment.attrib.get(f"{{{W_NS['w']}}}id") == "0":
+                paragraph = comment.find(".//w:p", W_NS)
+                return paragraph.attrib.get(f"{{{W14_NS['w14']}}}paraId")
+        return None
 
     def test_source_docx_export_preserves_ignorable_namespace_prefixes(self):
         source_text = "This Agreement shall be governed by the laws of California."

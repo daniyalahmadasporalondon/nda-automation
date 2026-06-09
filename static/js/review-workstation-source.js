@@ -1,12 +1,20 @@
 function manualExportRedlines() {
-  const originalById = new Map(manualRedlineBaselineParagraphs().map((paragraph) => [paragraph.id, paragraph]));
+  const baseline = manualRedlineBaselineParagraphs();
+  const originalById = new Map(baseline.map((paragraph) => [paragraph.id, paragraph]));
   return state.reviewParagraphs
     .map((paragraph) => {
       const original = originalById.get(paragraph.id);
       if (!original) return null;
       const originalText = String(original.text || "").trim();
       const replacementText = String(paragraph.text || "").trim();
-      if (originalText === replacementText) return null;
+      // Trimmed text equal to baseline: emit a paragraph-level format redline
+      // (alignment/font) if one is pending, otherwise nothing. Only a
+      // format_paragraph result is taken here so a whitespace-only difference
+      // keeps its prior behaviour (no redline) rather than becoming a replace.
+      if (originalText === replacementText) {
+        const formatRedline = manualParagraphRedline(paragraph, baseline);
+        return formatRedline?.action === "format_paragraph" ? formatRedline : null;
+      }
       const isDelete = !replacementText;
       const redline = {
         id: `manual-${paragraph.id}`,

@@ -10,13 +10,22 @@ from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
+    REDLINE_FORMAT_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .docx_health import validate_docx_open_health as validate_docx_open_health
 from .docx_text import DocxExtractionError, validate_docx_archive, validate_docx_bytes_before_open
-from .docx_comments import _apply_comment_anchor, _comments_xml_with_appended_comments
+from .docx_comments import (
+    COMMENTS_EXTENDED_CONTENT_TYPE,
+    COMMENTS_EXTENDED_RELATIONSHIP_TYPE,
+    _apply_comment_anchor,
+    _comments_extended_xml_for_assigned,
+    _comments_xml_with_appended_comments,
+)
 from .redline_xml import (
+    _apply_tracked_paragraph_format,
+    _apply_tracked_run_format,
     _run,
     _source_tracked_delete_paragraph,
     _source_tracked_insert_paragraphs,
@@ -102,6 +111,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
     document_root = parse_docx_xml(_document_xml("".join(paragraphs)), part_name="word/document.xml")
     report_comments = _targeted_report_comments(review_result)
     assigned_comments, comments_xml = _comments_xml_with_appended_comments(None, report_comments)
+    comments_extended_xml = _comments_extended_xml_for_assigned(None, assigned_comments) if assigned_comments else b""
     if assigned_comments:
         _apply_comment_anchors_to_report_document(
             document_root,
@@ -122,6 +132,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
             archive.writestr("word/_rels/document.xml.rels", _document_rels_xml(include_comments=bool(assigned_comments)))
             if assigned_comments:
                 archive.writestr("word/comments.xml", comments_xml)
+                archive.writestr("word/commentsExtended.xml", comments_extended_xml)
         return output.getvalue()
 
 
@@ -167,6 +178,16 @@ def build_source_redline_docx(
                 source_archive.read("word/comments.xml") if "word/comments.xml" in source_names else None,
                 source_comments,
             )
+            comments_extended_xml = (
+                _comments_extended_xml_for_assigned(
+                    source_archive.read("word/commentsExtended.xml")
+                    if "word/commentsExtended.xml" in source_names
+                    else None,
+                    assigned_comments,
+                )
+                if assigned_comments
+                else b""
+            )
             if assigned_comments:
                 _apply_comment_anchors_to_source_document(document_root, assigned_comments)
             _ensure_document_section_properties(document_root)
@@ -193,6 +214,7 @@ def build_source_redline_docx(
             }
             if assigned_comments:
                 overrides["word/comments.xml"] = comments_xml
+                overrides["word/commentsExtended.xml"] = comments_extended_xml
 
             with BytesIO() as output:
                 with ZipFile(output, "w", ZIP_DEFLATED) as redlined_archive:
@@ -699,15 +721,29 @@ def _source_tracked_primary_redline_paragraph(
     revision_id: int,
 ) -> Tuple[ET.Element | None, int]:
     original_text = str(redline.get("original_text") or _paragraph_text(source_paragraph))
-    if redline.get("action") == REDLINE_REPLACE_PARAGRAPH:
+    action = redline.get("action")
+    if action == REDLINE_REPLACE_PARAGRAPH:
         return _source_tracked_replace_paragraph(
             source_paragraph,
             original_text,
             str(redline.get("replacement_text") or ""),
             revision_id,
         )
-    if redline.get("action") == REDLINE_DELETE_PARAGRAPH:
+    if action == REDLINE_DELETE_PARAGRAPH:
         return _source_tracked_delete_paragraph(source_paragraph, original_text, revision_id), revision_id + 1
+    if action == REDLINE_FORMAT_PARAGRAPH:
+        format_ops = list(redline.get("format_ops")) if isinstance(redline.get("format_ops"), list) else []
+        paragraph_ops = [op for op in format_ops if isinstance(op, dict) and op.get("scope") == "paragraph"]
+        run_ops = [op for op in format_ops if isinstance(op, dict) and op.get("scope") == "run"]
+        # Paragraph ops first (they rebuild the <w:p> and emit the <w:pPrChange>),
+        # then run ops applied to that result (each emits a per-range <w:rPrChange>).
+        formatted, revision_id = _apply_tracked_paragraph_format(
+            source_paragraph,
+            paragraph_ops,
+            revision_id,
+        )
+        formatted, revision_id = _apply_tracked_run_format(formatted, run_ops, revision_id)
+        return formatted, revision_id
     return None, revision_id
 
 
@@ -742,8 +778,15 @@ def _combined_block_aware_redline_paragraphs(
             # Unedited block: keep it verbatim, carrying the source properties.
             rendered.append(_source_verbatim_paragraph(source_paragraph.paragraph, block))
             continue
+        # Re-base the edit to THIS block, not the whole physical <w:p>. The redline's
+        # offsets (run-format ops in particular) are relative to the single block's
+        # text -- passing the whole physical paragraph would land run ops on the wrong
+        # block's characters. Build a single-block source <w:p> (the block text
+        # inheriting the source paragraph's properties, mirroring the verbatim path),
+        # so run-format offsets index from block-local 0.
+        block_source_paragraph = _source_verbatim_paragraph(source_paragraph.paragraph, block)
         block_paragraph, revision_id = _source_tracked_primary_redline_paragraph(
-            source_paragraph.paragraph,
+            block_source_paragraph,
             {**edit, "original_text": block},
             revision_id,
         )
@@ -813,6 +856,8 @@ def _prepared_review_comments(review_result: ReviewResult) -> List[dict]:
             "created_at": str(comment.get("created_at") or "").strip(),
             "id": str(comment.get("id") or "").strip(),
             "paragraph_id": paragraph_id,
+            "parent_id": str(comment.get("parent_id") or "").strip(),
+            "resolved": bool(comment.get("resolved")),
             "scope": str(comment.get("scope") or "").strip(),
             "selected_text": str(comment.get("selected_text") or "").strip(),
             "selection_start": comment.get("selection_start"),
@@ -888,6 +933,10 @@ def _apply_comment_anchors_to_report_document(
             report_paragraph_by_id[paragraph_id] = body_paragraphs[report_paragraph_index]
         report_paragraph_index += 1
     for comment in comments:
+        # Replies (non-empty parent_id) are comment entries with NO in-document
+        # range; only the thread root gets the commentRangeStart/End + reference run.
+        if str(comment.get("parent_id") or "").strip():
+            continue
         paragraph = report_paragraph_by_id.get(str(comment.get("_report_paragraph_id") or ""))
         if paragraph is not None:
             _apply_comment_anchor(paragraph, comment)
@@ -899,6 +948,10 @@ def _apply_comment_anchors_to_source_document(document_root: ET.Element, comment
         for paragraph in _indexed_source_paragraphs(document_root)
     }
     for comment in comments:
+        # Replies (non-empty parent_id) are comment entries with NO in-document
+        # range; only the thread root gets the commentRangeStart/End + reference run.
+        if str(comment.get("parent_id") or "").strip():
+            continue
         paragraph = source_paragraph_by_index.get(comment.get("_source_index"))
         if paragraph is not None:
             _apply_comment_anchor(paragraph, comment)
@@ -1039,6 +1092,7 @@ def _styles_xml() -> str:
 def _content_types_xml(*, include_comments: bool = False) -> str:
     comments_override = (
         f'  <Override PartName="/word/comments.xml" ContentType="{COMMENTS_CONTENT_TYPE}"/>\n'
+        f'  <Override PartName="/word/commentsExtended.xml" ContentType="{COMMENTS_EXTENDED_CONTENT_TYPE}"/>\n'
         if include_comments else ""
     )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1077,6 +1131,7 @@ def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
 def _document_rels_xml(*, include_comments: bool = False) -> str:
     comments_relationship = (
         f'  <Relationship Id="rId3" Type="{COMMENTS_RELATIONSHIP_TYPE}" Target="comments.xml"/>\n'
+        f'  <Relationship Id="rId4" Type="{COMMENTS_EXTENDED_RELATIONSHIP_TYPE}" Target="commentsExtended.xml"/>\n'
         if include_comments else ""
     )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1126,6 +1181,9 @@ def _document_rels_xml_with_settings(relationships_xml: bytes | None, *, has_com
     _ensure_relationship_target(relationships_root, SETTINGS_RELATIONSHIP_TYPE, "settings.xml")
     if has_comments:
         _ensure_relationship_target(relationships_root, COMMENTS_RELATIONSHIP_TYPE, "comments.xml")
+        _ensure_relationship_target(
+            relationships_root, COMMENTS_EXTENDED_RELATIONSHIP_TYPE, "commentsExtended.xml"
+        )
     return _xml_bytes(relationships_root, namespace_declarations=namespaces)
 
 
@@ -1152,6 +1210,9 @@ def _content_types_xml_with_settings(
         _ensure_content_type_override(content_types_root, "/word/styles.xml", STYLES_CONTENT_TYPE)
     if has_comments:
         _ensure_content_type_override(content_types_root, "/word/comments.xml", COMMENTS_CONTENT_TYPE)
+        _ensure_content_type_override(
+            content_types_root, "/word/commentsExtended.xml", COMMENTS_EXTENDED_CONTENT_TYPE
+        )
     return _xml_bytes(content_types_root, namespace_declarations=namespaces)
 
 

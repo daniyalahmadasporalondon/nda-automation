@@ -195,7 +195,7 @@ function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
   const structureAttributes = paragraphStructureAttributes(model.paragraph);
   return renderStudioParagraphFrame({
     badge,
-    body,
+    body: applyParagraphFormatToBody(model, body),
     classes: [...classes, ...paragraphStructureClasses(model.paragraph)],
     clauseIds: model.ids,
     commentCount: model.commentCount,
@@ -203,6 +203,60 @@ function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
     selected: model.selected,
     attributes: structureAttributes,
   });
+}
+
+// Applies the paragraph's own alignment/font to the rendered body and, when a
+// `format_paragraph` redline is pending for this paragraph, appends a small
+// "Formatted: …" tracked-change note (reusing the .paragraph-redline-note
+// pattern). When the paragraph has no formatting and no format redline, the body
+// is returned unchanged so existing paragraphs render exactly as before.
+function applyParagraphFormatToBody(model, body) {
+  const styleAttribute = paragraphFormatStyleAttribute(model.paragraph);
+  const formatRedline = isFormatParagraphRedline(model.manualRedline) ? model.manualRedline : null;
+  if (!styleAttribute && !formatRedline) return body;
+  const note = formatRedline ? renderParagraphFormatNote(formatRedline) : "";
+  if (!styleAttribute) return `${body}${note}`;
+  return `<div class="studio-doc-paragraph-body"${styleAttribute}>${body}</div>${note}`;
+}
+
+function isFormatParagraphRedline(edit) {
+  return edit?.action === "format_paragraph" && Array.isArray(edit.format_ops) && edit.format_ops.length > 0;
+}
+
+// "Formatted: …" tracked-change note summarising the format_ops, so a
+// formatting-only change reads as a tracked change alongside the paragraph.
+function renderParagraphFormatNote(edit) {
+  const summary = [...new Set(
+    (edit.format_ops || []).map(formatOpSummary).filter(Boolean),
+  )].join("; ");
+  if (!summary) return "";
+  return `<div class="paragraph-redline-note paragraph-format-note" data-redline-note contenteditable="false"><span class="redline-replacement">Formatted: ${escapeHtml(summary)}</span></div>`;
+}
+
+function formatOpSummary(op) {
+  if (!op || typeof op !== "object") return "";
+  if (op.scope === "run") return runOpSummary(op);
+  const to = String(op.to || "").trim();
+  if (op.property === "alignment") {
+    return to ? `align ${to}` : "";
+  }
+  if (op.property === "font") {
+    return to ? `font ${to}` : "";
+  }
+  return "";
+}
+
+// Summary for an inline (run-scope) op, e.g. "Bold", "Italic",
+// "Font: Arial (selection)". A bold/italic op that turns the property OFF reads
+// "No bold" / "No italic"; clearing a font reads "Default font (selection)".
+function runOpSummary(op) {
+  if (op.property === "bold") return op.to ? "Bold" : "No bold";
+  if (op.property === "italic") return op.to ? "Italic" : "No italic";
+  if (op.property === "font") {
+    const to = String(op.to || "").trim();
+    return to ? `Font: ${to} (selection)` : "Default font (selection)";
+  }
+  return "";
 }
 
 function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", badge = "" }) {
@@ -220,7 +274,7 @@ function renderParagraphCommentTools(paragraphId, commentCount) {
   return `
     <div class="paragraph-comment-tools" contenteditable="false">
       <button type="button" class="paragraph-comment-add" data-add-selection-comment-id="${escapeHtml(paragraphId)}" aria-label="Add comment" title="Add comment"><svg class="comment-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></svg></button>
-      ${count ? `<span class="paragraph-comment-count"><svg class="comment-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></svg>${count}</span>` : ""}
+      ${count ? `<button type="button" class="paragraph-comment-count" data-edit-paragraph-comments-id="${escapeHtml(paragraphId)}" aria-label="View, edit or remove comment" title="View, edit or remove comment"><svg class="comment-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></svg>${count}</button>` : ""}
     </div>
   `;
 }
@@ -359,23 +413,176 @@ function renderSideBySideOperations(operations, side) {
 }
 
 function manualParagraphRedline(paragraph, originalParagraphs = []) {
-  const original = originalParagraphText(paragraph, originalParagraphs);
+  const baseline = originalParagraphFor(paragraph, originalParagraphs);
+  const original = baseline ? String(baseline.text || "") : String(paragraph.text || "");
   const current = String(paragraph.text || "");
-  if (current === original) return null;
-  const action = current.trim() ? REDLINE_REPLACE_PARAGRAPH : REDLINE_DELETE_PARAGRAPH;
-  return {
-    action,
-    action_label: current.trim() ? "Your edit" : "Delete paragraph",
+  // Text-only path (replace / delete) is unchanged.
+  if (current !== original) {
+    const action = current.trim() ? REDLINE_REPLACE_PARAGRAPH : REDLINE_DELETE_PARAGRAPH;
+    return {
+      action,
+      action_label: current.trim() ? "Your edit" : "Delete paragraph",
+      is_manual: true,
+      // Clause-applied paragraph replacements (e.g. the governing-law picker) stay
+      // whole-paragraph; free-form typing leaves this false so it word-diffs.
+      whole_paragraph: paragraph?.clauseRedlineWholeParagraph === true,
+      original_text: original,
+      paragraph_id: paragraph.id,
+      paragraph_index: paragraph.index,
+      replacement_text: current,
+    };
+  }
+  // Text byte-identical to baseline: a paragraph-level alignment/font change is a
+  // tracked formatting redline. (Formatting WITH a text change is a later
+  // milestone, so we only reach here when text is unchanged.)
+  return paragraphFormatRedline(paragraph, baseline);
+}
+
+// Builds a `format_paragraph` redline when the paragraph's alignment and/or font
+// differ from the baseline, otherwise null. `original_text`/`replacement_text`
+// are both the current (unchanged) text per the redline contract.
+function paragraphFormatRedline(paragraph, baseline) {
+  if (!baseline) return null;
+  const formatOps = paragraphFormatOps(paragraph, baseline);
+  if (!formatOps.length) return null;
+  const current = String(paragraph.text || "");
+  const redline = {
+    id: `manual-${paragraph.id}-fmt`,
+    clause_id: "manual_viewer_edit",
+    status: "proposed",
+    action: "format_paragraph",
+    action_label: "Format paragraph",
     is_manual: true,
-    original_text: original,
     paragraph_id: paragraph.id,
     paragraph_index: paragraph.index,
+    original_text: current,
     replacement_text: current,
+    format_ops: formatOps,
   };
+  if (baseline.source_index !== undefined || paragraph.source_index !== undefined) {
+    redline.source_index = baseline.source_index !== undefined ? baseline.source_index : paragraph.source_index;
+  }
+  if (baseline.source_part !== undefined) {
+    redline.source_part = baseline.source_part;
+  } else if (paragraph.source_part !== undefined) {
+    redline.source_part = paragraph.source_part;
+  }
+  return redline;
+}
+
+// Diffs the two paragraph-level formatting properties (alignment, font) against
+// the baseline, emitting one op per property that actually changed. Font values
+// are Word font NAME strings (e.g. "Arial"), never a CSS stack. Run-scope ops
+// (inline bold/italic/font over a selection) are appended afterwards.
+function paragraphFormatOps(paragraph, baseline) {
+  const ops = [];
+  const fromAlignment = normalizeFormatValue(baseline.alignment);
+  const toAlignment = normalizeFormatValue(paragraph.alignment);
+  if (fromAlignment !== toAlignment) {
+    ops.push({ scope: "paragraph", property: "alignment", from: fromAlignment, to: toAlignment });
+  }
+  const fromFont = normalizeFormatValue(baseline.font);
+  const toFont = normalizeFormatValue(paragraph.font);
+  if (fromFont !== toFont) {
+    ops.push({ scope: "paragraph", property: "font", from: fromFont, to: toFont });
+  }
+  return ops.concat(runFormatOps(paragraph, baseline));
+}
+
+// Derives run-scope ops by diffing CURRENT `paragraph.runs` against BASELINE
+// `runs`. Both tile the SAME paragraph text (run formatting only ever changes
+// when the text is byte-identical to baseline), so we build per-character
+// property values for each side and emit one op per contiguous range where a
+// property differs. Returns [] when runs are absent or identical.
+function runFormatOps(paragraph, baseline) {
+  const text = String(paragraph?.text || "");
+  if (!text.length) return [];
+  const current = runCharProperties(paragraph.runs, text);
+  const original = runCharProperties(baseline?.runs, text);
+  if (!current || !original) return [];
+  const ops = [];
+  ["bold", "italic", "font"].forEach((property) => {
+    let index = 0;
+    while (index < text.length) {
+      const from = original[property][index];
+      const to = current[property][index];
+      if (runPropEqual(from, to)) {
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (
+        end < text.length
+        && runPropEqual(original[property][end], from)
+        && runPropEqual(current[property][end], to)
+      ) {
+        end += 1;
+      }
+      ops.push({
+        scope: "run",
+        property,
+        start: index,
+        end,
+        from: runOpValue(property, from),
+        to: runOpValue(property, to),
+      });
+      index = end;
+    }
+  });
+  return ops;
+}
+
+// Per-character property arrays for a run list tiling `text`. bold/italic carry a
+// boolean per char; font carries a font-name string ("" when none). Returns null
+// when runs are absent or do not tile the text (so the diff is skipped).
+function runCharProperties(runs, text) {
+  if (!Array.isArray(runs) || !runs.length) {
+    // Absent runs = the unformatted baseline: every char is plain.
+    return runs === undefined || runs === null
+      ? { bold: new Array(text.length).fill(false), italic: new Array(text.length).fill(false), font: new Array(text.length).fill("") }
+      : null;
+  }
+  if (runs.map((run) => String(run?.text || "")).join("") !== text) return null;
+  const bold = [];
+  const italic = [];
+  const font = [];
+  runs.forEach((run) => {
+    const runText = String(run?.text || "");
+    const isBold = Boolean(run?.bold);
+    const isItalic = Boolean(run?.italic);
+    const fontName = String(run?.font || "").trim();
+    for (let i = 0; i < runText.length; i += 1) {
+      bold.push(isBold);
+      italic.push(isItalic);
+      font.push(fontName);
+    }
+  });
+  return { bold, italic, font };
+}
+
+function runPropEqual(a, b) {
+  if (typeof a === "boolean" || typeof b === "boolean") return Boolean(a) === Boolean(b);
+  return String(a || "") === String(b || "");
+}
+
+// Contract value for an op: bold/italic -> boolean; font -> Word name string.
+function runOpValue(property, value) {
+  if (property === "font") return String(value || "");
+  return Boolean(value);
+}
+
+function normalizeFormatValue(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function originalParagraphFor(paragraph, originalParagraphs = []) {
+  return originalParagraphs.find((item) => item.id === paragraph.id) || null;
 }
 
 function originalParagraphText(paragraph, originalParagraphs = []) {
-  const original = originalParagraphs.find((item) => item.id === paragraph.id);
+  const original = originalParagraphFor(paragraph, originalParagraphs);
   return original ? String(original.text || "") : String(paragraph.text || "");
 }
 
@@ -391,7 +598,101 @@ function redlineDiffOperations(edit, original, replacement) {
   if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
     return edit.inline_diff_operations;
   }
-  return fullReplacementOperations(original, replacement);
+  // Clause-level redlines (and the governing-law picker) stay whole-paragraph; a
+  // free-form manual edit diffs at the word level so only the changed words redline.
+  if (edit?.whole_paragraph) {
+    return fullReplacementOperations(original, replacement);
+  }
+  return wordDiffOperations(original, replacement);
+}
+
+// Word-level diff (LCS) for free-form manual edits: emits equal/delete/insert word
+// tokens so only the changed words are struck/inserted, not the whole paragraph.
+function wordDiffOperations(original, replacement) {
+  const a = String(original || "").split(/\s+/).filter(Boolean);
+  const b = String(replacement || "").split(/\s+/).filter(Boolean);
+  const n = a.length;
+  const m = b.length;
+  if (!n && !m) return [];
+  // Guard against pathological cost on very long paragraphs.
+  if (n * m > 1000000) return fullReplacementOperations(original, replacement);
+  const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const operations = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      operations.push({ type: "equal", token: a[i] });
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      operations.push({ type: "delete", token: a[i] });
+      i += 1;
+    } else {
+      operations.push({ type: "insert", token: b[j] });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    operations.push({ type: "delete", token: a[i] });
+    i += 1;
+  }
+  while (j < m) {
+    operations.push({ type: "insert", token: b[j] });
+    j += 1;
+  }
+  return operations;
+}
+
+// Word font NAME -> CSS family stack, for on-screen rendering only. The redline
+// op carries the bare Word name (e.g. "Arial"); this maps it to a display stack.
+// A name with no entry falls back to itself so an unknown font still renders.
+const FORMAT_FONT_CSS_STACKS = {
+  Calibri: "Calibri, sans-serif",
+  Arial: "Arial, Helvetica, sans-serif",
+  "Times New Roman": "'Times New Roman', Times, serif",
+  Georgia: "Georgia, serif",
+  Cambria: "Cambria, Georgia, serif",
+  Garamond: "Garamond, 'Times New Roman', serif",
+  Verdana: "Verdana, Geneva, sans-serif",
+  Tahoma: "Tahoma, Geneva, sans-serif",
+  "Trebuchet MS": "'Trebuchet MS', Helvetica, sans-serif",
+  "Courier New": "'Courier New', Courier, monospace",
+};
+
+function fontCssStackForName(name) {
+  const fontName = String(name || "").trim();
+  if (!fontName) return "";
+  if (Object.prototype.hasOwnProperty.call(FORMAT_FONT_CSS_STACKS, fontName)) {
+    return FORMAT_FONT_CSS_STACKS[fontName];
+  }
+  // Unknown name: render it as a single-family stack so the choice still shows.
+  return /\s/.test(fontName) ? `'${fontName}'` : fontName;
+}
+
+const PARAGRAPH_TEXT_ALIGNMENTS = new Set(["left", "center", "right", "justify"]);
+
+// Inline `text-align` + `font-family` for a paragraph's own formatting. Returns
+// "" when neither is set, so unformatted paragraphs render exactly as before.
+function paragraphFormatStyle(paragraph) {
+  const declarations = [];
+  const alignment = String(paragraph?.alignment || "").trim().toLowerCase();
+  if (PARAGRAPH_TEXT_ALIGNMENTS.has(alignment)) {
+    declarations.push(`text-align:${alignment}`);
+  }
+  const fontStack = fontCssStackForName(paragraph?.font);
+  if (fontStack) declarations.push(`font-family:${fontStack}`);
+  return declarations.join(";");
+}
+
+function paragraphFormatStyleAttribute(paragraph) {
+  const style = paragraphFormatStyle(paragraph);
+  return style ? ` style="${escapeHtml(style)}"` : "";
 }
 
 function renderEditableParagraph(paragraph, extraClasses = []) {
@@ -399,10 +700,13 @@ function renderEditableParagraph(paragraph, extraClasses = []) {
   return `<div class="${classes}" contenteditable="plaintext-only" spellcheck="true" role="textbox" aria-multiline="true" data-editable-paragraph-id="${escapeHtml(paragraph.id)}" aria-label="Edit paragraph ${escapeHtml(paragraph.index || "")}">${renderParagraphRichText(paragraph)}</div>`;
 }
 
-// Renders the paragraph's text with run-level bold/italic/underline when the
-// extractor captured a `runs` breakdown, otherwise the plain escaped text. The
-// run markup is display-only: editing reads innerText, so the editable identity
-// and the round-trip to `paragraph.text` are unchanged.
+// Renders the paragraph's text with run-level bold/italic/underline/font when the
+// extractor (or an inline-format edit) produced a `runs` breakdown, otherwise the
+// plain escaped text. Any run whose formatting DIFFERS from the baseline run-state
+// is wrapped in a tracked-change span (.inline-ins, the existing redline inline
+// class) so a manual inline format reads as a tracked change. The run markup is
+// display-only: editing reads innerText, so the editable identity and the
+// round-trip to `paragraph.text` are unchanged.
 function renderParagraphRichText(paragraph) {
   const text = String(paragraph?.text || "");
   const runs = Array.isArray(paragraph?.runs) ? paragraph.runs : null;
@@ -412,15 +716,62 @@ function renderParagraphRichText(paragraph) {
     // shows. Fall back to the authoritative flat text.
     return escapeHtml(text);
   }
-  return runs.map(renderFormattedRun).join("");
+  const baselineChars = baselineRunCharProperties(paragraph, text);
+  let cursor = 0;
+  return runs.map((run) => {
+    const runText = String(run?.text || "");
+    const changed = baselineChars
+      ? runDiffersFromBaseline(run, baselineChars, cursor, cursor + runText.length)
+      : false;
+    cursor += runText.length;
+    return renderFormattedRun(run, changed);
+  }).join("");
 }
 
-function renderFormattedRun(run) {
+function renderFormattedRun(run, changed = false) {
   let html = escapeHtml(String(run?.text || ""));
   if (run?.bold) html = `<strong>${html}</strong>`;
   if (run?.italic) html = `<em>${html}</em>`;
   if (run?.underline) html = `<u>${html}</u>`;
+  const fontStack = fontCssStackForName(run?.font);
+  if (fontStack) html = `<span style="font-family:${escapeHtml(fontStack)}">${html}</span>`;
+  // Wrap a run whose formatting differs from baseline in the tracked-change
+  // inline class so the manual inline format surfaces as a redline.
+  if (changed) html = `<span class="inline-ins redline-format-ins" data-redline-format-ins>${html}</span>`;
   return html;
+}
+
+// Per-character baseline property arrays for `paragraph`, used to decide which
+// runs differ from the original formatting. Resolves the baseline paragraph from
+// the manual-redline baseline; returns null when no baseline / text drift so the
+// caller renders without any tracked-format wrapping.
+function baselineRunCharProperties(paragraph, text) {
+  const baseline = baselineParagraphForRichText(paragraph);
+  if (!baseline) return null;
+  if (String(baseline.text || "") !== text) return null;
+  return runCharProperties(baseline.runs, text);
+}
+
+function baselineParagraphForRichText(paragraph) {
+  if (!paragraph || typeof manualRedlineBaselineParagraphs !== "function") return null;
+  const baseline = manualRedlineBaselineParagraphs();
+  if (!Array.isArray(baseline)) return null;
+  return baseline.find((item) => item.id === paragraph.id) || null;
+}
+
+// True when any character of the run [start, end) carries bold/italic/font that
+// differs from the baseline char-state at that index.
+function runDiffersFromBaseline(run, baselineChars, start, end) {
+  if (!baselineChars) return false;
+  const isBold = Boolean(run?.bold);
+  const isItalic = Boolean(run?.italic);
+  const font = String(run?.font || "").trim();
+  for (let index = start; index < end; index += 1) {
+    if (Boolean(baselineChars.bold[index]) !== isBold) return true;
+    if (Boolean(baselineChars.italic[index]) !== isItalic) return true;
+    if (String(baselineChars.font[index] || "") !== font) return true;
+  }
+  return false;
 }
 
 // Structural CSS classes + data hooks for a paragraph frame, driven by metadata

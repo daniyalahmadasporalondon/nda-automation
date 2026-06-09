@@ -353,7 +353,56 @@ def _paragraph_record(
         if structure_number:
             record["structure_number"] = structure_number
 
+    alignment = _paragraph_alignment(ppr)
+    if alignment:
+        record["alignment"] = alignment
+
+    font = _paragraph_font(paragraph)
+    if font:
+        record["font"] = font
+
     return record
+
+
+def _paragraph_alignment(ppr: ET.Element | None) -> str | None:
+    """The paragraph's from-state alignment, mapped to left/center/right/justify.
+
+    Read from ``<w:pPr>/<w:jc w:val>``; Word's ``both`` is justified text. Only
+    returned when present, so the field stays additive and absent on paragraphs
+    that inherit alignment from their style."""
+    if ppr is None:
+        return None
+    value = _val(ppr.find(f"{WORD_NS}jc")).strip().lower()
+    if not value:
+        return None
+    if value == "both":
+        return "justify"
+    if value in {"left", "center", "right", "justify"}:
+        return value
+    if value == "start":
+        return "left"
+    if value == "end":
+        return "right"
+    return None
+
+
+def _paragraph_font(paragraph: ET.Element) -> str | None:
+    """The paragraph's dominant-run font name (``<w:rPr>/<w:rFonts w:ascii>``).
+
+    Reuses the same first-run-with-rPr "dominant run" heuristic the redline
+    emitter uses, so the captured from-state font matches what carries through a
+    tracked change. Only returned when present."""
+    for run in paragraph.iter(f"{WORD_NS}r"):
+        rpr = run.find(f"{WORD_NS}rPr")
+        if rpr is None:
+            continue
+        rfonts = rpr.find(f"{WORD_NS}rFonts")
+        if rfonts is None:
+            continue
+        ascii_font = _attr(rfonts, "ascii").strip()
+        if ascii_font:
+            return ascii_font
+    return None
 
 
 def _read_styles(document: ZipFile) -> StyleDefinitions:
@@ -655,17 +704,37 @@ def _run_text(run: ET.Element) -> str:
     return "".join(parts)
 
 
-def _run_formatting(run: ET.Element) -> Dict[str, bool]:
+def _run_formatting(run: ET.Element) -> Dict[str, object]:
     rpr = run.find(f"{WORD_NS}rPr")
-    return {
+    formatting: Dict[str, object] = {
         "bold": _toggle_property(rpr, "b"),
         "italic": _toggle_property(rpr, "i"),
         "underline": _underline_property(rpr),
     }
+    # ``font`` is additive: present only when the run names one, so a run with no
+    # explicit font keeps its prior dict shape. It still drives the merge boundary
+    # (see ``_run_formatting_matches``) so differently-fonted runs do not coalesce.
+    font = _run_font(rpr)
+    if font:
+        formatting["font"] = font
+    return formatting
 
 
-def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, bool]) -> bool:
-    return all(bool(existing.get(key)) == formatting[key] for key in ("bold", "italic", "underline"))
+def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, object]) -> bool:
+    if not all(bool(existing.get(key)) == bool(formatting[key]) for key in ("bold", "italic", "underline")):
+        return False
+    # Runs with different fonts must not merge -- a font change is itself a
+    # formatting boundary (sets up the later inline-format milestone).
+    return str(existing.get("font") or "") == str(formatting.get("font") or "")
+
+
+def _run_font(rpr: ET.Element | None) -> str:
+    if rpr is None:
+        return ""
+    rfonts = rpr.find(f"{WORD_NS}rFonts")
+    if rfonts is None:
+        return ""
+    return _attr(rfonts, "ascii").strip()
 
 
 def _toggle_property(rpr: ET.Element | None, local_name: str) -> bool:
