@@ -608,15 +608,12 @@ function scrollRenderedClauseToView(clauseId) {
 function jumpToParagraph(paragraphId) {
   const id = String(paragraphId || "");
   if (!id || !studioDocumentRender) return;
-  const container = studioDocumentRender.closest(".studio-page-wrap");
   const target = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
     || studioDocumentRender.querySelector(`[data-editable-paragraph-id="${id}"]`);
-  if (!container || !target) return;
-  const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
-  container.scrollTo({
-    behavior: "smooth",
-    top: Math.max(0, targetTop - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO),
-  });
+  if (!target) return;
+  // scrollIntoView locates the scrollable ancestor itself, so this works regardless
+  // of which wrapper is the scroller and needs no manual offset math.
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
   target.classList.remove("paragraph-pulse");
   void target.offsetWidth;
   target.classList.add("paragraph-pulse");
@@ -638,6 +635,13 @@ function renderedClauseTargets(clauseId) {
         targetKeys.push({ type: "paragraph", id: edit.paragraph_id });
       }
     });
+
+  // Fallback for clauses with no grounded/redline anchor (typically "needs review"):
+  // use the paragraphs the AI named in its assessment so the navigator still jumps.
+  if (!targetKeys.length && typeof referencedParagraphIds === "function") {
+    const text = `${clause?.finding || ""} ${clause?.reason || ""} ${clause?.rationale || ""}`;
+    referencedParagraphIds(text).forEach((id) => targetKeys.push({ type: "paragraph", id }));
+  }
 
   const seen = new Set();
   return targetKeys

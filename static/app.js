@@ -328,13 +328,13 @@ const pdfMarkupController = createPdfMarkupController({
 });
 
 // Clicking an AI-referenced paragraph (e.g. "p15") in a clause assessment jumps the
-// document to that paragraph and flashes it (jumpToParagraph lives in the viewer).
-if (studioDetailPanel) {
-  studioDetailPanel.addEventListener("click", (event) => {
-    const ref = event.target.closest("[data-para-ref]");
-    if (ref && typeof jumpToParagraph === "function") jumpToParagraph(ref.dataset.paraRef);
-  });
-}
+// document to that paragraph and flashes it. Delegated at document level so it fires
+// no matter which panel re-rendered the reference (jumpToParagraph lives in the viewer).
+document.addEventListener("click", (event) => {
+  const el = event.target;
+  const ref = el && typeof el.closest === "function" ? el.closest("[data-para-ref]") : null;
+  if (ref && typeof jumpToParagraph === "function") jumpToParagraph(ref.dataset.paraRef);
+}, true);  // capture phase: fires before any handler that stops click propagation
 
 setupSourceEditors();
 setupReviewWorkstationActions();

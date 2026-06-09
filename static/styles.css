@@ -3909,29 +3909,21 @@ textarea::placeholder {
   padding: 0 1px;
 }
 
-/* Paragraphs the AI named as the basis for the selected clause's review. */
-.clause-ref-paragraph {
-  background: #fff0c2;
-  box-shadow: inset 3px 0 0 0 rgba(214, 178, 70, 0.75);
-}
-
-.clause-ref-paragraph [data-editable-paragraph-id] {
-  background: transparent;
-}
-
-/* Clickable paragraph reference inside a clause assessment ("p15", "p34"). */
+/* Clickable paragraph reference inside a clause assessment ("p15", "p34").
+   Underline only, no fill — the referenced paragraph itself is highlighted on the
+   document in the clause's own status colour (see highlightSelectedClauseRefs). */
 .para-ref {
-  background: #fff0c2;
+  background: none;
   border: 0;
   color: inherit;
   cursor: pointer;
   font: inherit;
-  padding: 0 3px;
+  padding: 0;
   text-decoration: underline;
 }
 
 .para-ref:hover {
-  background: #ffe39a;
+  text-decoration: none;
 }
 
 .fill-blank-controls {

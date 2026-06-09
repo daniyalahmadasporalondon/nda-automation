@@ -878,16 +878,20 @@ function linkifyParagraphRefs(text) {
 // exactly the paragraphs the AI cited as its reason. Cleared + reapplied per render.
 function highlightSelectedClauseRefs() {
   if (!studioDocumentRender) return;
-  studioDocumentRender.querySelectorAll(".clause-ref-paragraph").forEach((el) => {
-    el.classList.remove("clause-ref-paragraph");
-  });
   const clause = state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
   if (!clause) return;
+  // Reuse the document's existing paragraph-status highlight (match=pass/green,
+  // review=amber, verify=fail/red) so a referenced paragraph reads in the clause's
+  // own colour, matching its grounded evidence paragraphs. The document re-renders
+  // fresh before this runs, so these classes never accumulate.
+  const status = clauseStatus(clause);
+  const toneClass = status.fails ? "verify" : status.needsReview ? "review" : "match";
   const text = `${clause.finding || ""} ${clause.reason || ""} ${clause.rationale || ""}`;
   referencedParagraphIds(text).forEach((id) => {
-    const target = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
+    const el = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
       || studioDocumentRender.querySelector(`[data-editable-paragraph-id="${id}"]`);
-    if (target) target.classList.add("clause-ref-paragraph");
+    const frame = el ? el.closest(".studio-doc-paragraph") || el : null;
+    if (frame) frame.classList.add(toneClass);
   });
 }
 
