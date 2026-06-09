@@ -696,6 +696,106 @@ function clauseEngineBadge() {
   return "";
 }
 
+// ── Governing-law <-> picked-entity concurrence ─────────────────────────────
+// The Fill tool's chosen Aspora entity carries a registry governing law; the
+// document states its own. When both are known and differ, the Governing Law
+// clause reads as a FAIL in real time (recomputed on every render, on entity
+// change, and on a document edit). This is a live UI signal layered on top of the
+// backend verdict — it does not re-run the backend review.
+const DOCUMENT_GOVERNING_LAWS = [
+  ["India", /\b(?:india|indian)\b/i],
+  ["Delaware", /\bdelaware\b/i],
+  ["England and Wales", /\b(?:england and wales|english\s+law|laws?\s+of\s+england)\b/i],
+  ["DIFC", /\b(?:difc|dubai international financial cent)/i],
+  ["Ontario, Canada", /\b(?:ontario|ontarian|canadian|canada)\b/i],
+];
+
+function detectDocumentGoverningLaw() {
+  const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
+  for (const paragraph of paragraphs) {
+    const text = String((paragraph && paragraph.text) || "");
+    // Operative governing-law language only — never an "incorporated under the
+    // laws of X" recital, which names a party's jurisdiction, not the contract's.
+    if (!/governing\s+law|governed\s+by|construed\s+in\s+accordance/i.test(text)) continue;
+    for (const [label, pattern] of DOCUMENT_GOVERNING_LAWS) {
+      if (pattern.test(text)) return label;
+    }
+  }
+  return "";
+}
+
+function governingLawConflict() {
+  const picked = state.reviewPickedAspora;
+  const entityLaw = picked && picked.lawLabel ? String(picked.lawLabel).trim() : "";
+  if (!entityLaw) return null;
+  const docLaw = detectDocumentGoverningLaw();
+  if (!docLaw) return null;
+  if (docLaw.toLowerCase() === entityLaw.toLowerCase()) return null;
+  return { entityName: (picked && picked.name) || "the selected entity", entityLaw, docLaw };
+}
+
+// clauseStatus, overridden to a fail for the Governing Law clause when the
+// document's law does not concur with the picked entity's law. Used wherever the
+// clause verdict is shown so the conflict reads as a fail (dot, headline, status).
+function clauseDisplayStatus(clause) {
+  const status = clauseStatus(clause);
+  if (clause && clause.id === "governing_law" && governingLawConflict()) {
+    return {
+      ...status,
+      tone: "check",
+      dotTone: "verify",
+      fails: true,
+      needsReview: false,
+      passes: false,
+      requiresAttention: true,
+      blocksSend: true,
+      issueLabel: "Fail",
+      pillLabel: "FAIL",
+    };
+  }
+  return status;
+}
+
+let concurrenceRefreshFrame = null;
+// Re-render only the navigator + detail panel (never the editable document, to keep
+// the caret) so the concurrence verdict updates live. Coalesced to one frame.
+function refreshGoverningLawConcurrence() {
+  if (concurrenceRefreshFrame) return;
+  concurrenceRefreshFrame = requestAnimationFrame(() => {
+    concurrenceRefreshFrame = null;
+    if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
+    if (state.reviewInspectorView === "clause"
+      && state.selectedReviewClauseId === "governing_law"
+      && typeof renderStudioDetail === "function") {
+      renderStudioDetail();
+    }
+  });
+}
+
+// Apply a governing-law fix from the concurrence picker: replace the matched
+// governing-law paragraph with a clean approved sentence (shown as a tracked redline
+// in the document) and re-render so the concurrence re-evaluates live.
+function applyGoverningLawRedline(lawPhrase, lawLabel) {
+  const gl = state.reviewClauses.find((clause) => clause.id === "governing_law");
+  const paraId = gl && Array.isArray(gl.matched_paragraph_ids) ? gl.matched_paragraph_ids[0] : "";
+  const para = paraId ? state.reviewParagraphs.find((item) => item.id === paraId) : null;
+  if (!para) return;
+  const phrase = String(lawPhrase || lawLabel || "").trim();
+  if (!phrase) return;
+  const newText = `This Agreement shall be governed by the laws of ${phrase}.`;
+  if (newText === para.text) return;
+  if (typeof pushReviewEditHistoryEntry === "function") {
+    pushReviewEditHistoryEntry({ paragraphId: para.id, previousText: para.text, type: "paragraph_text" });
+  }
+  para.text = newText;
+  if (typeof syncReviewSourceFromParagraphs === "function") syncReviewSourceFromParagraphs();
+  if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
+  if (typeof markSourceEdited === "function") markSourceEdited("Governing law redline", { preserveSourceDocument: true });
+  if (typeof renderStudioDocumentHighlights === "function") renderStudioDocumentHighlights();
+  renderStudioClauseLane();
+  renderStudioDetail();
+}
+
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -709,7 +809,7 @@ function renderStudioClauseLane() {
   studioClauseLane.innerHTML = sourceClauses
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
-      const status = clauseStatus(clause);
+      const status = clauseDisplayStatus(clause);
       const displayName = clauseDisplayName(clause);
       const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
       const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
@@ -994,9 +1094,35 @@ function renderStudioDetail() {
     studioDetailPanel.innerHTML = "";
     return;
   }
-  const status = clauseStatus(clause);
+  const status = clauseDisplayStatus(clause);
   const findingHeadline = renderClauseFindingHeadline(clause, status);
   const explanation = renderClauseExplanation(clause);
+  const glConflict = clause.id === "governing_law" ? governingLawConflict() : null;
+  const concurrenceBanner = glConflict
+    ? `<div class="studio-detail-block gl-concurrence-fail">
+        <small>Governing law conflict</small>
+        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not concur with the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>.</p>
+      </div>`
+    : "";
+  const glRedlinePicker = glConflict
+    ? `<div class="studio-detail-block">
+        <div class="redline-options">
+          <span class="redline-options-title">Redline governing law to</span>
+          ${(Array.isArray(clause.approved_laws) ? clause.approved_laws : []).map((label) => {
+            const phrase = (clause.law_phrases && clause.law_phrases[label]) || label;
+            const recommended = String(label).trim().toLowerCase() === glConflict.entityLaw.toLowerCase();
+            const optionText = `This Agreement shall be governed by the laws of ${phrase}.`;
+            return `<button class="redline-option ${recommended ? "selected" : ""}" type="button" data-gl-redline-law="${escapeHtml(label)}" data-gl-redline-phrase="${escapeHtml(phrase)}" aria-pressed="${recommended ? "true" : "false"}">
+              <span class="redline-option-dot" aria-hidden="true"></span>
+              <span class="redline-option-copy">
+                <strong>${escapeHtml(label)}${recommended ? " — recommended" : ""}</strong>
+                <span>${escapeHtml(optionText)}</span>
+              </span>
+            </button>`;
+          }).join("")}
+        </div>
+      </div>`
+    : "";
   const rationale = clause.rationale || clause.requirement || "";
   // The "Based on" grounding surface (citation / absence / ungrounded) sits
   // right under the explanation; it self-gates to "" until citation/grounding
@@ -1019,6 +1145,8 @@ function renderStudioDetail() {
       ${activeStatus}
     </div>
     <div class="studio-detail-stack">
+      ${concurrenceBanner}
+      ${glRedlinePicker}
       ${findingHeadline}
       ${explanation}
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>

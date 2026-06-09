@@ -3926,6 +3926,17 @@ textarea::placeholder {
   text-decoration: none;
 }
 
+/* Governing-law <-> picked-entity conflict, surfaced as a fail on the clause. */
+.gl-concurrence-fail {
+  background: var(--red-bg);
+}
+
+.gl-concurrence-fail small {
+  color: #b42318;
+  font-weight: 800;
+}
+
+
 .fill-blank-controls {
   align-items: center;
   display: flex;

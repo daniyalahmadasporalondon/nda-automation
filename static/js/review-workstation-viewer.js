@@ -73,6 +73,7 @@ function bindViewerParagraphEditing() {
     editable.addEventListener("input", () => {
       recordViewerEditHistoryEntry(editable);
       syncViewerParagraphEdit(editable);
+      if (typeof refreshGoverningLawConcurrence === "function") refreshGoverningLawConcurrence();
     });
     editable.addEventListener("paste", pastePlainText);
   });

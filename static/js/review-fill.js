@@ -93,6 +93,25 @@ function createFillController({ state, root, rerenderDocument }) {
     api();
     return Array.isArray(entityApi.entities) ? entityApi.entities : [];
   }
+
+  // Publish the chosen Aspora entity (+ its governing law) to shared review state so
+  // the Governing Law clause can check concurrence, then trigger a live refresh.
+  function publishPickedAspora() {
+    api();
+    const entity = entityApi.selectedEntity(pick);
+    if (!entity) {
+      state.reviewPickedAspora = null;
+    } else {
+      const law = typeof entityApi.effectiveGoverningLaw === "function"
+        ? entityApi.effectiveGoverningLaw(pick)
+        : (entity.governing_law || null);
+      state.reviewPickedAspora = {
+        name: String(entity.legal_name || entity.short_name || "").trim(),
+        lawLabel: String((law && law.label) || (entity.governing_law && entity.governing_law.label) || "").trim(),
+      };
+    }
+    if (typeof refreshGoverningLawConcurrence === "function") refreshGoverningLawConcurrence();
+  }
   function entityAddressStrings(entity) {
     const addresses = Array.isArray(entity.addresses) ? entity.addresses : [];
     return addresses
@@ -469,6 +488,7 @@ function createFillController({ state, root, rerenderDocument }) {
       entitySelect.addEventListener("change", () => {
         pick = entityApi.applyEntitySelection(pick, entitySelect.value);
         render();
+        publishPickedAspora();
       });
     }
     const addressSelect = root.querySelector("[data-fill-address]");

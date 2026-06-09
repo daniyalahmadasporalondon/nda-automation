@@ -332,8 +332,16 @@ const pdfMarkupController = createPdfMarkupController({
 // no matter which panel re-rendered the reference (jumpToParagraph lives in the viewer).
 document.addEventListener("click", (event) => {
   const el = event.target;
-  const ref = el && typeof el.closest === "function" ? el.closest("[data-para-ref]") : null;
-  if (ref && typeof jumpToParagraph === "function") jumpToParagraph(ref.dataset.paraRef);
+  if (!el || typeof el.closest !== "function") return;
+  const ref = el.closest("[data-para-ref]");
+  if (ref && typeof jumpToParagraph === "function") {
+    jumpToParagraph(ref.dataset.paraRef);
+    return;
+  }
+  const glOption = el.closest("[data-gl-redline-law]");
+  if (glOption && typeof applyGoverningLawRedline === "function") {
+    applyGoverningLawRedline(glOption.dataset.glRedlinePhrase, glOption.dataset.glRedlineLaw);
+  }
 }, true);  // capture phase: fires before any handler that stops click propagation
 
 setupSourceEditors();
