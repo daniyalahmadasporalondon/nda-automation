@@ -800,7 +800,7 @@ function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", si
   return `
     <div class="studio-detail-block assessment-block">
       <small>Assessment</small>
-      <p>${escapeHtml(assessment)}</p>
+      <p>${linkifyParagraphRefs(assessment)}</p>
     </div>
     ${evidence ? `
       <div class="studio-detail-block studio-detail-evidence">
@@ -815,6 +815,80 @@ function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", si
       </div>
     ` : ""}
   `;
+}
+
+// --- AI-referenced paragraphs ------------------------------------------------
+// A clause assessment names the paragraphs the AI relied on (e.g. "p15", "p34-p39").
+// Those references come from the model's own prose, so surfacing them stays within
+// the AI-first review (no deterministic locator). Every reference is validated
+// against the document's real paragraph ids, then rendered as a clickable link in
+// the assessment and highlighted on the document so a reviewer can jump straight to
+// the paragraphs the AI flagged as its reason for needing review.
+function validParagraphIdSet() {
+  const ids = new Set();
+  (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : []).forEach((paragraph) => {
+    const id = String((paragraph && paragraph.id) || "").trim();
+    if (id) ids.add(id);
+  });
+  return ids;
+}
+
+function referencedParagraphIds(text) {
+  const valid = validParagraphIdSet();
+  if (!valid.size || !text) return [];
+  const found = [];
+  const seen = new Set();
+  const add = (id) => {
+    if (valid.has(id) && !seen.has(id)) {
+      seen.add(id);
+      found.push(id);
+    }
+  };
+  const source = String(text);
+  // Expand ranges first ("p34-p39" -> p34..p39), capped so a typo cannot blow up.
+  source.replace(/\bp(\d+)\s*[-–—]\s*p?(\d+)\b/gi, (match, a, b) => {
+    const start = parseInt(a, 10);
+    const end = parseInt(b, 10);
+    if (start <= end && end - start <= 200) {
+      for (let n = start; n <= end; n += 1) add(`p${n}`);
+    }
+    return match;
+  });
+  // Then standalone references.
+  source.replace(/\bp(\d+)\b/gi, (match, n) => {
+    add(`p${n}`);
+    return match;
+  });
+  return found;
+}
+
+function linkifyParagraphRefs(text) {
+  const escaped = escapeHtml(text);
+  const valid = validParagraphIdSet();
+  if (!valid.size) return escaped;
+  return escaped.replace(/\bp(\d+)\b/gi, (match, n) => {
+    const id = `p${n}`;
+    return valid.has(id)
+      ? `<button type="button" class="para-ref" data-para-ref="${id}">${match}</button>`
+      : match;
+  });
+}
+
+// Paint the selected clause's AI-referenced paragraphs so a reviewer can go back to
+// exactly the paragraphs the AI cited as its reason. Cleared + reapplied per render.
+function highlightSelectedClauseRefs() {
+  if (!studioDocumentRender) return;
+  studioDocumentRender.querySelectorAll(".clause-ref-paragraph").forEach((el) => {
+    el.classList.remove("clause-ref-paragraph");
+  });
+  const clause = state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
+  if (!clause) return;
+  const text = `${clause.finding || ""} ${clause.reason || ""} ${clause.rationale || ""}`;
+  referencedParagraphIds(text).forEach((id) => {
+    const target = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
+      || studioDocumentRender.querySelector(`[data-editable-paragraph-id="${id}"]`);
+    if (target) target.classList.add("clause-ref-paragraph");
+  });
 }
 
 // Builds the heart of the panel around the active AI-first assessment. The
@@ -1714,6 +1788,18 @@ function renderStudioDocumentHighlights() {
   bindParagraphCommentControls(studioDocumentRender);
 
   showStudioDocumentRender();
+  notifyFillHighlights();
+  highlightSelectedClauseRefs();
+}
+
+// Bridge to the Fill controller (constructed in app.js): keep its name/address
+// highlights painted on every text render so they persist across tabs and views.
+// Guarded so the rendering module stays usable when the controller is absent.
+function notifyFillHighlights() {
+  if (typeof reviewFillController !== "undefined" && reviewFillController
+    && typeof reviewFillController.highlightDocument === "function") {
+    reviewFillController.highlightDocument();
+  }
 }
 
 function bindOriginalViewFallbackControls() {

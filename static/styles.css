@@ -3762,7 +3762,7 @@ textarea::placeholder {
 
 .fill-picker {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -3807,7 +3807,7 @@ textarea::placeholder {
   align-items: center;
   background: #f4f7ff;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   color: var(--ink);
   display: flex;
   flex-wrap: wrap;
@@ -3847,7 +3847,7 @@ textarea::placeholder {
 
 .fill-blank-row {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -3907,6 +3907,31 @@ textarea::placeholder {
   box-shadow: 0 0 0 1px rgba(214, 178, 70, 0.45);
   color: inherit;
   padding: 0 1px;
+}
+
+/* Paragraphs the AI named as the basis for the selected clause's review. */
+.clause-ref-paragraph {
+  background: #fff0c2;
+  box-shadow: inset 3px 0 0 0 rgba(214, 178, 70, 0.75);
+}
+
+.clause-ref-paragraph [data-editable-paragraph-id] {
+  background: transparent;
+}
+
+/* Clickable paragraph reference inside a clause assessment ("p15", "p34"). */
+.para-ref {
+  background: #fff0c2;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0 3px;
+  text-decoration: underline;
+}
+
+.para-ref:hover {
+  background: #ffe39a;
 }
 
 .fill-blank-controls {

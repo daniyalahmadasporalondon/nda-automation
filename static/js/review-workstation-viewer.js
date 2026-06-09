@@ -603,6 +603,25 @@ function scrollRenderedClauseToView(clauseId) {
   target.classList.add("paragraph-pulse");
 }
 
+// Scroll the document to a specific paragraph id and flash it. Powers the
+// clickable paragraph references in a clause assessment.
+function jumpToParagraph(paragraphId) {
+  const id = String(paragraphId || "");
+  if (!id || !studioDocumentRender) return;
+  const container = studioDocumentRender.closest(".studio-page-wrap");
+  const target = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
+    || studioDocumentRender.querySelector(`[data-editable-paragraph-id="${id}"]`);
+  if (!container || !target) return;
+  const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
+  container.scrollTo({
+    behavior: "smooth",
+    top: Math.max(0, targetTop - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO),
+  });
+  target.classList.remove("paragraph-pulse");
+  void target.offsetWidth;
+  target.classList.add("paragraph-pulse");
+}
+
 function renderedClauseTargets(clauseId) {
   const clause = state.reviewClauses.find((item) => item.id === clauseId);
   const targetKeys = [];

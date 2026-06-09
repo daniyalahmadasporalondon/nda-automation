@@ -327,6 +327,15 @@ const pdfMarkupController = createPdfMarkupController({
   matterIsPdf: () => Boolean(state.selectedMatter?.id),
 });
 
+// Clicking an AI-referenced paragraph (e.g. "p15") in a clause assessment jumps the
+// document to that paragraph and flashes it (jumpToParagraph lives in the viewer).
+if (studioDetailPanel) {
+  studioDetailPanel.addEventListener("click", (event) => {
+    const ref = event.target.closest("[data-para-ref]");
+    if (ref && typeof jumpToParagraph === "function") jumpToParagraph(ref.dataset.paraRef);
+  });
+}
+
 setupSourceEditors();
 setupReviewWorkstationActions();
 setActiveTab("dashboard");
@@ -924,11 +933,6 @@ function setReviewInspectorView(viewName) {
   state.reviewInspectorView = normalizeReviewInspectorView(viewName);
   updateReviewInspectorTabs();
   renderStudioDetail();
-  // Leaving the Fill tab: drop its yellow document highlights (the Fill controller
-  // re-applies them when the tab is shown again).
-  if (state.reviewInspectorView !== "fill" && reviewFillController && typeof reviewFillController.clearHighlights === "function") {
-    reviewFillController.clearHighlights();
-  }
 }
 
 function updateReviewInspectorTabs() {

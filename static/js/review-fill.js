@@ -642,7 +642,21 @@ function createFillController({ state, root, rerenderDocument }) {
     });
   }
 
-  return { render, clearHighlights: clearDocHighlights };
+  // Detect + paint the name/address spans on the current document, independent of
+  // the Fill panel. The document-render funnel calls this on every text render so
+  // the yellow marks are PERMANENT across every tab/view, not just the Fill tab.
+  function highlightDocument() {
+    const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
+    if (!paragraphs.length) {
+      clearDocHighlights();
+      return;
+    }
+    ensureRegistry();
+    api();
+    decorateDocument(detectInserts().concat(detectReplacements()));
+  }
+
+  return { render, clearHighlights: clearDocHighlights, highlightDocument };
 }
 
 // Export payload helper shared by the DOCX export (and send-redline). Maps
