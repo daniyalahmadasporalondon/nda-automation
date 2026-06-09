@@ -167,6 +167,12 @@ async function exportReviewDocx() {
       export_redline_edits: exportRedlines,
       manual_redline_edits: exportManualRedlines,
       review_comments: currentReviewComments(),
+      // Inbound-fill tool: blanks the user filled with Aspora entity values.
+      // CLEAN fills have already rewritten the paragraph text (and advanced the
+      // manual-redline baseline so they don't double-emit as manual redlines);
+      // TRACKED fills are left for the backend to render as tracked changes.
+      // The backend keys on {paragraph_id, find, value, mode}.
+      fills: currentReviewFills(),
     };
     if (exportMatter?.id) {
       payload.matter_id = exportMatter.id;
@@ -387,6 +393,9 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
       export_redline_edits: effectiveReviewRedlines(),
       manual_redline_edits: manualExportRedlines(),
       review_comments: currentReviewComments(),
+      // Carry inbound-fill blanks on send too, so a TRACKED fill isn't dropped
+      // when the redline is emailed (CLEAN fills already live in the text).
+      fills: currentReviewFills(),
       to: recipient,
       subject: subject.trim(),
       body: body.trim(),

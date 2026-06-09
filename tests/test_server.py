@@ -2292,7 +2292,7 @@ class ServerTests(unittest.TestCase):
         active_result["playbook_runtime"] = self.active_playbook_review_runtime()
         captured_redline_counts = []
 
-        def capture_redline_build(_source_bytes, review_result):
+        def capture_redline_build(_source_bytes, review_result, **_kwargs):
             captured_redline_counts.append(len(review_result.get("redline_edits") or []))
             return source_docx
 
@@ -5340,7 +5340,7 @@ class ServerTests(unittest.TestCase):
         }
         captured = {}
 
-        def capture_redline_build(source_bytes, review_result):
+        def capture_redline_build(source_bytes, review_result, **_kwargs):
             captured["source_bytes"] = source_bytes
             captured["paragraph_texts"] = [
                 paragraph.get("text")
@@ -5525,7 +5525,7 @@ class ServerTests(unittest.TestCase):
         ])
         captured_redline_counts = []
 
-        def capture_redline_build(_source_bytes, review_result):
+        def capture_redline_build(_source_bytes, review_result, **_kwargs):
             captured_redline_counts.append(len(review_result.get("redline_edits") or []))
             return source_docx
 
@@ -6359,7 +6359,7 @@ class ServerTests(unittest.TestCase):
         ])
         captured = {}
 
-        def capture_redline_build(_source_bytes, review_result):
+        def capture_redline_build(_source_bytes, review_result, **_kwargs):
             captured["redline_count"] = len(review_result.get("redline_edits") or [])
             return source_docx
 

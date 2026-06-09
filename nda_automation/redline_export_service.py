@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export_service, telemetry
+from . import export_service, fill_export, telemetry
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
@@ -96,8 +96,21 @@ def _build_redline_export(
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
     export_service.apply_review_comments(review_result, payload.get("review_comments"))
 
+    # Inbound-NDA fills (optional; fully backward-compatible when absent/empty).
+    # Tracked fills become replace-paragraph redlines so they render as Word
+    # tracked changes; clean fills are baked into the base DOCX text below, BEFORE
+    # the tracked redlines, so they read as plain filled values.
+    cleaned_fills = fill_export.clean_fills(payload.get("fills"))
+    clean_mode_fills, tracked_mode_fills = fill_export.split_fills_by_mode(cleaned_fills)
+    fill_export.merge_fill_redlines(
+        review_result,
+        fill_export.synthesize_tracked_fill_redlines(tracked_mode_fills, review_result),
+    )
+
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
-        report_bytes = build_source_redline_docx(source_document_bytes, review_result)
+        report_bytes = build_source_redline_docx(
+            source_document_bytes, review_result, clean_fills=clean_mode_fills
+        )
         download_filename = export_service.redline_download_filename(source_filename)
         require_styles = False
         expected_source_text = str(review_result.get("extracted_text") or "")

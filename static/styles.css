@@ -3727,7 +3727,7 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 12px 18px;
   position: sticky;
   top: 40px;
@@ -3749,6 +3749,228 @@ textarea::placeholder {
   background: var(--brand);
   border-color: var(--brand);
   color: #fff;
+}
+
+/* ── Inbound-fill tool (Fill inspector tab) ─────────────────────────────── */
+.fill-empty {
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 18px 4px;
+}
+
+.fill-picker {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+}
+
+.fill-picker-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fill-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fill-field > span {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fill-field select,
+.fill-field input {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 13px;
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.fill-field-value {
+  flex: 1 1 auto;
+}
+
+.fill-bundle-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.fill-bundle-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fill-bundle-grid dt {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fill-bundle-grid dd {
+  font-size: 13px;
+  margin: 0;
+}
+
+.fill-bundle-empty {
+  color: var(--ink-soft);
+  font-size: 12px;
+  margin: 0;
+}
+
+.fill-applied {
+  align-items: center;
+  background: #f4f7ff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--ink);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 9px 12px;
+}
+
+.fill-clear,
+.fill-apply {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.fill-clear {
+  margin-left: auto;
+}
+
+.fill-apply {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.fill-blank-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fill-blank-row {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.fill-blank-row.disabled {
+  opacity: 0.55;
+}
+
+.fill-blank-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.fill-blank-enable {
+  align-items: center;
+  color: var(--ink-soft);
+  display: flex;
+  font-size: 11px;
+  font-weight: 800;
+  gap: 6px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.fill-blank-token {
+  background: #fff6e5;
+  border-radius: 6px;
+  color: #8a5a00;
+  font-size: 12px;
+  padding: 2px 7px;
+}
+
+.fill-blank-context {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.fill-blank-mark {
+  background: #fff0c2;
+  border-radius: 4px;
+  color: var(--ink);
+  font-weight: 700;
+  padding: 0 3px;
+}
+
+.fill-blank-controls {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fill-mode-toggle {
+  display: inline-flex;
+  gap: 0;
+}
+
+.fill-mode-toggle button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.fill-mode-toggle button:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.fill-mode-toggle button:last-child {
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+}
+
+.fill-mode-toggle button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.fill-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 .studio-card {

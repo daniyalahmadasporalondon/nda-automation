@@ -68,6 +68,8 @@ function renderStudioEmpty() {
   resetReviewEditHistory();
   if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
+  } else if (state.reviewInspectorView === "fill") {
+    reviewFillController.render();
   } else {
     studioDetailPanel.innerHTML = "";
   }
@@ -903,6 +905,10 @@ function renderStudioDetail() {
   updateReviewInspectorTabs();
   if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
+    return;
+  }
+  if (state.reviewInspectorView === "fill") {
+    reviewFillController.render();
     return;
   }
   const clause = getSelectedReviewClause();
