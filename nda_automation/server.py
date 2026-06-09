@@ -71,7 +71,6 @@ from .routes import auth as auth_routes
 from .routes import dashboard as dashboard_routes
 from .routes import drive as drive_routes
 from .routes import entities as entity_routes
-from .routes import fill as fill_routes
 from .routes import generation as generation_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
@@ -230,7 +229,6 @@ _POST_EXACT_ROUTES = {
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/generate-nda": generation_routes.handle_generate_nda,
-    "/api/fill-suggestions": fill_routes.handle_fill_suggestions,
     "/api/dashboard/search-intent": dashboard_routes.handle_dashboard_search_intent,
     "/api/send-document": _handle_send_document_post,
     "/api/gmail/import": gmail_routes.handle_gmail_import,

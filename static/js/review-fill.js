@@ -1,58 +1,35 @@
-// Inbound NDA "Fill" tool — the 3rd Review-workstation inspector tab.
+// NDA "Fill" tool — the 3rd Review-workstation inspector tab.
 //
-// An inbound NDA usually arrives with blanks: underscore runs, [bracketed
-// tokens], dotted lines, and empty "Label:" slots. This tool lets the reviewer
-// pick one of our Aspora signing entities (and, for the multi-address entity,
-// which address signs), then fill each detected blank with the matching entity
-// value — choosing per-blank whether the fill goes in CLEAN (rewriting the
-// paragraph text so the viewer shows the filled NDA) or TRACKED (left for the
-// backend to render as a tracked change on export).
+// Manages ASPORA'S IDENTITY (entity legal name + registered address) in an NDA,
+// deterministically, in two modes:
+//   1. INSERT  — find empty name/address blanks (underscore runs, [bracketed
+//      tokens], dotted lines) and insert the chosen Aspora entity's legal name /
+//      registered address.
+//   2. REPLACE — find an Aspora entity's name/address ALREADY present in the
+//      document (matched against our signing-entity registry) and swap it for the
+//      chosen entity's name/address.
+// Each item applies CLEAN (rewrite the paragraph text so the viewer shows it) or
+// TRACKED (a tracked change the backend renders on export). Everything else
+// (governing law, term, signatory names, ...) is handled by clause review — this
+// tool is entity name + registered address ONLY.
 //
-// It mirrors the createContractStructureController pattern: a factory returning
-// { render() } that paints into #studioDetailPanel when the Fill tab is active.
-// All entity data comes from the same registry the generator uses — the bridged
-// window.createDraftIntake helper surface (which reads /api/signing-entities via
-// the controller, with an embedded mirror fallback). Here we feed it the live
-// feed when available and otherwise fall back to the embedded SIGNING_ENTITIES.
-//
-// Pure DOM + state; no framework. escapeHtml is resolved lazily through
-// window.escapeHtml (bridged by global-bridge.mjs) since this classic script's
-// render only runs at interaction time, never at load time.
+// Factory returning { render() } that paints into #studioDetailPanel when the Fill
+// tab is active. Entity data comes from the registry via the bridged
+// window.createDraftIntake helper (live /api/signing-entities, embedded fallback).
+// Pure DOM + state; escapeHtml is resolved lazily via window.escapeHtml.
 
 function createFillController({ state, root, rerenderDocument }) {
-  // The entity helper surface (window.createDraftIntake). Bound lazily so the
-  // deferred bridge module has loaded by first render. Re-bound once the live
-  // /api/signing-entities feed resolves so the picker reflects the deployed
-  // bundles; until then it runs on the embedded mirror.
   let entityApi = null;
   let registryLoaded = false;
   let registryLoading = false;
 
-  // The current picker selection. Reuses the intake shape so we can lean on the
-  // same coupled entity+address+law helpers the generator uses.
+  // The chosen Aspora entity (+ address) to insert / replace with. Reuses the
+  // generator's intake shape so we lean on the same entity/address helpers.
   let pick = null;
 
-  // AI blank-linking pass state: the detected Aspora party, a soft error to
-  // surface, and an in-flight guard. Populated by suggestWithAI(); the tool
-  // stays fully usable on the keyword heuristic when AI is unavailable.
-  let aiParty = null;
-  let aiError = "";
-  let aiBusy = false;
-
-  // Per-blank working state, keyed by blank id: { value, field, mode, enabled }.
-  // Survives re-renders so the user's overrides/toggles aren't lost when the
-  // panel repaints (e.g. after picking an entity).
-  const blankState = new Map();
-
-  const FIELD_OPTIONS = [
-    { id: "legal_name", label: "Entity legal name" },
-    { id: "registered_office", label: "Registered office" },
-    { id: "incorporation_jurisdiction", label: "Incorporation jurisdiction" },
-    { id: "governing_law", label: "Governing law" },
-    { id: "signatory_name", label: "Signatory name" },
-    { id: "signatory_title", label: "Signatory title" },
-    { id: "custom", label: "Custom value" },
-  ];
+  // Per-candidate working state keyed by candidate id: { mode, enabled }. Survives
+  // re-renders so toggles aren't lost when the panel repaints.
+  const itemState = new Map();
 
   function escape(value) {
     return typeof window !== "undefined" && typeof window.escapeHtml === "function"
@@ -68,9 +45,9 @@ function createFillController({ state, root, rerenderDocument }) {
     return entityApi;
   }
 
-  // Loads the live signing-entity feed once, then re-binds the helper surface to
-  // it (preserving the in-progress picker selection). A 404 / network error
-  // leaves the embedded mirror in place — the picker stays fully usable.
+  // Loads the live signing-entity feed once, then re-binds the helper to it
+  // (preserving the in-progress selection). A 404/network error keeps the embedded
+  // mirror — the picker stays usable.
   function ensureRegistry() {
     if (registryLoaded || registryLoading) return;
     registryLoading = true;
@@ -84,91 +61,55 @@ function createFillController({ state, root, rerenderDocument }) {
           if (previous?.entityId) {
             pick = entityApi.applyEntitySelection(pick, previous.entityId);
             if (previous.addressId) pick = entityApi.selectAddress(pick, previous.addressId);
-            // Repaint so the newly-loaded entity labels/values appear.
-            if (state.reviewInspectorView === "fill") render();
           }
+          if (state.reviewInspectorView === "fill") render();
         }
       })
-      .catch(() => {
-        // Stay on the embedded mirror.
-      })
+      .catch(() => {})
       .finally(() => {
         registryLoaded = true;
         registryLoading = false;
       });
   }
 
-  // ── Candidate entity values ───────────────────────────────────────────────
-  // Derives the fillable values from the current entity + address selection.
-  function entityValues() {
+  // ── Chosen entity values (name + registered address only) ───────────────────
+  function targetEntity() {
     api();
-    const entity = entityApi.selectedEntity(pick);
-    if (!entity) return null;
-    const address = entityApi.selectedAddress(pick);
-    const law = entityApi.effectiveGoverningLaw(pick);
-    const signatory = (entity.signatory && typeof entity.signatory === "object") ? entity.signatory : {};
-    return {
-      legal_name: String(entity.legal_name || "").trim(),
-      registered_office: entityApi.formatAddressLines(address),
-      incorporation_jurisdiction: String(
-        entity.incorporation_jurisdiction || entity.jurisdiction || "",
-      ).trim(),
-      governing_law: String(law?.label || "").trim(),
-      signatory_name: String(signatory.name || "").trim(),
-      signatory_title: String(signatory.title || "").trim(),
-    };
+    return entityApi.selectedEntity(pick);
+  }
+  function targetName() {
+    const entity = targetEntity();
+    return entity ? String(entity.legal_name || "").trim() : "";
+  }
+  function targetAddress() {
+    api();
+    if (!entityApi.selectedEntity(pick)) return "";
+    return String(entityApi.formatAddressLines(entityApi.selectedAddress(pick)) || "").trim();
+  }
+  function valueForSlot(slot) {
+    return slot === "address" ? targetAddress() : targetName();
+  }
+  function registryEntities() {
+    api();
+    return Array.isArray(entityApi.entities) ? entityApi.entities : [];
+  }
+  function entityAddressStrings(entity) {
+    const addresses = Array.isArray(entity.addresses) ? entity.addresses : [];
+    return addresses
+      .map((address) => String(entityApi.formatAddressLines(address) || "").trim())
+      .filter(Boolean);
   }
 
-  function valueForField(field) {
-    const values = entityValues();
-    if (!values || field === "custom") return "";
-    return values[field] || "";
-  }
+  // ── Detection: INSERT (empty entity-name / address blanks) ──────────────────
+  const BLANK_PATTERNS = [/_{3,}/g, /\[[^\]]*\]/g, /\.{4,}|…+/g];
 
-  // ── Blank detection ───────────────────────────────────────────────────────
-  // Scans every loaded paragraph for blank tokens and proposes a field per blank
-  // from nearby label keywords. Returns an ordered list of detected blanks.
-  function detectBlanks() {
-    const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
-    const blanks = [];
-    paragraphs.forEach((paragraph) => {
-      const text = String(paragraph?.text || "");
-      if (!text.trim()) return;
-      const seen = new Set();
-      blankMatches(text).forEach((match) => {
-        const find = match.text;
-        if (!find || seen.has(match.index)) return;
-        seen.add(match.index);
-        const field = suggestField(text, match.index, find);
-        blanks.push({
-          id: `fill-${paragraph.id}-${match.index}`,
-          paragraph_id: String(paragraph.id),
-          paragraph_index: paragraph.index ?? paragraph.source_index ?? null,
-          context: text,
-          find,
-          offset: match.index,
-          field,
-        });
-      });
-    });
-    return blanks;
-  }
-
-  // The blank patterns: underscore runs, [bracketed tokens], dotted/ellipsis
-  // lines. Returns {text, index} for each, sorted by position so the per-blank
-  // rows read top-to-bottom through the paragraph.
   function blankMatches(text) {
-    const patterns = [
-      /_{3,}/g, // underscore runs
-      /\[[^\]]*\]/g, // [bracketed tokens]
-      /\.{4,}|…+/g, // dotted lines / ellipses
-    ];
     const matches = [];
-    patterns.forEach((pattern) => {
+    BLANK_PATTERNS.forEach((pattern) => {
+      pattern.lastIndex = 0;
       let match = pattern.exec(text);
       while (match) {
         matches.push({ text: match[0], index: match.index });
-        // Guard against zero-length matches looping forever.
         if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
         match = pattern.exec(text);
       }
@@ -176,88 +117,243 @@ function createFillController({ state, root, rerenderDocument }) {
     return matches.sort((a, b) => a.index - b.index);
   }
 
-  // Suggests a field for a blank from label keywords in the ~60 chars before it
-  // (and a little after, to catch "____ (Authorised Signatory)" style trailers).
-  // "Label: ___" and bare "Label:" both work because the label text precedes the
-  // blank. Falls back to "custom" when no keyword matches.
-  function suggestField(text, index, find) {
-    const before = text.slice(Math.max(0, index - 80), index).toLowerCase();
-    const after = text.slice(index + find.length, index + find.length + 40).toLowerCase();
-    const window = `${before} ${after}`;
-    // Order matters: more specific phrases first so "registered office" wins over
-    // a bare "office", and "governing law"/"jurisdiction" beat a generic match.
-    if (/governing law|laws of/.test(window)) return "governing_law";
-    if (/registered office|address|registered at|having its office|principal place/.test(window)) {
-      return "registered_office";
+  // Returns "name" | "address" | null from label keywords around the blank. Only
+  // ENTITY-name slots qualify as "name"; a bare signatory "Name:" (no company/party
+  // context) is skipped — that's clause review's job, not ours.
+  function classifyBlank(text, index, find) {
+    const beforeFull = text.slice(Math.max(0, index - 120), index).toLowerCase();
+    // The immediate label leading into the blank — what tells us name vs address.
+    const beforeClose = text.slice(Math.max(0, index - 48), index).toLowerCase();
+    const after = text.slice(index + find.length, index + find.length + 40);
+    // Signatory/person name lines are clause-review's job, not ours.
+    const signatoryCtx = /for and on behalf|signature|signed by|authoris|authoriz|designation|witness/.test(beforeFull);
+
+    // 1. A defined term right after the blank — e.g. ___ ("Company") — is a party NAME.
+    if (/^\s*\(\s*["“']?(?:the\s+)?(?:company|recipient|disclosing|receiving|client|customer|vendor|supplier|party)/i.test(after)) {
+      return signatoryCtx ? null : "name";
     }
-    if (/incorporat|jurisdiction|organized under|organised under/.test(window)) {
-      return "incorporation_jurisdiction";
+    // 2. An address label leading INTO the blank — "...registered office at ___".
+    // Require office/registered-office context, or a bare "address" that isn't an
+    // EMAIL / web / IP address (those aren't a registered office to fill).
+    const officeCtx = /registered office|having its (?:registered )?office|office (?:at|located)|principal (?:place|office)/.test(beforeClose);
+    const plainAddress = /\baddress\b/.test(beforeClose) && !/e-?mail|electronic mail|\bmail\b|web ?site|\bweb\b|\bip\b/.test(beforeClose);
+    if (officeCtx || plainAddress) {
+      return "address";
     }
-    if (/authorised signatory|authorized signatory|signatory|signed by|signature/.test(window)) {
-      return "signatory_name";
+    // 3. A party-definition tail right after the blank — "___, a company incorporated
+    // under...", "___, a small finance bank...", "___, an entity organized under..." —
+    // marks the blank as the party NAME. The defined term like ("Company") often
+    // appears much later in the sentence, not immediately after the blank.
+    if (/^\s*[,(]?\s*(?:a|an)\s+[\w.&'’\/ -]{0,45}?\b(?:company|corporation|limited|ltd|llc|inc|bank|firm|partnership|entity|llp|society|trust|incorporated|organi[sz]ed|registered under)\b/i.test(after)) {
+      return signatoryCtx ? null : "name";
     }
-    if (/title|designation|position/.test(window)) return "signatory_title";
-    if (/company name|legal name|name of (?:the )?(?:company|party|entity)|\bname\b|company|party|entity/.test(window)) {
-      return "legal_name";
+    // 4. An explicit entity-name label leading into the blank.
+    if (/company name|legal name|name of (?:the )?(?:company|party|entity)/.test(beforeClose)) {
+      return signatoryCtx ? null : "name";
     }
-    return "custom";
+    return null;
   }
 
-  // Working state for a blank, seeded from the suggested field's entity value.
-  // Re-seeds the value only while the user hasn't typed a custom one (tracked by
-  // `dirty`), so changing the picked entity refreshes the prefill but a manual
-  // override is preserved.
-  function workingFor(blank) {
-    const existing = blankState.get(blank.id);
-    if (existing) {
-      if (!existing.dirty) {
-        const seeded = valueForField(existing.field);
-        if (seeded) existing.value = seeded;
+  function detectInserts() {
+    const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
+    const out = [];
+    paragraphs.forEach((paragraph) => {
+      const text = String(paragraph?.text || "");
+      if (!text.trim()) return;
+      const seen = new Set();
+      blankMatches(text).forEach((match) => {
+        if (seen.has(match.index)) return;
+        seen.add(match.index);
+        const slot = classifyBlank(text, match.index, match.text);
+        if (!slot) return;
+        out.push({
+          id: `ins-${paragraph.id}-${match.index}`,
+          mode: "insert",
+          slot,
+          paragraph_id: String(paragraph.id),
+          paragraph_index: paragraph.index ?? null,
+          find: match.text,
+          offset: match.index,
+          context: text,
+        });
+      });
+    });
+    return out;
+  }
+
+  // ── Detection: REPLACE (an Aspora entity already present in the document) ────
+  // Case-insensitive raw-substring locate so the `find` we store is the exact text
+  // present in the paragraph (clean-fill rewrites by indexOf(find)).
+  function rawOccurrence(text, needle) {
+    const n = String(needle || "");
+    if (!n) return null;
+    const idx = text.toLowerCase().indexOf(n.toLowerCase());
+    if (idx === -1) return null;
+    return { index: idx, raw: text.slice(idx, idx + n.length) };
+  }
+
+  // (a) Exact match: an entity's verbatim registry name/address is in the document.
+  function detectExactReplacements() {
+    const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
+    const targetId = (targetEntity() || {}).id || null;
+    const entities = registryEntities();
+    const out = [];
+    paragraphs.forEach((paragraph) => {
+      const text = String(paragraph?.text || "");
+      if (!text.trim()) return;
+      entities.forEach((entity) => {
+        if (entity.id === targetId) return; // already the chosen entity — nothing to swap
+        const legal = String(entity.legal_name || "").trim();
+        const nameHit = rawOccurrence(text, legal);
+        if (nameHit) {
+          out.push({
+            id: `rep-name-${paragraph.id}-${entity.id}-${nameHit.index}`,
+            mode: "replace",
+            slot: "name",
+            paragraph_id: String(paragraph.id),
+            paragraph_index: paragraph.index ?? null,
+            find: nameHit.raw,
+            offset: nameHit.index,
+            context: text,
+            sourceLabel: entity.short_name || legal,
+          });
+        }
+        entityAddressStrings(entity).forEach((addr) => {
+          const addrHit = rawOccurrence(text, addr);
+          if (addrHit) {
+            out.push({
+              id: `rep-addr-${paragraph.id}-${entity.id}-${addrHit.index}`,
+              mode: "replace",
+              slot: "address",
+              paragraph_id: String(paragraph.id),
+              paragraph_index: paragraph.index ?? null,
+              find: addrHit.raw,
+              offset: addrHit.index,
+              context: text,
+              sourceLabel: entity.short_name || legal,
+            });
+          }
+        });
+      });
+    });
+    return out;
+  }
+
+  function escapeRe(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // Defined-terms that mark OUR side in counterparty paper: the "Aspora" brand plus
+  // each registry entity's short name (e.g. "Vance Money").
+  function brandAliases() {
+    const names = ["Aspora"].concat(
+      registryEntities().map((entity) => String(entity.short_name || "").trim()).filter(Boolean),
+    );
+    return [...new Set(names.map((name) => name.toLowerCase()))];
+  }
+
+  // (b) Alias match: a party clause whose DEFINED TERM is one of our brands (e.g.
+  // 'Vance Inc. ... having its registered office at X ... referred to as "Aspora"').
+  // The party name itself need not be a verbatim registry name — the alias marks it
+  // as our side. We extract the name + registered office to offer a swap.
+  function detectAliasReplacements() {
+    const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
+    const aliases = brandAliases();
+    const out = [];
+    paragraphs.forEach((paragraph) => {
+      const text = String(paragraph?.text || "");
+      if (!text.trim()) return;
+      const aliased = aliases.some((alias) =>
+        new RegExp(`(?:referred to as\\s*|\\(\\s*)["“']?\\s*${escapeRe(alias)}\\b`, "i").test(text));
+      if (!aliased) return;
+
+      // NAME: the entity name at the clause start, up to ", a/an company", ", having", etc.
+      const nameMatch = text.match(/^\s*([A-Z][^,\n]{1,90}?)\s*,\s*(?:an? |incorporated|having|with its|registered)/);
+      if (nameMatch) {
+        const hit = rawOccurrence(text, nameMatch[1].trim());
+        if (hit) {
+          out.push({
+            id: `rep-alias-name-${paragraph.id}-${hit.index}`,
+            mode: "replace",
+            slot: "name",
+            paragraph_id: String(paragraph.id),
+            paragraph_index: paragraph.index ?? null,
+            find: hit.raw,
+            offset: hit.index,
+            context: text,
+            sourceLabel: hit.raw,
+          });
+        }
       }
-      return existing;
-    }
-    const fresh = {
-      field: blank.field,
-      value: valueForField(blank.field),
-      mode: "clean",
-      enabled: true,
-      dirty: false,
-    };
-    blankState.set(blank.id, fresh);
-    return fresh;
+      // ADDRESS: after "registered office at …", up to "hereinafter"/"referred to"/"(".
+      const addrMatch = text.match(/(?:registered office (?:at|located at)|having its (?:registered )?office (?:at\s+)?|office (?:at|located at)|principal place of business at)\s+([^]+?)\s*,?\s*(?:hereinafter|referred to as|\()/i);
+      if (addrMatch) {
+        const hit = rawOccurrence(text, addrMatch[1].trim());
+        if (hit && hit.raw.length > 6) {
+          out.push({
+            id: `rep-alias-addr-${paragraph.id}-${hit.index}`,
+            mode: "replace",
+            slot: "address",
+            paragraph_id: String(paragraph.id),
+            paragraph_index: paragraph.index ?? null,
+            find: hit.raw,
+            offset: hit.index,
+            context: text,
+            sourceLabel: "current registered office",
+          });
+        }
+      }
+    });
+    return out;
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  function detectReplacements() {
+    const combined = detectExactReplacements().concat(detectAliasReplacements());
+    const seen = new Set();
+    return combined.filter((item) => {
+      const key = `${item.paragraph_id}|${item.slot}|${item.offset}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function workingFor(candidate) {
+    let existing = itemState.get(candidate.id);
+    if (!existing) {
+      existing = { mode: "clean", enabled: true };
+      itemState.set(candidate.id, existing);
+    }
+    return existing;
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   function render() {
     if (!root) return;
     ensureRegistry();
     api();
 
-    // Gate: generated NDAs were drafted by us with no blanks to fill.
-    if (state.selectedMatter?.source_type === "generated") {
-      root.innerHTML = `
-        <div class="fill-empty">No blanks to fill — this NDA was generated by Aspora.</div>
-      `;
-      return;
-    }
-
     const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
     if (!paragraphs.length) {
-      root.innerHTML = `
-        <div class="fill-empty">Load or review an inbound NDA to scan it for blanks to fill.</div>
-      `;
+      clearDocHighlights();
+      root.innerHTML = '<div class="fill-empty">Load or review an NDA to scan it for Aspora name &amp; address slots.</div>';
       return;
     }
 
-    const blanks = detectBlanks();
+    const inserts = detectInserts();
+    const replacements = detectReplacements();
+    const hasTarget = Boolean(targetEntity());
+
     root.innerHTML = `
       ${renderEntityPicker()}
-      ${renderAiStatus()}
       ${renderAppliedSummary()}
-      ${blanks.length ? renderBlanksList(blanks) : '<div class="fill-empty">No blanks detected in this document.</div>'}
-      ${blanks.length ? renderActions() : ""}
+      ${renderSection("Insert into blanks", inserts)}
+      ${renderSection("Replace existing Aspora identity", replacements)}
+      ${(inserts.length || replacements.length) ? renderActions() : '<div class="fill-empty">No name or address blanks — and no existing Aspora identity — found in this document.</div>'}
     `;
-    bindControls(blanks);
+    const candidates = inserts.concat(replacements);
+    bindControls(candidates);
+    decorateDocument(candidates);
   }
 
   function renderEntityPicker() {
@@ -267,7 +363,6 @@ function createFillController({ state, root, rerenderDocument }) {
       '<option value="">Choose entity…</option>',
       ...entityApi.entities.map((item) => `<option value="${escape(item.id)}"${pick.entityId === item.id ? " selected" : ""}>${escape(entityApi.entityLabel(item))}</option>`),
     ].join("");
-
     let addressField = "";
     if (entity && entityApi.hasMultipleAddresses(entity)) {
       const addressOptions = entity.addresses.map((address) => `<option value="${escape(address.id)}"${pick.addressId === address.id ? " selected" : ""}>${escape(`${address.label} — ${entityApi.formatAddressLines(address)}`)}</option>`).join("");
@@ -275,21 +370,14 @@ function createFillController({ state, root, rerenderDocument }) {
         <label class="fill-field">
           <span>Address</span>
           <select data-fill-address>${addressOptions}</select>
-        </label>
-      `;
+        </label>`;
     }
-
-    const values = entityValues();
-    const bundle = values
-      ? `
-        <dl class="fill-bundle-grid">
-          <div><dt>Legal name</dt><dd>${escape(values.legal_name || "—")}</dd></div>
-          <div><dt>Registered office</dt><dd>${escape(values.registered_office || "—")}</dd></div>
-          <div><dt>Governing law</dt><dd>${escape(values.governing_law || "—")}</dd></div>
-        </dl>
-      `
-      : '<p class="fill-bundle-empty">Pick an entity to source fill values from its bundle.</p>';
-
+    const bundle = entity
+      ? `<dl class="fill-bundle-grid">
+          <div><dt>Name</dt><dd>${escape(targetName() || "—")}</dd></div>
+          <div><dt>Registered office</dt><dd>${escape(targetAddress() || "—")}</dd></div>
+        </dl>`
+      : '<p class="fill-bundle-empty">Pick the Aspora entity to insert / replace with.</p>';
     return `
       <section class="fill-picker" aria-label="Aspora entity">
         <div class="fill-picker-fields">
@@ -300,60 +388,57 @@ function createFillController({ state, root, rerenderDocument }) {
           ${addressField}
         </div>
         ${bundle}
-      </section>
-    `;
+      </section>`;
   }
 
-  function renderBlanksList(blanks) {
+  function renderSection(title, candidates) {
+    if (!candidates.length) return "";
     return `
-      <section class="fill-blank-list" aria-label="Detected blanks">
-        ${blanks.map(renderBlankRow).join("")}
-      </section>
-    `;
+      <section class="fill-section" aria-label="${escape(title)}">
+        <h3 class="fill-section-title">${escape(title)} (${candidates.length})</h3>
+        ${candidates.map(renderRow).join("")}
+      </section>`;
   }
 
-  function renderBlankRow(blank) {
-    const work = workingFor(blank);
-    const fieldOptions = FIELD_OPTIONS.map((option) => `<option value="${escape(option.id)}"${work.field === option.id ? " selected" : ""}>${escape(option.label)}</option>`).join("");
-    const contextHtml = renderContext(blank);
-    const paragraphLabel = blank.paragraph_index != null ? `Paragraph ${escape(blank.paragraph_index)}` : "Paragraph";
+  function renderRow(candidate) {
+    const work = workingFor(candidate);
     const tracked = work.mode === "tracked";
+    const value = valueForSlot(candidate.slot);
+    const slotLabel = candidate.slot === "address" ? "Address" : "Name";
+    const para = candidate.paragraph_index != null ? `¶${escape(candidate.paragraph_index)} · ` : "";
+    const head = candidate.mode === "replace"
+      ? `<span class="fill-slot">Replace ${escape(slotLabel.toLowerCase())}</span>`
+      : `<span class="fill-slot">${escape(slotLabel)}</span>`;
+    const valueLine = value
+      ? `<span class="fill-row-value">${escape(value)}</span>`
+      : '<span class="fill-row-value muted">pick an entity above</span>';
     return `
-      <article class="fill-blank-row${work.enabled ? "" : " disabled"}" data-fill-blank-id="${escape(blank.id)}">
+      <article class="fill-blank-row${work.enabled ? "" : " disabled"}" data-fill-id="${escape(candidate.id)}">
         <header class="fill-blank-head">
           <label class="fill-blank-enable">
             <input type="checkbox" data-fill-enable${work.enabled ? " checked" : ""}>
-            <span>${paragraphLabel}</span>
+            <span>${para}${head}</span>
           </label>
-          <code class="fill-blank-token">${escape(blank.find)}</code>
         </header>
-        <p class="fill-blank-context">${contextHtml}</p>
+        <p class="fill-blank-context">${renderContext(candidate)}</p>
         <div class="fill-blank-controls">
-          <label class="fill-field">
-            <span>Field</span>
-            <select data-fill-field>${fieldOptions}</select>
-          </label>
-          <label class="fill-field fill-field-value">
-            <span>Value</span>
-            <input type="text" data-fill-value value="${escape(work.value)}" placeholder="Value to insert">
-          </label>
+          <span class="fill-arrow" aria-hidden="true">→</span>
+          ${valueLine}
           <div class="fill-mode-toggle" role="group" aria-label="Fill mode">
             <button type="button" data-fill-mode="clean" class="${tracked ? "" : "active"}" aria-pressed="${tracked ? "false" : "true"}">Clean</button>
             <button type="button" data-fill-mode="tracked" class="${tracked ? "active" : ""}" aria-pressed="${tracked ? "true" : "false"}">Tracked</button>
           </div>
         </div>
-      </article>
-    `;
+      </article>`;
   }
 
-  // Renders the paragraph context with the blank token highlighted in place.
-  function renderContext(blank) {
-    const text = String(blank.context || "");
-    const start = Number(blank.offset) || 0;
-    const end = start + String(blank.find || "").length;
-    const head = clip(text.slice(0, start), -90);
-    const tail = clip(text.slice(end), 90);
-    return `${escape(head)}<mark class="fill-blank-mark">${escape(blank.find)}</mark>${escape(tail)}`;
+  function renderContext(candidate) {
+    const text = String(candidate.context || "");
+    const start = Number(candidate.offset) || 0;
+    const end = start + String(candidate.find || "").length;
+    const head = clip(text.slice(0, start), -80);
+    const tail = clip(text.slice(end), 80);
+    return `${escape(head)}<mark class="fill-blank-mark">${escape(candidate.find)}</mark>${escape(tail)}`;
   }
 
   function clip(value, limit) {
@@ -368,22 +453,8 @@ function createFillController({ state, root, rerenderDocument }) {
   function renderActions() {
     return `
       <div class="fill-actions">
-        <button type="button" class="fill-ai" data-fill-ai${aiBusy ? " disabled" : ""}>${aiBusy ? "Analyzing…" : "✨ Suggest with AI"}</button>
-        <button type="button" class="fill-apply" data-fill-apply>Apply fills</button>
-      </div>
-    `;
-  }
-
-  // Surfaces the AI pass result: the detected Aspora party, plus any soft error
-  // (the tool still works on the keyword heuristic when AI is unavailable).
-  function renderAiStatus() {
-    const parts = [];
-    if (aiParty && aiParty.name) {
-      const note = aiParty.note ? ` — ${escape(aiParty.note)}` : "";
-      parts.push(`<div class="fill-ai-party">AI read this as <strong>${escape(aiParty.name)}</strong> being the Aspora side${note}. Rows are pre-filled for that party only.</div>`);
-    }
-    if (aiError) parts.push(`<div class="fill-ai-error">${escape(aiError)}</div>`);
-    return parts.length ? `<div class="fill-ai-status" role="status">${parts.join("")}</div>` : "";
+        <button type="button" class="fill-apply" data-fill-apply>Apply</button>
+      </div>`;
   }
 
   function renderAppliedSummary() {
@@ -393,15 +464,13 @@ function createFillController({ state, root, rerenderDocument }) {
     const trackedCount = fills.length - cleanCount;
     return `
       <div class="fill-applied" role="status">
-        ${escape(fills.length)} ${fills.length === 1 ? "fill" : "fills"} applied
-        (${escape(cleanCount)} clean, ${escape(trackedCount)} tracked).
-        <button type="button" class="fill-clear" data-fill-clear>Clear applied fills</button>
-      </div>
-    `;
+        ${escape(fills.length)} applied (${escape(cleanCount)} clean, ${escape(trackedCount)} tracked).
+        <button type="button" class="fill-clear" data-fill-clear>Clear</button>
+      </div>`;
   }
 
-  // ── Events ────────────────────────────────────────────────────────────────
-  function bindControls(blanks) {
+  // ── Events ──────────────────────────────────────────────────────────────────
+  function bindControls(candidates) {
     const entitySelect = root.querySelector("[data-fill-entity]");
     if (entitySelect) {
       entitySelect.addEventListener("change", () => {
@@ -417,36 +486,16 @@ function createFillController({ state, root, rerenderDocument }) {
       });
     }
 
-    const blankById = new Map(blanks.map((blank) => [blank.id, blank]));
-    root.querySelectorAll("[data-fill-blank-id]").forEach((rowNode) => {
-      const blankId = rowNode.dataset.fillBlankId;
-      const blank = blankById.get(blankId);
-      if (!blank) return;
-      const work = workingFor(blank);
-
+    const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    root.querySelectorAll("[data-fill-id]").forEach((rowNode) => {
+      const candidate = byId.get(rowNode.dataset.fillId);
+      if (!candidate) return;
+      const work = workingFor(candidate);
       const enable = rowNode.querySelector("[data-fill-enable]");
       enable?.addEventListener("change", () => {
         work.enabled = enable.checked;
         rowNode.classList.toggle("disabled", !work.enabled);
       });
-
-      const fieldSelect = rowNode.querySelector("[data-fill-field]");
-      const valueInput = rowNode.querySelector("[data-fill-value]");
-      fieldSelect?.addEventListener("change", () => {
-        work.field = fieldSelect.value;
-        // Re-seed the value from the newly-chosen field unless the user has typed
-        // a custom value already.
-        if (!work.dirty) {
-          const seeded = valueForField(work.field);
-          work.value = seeded;
-          if (valueInput) valueInput.value = seeded;
-        }
-      });
-      valueInput?.addEventListener("input", () => {
-        work.value = valueInput.value;
-        work.dirty = true;
-      });
-
       rowNode.querySelectorAll("[data-fill-mode]").forEach((button) => {
         button.addEventListener("click", () => {
           work.mode = button.dataset.fillMode === "tracked" ? "tracked" : "clean";
@@ -459,149 +508,51 @@ function createFillController({ state, root, rerenderDocument }) {
       });
     });
 
-    root.querySelector("[data-fill-apply]")?.addEventListener("click", () => applyFills(blanks));
+    root.querySelector("[data-fill-apply]")?.addEventListener("click", () => applyFills(candidates));
     root.querySelector("[data-fill-clear]")?.addEventListener("click", () => clearFills());
-    root.querySelector("[data-fill-ai]")?.addEventListener("click", () => suggestWithAI(blanks));
-  }
-
-  // ── AI suggest ──────────────────────────────────────────────────────────────
-  // Sends the document + detected blanks + chosen entity to the backend AI pass,
-  // which identifies the Aspora party and classifies each blank (field + whether
-  // it belongs to Aspora + whether to fill it). Merges the result into the
-  // per-blank working state. Entity-field values come from OUR registry (via
-  // valueForField), never the model's echo. Degrades to the keyword heuristic on
-  // any error or when AI isn't configured — never blocks manual filling.
-  const AI_ENTITY_FIELDS = new Set([
-    "legal_name", "registered_office", "incorporation_jurisdiction",
-    "governing_law", "signatory_name", "signatory_title",
-  ]);
-
-  function suggestWithAI(blanks) {
-    api();
-    const entity = entityApi.selectedEntity(pick);
-    if (!entity) {
-      aiParty = null;
-      aiError = "Pick an Aspora entity first, then run AI suggest.";
-      render();
-      return;
-    }
-    if (aiBusy) return;
-    aiBusy = true;
-    aiError = "";
-    render();
-
-    const documentText = (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [])
-      .map((paragraph) => String(paragraph?.text || ""))
-      .join("\n\n");
-    const payloadBlanks = blanks.map((blank) => ({
-      id: blank.id,
-      paragraph_id: blank.paragraph_id,
-      find: blank.find,
-      context: blank.context,
-    }));
-
-    fetch("/api/fill-suggestions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity_id: entity.id, document_text: documentText, blanks: payloadBlanks }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        aiBusy = false;
-        const status = data && data.status;
-        if (status === "not_configured") {
-          aiParty = null;
-          aiError = "AI suggestions aren't configured here — showing keyword guesses.";
-          render();
-          return;
-        }
-        if (!data || status !== "ok") {
-          aiError = "AI suggestion failed — showing keyword guesses.";
-          render();
-          return;
-        }
-        aiParty = data.aspora_party || null;
-        const byId = new Map(blanks.map((blank) => [blank.id, blank]));
-        (Array.isArray(data.classifications) ? data.classifications : []).forEach((item) => {
-          const blank = byId.get(item && item.blank_id);
-          if (!blank) return;
-          const work = workingFor(blank);
-          const fill = item.fill !== false;
-          work.enabled = fill;
-          if (!fill) {
-            // AI skipped this blank (the counterparty's, a bare signature line, or
-            // an instruction note): clear any guess so no Aspora data leaks in.
-            work.field = "custom";
-            work.value = "";
-            work.dirty = false;
-            return;
-          }
-          // Map the backend's field ids onto the picker's: the backend emits
-          // "date"/"other" where the picker only offers "custom".
-          const field = AI_ENTITY_FIELDS.has(item.field) ? item.field : "custom";
-          work.field = field;
-          // The server's value is authoritative — the registry value for entity
-          // fields, a document-grounded literal for custom.
-          work.value = String(item.value || "");
-          work.dirty = field === "custom" ? Boolean(work.value) : false;
-        });
-        render();
-      })
-      .catch(() => {
-        aiBusy = false;
-        aiError = "AI suggestion failed — showing keyword guesses.";
-        render();
-      });
   }
 
   // ── Apply ─────────────────────────────────────────────────────────────────
-  // Commits the enabled blanks: pushes a record to state.filledBlanks and, for
-  // CLEAN fills, rewrites the paragraph text + advances the manual-redline
-  // baseline so manualExportRedlines() doesn't also emit a tracked redline for
-  // the same change (avoiding double counting). TRACKED fills leave the text and
-  // baseline untouched — the backend renders them as tracked changes on export.
-  function applyFills(blanks) {
+  // Each enabled candidate becomes a fill record { paragraph_id, find, value,
+  // mode }. CLEAN rewrites the paragraph text + advances the manual-redline
+  // baseline (so manualExportRedlines doesn't double-emit it); TRACKED leaves the
+  // text alone for the backend to render as a tracked change on export.
+  function applyFills(candidates) {
     api();
     let cleanTouched = false;
     let applied = 0;
-    blanks.forEach((blank) => {
-      const work = workingFor(blank);
+    candidates.forEach((candidate) => {
+      const work = workingFor(candidate);
       if (!work.enabled) return;
-      const value = String(work.value || "").trim();
-      if (!value) return;
+      const value = String(valueForSlot(candidate.slot) || "").trim();
+      if (!value || value === candidate.find) return;
       const record = {
-        id: blank.id,
-        paragraph_id: blank.paragraph_id,
-        find: blank.find,
+        id: candidate.id,
+        paragraph_id: candidate.paragraph_id,
+        find: candidate.find,
         value,
-        field: work.field,
+        field: candidate.slot === "address" ? "registered_office" : "legal_name",
         mode: work.mode === "tracked" ? "tracked" : "clean",
       };
       upsertFill(record);
       applied += 1;
-      if (record.mode === "clean") {
-        if (applyCleanFill(record)) cleanTouched = true;
-      }
+      if (record.mode === "clean" && applyCleanFill(record)) cleanTouched = true;
     });
 
-    if (cleanTouched && typeof rerenderDocument === "function") {
-      rerenderDocument();
-    }
-    // Mark the matter's redline draft dirty so the applied fills are saved/sent
-    // alongside the other review edits (no-op when there's no loaded matter).
+    if (cleanTouched && typeof rerenderDocument === "function") rerenderDocument();
     if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
     render();
     if (typeof setFileMeta === "function") {
+      const name = targetName();
       setFileMeta(applied
-        ? `Applied ${applied} ${applied === 1 ? "fill" : "fills"} from the entity bundle.`
-        : "No blanks were filled — enable a blank and give it a value.");
+        ? `Applied ${applied} ${applied === 1 ? "change" : "changes"}${name ? ` for ${name}` : ""}.`
+        : "Nothing applied — pick an entity and enable a row.");
     }
   }
 
-  // Rewrites the first occurrence of the blank token in the paragraph with the
-  // value, in BOTH the live paragraph and the export baseline, so the viewer
-  // shows the filled text and manualExportRedlines() sees no difference for it.
-  // Returns true when it actually mutated text.
+  // Rewrites the first occurrence of `find` in the paragraph with `value`, in BOTH
+  // the live paragraph and the export baselines, so the viewer shows the change and
+  // manualExportRedlines() sees no diff for it.
   function applyCleanFill(record) {
     let touched = false;
     const replaceIn = (list) => {
@@ -615,8 +566,6 @@ function createFillController({ state, root, rerenderDocument }) {
       touched = true;
     };
     replaceIn(state.reviewParagraphs);
-    // Advance BOTH baseline snapshots so the clean fill is treated as the new
-    // original — manualRedlineBaselineParagraphs() prefers reviewExportOriginalParagraphs.
     replaceIn(state.reviewExportOriginalParagraphs);
     replaceIn(state.reviewOriginalParagraphs);
     return touched;
@@ -635,13 +584,77 @@ function createFillController({ state, root, rerenderDocument }) {
     if (typeof setFileMeta === "function") setFileMeta("Cleared applied fills.");
   }
 
-  return { render };
+  // ── Document highlighting ───────────────────────────────────────────────────
+  // Mirrors the generator's yellow placeholder highlight: marks each detected slot
+  // / existing-identity span directly in the rendered document so the reviewer sees
+  // WHERE each row points. Post-render DOM decoration (fully unwrappable), re-applied
+  // on every Fill render and cleared when the Fill tab is left.
+  function cssEscape(value) {
+    if (typeof window !== "undefined" && window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(String(value));
+    }
+    return String(value).replace(/["\\\]]/g, "\\$&");
+  }
+
+  function clearDocHighlights() {
+    const render = document.getElementById("studioDocumentRender");
+    if (!render) return;
+    render.querySelectorAll("mark.fill-doc-highlight").forEach((mark) => {
+      const parent = mark.parentNode;
+      if (!parent) return;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+    });
+  }
+
+  function highlightSpan(el, find) {
+    const needle = String(find || "");
+    if (!needle) return;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let node = walker.nextNode();
+    while (node) {
+      const parent = node.parentNode;
+      const alreadyMarked = parent && parent.classList && parent.classList.contains("fill-doc-highlight");
+      if (!alreadyMarked) {
+        const idx = node.nodeValue.indexOf(needle);
+        if (idx !== -1) {
+          const range = document.createRange();
+          range.setStart(node, idx);
+          range.setEnd(node, idx + needle.length);
+          const mark = document.createElement("mark");
+          mark.className = "fill-doc-highlight";
+          mark.setAttribute("contenteditable", "false");
+          try {
+            range.surroundContents(mark);
+          } catch (error) {
+            // The span crosses element boundaries (rich runs) — skip rather than break.
+          }
+          return;
+        }
+      }
+      node = walker.nextNode();
+    }
+  }
+
+  function decorateDocument(candidates) {
+    const render = document.getElementById("studioDocumentRender");
+    if (!render || render.hidden) return;
+    clearDocHighlights();
+    candidates.forEach((candidate) => {
+      const id = String(candidate.paragraph_id || "");
+      const para = render.querySelector(`[data-editable-paragraph-id="${cssEscape(id)}"]`)
+        || render.querySelector(`[data-paragraph-id="${cssEscape(id)}"]`);
+      if (para) highlightSpan(para, candidate.find);
+    });
+  }
+
+  return { render, clearHighlights: clearDocHighlights };
 }
 
-// Export payload helper, shared by the DOCX export (and any other outbound
-// flow). Maps state.filledBlanks to the backend-agreed shape:
-// { paragraph_id, find, value, mode }. A global (classic-script) function so the
-// review-workstation action modules can call it without importing the controller.
+// Export payload helper shared by the DOCX export (and send-redline). Maps
+// state.filledBlanks to the backend shape { paragraph_id, find, value, mode }. The
+// backend substitutes find->value as plain text (clean) or a tracked change.
 function currentReviewFills() {
   const fills = Array.isArray(state.filledBlanks) ? state.filledBlanks : [];
   return fills.map((fill) => ({

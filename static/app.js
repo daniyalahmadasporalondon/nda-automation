@@ -924,6 +924,11 @@ function setReviewInspectorView(viewName) {
   state.reviewInspectorView = normalizeReviewInspectorView(viewName);
   updateReviewInspectorTabs();
   renderStudioDetail();
+  // Leaving the Fill tab: drop its yellow document highlights (the Fill controller
+  // re-applies them when the tab is shown again).
+  if (state.reviewInspectorView !== "fill" && reviewFillController && typeof reviewFillController.clearHighlights === "function") {
+    reviewFillController.clearHighlights();
+  }
 }
 
 function updateReviewInspectorTabs() {

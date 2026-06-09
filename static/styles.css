@@ -3930,11 +3930,59 @@ textarea::placeholder {
   padding: 0 3px;
 }
 
+/* Yellow span highlight painted into the rendered document for each detected
+   Fill slot / existing-identity, mirroring the generator's placeholder highlight. */
+.fill-doc-highlight {
+  background: #fff0c2;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(214, 178, 70, 0.45);
+  color: inherit;
+  padding: 0 1px;
+}
+
 .fill-blank-controls {
-  align-items: flex-end;
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.fill-section {
+  margin-top: 14px;
+}
+
+.fill-section-title {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.fill-slot {
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.fill-arrow {
+  color: var(--ink-muted);
+  font-weight: 800;
+}
+
+.fill-row-value {
+  color: var(--ink);
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.fill-row-value.muted {
+  color: var(--ink-muted);
+  font-style: italic;
+  font-weight: 500;
 }
 
 .fill-mode-toggle {
