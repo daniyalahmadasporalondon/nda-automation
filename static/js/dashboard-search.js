@@ -53,6 +53,7 @@ const DashboardSearchView = (() => {
     // query. Optional — absent on an old cached page; the box still works.
     interpretedLine,
     getMatters,
+    ensureMatters,
     openMatter,
     // Async seam: POST to the summary endpoint and resolve the parsed JSON body
     // (plus the HTTP ok flag). Lives in app.js so this controller stays DOM-only
@@ -89,6 +90,17 @@ const DashboardSearchView = (() => {
     function matters() {
       const list = typeof getMatters === "function" ? getMatters() : [];
       return Array.isArray(list) ? list : [];
+    }
+
+    async function ensureMatterList() {
+      if (typeof ensureMatters !== "function") return;
+      if (matters().length) return;
+      try {
+        await ensureMatters();
+      } catch (error) {
+        // load failures are rendered by the repository board; search still falls
+        // back to an empty deterministic result set instead of throwing.
+      }
     }
 
     function renderChips() {
@@ -154,24 +166,55 @@ const DashboardSearchView = (() => {
       );
     }
 
-    function renderResults(results, { emptyMessage }) {
+    function renderResults(results, { emptyMessage, statusPrefix = "" }) {
       if (!resultsList) return;
       if (!results.length) {
         resultsList.innerHTML = "";
         resultsList.hidden = true;
         if (resultsStatus) {
           resultsStatus.hidden = false;
-          resultsStatus.textContent = emptyMessage;
+          resultsStatus.textContent = [statusPrefix, emptyMessage].filter(Boolean).join(" ");
         }
         return;
       }
       if (resultsStatus) {
         resultsStatus.hidden = false;
         const noun = results.length === 1 ? "document" : "documents";
-        resultsStatus.textContent = `${results.length} ${noun}`;
+        resultsStatus.textContent = [statusPrefix, `${results.length} ${noun}`].filter(Boolean).join(" ");
       }
       resultsList.hidden = false;
       resultsList.innerHTML = results.map((matter) => resultItemMarkup(matter)).join("");
+    }
+
+    function isSystemInfoQuery(query) {
+      const normalized = String(query || "").toLowerCase();
+      return /\b(ai|artificial intelligence|system|app|dashboard|search|help|working|works|what can)\b/.test(normalized)
+        && /\b(system|app|dashboard|search|help|working|works|what can|do)\b/.test(normalized);
+    }
+
+    function renderSystemInfo(query, { aiFallback = false } = {}) {
+      activeSpec = null;
+      activeInterpreted = "";
+      setInterpreted("");
+      if (resultsStatus) {
+        resultsStatus.hidden = false;
+        resultsStatus.textContent = aiFallback
+          ? "AI search is unavailable right now; keyword search is still active."
+          : "Dashboard AI search is available for document filters.";
+      }
+      if (!resultsList) return;
+      resultsList.hidden = false;
+      resultsList.innerHTML =
+        `<li class="dashboard-search-result dashboard-search-system-answer">` +
+        `<p class="dashboard-search-system-title">Dashboard AI search</p>` +
+        `<p class="dashboard-search-system-copy">` +
+        `This search bar translates natural-language document questions into safe repository filters. ` +
+        `It only shows real documents already loaded in your workspace; it does not invent answers or browse outside the system.` +
+        `</p>` +
+        `<p class="dashboard-search-system-copy">` +
+        `${aiFallback ? "The AI translator is currently unavailable, so the bar is using keyword search only." : "When AI is configured, it reads your query and returns a filter, then the browser applies that filter to your matter list."}` +
+        `</p>` +
+        `</li>`;
     }
 
     // v3 "Find documents linked to a counterparty": render the real matters grouped
@@ -236,12 +279,12 @@ const DashboardSearchView = (() => {
     // The v1 deterministic keyword filter — the always-available fallback. Used
     // directly when no AI seam is wired, and as the graceful fallback whenever the
     // AI endpoint returns {fallback:true}, errors, or yields an empty spec.
-    function renderKeywordResults(query) {
+    function renderKeywordResults(query, { statusPrefix = "" } = {}) {
       activeSpec = null;
       activeInterpreted = "";
       const results = (lib().filterMattersByText || (() => []))(matters(), query);
       setInterpreted("");
-      renderResults(results, { emptyMessage: "No documents match your search." });
+      renderResults(results, { emptyMessage: "No documents match your search.", statusPrefix });
     }
 
     // Run the free-text search. v2: translate the natural-language query into a
@@ -259,6 +302,8 @@ const DashboardSearchView = (() => {
       activeChipId = "";
       activeQuery = query;
       renderChips();
+
+      await ensureMatterList();
 
       // No AI seam wired -> v1 keyword search directly.
       if (typeof searchIntent !== "function") {
@@ -293,7 +338,11 @@ const DashboardSearchView = (() => {
 
       // Fallback signal, error, or no spec -> v1 keyword search.
       if (!ok || payload.fallback === true || spec == null) {
-        renderKeywordResults(query);
+        if (isSystemInfoQuery(query)) {
+          renderSystemInfo(query, { aiFallback: true });
+          return;
+        }
+        renderKeywordResults(query, { statusPrefix: "AI search is unavailable; showing keyword matches only." });
         return;
       }
 
@@ -304,11 +353,15 @@ const DashboardSearchView = (() => {
       // An all-null spec means the query didn't map to any dimension — the AI
       // couldn't structure it, so honor the user's words via v1 keyword search.
       if (typeof isEmpty === "function" && isEmpty(validated)) {
+        if (isSystemInfoQuery(query)) {
+          renderSystemInfo(query);
+          return;
+        }
         renderKeywordResults(query);
         return;
       }
       if (typeof apply !== "function") {
-        renderKeywordResults(query);
+        renderKeywordResults(query, { statusPrefix: "AI search is unavailable; showing keyword matches only." });
         return;
       }
 

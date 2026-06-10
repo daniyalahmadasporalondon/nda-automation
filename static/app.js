@@ -97,6 +97,7 @@ const dashboardSearchController = createDashboardSearchController({
   resultsStatus: document.querySelector("#dashboardSearchResultsStatus"),
   interpretedLine: document.querySelector("#dashboardSearchInterpreted"),
   getMatters: () => state.matters,
+  ensureMatters: () => repositoryController.loadMatters(),
   openMatter: (matterId) => {
     // Reuse the repository open-matter flow, then surface the Repository tab so
     // the opened matter's detail panel is visible.
@@ -268,6 +269,15 @@ authSessionController = createAuthSessionController({
   root: document.querySelector("#sessionStrip"),
   userNode: document.querySelector("[data-session-user]"),
   gmailNode: document.querySelector("[data-session-gmail]"),
+  accountToggle: document.querySelector("[data-session-account-toggle]"),
+  accountMenu: document.querySelector("[data-session-account-menu]"),
+  avatarNode: document.querySelector("[data-session-avatar]"),
+  avatarImage: document.querySelector("[data-session-avatar-image]"),
+  avatarInitial: document.querySelector("[data-session-avatar-initial]"),
+  menuGreeting: document.querySelector("[data-session-menu-greeting]"),
+  menuStatus: document.querySelector("[data-session-menu-status]"),
+  menuAvatarImage: document.querySelector("[data-session-menu-avatar-image]"),
+  menuAvatarInitial: document.querySelector("[data-session-menu-avatar-initial]"),
   greetingNode: document.querySelector("#dashboardHeroTitle"),
   warningNode: document.querySelector("[data-session-warning]"),
   loginLink: document.querySelector("[data-session-login]"),
@@ -415,6 +425,22 @@ dashboardSubmitButton?.addEventListener("click", () => {
 
 document.querySelector("[data-dashboard-send-document]")?.addEventListener("click", () => {
   sendDocumentController.openModal();
+});
+
+document.querySelectorAll("[data-dashboard-metric-column]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const columnId = button.dataset.dashboardMetricColumn;
+    activateTab("repository");
+    requestAnimationFrame(() => {
+      const list = Array.from(document.querySelectorAll("[data-repository-list]"))
+        .find((node) => node.dataset.repositoryList === columnId);
+      const column = list?.closest(".repository-column");
+      column?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      if (!column) return;
+      column.classList.add("is-dashboard-target");
+      window.setTimeout(() => column.classList.remove("is-dashboard-target"), 1400);
+    });
+  });
 });
 
 document.querySelectorAll("[data-repository-add-column]").forEach((button) => {

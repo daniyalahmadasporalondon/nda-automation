@@ -10,6 +10,15 @@ const AuthSessionView = (() => {
     connectButton,
     syncButton,
     disconnectButton,
+    accountToggle,
+    accountMenu,
+    avatarNode,
+    avatarImage,
+    avatarInitial,
+    menuGreeting,
+    menuStatus,
+    menuAvatarImage,
+    menuAvatarInitial,
     greetingNode,
     reviewErrorFromPayload,
     onGmailStatus,
@@ -19,6 +28,7 @@ const AuthSessionView = (() => {
     let gmailStatus = null;
     let deploymentStatus = null;
     let greetingHelper = null;
+    let menuOpen = false;
     const api = RepositoryApi.create({ reviewErrorFromPayload });
 
     // Load the greeting name-resolution helper once; re-render the greeting when
@@ -49,6 +59,15 @@ const AuthSessionView = (() => {
     });
     disconnectButton?.addEventListener("click", disconnectGmail);
     syncButton?.addEventListener("click", syncGmail);
+    accountToggle?.addEventListener("click", () => setMenuOpen(!menuOpen));
+    document.addEventListener("click", (event) => {
+      if (!menuOpen || !root) return;
+      if (root.contains(event.target)) return;
+      setMenuOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    });
 
     async function load() {
       if (!root) return;
@@ -155,33 +174,99 @@ const AuthSessionView = (() => {
       const setupRequired = canUseUserGmail && (!inbound.ready || !outbound.ready);
 
       if (userNode) {
+        const firstName = firstNameForUser(user, gmailStatus);
         userNode.textContent = authStatus === null
           ? "Checking account"
           : authenticated
-          ? `Signed in: ${user.email || user.name || user.id || "Google user"}`
+          ? `Hi, ${firstName}!`
           : authStatus?.google_oauth_configured
           ? "Sign in required"
           : "Local session";
+        if (menuGreeting) {
+          menuGreeting.textContent = authenticated ? `Hi, ${firstName}!` : "Hi!";
+        }
       }
       if (gmailNode) {
-        gmailNode.textContent = gmailStatus === null
+        const gmailLabel = gmailStatus === null
           ? "Checking Gmail"
           : canUseUserGmail
           ? ready
-            ? `Gmail connected: ${inbound.email || outbound.email || "this user"}`
+            ? `Gmail: ${inbound.email || outbound.email || "connected"}`
             : setupRequired
             ? "Gmail needs connection"
             : "Gmail status unavailable"
           : legacyGmailLabel(gmailStatus);
+        gmailNode.textContent = gmailLabel;
+        if (menuStatus) menuStatus.textContent = gmailLabel;
       }
+      renderAvatar(user, gmailStatus);
 
       toggleHidden(loginLink, authenticated || !authStatus?.login_url);
-      toggleHidden(logoutButton, !authenticated);
+      toggleHidden(logoutButton, authStatus === null);
       toggleHidden(connectButton, !canUseUserGmail || ready);
       toggleHidden(disconnectButton, !canUseUserGmail || (!inbound.token?.configured && !outbound.token?.configured));
       toggleHidden(syncButton, !canUseUserGmail || !inboundOnlyReady);
       setWarning(deploymentWarning() || authStatus?.error || "");
+      if (accountToggle) {
+        accountToggle.disabled = authStatus === null && gmailStatus === null;
+        accountToggle.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+        const labelName = userNode?.textContent || "Account";
+        accountToggle.setAttribute("aria-label", `${labelName}. Open account menu.`);
+      }
+      renderMenuVisibility();
       renderGreeting();
+    }
+
+    function setMenuOpen(open) {
+      menuOpen = Boolean(open);
+      renderMenuVisibility();
+    }
+
+    function renderMenuVisibility() {
+      toggleHidden(accountMenu, !menuOpen);
+      accountToggle?.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+    }
+
+    function renderAvatar(user, status) {
+      if (!avatarNode) return;
+      const picture = String(user?.picture || "").trim();
+      const initial = firstNameForUser(user, status).slice(0, 1).toUpperCase() || "A";
+      if (avatarInitial) avatarInitial.textContent = initial;
+      if (avatarImage) {
+        if (picture) {
+          avatarImage.src = picture;
+          avatarImage.hidden = false;
+          if (avatarInitial) avatarInitial.hidden = true;
+        } else {
+          avatarImage.removeAttribute("src");
+          avatarImage.hidden = true;
+          if (avatarInitial) avatarInitial.hidden = false;
+        }
+      }
+      if (menuAvatarInitial) menuAvatarInitial.textContent = initial;
+      if (menuAvatarImage) {
+        if (picture) {
+          menuAvatarImage.src = picture;
+          menuAvatarImage.hidden = false;
+          if (menuAvatarInitial) menuAvatarInitial.hidden = true;
+        } else {
+          menuAvatarImage.removeAttribute("src");
+          menuAvatarImage.hidden = true;
+          if (menuAvatarInitial) menuAvatarInitial.hidden = false;
+        }
+      }
+    }
+
+    function firstNameForUser(user, status) {
+      const name = String(user?.name || "").trim();
+      if (name && name !== String(user?.email || "").trim()) return name.split(/\s+/)[0] || "there";
+      const email = String(user?.email || status?.inbound?.email || status?.outbound?.email || "").trim();
+      if (email.includes("@")) {
+        const local = email.split("@")[0].replace(/[._-]+/g, " ").trim();
+        const first = local.split(/\s+/)[0] || "";
+        return first ? first.slice(0, 1).toUpperCase() + first.slice(1) : "there";
+      }
+      return name || "there";
     }
 
     function deploymentWarning() {
