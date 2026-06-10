@@ -11,8 +11,9 @@ proves:
 * a natural-language query maps to the right validated filters,
 * the validator DROPS an out-of-enum status/phase the model returns,
 * min_age_days is CLAMPED (and 0/negative disabled),
-* AI disabled / a provider failure degrades to the graceful {fallback: true}
-  signal with HTTP 200 (never a 500),
+* AI disabled / a provider failure degrades to deterministic local filters for
+  common queries, else the graceful {fallback: true} signal with HTTP 200
+  (never a 500),
 * the empty query short-circuits with no AI call,
 * auth is consistent with the other routes (unauthenticated -> 401).
 """
@@ -237,13 +238,28 @@ class DashboardSearchIntentRouteTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertTrue(dashboard_search_intent.filter_spec_is_empty(payload["filters"]))
 
-    def test_ai_unavailable_returns_graceful_fallback_signal_not_500(self):
-        # AI disabled (no injected transport AND settings disabled) -> the route
-        # returns the friendly fallback signal with HTTP 200, never a 500/stack.
+    def test_ai_unavailable_returns_deterministic_filters_not_empty_results(self):
+        # AI disabled (no injected transport AND settings disabled) still returns
+        # a usable deterministic filter for common queries, instead of forcing the
+        # frontend to keyword-search filler words like "show me docs".
         del QuietHandler.dashboard_search_intent_transport  # force the real path
         with self._env(extra={}), _patch_settings(enabled=False):
             status, payload, _ = self.search_intent(
-                "Acme docs", headers=self.basic_auth_headers()
+                "show me Acme docs awaiting approval", headers=self.basic_auth_headers()
+            )
+        self.assertEqual(status, 200, payload)
+        self.assertNotIn("fallback", payload)
+        self.assertTrue(payload["deterministic"])
+        self.assertEqual(payload["reason"], dashboard_search_intent.FALLBACK_REASON_AI_UNAVAILABLE)
+        self.assertEqual(payload["filters"]["status"], "awaiting_approval")
+        self.assertEqual(payload["filters"]["phase"], "approval")
+        self.assertEqual(payload["filters"]["text"], "Acme")
+
+    def test_ai_unavailable_still_returns_fallback_signal_when_unmappable(self):
+        del QuietHandler.dashboard_search_intent_transport  # force the real path
+        with self._env(extra={}), _patch_settings(enabled=False):
+            status, payload, _ = self.search_intent(
+                "show me documents", headers=self.basic_auth_headers()
             )
         self.assertEqual(status, 200, payload)
         self.assertIsNone(payload["filters"])
@@ -254,23 +270,26 @@ class DashboardSearchIntentRouteTests(unittest.TestCase):
         _StubIntentTransport.error = dashboard_search_intent.DashboardSearchIntentUnavailableError()
         with self._env():
             status, payload, _ = self.search_intent(
-                "Acme docs", headers=self.basic_auth_headers()
+                "Acme docs awaiting approval", headers=self.basic_auth_headers()
             )
         self.assertEqual(status, 200, payload)
-        self.assertIsNone(payload["filters"])
-        self.assertTrue(payload["fallback"])
+        self.assertTrue(payload["deterministic"])
         self.assertEqual(payload["reason"], dashboard_search_intent.FALLBACK_REASON_AI_UNAVAILABLE)
+        self.assertEqual(payload["filters"]["text"], "Acme")
+        self.assertEqual(payload["filters"]["status"], "awaiting_approval")
 
     def test_unexpected_transport_error_still_degrades_gracefully(self):
-        # Even a bare RuntimeError from the transport degrades to the fallback signal
-        # (the translator wraps any non-DashboardSearchIntentError failure).
+        # Even a bare RuntimeError from the transport degrades to deterministic
+        # local intent when the query can be mapped.
         _StubIntentTransport.error = RuntimeError("kaboom")
         with self._env():
             status, payload, _ = self.search_intent(
-                "Acme docs", headers=self.basic_auth_headers()
+                "Vance pending approval", headers=self.basic_auth_headers()
             )
         self.assertEqual(status, 200, payload)
-        self.assertTrue(payload["fallback"])
+        self.assertTrue(payload["deterministic"])
+        self.assertEqual(payload["filters"]["status"], "awaiting_approval")
+        self.assertEqual(payload["filters"]["text"], "Vance")
 
     def test_empty_query_short_circuits_with_no_ai_call(self):
         # An empty/whitespace query returns the all-null spec WITHOUT calling the AI.

@@ -12,9 +12,11 @@ the query string), so there is nothing tenant-scoped to leak here; ownership sta
 on the frontend's existing ``state.matters`` (already tenant-filtered by the matters
 list route) where the spec is applied.
 
-Graceful degradation: when AI is disabled / unconfigured / the call fails, we return
-a clean ``{"filters": null, "fallback": true, "reason": "ai_unavailable"}`` with HTTP
-200 (never a 500), so the frontend falls back to v1 keyword search.
+Graceful degradation: when AI is disabled / unconfigured / the call fails, the
+route first returns a deterministic local filter for common queries. Only
+unmappable queries return a clean ``{"filters": null, "fallback": true,
+"reason": "ai_unavailable"}`` with HTTP 200 (never a 500), so the frontend falls
+back to v1 keyword search.
 """
 from __future__ import annotations
 
@@ -42,8 +44,16 @@ def handle_dashboard_search_intent(handler) -> None:
             query, transport=_search_intent_transport(handler)
         )
     except dashboard_search_intent.DashboardSearchIntentUnavailableError:
-        # AI off / unconfigured / provider failed -> graceful fallback signal (200),
-        # never a crash. The frontend falls back to v1 keyword search.
+        deterministic = dashboard_search_intent.deterministic_search_intent(
+            query,
+            reason=dashboard_search_intent.FALLBACK_REASON_AI_UNAVAILABLE,
+        )
+        if not dashboard_search_intent.filter_spec_is_empty(deterministic["filters"]):
+            handler._send_json(deterministic)
+            return
+        # AI off / unconfigured / provider failed, and the local parser could not
+        # map the query -> graceful fallback signal (200), never a crash. The
+        # frontend falls back to v1 keyword search.
         handler._send_json(
             {
                 "filters": None,
