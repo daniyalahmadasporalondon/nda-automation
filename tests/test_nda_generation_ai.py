@@ -9,12 +9,32 @@ Playbook wording — so the generated NDA always still passes its own Playbook.
 from __future__ import annotations
 
 import datetime
+import io
+import json
+from unittest.mock import patch
 
 import pytest
 
 from nda_automation import nda_generation as gen
 from nda_automation import nda_generation_ai as gen_ai
 from nda_automation.checker import load_playbook
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        return _FakeResponse(response_bytes)
+
+    return urlopen
 
 
 @pytest.fixture
@@ -61,6 +81,24 @@ class TestBuildClauseAdapter:
         adapter = gen_ai.build_clause_adapter(provider=lambda request: "")
         assert adapter is not None
         assert hasattr(adapter, "adapt")
+
+    def test_openrouter_clause_adapter_uses_shared_runtime_adapter(self):
+        captured = []
+        response = json.dumps(
+            {"choices": [{"message": {"content": "Adapted clause text."}}]}
+        ).encode("utf-8")
+        adapter = gen_ai.OpenRouterClauseAdapter(api_key="sk-test", model="x-ai/grok-4.3")
+
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            adapted = adapter.adapt("mutuality", "Each party is bound.", {"counterparty": "Acme"})
+
+        assert adapted == "Adapted clause text."
+        assert len(captured) == 1
+        assert captured[0].headers["Authorization"] == "Bearer sk-test"
+        body = json.loads(captured[0].data.decode("utf-8"))
+        assert body["model"] == "x-ai/grok-4.3"
+        assert body["temperature"] == 0.2
+        assert "Each party is bound." in body["messages"][1]["content"]
 
 
 class TestGuardrail:

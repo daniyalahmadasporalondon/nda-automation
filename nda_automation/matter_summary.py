@@ -29,19 +29,18 @@ Design notes
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .ai_runtime import (
+    AIRuntimeError,
     DEFAULT_OPENROUTER_MODEL,
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    OpenRouterJSONChatAdapter,
     ai_review_settings as _ai_review_settings,
     configured_api_key as _configured_api_key,
+    openrouter_response_text,
     sanitize_model_name as _sanitize_model_name,
-    trusted_https_context as _trusted_https_context,
 )
 from .untrusted_text import neutralize_untrusted_text
 
@@ -251,51 +250,32 @@ def _build_user_message(context: Mapping[str, Any]) -> str:
 class _OpenRouterSummaryTransport:
     """Thin POST to the SAME OpenRouter endpoint the reviewer uses.
 
-    Reuses ``OPENROUTER_CHAT_COMPLETIONS_ENDPOINT`` and ``_trusted_https_context``;
-    the api key + model + timeout come from the reviewer's configured settings. We do
-    NOT introduce a new client or key path.
+    Reuses the shared AI runtime transport; the api key + model + timeout come from
+    the reviewer's configured settings. We do NOT introduce a new client or key path.
     """
 
     def __init__(self, *, api_key: str, timeout_seconds: int) -> None:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise MatterSummaryUnavailableError()
-        self.api_key = cleaned_key
         self.timeout_seconds = max(1, int(timeout_seconds or 20))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=DEFAULT_OPENROUTER_MODEL,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def __call__(self, request_body: Mapping[str, Any]) -> Mapping[str, Any]:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(request_body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(
-                request, timeout=self.timeout_seconds, context=_trusted_https_context()
-            ) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            return self._adapter.chat(request_body)
+        except AIRuntimeError as error:
             # Never leak the provider error/stack to the user; the route turns this
             # into the friendly "Summary unavailable right now." message.
             raise MatterSummaryUnavailableError() from error
 
 
 def _summary_text_from_response(payload: Mapping[str, Any]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, Sequence) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, Mapping):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, Mapping):
-        return ""
-    return str(message.get("content") or "").strip()
+    return openrouter_response_text(payload)
 
 
 # --------------------------------------------------------------------------- #

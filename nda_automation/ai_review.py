@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
 from .ai_runtime import (
+    AIRuntimeError,
     AI_REVIEW_ENV_BACKUP_MODEL as AI_REVIEW_ENV_BACKUP_MODEL,
     AI_REVIEW_ENV_BACKUP_PROVIDER as AI_REVIEW_ENV_BACKUP_PROVIDER,
     AI_REVIEW_ENV_CLAUSES as AI_REVIEW_ENV_CLAUSES,
@@ -27,20 +26,16 @@ from .ai_runtime import (
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     STORED_KEY_MIGRATION_CODE,
     STORED_KEY_MIGRATION_MESSAGE,
-    ai_review_settings as _runtime_ai_review_settings,
-    api_key_source as _runtime_api_key_source,
-    configured_api_key as _runtime_configured_api_key,
-    configured_model as _runtime_configured_model,
-    configured_provider as _runtime_configured_provider,
-    default_model_for_provider as _runtime_default_model_for_provider,
+    OpenRouterJSONChatAdapter,
+    ai_review_settings as runtime_ai_review_settings,
+    api_key_source as runtime_api_key_source,
+    configured_api_key as runtime_configured_api_key,
+    default_model_for_provider as runtime_default_model_for_provider,
     env_enabled as _runtime_env_enabled,
-    env_float as _runtime_env_float,
-    env_int as _runtime_env_int,
     openrouter_json_chat_request_body,
     openrouter_response_text as _runtime_openrouter_response_text,
-    provider_for_api_key as _runtime_provider_for_api_key,
+    provider_for_api_key as runtime_provider_for_api_key,
     sanitize_model_name as _runtime_sanitize_model_name,
-    stored_key_for_provider as _runtime_stored_key_for_provider,
     trusted_https_context as _runtime_trusted_https_context,
 )
 from .checks.common import ClauseResult, Paragraph
@@ -151,31 +146,20 @@ class OpenRouterAIReviewer:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise AIReviewError("OpenRouter API key is not configured.")
-        self.api_key = cleaned_key
         self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(_openrouter_request_body(packet, model=self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIReviewError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIReviewError(f"OpenRouter API request failed: {error}") from error
-
-        response_text = _openrouter_response_text(payload)
+            payload = self._adapter.chat(_openrouter_request_body(packet, model=self.model))
+        except AIRuntimeError as error:
+            raise AIReviewError(str(error)) from error
+        response_text = _runtime_openrouter_response_text(payload)
         if not response_text:
             raise AIReviewError("OpenRouter API returned no message content.")
         try:
@@ -826,35 +810,23 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
 
 
 def provider_for_api_key(api_key: str) -> str:
-    return _runtime_provider_for_api_key(api_key)
+    return runtime_provider_for_api_key(api_key)
 
 
 def default_model_for_provider(provider: str) -> str:
-    return _runtime_default_model_for_provider(provider)
+    return runtime_default_model_for_provider(provider)
 
 
 def _configured_api_key(provider: str) -> str:
-    return _runtime_configured_api_key(provider)
+    return runtime_configured_api_key(provider)
 
 
 def _api_key_source(provider: str) -> str:
-    return _runtime_api_key_source(provider)
-
-
-def _stored_key_for_provider(provider: str) -> str:
-    return _runtime_stored_key_for_provider(provider)
+    return runtime_api_key_source(provider)
 
 
 def _ai_review_settings() -> Dict[str, object]:
-    return _runtime_ai_review_settings()
-
-
-def _configured_provider(stored: Dict[str, object]) -> str:
-    return _runtime_configured_provider(stored)
-
-
-def _configured_model(provider: str, stored: Dict[str, object]) -> str:
-    return _runtime_configured_model(provider, stored)
+    return runtime_ai_review_settings()
 
 
 def _summary(
@@ -1032,14 +1004,6 @@ def _confidence_threshold(settings: Dict[str, object]) -> float:
 
 def _env_enabled(name: str) -> bool:
     return _runtime_env_enabled(name)
-
-
-def _env_int(name: str, fallback: int) -> int:
-    return _runtime_env_int(name, fallback)
-
-
-def _env_float(name: str, fallback: float) -> float:
-    return _runtime_env_float(name, fallback)
 
 
 def _sanitize_model_name(model: str) -> str:

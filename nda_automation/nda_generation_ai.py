@@ -25,18 +25,17 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
-import urllib.request
 from typing import Any, Callable, Mapping
 
-from .ai_review import (
+from .ai_runtime import (
+    AIRuntimeError,
     DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_API_KEY_ENV,
-    _sanitize_model_name,
+    OpenRouterJSONChatAdapter,
+    sanitize_model_name,
 )
 from .prohibited_positions import ANY_PROHIBITED_POSITION
 
-OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_ADAPT_TIMEOUT_SECONDS = 30
 
 # Per-clause load-bearing terms. The adapted text MUST still contain these (case-
@@ -237,33 +236,31 @@ class OpenRouterClauseAdapter:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise ClauseAdaptationError("OpenRouter API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
+        self.model = sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_ADAPT_TIMEOUT_SECONDS))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def adapt(self, clause_id: str, playbook_text: str, context: Mapping[str, Any]) -> str:
         body = _openrouter_request_body(
             build_adaptation_request(clause_id, playbook_text, context), model=self.model
         )
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:300]
-            raise ClauseAdaptationError(f"OpenRouter returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise ClauseAdaptationError(f"OpenRouter request failed: {error}") from error
+            payload = self._adapter.chat(body)
+        except AIRuntimeError as error:
+            raise ClauseAdaptationError(_adaptation_transport_error_message(str(error))) from error
         return _openrouter_response_text(payload)
+
+
+def _adaptation_transport_error_message(message: str) -> str:
+    if message.startswith("OpenRouter API returned HTTP"):
+        return "OpenRouter returned HTTP" + message.removeprefix("OpenRouter API returned HTTP")
+    if message.startswith("OpenRouter API request failed:"):
+        return "OpenRouter request failed:" + message.removeprefix("OpenRouter API request failed:")
+    return message
 
 
 def build_adaptation_request(

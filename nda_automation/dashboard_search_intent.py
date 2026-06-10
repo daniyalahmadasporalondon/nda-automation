@@ -36,19 +36,18 @@ Design notes
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from . import workflow
 from .ai_runtime import (
+    AIRuntimeError,
     DEFAULT_OPENROUTER_MODEL,
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    OpenRouterJSONChatAdapter,
     ai_review_settings as _ai_review_settings,
     configured_api_key as _configured_api_key,
+    openrouter_response_text,
     sanitize_model_name as _sanitize_model_name,
-    trusted_https_context as _trusted_https_context,
 )
 from .untrusted_text import neutralize_untrusted_text
 
@@ -346,35 +345,25 @@ def build_intent_request_body(query: str, *, model: str) -> dict[str, Any]:
 class _OpenRouterIntentTransport:
     """Thin POST to the SAME OpenRouter endpoint the reviewer/summary use.
 
-    Reuses ``OPENROUTER_CHAT_COMPLETIONS_ENDPOINT`` and ``_trusted_https_context``;
-    the api key + model + timeout come from the reviewer's configured settings. No
-    new client or key path is introduced.
+    Reuses the shared AI runtime transport; the api key + model + timeout come from
+    the reviewer's configured settings. No new client or key path is introduced.
     """
 
     def __init__(self, *, api_key: str, timeout_seconds: int) -> None:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise DashboardSearchIntentUnavailableError()
-        self.api_key = cleaned_key
         self.timeout_seconds = max(1, int(timeout_seconds or 20))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=DEFAULT_OPENROUTER_MODEL,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def __call__(self, request_body: Mapping[str, Any]) -> Mapping[str, Any]:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(request_body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(
-                request, timeout=self.timeout_seconds, context=_trusted_https_context()
-            ) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            return self._adapter.chat(request_body)
+        except AIRuntimeError as error:
             # Never leak the provider error/stack; the route turns this into the
             # graceful fallback signal.
             raise DashboardSearchIntentUnavailableError() from error
@@ -388,17 +377,8 @@ def _spec_from_response(payload: Mapping[str, Any]) -> object:
     collapses it to the all-null spec (and the route still returns a clean,
     apply-nothing filter rather than failing).
     """
-    choices = payload.get("choices")
-    if not isinstance(choices, Sequence) or not choices:
-        return None
-    first = choices[0]
-    if not isinstance(first, Mapping):
-        return None
-    message = first.get("message")
-    if not isinstance(message, Mapping):
-        return None
-    content = message.get("content")
-    if not isinstance(content, str):
+    content = openrouter_response_text(payload)
+    if not content:
         return None
     return _parse_json_object(content)
 

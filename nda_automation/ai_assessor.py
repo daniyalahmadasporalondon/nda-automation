@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.request
 from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
@@ -20,14 +18,15 @@ from .ai_assessment_prompt import (
     build_ai_assessment_prompt,
 )
 from .ai_first_review import build_ai_first_review_result
-from .ai_review import (
+from .ai_runtime import (
+    AIRuntimeError,
     DEFAULT_AI_TIMEOUT_SECONDS,
     DEFAULT_OPENROUTER_MODEL,
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-    _ai_review_settings,
-    _configured_api_key,
-    _sanitize_model_name,
-    _trusted_https_context,
+    OpenRouterJSONChatAdapter,
+    ai_review_settings,
+    configured_api_key,
+    openrouter_response_text,
+    sanitize_model_name,
 )
 from .checker import load_playbook, validate_playbook
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
@@ -58,9 +57,13 @@ class OpenRouterAIAssessmentReviewer:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise AIAssessorError("OpenRouter API key is not configured.")
-        self.api_key = cleaned_key
-        self.model = _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
+        self.model = sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL)
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+        )
         # Provenance: set on a successful call so the result attributes the model
         # that ACTUALLY produced the verdict, not just the configured settings (which
         # would silently misreport once a fallback/override provider is introduced).
@@ -68,25 +71,11 @@ class OpenRouterAIAssessmentReviewer:
         self.last_success_model = ""
 
     def __call__(self, packet: dict[str, Any]) -> dict[str, Any] | None:
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(openrouter_ai_assessment_request_body(packet, model=self.model)).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
-        parsed = _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
+            payload = self._adapter.chat(openrouter_ai_assessment_request_body(packet, model=self.model))
+        except AIRuntimeError as error:
+            raise AIAssessorError(str(error)) from error
+        parsed = _parse_provider_response_text(openrouter_response_text(payload), provider="OpenRouter")
         self.last_success_provider = "openrouter"
         self.last_success_model = self.model
         return parsed
@@ -177,7 +166,7 @@ def assess_nda_with_ai(
     playbook: Mapping[str, Any] | None = None,
     checked_at: str | None = None,
 ) -> dict[str, Any]:
-    settings = _ai_review_settings()
+    settings = ai_review_settings()
     configured_reviewer = reviewer
     if configured_reviewer is None:
         if not settings["enabled"]:
@@ -325,13 +314,13 @@ def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None)
     # key-free stub instead of any real provider. Off by default in production.
     if os.environ.get(AI_ASSESSMENT_STUB_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
         return InMemoryAssessmentReviewer(response=stub_ai_assessment_response)
-    config = dict(settings or _ai_review_settings())
+    config = dict(settings or ai_review_settings())
     provider = str(config.get("provider") or "openrouter").strip().lower()
     timeout_seconds = int(config.get("timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS)
     model = str(config.get("model") or "").strip()
     if provider == "openrouter":
         return OpenRouterAIAssessmentReviewer(
-            api_key=_configured_api_key(provider),
+            api_key=configured_api_key(provider),
             model=model or DEFAULT_OPENROUTER_MODEL,
             timeout_seconds=timeout_seconds,
         )
@@ -341,7 +330,7 @@ def configured_ai_assessment_reviewer(settings: Mapping[str, Any] | None = None)
 def openrouter_ai_assessment_request_body(packet: Mapping[str, Any], *, model: str) -> dict[str, Any]:
     prompt = build_ai_assessment_prompt(packet)
     return {
-        "model": _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL),
+        "model": sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL),
         "messages": [
             {
                 "role": "system",
@@ -422,16 +411,3 @@ def _parse_provider_response_text(response_text: str, *, provider: str) -> dict[
     except json.JSONDecodeError as error:
         raise AIAssessorError(f"{provider} API returned non-JSON text.") from error
     return parsed if isinstance(parsed, dict) else None
-
-
-def _openrouter_response_text(payload: Mapping[str, Any]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, Mapping):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, Mapping):
-        return ""
-    return str(message.get("content") or "").strip()

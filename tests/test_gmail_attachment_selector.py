@@ -55,6 +55,18 @@ def _model_reply(selection: dict[str, object]):
     return _fake_urlopen
 
 
+def _capturing_model_reply(selection: dict[str, object], captured_requests: list[object]):
+    body = json.dumps(
+        {"choices": [{"message": {"content": json.dumps(selection)}}]}
+    ).encode("utf-8")
+
+    def _fake_urlopen(request, *_args, **_kwargs):
+        captured_requests.append(request)
+        return _FakeResponse(body)
+
+    return _fake_urlopen
+
+
 class GmailAttachmentSelectorInjectionTests(unittest.TestCase):
     def setUp(self):
         # A configured API key makes select_nda_attachments attempt the call.
@@ -74,7 +86,7 @@ class GmailAttachmentSelectorInjectionTests(unittest.TestCase):
             ),
         }
         # The compromised "model" obeys the injection and returns the fabricated id.
-        with patch.object(selector.urllib.request, "urlopen", _model_reply({
+        with patch("urllib.request.urlopen", _model_reply({
             "should_import": True,
             "selected_attachment_ids": ["att_payload"],
             "confidence": 0.99,
@@ -110,7 +122,7 @@ class GmailAttachmentSelectorInjectionTests(unittest.TestCase):
             "reason": "att_nda is the NDA",
         }
 
-        with patch.object(selector.urllib.request, "urlopen", _model_reply(model_selection)):
+        with patch("urllib.request.urlopen", _model_reply(model_selection)):
             clean_result = selector.select_nda_attachments(
                 message_metadata=clean_metadata,
                 candidates=candidates,
@@ -129,7 +141,7 @@ class GmailAttachmentSelectorInjectionTests(unittest.TestCase):
         # The model returns BOTH a real id and a fabricated one. Only the real
         # candidate survives the enumeration constraint.
         candidates = [_candidate("att_nda", "Mutual NDA.docx")]
-        with patch.object(selector.urllib.request, "urlopen", _model_reply({
+        with patch("urllib.request.urlopen", _model_reply({
             "should_import": True,
             "selected_attachment_ids": ["att_nda", "att_evil", "att_nda"],
             "confidence": 0.99,
@@ -173,6 +185,30 @@ class GmailAttachmentSelectorInjectionTests(unittest.TestCase):
         self.assertNotIn("\x07", cleaned)
         self.assertIn("a", cleaned)
         self.assertIn("c", cleaned)
+
+    def test_selector_uses_shared_runtime_transport(self):
+        captured = []
+        candidates = [_candidate("att_nda", "Mutual NDA.docx")]
+
+        with patch("urllib.request.urlopen", _capturing_model_reply({
+            "should_import": True,
+            "selected_attachment_ids": ["att_nda"],
+            "confidence": 0.95,
+            "reason": "att_nda is the NDA",
+        }, captured)):
+            result = selector.select_nda_attachments(
+                message_metadata={"subject": "Please review the attached NDA"},
+                candidates=candidates,
+            )
+
+        self.assertEqual(result["status"], "selected")
+        self.assertEqual(result["selected_attachment_ids"], ["att_nda"])
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer test-key")
+        body = json.loads(captured[0].data.decode("utf-8"))
+        self.assertEqual(body["model"], selector.DEFAULT_GMAIL_TRIAGE_MODEL)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertIn("select_gmail_nda_attachment", body["messages"][1]["content"])
 
 
 if __name__ == "__main__":

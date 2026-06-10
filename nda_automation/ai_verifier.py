@@ -30,16 +30,14 @@ import json
 import math
 import os
 import re
-import urllib.error
-import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
 from .ai_runtime import (
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    AIRuntimeError,
+    OpenRouterJSONChatAdapter,
     configured_api_key as _runtime_configured_api_key,
     openrouter_response_text,
-    trusted_https_context,
 )
 from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
 from .review_state import (
@@ -716,9 +714,14 @@ class OpenRouterVerifier:
         cleaned_key = str(api_key or "").strip()
         if not cleaned_key:
             raise VerifierError("OpenRouter API key is not configured for the verifier.")
-        self.api_key = cleaned_key
         self.model = str(model or DEFAULT_VERIFIER_MODEL).strip() or DEFAULT_VERIFIER_MODEL
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_VERIFIER_TIMEOUT_SECONDS))
+        self._adapter = OpenRouterJSONChatAdapter(
+            api_key=cleaned_key,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+            user_agent="nda-automation-verifier/1.0",
+        )
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
         body = {
@@ -730,24 +733,10 @@ class OpenRouterVerifier:
             "temperature": 0,
             "response_format": {"type": "json_object"},
         }
-        request = urllib.request.Request(
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "nda-automation-verifier/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:300]
-            raise VerifierError(f"Verifier API returned HTTP {error.code}: {message}") from error
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise VerifierError(f"Verifier API request failed: {error}") from error
+            payload = self._adapter.chat(body)
+        except AIRuntimeError as error:
+            raise VerifierError(_verifier_transport_error_message(str(error))) from error
 
         response_text = openrouter_response_text(payload)
         if not response_text:
@@ -757,6 +746,14 @@ class OpenRouterVerifier:
         except json.JSONDecodeError as error:
             raise VerifierError("Verifier API returned non-JSON text.") from error
         return parsed if isinstance(parsed, dict) else None
+
+
+def _verifier_transport_error_message(message: str) -> str:
+    if message.startswith("OpenRouter API returned HTTP"):
+        return "Verifier API returned HTTP" + message.removeprefix("OpenRouter API returned HTTP")
+    if message.startswith("OpenRouter API request failed:"):
+        return "Verifier API request failed:" + message.removeprefix("OpenRouter API request failed:")
+    return message
 
 
 def verifier_enabled() -> bool:
