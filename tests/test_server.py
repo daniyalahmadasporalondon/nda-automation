@@ -2341,8 +2341,8 @@ class ServerTests(unittest.TestCase):
                 ):
                     review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
                 stored_after_refresh = matter_store.get_matter(matter["id"])
-                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
                         export_status, _export_payload = self.request(
                             "POST",
                             "/api/export-review-docx",
@@ -5375,9 +5375,9 @@ class ServerTests(unittest.TestCase):
                         "content_base64": base64.b64encode(source_docx).decode("ascii"),
                     },
                 )
-                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
-                        with patch.object(server_module.redline_export_service, "verify_export_content_coverage", return_value=[]):
+                with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
+                        with patch.object(server_module.redline_export_service.docx_package_renderer, "verify_export_content_coverage", return_value=[]):
                             export_status, _export_payload, _headers = self.request_with_headers(
                                 "POST",
                                 "/api/export-review-docx",
@@ -5571,8 +5571,8 @@ class ServerTests(unittest.TestCase):
                         },
                     },
                 )
-                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                             with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
                                 "message_id": "msg_outbound",
@@ -6393,8 +6393,8 @@ class ServerTests(unittest.TestCase):
                 matter = create_payload["matter"]
                 stored_matter = matter_store.get_matter(matter["id"])
                 self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
-                with patch.object(server_module.redline_export_service, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module.redline_export_service, "validate_docx_open_health", return_value=[]):
+                with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
+                    with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                             with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
                                 "message_id": "msg_outbound",
