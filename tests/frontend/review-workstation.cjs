@@ -367,7 +367,7 @@ async function testAccessibleControlState(page) {
   assert.equal(matterCardStyles.borderRadius, "22px");
   assert.equal(matterCardStyles.boxShadow, "rgba(26, 19, 51, 0.2) 0px 10px 30px -20px");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
-  assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
+  assert.equal(await page.locator("#studioInspectorTitle").innerText(), "SELECTED CLAUSE");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
 
   await page.locator("#dashboardTab").focus();
@@ -627,12 +627,13 @@ async function testPlaybookAdminEditor(page) {
   await page.locator("#clauseDetail").getByRole("button", { name: "Policy" }).click();
   await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
   await page.locator("#addGoverningLaw").click();
-  assert.equal(await page.locator('input[name="governing_law_value_4"]').inputValue(), "UAE");
-  await page.locator('input[name="governing_law_phrase_4"]').fill("the UAE");
+  const addedGoverningLawIndex = await page.locator('input[name^="governing_law_value_"]').count() - 1;
+  assert.equal(await page.locator(`input[name="governing_law_value_${addedGoverningLawIndex}"]`).inputValue(), "UAE");
+  await page.locator(`input[name="governing_law_phrase_${addedGoverningLawIndex}"]`).fill("the UAE");
   await page.locator("#clauseDetail").getByRole("button", { name: "Redline" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of the UAE.");
   await page.locator("#clauseDetail").getByRole("button", { name: "Policy" }).click();
-  await page.locator('input[name="preferred_law_index"][value="4"]').check();
+  await page.locator(`input[name="preferred_law_index"][value="${addedGoverningLawIndex}"]`).check();
   await page.locator("#clauseDetail").getByRole("button", { name: "Audit" }).click();
   await assertTextContains(page.locator("#playbookDraftDiff"), "approved_laws");
   await assertTextContains(page.locator("#playbookDraftDiff"), "rules.approved_options");
@@ -702,7 +703,14 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(Object.prototype.hasOwnProperty.call(savedGoverningLaw, "redline_template"), false);
   assert.deepEqual(
     savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
-    [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],
+    [
+      ["India", false],
+      ["Delaware", false],
+      ["England and Wales", false],
+      ["DIFC", false],
+      ["Ontario, Canada", false],
+      ["UAE", true],
+    ],
   );
 
   // --- Validate Draft: surfaces server validation errors, then a clean pass ---
@@ -2257,6 +2265,20 @@ async function testDraftIntakeGenerateNda(page) {
       body: "PK generated-nda-docx-bytes",
     });
   });
+  await page.route("**/api/matters/mat_generated_1/review", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        review_result: {
+          paragraphs: [
+            { id: "gen-1", index: 1, text: "Generated NDA for Acme Corporation" },
+            { id: "gen-2", index: 2, text: "This Agreement is governed by England and Wales." },
+          ],
+        },
+      }),
+    });
+  });
   // The Generator is its own top-nav tab. Open it from the nav, confirm the tab
   // panel (not a modal) is shown, pick our signing entity + a counterparty so the
   // Generate button enables, then generate.
@@ -2279,6 +2301,7 @@ async function testDraftIntakeGenerateNda(page) {
   await page.locator("#draftIntakeGenerateButton").click();
   await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
   await assertTextContains(page.locator("#draftIntakeStatus"), "Acme Corporation");
+  await waitForText(page, "#generatorDocumentRender", "Generated NDA for Acme Corporation");
   // The success line confirms the generated terms from the manifest at a glance,
   // including the server-authoritative governing-law override provenance.
   await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales (overridden from India)");
@@ -2317,8 +2340,14 @@ async function testDraftIntakeGenerateNda(page) {
   await page.waitForSelector("#sendDocumentSubmitButton:not([disabled])");
   await page.locator("#sendDocumentModalClose").click();
 
+  await page.locator("#draftIntakeClearButton").click();
+  assert.equal(await page.locator("#draftIntakeCounterpartyName").inputValue(), "");
+  assert.equal(await page.locator("#generatorDocumentRender .generator-doc-paragraph").count(), 0);
+  assert.equal((await page.locator("#generatorDocumentRender").innerText()).trim(), "");
+
   await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/matters/mat_generated_1/source");
+  await page.unroute("**/api/matters/mat_generated_1/review");
 }
 
 // When the endpoint is not deployed on this base (404 — generation lives on
