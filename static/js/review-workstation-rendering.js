@@ -2,53 +2,18 @@ let reviewDocumentRenderRequestSequence = 0;
 
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
-  state.reviewDocumentRender = reviewDocumentRenderState(result);
-  state.latestReviewResult = result;
-  state.reviewClauses = result.clauses || [];
-  state.reviewParagraphs = result.paragraphs || [];
-  state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
-  state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
-  state.reviewRedlines = result.redline_edits || [];
-  state.reviewComments = [];
-  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
-  state.exportRedlineDecisions = {};
-  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
-  state.redlineDraft = null;
-  state.redlineDraftDirty = false;
-  state.reviewedClauseIds = {};
-  state.reasoningTrailOpen = {};
-  state.reviewResolution = null;
-  state.approveServerBlocks = [];
+  ReviewWorkstationModel.loadReviewResultState(state, result, {
+    documentRender: reviewDocumentRenderState(result),
+    reviewedText: reviewedText || studioNdaText.value.trim(),
+  });
   resetReviewEditHistory();
-  state.reviewSourceText = reviewedText || studioNdaText.value.trim();
-  state.clauseJumpIndexes = {};
-  state.selectedReviewClauseId =
-    state.reviewClauses.find((clause) => clauseStatus(clause).requiresAttention)?.id || state.reviewClauses[0]?.id || null;
   renderStudioResult(result);
   updateExportButtonState();
   requestMatterDocumentRenderPreview();
 }
 
 function snapshotReviewParagraphs(paragraphs) {
-  return (paragraphs || []).map((paragraph) => {
-    const snapshot = {
-      id: paragraph.id,
-      index: paragraph.index,
-      text: String(paragraph.text || ""),
-    };
-    if (paragraph.source_index !== undefined) snapshot.source_index = paragraph.source_index;
-    if (paragraph.source_part !== undefined) snapshot.source_part = paragraph.source_part;
-    // Capture paragraph-level formatting so a format-only change (alignment/font/
-    // size with identical text) is diffable against this baseline. fontSize MUST be
-    // captured: the extractor now records a paragraph's point size, and
-    // paragraphFormatOps diffs paragraph.fontSize against the baseline -- omitting it
-    // here makes every freshly-loaded paragraph read as a spurious "size N" change.
-    if (paragraph.alignment !== undefined) snapshot.alignment = paragraph.alignment;
-    if (paragraph.font !== undefined) snapshot.font = paragraph.font;
-    if (paragraph.fontSize !== undefined) snapshot.fontSize = paragraph.fontSize;
-    if (Array.isArray(paragraph.runs)) snapshot.runs = paragraph.runs.map((run) => ({ ...run }));
-    return snapshot;
-  });
+  return ReviewWorkstationModel.snapshotReviewParagraphs(paragraphs);
 }
 
 function manualRedlineBaselineParagraphs() {
@@ -58,9 +23,7 @@ function manualRedlineBaselineParagraphs() {
 }
 
 function paragraphsAlignWithBaseline(paragraphs, baseline) {
-  if (!Array.isArray(paragraphs) || !Array.isArray(baseline) || !baseline.length) return false;
-  if (paragraphs.length !== baseline.length) return false;
-  return paragraphs.every((paragraph, index) => String(paragraph.id || "") === String(baseline[index]?.id || ""));
+  return ReviewWorkstationModel.paragraphsAlignWithBaseline(paragraphs, baseline);
 }
 
 function renderStudioEmpty() {
@@ -224,30 +187,19 @@ function renderClauseCommentState(clause) {
 }
 
 function reviewedClauseMap() {
-  if (!state.reviewedClauseIds || typeof state.reviewedClauseIds !== "object") {
-    state.reviewedClauseIds = {};
-  }
-  return state.reviewedClauseIds;
+  return ReviewWorkstationModel.reviewedClauseMap(state);
 }
 
 function reviewClauseIds() {
-  return state.reviewClauses
-    .filter((clause) => clauseStatus(clause).needsReview)
-    .map((clause) => clause.id)
-    .filter(Boolean);
+  return ReviewWorkstationModel.reviewClauseIds(state);
 }
 
 function clauseReviewAcknowledged(clauseId) {
-  const reviewedMap = reviewedClauseMap();
-  if (Object.prototype.hasOwnProperty.call(reviewedMap, clauseId)) {
-    return reviewedMap[clauseId] === true;
-  }
-  return Boolean(state.selectedMatter?.human_reviewed);
+  return ReviewWorkstationModel.clauseReviewAcknowledged(state, clauseId);
 }
 
 function humanReviewAcknowledged() {
-  const ids = reviewClauseIds();
-  return ids.length > 0 && ids.every((clauseId) => clauseReviewAcknowledged(clauseId));
+  return ReviewWorkstationModel.humanReviewAcknowledged(state);
 }
 
 function renderActiveClauseStatusToggle(clause, status) {
@@ -302,215 +254,102 @@ function hasReviewResults() {
 }
 
 function defaultExportClauseDecisions(clauses, redlines) {
-  const clausesWithRedlines = new Set((redlines || []).map((edit) => edit.clause_id).filter(Boolean));
-  return Object.fromEntries((clauses || []).map((clause) => [
-    clause.id,
-    clausesWithRedlines.has(clause.id),
-  ]));
+  return ReviewWorkstationModel.defaultExportClauseDecisions(clauses, redlines);
 }
 
 function defaultRedlineTemplateSelections(redlines) {
-  const selections = {};
-  (redlines || []).forEach((edit) => {
-    const selected = (edit.template_options || []).find((option) => option.selected) || (edit.template_options || [])[0];
-    if (selected?.id) selections[edit.id] = selected.id;
-  });
-  return selections;
+  return ReviewWorkstationModel.defaultRedlineTemplateSelections(redlines);
 }
 
 function applyMatterRedlineDraft(draft) {
-  state.redlineDraft = draft && typeof draft === "object" ? draft : null;
-  state.redlineDraftDirty = false;
+  const result = ReviewWorkstationModel.applyRedlineDraftState(state, draft, {
+    baselineParagraphs: manualRedlineBaselineParagraphs(),
+  });
+  if (result.sourceTextChanged) setSourceText(state.reviewSourceText);
   if (!state.redlineDraft) {
     resetReviewEditHistory();
     updateRedlineDraftControls();
     return;
   }
-  applyDraftClauseDecisions(state.redlineDraft.clause_decisions);
-  applyDraftRedlineDecisions(state.redlineDraft.redline_decisions);
-  applyDraftTemplateSelections(state.redlineDraft.template_selections);
-  applyDraftReviewedClauseIds(state.redlineDraft.reviewed_clause_ids);
-  applyDraftManualRedlines(state.redlineDraft.manual_redline_edits);
-  applyDraftReviewComments(state.redlineDraft.review_comments);
   renderStudioResult({ clauses: state.reviewClauses });
   resetReviewEditHistory();
   updateRedlineDraftControls();
 }
 
 function resetCurrentRedlineDraftToDefaults() {
-  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
-  state.exportRedlineDecisions = {};
-  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
-  state.reviewedClauseIds = {};
-  state.reviewComments = [];
-  state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
-    const original = manualRedlineBaselineParagraphs().find((item) => item.id === paragraph.id);
-    return original ? { ...paragraph, text: original.text } : paragraph;
+  ReviewWorkstationModel.resetRedlineDraftState(state, {
+    baselineParagraphs: manualRedlineBaselineParagraphs(),
   });
-  syncReviewSourceFromParagraphs();
-  state.redlineDraft = null;
-  state.redlineDraftDirty = false;
+  setSourceText(state.reviewSourceText);
   resetReviewEditHistory();
   renderStudioResult({ clauses: state.reviewClauses });
   updateRedlineDraftControls();
 }
 
 function applyDraftClauseDecisions(decisions) {
-  if (!decisions || typeof decisions !== "object") return;
-  Object.entries(decisions).forEach(([clauseId, included]) => {
-    if (state.reviewClauses.some((clause) => clause.id === clauseId)) {
-      state.exportClauseDecisions[clauseId] = Boolean(included);
-    }
-  });
+  ReviewWorkstationModel.applyDraftClauseDecisions(state, decisions);
 }
 
 function applyDraftRedlineDecisions(decisions) {
-  if (!decisions || typeof decisions !== "object") return;
-  const validRedlineIds = new Set(state.reviewRedlines.map((edit) => edit.id));
-  Object.entries(decisions).forEach(([redlineId, included]) => {
-    if (validRedlineIds.has(redlineId)) {
-      state.exportRedlineDecisions[redlineId] = Boolean(included);
-    }
-  });
+  ReviewWorkstationModel.applyDraftRedlineDecisions(state, decisions);
 }
 
 function applyDraftReviewedClauseIds(reviewedIds) {
-  state.reviewedClauseIds = {};
-  if (!reviewedIds || typeof reviewedIds !== "object") return;
-  Object.entries(reviewedIds).forEach(([clauseId, reviewed]) => {
-    if (state.reviewClauses.some((clause) => clause.id === clauseId)) {
-      state.reviewedClauseIds[clauseId] = reviewed === true;
-    }
-  });
+  ReviewWorkstationModel.applyDraftReviewedClauseIds(state, reviewedIds);
 }
 
 function applyDraftTemplateSelections(selections) {
-  if (!selections || typeof selections !== "object") return;
-  const validRedlineIds = new Set(state.reviewRedlines.map((edit) => edit.id));
-  Object.entries(selections).forEach(([editId, optionId]) => {
-    if (validRedlineIds.has(editId) && optionId) {
-      state.redlineTemplateSelections[editId] = String(optionId);
-    }
-  });
+  ReviewWorkstationModel.applyDraftTemplateSelections(state, selections);
 }
 
 function applyDraftManualRedlines(manualRedlines) {
-  if (!Array.isArray(manualRedlines) || !manualRedlines.length) return;
-  const redlineByParagraph = new Map();
-  manualRedlines.forEach((redline) => {
-    if (redline?.paragraph_id) redlineByParagraph.set(String(redline.paragraph_id), redline);
-  });
-  state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
-    const redline = redlineByParagraph.get(String(paragraph.id));
-    if (!redline) return paragraph;
-    const replacement = redline.action === REDLINE_DELETE_PARAGRAPH ? "" : String(redline.replacement_text || "");
-    return { ...paragraph, text: replacement };
-  });
-  syncReviewSourceFromParagraphs();
+  if (ReviewWorkstationModel.applyDraftManualRedlines(state, manualRedlines, {
+    baselineParagraphs: manualRedlineBaselineParagraphs(),
+  })) {
+    setSourceText(state.reviewSourceText);
+  }
 }
 
 function applyDraftReviewComments(reviewComments) {
-  state.reviewComments = normalizeReviewComments(reviewComments);
+  ReviewWorkstationModel.applyDraftReviewComments(state, reviewComments);
 }
 
 function normalizeReviewComments(reviewComments) {
-  if (!Array.isArray(reviewComments)) return [];
-  return reviewComments
-    .filter((comment) => comment && typeof comment === "object" && String(comment.text || "").trim())
-    .map((comment) => ({
-      ...comment,
-      id: String(comment.id || `comment-${comment.clause_id || comment.paragraph_id || Date.now()}`),
-      scope: String(comment.scope || (comment.selected_text ? "selection" : comment.clause_id ? "clause" : "paragraph")),
-      text: String(comment.text || "").trim(),
-    }));
+  return ReviewWorkstationModel.normalizeReviewComments(reviewComments);
 }
 
 function currentReviewComments() {
-  return normalizeReviewComments(state.reviewComments)
-    .map((comment) => (comment.scope === "clause" || (comment.clause_id && !comment.paragraph_id)
-      ? { ...comment, ...reviewCommentTargetForClause(comment.clause_id) }
-      : { ...comment, ...reviewCommentTargetForParagraph(comment.paragraph_id) }))
-    .filter((comment) => String(comment.text || "").trim() && (comment.paragraph_id || comment.clause_id));
+  return ReviewWorkstationModel.currentReviewComments(state);
 }
 
 function clauseReviewComment(clauseId) {
-  return normalizeReviewComments(state.reviewComments).find((comment) => comment.clause_id === clauseId) || null;
+  return ReviewWorkstationModel.clauseReviewComment(state, clauseId);
 }
 
 function setClauseReviewComment(clauseId, text) {
-  const clause = state.reviewClauses.find((item) => item.id === clauseId);
-  if (!clause) return;
-  const existing = clauseReviewComment(clauseId);
-  const trimmedText = String(text || "").trim();
-  state.reviewComments = normalizeReviewComments(state.reviewComments)
-    .filter((comment) => comment.clause_id !== clauseId);
-  if (trimmedText) {
-    state.reviewComments.push({
-      ...(existing || {}),
-      ...reviewCommentTargetForClause(clauseId),
-      author: existing?.author || "Reviewer",
-      clause_id: clauseId,
-      clause_name: clause.name || clauseId,
-      created_at: existing?.created_at || new Date().toISOString(),
-      id: existing?.id || `comment-${clauseId}`,
-      scope: "clause",
-      text: trimmedText,
-    });
-  }
+  if (!state.reviewClauses.some((item) => item.id === clauseId)) return;
+  ReviewWorkstationModel.setClauseReviewComment(state, clauseId, text);
   markRedlineDraftDirty();
   renderStudioClauseLane();
   updateExportButtonState();
 }
 
 function reviewCommentTargetForClause(clauseId) {
-  const clause = state.reviewClauses.find((item) => item.id === clauseId);
-  const targetParagraphId = firstClauseParagraphId(clauseId, clause);
-  const paragraph = state.reviewParagraphs.find((item) => item.id === targetParagraphId);
-  const target = {};
-  if (targetParagraphId) target.paragraph_id = targetParagraphId;
-  if (paragraph?.index !== undefined) target.paragraph_index = paragraph.index;
-  if (paragraph?.source_index !== undefined) target.source_index = paragraph.source_index;
-  return target;
+  return ReviewWorkstationModel.reviewCommentTargetForClause(state, clauseId);
 }
 
 function reviewCommentTargetForParagraph(paragraphId) {
-  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
-  const target = {};
-  if (paragraph?.id) target.paragraph_id = paragraph.id;
-  if (paragraph?.index !== undefined) target.paragraph_index = paragraph.index;
-  if (paragraph?.source_index !== undefined) target.source_index = paragraph.source_index;
-  return target;
+  return ReviewWorkstationModel.reviewCommentTargetForParagraph(state, paragraphId);
 }
 
 function setParagraphReviewComment(paragraphId, text) {
-  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
-  if (!paragraph) return;
-  const commentId = `comment-paragraph-${paragraphId}`;
-  upsertReviewComment({
-    ...reviewCommentTargetForParagraph(paragraphId),
-    author: "Reviewer",
-    created_at: new Date().toISOString(),
-    id: commentId,
-    scope: "paragraph",
-    text,
-  });
+  const comment = ReviewWorkstationModel.buildParagraphReviewComment(state, paragraphId, text);
+  if (comment) upsertReviewComment(comment);
 }
 
 function setSelectedTextReviewComment(paragraphId, selectionInfo, text) {
-  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
-  if (!paragraph || !selectionInfo?.selectedText) return;
-  const commentId = `comment-selection-${paragraphId}-${selectionInfo.startOffset}-${selectionInfo.endOffset}`;
-  upsertReviewComment({
-    ...reviewCommentTargetForParagraph(paragraphId),
-    author: "Reviewer",
-    created_at: new Date().toISOString(),
-    id: commentId,
-    scope: "selection",
-    selected_text: selectionInfo.selectedText,
-    selection_end: selectionInfo.endOffset,
-    selection_start: selectionInfo.startOffset,
-    text,
-  });
+  const comment = ReviewWorkstationModel.buildSelectedTextReviewComment(state, paragraphId, selectionInfo, text);
+  if (comment) upsertReviewComment(comment);
 }
 
 // Snapshot the whole comment set onto the shared viewer undo stack before a
@@ -521,20 +360,13 @@ function pushReviewCommentsHistory() {
   if (typeof pushReviewEditHistoryEntry !== "function") return;
   pushReviewEditHistoryEntry({
     type: "review_comments",
-    snapshot: normalizeReviewComments(state.reviewComments).map((comment) => ({ ...comment })),
+    snapshot: ReviewWorkstationModel.reviewCommentsSnapshot(state),
   });
 }
 
 function upsertReviewComment(comment) {
   pushReviewCommentsHistory();
-  const trimmedText = String(comment.text || "").trim();
-  state.reviewComments = normalizeReviewComments(state.reviewComments).filter((item) => item.id !== comment.id);
-  if (trimmedText) {
-    state.reviewComments.push({
-      ...comment,
-      text: trimmedText,
-    });
-  }
+  ReviewWorkstationModel.upsertReviewComment(state, comment);
   markRedlineDraftDirty();
   renderStudioDocumentHighlights();
   renderStudioClauseLane();
@@ -542,57 +374,23 @@ function upsertReviewComment(comment) {
 }
 
 function firstClauseParagraphId(clauseId, clause) {
-  const matched = Array.isArray(clause?.matched_paragraph_ids)
-    ? clause.matched_paragraph_ids.find(Boolean)
-    : "";
-  if (matched) return String(matched);
-  const redline = state.reviewRedlines.find((edit) => edit.clause_id === clauseId && edit.paragraph_id);
-  return redline?.paragraph_id ? String(redline.paragraph_id) : "";
+  return ReviewWorkstationModel.firstClauseParagraphId(state, clauseId, clause);
 }
 
 function clauseExportIncluded(clauseId) {
-  return state.exportClauseDecisions[clauseId] !== false;
+  return ReviewWorkstationModel.clauseExportIncluded(state, clauseId);
 }
 
 function redlineExportIncluded(edit) {
-  if (edit && edit.id && Object.prototype.hasOwnProperty.call(state.exportRedlineDecisions, edit.id)) {
-    return state.exportRedlineDecisions[edit.id] !== false;
-  }
-  return clauseExportIncluded(edit.clause_id);
+  return ReviewWorkstationModel.redlineExportIncluded(state, edit);
 }
 
 function effectiveReviewRedlines() {
-  return state.reviewRedlines
-    .filter(redlineExportIncluded)
-    .map(applyTemplateSelectionToRedline);
+  return ReviewWorkstationModel.effectiveReviewRedlines(state);
 }
 
 function applyTemplateSelectionToRedline(edit) {
-  const selectedOptionId = state.redlineTemplateSelections[edit.id];
-  const selectedOption = (edit.template_options || []).find((option) => option.id === selectedOptionId);
-  if (!selectedOption) return { ...edit };
-
-  const nextEdit = {
-    ...edit,
-    template_options: (edit.template_options || []).map((option) => ({
-      ...option,
-      selected: option.id === selectedOption.id,
-    })),
-  };
-  const selectedReplacement = selectedOption.replacement_text || selectedOption.text || "";
-  const selectedInsert = selectedOption.insert_text || selectedOption.replacement_text || selectedOption.text || "";
-  if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) {
-    if (selectedInsert.trim()) nextEdit.insert_text = selectedInsert;
-    if (selectedReplacement.trim()) nextEdit.replacement_text = selectedReplacement;
-  } else if (selectedReplacement.trim()) {
-    nextEdit.replacement_text = selectedReplacement;
-  }
-  if (Array.isArray(selectedOption.inline_diff_operations)) {
-    nextEdit.inline_diff_operations = selectedOption.inline_diff_operations;
-  } else {
-    delete nextEdit.inline_diff_operations;
-  }
-  return nextEdit;
+  return ReviewWorkstationModel.applyTemplateSelectionToRedline(state, edit);
 }
 
 function getDisplayClauses() {
@@ -643,20 +441,16 @@ function bindReviewAcknowledgementControls(container) {
 
 function setRedlineExportDecision(redlineId, included) {
   if (!redlineId) return;
-  const edit = state.reviewRedlines.find((item) => item.id === redlineId);
-  const hadPrevious = Object.prototype.hasOwnProperty.call(state.exportRedlineDecisions, redlineId);
-  const previousIncluded = state.exportRedlineDecisions[redlineId];
-  const currentIncluded = edit ? redlineExportIncluded(edit) : previousIncluded !== false;
-  if (currentIncluded !== included) {
+  const result = ReviewWorkstationModel.setRedlineExportDecision(state, redlineId, included);
+  const edit = result.edit;
+  if (result.changed) {
     pushReviewEditHistoryEntry({
       editId: redlineId,
-      hadPrevious,
-      previousIncluded,
+      hadPrevious: result.hadPrevious,
+      previousIncluded: result.previousIncluded,
       type: "redline_export_decision",
     });
   }
-  state.exportRedlineDecisions[redlineId] = included;
-  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
   if (included && edit?.clause_id) {
@@ -667,19 +461,15 @@ function setRedlineExportDecision(redlineId, included) {
 }
 
 function setClauseExportDecision(clauseId, included) {
-  const hadPrevious = Object.prototype.hasOwnProperty.call(state.exportClauseDecisions, clauseId);
-  const previousIncluded = state.exportClauseDecisions[clauseId];
-  const currentIncluded = clauseExportIncluded(clauseId);
-  if (currentIncluded !== included) {
+  const result = ReviewWorkstationModel.setClauseExportDecision(state, clauseId, included);
+  if (result.changed) {
     pushReviewEditHistoryEntry({
       clauseId,
-      hadPrevious,
-      previousIncluded,
+      hadPrevious: result.hadPrevious,
+      previousIncluded: result.previousIncluded,
       type: "clause_export_decision",
     });
   }
-  state.exportClauseDecisions[clauseId] = included;
-  state.selectedReviewClauseId = clauseId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
   if (included) {
@@ -690,24 +480,20 @@ function setClauseExportDecision(clauseId, included) {
 }
 
 function setRedlineTemplateSelection(editId, optionId) {
-  const hadPrevious = Object.prototype.hasOwnProperty.call(state.redlineTemplateSelections, editId);
-  const previousOptionId = state.redlineTemplateSelections[editId];
-  if (previousOptionId === optionId) return;
+  const result = ReviewWorkstationModel.setRedlineTemplateSelection(state, editId, optionId);
+  if (!result.changed) return;
   pushReviewEditHistoryEntry({
     editId,
-    hadPrevious,
-    previousOptionId,
+    hadPrevious: result.hadPrevious,
+    previousOptionId: result.previousOptionId,
     type: "redline_template_selection",
   });
-  state.redlineTemplateSelections[editId] = optionId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
 }
 
 function selectedRedlineTemplateOptionId(edit) {
-  return state.redlineTemplateSelections?.[edit.id]
-    || (edit.template_options || []).find((option) => option.selected)?.id
-    || "";
+  return ReviewWorkstationModel.selectedRedlineTemplateOptionId(state, edit);
 }
 
 // The "Dynamic" engine badge was removed from the UI (product decision). The
@@ -1806,18 +1592,7 @@ function dockCommentCardInMargin(card, paragraph) {
 }
 
 function paragraphCommentThreads(paragraphId) {
-  // Clause-scoped comments may also carry a paragraph_id (their clause's anchor
-  // paragraph); they belong to the clause lane, not the in-document thread card.
-  const all = normalizeReviewComments(state.reviewComments)
-    .filter((comment) => comment.paragraph_id === paragraphId && !comment.clause_id);
-  const byCreated = (a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""));
-  return all
-    .filter((comment) => !comment.parent_id)
-    .sort(byCreated)
-    .map((root) => ({
-      root,
-      replies: all.filter((comment) => comment.parent_id === root.id).sort(byCreated),
-    }));
+  return ReviewWorkstationModel.paragraphCommentThreads(state, paragraphId);
 }
 
 function commentAuthorName(comment) {
@@ -1843,31 +1618,12 @@ function formatCommentTimestamp(value) {
 }
 
 function nextCommentReplyId(rootId) {
-  const base = `comment-reply-${rootId}-`;
-  let max = 0;
-  normalizeReviewComments(state.reviewComments).forEach((comment) => {
-    if (typeof comment.id === "string" && comment.id.startsWith(base)) {
-      const value = Number(comment.id.slice(base.length));
-      if (Number.isFinite(value) && value > max) max = value;
-    }
-  });
-  return `${base}${max + 1}`;
+  return ReviewWorkstationModel.nextCommentReplyId(state, rootId);
 }
 
 function addCommentReply(rootId, text) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return;
-  const root = normalizeReviewComments(state.reviewComments).find((comment) => comment.id === rootId);
-  if (!root) return;
-  upsertReviewComment({
-    ...reviewCommentTargetForParagraph(root.paragraph_id),
-    author: "Reviewer",
-    created_at: new Date().toISOString(),
-    id: nextCommentReplyId(rootId),
-    parent_id: rootId,
-    scope: "reply",
-    text: trimmed,
-  });
+  const comment = ReviewWorkstationModel.buildCommentReply(state, rootId, text);
+  if (comment) upsertReviewComment(comment);
 }
 
 function editReviewCommentText(commentId, text) {
@@ -1879,18 +1635,9 @@ function editReviewCommentText(commentId, text) {
 }
 
 function removeReviewCommentThread(commentId) {
-  const all = normalizeReviewComments(state.reviewComments);
-  const target = all.find((comment) => comment.id === commentId);
-  if (!target) return;
+  if (!normalizeReviewComments(state.reviewComments).some((comment) => comment.id === commentId)) return;
   pushReviewCommentsHistory();
-  const removeIds = new Set([commentId]);
-  if (!target.parent_id) {
-    // Deleting a thread root removes its replies too.
-    all.forEach((comment) => {
-      if (comment.parent_id === commentId) removeIds.add(comment.id);
-    });
-  }
-  state.reviewComments = all.filter((comment) => !removeIds.has(comment.id));
+  ReviewWorkstationModel.removeReviewCommentThread(state, commentId);
   markRedlineDraftDirty();
   renderStudioDocumentHighlights();
   renderStudioClauseLane();

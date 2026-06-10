@@ -142,7 +142,6 @@ async function exportReviewDocx() {
   const exportMatter = state.selectedMatter?.id ? state.selectedMatter : null;
   const exportDocument = !exportMatter && state.selectedDocument ? state.selectedDocument : null;
   const exportTitle = studioDocTitle.textContent || DEFAULT_DOCUMENT_TITLE;
-  const exportRedlines = effectiveReviewRedlines();
   const exportManualRedlines = manualExportRedlines();
   const exportDraftDirty = Boolean(exportMatter?.id && state.redlineDraftDirty);
 
@@ -160,26 +159,16 @@ async function exportReviewDocx() {
     if (exportDraftDirty && state.selectedMatter?.id === exportMatter.id) {
       await saveReviewRedlineDraft({ quiet: true });
     }
-    const payload = {
-      text,
-      reviewed_text: text,
-      title: exportTitle,
-      export_redline_edits: exportRedlines,
-      manual_redline_edits: exportManualRedlines,
-      review_comments: currentReviewComments(),
-      // Inbound-fill tool: blanks the user filled with Aspora entity values.
-      // CLEAN fills have already rewritten the paragraph text (and advanced the
-      // manual-redline baseline so they don't double-emit as manual redlines);
-      // TRACKED fills are left for the backend to render as tracked changes.
-      // The backend keys on {paragraph_id, find, value, mode}.
+    const payload = ReviewWorkstationModel.buildReviewExportPayload(state, {
+      contentBase64: exportDocument ? await fileToBase64(exportDocument) : "",
+      document: exportDocument,
       fills: currentReviewFills(),
-    };
-    if (exportMatter?.id) {
-      payload.matter_id = exportMatter.id;
-    } else if (exportDocument) {
-      payload.filename = exportDocument.name;
-      payload.content_base64 = await fileToBase64(exportDocument);
-    }
+      manualRedlineEdits: exportManualRedlines,
+      matter: exportMatter,
+      reviewComments: currentReviewComments(),
+      text,
+      title: exportTitle,
+    });
 
     const response = await fetch("/api/export-review-docx", {
       method: "POST",
@@ -220,35 +209,17 @@ async function exportReviewDocx() {
 }
 
 async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseId = "" } = {}) {
-  const matterId = state.selectedMatter?.id;
   const targetClauseId = clauseId || sourceButton?.dataset?.reviewClauseId || "";
-  const targetClauseIds = targetClauseId ? [targetClauseId] : reviewClauseIds();
-  if (!targetClauseIds.length) return;
-  const previousReviewedClauseIds = { ...reviewedClauseMap() };
-  const previousMatter = state.selectedMatter ? { ...state.selectedMatter } : null;
-  const previousMatterReviewed = Boolean(previousMatter?.human_reviewed);
-
-  if (state.selectedMatter?.human_reviewed) {
-    reviewClauseIds().forEach((id) => {
-      if (!Object.prototype.hasOwnProperty.call(reviewedClauseMap(), id)) {
-        reviewedClauseMap()[id] = true;
-      }
-    });
-  }
-
-  const nextReviewed = targetClauseIds.some((id) => !clauseReviewAcknowledged(id));
-  targetClauseIds.forEach((id) => {
-    if (state.reviewClauses.some((clause) => clause.id === id)) {
-      reviewedClauseMap()[id] = nextReviewed;
-    }
-  });
-  const allReviewed = humanReviewAcknowledged();
-  const shouldPersistMatterReviewed = Boolean(matterId && allReviewed !== previousMatterReviewed);
-
-  if (state.selectedMatter && shouldPersistMatterReviewed) {
-    state.selectedMatter = { ...state.selectedMatter, human_reviewed: allReviewed };
-    if (allReviewed) delete state.selectedMatter.send_block_reason;
-  }
+  const reviewToggle = ReviewWorkstationModel.toggleReviewAcknowledgement(state, { clauseId: targetClauseId });
+  if (!reviewToggle) return;
+  const {
+    allReviewed,
+    matterId,
+    nextReviewed,
+    previousMatter,
+    previousReviewedClauseIds,
+    shouldPersistMatterReviewed,
+  } = reviewToggle;
 
   markRedlineDraftDirty();
   setFileMeta(
@@ -273,11 +244,7 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter reviewed");
     if (payload.matter?.id) {
-      const merged = { ...state.selectedMatter, ...payload.matter };
-      // The server omits send_block_reason once it clears; drop any stale value
-      // so the client gate (which checks it first) unblocks too.
-      if (allReviewed && !payload.matter.send_block_reason) delete merged.send_block_reason;
-      state.selectedMatter = merged;
+      ReviewWorkstationModel.applyReviewedMatterResponse(state, payload.matter, { allReviewed });
     }
     updateExportButtonState();
   } catch (error) {
@@ -382,24 +349,15 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
     if (state.redlineDraftDirty) {
       await saveReviewRedlineDraft({ quiet: true });
     }
-    const payload = {
-      matter_id: state.selectedMatter.id,
-      confirm_send: true,
-      // Confirm the exact destination so a spoofed inbound Reply-To cannot
-      // silently redirect the outbound redline; the server rejects a mismatch.
-      confirm_recipient: recipient,
-      text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
-      reviewed_text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
-      export_redline_edits: effectiveReviewRedlines(),
-      manual_redline_edits: manualExportRedlines(),
-      review_comments: currentReviewComments(),
-      // Carry inbound-fill blanks on send too, so a TRACKED fill isn't dropped
-      // when the redline is emailed (CLEAN fills already live in the text).
+    const payload = ReviewWorkstationModel.buildReviewSendPayload(state, {
+      body,
       fills: currentReviewFills(),
-      to: recipient,
-      subject: subject.trim(),
-      body: body.trim(),
-    };
+      manualRedlineEdits: manualExportRedlines(),
+      recipient,
+      reviewComments: currentReviewComments(),
+      subject,
+      text: studioNdaText.value.trim() || state.reviewSourceText.trim(),
+    });
     const response = await fetch("/api/gmail/send-redline", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -790,15 +748,10 @@ function updateRedlineDraftControls() {
 }
 
 function currentRedlineDraftPayload() {
-  return {
-    clause_decisions: { ...state.exportClauseDecisions },
-    redline_decisions: { ...state.exportRedlineDecisions },
-    template_selections: { ...state.redlineTemplateSelections },
-    reviewed_clause_ids: { ...reviewedClauseMap() },
-    export_redline_edits: effectiveReviewRedlines(),
-    manual_redline_edits: manualExportRedlines(),
-    review_comments: currentReviewComments(),
-  };
+  return ReviewWorkstationModel.buildRedlineDraftPayload(state, {
+    manualRedlineEdits: manualExportRedlines(),
+    reviewComments: currentReviewComments(),
+  });
 }
 
 async function saveReviewRedlineDraft({ quiet = false } = {}) {
