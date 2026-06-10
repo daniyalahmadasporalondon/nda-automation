@@ -77,6 +77,34 @@ function bindViewerParagraphEditing() {
     });
     editable.addEventListener("paste", pastePlainText);
   });
+
+  // Click-to-edit: a manual-redline paragraph shows only the diff (its plain
+  // editor is collapsed via CSS). Clicking the diff reveals + focuses the editor
+  // in place; the diff returns on blur -- so no editor box opens below it.
+  studioDocumentRender.querySelectorAll("[data-redline-preview]").forEach((preview) => {
+    preview.addEventListener("mousedown", (event) => {
+      const container = preview.closest(".studio-doc-paragraph");
+      const editable = container?.querySelector(".paragraph-editable");
+      if (!editable) return;
+      event.preventDefault();
+      container.classList.add("is-editing");
+      editable.focus({ preventScroll: true });
+      placeViewerCaretAtEnd(editable);
+    });
+  });
+}
+
+function placeViewerCaretAtEnd(editable) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  } catch (error) {
+    /* caret placement is best-effort */
+  }
 }
 
 function recordViewerEditHistoryEntry(editable) {
@@ -429,6 +457,10 @@ function restoreViewerEditSelection(snapshot) {
   );
   if (!editable) return;
 
+  // A re-render rebuilds the paragraph without .is-editing; for a manual-redline
+  // paragraph that collapses the editor (CSS), so re-add the class before focus
+  // (a display:none element can't take focus).
+  editable.closest(".studio-doc-paragraph")?.classList.add("is-editing");
   try {
     editable.focus({ preventScroll: true });
   } catch {

@@ -2055,7 +2055,7 @@ h3 {
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   margin: 0;
-  padding: 0 14px 12px;
+  padding: 16px 14px 12px;
 }
 
 .studio-clause-navigator-head {
@@ -3679,9 +3679,21 @@ h3 {
   padding-top: 7px;
 }
 
-.studio-doc-paragraph.selected .paragraph-source-editor,
+/* The plain-text editor is revealed only while actively editing -- not merely
+   when the paragraph is selected -- so a redline paragraph shows just its diff
+   and no editor box opens below it. */
 .studio-doc-paragraph.is-editing .paragraph-source-editor {
   display: block;
+}
+
+/* While editing, swap the diff out for the editor in place. */
+.studio-doc-paragraph.is-editing .paragraph-redline-preview {
+  display: none;
+}
+
+/* The diff is the click target to start editing in place. */
+.studio-doc-paragraph .paragraph-redline-preview[data-redline-preview]:not([hidden]) {
+  cursor: text;
 }
 
 .paragraph-source-editor .paragraph-editable {

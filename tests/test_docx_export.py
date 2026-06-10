@@ -1149,8 +1149,9 @@ class DocxExportTests(unittest.TestCase):
         # paragraph text (docx_text._paragraph_text .strip()s it), but the non-split
         # export path measured run-op offsets from the RAW <w:p>. A paragraph with
         # leading whitespace shifted the <w:rPrChange> left (bolding "world" hit
-        # "llo w"). The format edit now redlines a verbatim source rebuilt from the
-        # stripped text, so the bold lands on exactly the selected word.
+        # "llo w"). _apply_tracked_run_format now shifts run-op offsets by the
+        # leading-whitespace count (raw_text minus raw_text.lstrip()), so the bold
+        # lands on exactly the selected word while the raw run structure is kept.
         document_xml = (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -2174,6 +2175,157 @@ class DocxExportTests(unittest.TestCase):
         paragraph = document_root.find(".//w:body/w:p", W_NS)
         self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
         self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+
+    def test_manual_freeform_replace_redlines_at_character_level(self):
+        # A free-form manual edit (clause_id == manual_viewer_edit, no whole_paragraph)
+        # must diff at the CHARACTER level like the frontend preview: "color" -> "colour"
+        # keeps "colo", inserts only "u", keeps "r" -- never strikes the whole word.
+        original = "Favourite color is blue."
+        replacement = "Favourite colour is blue."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraph = document_root.find(".//w:body/w:p", W_NS)
+        # Accepting/rejecting still reconstructs both states exactly.
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        # Char-level: only "u" is inserted, nothing is deleted (pure insertion).
+        self.assertEqual(tracked_inserted_text(document_root), ["u"])
+        self.assertEqual(tracked_deleted_text(document_root), [])
+        # NOT a whole-word ~~color~~ colour replacement: "colour" never appears whole
+        # inside an insert run, and "color" is never struck whole inside a delete run.
+        self.assertNotIn("colour", tracked_inserted_text(document_root))
+        self.assertNotIn("color", tracked_deleted_text(document_root))
+
+    def test_manual_freeform_replace_deletes_only_changed_chars_verbatim(self):
+        # Deleting a word inside a quoted phrase: only " India" (with its leading space)
+        # is struck, verbatim -- no spurious spacing introduced around the curly quotes.
+        original = "The party known as “Air India” is referenced."
+        replacement = "The party known as “Air” is referenced."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraph = document_root.find(".//w:body/w:p", W_NS)
+        # Exactly one deletion, carrying just " India" verbatim (leading space kept).
+        self.assertEqual(tracked_deleted_text(document_root), [" India"])
+        self.assertEqual(tracked_inserted_text(document_root), [])
+        # Both states reconstruct byte-identically -- the curly quotes are untouched.
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+
+    def test_manual_whole_paragraph_replace_does_not_use_char_level(self):
+        # A manual redline explicitly flagged whole_paragraph (e.g. a clause/governing
+        # -law pick surfaced through the manual path) must stay on the token/whole
+        # path, NOT the char-level diff. A char-level diff would fragment "California"
+        # into single-letter runs (sharing letters with "Wales"); the token path
+        # strikes the whole word " California" instead.
+        original = "Governed by the laws of California."
+        replacement = "Governed by the laws of England and Wales."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                    "whole_paragraph": True,
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraph = document_root.find(".//w:body/w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        # Token/whole path: the whole word " California" is struck as ONE delete run,
+        # not fragmented into single-character runs the way char-level would.
+        self.assertEqual(tracked_deleted_text(document_root), [" California"])
+        # Every insertion is a whole word, never a lone letter (the char-level
+        # signature). The token path inserts " England", " and", " Wales".
+        for inserted in tracked_inserted_text(document_root):
+            self.assertGreater(len(inserted.strip()), 1)
+
+    def test_ai_clause_replace_still_uses_token_level_path(self):
+        # An AI/clause redline (clause_id != manual_viewer_edit) keeps the token-level
+        # path: a word-boundary edit redlines whole words, not individual characters.
+        original = "The confidentiality obligations survive for seven years."
+        replacement = "The confidentiality obligations survive for ten years."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "c1",
+                    "clause_id": "term",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraph = document_root.find(".//w:body/w:p", W_NS)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=False), original)
+        self.assertEqual(revision_text_for_state(paragraph, accepted=True), replacement)
+        # Token-level: the whole word "seven" is struck and the whole word "ten"
+        # inserted -- a char-level diff would have kept the shared "en".
+        self.assertTrue(any("seven" in text for text in tracked_deleted_text(document_root)))
+        self.assertTrue(any("ten" in text for text in tracked_inserted_text(document_root)))
 
     def test_source_docx_export_preserves_multiple_redlines_on_same_source_paragraph(self):
         original = "This Agreement is governed by California. Confidentiality survives for seven years."

@@ -152,6 +152,12 @@ def clean_manual_export_redline(redline: object) -> dict | None:
     if action == REDLINE_FORMAT_PARAGRAPH:
         cleaned["format_ops"] = _clean_format_ops(redline.get("format_ops"), common["original_text"])
 
+    # Preserve whether this manual edit is a whole-paragraph replacement (e.g. a
+    # clause/governing-law pick) vs. a free-form character-level edit, so the export
+    # can route between the token/whole path and the char-level path. The sanitiser
+    # otherwise drops this flag.
+    cleaned["whole_paragraph"] = bool(redline.get("whole_paragraph"))
+
     _copy_redline_indexes(redline, cleaned)
     source_part = str(redline.get("source_part") or "").strip()
     if source_part:

@@ -591,7 +591,19 @@ function renderInlineRedline(paragraph, edit) {
   if (edit.action === REDLINE_DELETE_PARAGRAPH) {
     return `<span class="inline-del">${escapeHtml(original)}</span>`;
   }
-  return renderDiffOperations(redlineDiffOperations(edit, original, String(edit.replacement_text || "")));
+  const replacement = String(edit.replacement_text || "");
+  // Backend/AI redlines keep their token-level ops; clause / whole-paragraph edits
+  // replace the whole paragraph. A free-form manual edit diffs at the CHARACTER
+  // level so only the changed letters are struck/inserted -- rendered verbatim,
+  // because char tokens carry their own whitespace (renderDiffOperations would
+  // re-insert inter-token spaces and corrupt them).
+  if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
+    return renderDiffOperations(edit.inline_diff_operations);
+  }
+  if (edit?.whole_paragraph) {
+    return renderDiffOperations(fullReplacementOperations(original, replacement));
+  }
+  return renderVerbatimDiffOperations(charDiffOperations(original, replacement));
 }
 
 function redlineDiffOperations(edit, original, replacement) {
@@ -647,6 +659,61 @@ function wordDiffOperations(original, replacement) {
     j += 1;
   }
   return operations;
+}
+
+// Character-level diff (LCS) for free-form manual edits: a small change (e.g.
+// deleting one word inside a quoted phrase) redlines only the changed letters,
+// not the whole word/phrase. Consecutive same-type characters are merged into
+// runs whose tokens carry their own whitespace, so they MUST be rendered with
+// renderVerbatimDiffOperations (renderDiffOperations re-inserts inter-token
+// spaces, which is correct for word tokens but corrupts character runs).
+function charDiffOperations(original, replacement) {
+  const a = [...String(original || "")];
+  const b = [...String(replacement || "")];
+  const n = a.length;
+  const m = b.length;
+  if (!n && !m) return [];
+  // Char-level LCS is O(n*m); fall back to a whole-paragraph replacement on very
+  // long paragraphs so a keystroke never stalls the live preview.
+  if (n * m > 1000000) return fullReplacementOperations(original, replacement);
+  const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const operations = [];
+  const pushChar = (type, token) => {
+    const last = operations[operations.length - 1];
+    if (last && last.type === type) last.token += token;
+    else operations.push({ type, token });
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { pushChar("equal", a[i]); i += 1; j += 1; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { pushChar("delete", a[i]); i += 1; }
+    else { pushChar("insert", b[j]); j += 1; }
+  }
+  while (i < n) { pushChar("delete", a[i]); i += 1; }
+  while (j < m) { pushChar("insert", b[j]); j += 1; }
+  return operations;
+}
+
+// Renders diff ops verbatim, wrapping deletes/inserts in the redline spans. The
+// tokens already carry their own whitespace (as charDiffOperations produces), so
+// unlike renderDiffOperations it never inserts inter-token spaces.
+function renderVerbatimDiffOperations(operations) {
+  return operations
+    .map((operation) => {
+      const className = operation.type === "delete"
+        ? "inline-del"
+        : operation.type === "insert"
+          ? "inline-ins"
+          : "";
+      return renderInlineToken(operation.token, className);
+    })
+    .join("");
 }
 
 // Word font NAME -> CSS family stack, for on-screen rendering only. The redline

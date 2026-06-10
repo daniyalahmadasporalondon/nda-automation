@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import List, Tuple
 
-from .inline_diff import diff_text_operations
+from .inline_diff import diff_text_char_operations, diff_text_operations
 from .docx_xml import _clone_element, _escape_xml, _w_tag, _word_paragraph_from_xml
 
 
@@ -25,6 +25,20 @@ def _source_tracked_replace_paragraph(
     first_revision_id: int,
 ) -> Tuple[ET.Element, int]:
     tracked_paragraph_xml, next_revision_id = _tracked_replace_paragraph(original, replacement, first_revision_id)
+    return _merge_source_paragraph_properties(source_paragraph, _word_paragraph_from_xml(tracked_paragraph_xml)), next_revision_id
+
+def _source_tracked_replace_paragraph_char(
+    source_paragraph: ET.Element,
+    original: str,
+    replacement: str,
+    first_revision_id: int,
+) -> Tuple[ET.Element, int]:
+    """Char-level mirror of :func:`_source_tracked_replace_paragraph` for free-form
+    manual edits. Builds the tracked <w:p> via :func:`_tracked_replace_paragraph_char`
+    (single-character diff, no inter-token spacing) and merges the source paragraph's
+    pPr/run formatting in the same way, so character-level redlines still inherit the
+    source paragraph's appearance."""
+    tracked_paragraph_xml, next_revision_id = _tracked_replace_paragraph_char(original, replacement, first_revision_id)
     return _merge_source_paragraph_properties(source_paragraph, _word_paragraph_from_xml(tracked_paragraph_xml)), next_revision_id
 
 def _source_tracked_delete_paragraph(source_paragraph: ET.Element, text: str, revision_id: int) -> ET.Element:
@@ -521,6 +535,53 @@ def _tracked_replace_paragraph(original: str, replacement: str, first_revision_i
             previous_original_token = token
             previous_accepted_token = token
         current_parts.append(f"{prefix}{token}")
+
+    flush_current()
+    return f"<w:p>{''.join(runs)}</w:p>", revision_id
+
+def _tracked_replace_paragraph_char(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
+    """Char-level tracked replace for free-form manual edits.
+
+    Mirrors :func:`_tracked_replace_paragraph` (same multi-line guard, same
+    per-tracked-run revision-id increment) BUT iterates the single-character diff
+    and batches consecutive same-type ops by PLAIN CONCATENATION -- no
+    ``_needs_inline_space`` prefix. The char tokens already carry their own
+    whitespace; the word-spacing heuristic would put a spurious space between
+    adjacent letters (e.g. inside "colour"), so it must not run here. This is the
+    backend counterpart of the frontend ``renderVerbatimDiffOperations`` path."""
+    if "\n" in str(original) or "\n" in str(replacement):
+        return (
+            f"<w:p>{_tracked_delete(str(original), first_revision_id)}{_tracked_insert(str(replacement), first_revision_id + 1)}</w:p>",
+            first_revision_id + 2,
+        )
+
+    runs: List[str] = []
+    revision_id = first_revision_id
+    current_type = ""
+    current_parts: List[str] = []
+
+    def flush_current() -> None:
+        nonlocal revision_id, current_type, current_parts
+        if not current_parts:
+            return
+        text = "".join(current_parts)
+        if current_type == "delete":
+            runs.append(_tracked_delete(text, revision_id))
+            revision_id += 1
+        elif current_type == "insert":
+            runs.append(_tracked_insert(text, revision_id))
+            revision_id += 1
+        else:
+            runs.append(_run(text))
+        current_parts = []
+
+    for operation_type, token in diff_text_char_operations(original, replacement):
+        if operation_type != current_type:
+            flush_current()
+            current_type = operation_type
+        # Verbatim batching: the char token carries its own whitespace, so it is
+        # appended with no inter-token prefix (unlike the token-level path).
+        current_parts.append(token)
 
     flush_current()
     return f"<w:p>{''.join(runs)}</w:p>", revision_id

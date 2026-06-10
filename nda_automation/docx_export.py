@@ -30,6 +30,7 @@ from .redline_xml import (
     _source_tracked_delete_paragraph,
     _source_tracked_insert_paragraphs,
     _source_tracked_replace_paragraph,
+    _source_tracked_replace_paragraph_char,
     _source_verbatim_paragraph,
     _strip_paragraph_property_revisions,
     _tracked_delete_paragraph,
@@ -723,7 +724,20 @@ def _source_tracked_primary_redline_paragraph(
     original_text = str(redline.get("original_text") or _paragraph_text(source_paragraph))
     action = redline.get("action")
     if action == REDLINE_REPLACE_PARAGRAPH:
-        return _source_tracked_replace_paragraph(
+        # A free-form manual viewer edit diffs at the CHARACTER level (mirroring the
+        # frontend redline preview), so only the changed letters redline. Clause and
+        # governing-law replacements stay whole-paragraph; they (and any manual edit
+        # explicitly flagged whole_paragraph) keep the token-level path.
+        is_freeform_manual_edit = (
+            redline.get("clause_id") == "manual_viewer_edit"
+            and not redline.get("whole_paragraph")
+        )
+        replace_paragraph = (
+            _source_tracked_replace_paragraph_char
+            if is_freeform_manual_edit
+            else _source_tracked_replace_paragraph
+        )
+        return replace_paragraph(
             source_paragraph,
             original_text,
             str(redline.get("replacement_text") or ""),
