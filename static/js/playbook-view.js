@@ -18,6 +18,9 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function draftHelpers() {
     return runtime?.draft || null;
   }
+  function authoringModel() {
+    return runtime?.authoring || null;
+  }
   function playbookApi() {
     return runtime?.api || null;
   }
@@ -86,10 +89,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function renderTabbedClauseDetail(clause) {
-    const allowedPanels = new Set(["policy", "redline", "decision", "audit"]);
+    const model = authoringModel();
     const panelState = playbookPanelState();
-    const savedPanel = panelState[clause.id] || (clause.id === "mutuality" ? state.playbookMutualityPanel : "");
-    const activePanel = allowedPanels.has(savedPanel) ? savedPanel : "policy";
+    const activePanel = model
+      ? model.resolveActivePanel({
+        clauseId: clause.id,
+        panelState,
+        mutualityPanel: state.playbookMutualityPanel,
+      })
+      : fallbackActivePanel(clause.id, panelState, state.playbookMutualityPanel);
     const panelActive = (name) => activePanel === name;
     clauseDetail.innerHTML = `
       <form class="playbook-editor playbook-editor-tabbed" id="playbookEditor">
@@ -170,10 +178,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
         <div class="admin-actions playbook-draft-actions">
           <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
-          <button class="secondary" type="button" id="discardPlaybookDraft" ${hasClauseDraft(clause.id) ? "" : "disabled"}>Discard Changes</button>
+          <button class="secondary" type="button" id="discardPlaybookDraft" ${actionAvailabilityForClause(clause).discardDisabled ? "disabled" : ""}>Discard Changes</button>
           <button class="secondary" type="button" id="validatePlaybookButton">Validate Draft</button>
-          <button type="submit" id="savePlaybookButton" ${hasAnyDraft() && !hasTemplateValidationErrors() ? "" : "disabled"}>Save Draft</button>
-          <button class="primary" type="button" id="publishPlaybookButton" ${canPublish() ? "" : "disabled"}>Publish Playbook</button>
+          <button type="submit" id="savePlaybookButton" ${actionAvailabilityForClause(clause).saveDisabled ? "disabled" : ""}>Save Draft</button>
+          <button class="primary" type="button" id="publishPlaybookButton" ${actionAvailabilityForClause(clause).publishDisabled ? "disabled" : ""}>Publish Playbook</button>
         </div>
       </form>
     `;
@@ -229,12 +237,40 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (save) save.disabled = !hasAnyDraft() || hasTemplateValidationErrors();
     if (publish) publish.disabled = !canPublish();
     // Editing invalidates a prior validation pass; clear it so the badge can't go stale.
-    if (lastValidation && hasAnyDraft()) {
+    const model = authoringModel();
+    const invalidateValidation = model
+      ? model.shouldInvalidateValidation({ validation: lastValidation, hasUnsavedChanges: hasAnyDraft() })
+      : Boolean(lastValidation && hasAnyDraft());
+    if (invalidateValidation) {
       lastValidation = null;
       renderValidationState();
     }
     updateStatusBannerState();
     renderPlaybookList();
+  }
+
+  function fallbackActivePanel(clauseId, panelState, mutualityPanel) {
+    const allowed = new Set(["policy", "redline", "decision", "audit"]);
+    const savedPanel = panelState[clauseId] || (clauseId === "mutuality" ? mutualityPanel : "");
+    return allowed.has(savedPanel) ? savedPanel : "policy";
+  }
+
+  function actionAvailabilityForClause(clause) {
+    const publishable = canPublish();
+    const model = authoringModel();
+    if (!model) {
+      return {
+        discardDisabled: !hasClauseDraft(clause.id),
+        saveDisabled: !hasAnyDraft() || hasTemplateValidationErrors(),
+        publishDisabled: !publishable,
+      };
+    }
+    return model.actionAvailability({
+      clauseHasDraft: hasClauseDraft(clause.id),
+      hasUnsavedChanges: hasAnyDraft(),
+      hasTemplateValidationErrors: hasTemplateValidationErrors(),
+      canPublish: publishable,
+    });
   }
 
   // Patch the version banner's draft-state class + note in place, so live edits
@@ -245,24 +281,18 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const helpers = draftHelpers();
     const dirty = hasAnyDraft();
     const draftAhead = helpers ? helpers.draftDiffersFromActive(state.draftMeta, state.activePlaybook) : false;
-    let note = "Matches the active published version.";
-    let stateClass = "in-sync";
-    if (dirty) {
-      note = "Unsaved changes - Save Draft to keep them.";
-      stateClass = "editing";
-    } else if (draftAhead) {
-      note = "Saved draft is ahead of the active version - Publish to make it live.";
-      stateClass = "ahead";
-    }
-    banner.dataset.draftState = stateClass;
+    const status = authoringModel()
+      ? authoringModel().draftStatus({ hasUnsavedChanges: dirty, draftAhead })
+      : fallbackDraftStatus(dirty, draftAhead);
+    banner.dataset.draftState = status.state;
     const draftNote = banner.querySelector(".playbook-version-card.draft small");
-    if (draftNote) draftNote.textContent = note;
+    if (draftNote) draftNote.textContent = status.note;
     const draftEyebrow = banner.querySelector(".playbook-version-card.draft .eyebrow");
     if (draftEyebrow) {
       const hasDot = Boolean(draftEyebrow.querySelector(".playbook-dirty-dot"));
-      if (dirty && !hasDot) {
+      if (status.showDirtyDot && !hasDot) {
         draftEyebrow.insertAdjacentHTML("beforeend", ' <span class="playbook-dirty-dot" aria-hidden="true"></span>');
-      } else if (!dirty && hasDot) {
+      } else if (!status.showDirtyDot && hasDot) {
         draftEyebrow.querySelector(".playbook-dirty-dot").remove();
       }
     }
@@ -280,17 +310,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const draftLabel = helpers ? helpers.friendlyVersionLabel(draft, "draft") : "";
     const dirty = hasAnyDraft();
     const draftAhead = helpers ? helpers.draftDiffersFromActive(draft, active) : false;
-    let draftNote = "Matches the active published version.";
-    let draftStateClass = "in-sync";
-    if (dirty) {
-      draftNote = "Unsaved changes - Save Draft to keep them.";
-      draftStateClass = "editing";
-    } else if (draftAhead) {
-      draftNote = "Saved draft is ahead of the active version - Publish to make it live.";
-      draftStateClass = "ahead";
-    }
+    const status = authoringModel()
+      ? authoringModel().draftStatus({ hasUnsavedChanges: dirty, draftAhead })
+      : fallbackDraftStatus(dirty, draftAhead);
     return `
-      <section class="playbook-version-banner" data-draft-state="${escapeHtml(draftStateClass)}" aria-label="Playbook version status">
+      <section class="playbook-version-banner" data-draft-state="${escapeHtml(status.state)}" aria-label="Playbook version status">
         <article class="playbook-version-card active">
           <p class="eyebrow">Active published</p>
           <strong${versionTooltipAttr(active)}>${escapeHtml(activeLabel || "Not yet published")}</strong>
@@ -298,13 +322,35 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <small>Used by the review engine right now.</small>
         </article>
         <article class="playbook-version-card draft">
-          <p class="eyebrow">Working draft${dirty ? " <span class=\"playbook-dirty-dot\" aria-hidden=\"true\"></span>" : ""}</p>
+          <p class="eyebrow">Working draft${status.showDirtyDot ? " <span class=\"playbook-dirty-dot\" aria-hidden=\"true\"></span>" : ""}</p>
           <strong${versionTooltipAttr(draft)}>${escapeHtml(draftLabel || "No saved draft yet")}</strong>
           ${versionFingerprint(draft)}
-          <small>${escapeHtml(draftNote)}</small>
+          <small>${escapeHtml(status.note)}</small>
         </article>
       </section>
     `;
+  }
+
+  function fallbackDraftStatus(dirty, draftAhead) {
+    if (dirty) {
+      return {
+        state: "editing",
+        note: "Unsaved changes - Save Draft to keep them.",
+        showDirtyDot: true,
+      };
+    }
+    if (draftAhead) {
+      return {
+        state: "ahead",
+        note: "Saved draft is ahead of the active version - Publish to make it live.",
+        showDirtyDot: false,
+      };
+    }
+    return {
+      state: "in-sync",
+      note: "Matches the active published version.",
+      showDirtyDot: false,
+    };
   }
 
   // Subtle short-hash fingerprint line under a version headline (omitted when no
@@ -334,11 +380,21 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   // Publish is allowed only when the draft is saved (no unsaved edits), the draft
   // actually differs from the active version, and no validation errors are pending.
   function canPublish() {
-    if (hasAnyDraft() || hasTemplateValidationErrors()) return false;
-    if (lastValidation && !lastValidation.valid) return false;
     const helpers = draftHelpers();
     if (!helpers) return false;
-    return helpers.draftDiffersFromActive(state.draftMeta, state.activePlaybook);
+    const draftAhead = helpers.draftDiffersFromActive(state.draftMeta, state.activePlaybook);
+    const model = authoringModel();
+    if (!model) {
+      if (hasAnyDraft() || hasTemplateValidationErrors()) return false;
+      if (lastValidation && !lastValidation.valid) return false;
+      return draftAhead;
+    }
+    return model.canPublishDraft({
+      hasUnsavedChanges: hasAnyDraft(),
+      hasTemplateValidationErrors: hasTemplateValidationErrors(),
+      validation: lastValidation,
+      draftAhead,
+    });
   }
 
   // Render the validation region from the last validation result. Hidden until a
@@ -346,10 +402,34 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function renderValidationState() {
     const region = clauseDetail.querySelector("#playbookValidation");
     if (!region) return;
-    if (!lastValidation) {
+    const view = authoringModel()
+      ? authoringModel().validationView(lastValidation)
+      : null;
+    if (view?.hidden || (!view && !lastValidation)) {
       region.hidden = true;
       region.dataset.state = "idle";
       region.innerHTML = "";
+      return;
+    }
+    if (view) {
+      region.hidden = false;
+      region.dataset.state = view.state;
+      if (view.state === "valid") {
+        region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>';
+        return;
+      }
+      const items = view.errors
+        .map((error) => {
+          const where = error.clause_id
+            ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(error.field)}` : ""}</span>`
+            : "";
+          return `<li>${where}<span>${escapeHtml(error.message)}</span></li>`;
+        })
+        .join("");
+      region.innerHTML = `
+        <p class="playbook-validation-title">${escapeHtml(view.title)}</p>
+        <ul class="playbook-validation-list">${items}</ul>
+      `;
       return;
     }
     region.hidden = false;
@@ -465,6 +545,17 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         if (clause) {
           playbookPanelState()[clause.id] = target;
           if (clause.id === "mutuality") state.playbookMutualityPanel = target;
+          const model = authoringModel();
+          if (model) {
+            const next = model.setClausePanel({
+              clauseId: clause.id,
+              panel: target,
+              panelState: playbookPanelState(),
+              mutualityPanel: state.playbookMutualityPanel,
+            });
+            state.playbookClausePanels = next.panelState;
+            state.playbookMutualityPanel = next.mutualityPanel;
+          }
         }
         tabs.forEach((item) => {
           const active = item === tab;

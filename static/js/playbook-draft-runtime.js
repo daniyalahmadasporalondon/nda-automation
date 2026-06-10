@@ -7,13 +7,16 @@
 const PlaybookRuntime = (() => {
   const draftModule = import("./modules/playbook-draft.mjs?v=20260605b");
   const apiModule = import("./modules/playbook-api.mjs?v=20260605a");
+  const authoringModule = import("./modules/playbook-authoring-model.mjs?v=20260610a");
 
   const runtime = {
     draft: null,
     api: null,
-    ready: Promise.all([draftModule, apiModule]).then(([draft, api]) => {
+    authoring: null,
+    ready: Promise.all([draftModule, apiModule, authoringModule]).then(([draft, api, authoring]) => {
       runtime.draft = draft;
       runtime.api = api.createPlaybookApi({});
+      runtime.authoring = authoring.PlaybookAuthoringModel;
       return runtime;
     }),
   };
