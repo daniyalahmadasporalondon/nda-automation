@@ -3,13 +3,46 @@ from __future__ import annotations
 import json
 import os
 import re
-import ssl
 import urllib.error
 import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
+from .ai_runtime import (
+    AI_REVIEW_ENV_BACKUP_MODEL as AI_REVIEW_ENV_BACKUP_MODEL,
+    AI_REVIEW_ENV_BACKUP_PROVIDER as AI_REVIEW_ENV_BACKUP_PROVIDER,
+    AI_REVIEW_ENV_CLAUSES as AI_REVIEW_ENV_CLAUSES,
+    AI_REVIEW_ENV_ENABLED,
+    AI_REVIEW_ENV_MODEL as AI_REVIEW_ENV_MODEL,
+    AI_REVIEW_ENV_PROVIDER as AI_REVIEW_ENV_PROVIDER,
+    AI_REVIEW_ENV_THRESHOLD as AI_REVIEW_ENV_THRESHOLD,
+    AI_REVIEW_ENV_TIMEOUT as AI_REVIEW_ENV_TIMEOUT,
+    DEFAULT_AI_REVIEW_THRESHOLD,
+    DEFAULT_AI_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_MODEL,
+    GEMINI_DIRECT_API_KEY_PREFIX,
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_API_KEY_PREFIX,
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    STORED_KEY_MIGRATION_CODE,
+    STORED_KEY_MIGRATION_MESSAGE,
+    ai_review_settings as _runtime_ai_review_settings,
+    api_key_source as _runtime_api_key_source,
+    configured_api_key as _runtime_configured_api_key,
+    configured_model as _runtime_configured_model,
+    configured_provider as _runtime_configured_provider,
+    default_model_for_provider as _runtime_default_model_for_provider,
+    env_enabled as _runtime_env_enabled,
+    env_float as _runtime_env_float,
+    env_int as _runtime_env_int,
+    openrouter_json_chat_request_body,
+    openrouter_response_text as _runtime_openrouter_response_text,
+    provider_for_api_key as _runtime_provider_for_api_key,
+    sanitize_model_name as _runtime_sanitize_model_name,
+    stored_key_for_provider as _runtime_stored_key_for_provider,
+    trusted_https_context as _runtime_trusted_https_context,
+)
 from .checks.common import ClauseResult, Paragraph
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -23,33 +56,12 @@ from .review_state import (
 )
 
 AI_REVIEW_VERSION = 1
-DEFAULT_OPENROUTER_MODEL = "x-ai/grok-4.3"
-DEFAULT_AI_REVIEW_THRESHOLD = 0.75
-DEFAULT_AI_TIMEOUT_SECONDS = 20
 MAX_AI_CONTEXT_PARAGRAPHS = 40
 MAX_AI_CONTEXT_CHARS = 20000
-AI_REVIEW_ENV_ENABLED = "NDA_AI_REVIEW_ENABLED"
-AI_REVIEW_ENV_PROVIDER = "NDA_AI_PROVIDER"
-AI_REVIEW_ENV_MODEL = "NDA_AI_MODEL"
-AI_REVIEW_ENV_TIMEOUT = "NDA_AI_TIMEOUT_SECONDS"
-AI_REVIEW_ENV_THRESHOLD = "NDA_AI_REVIEW_THRESHOLD"
-AI_REVIEW_ENV_CLAUSES = "NDA_AI_REVIEW_CLAUSES"
-AI_REVIEW_ENV_BACKUP_PROVIDER = "NDA_AI_BACKUP_PROVIDER"
-AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
-OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
-OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 # OpenRouter API keys are prefixed "sk-or-"; legacy Google/Gemini-direct keys are
 # prefixed "AIza". OpenRouter is the sole provider now (the default model x-ai/grok-4.3
 # is served THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
 # and must be replaced with an OpenRouter key.
-OPENROUTER_API_KEY_PREFIX = "sk-or-"
-GEMINI_DIRECT_API_KEY_PREFIX = "AIza"
-STORED_KEY_MIGRATION_CODE = "gemini_direct_stored_key"
-STORED_KEY_MIGRATION_MESSAGE = (
-    "The stored AI API key looks like a Google/Gemini API key, but AI review now "
-    "runs through OpenRouter (model x-ai/grok-4.3). Replace it with an "
-    "OpenRouter API key (it starts with \"sk-or-\") from openrouter.ai to re-enable AI review."
-)
 AI_REVIEW_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
@@ -814,71 +826,35 @@ def _configured_reviewer(settings: Dict[str, object]) -> AIReviewFn:
 
 
 def provider_for_api_key(api_key: str) -> str:
-    return "openrouter"
+    return _runtime_provider_for_api_key(api_key)
 
 
 def default_model_for_provider(provider: str) -> str:
-    return DEFAULT_OPENROUTER_MODEL
+    return _runtime_default_model_for_provider(provider)
 
 
 def _configured_api_key(provider: str) -> str:
-    normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "openrouter":
-        return os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or _stored_key_for_provider("openrouter")
-    return ""
+    return _runtime_configured_api_key(provider)
 
 
 def _api_key_source(provider: str) -> str:
-    normalized_provider = str(provider).strip().lower()
-    if normalized_provider == "openrouter" and os.environ.get(OPENROUTER_API_KEY_ENV, "").strip():
-        return "environment"
-    if _stored_key_for_provider(normalized_provider):
-        return "local_settings"
-    return ""
+    return _runtime_api_key_source(provider)
 
 
 def _stored_key_for_provider(provider: str) -> str:
-    normalized_provider = str(provider).strip().lower()
-    stored_key = app_settings.stored_ai_api_key()
-    if not stored_key:
-        return ""
-    return stored_key if normalized_provider == "openrouter" else ""
+    return _runtime_stored_key_for_provider(provider)
 
 
 def _ai_review_settings() -> Dict[str, object]:
-    stored = app_settings.ai_settings()
-    stored_enabled = stored.get("enabled")
-    env_enabled = _env_enabled(AI_REVIEW_ENV_ENABLED)
-    provider = _configured_provider(stored)
-    return {
-        "enabled": stored_enabled if isinstance(stored_enabled, bool) else env_enabled,
-        "provider": provider,
-        "model": _configured_model(provider, stored),
-        "timeout_seconds": _env_int(AI_REVIEW_ENV_TIMEOUT, DEFAULT_AI_TIMEOUT_SECONDS),
-        "confidence_threshold": _env_float(AI_REVIEW_ENV_THRESHOLD, DEFAULT_AI_REVIEW_THRESHOLD),
-        "clause_ids": os.environ.get(AI_REVIEW_ENV_CLAUSES, ""),
-    }
+    return _runtime_ai_review_settings()
 
 
 def _configured_provider(stored: Dict[str, object]) -> str:
-    env_provider = os.environ.get(AI_REVIEW_ENV_PROVIDER, "").strip().lower()
-    if env_provider == "openrouter":
-        return env_provider
-    stored_provider = str(stored.get("provider") or "").strip().lower()
-    if stored_provider == "openrouter":
-        return stored_provider
-    return "openrouter"
+    return _runtime_configured_provider(stored)
 
 
 def _configured_model(provider: str, stored: Dict[str, object]) -> str:
-    env_model = os.environ.get(AI_REVIEW_ENV_MODEL, "").strip()
-    if env_model:
-        return env_model
-    stored_provider = str(stored.get("provider") or "").strip().lower()
-    stored_model = str(stored.get("model") or "").strip() if stored_provider == provider else ""
-    if stored_model:
-        return stored_model
-    return default_model_for_provider(provider)
+    return _runtime_configured_model(provider, stored)
 
 
 def _summary(
@@ -903,9 +879,9 @@ def _summary(
 
 def _openrouter_request_body(packet: Dict[str, object], *, model: str) -> Dict[str, object]:
     prompt = json.dumps(packet, ensure_ascii=False, indent=2)
-    return {
-        "model": _sanitize_model_name(model or DEFAULT_OPENROUTER_MODEL),
-        "messages": [
+    return openrouter_json_chat_request_body(
+        model=model or DEFAULT_OPENROUTER_MODEL,
+        messages=[
             {
                 "role": "system",
                 "content": (
@@ -916,33 +892,15 @@ def _openrouter_request_body(packet: Dict[str, object], *, model: str) -> Dict[s
             },
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-    }
+    )
 
 
-def _trusted_https_context() -> ssl.SSLContext | None:
-    try:
-        import certifi  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    try:
-        return ssl.create_default_context(cafile=certifi.where())
-    except (OSError, ssl.SSLError):
-        return None
+def _trusted_https_context():
+    return _runtime_trusted_https_context()
 
 
 def _openrouter_response_text(payload: Dict[str, object]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, dict):
-        return ""
-    return str(message.get("content") or "").strip()
+    return _runtime_openrouter_response_text(payload)
 
 
 def _context_paragraphs(
@@ -1073,24 +1031,16 @@ def _confidence_threshold(settings: Dict[str, object]) -> float:
 
 
 def _env_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return _runtime_env_enabled(name)
 
 
 def _env_int(name: str, fallback: int) -> int:
-    try:
-        return int(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return fallback
+    return _runtime_env_int(name, fallback)
 
 
 def _env_float(name: str, fallback: float) -> float:
-    try:
-        return float(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return fallback
+    return _runtime_env_float(name, fallback)
 
 
 def _sanitize_model_name(model: str) -> str:
-    cleaned = str(model or DEFAULT_OPENROUTER_MODEL).strip()
-    cleaned = re.sub(r"[^A-Za-z0-9._/-]", "", cleaned)
-    return cleaned or DEFAULT_OPENROUTER_MODEL
+    return _runtime_sanitize_model_name(model)
