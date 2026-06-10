@@ -1,5 +1,9 @@
 let reviewDocumentRenderRequestSequence = 0;
 
+function reviewWorkstationModel() {
+  return window.ReviewWorkstationModel || null;
+}
+
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
   state.reviewDocumentRender = reviewDocumentRenderState(result);
@@ -107,25 +111,36 @@ function updateExportButtonState() {
   const hasSendableMatter = Boolean(state.selectedMatter?.id);
   studioSendButton.hidden = !hasSendableMatter;
   const sendBlockReason = state.selectedMatter?.id ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus) : "";
-  const canSend = Boolean(canExport && hasSendableMatter && !sendBlockReason && !staleReview);
+  const sendLabel = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
+  const sendReadiness = reviewWorkstationModel()?.gmailSendReadiness({
+    blockedLabel: sendLabel,
+    canExport,
+    hasSendableMatter,
+    sendBlockReason,
+    staleReview,
+  }) || {
+    ariaDisabled: String(!(canExport && hasSendableMatter && !staleReview)),
+    canSend: Boolean(canExport && hasSendableMatter && !sendBlockReason && !staleReview),
+    interactive: Boolean(canExport && hasSendableMatter && !staleReview),
+    label: sendLabel,
+    title: staleReview ? "Refresh review before sending a redline" : sendBlockReason || sendLabel,
+  };
   // Keep the button clickable once a review has run, even when blocked, so a
   // click can surface *why* sending is blocked (openReviewSendComposer writes the
   // reason to the file-meta line) instead of leaving a silent, dead icon. The
   // .blocked class + aria-disabled mark it not-ready without swallowing the click.
-  const interactive = Boolean(canExport && hasSendableMatter && !staleReview);
-  studioSendButton.disabled = !interactive;
-  studioSendButton.classList.toggle("blocked", interactive && Boolean(sendBlockReason));
-  studioSendButton.setAttribute("aria-disabled", String(!interactive));
+  studioSendButton.disabled = !sendReadiness.interactive;
+  studioSendButton.classList.toggle("blocked", sendReadiness.interactive && Boolean(sendBlockReason));
+  studioSendButton.setAttribute("aria-disabled", sendReadiness.ariaDisabled);
   if (staleReview) {
     pendingReviewSendMatterId = null;
-    setStudioSendButtonLabel("Send Redline", "Refresh review before sending a redline");
-  } else if (!canSend) {
+    setStudioSendButtonLabel(sendReadiness.label, sendReadiness.title);
+  } else if (!sendReadiness.canSend) {
     pendingReviewSendMatterId = null;
-    const sendLabel = sendBlockReason ? MatterUtils.gmailSendButtonLabel(sendBlockReason) : "Send Redline";
-    setStudioSendButtonLabel(sendLabel, sendBlockReason || sendLabel);
+    setStudioSendButtonLabel(sendReadiness.label, sendReadiness.title);
   } else {
     pendingReviewSendMatterId = null;
-    setStudioSendButtonLabel("Send Redline");
+    setStudioSendButtonLabel(sendReadiness.label);
   }
   if (studioReviewedButton) {
     // Offer "Reviewed" only while the sole thing blocking send is the
@@ -298,10 +313,11 @@ function getClauseTotal(clauses = []) {
 }
 
 function hasReviewResults() {
-  return state.reviewClauses.length > 0;
+  return reviewWorkstationModel()?.hasReviewResults(state) ?? state.reviewClauses.length > 0;
 }
 
 function defaultExportClauseDecisions(clauses, redlines) {
+  if (reviewWorkstationModel()) return reviewWorkstationModel().defaultExportClauseDecisions(clauses, redlines);
   const clausesWithRedlines = new Set((redlines || []).map((edit) => edit.clause_id).filter(Boolean));
   return Object.fromEntries((clauses || []).map((clause) => [
     clause.id,
@@ -310,6 +326,7 @@ function defaultExportClauseDecisions(clauses, redlines) {
 }
 
 function defaultRedlineTemplateSelections(redlines) {
+  if (reviewWorkstationModel()) return reviewWorkstationModel().defaultRedlineTemplateSelections(redlines);
   const selections = {};
   (redlines || []).forEach((edit) => {
     const selected = (edit.template_options || []).find((option) => option.selected) || (edit.template_options || [])[0];
@@ -551,10 +568,11 @@ function firstClauseParagraphId(clauseId, clause) {
 }
 
 function clauseExportIncluded(clauseId) {
-  return state.exportClauseDecisions[clauseId] !== false;
+  return reviewWorkstationModel()?.clauseExportIncluded(state, clauseId) ?? state.exportClauseDecisions[clauseId] !== false;
 }
 
 function redlineExportIncluded(edit) {
+  if (reviewWorkstationModel()) return reviewWorkstationModel().redlineExportIncluded(state, edit);
   if (edit && edit.id && Object.prototype.hasOwnProperty.call(state.exportRedlineDecisions, edit.id)) {
     return state.exportRedlineDecisions[edit.id] !== false;
   }
@@ -562,12 +580,15 @@ function redlineExportIncluded(edit) {
 }
 
 function effectiveReviewRedlines() {
-  return state.reviewRedlines
-    .filter(redlineExportIncluded)
-    .map(applyTemplateSelectionToRedline);
+  return reviewWorkstationModel()
+    ? reviewWorkstationModel().effectiveReviewRedlines(state)
+    : state.reviewRedlines.filter(redlineExportIncluded).map(applyTemplateSelectionToRedline);
 }
 
 function applyTemplateSelectionToRedline(edit) {
+  if (reviewWorkstationModel()) {
+    return reviewWorkstationModel().applyTemplateSelectionToRedline(edit, state.redlineTemplateSelections);
+  }
   const selectedOptionId = state.redlineTemplateSelections[edit.id];
   const selectedOption = (edit.template_options || []).find((option) => option.id === selectedOptionId);
   if (!selectedOption) return { ...edit };
@@ -602,7 +623,8 @@ function getDisplayClauses() {
 }
 
 function getSelectedReviewClause() {
-  return state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
+  return reviewWorkstationModel()?.selectedReviewClause(state)
+    || state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
 }
 
 function getSelectedRedlineEdits() {

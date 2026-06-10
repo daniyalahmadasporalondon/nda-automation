@@ -29,6 +29,8 @@ import {
 } from "./send-document.mjs";
 import { createDraftIntake } from "./draft-intake.mjs";
 import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
+import { RedlineEditContract } from "./redline-edit-contract.mjs";
+import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
@@ -80,6 +82,8 @@ Object.assign(window, {
   // load time, so the deferred-module availability is safe.
   createGenerationApi,
   GenerationUnavailableError,
+  RedlineEditContract,
+  ReviewWorkstationModel,
   // Dashboard smart-search (v1, deterministic). The DOM controller is a classic
   // script built at app.js load time; it reads these pure filters lazily at
   // runtime (inside handlers), so the deferred-module availability is safe.

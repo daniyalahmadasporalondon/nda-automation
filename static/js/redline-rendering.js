@@ -33,6 +33,18 @@ function renderReviewDocument({
   return renderReviewParagraphsWithTables(paragraphs, renderOne);
 }
 
+function redlineEditContract() {
+  return window.RedlineEditContract || null;
+}
+
+function manualViewerEditClauseId() {
+  return redlineEditContract()?.MANUAL_VIEWER_EDIT_CLAUSE_ID || "manual_viewer_edit";
+}
+
+function redlineFormatParagraphAction() {
+  return redlineEditContract()?.REDLINE_ACTION_FORMAT_PARAGRAPH || "format_paragraph";
+}
+
 // Walks the flat paragraph list and wraps each run of consecutive table-cell
 // paragraphs (same table_index) into a presentational CSS grid so multi-cell
 // tables (e.g. signature blocks) render as side-by-side columns instead of a
@@ -290,7 +302,7 @@ function applyParagraphFormatToBody(model, body) {
 }
 
 function isFormatParagraphRedline(edit) {
-  return edit?.action === "format_paragraph" && Array.isArray(edit.format_ops) && edit.format_ops.length > 0;
+  return edit?.action === redlineFormatParagraphAction() && Array.isArray(edit.format_ops) && edit.format_ops.length > 0;
 }
 
 // "Formatted: …" tracked-change note summarising the format_ops, so a
@@ -524,9 +536,9 @@ function paragraphFormatRedline(paragraph, baseline) {
   const current = String(paragraph.text || "");
   const redline = {
     id: `manual-${paragraph.id}-fmt`,
-    clause_id: "manual_viewer_edit",
+    clause_id: manualViewerEditClauseId(),
     status: "proposed",
-    action: "format_paragraph",
+    action: redlineFormatParagraphAction(),
     action_label: "Format paragraph",
     is_manual: true,
     paragraph_id: paragraph.id,
@@ -698,22 +710,34 @@ function renderInlineRedline(paragraph, edit) {
   // level so only the changed letters are struck/inserted -- rendered verbatim,
   // because char tokens carry their own whitespace (renderDiffOperations would
   // re-insert inter-token spaces and corrupt them).
-  if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
+  const previewMode = redlineEditContract()?.redlineInlinePreviewMode(edit)
+    || (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length
+      ? "operations"
+      : isFreeformManualReplacement(edit)
+        ? "character_diff"
+        : "whole_paragraph");
+  if (previewMode === "operations") {
     return renderDiffOperations(edit.inline_diff_operations);
   }
-  if (isFreeformManualReplacement(edit)) {
+  if (previewMode === "character_diff") {
     return renderVerbatimDiffOperations(charDiffOperations(original, replacement));
   }
   return renderDiffOperations(fullReplacementOperations(original, replacement));
 }
 
 function redlineDiffOperations(edit, original, replacement) {
-  if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
+  const previewMode = redlineEditContract()?.redlineOperationPreviewMode(edit)
+    || (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length
+      ? "operations"
+      : isFreeformManualReplacement(edit)
+        ? "word_diff"
+        : "whole_paragraph");
+  if (previewMode === "operations") {
     return edit.inline_diff_operations;
   }
   // Clause-level redlines (and the governing-law picker) stay whole-paragraph; a
   // free-form manual edit diffs at the word level so only the changed words redline.
-  if (isFreeformManualReplacement(edit)) {
+  if (previewMode === "word_diff") {
     return wordDiffOperations(original, replacement);
   }
   return fullReplacementOperations(original, replacement);
@@ -722,7 +746,7 @@ function redlineDiffOperations(edit, original, replacement) {
 function isFreeformManualReplacement(edit) {
   return edit?.action === REDLINE_REPLACE_PARAGRAPH
     && !edit?.whole_paragraph
-    && (edit?.clause_id === "manual_viewer_edit" || edit?.is_manual === true);
+    && (edit?.clause_id === manualViewerEditClauseId() || edit?.is_manual === true);
 }
 
 // Word-level diff (LCS) for free-form manual edits: emits equal/delete/insert word
@@ -1090,10 +1114,12 @@ function renderParagraphRedline(edit) {
 }
 
 function renderParagraphInsertion(edit) {
-  return `<div class="paragraph-insertion" data-redline-edit-id="${escapeHtml(edit.id || "")}" contenteditable="false"><span class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</span></div>`;
+  const inserted = redlineEditContract()?.redlineInsertedText(edit) || edit.insert_text || edit.replacement_text || "";
+  return `<div class="paragraph-insertion" data-redline-edit-id="${escapeHtml(edit.id || "")}" contenteditable="false"><span class="redline-insertion">${escapeHtml(inserted)}</span></div>`;
 }
 
 function redlineActionLabel(edit) {
+  if (redlineEditContract()) return redlineEditContract().redlineActionLabel(edit);
   if (edit.action === REDLINE_DELETE_PARAGRAPH) return edit.action_label || "Remove paragraph";
   if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) return edit.action_label || "Insert after paragraph";
   if (edit.action === REDLINE_REPLACE_PARAGRAPH) return edit.action_label || "Replace paragraph";
@@ -1105,11 +1131,13 @@ function renderRedlineReplacement(edit, tagName) {
     return `<${tagName} class="redline-removal">Remove this paragraph.</${tagName}>`;
   }
   if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) {
-    return `<${tagName} class="redline-insertion">${escapeHtml(edit.insert_text || edit.replacement_text || "")}</${tagName}>`;
+    const inserted = redlineEditContract()?.redlineInsertedText(edit) || edit.insert_text || edit.replacement_text || "";
+    return `<${tagName} class="redline-insertion">${escapeHtml(inserted)}</${tagName}>`;
   }
-  return `<${tagName} class="redline-replacement" data-redline-replacement>${escapeHtml(edit.replacement_text || "")}</${tagName}>`;
+  const replacement = redlineEditContract()?.redlineReplacementText(edit) || edit.replacement_text || "";
+  return `<${tagName} class="redline-replacement" data-redline-replacement>${escapeHtml(replacement)}</${tagName}>`;
 }
 
 function isInsertionRedline(edit) {
-  return edit?.action === REDLINE_INSERT_AFTER_PARAGRAPH;
+  return redlineEditContract()?.isInsertionRedlineEdit(edit) ?? edit?.action === REDLINE_INSERT_AFTER_PARAGRAPH;
 }

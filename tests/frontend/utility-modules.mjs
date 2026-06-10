@@ -94,6 +94,8 @@ import {
   GenerationUnavailableError,
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
+import { RedlineEditContract } from "../../static/js/modules/redline-edit-contract.mjs";
+import { ReviewWorkstationModel } from "../../static/js/modules/review-workstation-model.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -157,6 +159,125 @@ assert.deepEqual(fullReplacementOperations("Old", "New"), [
   { type: "delete", token: "Old" },
   { type: "insert", token: "New" },
 ]);
+
+const normalizedManualEdit = RedlineEditContract.normalizeRedlineEdit({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "manual-p1",
+  inline_diff_operations: [
+    { type: "equal", token: "Old" },
+    { type: "unknown", token: "dropped" },
+    { type: "insert", token: "New" },
+  ],
+  paragraph_id: "p1",
+  replacement_text: "New text",
+  whole_paragraph: false,
+});
+assert.equal(RedlineEditContract.isManualRedlineEdit(normalizedManualEdit), true);
+assert.equal(RedlineEditContract.redlineInlinePreviewMode(normalizedManualEdit), "operations");
+assert.equal(RedlineEditContract.redlineOperationPreviewMode(normalizedManualEdit), "operations");
+assert.deepEqual(normalizedManualEdit.inline_diff_operations, [
+  { type: "equal", token: "Old" },
+  { type: "insert", token: "New" },
+]);
+const normalizedClauseEdit = RedlineEditContract.normalizeRedlineEdit({
+  action: "replace_paragraph",
+  clause_id: "governing_law",
+  paragraph_id: "p2",
+  replacement_text: "English law applies.",
+});
+assert.equal(RedlineEditContract.redlineInlinePreviewMode(normalizedClauseEdit), "whole_paragraph");
+assert.equal(RedlineEditContract.redlineInlinePreviewMode({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p3",
+  replacement_text: "Manual",
+}), "character_diff");
+assert.equal(RedlineEditContract.redlineOperationPreviewMode({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p3",
+  replacement_text: "Manual",
+}), "word_diff");
+assert.equal(RedlineEditContract.redlineActionLabel({ action: "insert_after_paragraph" }), "Insert after paragraph");
+assert.equal(RedlineEditContract.redlineInsertedText({ insert_text: "Inserted", replacement_text: "Fallback" }), "Inserted");
+
+const workstation = {
+  exportClauseDecisions: { governing_law: true },
+  exportRedlineDecisions: { "redline-2": false },
+  redlineDraft: { saved_at: "2026-06-10T10:00:00Z" },
+  redlineDraftDirty: true,
+  redlineTemplateSelections: { "redline-1": "option-2" },
+  reviewClauses: [
+    { id: "governing_law", matched_paragraph_ids: ["p1"] },
+    { id: "term", matched_paragraph_ids: ["p2"] },
+  ],
+  reviewParagraphs: [
+    { id: "p1", text: "Old law." },
+    { id: "p2", text: "Term." },
+  ],
+  reviewRedlines: [
+    {
+      action: "replace_paragraph",
+      clause_id: "governing_law",
+      id: "redline-1",
+      paragraph_id: "p1",
+      replacement_text: "New law.",
+      template_options: [
+        { id: "option-1", replacement_text: "First" },
+        { id: "option-2", inline_diff_operations: [{ type: "insert", token: "Second" }], replacement_text: "Second" },
+      ],
+    },
+    {
+      action: "delete_paragraph",
+      clause_id: "term",
+      id: "redline-2",
+      paragraph_id: "p2",
+      replacement_text: "",
+    },
+  ],
+  selectedMatter: { id: "matter-1", review_refresh: { stale: true } },
+  selectedReviewClauseId: "governing_law",
+};
+assert.equal(ReviewWorkstationModel.hasReviewResults(workstation), true);
+assert.equal(ReviewWorkstationModel.selectedReviewClause(workstation).id, "governing_law");
+assert.equal(ReviewWorkstationModel.selectedReviewParagraph(workstation).id, "p1");
+assert.deepEqual(ReviewWorkstationModel.defaultExportClauseDecisions(workstation.reviewClauses, workstation.reviewRedlines), {
+  governing_law: true,
+  term: true,
+});
+assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation).length, 1);
+assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation)[0].replacement_text, "Second");
+assert.equal(ReviewWorkstationModel.reviewIsStale(workstation), true);
+assert.deepEqual(ReviewWorkstationModel.redlineDraftControlState(workstation), {
+  canDraft: true,
+  discardDisabled: false,
+  metaText: "Unsaved redline draft changes",
+  saveDisabled: false,
+});
+assert.deepEqual(ReviewWorkstationModel.nextClauseSelectionState(workstation, "term"), {
+  reviewInspectorView: "clause",
+  selectedReviewClauseId: "term",
+});
+assert.equal(ReviewWorkstationModel.selectedBackendRedline(workstation, "p1").id, "redline-1");
+assert.equal(ReviewWorkstationModel.gmailSendReadiness({
+  blockedLabel: "Needs Review",
+  canExport: true,
+  hasSendableMatter: true,
+  sendBlockReason: "Matter needs human review before a redline can be sent.",
+}).label, "Needs Review");
+assert.equal(ReviewWorkstationModel.commentComposerState({ hasThreads: false }).scope, "paragraph");
+assert.deepEqual(ReviewWorkstationModel.annotationGeometryState({
+  page: 0,
+  rect: { x: -1, y: 0.25, w: 2, h: 0.1 },
+  selectedId: 42,
+  tool: "highlight",
+}), {
+  page: 1,
+  rect: { h: 0.1, w: 1, x: 0, y: 0.25 },
+  selectedId: "42",
+  tool: "highlight",
+});
 
 const matter = {
   can_send_redline: true,
