@@ -75,6 +75,11 @@ def _generate(playbook, *, bundle=None, intake=None, clause_adapter=None) -> gen
     )
 
 
+def _governing_law_options(playbook):
+    clause = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+    return list(clause["rules"]["approved_options"])
+
+
 # --------------------------------------------------------------------------- #
 # Ingestion — the template is a tracked, parseable asset with the known slots
 # --------------------------------------------------------------------------- #
@@ -302,9 +307,29 @@ class TestGoverningLawOverride:
         assert d["governing_law_overridden"] is True
         assert d["entity_default_governing_law_value"] == "India"
 
-    def test_override_to_each_approved_option_derives_its_forum(self, playbook):
-        # Every approved option resolves the forum that goes WITH it (from the
-        # registry entity that defaults to that option), never the wrong courts.
+    def test_override_to_each_approved_option_renders_governing_law_and_self_checks(self, playbook):
+        default_option_id = "india"
+
+        for option in _governing_law_options(playbook):
+            result = gen.generate_nda_for_entity(
+                "aspora_technology",
+                _intake(),
+                playbook=playbook,
+                governing_law_override=option["id"],
+                use_ai=False,
+            )
+            text = extract_docx_text(result.docx_bytes)
+            check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+
+            assert result.manifest.governing_law_option_id == option["id"]
+            assert result.manifest.governing_law_value == option["value"]
+            assert result.manifest.governing_law_overridden is (option["id"] != default_option_id)
+            assert f"laws of {option['value']}" in text, option["id"]
+            assert check.passed, (option["id"], check.native_failures, check.native_reviews)
+
+    def test_override_to_each_sampled_forum_option_derives_its_forum(self, playbook):
+        # This existing forum provenance sample is separate from the approved-law
+        # wording matrix above.
         expected = {
             "india": "Courts of India",
             "delaware": "Courts of the State of Delaware",

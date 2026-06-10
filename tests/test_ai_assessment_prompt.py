@@ -47,16 +47,18 @@ class AIAssessmentPromptTests(unittest.TestCase):
         )
 
     def test_packet_includes_governing_law_approved_options(self):
-        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        playbook = load_playbook()
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=playbook)
         governing_law = next(clause for clause in packet["playbook"]["clauses"] if clause["clause_id"] == "governing_law")
+        active_governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
 
         self.assertEqual(
             [option["value"] for option in governing_law["rules"]["approved_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
+            active_governing_law["approved_laws"],
         )
         self.assertEqual(
             [option["value"] for option in governing_law["rules"]["approved_options"] if option.get("default")],
-            ["England and Wales"],
+            [active_governing_law["preferred_law"]],
         )
 
     def test_packet_instructions_cover_missing_absent_and_verdict_choices(self):

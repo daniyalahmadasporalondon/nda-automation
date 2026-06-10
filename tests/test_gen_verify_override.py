@@ -1,7 +1,7 @@
 """Override-awareness tests for the gen-verify governing-law check.
 
 The product allows a user to OVERRIDE an entity's default governing law with a
-different one, constrained to the same 4 Playbook-approved options. The gate must
+different one, constrained to the Playbook-approved options. The gate must
 validate the draft against the CHOSEN law, not mechanically flag "law != entity
 default" as drift. These tests drive the real generator (which renders the chosen
 law into the clause) and a manifest carrying the override fields generation is
@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from nda_automation import entity_registry, nda_generation as gen
 from nda_automation.checker import load_playbook
+from nda_automation.docx_text import extract_docx_text
 
 from tests.gen_verify_harness import (
     VerificationReport,
@@ -74,6 +75,13 @@ def _law_value(option_id: str) -> str:
     raise KeyError(option_id)
 
 
+def _approved_options() -> list[dict]:
+    for clause in PLAYBOOK.get("clauses", []):
+        if clause.get("id") == "governing_law":
+            return list(clause.get("rules", {}).get("approved_options", []))
+    return []
+
+
 def _findings(report: VerificationReport, check: str) -> list:
     return [f for f in report.findings if f.check == check and f.severity == "DEFECT"]
 
@@ -85,7 +93,6 @@ def test_override_to_different_approved_law_is_clean():
     # aspora defaults to India; override to England and Wales (both approved).
     override_value = _law_value("england_and_wales")
     result = _generate_with_law("aspora_technology", "england_and_wales")
-    from nda_automation.docx_text import extract_docx_text
 
     text = extract_docx_text(result.docx_bytes)
     expect = expectations_from_registry()["aspora_technology"]  # default = India
@@ -107,6 +114,34 @@ def test_override_to_different_approved_law_is_clean():
     assert report.clear, [(f.check, f.detail) for f in report.findings]
 
 
+def test_every_approved_override_law_is_clean_through_generation_self_check_and_gate():
+    expect = expectations_from_registry()["aspora_technology"]
+
+    for option in _approved_options():
+        result = gen.generate_nda_for_entity(
+            "aspora_technology",
+            _intake(),
+            playbook=PLAYBOOK,
+            governing_law_override=option["id"],
+            use_ai=False,
+        )
+        text = extract_docx_text(result.docx_bytes)
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=PLAYBOOK)
+        override = gov_law_override_from_manifest(result.manifest, expect)
+        report = VerificationReport(label=f"approved-law-carryover {option['id']}")
+        check_governing_law(text, expect, report, override=override)
+
+        assert result.manifest.governing_law_option_id == option["id"]
+        assert result.manifest.governing_law_value == option["value"]
+        assert option["value"] in text
+        assert check.passed, (option["id"], check.native_failures, check.native_reviews)
+        assert _findings(report, "law.override_mismatch") == []
+        assert _findings(report, "law.entity_mismatch") == []
+        assert _findings(report, "law.override_not_approved") == []
+        assert _findings(report, "law.not_approved") == []
+        assert report.clear, [(f.check, f.detail) for f in report.findings]
+
+
 # --------------------------------------------------------------------------- #
 # 2. Override claimed, but the draft still names the entity default -> DEFECT
 # --------------------------------------------------------------------------- #
@@ -114,7 +149,6 @@ def test_override_but_draft_names_default_is_flagged():
     # Manifest CLAIMS an England override, but the generated draft was actually
     # rendered with India (the entity default) -- a real generator bug.
     result = _generate_with_law("aspora_technology", "india")  # draft says India
-    from nda_automation.docx_text import extract_docx_text
 
     text = extract_docx_text(result.docx_bytes)
     expect = expectations_from_registry()["aspora_technology"]
@@ -134,7 +168,7 @@ def test_override_but_draft_names_default_is_flagged():
 # 3. Override to a NON-approved law -> DEFECT (defense in depth)
 # --------------------------------------------------------------------------- #
 def test_override_to_non_approved_law_is_flagged():
-    # The FE constrains overrides to the 4 approved options, but the gate must still
+    # The FE constrains overrides to the live Playbook-approved options, but the gate must still
     # catch an out-of-band override to an unapproved law. We don't render it; we
     # only feed the manifest claim, since the assertion is on the manifest intent.
     expect = expectations_from_registry()["aspora_technology"]
@@ -156,7 +190,6 @@ def test_override_to_non_approved_law_is_flagged():
 # --------------------------------------------------------------------------- #
 def test_no_override_keeps_entity_default_behaviour():
     result = _generate_with_law("real_transfer", "england_and_wales")  # its own default
-    from nda_automation.docx_text import extract_docx_text
 
     text = extract_docx_text(result.docx_bytes)
     expect = expectations_from_registry()["real_transfer"]  # default = England and Wales

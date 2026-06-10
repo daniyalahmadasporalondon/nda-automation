@@ -197,8 +197,8 @@ class GovLawOverride:
     """The resolved governing-law intent for one draft, override-aware.
 
     The product lets a user OVERRIDE the entity's default governing law with a
-    different one -- but only ever to one of the same 4 Playbook-approved options
-    (india / delaware / england_and_wales / difc), so the law is always approved,
+    different one -- but only ever to one of the same Playbook-approved options,
+    so the law is always approved,
     override or not. This record carries what the *clause* should actually say
     (``effective_law``) versus what the entity would default to
     (``entity_default_law``), so the gate validates the draft against the chosen
@@ -254,14 +254,14 @@ def check_governing_law(
     override: "GovLawOverride | None" = None,
 ) -> None:
     """The governing-law value in the draft must match the INTENDED law (entity
-    default, or a user-chosen override) AND be one of the 4 Playbook-approved laws.
+    default, or a user-chosen override) AND be one of the Playbook-approved laws.
 
     ``override`` (from the generator's manifest) makes the check override-aware:
 
     * overridden -> the clause must name the OVERRIDE law; we do NOT flag a
       mismatch against the entity default (the difference is intentional). The
-      override law must still be one of the 4 approved positions (defence in depth
-      -- the FE constrains the override to the 4, but the gate verifies it anyway).
+      override law must still be one of the approved positions (defence in depth
+      -- the FE constrains the override to the Playbook list, but the gate verifies it anyway).
     * not overridden (or no manifest override info) -> the clause must name the
       entity default, exactly as before.
     """
@@ -277,7 +277,7 @@ def check_governing_law(
                 report.defect(
                     "law.override_not_approved",
                     f"override governing law {override.effective_law!r} is not in Playbook "
-                    f"approved_laws {approved} (override must stay within the 4 approved positions)",
+                    f"approved_laws {approved} (override must stay within approved positions)",
                 )
 
     if expected_law not in approved:

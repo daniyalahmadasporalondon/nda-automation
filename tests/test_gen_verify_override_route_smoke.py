@@ -12,7 +12,7 @@ So this smoke drives the ROUTE PARSER: it feeds the EXACT shape
 static/js/modules/draft-intake.mjs:buildDraftPayload emits (override nested under
 signing_entity.governing_law.playbook_option_id) through the real
 routing workflow intake parser — the function the HTTP handler uses — then
-runs the rendered NDA through the full adversarial gate. For all 4 entities, each
+runs the rendered NDA through the full adversarial gate. For each sampled entity
 overridden to a DIFFERENT approved law, it asserts the parser carried the nested
 override AND the rendered NDA names it, the forum tracks it, and the gate is CLEAR.
 """

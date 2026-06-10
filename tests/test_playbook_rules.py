@@ -80,8 +80,17 @@ class PlaybookRulesTests(unittest.TestCase):
         options = governing_law["rules"]["approved_options"]
 
         self.assertEqual([option["value"] for option in options], governing_law["approved_laws"])
-        self.assertEqual([option["label"] for option in options], ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"])
-        self.assertEqual([option["value"] for option in options if option.get("default")], ["England and Wales"])
+        self.assertEqual([option["label"] for option in options], governing_law["approved_laws"])
+        self.assertEqual(
+            [option["value"] for option in options if option.get("default")],
+            [governing_law["preferred_law"]],
+        )
+        for option, law in zip(options, governing_law["approved_laws"], strict=True):
+            with self.subTest(law=law):
+                self.assertTrue(option["id"])
+                self.assertEqual(option["label"], law)
+                self.assertEqual(option["value"], law)
+                self.assertIn(law, governing_law["law_phrases"])
 
     def test_playbook_rules_for_ai_exposes_assessment_schema_and_clause_rules(self):
         packet = playbook_rules_for_ai(load_playbook())
@@ -93,7 +102,11 @@ class PlaybookRulesTests(unittest.TestCase):
             [clause["id"] for clause in load_playbook()["clauses"]],
         )
         governing_law = next(clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law")
-        self.assertEqual(governing_law["rules"]["approved_options"][2]["value"], "England and Wales")
+        active_governing_law = next(clause for clause in load_playbook()["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(
+            governing_law["rules"]["approved_options"],
+            active_governing_law["rules"]["approved_options"],
+        )
 
     def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
         playbook = deepcopy(load_playbook())
