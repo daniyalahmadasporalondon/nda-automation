@@ -38,10 +38,14 @@ function snapshotReviewParagraphs(paragraphs) {
     };
     if (paragraph.source_index !== undefined) snapshot.source_index = paragraph.source_index;
     if (paragraph.source_part !== undefined) snapshot.source_part = paragraph.source_part;
-    // Capture paragraph-level formatting so a format-only change (alignment/font
-    // with identical text) is diffable against this baseline.
+    // Capture paragraph-level formatting so a format-only change (alignment/font/
+    // size with identical text) is diffable against this baseline. fontSize MUST be
+    // captured: the extractor now records a paragraph's point size, and
+    // paragraphFormatOps diffs paragraph.fontSize against the baseline -- omitting it
+    // here makes every freshly-loaded paragraph read as a spurious "size N" change.
     if (paragraph.alignment !== undefined) snapshot.alignment = paragraph.alignment;
     if (paragraph.font !== undefined) snapshot.font = paragraph.font;
+    if (paragraph.fontSize !== undefined) snapshot.fontSize = paragraph.fontSize;
     if (Array.isArray(paragraph.runs)) snapshot.runs = paragraph.runs.map((run) => ({ ...run }));
     return snapshot;
   });

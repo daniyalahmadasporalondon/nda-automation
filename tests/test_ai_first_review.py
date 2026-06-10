@@ -253,6 +253,40 @@ class QuoteOffsetRobustnessTests(unittest.TestCase):
         paragraphs = [{"id": "p1", "text": 'It is a “mutual”  agreement between the parties.'}]
         self.assertEqual(_paragraph_id_for_quote(paragraphs, 'a "mutual" agreement'), "p1")
 
+    def test_is_document_title_paragraph_detects_title_style_only(self):
+        from nda_automation.ai_first_review import _is_document_title_paragraph
+
+        self.assertTrue(_is_document_title_paragraph({"style_name": "Title"}))
+        self.assertTrue(_is_document_title_paragraph({"style_id": "Title"}))
+        self.assertTrue(_is_document_title_paragraph({"style_name": "title"}))
+        # Real clause headings use Heading styles, not Title -- they stay eligible.
+        self.assertFalse(_is_document_title_paragraph({"style_name": "Heading 1"}))
+        self.assertFalse(_is_document_title_paragraph({"style_name": "Body Text"}))
+        self.assertFalse(_is_document_title_paragraph({}))
+
+    def test_matched_paragraphs_drops_document_title_from_clause_evidence(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs = [
+            {"id": "p1", "text": "Non-Disclosure Agreement", "style_name": "Title"},
+            {"id": "p2", "text": "Each party may disclose Confidential Information."},
+        ]
+        # The AI cited the title (p1) and a real paragraph (p2) as evidence.
+        assessment = {"matched_paragraph_ids": ["p1", "p2"]}
+        matched = _matched_paragraphs(paragraphs, assessment)
+        # The title is dropped; the substantive paragraph is kept.
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p2"])
+
+    def test_matched_paragraphs_keeps_real_paragraphs_when_no_title_cited(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs = [
+            {"id": "p1", "text": "Heading", "style_name": "Heading 1"},
+            {"id": "p2", "text": "Body."},
+        ]
+        matched = _matched_paragraphs(paragraphs, {"matched_paragraph_ids": ["p1", "p2"]})
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p1", "p2"])
+
 
 if __name__ == "__main__":
     unittest.main()

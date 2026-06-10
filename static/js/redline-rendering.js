@@ -103,7 +103,13 @@ function paragraphViewModel(paragraph, context) {
   const redlineClauses = redlines
     .map((edit) => context.clauses.find((clause) => clause.id === edit.clause_id))
     .filter(Boolean);
-  const linkedClauses = mergeClauses(context.clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
+  // The document title (Word "Title" style) is the document's name, never clause
+  // content. Some stored reviews list it in a clause's matched_paragraph_ids (the
+  // AI cited it as on-topic evidence), which would paint the title green. Suppress
+  // any clause linkage on a title paragraph so it is never highlighted as a clause.
+  const linkedClauses = paragraphIsDocumentTitle(paragraph)
+    ? []
+    : mergeClauses(context.clausesByParagraphId.get(paragraph.id) || [], redlineClauses);
   const selectedClause = linkedClauses.find((clause) => clause.id === context.selectedClauseId);
   const selectedRedline = redlines.find((edit) => edit.clause_id === context.selectedClauseId);
   const manualRedline = manualParagraphRedline(paragraph, context.originalParagraphs);
@@ -665,6 +671,15 @@ function normalizeSizeValue(value) {
 
 function originalParagraphFor(paragraph, originalParagraphs = []) {
   return originalParagraphs.find((item) => item.id === paragraph.id) || null;
+}
+
+// True for the document title paragraph (Word "Title" paragraph style). Mirrors
+// the backend's _is_document_title_paragraph so the title is never treated as
+// clause evidence. Clause headings use Heading styles, not Title.
+function paragraphIsDocumentTitle(paragraph) {
+  return ["style_id", "style_name"].some(
+    (key) => String(paragraph?.[key] || "").trim().toLowerCase() === "title",
+  );
 }
 
 function originalParagraphText(paragraph, originalParagraphs = []) {

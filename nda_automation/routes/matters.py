@@ -15,10 +15,11 @@ from ..checker import (
     PlaybookTemplateError,
 )
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
-from ..docx_text import DocxExtractionError
+from ..docx_text import DocxExtractionError, extract_docx_paragraphs
 from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
+from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..triage import triage_review_result
@@ -84,7 +85,92 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
-    return matter
+    return _with_restored_paragraph_structure(matter)
+
+
+def _restored_review_result_paragraphs(matter: dict) -> list[dict] | None:
+    """Best-effort: re-attach structural metadata (numbering, indentation, runs,
+    font size, style) to a matter's stored review paragraphs by re-extracting its
+    original .docx.
+
+    Matters reviewed before the extractor captured contract structure stored only
+    flat text paragraphs, so the review render shows no clause/sub-clause numbers.
+    Re-extracting the original .docx and merging its structural fields onto the
+    stored paragraphs restores that fidelity on open -- without re-running the AI
+    review or disturbing clause<->paragraph references (ids/text are unchanged).
+
+    Returns merged paragraphs, or None when restoration does not apply or cannot be
+    done safely (no original .docx, not a .docx, extraction fails, or the
+    re-extracted paragraphs do not line up 1:1 with the stored text).
+    """
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return None
+    paragraphs = review_result.get("paragraphs")
+    if not isinstance(paragraphs, list) or not paragraphs:
+        return None
+    # Already structured -- nothing to restore (and avoids re-extracting every open).
+    if any(
+        isinstance(paragraph, dict) and (paragraph.get("numbering") or paragraph.get("structure_label"))
+        for paragraph in paragraphs
+    ):
+        return None
+    source_path = matter_store.source_document_path(matter)
+    if source_path is None or source_path.suffix.casefold() != ".docx":
+        return None
+    source_bytes = matter_store.get_source_document_bytes(matter)
+    if not source_bytes:
+        return None
+    try:
+        rich = extract_docx_paragraphs(source_bytes)
+        source_text = "\n\n".join(str(paragraph.get("text", "")) for paragraph in rich)
+        aligned = align_document_paragraphs(rich, source_text)
+    except (DocxExtractionError, ParagraphAlignmentError, ValueError, OSError):
+        return None
+    if len(aligned) != len(paragraphs):
+        return None
+    merged: list[dict] = []
+    for stored, fresh in zip(paragraphs, aligned):
+        if not isinstance(stored, dict):
+            return None
+        # Bail entirely on any text divergence: a partial/misaligned merge would
+        # mislabel paragraphs, which is worse than showing none.
+        if str(stored.get("text", "")).strip() != str(fresh.get("text", "")).strip():
+            return None
+        restored = dict(stored)
+        for key in STRUCTURAL_METADATA_KEYS:
+            if key in fresh and key not in restored:
+                restored[key] = fresh[key]
+        merged.append(restored)
+    return merged
+
+
+def _with_restored_paragraph_structure(matter: dict) -> dict:
+    merged = _restored_review_result_paragraphs(matter)
+    if merged is None:
+        return matter
+    review_result = matter.get("review_result")
+    return {**matter, "review_result": {**review_result, "paragraphs": merged}}
+
+
+def _original_docx_paragraphs(matter: dict) -> list[dict] | None:
+    """Rich paragraphs re-extracted from the matter's original .docx, or None.
+
+    Used to restore contract structure on a review refresh. Returns None unless the
+    matter's original document is a .docx that extracts to at least one paragraph;
+    the caller aligns these against the stored extracted text.
+    """
+    source_path = matter_store.source_document_path(matter)
+    if source_path is None or source_path.suffix.casefold() != ".docx":
+        return None
+    source_bytes = matter_store.get_source_document_bytes(matter)
+    if not source_bytes:
+        return None
+    try:
+        rich = extract_docx_paragraphs(source_bytes)
+    except (DocxExtractionError, ValueError, OSError):
+        return None
+    return rich or None
 
 
 def _matter_review_payload(
@@ -146,9 +232,21 @@ def refresh_stale_matter_review(matter: dict) -> dict:
     extracted_text = str(matter.get("extracted_text") or "")
     if not extracted_text.strip():
         return matter
+    # Re-extract the original .docx so the refreshed review keeps contract structure
+    # (clause/sub-clause numbering, indentation, run formatting). Passing the rich
+    # paragraphs aligns them to the stored text; a plain text refresh would flatten
+    # the document and drop every numbering marker.
+    paragraphs = _original_docx_paragraphs(matter)
     try:
-        review_result = review_nda_with_active_engine(extracted_text)
-    except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
+        review_result = review_nda_with_active_engine(extracted_text, paragraphs=paragraphs)
+    except ParagraphAlignmentError:
+        if paragraphs is None:
+            return matter
+        try:
+            review_result = review_nda_with_active_engine(extracted_text)
+        except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
+            return matter
+    except (ActiveReviewEngineError, EvidenceProvenanceError, PlaybookTemplateError, ValueError):
         return matter
     triage = triage_review_result(review_result)
     updated_matter = matter_store.update_matter_review(

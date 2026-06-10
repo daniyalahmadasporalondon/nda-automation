@@ -2189,7 +2189,10 @@ class ServerTests(unittest.TestCase):
                 stored_matter = matter_store.get_matter(matter["id"])
 
         self.assertEqual(status, 200)
-        active_review.assert_called_once_with("Mutual NDA text.")
+        # The refresh now re-extracts the original .docx to restore contract
+        # structure; the test's source bytes are not a real .docx, so extraction
+        # yields no paragraphs and the call falls back to a text-only refresh.
+        active_review.assert_called_once_with("Mutual NDA text.", paragraphs=None)
         self.assertEqual(payload["review_result"]["review_mode"], "ai_first_compat")
         self.assertEqual(payload["review_refresh"]["stale"], False)
         self.assertEqual(payload["review_refresh"]["refresh_method"], "POST")

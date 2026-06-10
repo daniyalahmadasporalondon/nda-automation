@@ -519,9 +519,26 @@ def _matched_paragraphs(paragraphs: list[Paragraph], assessment: Mapping[str, An
         paragraph = paragraph_lookup.get(paragraph_id)
         if not paragraph or paragraph_id in seen:
             continue
+        # The document title (Word "Title" style -- e.g. the heading literally
+        # reading "Non-Disclosure Agreement") is the document's name, never
+        # substantive clause content. The AI sometimes cites it as on-topic
+        # "evidence" for confidentiality/mutuality/signatures clauses, which then
+        # paints the title green in the review render. Drop it from every clause's
+        # matched set so it is never cited or highlighted as clause evidence. Real
+        # clause headings ("Confidentiality", "Term") use Heading styles, not Title,
+        # so they are unaffected.
+        if _is_document_title_paragraph(paragraph):
+            continue
         matched.append(paragraph)
         seen.add(paragraph_id)
     return matched
+
+
+def _is_document_title_paragraph(paragraph: Mapping[str, Any]) -> bool:
+    for key in ("style_id", "style_name"):
+        if str(paragraph.get(key) or "").strip().casefold() == "title":
+            return True
+    return False
 
 
 def _evidence_paragraph_ids(assessment: Mapping[str, Any], paragraphs: list[Paragraph]) -> list[str]:
