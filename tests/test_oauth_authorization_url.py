@@ -11,10 +11,10 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from nda_automation import gmail_integration
+from nda_automation import google_connection
 
 
-class GmailAuthorizationUrlTests(unittest.TestCase):
+class GoogleAuthorizationUrlTests(unittest.TestCase):
     def _build(self, **kwargs):
         with patch.dict(
             os.environ,
@@ -24,7 +24,7 @@ class GmailAuthorizationUrlTests(unittest.TestCase):
             },
             clear=False,
         ):
-            return gmail_integration.build_gmail_authorization_url(
+            return google_connection.build_authorization_url(
                 redirect_uri="https://nda.example.com/auth/drive/callback",
                 state="state-token",
                 role="drive",

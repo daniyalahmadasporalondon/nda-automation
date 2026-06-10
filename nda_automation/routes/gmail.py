@@ -3,9 +3,24 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
-from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry, workflow
+from .. import (
+    app_settings,
+    gmail_integration,
+    google_connection,
+    matter_store,
+    matter_view,
+    redline_export_service,
+    telemetry,
+)
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
+from ..matter_lifecycle import (
+    MatterDeliveryError,
+    MatterNotFoundError,
+    MatterSendBlockedError,
+    RepositoryMatterLifecycle,
+)
+from ..matter_repository import DiskMatterRepository
 from .common import request_owner_user_id
 from .. import user_store
 
@@ -38,11 +53,11 @@ def handle_gmail_connect_start(handler, *, send_body: bool = True) -> None:
             next_path=next_path,
             metadata={"role": role},
         )
-        authorization_url = gmail_integration.build_gmail_authorization_url(
+        authorization_url = google_connection.build_authorization_url(
             redirect_uri=_gmail_redirect_uri(handler),
             role=role,
             state=state,
-            login_hint=str((getattr(handler, "current_user", None) or {}).get("email") or ""),
+            login_hint=google_connection.login_hint(getattr(handler, "current_user", None)),
         )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
@@ -67,8 +82,8 @@ def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
         return
     role = str((state_record.get("metadata") or {}).get("role") or "all")
     try:
-        token_response = gmail_integration.exchange_gmail_oauth_code(code, redirect_uri=_gmail_redirect_uri(handler))
-        connected_roles = gmail_integration.save_user_gmail_oauth_token(
+        token_response = google_connection.exchange_oauth_code(code, redirect_uri=_gmail_redirect_uri(handler))
+        connected_roles = google_connection.save_user_oauth_token(
             owner_user_id,
             token_response,
             role=role,
@@ -108,7 +123,7 @@ def handle_gmail_disconnect(handler) -> None:
         return
     role = str(payload.get("role") or "all").strip().lower()
     try:
-        removed = gmail_integration.disconnect_user_gmail(owner_user_id, role=role)
+        removed = google_connection.disconnect_user_oauth(owner_user_id, role=role)
         status = gmail_integration.gmail_status(owner_user_id=owner_user_id)
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=400)
@@ -237,58 +252,41 @@ def handle_gmail_send_redline(handler) -> None:
 
     owner_user_id = request_owner_user_id(handler)
     gmail_token_owner_user_id = gmail_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
     outbound_to = clean_outbound_recipient(payload.get("to"))
-    if not outbound_to and not gmail_integration.matter_reply_recipient(matter):
-        handler._send_json({"error": "Matter does not have a valid reply recipient email address."}, status=400)
-        return
     # The recipient can originate from an attacker-controlled inbound header
     # (Reply-To/From), so require the operator to confirm the exact destination
     # address; the integration layer rejects the send if it does not match the
     # address the redline is actually going to.
     confirmed_recipient = clean_outbound_recipient(payload.get("confirm_recipient"))
-    if not confirmed_recipient:
-        handler._send_json(
-            {"error": "Confirm the outbound recipient email address before sending."},
-            status=400,
-        )
-        return
-    if matter_blocks_redline_send(matter):
-        handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
-        return
-    if not app_settings.gmail_role_enabled("outbound"):
-        handler._send_json({"error": "Gmail outbound is disabled in Admin."}, status=409)
-        return
     outbound_subject = clean_outbound_subject(payload.get("subject"))
     outbound_body = clean_outbound_body(payload.get("body"))
 
     try:
-        if gmail_token_owner_user_id:
-            gmail_integration.validate_outbound_send_ready(
-                matter,
-                to=outbound_to,
-                confirmed_recipient=confirmed_recipient,
-                owner_user_id=gmail_token_owner_user_id,
-            )
-        else:
-            gmail_integration.validate_outbound_send_ready(
-                matter,
-                to=outbound_to,
-                confirmed_recipient=confirmed_recipient,
-            )
-    except gmail_integration.GmailIntegrationError as error:
-        handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
-        return
-
-    try:
-        redline_export = redline_export_service.build_matter_redline(
+        sent_redline = RepositoryMatterLifecycle(DiskMatterRepository()).send_redline(
             matter_id.strip(),
             payload,
             owner_user_id=owner_user_id,
+            token_owner_user_id=gmail_token_owner_user_id,
+            to=outbound_to,
+            confirmed_recipient=confirmed_recipient,
+            subject=outbound_subject,
+            body=outbound_body,
         )
+    except MatterNotFoundError:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    except MatterDeliveryError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    except MatterSendBlockedError as error:
+        handler._send_json({"error": str(error)}, status=409)
+        return
+    except gmail_integration.GmailIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
+        return
+    except redline_export_service.MatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404)
+        return
     except redline_export_service.DocxOpenHealthError as error:
         handler._send_json({"error": str(error), "details": error.details}, status=500)
         return
@@ -309,90 +307,11 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    send_matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
-    if send_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    if matter_blocks_redline_send(send_matter):
-        handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
-        return
-
-    try:
-        if gmail_token_owner_user_id:
-            sent = gmail_integration.send_redline_email(
-                send_matter,
-                redline_export.data,
-                redline_export.filename,
-                body=outbound_body,
-                confirmed_recipient=confirmed_recipient,
-                owner_user_id=gmail_token_owner_user_id,
-                subject=outbound_subject,
-                to=outbound_to,
-            )
-        else:
-            sent = gmail_integration.send_redline_email(
-                send_matter,
-                redline_export.data,
-                redline_export.filename,
-                body=outbound_body,
-                confirmed_recipient=confirmed_recipient,
-                subject=outbound_subject,
-                to=outbound_to,
-            )
-    except gmail_integration.GmailIntegrationError as error:
-        handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
-        return
-
-    updated_matter = matter_store.update_matter_fields(
-        matter_id.strip(),
-        {
-            "board_column": "sent",
-            "last_outbound_account": sent.get("outbound_account", ""),
-            "last_outbound_at": sent.get("sent_at", ""),
-            "last_outbound_filename": redline_export.filename,
-            "last_outbound_message_id": sent.get("message_id", ""),
-            "last_outbound_subject": sent.get("subject", ""),
-            "last_outbound_thread_id": sent.get("thread_id", ""),
-            "last_outbound_to": sent.get("to", ""),
-            "status": "active",
-        },
-        owner_user_id=owner_user_id,
-    )
-    if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    _stamp_sent_timeline(updated_matter, sent, owner_user_id=owner_user_id)
     handler._send_json({
-        "filename": redline_export.filename,
-        "matter": matter_view.public_matter(updated_matter),
-        "sent": sent,
+        "filename": sent_redline.filename,
+        "matter": matter_view.public_matter(sent_redline.matter),
+        "sent": sent_redline.sent,
     })
-
-
-def _stamp_sent_timeline(matter: dict, sent: dict, *, owner_user_id: str = "") -> None:
-    """Append the Approval->Sent transition to the timeline backbone (best-effort).
-
-    The redline went out; record it on the append-only log referencing the
-    outbound message so the lifecycle is traceable. Never fails the send -- the
-    document is already delivered and the matter already stamped.
-    """
-    matter_id = str(matter.get("id") or "")
-    if not matter_id:
-        return
-    try:
-        matter_store.append_timeline_event(
-            matter_id,
-            workflow.build_timeline_event(
-                workflow.EVENT_SENT,
-                phase=workflow.PHASE_SENT,
-                status=workflow.STATUS_SENT_AWAITING_COUNTERPARTY,
-                actor=str(sent.get("outbound_account") or "system"),
-                detail=str(sent.get("to") or ""),
-            ),
-            owner_user_id=owner_user_id,
-        )
-    except Exception:
-        return
 
 
 def matter_blocks_redline_send(matter: dict) -> bool:
@@ -400,28 +319,17 @@ def matter_blocks_redline_send(matter: dict) -> bool:
 
 
 def gmail_owner_user_id(handler) -> str:
-    current_user = getattr(handler, "current_user", None)
-    if isinstance(current_user, dict) and current_user.get("provider") == "google":
-        return request_owner_user_id(handler)
-    return ""
+    return google_connection.connected_owner_user_id(
+        getattr(handler, "current_user", None),
+        owner_user_id=request_owner_user_id(handler),
+    )
 
 
 def _gmail_redirect_uri(handler) -> str:
     configured = gmail_integration.configured_gmail_redirect_uri()
     if configured:
         return configured
-    return f"{_request_base_url(handler)}/auth/gmail/callback"
-
-
-def _request_base_url(handler) -> str:
-    scheme = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip() or "http"
-    host = handler.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
-    if not host:
-        host = handler.headers.get("Host", "").strip()
-    if not host:
-        server_host, server_port = handler.server.server_address[:2]
-        host = f"{server_host}:{server_port}"
-    return f"{scheme}://{host}"
+    return f"{google_connection.request_base_url(handler)}/auth/gmail/callback"
 
 
 def clean_outbound_subject(value: object) -> str | None:

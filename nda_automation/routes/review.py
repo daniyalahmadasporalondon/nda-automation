@@ -25,6 +25,7 @@ from ..docx_text import DocxExtractionError
 from ..ingestion_service import extract_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
 from ..review_engine import ActiveReviewEngineError
+from ..review_result_contract import attach_document_source, extracted_text_from_paragraphs
 from .common import request_owner_user_id
 
 
@@ -86,7 +87,7 @@ def handle_document_review(handler, *, extract_document_func=extract_document, r
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted_paragraphs)
+    extracted_text = extracted_text_from_paragraphs(extracted_paragraphs)
     try:
         result = review_nda_func(extracted_text, paragraphs=extracted_paragraphs)
     except ActiveReviewEngineError as error:
@@ -95,18 +96,14 @@ def handle_document_review(handler, *, extract_document_func=extract_document, r
     except ParagraphAlignmentError:
         handler._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
         return
-    result["source"] = {
-        "filename": filename,
-        "type": source_type,
-        "extracted_characters": len(extracted_text),
-        "extracted_paragraphs": len(extracted_paragraphs),
-    }
-    if extraction_quality:
-        result["source"]["extraction_quality"] = extraction_quality
-        warnings = extraction_quality.get("warnings")
-        if isinstance(warnings, list) and warnings:
-            result.setdefault("review_warnings", []).extend(warnings)
-    result["extracted_text"] = extracted_text
+    attach_document_source(
+        result,
+        filename=filename,
+        document_type=source_type,
+        extracted_paragraphs=extracted_paragraphs,
+        extracted_text=extracted_text,
+        extraction_quality=extraction_quality,
+    )
     handler._send_json(result)
 
 

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import os
+import inspect
 from copy import deepcopy
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from . import app_settings
+from . import checker as checker_module
 from .ai_assessor import AIAssessorError, assess_nda_with_ai
 from .checker import compute_unmatched_sections, review_nda
 from .review_document import Paragraph
 from . import telemetry
-from .playbook_runtime import ensure_active_playbook_runtime
+from .playbook_runtime import (
+    ActivePlaybookBundle,
+    active_playbook_bundle_from_runtime,
+    ensure_active_runtime_for_playbook,
+)
 
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
 REVIEW_ENGINE_DETERMINISTIC = "deterministic"
@@ -26,7 +32,7 @@ class ActiveReviewEngineError(RuntimeError):
 
 
 ReviewEngineFn = Callable[..., dict[str, Any]]
-PlaybookRuntimeFn = Callable[[], dict[str, Any]]
+PlaybookRuntimeFn = Callable[[], dict[str, Any] | ActivePlaybookBundle]
 
 
 def active_review_engine() -> str:
@@ -46,14 +52,29 @@ def active_review_engine_status() -> dict[str, Any]:
     }
 
 
-def _offline_deterministic_review(text: str, *, paragraphs: Sequence[Paragraph] | None = None) -> dict[str, Any]:
+def _offline_deterministic_review(
+    text: str,
+    *,
+    paragraphs: Sequence[Paragraph] | None = None,
+    playbook: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     # The deterministic engine is the OFFLINE oracle. review_nda defaults to
     # verify=True, which runs an AI verifier over the findings — i.e. live network
     # calls. That (not the checks themselves) is what made the "deterministic"
     # review take ~20s. Pin ai_enabled=False (no AI overlay) + verify=False (no AI
     # verifier) so the deterministic engine is genuinely offline and fast, as its
     # name promises.
-    return review_nda(text, paragraphs=paragraphs, verify=False, ai_enabled=False)
+    return review_nda(text, paragraphs=paragraphs, playbook=playbook, verify=False, ai_enabled=False)
+
+
+def ensure_active_review_playbook_bundle() -> ActivePlaybookBundle:
+    playbook = checker_module.load_playbook()
+    checker_module.validate_playbook(playbook)
+    runtime = ensure_active_runtime_for_playbook(
+        playbook,
+        playbook_path=checker_module.PLAYBOOK_PATH,
+    )
+    return ActivePlaybookBundle(playbook=playbook, runtime=runtime)
 
 
 def review_nda_with_active_engine(
@@ -62,7 +83,7 @@ def review_nda_with_active_engine(
     paragraphs: Sequence[Paragraph] | None = None,
     deterministic_review_func: ReviewEngineFn = _offline_deterministic_review,
     ai_first_review_func: ReviewEngineFn = assess_nda_with_ai,
-    playbook_runtime_func: PlaybookRuntimeFn = ensure_active_playbook_runtime,
+    playbook_runtime_func: PlaybookRuntimeFn = ensure_active_review_playbook_bundle,
     force_engine: str | None = None,
 ) -> dict[str, Any]:
     # force_engine lets a caller pin the engine regardless of the active config —
@@ -72,22 +93,32 @@ def review_nda_with_active_engine(
     engine_config = _active_review_engine_config()
     selected_engine = force_engine or engine_config["value"]
     engine_source = "forced" if force_engine else engine_config["source"]
+    playbook_bundle = _review_playbook_bundle(playbook_runtime_func)
     if selected_engine != REVIEW_ENGINE_AI_FIRST:
         telemetry.increment("active_review_deterministic_completed")
-        result = deterministic_review_func(text, paragraphs=paragraphs)
-        playbook_runtime = _review_playbook_runtime(playbook_runtime_func)
+        result = _call_review_engine(
+            deterministic_review_func,
+            text,
+            paragraphs=paragraphs,
+            playbook=playbook_bundle.playbook,
+        )
         return _with_active_engine_metadata(
             result,
             selected_engine=REVIEW_ENGINE_DETERMINISTIC,
             executed_engine=REVIEW_ENGINE_DETERMINISTIC,
             status="completed",
             engine_source=engine_source,
-            playbook_runtime=playbook_runtime,
+            playbook_runtime=playbook_bundle.runtime,
         )
 
     telemetry.increment("active_review_ai_first_attempted")
     try:
-        result = ai_first_review_func(text, paragraphs=paragraphs)
+        result = _call_review_engine(
+            ai_first_review_func,
+            text,
+            paragraphs=paragraphs,
+            playbook=playbook_bundle.playbook,
+        )
     except AIAssessorError as error:
         telemetry.increment("active_review_ai_first_failed")
         telemetry.increment("active_review_ai_first_fail_closed")
@@ -97,14 +128,13 @@ def review_nda_with_active_engine(
     ai_first_status = _ai_first_status(result)
     if ai_first_status == "partial":
         telemetry.increment("active_review_ai_first_partial")
-    playbook_runtime = _review_playbook_runtime(playbook_runtime_func)
     return _with_active_engine_metadata(
         result,
         selected_engine=REVIEW_ENGINE_AI_FIRST,
         executed_engine=REVIEW_ENGINE_AI_FIRST,
         status=ai_first_status or "completed",
         engine_source=engine_config["source"],
-        playbook_runtime=playbook_runtime,
+        playbook_runtime=playbook_bundle.runtime,
     )
 
 
@@ -151,8 +181,14 @@ def _with_active_engine_metadata(
     return updated
 
 
-def _review_playbook_runtime(playbook_runtime_func: PlaybookRuntimeFn) -> dict[str, Any]:
-    runtime = playbook_runtime_func()
+def _review_playbook_bundle(playbook_runtime_func: PlaybookRuntimeFn) -> ActivePlaybookBundle:
+    candidate = playbook_runtime_func()
+    if isinstance(candidate, ActivePlaybookBundle):
+        runtime = candidate.runtime
+        playbook = candidate.playbook
+    else:
+        runtime = candidate
+        playbook = {}
     if not isinstance(runtime, dict):
         raise ActiveReviewEngineError("Active Playbook runtime metadata could not be loaded.")
     required_keys = [
@@ -168,7 +204,30 @@ def _review_playbook_runtime(playbook_runtime_func: PlaybookRuntimeFn) -> dict[s
         raise ActiveReviewEngineError(
             "Active Playbook runtime metadata is incomplete: " + ", ".join(missing_keys)
         )
-    return runtime
+    if not isinstance(playbook, dict):
+        playbook = {}
+    return active_playbook_bundle_from_runtime(runtime, playbook=playbook)
+
+
+def _call_review_engine(
+    review_func: ReviewEngineFn,
+    text: str,
+    *,
+    paragraphs: Sequence[Paragraph] | None,
+    playbook: Mapping[str, Any],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"paragraphs": paragraphs}
+    if playbook and _accepts_keyword(review_func, "playbook"):
+        kwargs["playbook"] = playbook
+    return review_func(text, **kwargs)
+
+
+def _accepts_keyword(func: ReviewEngineFn, keyword: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    return keyword in signature.parameters
 
 
 def _public_review_playbook_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:

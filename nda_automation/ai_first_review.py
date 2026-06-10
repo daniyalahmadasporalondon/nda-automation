@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -33,11 +32,9 @@ from .evidence_grounding import (
 )
 from .reference_resolver import resolve_document_references
 from .review_document import (
-    EvidenceProvenanceError,
     Paragraph,
     align_document_paragraphs,
     split_document_paragraphs,
-    validate_clause_evidence_trust,
 )
 from .playbook_rules import normalize_playbook_policy
 from .redline_rationale import attach_redline_rationales
@@ -51,6 +48,7 @@ from .review_state import (
     reason_codes_for_clause,
 )
 from .ai_verifier import apply_ai_verifier, refinalize_clause_grounding
+from .review_result_contract import build_review_result, review_result_clause_counts
 
 AI_FIRST_REVIEW_MODE = "ai_first_compat"
 
@@ -153,14 +151,12 @@ def build_ai_first_review_result(
         enabled=verify,
     )
     _refinalize_ai_first_verifier_changes(clause_results, ai_verifier_review, document_paragraphs)
-    failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
-    review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
-    passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
+    counts = review_result_clause_counts(clause_results)
     review_state = aggregate_review_state(
         clause_results,
-        pass_count=len(passed),
-        review_count=len(review),
-        check_count=len(failed),
+        pass_count=counts["passed"],
+        review_count=counts["needs_review"],
+        check_count=counts["failed"],
     )
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
     # Explain WHY each proposed redline exists, sourced from the Playbook clause
@@ -171,22 +167,21 @@ def build_ai_first_review_result(
         redline_edits,
         playbook_clauses_by_id={str(clause.get("id") or ""): clause for clause in playbook_clauses},
     )
-    result = {
-        "review_engine_version": REVIEW_ENGINE_VERSION,
-        "review_mode": AI_FIRST_REVIEW_MODE,
-        "playbook_version": playbook_version,
-        "overall_status": review_state["overall_status"],
-        "review_state": review_state,
-        "checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
-        "requirements_passed": len(passed),
-        "requirements_failed": len(failed),
-        "requirements_needs_review": len(review),
-        "paragraphs": document_paragraphs,
-        "contract_structure": contract_structure,
-        "reference_resolver": reference_resolver,
-        "concept_classifier": concept_classifier,
-        "semantic_crosscheck": {"status": "not_run", "mode": AI_FIRST_REVIEW_MODE},
-        "ai_review": {
+    return build_review_result(
+        source_text=text,
+        review_engine_version=REVIEW_ENGINE_VERSION,
+        metadata_fields={
+            "review_mode": AI_FIRST_REVIEW_MODE,
+            "playbook_version": playbook_version,
+        },
+        review_state=review_state,
+        checked_at=checked_at,
+        paragraphs=document_paragraphs,
+        contract_structure=contract_structure,
+        reference_resolver=reference_resolver,
+        concept_classifier=concept_classifier,
+        semantic_crosscheck={"status": "not_run", "mode": AI_FIRST_REVIEW_MODE},
+        ai_review={
             "status": "completed",
             "mode": AI_FIRST_REVIEW_MODE,
             "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
@@ -197,21 +192,19 @@ def build_ai_first_review_result(
                 if str(clause.get("id") or "") not in assessment_by_clause_id
             ],
         },
-        "ai_first_review": {
-            "status": "normalized",
-            "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
-            "assessment_count": len(assessment_by_clause_id),
-            "playbook_clause_count": len(playbook_clauses),
+        review_fields={
+            "ai_first_review": {
+                "status": "normalized",
+                "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
+                "assessment_count": len(assessment_by_clause_id),
+                "playbook_clause_count": len(playbook_clauses),
+            },
         },
-        "ai_verifier": ai_verifier_review,
-        "clauses": clause_results,
-        "redline_edits": redline_edits,
-    }
-    evidence_errors = validate_clause_evidence_trust(result, text)
-    if evidence_errors:
-        raise EvidenceProvenanceError("AI-first review evidence validation failed: " + "; ".join(evidence_errors))
-    result["evidence_trust"] = {"status": "verified", "errors": []}
-    return result
+        ai_verifier=ai_verifier_review,
+        clauses=clause_results,
+        redline_edits=redline_edits,
+        evidence_error_prefix="AI-first review evidence validation failed",
+    )
 
 
 def _content_playbook_version(playbook: Mapping[str, Any]) -> dict[str, str]:

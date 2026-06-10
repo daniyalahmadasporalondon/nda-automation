@@ -11,19 +11,24 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import gmail_integration, matter_store, matter_view, telemetry
+from .. import gmail_integration, google_connection, matter_view, telemetry
 from ..app_settings import gmail_role_enabled
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
+from ..matter_lifecycle import (
+    MatterNotFoundError,
+    RepositoryMatterLifecycle,
+    send_document_metadata,
+    send_document_triage,
+)
+from ..matter_repository import DiskMatterRepository
 from .common import request_owner_user_id
 from .gmail import (
     clean_outbound_body,
     clean_outbound_recipient,
     clean_outbound_subject,
-    gmail_owner_user_id,
     gmail_send_error_status,
 )
 
@@ -74,70 +79,34 @@ def handle_send_document(handler) -> None:
     subject = clean_outbound_subject(payload.get("subject")) or _default_subject(filename)
     body = clean_outbound_body(payload.get("body"))
     owner_user_id = request_owner_user_id(handler)
-    gmail_token_owner_user_id = gmail_owner_user_id(handler)
+    gmail_token_owner_user_id = google_connection.connected_owner_user_id(
+        getattr(handler, "current_user", None),
+        owner_user_id=owner_user_id,
+    )
 
-    # Send first against a transient matter so a failed send never leaves a
-    # phantom card behind; only persist the Sent matter once Gmail accepts it.
-    transient_matter = {"subject": subject, "reply_to": recipient}
     try:
-        if gmail_token_owner_user_id:
-            sent = gmail_integration.send_redline_email(
-                transient_matter,
-                document_bytes,
-                filename,
-                body=body,
-                owner_user_id=gmail_token_owner_user_id,
-                subject=subject,
-                to=recipient,
-            )
-        else:
-            sent = gmail_integration.send_redline_email(
-                transient_matter,
-                document_bytes,
-                filename,
-                body=body,
-                subject=subject,
-                to=recipient,
-            )
+        sent_document = RepositoryMatterLifecycle(DiskMatterRepository()).send_document(
+            filename=filename,
+            document_bytes=document_bytes,
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            owner_user_id=owner_user_id,
+            token_owner_user_id=gmail_token_owner_user_id,
+        )
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
-
-    matter = matter_store.create_matter(
-        source_filename=filename,
-        document_bytes=document_bytes,
-        extracted_text="",
-        review_result={},
-        triage=_send_document_triage(),
-        source_type="send_document",
-        board_column="sent",
-        intake_metadata=_send_document_metadata(filename, recipient, subject),
-        owner_user_id=owner_user_id,
-    )
-    updated_matter = matter_store.update_matter_fields(
-        str(matter.get("id") or ""),
-        {
-            "board_column": "sent",
-            "last_outbound_account": sent.get("outbound_account", ""),
-            "last_outbound_at": sent.get("sent_at", ""),
-            "last_outbound_filename": filename,
-            "last_outbound_message_id": sent.get("message_id", ""),
-            "last_outbound_subject": sent.get("subject", ""),
-            "last_outbound_thread_id": sent.get("thread_id", ""),
-            "last_outbound_to": sent.get("to", ""),
-            "status": "active",
-        },
-        owner_user_id=owner_user_id,
-    )
-    if updated_matter is None:
-        updated_matter = matter
+    except MatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404)
+        return
 
     telemetry.increment("send_document_sent")
     handler._send_json(
         {
             "filename": filename,
-            "matter": matter_view.public_matter(updated_matter),
-            "sent": sent,
+            "matter": matter_view.public_matter(sent_document.matter),
+            "sent": sent_document.sent,
         },
         status=201,
     )
@@ -152,22 +121,8 @@ def _default_subject(filename: str) -> str:
 
 
 def _send_document_metadata(filename: str, recipient: str, subject: str) -> dict[str, str]:
-    return {
-        "sender": recipient,
-        "reply_to": recipient,
-        "subject": subject,
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "message_snippet": f"Sent {Path(str(filename or '')).name or 'document'} to {recipient}.",
-        "attachment_filename": filename,
-    }
+    return send_document_metadata(filename, recipient, subject)
 
 
 def _send_document_triage() -> dict[str, Any]:
-    return {
-        "triage_status": "sent",
-        "next_action": "Document sent",
-        "issue_count": 0,
-        "requirements_passed": 0,
-        "requirements_needs_review": 0,
-        "requirements_failed": 0,
-    }
+    return send_document_triage()

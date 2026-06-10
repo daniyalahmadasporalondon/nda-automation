@@ -58,6 +58,20 @@ class PlaybookRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime["playbook_version"], playbook["version"])
         self.assertRegex(runtime["active_version_id"], r"^pbv_")
 
+    def test_active_playbook_bundle_pairs_snapshot_with_runtime(self):
+        playbook = deepcopy(load_playbook())
+
+        with tempfile.TemporaryDirectory() as playbook_dir:
+            playbook_path = Path(playbook_dir) / "playbook.json"
+            playbook_path.write_text(json.dumps(playbook), encoding="utf-8")
+
+            bundle = playbook_runtime.ensure_active_playbook_bundle(playbook_path=playbook_path)
+
+        self.assertEqual(bundle.playbook, playbook)
+        self.assertEqual(bundle.runtime["active_hash"], playbook_runtime.playbook_snapshot_hash(bundle.playbook))
+        self.assertEqual(bundle.runtime["playbook_name"], playbook["name"])
+        self.assertEqual(bundle.runtime["playbook_version"], playbook["version"])
+
     def test_api_get_returns_backwards_compatible_active_metadata(self):
         playbook = deepcopy(load_playbook())
 

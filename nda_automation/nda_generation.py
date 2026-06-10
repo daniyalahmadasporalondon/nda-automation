@@ -43,6 +43,8 @@ from typing import Any, Callable, Mapping, Protocol
 from docx import Document
 from docx.document import Document as DocxDocument
 
+from .playbook_runtime import ActivePlaybookBundle
+
 # The tracked template asset (the company's Generic NDA). Resolved relative to
 # this module so it works from any worktree / install location.
 TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "generic_nda.docx"
@@ -474,6 +476,7 @@ def generate_nda_for_entity(
     intake: CounterpartyIntake,
     *,
     playbook: Mapping[str, Any] | None = None,
+    playbook_bundle: ActivePlaybookBundle | None = None,
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
     use_frozen: bool = False,
@@ -502,6 +505,8 @@ def generate_nda_for_entity(
 
     from . import entity_registry  # noqa: PLC0415
 
+    if playbook is None and playbook_bundle is not None:
+        playbook = playbook_bundle.playbook
     if playbook is None:
         from .checker import load_playbook  # noqa: PLC0415
 
@@ -544,6 +549,7 @@ def generate_and_save_nda(
     matter_id: str,
     *,
     playbook: Mapping[str, Any] | None = None,
+    playbook_bundle: ActivePlaybookBundle | None = None,
     repository: Any | None = None,
     based_on_artifact_id: str = "",
     owner_user_id: str = "",
@@ -559,6 +565,8 @@ def generate_and_save_nda(
     Playbook governing-law option id (see :func:`generate_nda_for_entity`).
     """
 
+    if playbook is None and playbook_bundle is not None:
+        playbook = playbook_bundle.playbook
     if playbook is None:
         from .checker import load_playbook  # noqa: PLC0415
 
@@ -568,6 +576,7 @@ def generate_and_save_nda(
         entity_id,
         intake,
         playbook=playbook,
+        playbook_bundle=playbook_bundle,
         clause_adapter=clause_adapter,
         use_ai=use_ai,
         governing_law_override=governing_law_override,
@@ -747,7 +756,7 @@ def self_check_generated_nda(
     # verifier, ai_enabled=False drops the legacy per-clause AI overlay. Without
     # the latter this made ~5 live model calls (~20s) that never changed the
     # native verdict — and made a SAFETY GATE depend on a non-deterministic model.
-    native = review_nda(text, verify=False, ai_enabled=False)
+    native = review_nda(text, playbook=resolved_playbook, verify=False, ai_enabled=False)
     native_by_id = {str(clause.get("id")): clause for clause in native.get("clauses", [])}
     native_failures: list[str] = []
     native_reviews: list[str] = []

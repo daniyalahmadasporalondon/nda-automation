@@ -16,7 +16,7 @@ import datetime
 from typing import Any
 from urllib.parse import quote
 
-from .. import nda_generation, telemetry
+from .. import nda_generation, playbook_runtime, telemetry
 from ..nda_generation import CounterpartyIntake, NdaGenerationError
 from .common import request_owner_user_id
 
@@ -36,7 +36,7 @@ def handle_generate_nda(handler) -> None:
     owner_user_id = request_owner_user_id(handler)
 
     try:
-        result, matter, artifact = _generate(
+        result, matter, artifact, active_playbook = _generate(
             entity_id, intake, owner_user_id=owner_user_id, governing_law_override=governing_law_override
         )
     except NdaGenerationError as error:
@@ -58,7 +58,7 @@ def handle_generate_nda(handler) -> None:
 
     # The self-check is advisory in the response (the engine already passes the
     # Playbook deterministically); surfacing it lets the UI flag a rare miss.
-    check = nda_generation.self_check_generated_nda(result.docx_bytes, playbook=None)
+    check = nda_generation.self_check_generated_nda(result.docx_bytes, playbook=active_playbook.playbook)
 
     telemetry.increment("generate_nda_succeeded")
     matter_id = str(matter.get("id") or "")
@@ -97,8 +97,12 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
     from ..matter_repository import DiskMatterRepository  # noqa: PLC0415
 
     repository = DiskMatterRepository()
+    active_playbook = playbook_runtime.ensure_active_playbook_bundle()
     result = nda_generation.generate_nda_for_entity(
-        entity_id, intake, governing_law_override=governing_law_override
+        entity_id,
+        intake,
+        playbook_bundle=active_playbook,
+        governing_law_override=governing_law_override,
     )
 
     # HARD safety gate on the ACTUAL ship path, BEFORE any persistence: a generated
@@ -108,7 +112,7 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
     # adapter guard can fall back to deterministic wording; this whole-doc gate is
     # the final backstop, and it must live here because the route builds the matter
     # + artifact itself rather than going through generate_and_save_nda.)
-    nda_generation.assert_generated_nda_is_on_position(result)
+    nda_generation.assert_generated_nda_is_on_position(result, playbook=active_playbook.playbook)
 
     filename = _generated_filename(intake, result)
     matter = create_matter_from_document(
@@ -124,6 +128,7 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
         # deterministic review and let the AI review run on-demand (Refresh Review).
         # This is the slow step we're skipping at generation time.
         defer_ai_review=True,
+        playbook_runtime_func=lambda: active_playbook,
     )
 
     original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
@@ -134,7 +139,7 @@ def _generate(entity_id: str, intake: CounterpartyIntake, *, owner_user_id: str,
         based_on_artifact_id=(original.id if original else ""),
         owner_user_id=owner_user_id,
     )
-    return result, matter, artifact
+    return result, matter, artifact, active_playbook
 
 
 def _generated_filename(intake: CounterpartyIntake, result: nda_generation.GenerationResult) -> str:

@@ -20,6 +20,7 @@ from nda_automation import app_settings
 from nda_automation import artifact_service
 from nda_automation import drive_integration
 from nda_automation import gmail_integration
+from nda_automation import google_connection
 from nda_automation import matter_store
 from nda_automation import server as server_module
 from nda_automation import telemetry
@@ -208,19 +209,19 @@ def _make_rate_limit_error():
 class DriveIntegrationModuleTests(unittest.TestCase):
     def test_drive_role_uses_only_drive_file_scope(self):
         self.assertEqual(
-            gmail_integration.GMAIL_OAUTH_SCOPES_BY_ROLE["drive"],
+            google_connection.GOOGLE_OAUTH_SCOPES_BY_ROLE["drive"],
             ("https://www.googleapis.com/auth/drive.file",),
         )
         # The standalone drive role resolves to exactly itself, while the unified
         # "all" connect sweeps Drive in so one Google consent grants Gmail + Drive.
-        self.assertEqual(gmail_integration._gmail_oauth_roles_for_role("drive"), ("drive",))
+        self.assertEqual(google_connection.oauth_roles_for_role("drive"), ("drive",))
         self.assertEqual(
-            gmail_integration._gmail_oauth_roles_for_role("all"),
+            google_connection.oauth_roles_for_role("all"),
             ("inbound", "outbound", "drive"),
         )
         self.assertNotIn(
             "https://www.googleapis.com/auth/drive",
-            gmail_integration._gmail_oauth_scopes_for_role("drive"),
+            google_connection.oauth_scopes_for_role("drive"),
         )
 
     def test_upload_docx_records_create_args(self):

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import unquote
 
-from .. import approval, matter_store, matter_view, redline_export_service, telemetry
+from .. import approval, artifact_service, matter_document_artifacts, matter_store, matter_view, redline_export_service, telemetry
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
+from ..matter_lifecycle import MatterApprovalBlockedError, MatterNotFoundError, RepositoryMatterLifecycle
+from ..matter_repository import DiskMatterRepository
 from ..pdf_text import PdfExtractionError
 from ..checker import ParagraphAlignmentError
 from .common import parse_matter_id, request_owner_user_id
@@ -77,46 +78,36 @@ def handle_matter_approve(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
-    if matter is None:
+    actor = _request_actor(handler)
+    try:
+        approved = RepositoryMatterLifecycle(DiskMatterRepository()).approve_matter(
+            matter_id,
+            actor=actor,
+            owner_user_id=owner_user_id,
+        )
+    except MatterNotFoundError:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
-
-    blocks = approval.approval_blocks(matter)
-    if blocks:
+    except MatterApprovalBlockedError as error:
         telemetry.increment("matter_approvals_blocked")
         handler._send_json(
             {
                 "error": "Matter cannot be approved yet.",
-                "blocks_approval": blocks,
-                "resolution": approval.resolution_summary(matter),
+                "blocks_approval": error.blocks,
+                "resolution": error.resolution,
             },
             status=409,
         )
         return
 
-    actor = _request_actor(handler)
-    approved_at = datetime.now(timezone.utc).isoformat()
-    timeline_event = approval.approval_timeline_event(actor=actor)
-    updated_matter = matter_store.record_matter_approval(
-        matter_id,
-        approver=actor,
-        approved_at=approved_at,
-        timeline_event=timeline_event,
-        owner_user_id=owner_user_id,
-    )
-    if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
     telemetry.increment("matter_approvals")
     handler._send_json({
-        "matter": matter_view.public_matter(updated_matter),
+        "matter": matter_view.public_matter(approved.matter),
         "status": "approved",
-        "approved_at": approved_at,
-        "approver": actor,
-        "timeline_event": timeline_event,
-        "resolution": approval.resolution_summary(updated_matter),
+        "approved_at": approved.approved_at,
+        "approver": approved.approver,
+        "timeline_event": approved.timeline_event,
+        "resolution": approved.resolution,
     })
 
 
@@ -139,12 +130,10 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         )
         return
 
-    export_payload = approval.reviewed_docx_payload(matter)
     try:
-        redline_export = redline_export_service.build_matter_redline(
+        reviewed_docx = matter_document_artifacts.build_reviewed_docx(
             matter_id,
-            export_payload,
-            persist=False,
+            matter,
             owner_user_id=owner_user_id,
         )
     except redline_export_service.StaleMatterReviewError as error:
@@ -173,16 +162,23 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     except DocxExportError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
         return
+    except artifact_service.ArtifactRegistryError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return
 
     telemetry.increment("reviewed_docx_exports")
+    redline_export = reviewed_docx.export
+    headers = {
+        "X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER,
+        "X-Reviewed-Redline-Count": str(len(reviewed_docx.payload["export_redline_edits"])),
+    }
+    if reviewed_docx.artifact is not None:
+        headers["X-Reviewed-Artifact-ID"] = reviewed_docx.artifact.id
     handler._send_download(
         redline_export.data,
         redline_export.filename,
         DOCX_MIME,
-        headers={
-            "X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER,
-            "X-Reviewed-Redline-Count": str(len(export_payload["export_redline_edits"])),
-        },
+        headers=headers,
         send_body=send_body,
     )
 

@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 from nda_automation import telemetry
 from nda_automation.ai_assessor import AIAssessorError
+from nda_automation.playbook_runtime import ActivePlaybookBundle
 from nda_automation.review_engine import (
     ACTIVE_REVIEW_ENGINE_ENV,
     REVIEW_ENGINE_AI_FIRST,
@@ -25,6 +26,10 @@ def _playbook_runtime():
         "published_by": "legal-admin",
         "source": "publish",
     }
+
+
+def _playbook_bundle(playbook):
+    return ActivePlaybookBundle(playbook=playbook, runtime=_playbook_runtime())
 
 
 class ReviewEngineTests(unittest.TestCase):
@@ -121,6 +126,40 @@ class ReviewEngineTests(unittest.TestCase):
         self.assertEqual(result["playbook_runtime"]["active_version_id"], "pbv_test")
         self.assertEqual(result["playbook_runtime"]["active_hash"], "sha256:" + "a" * 64)
         self.assertEqual(result["playbook_runtime"]["source"], "active")
+
+    def test_deterministic_engine_receives_active_playbook_snapshot_from_bundle(self):
+        playbook = {"name": "Bundled Playbook", "version": "snapshot", "clauses": []}
+        captured = {}
+
+        def deterministic(text, *, paragraphs=None, playbook=None):
+            captured["playbook"] = playbook
+            return {"review_mode": "deterministic"}
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+            review_nda_with_active_engine(
+                "Clause text",
+                deterministic_review_func=deterministic,
+                playbook_runtime_func=lambda: _playbook_bundle(playbook),
+            )
+
+        self.assertIs(captured["playbook"], playbook)
+
+    def test_ai_first_engine_receives_active_playbook_snapshot_from_bundle(self):
+        playbook = {"name": "Bundled Playbook", "version": "snapshot", "clauses": []}
+        captured = {}
+
+        def ai_first(text, *, paragraphs=None, playbook=None):
+            captured["playbook"] = playbook
+            return {"review_mode": "ai_first_compat"}
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}):
+            review_nda_with_active_engine(
+                "Clause text",
+                ai_first_review_func=ai_first,
+                playbook_runtime_func=lambda: _playbook_bundle(playbook),
+            )
+
+        self.assertIs(captured["playbook"], playbook)
 
     def test_runtime_settings_select_ai_first_when_environment_is_unset(self):
         deterministic = Mock(return_value={"review_mode": "deterministic"})
