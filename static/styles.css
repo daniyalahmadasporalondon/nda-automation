@@ -2401,6 +2401,49 @@ h3 {
   border-color: var(--brand);
 }
 
+.fmt-size select {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12.5px;
+  height: 28px;
+  outline: none;
+  padding: 0 6px;
+  width: 58px;
+}
+
+.fmt-size select:focus {
+  border-color: var(--brand);
+}
+
+/* Increase / decrease font-size buttons: a bold "A" sized large vs. small with a
+   chevron, matching the word-processor grow/shrink affordance. */
+.fmt-btn-size {
+  gap: 1px;
+  padding: 0 5px;
+}
+
+.fmt-btn-size .fmt-size-a {
+  font-weight: 800;
+  line-height: 1;
+}
+
+.fmt-btn-size .fmt-size-a-lg {
+  font-size: 15px;
+}
+
+.fmt-btn-size .fmt-size-a-sm {
+  font-size: 11px;
+}
+
+.fmt-btn-size svg {
+  height: 12px;
+  width: 12px;
+}
+
 .fmt-btn {
   align-items: center;
   background: transparent;

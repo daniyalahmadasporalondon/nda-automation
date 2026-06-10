@@ -174,7 +174,7 @@ _MANUAL_REDLINE_ACTION_LABELS = {
 MAX_FORMAT_OPS = 200
 MAX_FONT_NAME_CHARS = 120
 _FORMAT_OP_SCOPES = {"paragraph", "run"}
-_FORMAT_OP_PROPERTIES = {"alignment", "font", "bold", "italic"}
+_FORMAT_OP_PROPERTIES = {"alignment", "font", "bold", "italic", "size"}
 _FORMAT_OP_ALIGNMENTS = {"left", "center", "right", "justify"}
 
 
@@ -213,6 +213,9 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
         elif prop == "font":
             clean_op["to"] = str(op.get("to") or "").strip()[:MAX_FONT_NAME_CHARS]
             clean_op["from"] = str(op.get("from") or "").strip()[:MAX_FONT_NAME_CHARS]
+        elif prop == "size":
+            clean_op["to"] = _clean_size_value(op.get("to"))
+            clean_op["from"] = _clean_size_value(op.get("from"))
         else:
             # bold/italic: carry the truthy intent through for the later inline
             # milestone; the paragraph emitter ignores run-scope ops for now.
@@ -232,6 +235,17 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
 def _clean_alignment_value(value: object) -> str | None:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in _FORMAT_OP_ALIGNMENTS else None
+
+
+def _clean_size_value(value: object) -> int:
+    """Coerce a requested point size to an int in Word's valid range; 0 = none."""
+    try:
+        size = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if size <= 0:
+        return 0
+    return min(max(size, 1), 1638)
 
 
 def _clean_run_offsets(start: object, end: object, text_length: int) -> tuple[int, int] | None:

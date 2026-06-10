@@ -243,6 +243,9 @@ function formatOpSummary(op) {
   if (op.property === "font") {
     return to ? `font ${to}` : "";
   }
+  if (op.property === "size") {
+    return Number(op.to) > 0 ? `size ${Number(op.to)}` : "";
+  }
   return "";
 }
 
@@ -255,6 +258,9 @@ function runOpSummary(op) {
   if (op.property === "font") {
     const to = String(op.to || "").trim();
     return to ? `Font: ${to} (selection)` : "Default font (selection)";
+  }
+  if (op.property === "size") {
+    return Number(op.to) > 0 ? `Size: ${Number(op.to)} (selection)` : "";
   }
   return "";
 }
@@ -486,6 +492,11 @@ function paragraphFormatOps(paragraph, baseline) {
   if (fromFont !== toFont) {
     ops.push({ scope: "paragraph", property: "font", from: fromFont, to: toFont });
   }
+  const fromSize = normalizeSizeValue(baseline.fontSize);
+  const toSize = normalizeSizeValue(paragraph.fontSize);
+  if (fromSize !== toSize) {
+    ops.push({ scope: "paragraph", property: "size", from: fromSize, to: toSize });
+  }
   return ops.concat(runFormatOps(paragraph, baseline));
 }
 
@@ -501,7 +512,7 @@ function runFormatOps(paragraph, baseline) {
   const original = runCharProperties(baseline?.runs, text);
   if (!current || !original) return [];
   const ops = [];
-  ["bold", "italic", "font"].forEach((property) => {
+  ["bold", "italic", "font", "size"].forEach((property) => {
     let index = 0;
     while (index < text.length) {
       const from = original[property][index];
@@ -539,25 +550,28 @@ function runCharProperties(runs, text) {
   if (!Array.isArray(runs) || !runs.length) {
     // Absent runs = the unformatted baseline: every char is plain.
     return runs === undefined || runs === null
-      ? { bold: new Array(text.length).fill(false), italic: new Array(text.length).fill(false), font: new Array(text.length).fill("") }
+      ? { bold: new Array(text.length).fill(false), italic: new Array(text.length).fill(false), font: new Array(text.length).fill(""), size: new Array(text.length).fill(0) }
       : null;
   }
   if (runs.map((run) => String(run?.text || "")).join("") !== text) return null;
   const bold = [];
   const italic = [];
   const font = [];
+  const size = [];
   runs.forEach((run) => {
     const runText = String(run?.text || "");
     const isBold = Boolean(run?.bold);
     const isItalic = Boolean(run?.italic);
     const fontName = String(run?.font || "").trim();
+    const pointSize = Number(run?.size) > 0 ? Number(run?.size) : 0;
     for (let i = 0; i < runText.length; i += 1) {
       bold.push(isBold);
       italic.push(isItalic);
       font.push(fontName);
+      size.push(pointSize);
     }
   });
-  return { bold, italic, font };
+  return { bold, italic, font, size };
 }
 
 function runPropEqual(a, b) {
@@ -565,9 +579,11 @@ function runPropEqual(a, b) {
   return String(a || "") === String(b || "");
 }
 
-// Contract value for an op: bold/italic -> boolean; font -> Word name string.
+// Contract value for an op: bold/italic -> boolean; font -> Word name string;
+// size -> point number (0 when none).
 function runOpValue(property, value) {
   if (property === "font") return String(value || "");
+  if (property === "size") return Number(value) > 0 ? Number(value) : 0;
   return Boolean(value);
 }
 
@@ -575,6 +591,12 @@ function normalizeFormatValue(value) {
   if (value === undefined || value === null) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+// Paragraph-level point size as a number, 0 when unset (the op contract value).
+function normalizeSizeValue(value) {
+  const size = Math.round(Number(value));
+  return Number.isFinite(size) && size > 0 ? size : 0;
 }
 
 function originalParagraphFor(paragraph, originalParagraphs = []) {
@@ -754,6 +776,8 @@ function paragraphFormatStyle(paragraph) {
   }
   const fontStack = fontCssStackForName(paragraph?.font);
   if (fontStack) declarations.push(`font-family:${fontStack}`);
+  const size = Number(paragraph?.fontSize);
+  if (Number.isFinite(size) && size > 0) declarations.push(`font-size:${size}pt`);
   return declarations.join(";");
 }
 
@@ -800,12 +824,23 @@ function renderFormattedRun(run, changed = false) {
   if (run?.bold) html = `<strong>${html}</strong>`;
   if (run?.italic) html = `<em>${html}</em>`;
   if (run?.underline) html = `<u>${html}</u>`;
-  const fontStack = fontCssStackForName(run?.font);
-  if (fontStack) html = `<span style="font-family:${escapeHtml(fontStack)}">${html}</span>`;
+  const runStyle = inlineRunStyle(run);
+  if (runStyle) html = `<span style="${escapeHtml(runStyle)}">${html}</span>`;
   // Wrap a run whose formatting differs from baseline in the tracked-change
   // inline class so the manual inline format surfaces as a redline.
   if (changed) html = `<span class="inline-ins redline-format-ins" data-redline-format-ins>${html}</span>`;
   return html;
+}
+
+// Inline `font-family` + `font-size` for a run's own formatting. Size is in
+// POINTS (rendered at true point size; unsized runs inherit the document base).
+function inlineRunStyle(run) {
+  const declarations = [];
+  const fontStack = fontCssStackForName(run?.font);
+  if (fontStack) declarations.push(`font-family:${fontStack}`);
+  const size = Number(run?.size);
+  if (Number.isFinite(size) && size > 0) declarations.push(`font-size:${size}pt`);
+  return declarations.join(";");
 }
 
 // Per-character baseline property arrays for `paragraph`, used to decide which
@@ -833,10 +868,12 @@ function runDiffersFromBaseline(run, baselineChars, start, end) {
   const isBold = Boolean(run?.bold);
   const isItalic = Boolean(run?.italic);
   const font = String(run?.font || "").trim();
+  const size = Number(run?.size) > 0 ? Number(run?.size) : 0;
   for (let index = start; index < end; index += 1) {
     if (Boolean(baselineChars.bold[index]) !== isBold) return true;
     if (Boolean(baselineChars.italic[index]) !== isItalic) return true;
     if (String(baselineChars.font[index] || "") !== font) return true;
+    if (Number((baselineChars.size && baselineChars.size[index]) || 0) !== size) return true;
   }
   return false;
 }

@@ -217,6 +217,11 @@ function restoreParagraphFormat(historyEntry) {
   } else {
     delete paragraph.font;
   }
+  if (historyEntry.hadFontSize) {
+    paragraph.fontSize = historyEntry.previousFontSize;
+  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadFontSize")) {
+    delete paragraph.fontSize;
+  }
   // Inline (bold/italic/per-selection font) edits paragraph.runs; restore the
   // prior run list (or delete it). Guard on the field existing so older entries
   // without run state never clobber runs.

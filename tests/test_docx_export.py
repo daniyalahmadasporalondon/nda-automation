@@ -1029,6 +1029,294 @@ class DocxExportTests(unittest.TestCase):
             [],
         )
 
+    def test_source_redline_format_paragraph_emits_tracked_run_size(self):
+        # A run "size" op (set a slice to 16pt) splits the run so the covered span
+        # carries <w:sz w:val="32"/> + <w:szCs w:val="32"/> (half-points) plus an
+        # <w:rPrChange> recording the prior (un-sized) rPr, with text byte-identical.
+        formatted_text = "This Agreement shall be governed by the laws of California."
+        formatted_paragraph = (
+            "<w:p>"
+            '<w:r><w:rPr><w:rFonts w:ascii="Aptos"/></w:rPr>'
+            f"<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        size_start = formatted_text.index("governed")
+        size_end = size_start + len("governed")
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-size-run-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {
+                            "scope": "run",
+                            "property": "size",
+                            "start": size_start,
+                            "end": size_end,
+                            "from": 0,
+                            "to": 16,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+        # Text byte-identical, no tracked insert/delete.
+        self.assertEqual(run_text(formatted), formatted_text)
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+
+        runs = formatted.findall("w:r", W_NS)
+        run_texts = ["".join(n.text or "" for n in r.findall("w:t", W_NS)) for r in runs]
+        self.assertEqual("".join(run_texts), formatted_text)
+        covered = next(r for r, t in zip(runs, run_texts) if t == "governed")
+        covered_rpr = covered.find("w:rPr", W_NS)
+        self.assertIsNotNone(covered_rpr, "covered run lost its rPr")
+        # New (current) state: <w:sz>/<w:szCs> in half-points (16pt -> 32).
+        sz = covered_rpr.find("w:sz", W_NS)
+        self.assertIsNotNone(sz, "covered run did not gain <w:sz/>")
+        self.assertEqual(sz.get(f"{{{W_NS['w']}}}val"), "32")
+        szcs = covered_rpr.find("w:szCs", W_NS)
+        self.assertIsNotNone(szcs, "covered run did not gain <w:szCs/>")
+        self.assertEqual(szcs.get(f"{{{W_NS['w']}}}val"), "32")
+        # The from-state record: an rPrChange whose nested original rPr has NO size.
+        rprchange = covered_rpr.find("w:rPrChange", W_NS)
+        self.assertIsNotNone(rprchange, "covered run did not emit an rPrChange")
+        self.assertTrue(
+            str(rprchange.get(f"{{{W_NS['w']}}}id") or "").strip(),
+            "rPrChange missing a revision id",
+        )
+        original_rpr = rprchange.find("w:rPr", W_NS)
+        self.assertIsNotNone(original_rpr, "rPrChange missing the original rPr")
+        self.assertIsNone(original_rpr.find("w:sz", W_NS), "from-state rPr must not carry <w:sz/>")
+        # The before/after runs keep their original (un-sized) formatting.
+        before = formatted_text[:size_start]
+        before_run = next(r for r, t in zip(runs, run_texts) if t == before)
+        self.assertIsNone(before_run.find("w:rPr/w:sz", W_NS), "before run must not be resized")
+        self.assertIsNone(before_run.find(".//w:rPrChange", W_NS), "before run must not be tracked")
+
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_source_redline_format_paragraph_emits_tracked_paragraph_size(self):
+        # A paragraph "size" op (whole-paragraph 14pt) sets the paragraph-mark run
+        # default <w:pPr><w:rPr><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr> plus a
+        # pPrChange recording the from-state, with the paragraph TEXT untouched.
+        formatted_text = "This Agreement shall be governed by the laws of California."
+        formatted_paragraph = (
+            '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr>'
+            '<w:r><w:rPr><w:rFonts w:ascii="Aptos"/></w:rPr>'
+            f"<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-size-para-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {"scope": "paragraph", "property": "size", "from": 0, "to": 14},
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        with ZipFile(BytesIO(redlined_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:p", W_NS)
+            if run_text(paragraph) == formatted_text
+        )
+        ppr = formatted.find("w:pPr", W_NS)
+        self.assertIsNotNone(ppr, "formatted paragraph lost its pPr")
+        # New (current) state: run-default sz/szCs in half-points (14pt -> 28).
+        sz = ppr.find("w:rPr/w:sz", W_NS)
+        self.assertIsNotNone(sz, "paragraph lost its run-default <w:sz/>")
+        self.assertEqual(sz.get(f"{{{W_NS['w']}}}val"), "28")
+        szcs = ppr.find("w:rPr/w:szCs", W_NS)
+        self.assertIsNotNone(szcs, "paragraph lost its run-default <w:szCs/>")
+        self.assertEqual(szcs.get(f"{{{W_NS['w']}}}val"), "28")
+        # An unrelated pPr child is preserved.
+        self.assertIsNotNone(ppr.find("w:spacing", W_NS), "size redline dropped an unrelated pPr child")
+        # The tracked change: a pPrChange whose nested original pPr carries no size.
+        pprchange = ppr.find("w:pPrChange", W_NS)
+        self.assertIsNotNone(pprchange, "size redline did not emit a pPrChange")
+        original_ppr = pprchange.find("w:pPr", W_NS)
+        self.assertIsNotNone(original_ppr, "pPrChange missing the original pPr")
+        self.assertIsNone(original_ppr.find("w:rPr/w:sz", W_NS), "from-state pPr must not carry a size")
+        # Text unchanged.
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+        self.assertEqual(run_text(formatted), formatted_text)
+
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_source_redline_run_size_inserts_sz_in_schema_order(self):
+        # When the source run's rPr already carries a CT_RPr child that must FOLLOW
+        # <w:sz> (here <w:u>), a run size op must insert <w:sz>/<w:szCs> BEFORE it so
+        # the rPr stays in schema sequence (sz < szCs < u), not blindly appended.
+        formatted_text = "This Agreement shall be governed by the laws of California."
+        formatted_paragraph = (
+            "<w:p>"
+            '<w:r><w:rPr><w:rFonts w:ascii="Aptos"/><w:u w:val="single"/></w:rPr>'
+            f"<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        size_start = formatted_text.index("governed")
+        size_end = size_start + len("governed")
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-size-order-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {"scope": "run", "property": "size", "start": size_start, "end": size_end, "from": 0, "to": 12},
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(paragraph):
+            return "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS))
+
+        formatted = next(
+            p for p in document_root.findall(".//w:p", W_NS) if run_text(p) == formatted_text
+        )
+        runs = formatted.findall("w:r", W_NS)
+        run_texts = ["".join(n.text or "" for n in r.findall("w:t", W_NS)) for r in runs]
+        covered = next(r for r, t in zip(runs, run_texts) if t == "governed")
+        children = [child.tag for child in list(covered.find("w:rPr", W_NS))]
+        sz_tag = f"{{{W_NS['w']}}}sz"
+        szcs_tag = f"{{{W_NS['w']}}}szCs"
+        u_tag = f"{{{W_NS['w']}}}u"
+        self.assertIn(sz_tag, children)
+        self.assertIn(szcs_tag, children)
+        self.assertIn(u_tag, children)
+        # Schema order: sz before szCs, both before the pre-existing <w:u>.
+        self.assertLess(children.index(sz_tag), children.index(szcs_tag))
+        self.assertLess(children.index(szcs_tag), children.index(u_tag))
+
     def test_source_redline_format_paragraph_mixes_paragraph_and_run_ops(self):
         # One format_paragraph redline carrying BOTH a paragraph op (alignment) and a
         # run op (italic a slice): the paragraph gains a pPrChange AND the covered run

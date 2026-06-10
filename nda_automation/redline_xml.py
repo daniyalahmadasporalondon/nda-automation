@@ -102,6 +102,8 @@ def _apply_tracked_paragraph_format(
             _set_paragraph_alignment(new_properties, str(op.get("to") or ""))
         elif prop == "font":
             _set_paragraph_run_default_font(new_properties, str(op.get("to") or ""))
+        elif prop == "size":
+            _set_paragraph_run_default_size(new_properties, op.get("to"))
 
     # The from-state record: a clean clone of the ORIGINAL pPr (its own revisions
     # stripped) wrapped in the pPrChange so Word can roll the formatting back.
@@ -151,7 +153,7 @@ def _apply_tracked_run_format(
         for op in run_ops
         if isinstance(op, dict)
         and op.get("scope") == "run"
-        and op.get("property") in ("bold", "italic", "font")
+        and op.get("property") in ("bold", "italic", "font", "size")
         and isinstance(op.get("start"), int)
         and isinstance(op.get("end"), int)
         and int(op["start"]) < int(op["end"])
@@ -318,6 +320,8 @@ def _run_format_changed_rpr(
             _set_run_toggle(new_rpr, "i", bool(op.get("to")))
         elif prop == "font":
             _set_run_font(new_rpr, str(op.get("to") or ""))
+        elif prop == "size":
+            _set_run_font_size(new_rpr, op.get("to"))
 
     # The from-state record: a clean clone of the ORIGINAL rPr (its own rPrChange
     # stripped) wrapped in <w:rPrChange> so Word can roll the formatting back.
@@ -363,6 +367,56 @@ def _set_run_font(run_properties: ET.Element, font: str) -> None:
         rfonts.set(_w_tag(attr), font)
 
 
+def _size_half_points(size: object) -> int | None:
+    """Word stores run sizes in HALF-points (12pt -> 24). Returns None for a
+    falsy/invalid size so the caller emits nothing (clearing is not tracked)."""
+    try:
+        points = float(size)
+    except (TypeError, ValueError):
+        return None
+    if points <= 0:
+        return None
+    return int(round(points * 2))
+
+
+# CT_RPr children that must FOLLOW <w:sz>/<w:szCs> in the schema sequence; a fresh
+# size element is inserted before the first of these so the rPr stays valid even
+# when the source run already carries later-ordered props (lang, u, highlight, ...).
+_RPR_TAGS_AFTER_SIZE = (
+    "szCs", "highlight", "u", "effect", "bdr", "shd", "fitText", "vertAlign",
+    "rtl", "cs", "em", "lang", "eastAsianLayout", "specVanish", "oMath", "rPrChange",
+)
+
+
+def _set_size_on_rpr(run_properties: ET.Element, half_points: int) -> None:
+    """Set <w:sz>/<w:szCs> (val in half-points), updating in place when present and
+    otherwise inserting them in CT_RPr order: sz before highlight/u/lang/..., szCs
+    immediately after sz."""
+    after = {_w_tag(tag) for tag in _RPR_TAGS_AFTER_SIZE}
+    sz = run_properties.find(_w_tag("sz"))
+    if sz is None:
+        index = next(
+            (i for i, child in enumerate(list(run_properties)) if child.tag in after),
+            len(run_properties),
+        )
+        sz = ET.Element(_w_tag("sz"))
+        run_properties.insert(index, sz)
+    sz.set(_w_tag("val"), str(half_points))
+    szcs = run_properties.find(_w_tag("szCs"))
+    if szcs is None:
+        szcs = ET.Element(_w_tag("szCs"))
+        run_properties.insert(list(run_properties).index(sz) + 1, szcs)
+    szcs.set(_w_tag("val"), str(half_points))
+
+
+def _set_run_font_size(run_properties: ET.Element, size: object) -> None:
+    """Set the run's point size as `<w:sz>`/`<w:szCs>` (half-points)."""
+    half_points = _size_half_points(size)
+    if half_points is None:
+        return
+    _set_size_on_rpr(run_properties, half_points)
+
+
 def _set_paragraph_alignment(properties: ET.Element, alignment: str) -> None:
     word_value = "both" if alignment == "justify" else alignment
     if not word_value:
@@ -403,6 +457,25 @@ def _set_paragraph_run_default_font(properties: ET.Element, font: str) -> None:
         run_properties.insert(0, rfonts)
     for attr in ("ascii", "hAnsi", "cs"):
         rfonts.set(_w_tag(attr), font)
+
+
+def _set_paragraph_run_default_size(properties: ET.Element, size: object) -> None:
+    """Paragraph-mark run default size: `<w:pPr><w:rPr><w:sz>/<w:szCs></w:rPr>`
+    (val in half-points). Mirrors _set_paragraph_run_default_font's rPr placement."""
+    half_points = _size_half_points(size)
+    if half_points is None:
+        return
+    run_properties = properties.find(_w_tag("rPr"))
+    if run_properties is None:
+        run_properties = ET.Element(_w_tag("rPr"))
+        # rPr precedes sectPr and pPrChange in CT_PPr; place it accordingly.
+        trailing = {_w_tag("sectPr"), _w_tag("pPrChange")}
+        insert_index = next(
+            (index for index, child in enumerate(list(properties)) if child.tag in trailing),
+            len(properties),
+        )
+        properties.insert(insert_index, run_properties)
+    _set_size_on_rpr(run_properties, half_points)
 
 
 def _set_revision_attrs(element: ET.Element, revision_id: int) -> None:

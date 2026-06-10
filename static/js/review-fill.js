@@ -658,9 +658,19 @@ function createFillController({ state, root, rerenderDocument }) {
     clearDocHighlights();
     candidates.forEach((candidate) => {
       const id = String(candidate.paragraph_id || "");
-      const para = render.querySelector(`[data-editable-paragraph-id="${cssEscape(id)}"]`)
+      const editable = render.querySelector(`[data-editable-paragraph-id="${cssEscape(id)}"]`)
         || render.querySelector(`[data-paragraph-id="${cssEscape(id)}"]`);
-      if (para) highlightSpan(para, candidate.find);
+      if (!editable) return;
+      // Paint the editable AND, when the paragraph is redlined, the visible diff
+      // preview. A redline (purple) paragraph collapses the editable behind the
+      // diff, so marking only the editable would hide the yellow name/address
+      // highlight as soon as the user edits the paragraph. Both are painted so the
+      // highlight survives regardless of edit state (only one is ever visible).
+      highlightSpan(editable, candidate.find);
+      const container = editable.closest(".studio-doc-paragraph");
+      const preview = container
+        && container.querySelector(".paragraph-redline-preview[data-redline-preview]");
+      if (preview && preview.textContent) highlightSpan(preview, candidate.find);
     });
   }
 

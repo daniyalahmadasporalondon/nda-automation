@@ -37,6 +37,16 @@ function formatItalicButtonElement() {
   return document.getElementById("studioFormatItalic");
 }
 
+function formatFontSizeSelectElement() {
+  return document.getElementById("studioFontSize");
+}
+
+// Word-like grow/shrink ladder + the size shown when a run carries no explicit
+// point size. The document's runs don't track an original point size, so the
+// control reflects this default until the user sets one. Sizes are POINTS.
+const FONT_SIZE_LADDER = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72];
+const DEFAULT_FONT_SIZE = 11;
+
 // ---- Run model (paragraph.runs) ---------------------------------------------
 // `paragraph.runs` is the source of truth for inline formatting:
 // `[{ text, bold?, italic?, font? }, ...]`. The invariant
@@ -138,13 +148,16 @@ function normalizeRun(run) {
   if (run?.italic) out.italic = true;
   const font = String(run?.font || "").trim();
   if (font) out.font = font;
+  const size = Number(run?.size);
+  if (Number.isFinite(size) && size > 0) out.size = size;
   return out;
 }
 
 function runFormattingMatches(a, b) {
   return Boolean(a?.bold) === Boolean(b?.bold)
     && Boolean(a?.italic) === Boolean(b?.italic)
-    && String(a?.font || "").trim() === String(b?.font || "").trim();
+    && String(a?.font || "").trim() === String(b?.font || "").trim()
+    && Number(a?.size || 0) === Number(b?.size || 0);
 }
 
 // True when EVERY character in [start, end) already carries `property` (=value
@@ -210,6 +223,15 @@ function bindFormatToolbar() {
     fontSelect.onchange = () => applyFontChange(fontSelect.value);
   }
 
+  const fontSizeSelect = formatFontSizeSelectElement();
+  if (fontSizeSelect) {
+    fontSizeSelect.onchange = () => applyFontSizeChange(fontSizeSelect.value);
+  }
+  const sizeUp = document.getElementById("studioFontSizeUp");
+  if (sizeUp) sizeUp.onclick = () => stepFontSize(1);
+  const sizeDown = document.getElementById("studioFontSizeDown");
+  if (sizeDown) sizeDown.onclick = () => stepFontSize(-1);
+
   ensureFormatSelectionListener();
   refreshFormatToolbarState();
 }
@@ -233,15 +255,18 @@ function pushParagraphFormatHistory(paragraph) {
   if (typeof pushReviewEditHistoryEntry !== "function" || !paragraph) return;
   const hadAlignment = Object.prototype.hasOwnProperty.call(paragraph, "alignment");
   const hadFont = Object.prototype.hasOwnProperty.call(paragraph, "font");
+  const hadFontSize = Object.prototype.hasOwnProperty.call(paragraph, "fontSize");
   const hadRuns = Object.prototype.hasOwnProperty.call(paragraph, "runs") && Array.isArray(paragraph.runs);
   pushReviewEditHistoryEntry({
     type: "paragraph_format",
     paragraphId: String(paragraph.id),
     hadAlignment,
     hadFont,
+    hadFontSize,
     hadRuns,
     previousAlignment: hadAlignment ? paragraph.alignment : undefined,
     previousFont: hadFont ? paragraph.font : undefined,
+    previousFontSize: hadFontSize ? paragraph.fontSize : undefined,
     // Deep-ish copy each run ({text, bold?, italic?, font?} are all primitives)
     // so a later mutation can never corrupt the captured undo state.
     previousRuns: hadRuns ? paragraph.runs.map((run) => ({ ...run })) : undefined,
@@ -325,6 +350,101 @@ function applyFontChange(fontName) {
   commitParagraphFormatChange();
 }
 
+// Sets the active paragraph's whole-paragraph font size (points). 0/empty clears.
+function applyParagraphFontSize(sizePt) {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) {
+    refreshFormatToolbarState();
+    return;
+  }
+  const next = normalizeFontSize(sizePt);
+  if (Number(paragraph.fontSize || 0) === next) {
+    refreshFormatToolbarState();
+    return;
+  }
+  pushParagraphFormatHistory(paragraph);
+  if (next) {
+    paragraph.fontSize = next;
+  } else {
+    delete paragraph.fontSize;
+  }
+  commitParagraphFormatChange();
+}
+
+// Size dropdown / explicit size: with a selection, set the run size over the
+// selection only; with no selection, fall back to the whole-paragraph override.
+function applyFontSizeChange(sizePt) {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) {
+    refreshFormatToolbarState();
+    return;
+  }
+  const selection = selectionForActiveParagraph();
+  if (!selection) {
+    applyParagraphFontSize(sizePt);
+    return;
+  }
+  const next = normalizeFontSize(sizePt);
+  pushParagraphFormatHistory(paragraph);
+  setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "size", next || false);
+  commitParagraphFormatChange();
+}
+
+// A▲ / A▼: step the current size to the next/previous rung of the ladder.
+function stepFontSize(direction) {
+  if (!activeFormatParagraph()) {
+    refreshFormatToolbarState();
+    return;
+  }
+  const current = currentActiveFontSize() || DEFAULT_FONT_SIZE;
+  const next = nextLadderSize(current, direction);
+  if (next && next !== current) applyFontSizeChange(next);
+}
+
+// The size to display / step from: a uniform selection size, else the paragraph
+// override, else null (the control then shows the default).
+function currentActiveFontSize() {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) return null;
+  const selection = selectionForActiveParagraph();
+  if (selection) return uniformSelectionSize(paragraph, selection);
+  return Number(paragraph.fontSize) > 0 ? Number(paragraph.fontSize) : null;
+}
+
+// Clamp a requested size to a valid Word point range; 0 means "no override".
+function normalizeFontSize(value) {
+  const size = Math.round(Number(value));
+  if (!Number.isFinite(size) || size <= 0) return 0;
+  return Math.min(Math.max(size, 1), 1638);
+}
+
+function nextLadderSize(current, direction) {
+  if (direction > 0) {
+    return FONT_SIZE_LADDER.find((size) => size > current) || Math.min(current + 1, 1638);
+  }
+  return [...FONT_SIZE_LADDER].reverse().find((size) => size < current) || Math.max(current - 1, 1);
+}
+
+// Returns the point size shared by every run touching the selection, or null when
+// the selection spans more than one size (mixed -> the control shows the default).
+function uniformSelectionSize(paragraph, selection) {
+  const runs = ensureParagraphRuns(paragraph);
+  const { startOffset, endOffset } = selection;
+  let cursor = 0;
+  let seen = null;
+  for (const run of runs) {
+    const text = String(run?.text || "");
+    const runStart = cursor;
+    const runEnd = cursor + text.length;
+    cursor = runEnd;
+    if (!text.length || runEnd <= startOffset || runStart >= endOffset) continue;
+    const size = Number(run?.size) > 0 ? Number(run?.size) : 0;
+    if (seen === null) seen = size;
+    else if (seen !== size) return null;
+  }
+  return seen || null;
+}
+
 // Resolves the current text selection within the ACTIVE paragraph, or null when
 // there is no non-empty selection there. Reuses selectedTextInParagraph.
 function selectionForActiveParagraph() {
@@ -389,6 +509,20 @@ function refreshFormatToolbarState() {
     if (fontSelect.selectedIndex < 0) fontSelect.value = "";
     fontSelect.disabled = !hasActive;
   }
+
+  const fontSizeSelect = formatFontSizeSelectElement();
+  if (fontSizeSelect) {
+    // Reflect the selection's (or paragraph's) size; show the default when none is
+    // set, and fall back to the default if the size isn't one of the listed rungs.
+    const activeSize = hasActive ? currentActiveFontSize() : null;
+    fontSizeSelect.value = String(activeSize || DEFAULT_FONT_SIZE);
+    if (fontSizeSelect.selectedIndex < 0) fontSizeSelect.value = String(DEFAULT_FONT_SIZE);
+    fontSizeSelect.disabled = !hasActive;
+  }
+  ["studioFontSizeUp", "studioFontSizeDown"].forEach((buttonId) => {
+    const button = document.getElementById(buttonId);
+    if (button) button.disabled = !hasActive;
+  });
 }
 
 // Returns the font name shared by every run touching the selection, or null when

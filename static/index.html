@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260610c">
+    <link rel="stylesheet" href="/static/styles.css?v=20260610d">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -333,6 +333,30 @@
                     <option value="Courier New">Courier New</option>
                   </select>
                 </label>
+                <span class="fmt-sep" aria-hidden="true"></span>
+                <label class="fmt-size">
+                  <span class="sr-only">Font size</span>
+                  <select id="studioFontSize" aria-label="Font size">
+                    <option value="8">8</option>
+                    <option value="9">9</option>
+                    <option value="10">10</option>
+                    <option value="11" selected>11</option>
+                    <option value="12">12</option>
+                    <option value="14">14</option>
+                    <option value="16">16</option>
+                    <option value="18">18</option>
+                    <option value="20">20</option>
+                    <option value="22">22</option>
+                    <option value="24">24</option>
+                    <option value="28">28</option>
+                    <option value="32">32</option>
+                    <option value="36">36</option>
+                    <option value="48">48</option>
+                    <option value="72">72</option>
+                  </select>
+                </label>
+                <button class="fmt-btn fmt-btn-size" id="studioFontSizeUp" type="button" aria-label="Increase font size" title="Increase font size"><span class="fmt-size-a fmt-size-a-lg">A</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 14 6-6 6 6"/></svg></button>
+                <button class="fmt-btn fmt-btn-size" id="studioFontSizeDown" type="button" aria-label="Decrease font size" title="Decrease font size"><span class="fmt-size-a fmt-size-a-sm">A</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 10 6 6 6-6"/></svg></button>
                 <span class="fmt-sep" aria-hidden="true"></span>
                 <button class="fmt-btn fmt-btn-bold" id="studioFormatBold" type="button" aria-label="Bold" title="Bold" aria-pressed="false">B</button>
                 <button class="fmt-btn fmt-btn-italic" id="studioFormatItalic" type="button" aria-label="Italic" title="Italic" aria-pressed="false">I</button>
@@ -1612,7 +1636,7 @@
       runs before any user interaction; all consumers call these at runtime.
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260608b"></script>
-    <script src="/static/js/redline-rendering.js?v=20260609z14"></script>
+    <script src="/static/js/redline-rendering.js?v=20260610e"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
@@ -1629,14 +1653,14 @@
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/admin-drive.js?v=20260607c"></script>
     <script src="/static/js/contract-structure-view.js"></script>
-    <script src="/static/js/review-fill.js?v=20260609v"></script>
+    <script src="/static/js/review-fill.js?v=20260610c"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260609a"></script>
     <script src="/static/js/review-workstation-source.js?v=20260609z10"></script>
     <script src="/static/js/review-workstation-rendering.js?v=20260609z10"></script>
-    <script src="/static/js/review-workstation-format.js?v=20260609z13"></script>
-    <script src="/static/js/review-workstation-viewer.js?v=20260610c"></script>
+    <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
+    <script src="/static/js/review-workstation-viewer.js?v=20260610d"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/pdf-markup.js?v=20260607f"></script>
     <script src="/static/js/app-state.js?v=20260609a"></script>
