@@ -335,6 +335,19 @@ assert.deepEqual(ReviewWorkstationModel.effectiveReviewRedlines(exportStabilityW
     { id: "server-option", inline_diff_operations: [{ type: "insert", token: "Selected" }], replacement_text: "Selected server replacement.", selected: true },
   ],
 }]);
+assert.equal(ReviewWorkstationModel.redlineExportIncluded({
+  exportClauseDecisions: { server_clause: false },
+  exportRedlineDecisions: { "server-redline": true },
+}, { clause_id: "server_clause", id: "server-redline" }), true);
+assert.equal(ReviewWorkstationModel.redlineExportIncluded({
+  exportClauseDecisions: { server_clause: true },
+  exportRedlineDecisions: { "server-redline": false },
+}, { clause_id: "server_clause", id: "server-redline" }), false);
+assert.deepEqual(ReviewWorkstationModel.exportDecisionTransition({ existing: true }, "", false), { existing: true });
+assert.deepEqual(ReviewWorkstationModel.exportDecisionTransition({ existing: true }, "server-redline", false), {
+  existing: true,
+  "server-redline": false,
+});
 assert.equal(ReviewWorkstationModel.reviewIsStale(workstation), true);
 assert.deepEqual(ReviewWorkstationModel.redlineDraftControlState(workstation), {
   canDraft: true,
@@ -353,6 +366,37 @@ assert.equal(ReviewWorkstationModel.gmailSendReadiness({
   hasSendableMatter: true,
   sendBlockReason: "Matter needs human review before a redline can be sent.",
 }).label, "Needs Review");
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: true,
+  hasSendableMatter: true,
+}), {
+  ariaDisabled: "false",
+  canSend: true,
+  interactive: true,
+  label: "Send Redline",
+  title: "Send Redline",
+});
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: true,
+  hasSendableMatter: true,
+  staleReview: true,
+}), {
+  ariaDisabled: "true",
+  canSend: false,
+  interactive: false,
+  label: "Send Redline",
+  title: "Refresh review before sending a redline",
+});
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: false,
+  hasSendableMatter: true,
+}), {
+  ariaDisabled: "true",
+  canSend: false,
+  interactive: false,
+  label: "Send Redline",
+  title: "Send Redline",
+});
 assert.equal(ReviewWorkstationModel.commentComposerState({ hasThreads: false }).scope, "paragraph");
 assert.deepEqual(ReviewWorkstationModel.annotationGeometryState({
   page: 0,
