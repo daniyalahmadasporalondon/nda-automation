@@ -82,6 +82,7 @@ Object.assign(window, {
   createGenerationApi,
   GenerationUnavailableError,
   ReviewWorkstationModel,
+  effectiveReviewRedlines: () => ReviewWorkstationModel.effectiveReviewRedlines(state),
   // Dashboard smart-search (v1, deterministic). The DOM controller is a classic
   // script built at app.js load time; it reads these pure filters lazily at
   // runtime (inside handlers), so the deferred-module availability is safe.
