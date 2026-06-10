@@ -35,6 +35,7 @@ from nda_automation import gmail_integration
 from nda_automation import ingestion_service
 from nda_automation import matter_store
 from nda_automation import matter_view
+from nda_automation import operational_settings_repository
 from nda_automation import server as server_module
 from nda_automation import telemetry
 from nda_automation import user_store
@@ -1365,11 +1366,11 @@ class ServerTests(unittest.TestCase):
 
     def test_app_settings_directory_fsync_uses_directory_fd(self):
         with (
-            patch.object(app_settings.os, "open", return_value=123) as directory_open,
-            patch.object(app_settings.os, "fsync") as fsync,
-            patch.object(app_settings.os, "close") as close,
+            patch.object(operational_settings_repository.os, "open", return_value=123) as directory_open,
+            patch.object(operational_settings_repository.os, "fsync") as fsync,
+            patch.object(operational_settings_repository.os, "close") as close,
         ):
-            app_settings._fsync_directory(server_module.Path("/tmp/nda-settings-test"))
+            operational_settings_repository.fsync_directory(server_module.Path("/tmp/nda-settings-test"))
 
         directory_open.assert_called_once()
         fsync.assert_called_once_with(123)

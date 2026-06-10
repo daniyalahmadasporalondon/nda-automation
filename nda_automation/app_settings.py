@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-import json
-import os
 from pathlib import Path
 import re
-import threading
 from typing import Any
 
-from . import matter_store
+from .operational_settings_repository import (
+    DiskOperationalSettingsRepository,
+    OperationalSettingsError,
+    fsync_directory as repository_fsync_directory,
+)
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
-    fcntl = None
-
-_SETTINGS_LOCK = threading.RLock()
 MAX_GMAIL_SYNC_HISTORY = 5
 MAX_SETTINGS_AUDIT_HISTORY = 25
 MAX_GMAIL_SEARCH_TERMS = 60
@@ -133,44 +127,31 @@ GMAIL_SYNC_FREQUENCIES = {
 }
 
 
-class AppSettingsError(RuntimeError):
-    pass
+AppSettingsError = OperationalSettingsError
+
+
+def _repository() -> DiskOperationalSettingsRepository:
+    return DiskOperationalSettingsRepository(fsync_directory_func=_fsync_directory)
 
 
 def gmail_settings() -> dict[str, Any]:
-    settings = _load_settings()
-    gmail = settings.get("gmail")
-    if not isinstance(gmail, dict):
-        gmail = {}
-    return gmail_settings_from_payload(gmail)
+    return _repository().read_section("gmail", gmail_settings_from_payload)
 
 
 def drive_settings() -> dict[str, Any]:
-    settings = _load_settings()
-    drive = settings.get("drive")
-    if not isinstance(drive, dict):
-        drive = {}
-    return drive_settings_from_payload(drive)
+    return _repository().read_section("drive", drive_settings_from_payload)
 
 
 def ai_settings() -> dict[str, Any]:
-    settings = _load_settings()
-    ai_review = settings.get("ai_review")
-    if not isinstance(ai_review, dict):
-        ai_review = {}
-    return ai_settings_from_payload(ai_review)
+    return _repository().read_section("ai_review", ai_settings_from_payload)
 
 
 def review_runtime_settings() -> dict[str, Any]:
-    settings = _load_settings()
-    review_runtime = settings.get("review_runtime")
-    if not isinstance(review_runtime, dict):
-        review_runtime = {}
-    return review_runtime_settings_from_payload(review_runtime)
+    return _repository().read_section("review_runtime", review_runtime_settings_from_payload)
 
 
 def settings_audit_history() -> list[dict[str, Any]]:
-    settings = _load_settings()
+    settings = _repository().read_settings()
     return settings_audit_history_from_payload(settings.get("settings_audit"))
 
 
@@ -183,14 +164,7 @@ def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
     if not cleaned:
         return ai_settings()
 
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        ai_review = settings.get("ai_review")
-        if not isinstance(ai_review, dict):
-            ai_review = {}
-        settings["ai_review"] = {**ai_settings_from_payload(ai_review), **cleaned}
-        _save_settings_unlocked(settings)
-        return ai_settings_from_payload(settings["ai_review"])
+    return _repository().update_section("ai_review", ai_settings_from_payload, cleaned)
 
 
 def update_review_runtime_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -202,33 +176,24 @@ def update_review_runtime_settings(updates: dict[str, Any]) -> dict[str, Any]:
     if not cleaned:
         return review_runtime_settings()
 
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        review_runtime = settings.get("review_runtime")
-        if not isinstance(review_runtime, dict):
-            review_runtime = {}
-        settings["review_runtime"] = {**review_runtime_settings_from_payload(review_runtime), **cleaned}
-        _save_settings_unlocked(settings)
-        return review_runtime_settings_from_payload(settings["review_runtime"])
+    return _repository().update_section("review_runtime", review_runtime_settings_from_payload, cleaned)
 
 
 def record_settings_audit_event(event: dict[str, Any]) -> list[dict[str, Any]]:
     cleaned_event = settings_audit_event_from_payload(event)
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        settings["settings_audit"] = _prepend_settings_audit_event(settings.get("settings_audit"), cleaned_event)
-        _save_settings_unlocked(settings)
-        return settings_audit_history_from_payload(settings["settings_audit"])
+    return _repository().prepend_settings_audit(
+        cleaned_event,
+        append_event=_prepend_settings_audit_event,
+        normalize_history=settings_audit_history_from_payload,
+    )
 
 
 def stored_ai_api_key() -> str:
-    with _locked_settings():
-        return _stored_ai_api_key_unlocked()
+    return _repository().read_secret(AI_API_KEY_FILENAME, "AI API key")
 
 
 def stored_gmail_triage_api_key() -> str:
-    with _locked_settings():
-        return _stored_secret_key_unlocked(_gmail_triage_api_key_path(), "Gmail triage API key")
+    return _repository().read_secret(GMAIL_TRIAGE_API_KEY_FILENAME, "Gmail triage API key")
 
 
 def save_ai_api_key(api_key: str) -> None:
@@ -238,8 +203,7 @@ def save_ai_api_key(api_key: str) -> None:
     if len(cleaned_key) > MAX_AI_API_KEY_LENGTH:
         raise AppSettingsError("AI API key is too long.")
 
-    with _locked_settings():
-        _save_ai_api_key_unlocked(cleaned_key)
+    _repository().save_secret(AI_API_KEY_FILENAME, cleaned_key, "AI API key")
 
 
 def save_gmail_triage_api_key(api_key: str) -> None:
@@ -249,24 +213,15 @@ def save_gmail_triage_api_key(api_key: str) -> None:
     if len(cleaned_key) > MAX_AI_API_KEY_LENGTH:
         raise AppSettingsError("Gmail triage API key is too long.")
 
-    with _locked_settings():
-        _save_secret_key_unlocked(_gmail_triage_api_key_path(), cleaned_key, "Gmail triage API key")
+    _repository().save_secret(GMAIL_TRIAGE_API_KEY_FILENAME, cleaned_key, "Gmail triage API key")
 
 
 def clear_ai_api_key() -> None:
-    with _locked_settings():
-        try:
-            _ai_api_key_path().unlink()
-        except FileNotFoundError:
-            pass
+    _repository().clear_secret(AI_API_KEY_FILENAME)
 
 
 def clear_gmail_triage_api_key() -> None:
-    with _locked_settings():
-        try:
-            _gmail_triage_api_key_path().unlink()
-        except FileNotFoundError:
-            pass
+    _repository().clear_secret(GMAIL_TRIAGE_API_KEY_FILENAME)
 
 
 def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -278,14 +233,7 @@ def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
     if not cleaned:
         return gmail_settings()
 
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        gmail = settings.get("gmail")
-        if not isinstance(gmail, dict):
-            gmail = {}
-        settings["gmail"] = {**gmail_settings_from_payload(gmail), **cleaned}
-        _save_settings_unlocked(settings)
-        return gmail_settings_from_payload(settings["gmail"])
+    return _repository().update_section("gmail", gmail_settings_from_payload, cleaned)
 
 
 def update_drive_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -297,14 +245,7 @@ def update_drive_settings(updates: dict[str, Any]) -> dict[str, Any]:
     if not cleaned:
         return drive_settings()
 
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        drive = settings.get("drive")
-        if not isinstance(drive, dict):
-            drive = {}
-        settings["drive"] = {**drive_settings_from_payload(drive), **cleaned}
-        _save_settings_unlocked(settings)
-        return drive_settings_from_payload(settings["drive"])
+    return _repository().update_section("drive", drive_settings_from_payload, cleaned)
 
 
 def gmail_role_enabled(role: str) -> bool:
@@ -345,21 +286,17 @@ def record_gmail_sync(
         finished_at=finished_at or synced_at,
         status="success",
     )
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        gmail = settings.get("gmail")
-        if not isinstance(gmail, dict):
-            gmail = {}
-        current_gmail = gmail_settings_from_payload(gmail)
-        settings["gmail"] = {
+    return _repository().update_section_with(
+        "gmail",
+        gmail_settings_from_payload,
+        lambda current_gmail: {
             **current_gmail,
             "last_sync_at": synced_at,
             "last_sync_imported_count": len(imported),
             "last_sync_skipped_count": len(skipped),
             "sync_history": _prepend_sync_history(current_gmail.get("sync_history"), sync_run),
-        }
-        _save_settings_unlocked(settings)
-        return gmail_settings_from_payload(settings["gmail"])
+        },
+    )
 
 
 def record_gmail_sync_error(
@@ -376,21 +313,17 @@ def record_gmail_sync_error(
         status="error",
         error=error,
     )
-    with _locked_settings():
-        settings = _load_settings_unlocked()
-        gmail = settings.get("gmail")
-        if not isinstance(gmail, dict):
-            gmail = {}
-        current_gmail = gmail_settings_from_payload(gmail)
-        settings["gmail"] = {
+    return _repository().update_section_with(
+        "gmail",
+        gmail_settings_from_payload,
+        lambda current_gmail: {
             **current_gmail,
             "last_sync_at": finished_at,
             "last_sync_imported_count": 0,
             "last_sync_skipped_count": 0,
             "sync_history": _prepend_sync_history(current_gmail.get("sync_history"), sync_run),
-        }
-        _save_settings_unlocked(settings)
-        return gmail_settings_from_payload(settings["gmail"])
+        },
+    )
 
 
 def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -712,130 +645,48 @@ def _safe_audit_value(value: object) -> str:
 
 
 def _load_settings() -> dict[str, Any]:
-    with _locked_settings():
-        return _load_settings_unlocked()
+    return _repository().read_settings()
 
 
-@contextmanager
 def _locked_settings():
-    with _SETTINGS_LOCK:
-        matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with (matter_store.DATA_DIR / "app_settings.lock").open("a+", encoding="utf-8") as lock_file:
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return _repository().locked_settings()
 
 
 def _settings_path():
-    return matter_store.DATA_DIR / "app_settings.json"
+    return _repository().settings_path()
 
 
 def _ai_api_key_path():
-    return matter_store.DATA_DIR / AI_API_KEY_FILENAME
+    return _repository().secret_path(AI_API_KEY_FILENAME)
 
 
 def _gmail_triage_api_key_path():
-    return matter_store.DATA_DIR / GMAIL_TRIAGE_API_KEY_FILENAME
+    return _repository().secret_path(GMAIL_TRIAGE_API_KEY_FILENAME)
 
 
 def _load_settings_unlocked() -> dict[str, Any]:
-    settings_path = _settings_path()
-    if not settings_path.is_file():
-        return {}
-    try:
-        with settings_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except OSError as exc:
-        raise AppSettingsError("App settings could not be read.") from exc
-    except json.JSONDecodeError as exc:
-        raise AppSettingsError("App settings are not valid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise AppSettingsError("App settings must contain a JSON object.")
-    return payload
+    return _repository().load_settings_unlocked()
 
 
 def _stored_ai_api_key_unlocked() -> str:
-    return _stored_secret_key_unlocked(_ai_api_key_path(), "AI API key")
+    return _repository().read_secret_unlocked(AI_API_KEY_FILENAME, "AI API key")
 
 
 def _stored_secret_key_unlocked(api_key_path: Path, label: str) -> str:
-    if not api_key_path.is_file():
-        return ""
-    try:
-        with api_key_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except OSError as exc:
-        raise AppSettingsError(f"{label} could not be read.") from exc
-    except json.JSONDecodeError as exc:
-        raise AppSettingsError(f"{label} storage is not valid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise AppSettingsError(f"{label} storage must contain a JSON object.")
-    return str(payload.get("api_key") or "").strip()
+    return _repository().read_secret_unlocked(api_key_path.name, label)
 
 
 def _save_ai_api_key_unlocked(api_key: str) -> None:
-    _save_secret_key_unlocked(_ai_api_key_path(), api_key, "AI API key")
+    _repository().save_secret_unlocked(AI_API_KEY_FILENAME, api_key, "AI API key")
 
 
 def _save_secret_key_unlocked(api_key_path: Path, api_key: str, label: str) -> None:
-    matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    temporary_path = api_key_path.with_name(f".{api_key_path.name}.tmp")
-    try:
-        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"api_key": api_key}, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, api_key_path)
-        try:
-            os.chmod(api_key_path, 0o600)
-        except OSError:
-            pass
-        _fsync_directory(api_key_path.parent)
-    except OSError as exc:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise AppSettingsError(f"{label} could not be saved.") from exc
+    _repository().save_secret_unlocked(api_key_path.name, api_key, label)
 
 
 def _save_settings_unlocked(settings: dict[str, Any]) -> None:
-    settings_path = _settings_path()
-    matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    temporary_path = settings_path.with_name(f".{settings_path.name}.tmp")
-    try:
-        with temporary_path.open("w", encoding="utf-8") as handle:
-            json.dump(settings, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, settings_path)
-        _fsync_directory(settings_path.parent)
-    except OSError as exc:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise AppSettingsError("App settings could not be saved.") from exc
+    _repository().save_settings_unlocked(settings)
 
 
 def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    flags = getattr(os, "O_RDONLY", 0)
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    try:
-        directory_fd = os.open(path, flags)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+    repository_fsync_directory(path)
