@@ -7,10 +7,10 @@ from .. import (
     app_settings,
     gmail_integration,
     google_connection,
-    matter_store,
     matter_view,
     redline_export_service,
     telemetry,
+    user_store,
 )
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
@@ -22,7 +22,6 @@ from ..matter_lifecycle import (
 )
 from ..matter_repository import DiskMatterRepository
 from .common import request_owner_user_id
-from .. import user_store
 
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
@@ -149,7 +148,7 @@ def handle_gmail_import(handler) -> None:
         )
         result = {
             **result,
-            "deduplicated_count": matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id),
+            "deduplicated_count": DiskMatterRepository().deduplicate_gmail_matters(owner_user_id=owner_user_id),
         }
     except gmail_integration.GmailRateLimitError as error:
         finished_at = datetime.now(timezone.utc).isoformat()

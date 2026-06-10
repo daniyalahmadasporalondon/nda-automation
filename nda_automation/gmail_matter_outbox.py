@@ -52,7 +52,7 @@ def send_redline_email(
     try:
         sent_message = service.users().messages().send(userId="me", body=gmail_payload).execute()
     except Exception as exc:
-        transport._raise_gmail_api_error(exc, "Gmail outbound send failed.")
+        transport.raise_gmail_api_error(exc, "Gmail outbound send failed.")
 
     return {
         "message_id": str(sent_message.get("id") or ""),
@@ -100,12 +100,12 @@ def outbound_send_context(
         transport=transport,
         recipient_from_inbound_header=not operator_recipient,
     )
-    if not transport.app_settings.gmail_role_enabled("outbound"):
+    if not transport.gmail_role_enabled("outbound"):
         raise transport.GmailIntegrationError("Gmail outbound is disabled in Admin.")
 
-    owner_user_id = transport._clean_user_token_segment(owner_user_id)
-    service = transport._gmail_service_for_owner("outbound", owner_user_id)
-    profile = transport._gmail_profile_for_role("outbound", service=service, owner_user_id=owner_user_id)
+    owner_user_id = transport.clean_user_token_segment(owner_user_id)
+    service = transport.gmail_service_for_owner("outbound", owner_user_id)
+    profile = transport.gmail_profile_for_role("outbound", service=service, owner_user_id=owner_user_id)
     outbound_account = str(profile.get("emailAddress") or "")
     if not is_valid_email_address(outbound_account):
         raise transport.GmailIntegrationError("Gmail outbound profile did not include a valid email address.")

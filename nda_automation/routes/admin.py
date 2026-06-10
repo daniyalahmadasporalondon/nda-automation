@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .. import ai_review, app_settings, matter_store, telemetry
+from .. import ai_review, app_settings, telemetry
 from ..deployment import _deployment_status_for_host
+from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
     REVIEW_ENGINE_DETERMINISTIC,
@@ -216,8 +217,8 @@ def handle_matter_backup(handler, *, send_body: bool = True) -> None:
         return
     telemetry.increment("matter_backup_requests")
     try:
-        backup = matter_store.export_matters_backup(owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        backup = DiskMatterRepository().export_matters_backup(owner_user_id=request_owner_user_id(handler))
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     data = json.dumps(backup, indent=2).encode("utf-8") + b"\n"

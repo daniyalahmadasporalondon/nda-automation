@@ -4,7 +4,7 @@ import base64
 import binascii
 from pathlib import Path
 
-from .. import document_rendering, gmail_integration, matter_render_job, matter_store, matter_summary, matter_view, telemetry
+from .. import document_rendering, gmail_integration, matter_render_job, matter_summary, matter_view, telemetry
 from ..ai_assessor import AIAssessorError
 from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
@@ -22,7 +22,7 @@ from ..matter_lifecycle import (
     clean_redline_draft as lifecycle_clean_redline_draft,
     clean_text_map as lifecycle_clean_text_map,
 )
-from ..matter_repository import DiskMatterRepository
+from ..matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 from ..pdf_text import PdfExtractionError
 from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
@@ -33,13 +33,23 @@ AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
+
+
+def _repository(handler) -> MatterRepository:
+    repository = getattr(handler, "matter_repository", None)
+    if repository is not None:
+        return repository
+    return DiskMatterRepository()
+
+
 def handle_matter_list(handler, *, send_body: bool = True) -> None:
+    repository = _repository(handler)
     try:
         handler._send_json(
-            {"matters": matter_view.public_matters(matter_store.list_matters(request_owner_user_id(handler)))},
+            {"matters": matter_view.public_matters(repository.list_matters(request_owner_user_id(handler)))},
             send_body=send_body,
         )
-    except matter_store.MatterStoreError as error:
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
 
 
@@ -56,7 +66,7 @@ def handle_matter_review_refresh(handler, path: str) -> None:
     matter = _matter_for_review_response(handler, matter_id, send_body=True)
     if matter is None:
         return
-    refresh = RepositoryMatterLifecycle(DiskMatterRepository()).refresh_review(
+    refresh = RepositoryMatterLifecycle(_repository(handler)).refresh_review(
         matter,
         review_engine_func=review_nda_with_active_engine,
         review_staleness_func=review_result_is_stale,
@@ -74,18 +84,23 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
     if matter_id is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
+    repository = _repository(handler)
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
-    return _with_restored_paragraph_structure(matter)
+    return _with_restored_paragraph_structure(matter, repository=repository)
 
 
-def _restored_review_result_paragraphs(matter: dict) -> list[dict] | None:
+def _restored_review_result_paragraphs(
+    matter: dict,
+    *,
+    repository: MatterRepository,
+) -> list[dict] | None:
     """Best-effort: re-attach structural metadata (numbering, indentation, runs,
     font size, style) to a matter's stored review paragraphs by re-extracting its
     original .docx.
@@ -112,10 +127,13 @@ def _restored_review_result_paragraphs(matter: dict) -> list[dict] | None:
         for paragraph in paragraphs
     ):
         return None
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None or source_path.suffix.casefold() != ".docx":
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    if Path(source_filename).suffix.casefold() != ".docx":
         return None
-    source_bytes = matter_store.get_source_document_bytes(matter)
+    try:
+        source_bytes = repository.get_source_document_bytes(matter)
+    except MatterRepositoryError:
+        return None
     if not source_bytes:
         return None
     try:
@@ -142,25 +160,28 @@ def _restored_review_result_paragraphs(matter: dict) -> list[dict] | None:
     return merged
 
 
-def _with_restored_paragraph_structure(matter: dict) -> dict:
-    merged = _restored_review_result_paragraphs(matter)
+def _with_restored_paragraph_structure(matter: dict, *, repository: MatterRepository) -> dict:
+    merged = _restored_review_result_paragraphs(matter, repository=repository)
     if merged is None:
         return matter
     review_result = matter.get("review_result")
     return {**matter, "review_result": {**review_result, "paragraphs": merged}}
 
 
-def _original_docx_paragraphs(matter: dict) -> list[dict] | None:
+def _original_docx_paragraphs(matter: dict, *, repository: MatterRepository) -> list[dict] | None:
     """Rich paragraphs re-extracted from the matter's original .docx, or None.
 
     Used to restore contract structure on a review refresh. Returns None unless the
     matter's original document is a .docx that extracts to at least one paragraph;
     the caller aligns these against the stored extracted text.
     """
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None or source_path.suffix.casefold() != ".docx":
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    if Path(source_filename).suffix.casefold() != ".docx":
         return None
-    source_bytes = matter_store.get_source_document_bytes(matter)
+    try:
+        source_bytes = repository.get_source_document_bytes(matter)
+    except MatterRepositoryError:
+        return None
     if not source_bytes:
         return None
     try:
@@ -212,9 +233,10 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
     if matter_id is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
+    repository = _repository(handler)
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
@@ -237,26 +259,32 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     if matter_id is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
+    repository = _repository(handler)
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None:
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    try:
+        source_bytes = repository.get_source_document_bytes(matter)
+    except MatterRepositoryError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return
+    if source_bytes is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return
-    ext = source_path.suffix.lower()
+    ext = Path(source_filename).suffix.lower()
     if ext == ".docx":
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif ext == ".pdf":
         mime = "application/pdf"
     else:
         mime = "application/octet-stream"
-    handler._send_file(source_path, content_type=mime, send_body=send_body)
+    handler._send_bytes(source_bytes, filename=source_filename, content_type=mime, send_body=send_body)
 
 
 def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -> None:
@@ -265,6 +293,7 @@ def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -
         payload = matter_render_job.render_status_payload(
             matter_id,
             owner_user_id=request_owner_user_id(handler),
+            repository=_repository(handler),
         )
     except matter_render_job.MatterRenderJobError as error:
         _send_render_job_error(handler, error, send_body=send_body)
@@ -275,7 +304,11 @@ def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -
 def handle_matter_render_pdf(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/render-pdf")
     try:
-        result = matter_render_job.render_pdf_file(matter_id, owner_user_id=request_owner_user_id(handler))
+        result = matter_render_job.render_pdf_file(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
+            repository=_repository(handler),
+        )
     except matter_render_job.MatterRenderJobError as error:
         _send_render_job_error(handler, error, send_body=send_body)
         return
@@ -293,6 +326,7 @@ def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> 
             matter_id,
             page_number,
             owner_user_id=request_owner_user_id(handler),
+            repository=_repository(handler),
         )
     except matter_render_job.MatterRenderJobError as error:
         _send_render_job_error(handler, error, send_body=send_body)
@@ -426,7 +460,11 @@ def handle_matter_stage_update(handler, path: str) -> None:
         handler._send_json({"error": "Unsupported matter stage."}, status=400)
         return
 
-    matter = matter_store.update_matter_stage(matter_id, board_column, owner_user_id=request_owner_user_id(handler))
+    matter = _repository(handler).update_matter_stage(
+        matter_id,
+        board_column,
+        owner_user_id=request_owner_user_id(handler),
+    )
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -448,7 +486,7 @@ def handle_matter_reviewed_update(handler, path: str) -> None:
         handler._send_json({"error": "reviewed must be true or false."}, status=400)
         return
 
-    matter = matter_store.update_matter_fields(
+    matter = _repository(handler).update_matter_fields(
         matter_id,
         {"human_reviewed": reviewed},
         owner_user_id=request_owner_user_id(handler),
@@ -477,7 +515,7 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         return
 
     try:
-        ai_first_review = RepositoryMatterLifecycle(DiskMatterRepository()).run_ai_first_review(
+        ai_first_review = RepositoryMatterLifecycle(_repository(handler)).run_ai_first_review(
             matter_id,
             owner_user_id=request_owner_user_id(handler),
         )
@@ -505,7 +543,7 @@ def handle_matter_summary(handler, path: str) -> None:
     """POST /api/matters/<id>/summary -- on-demand AI summary of one matter.
 
     Mirrors the other matter routes' auth/ownership shape: it runs after
-    _authorize_request (auth) and resolves the matter through matter_store with the
+    _authorize_request (auth) and resolves the matter through the repository with the
     request's owner_user_id, so a caller can never summarize another tenant's matter.
 
     Grounding: the summary is derived ONLY from the matter's real document text and
@@ -520,9 +558,10 @@ def handle_matter_summary(handler, path: str) -> None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
+    repository = _repository(handler)
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500)
         return
     if matter is None:
@@ -576,7 +615,7 @@ def handle_matter_redline_draft_update(handler, path: str) -> None:
         return
 
     try:
-        matter = RepositoryMatterLifecycle(DiskMatterRepository()).save_redline_draft(
+        matter = RepositoryMatterLifecycle(_repository(handler)).save_redline_draft(
             matter_id,
             payload.get("redline_draft"),
             owner_user_id=request_owner_user_id(handler),
@@ -613,14 +652,19 @@ def handle_matter_delete(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
+    repository = _repository(handler)
     # Capture the source bytes before deletion unlinks them, so the render-cache
     # purge below can recompute the (content + owner) cache key. Reading is gated
     # on ownership: a non-owner caller gets None and the matter is not deleted.
-    pre_delete = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
-    source_bytes = matter_store.get_source_document_bytes(pre_delete) if pre_delete else None
+    try:
+        pre_delete = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+        source_bytes = repository.get_source_document_bytes(pre_delete) if pre_delete else None
+    except MatterRepositoryError as error:
+        handler._send_json({"error": str(error)}, status=500)
+        return
     source_filename = str(pre_delete.get("source_filename") or "") if pre_delete else ""
 
-    matter = matter_store.delete_matter(matter_id, owner_user_id=owner_user_id)
+    matter = repository.delete_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -638,5 +682,5 @@ def handle_matter_delete(handler, path: str) -> None:
 
 
 def handle_demo_reset(handler) -> None:
-    removed_count = matter_store.reset_demo_repository(owner_user_id=request_owner_user_id(handler))
+    removed_count = _repository(handler).reset_demo_repository(owner_user_id=request_owner_user_id(handler))
     handler._send_json({"removed": removed_count, "matters": []})

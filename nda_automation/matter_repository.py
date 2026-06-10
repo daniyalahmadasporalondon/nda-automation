@@ -32,6 +32,8 @@ from .matter_store import (
     _safe_filename,
 )
 
+MatterRepositoryError = matter_store.MatterStoreError
+
 
 @runtime_checkable
 class MatterRepository(Protocol):
@@ -254,6 +256,8 @@ class DiskMatterRepository:
         return matter_store.reset_demo_repository(owner_user_id=owner_user_id)
 
     def deduplicate_gmail_matters(self, owner_user_id: str = "") -> int:
+        if not owner_user_id:
+            return matter_store.deduplicate_gmail_matters()
         return matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id)
 
     def find_gmail_attachment(

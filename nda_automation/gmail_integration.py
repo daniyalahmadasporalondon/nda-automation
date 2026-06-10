@@ -6,7 +6,6 @@ from html.parser import HTMLParser
 import json
 import os
 import re
-import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -19,6 +18,7 @@ from . import (
     gmail_attachment_selector,
     gmail_matter_inbox,
     gmail_matter_outbox,
+    gmail_transport,
     google_connection,
     matter_store,  # noqa: F401 - transport dependency for gmail_matter_inbox
     user_store,
@@ -406,11 +406,11 @@ def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: st
 
 
 def _gmail_outbox_transport() -> Any:
-    return sys.modules[__name__]
+    return gmail_transport.outbox_transport()
 
 
 def _gmail_inbox_transport() -> Any:
-    return sys.modules[__name__]
+    return gmail_transport.inbox_transport()
 
 
 def send_redline_email(

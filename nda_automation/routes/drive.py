@@ -25,17 +25,24 @@ from .. import (
     artifact_registry,
     drive_integration,
     google_connection,
-    matter_store,
     matter_view,
     telemetry,
     user_store,
 )
+from ..matter_repository import DiskMatterRepository, MatterRepository
 from .common import request_owner_user_id, require_admin
 
 DRIVE_CONNECT_URL = "/auth/drive/start"
 # Drive has its OWN OAuth callback path. It must not reuse the Gmail redirect
 # (NDA_GMAIL_OAUTH_REDIRECT_URI), which points at /auth/gmail/callback.
 DRIVE_OAUTH_REDIRECT_URI_ENV = "NDA_DRIVE_OAUTH_REDIRECT_URI"
+
+
+def _repository(handler) -> MatterRepository:
+    repository = getattr(handler, "matter_repository", None)
+    if repository is not None:
+        return repository
+    return DiskMatterRepository()
 
 
 def handle_drive_status(handler, *, send_body: bool = True) -> None:
@@ -165,8 +172,9 @@ def handle_drive_upload_matter(handler) -> None:
 
     owner_user_id = request_owner_user_id(handler)
     drive_token_owner_user_id = _google_owner_user_id(handler)
+    repository = _repository(handler)
 
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         telemetry.increment("drive_upload_failed")
         handler._send_json({"error": "Matter not found."}, status=400)
@@ -214,7 +222,7 @@ def handle_drive_upload_matter(handler) -> None:
         "synced_at": synced_at,
         "artifacts": synced["artifacts"],
     }
-    updated_matter = matter_store.update_matter_fields(
+    updated_matter = repository.update_matter_fields(
         matter_id,
         {"drive": drive_block},
         owner_user_id=owner_user_id,

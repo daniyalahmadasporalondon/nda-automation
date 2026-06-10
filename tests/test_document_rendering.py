@@ -209,6 +209,37 @@ class DocumentRenderingTests(unittest.TestCase):
             self.assertEqual(metadata["pages"][0]["page_number"], 1)
             self.assertEqual(metadata["pages"][0]["image_path"], f"{rendered.cache_key}/pages/page-1.png")
 
+    def test_source_path_render_result_owns_page_manifest_cache(self):
+        pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+        renderer = CountingPdfPageRenderer()
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            cache_dir = Path(cache_dir_name)
+            source_path = cache_dir / "Source NDA.pdf"
+            source_path.write_bytes(pdf_bytes)
+
+            # PDF-only cache hits are not enough for the higher-level result:
+            # page geometry has to be ready too.
+            rendered_pdf = document_rendering.render_source_path_to_pdf(source_path, cache_dir=cache_dir)
+            self.assertIsNone(document_rendering.peek_source_path_render_result(source_path, cache_dir=cache_dir))
+
+            result = document_rendering.render_source_path_result(
+                source_path,
+                cache_dir=cache_dir,
+                page_renderer=renderer,
+                dpi=144,
+            )
+            cached = document_rendering.peek_source_path_render_result(source_path, cache_dir=cache_dir, dpi=144)
+
+            self.assertEqual(result.rendered.cache_key, rendered_pdf.cache_key)
+            self.assertEqual(result.rendered.status, READY_STATUS)
+            self.assertIsNotNone(result.page_manifest)
+            self.assertEqual(result.page_manifest.status, READY_STATUS)
+            self.assertEqual(renderer.calls, 1)
+            self.assertIsNotNone(cached)
+            self.assertTrue(cached.rendered.cached)
+            self.assertTrue(cached.page_manifest.cached)
+            self.assertEqual(cached.page_manifest.pages[0].image_path, result.page_manifest.pages[0].image_path)
+
     def test_pdf_page_manifest_reports_renderer_unavailable_without_crashing(self):
         pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
         with tempfile.TemporaryDirectory() as cache_dir_name:

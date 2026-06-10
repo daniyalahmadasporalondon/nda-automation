@@ -11,20 +11,20 @@ def import_inbound_matters(
     query: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, Any]:
-    if not transport.app_settings.gmail_role_enabled("inbound"):
+    if not transport.gmail_role_enabled("inbound"):
         raise transport.GmailIntegrationError("Gmail inbound is disabled in Admin.")
-    owner_user_id = transport._clean_user_token_segment(owner_user_id)
-    service = transport._gmail_service_for_owner("inbound", owner_user_id)
-    profile = transport._gmail_profile_for_role("inbound", service=service, owner_user_id=owner_user_id)
-    inbound_query = query.strip() if isinstance(query, str) and query.strip() else transport._default_inbound_query()
+    owner_user_id = transport.clean_user_token_segment(owner_user_id)
+    service = transport.gmail_service_for_owner("inbound", owner_user_id)
+    profile = transport.gmail_profile_for_role("inbound", service=service, owner_user_id=owner_user_id)
+    inbound_query = query.strip() if isinstance(query, str) and query.strip() else transport.default_inbound_query()
     try:
         requested_limit = int(limit or 10)
     except (TypeError, ValueError):
         requested_limit = 10
-    import_limit = max(1, min(requested_limit, transport.MAX_GMAIL_IMPORT_LIMIT))
+    import_limit = max(1, min(requested_limit, transport.max_import_limit()))
 
     account_email = str(profile.get("emailAddress") or "")
-    selector_enabled = transport.gmail_attachment_selector.selector_configured()
+    selector_enabled = transport.selector_configured()
 
     try:
         result = service.users().messages().list(
@@ -33,7 +33,7 @@ def import_inbound_matters(
             maxResults=import_limit,
         ).execute()
     except Exception as exc:
-        transport._raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
+        transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
 
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -44,30 +44,30 @@ def import_inbound_matters(
         try:
             message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
         except Exception as exc:
-            if transport._gmail_retry_after_epoch(exc):
-                transport._raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
+            if transport.gmail_retry_after_epoch(exc):
+                transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
             skipped.append({"message_id": message_id, "reason": "message_unavailable"})
             continue
 
-        if transport._is_self_or_outbound_message(message, account_email):
+        if transport.is_self_or_outbound_message(message, account_email):
             skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
             continue
 
-        attachments = list(transport._reviewable_attachments(message.get("payload") or {}))
+        attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
         if not attachments:
             skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
-        detection = transport._message_nda_detection(message, attachments)
+        detection = transport.message_nda_detection(message, attachments)
         if not detection["matched"] and not selector_enabled:
-            detection = transport._attachment_nda_detection(service, message_id, attachments)
+            detection = transport.attachment_nda_detection(service, message_id, attachments)
         if not detection["matched"] and not selector_enabled:
             skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
             continue
 
         metadata = message_selector_metadata(
             message,
-            transport._message_metadata(message, account_email, detection=detection if detection["matched"] else None),
+            transport.message_metadata(message, account_email, detection=detection if detection["matched"] else None),
             transport=transport,
         )
         attachment_result = import_inbound_attachments(
@@ -100,7 +100,7 @@ def import_inbound_attachments(
 ) -> dict[str, list[dict[str, Any]]]:
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    selector_enabled = transport.gmail_attachment_selector.selector_configured()
+    selector_enabled = transport.selector_configured()
     for attachment in attachments:
         candidate, skip = prepare_inbound_attachment(
             service,
@@ -193,7 +193,7 @@ def prepare_inbound_attachment(
         return None, gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
 
     try:
-        document_bytes = transport._attachment_bytes(service, message_id, attachment)
+        document_bytes = transport.attachment_bytes(service, message_id, attachment)
     except transport.GmailIntegrationError:
         return None, gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
 
@@ -220,7 +220,7 @@ def prepare_inbound_attachment(
         return None, gmail_attachment_skip(
             message_id,
             attachment_filename,
-            transport._pdf_attachment_skip_reason(error),
+            transport.pdf_attachment_skip_reason(error),
             detail=str(error),
         )
     except transport.DocxExtractionError as error:
@@ -231,7 +231,7 @@ def prepare_inbound_attachment(
             detail=str(error),
         )
 
-    validation = transport._attachment_nda_validation(
+    validation = transport.attachment_nda_validation(
         attachment_filename,
         paragraphs,
         message_metadata=metadata,
@@ -278,9 +278,9 @@ def create_matter_from_prepared_attachment(
     if not isinstance(document_bytes, bytes):
         return None, gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
 
-    metadata = transport._attachment_validation_metadata(metadata, validation)
+    metadata = transport.attachment_validation_metadata(metadata, validation)
     if selector_metadata:
-        metadata = transport._attachment_selector_metadata(metadata, selector_metadata)
+        metadata = transport.attachment_selector_metadata(metadata, selector_metadata)
 
     try:
         matter = transport.create_matter_from_document(
@@ -317,14 +317,14 @@ def selected_candidate_attachment_ids(
     *,
     transport: Any,
 ) -> tuple[set[str] | None, dict[str, object]]:
-    if not prepared or not transport.gmail_attachment_selector.selector_configured():
+    if not prepared or not transport.selector_configured():
         return None, {}
     try:
-        selection = transport.gmail_attachment_selector.select_nda_attachments(
+        selection = transport.select_nda_attachments(
             message_metadata=metadata,
             candidates=prepared,
         )
-    except transport.gmail_attachment_selector.GmailAttachmentSelectorError:
+    except transport.GmailAttachmentSelectorError:
         return None, {}
     if selection.get("status") != "selected":
         return None, {}
@@ -337,12 +337,12 @@ def selected_candidate_attachment_ids(
 
 
 def message_selector_metadata(message: dict[str, Any], metadata: dict[str, str], *, transport: Any) -> dict[str, str]:
-    body_preview = transport._message_body_text(message.get("payload") or {})
+    body_preview = transport.message_body_text(message.get("payload") or {})
     if not body_preview:
         return metadata
     return {
         **metadata,
-        "message_body_preview": body_preview[:transport.GMAIL_BODY_PREVIEW_LIMIT],
+        "message_body_preview": body_preview[:transport.body_preview_limit()],
     }
 
 
@@ -365,14 +365,14 @@ def gmail_attachment_already_imported(
     part_id: str = "",
     owner_user_id: str = "",
 ) -> bool:
-    return transport.matter_store.find_gmail_attachment(
+    return transport.gmail_attachment_already_imported(
         message_id,
         attachment_id,
         attachment_filename=attachment_filename,
         attachment_sha256=attachment_sha256,
         part_id=part_id,
         owner_user_id=owner_user_id,
-    ) is not None
+    )
 
 
 def gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str, **details: object) -> dict[str, str]:

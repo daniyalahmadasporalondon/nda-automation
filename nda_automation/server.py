@@ -64,6 +64,7 @@ from .rate_limit import (
     _reset_rate_limits as _reset_rate_limits,
 )
 from .ingestion_service import create_matter_from_document, extract_document
+from .matter_repository import DiskMatterRepository
 from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import approval as approval_routes
@@ -479,6 +480,31 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
+    def _send_bytes(
+        self,
+        data: bytes,
+        *,
+        filename: str = "",
+        content_type: str | None = None,
+        send_body: bool = True,
+    ) -> None:
+        etag = f'"sha256-{hashlib.sha256(data).hexdigest()}"'
+        detected_type = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", detected_type)
+        self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+        self.send_header("ETag", etag)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if send_body:
+            self.wfile.write(data)
+
     def _send_download(
         self,
         data: bytes,
@@ -809,7 +835,7 @@ def _run_scheduled_gmail_sync() -> None:
             result = _run_scheduled_user_gmail_sync(owner_user_ids)
         else:
             result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
-            result = {**result, "deduplicated_count": matter_store.deduplicate_gmail_matters()}
+            result = {**result, "deduplicated_count": DiskMatterRepository().deduplicate_gmail_matters()}
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
         telemetry.increment("gmail_sync_successes")
@@ -842,7 +868,9 @@ def _run_scheduled_user_gmail_sync(owner_user_ids: list[str]) -> dict[str, objec
                 limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT,
                 owner_user_id=owner_user_id,
             )
-            owner_deduplicated_count = matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id)
+            owner_deduplicated_count = DiskMatterRepository().deduplicate_gmail_matters(
+                owner_user_id=owner_user_id
+            )
             result = {**result, "deduplicated_count": owner_deduplicated_count}
             user_finished_at = datetime.now(timezone.utc).isoformat()
             user_store.record_user_gmail_sync(

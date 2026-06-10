@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
-from .. import approval, artifact_service, matter_document_artifacts, matter_store, matter_view, redline_export_service, telemetry
+from .. import approval, artifact_service, matter_document_artifacts, matter_view, redline_export_service, telemetry
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..matter_lifecycle import MatterApprovalBlockedError, MatterNotFoundError, RepositoryMatterLifecycle
-from ..matter_repository import DiskMatterRepository
+from ..matter_repository import DiskMatterRepository, MatterRepository
 from ..pdf_text import PdfExtractionError
 from ..checker import ParagraphAlignmentError
 from .common import parse_matter_id, request_owner_user_id
+
+
+def _repository(handler) -> MatterRepository:
+    repository = getattr(handler, "matter_repository", None)
+    if repository is not None:
+        return repository
+    return DiskMatterRepository()
 
 
 def parse_clause_decision_path(path: str) -> tuple[str, str] | None:
@@ -40,7 +47,8 @@ def handle_clause_decision(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    repository = _repository(handler)
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -56,7 +64,7 @@ def handle_clause_decision(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    updated_matter = matter_store.set_clause_reviewer_decision(
+    updated_matter = repository.set_clause_reviewer_decision(
         matter_id, clause_id, reviewer_decision, owner_user_id=owner_user_id,
     )
     if updated_matter is None:
@@ -118,7 +126,7 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    matter = _repository(handler).get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
