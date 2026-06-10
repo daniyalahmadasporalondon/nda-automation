@@ -7,14 +7,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export_service, fill_export, telemetry
+from . import docx_package_renderer, export_service, fill_export, telemetry
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
     DocxExportError,
     accept_all_revisions,
     build_review_report_docx,
-    build_source_redline_docx,
 )
 from .docx_health import validate_docx_open_health, verify_export_content_coverage
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
@@ -109,26 +108,20 @@ def _build_redline_export(
     )
 
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
-        report_bytes = build_source_redline_docx(
-            source_document_bytes, review_result, clean_fills=clean_mode_fills
+        package_result = docx_package_renderer.render_source_redline_package(
+            source_document_bytes,
+            review_result,
+            clean_fills=clean_mode_fills,
+            expected_source_text=str(review_result.get("extracted_text") or ""),
+            expected_redline_edits=review_result.get("redline_edits", []),
         )
+        _raise_for_package_result(package_result)
+        report_bytes = package_result.data
         download_filename = export_service.redline_download_filename(source_filename)
-        require_styles = False
-        expected_source_text = str(review_result.get("extracted_text") or "")
-        expected_redline_edits = review_result.get("redline_edits", [])
     else:
         report_bytes = build_review_report_docx(review_result, title=title.strip() or "NDA Review")
         download_filename = export_service.redline_download_filename(source_filename) if source_filename else "nda-review-report.docx"
-        require_styles = True
-        expected_source_text = ""
-        expected_redline_edits = []
-
-    _validate_export(
-        report_bytes,
-        require_styles=require_styles,
-        expected_source_text=expected_source_text,
-        expected_redline_edits=expected_redline_edits,
-    )
+        _validate_export(report_bytes, require_styles=True)
     # Clean mode (the Generator's outbound draft): the tracked redline is built and
     # validated above, then ACCEPTED into a clean document -- the recipient gets a
     # finished NDA with the edits baked in, no strike-through / insertion marks. A
@@ -260,3 +253,20 @@ def _validate_export(
         telemetry.increment("docx_export_content_failures")
         print(f"DOCX export content check failed: {len(content_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its content-coverage check.", content_errors)
+
+
+def _raise_for_package_result(package_result: docx_package_renderer.DocxPackageRenderResult) -> None:
+    if package_result.health_errors:
+        telemetry.increment("docx_export_health_failures")
+        print(f"DOCX export health check failed: {len(package_result.health_errors)} issue(s)")
+        raise DocxOpenHealthError(
+            "The exported Word document failed its open-health check.",
+            package_result.health_errors,
+        )
+    if package_result.content_errors:
+        telemetry.increment("docx_export_content_failures")
+        print(f"DOCX export content check failed: {len(package_result.content_errors)} issue(s)")
+        raise DocxOpenHealthError(
+            "The exported Word document failed its content-coverage check.",
+            package_result.content_errors,
+        )
