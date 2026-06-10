@@ -225,6 +225,12 @@ class RenderedPdfPageImageManifest:
         return payload
 
 
+@dataclass(frozen=True)
+class DocumentRenderResult:
+    rendered: RenderedDocument
+    page_manifest: RenderedPdfPageImageManifest | None = None
+
+
 class PdfPageRenderer(Protocol):
     name: str
 
@@ -452,6 +458,34 @@ def render_source_path_to_pdf(
     )
 
 
+def render_source_path_result(
+    source_path: Path,
+    *,
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    converter: DocxConverter | None = None,
+    page_renderer: PdfPageRenderer | None = None,
+    timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    owner_user_id: str = "",
+    include_page_images: bool = True,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> DocumentRenderResult:
+    rendered = render_source_path_to_pdf(
+        source_path,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        converter=converter,
+        timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
+    )
+    return document_render_result(
+        rendered,
+        include_page_images=include_page_images,
+        page_renderer=page_renderer,
+        dpi=dpi,
+    )
+
+
 def peek_rendered_document(
     source_path: Path,
     *,
@@ -495,6 +529,71 @@ def peek_rendered_document(
     )
 
 
+def peek_source_path_render_result(
+    source_path: Path,
+    *,
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    owner_user_id: str = "",
+    include_page_images: bool = True,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> DocumentRenderResult | None:
+    rendered = peek_rendered_document(
+        source_path,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        owner_user_id=owner_user_id,
+    )
+    if rendered is None:
+        return None
+    page_manifest = None
+    if include_page_images:
+        page_manifest = peek_page_image_manifest(rendered, dpi=dpi)
+        if page_manifest is None:
+            return None
+    return DocumentRenderResult(rendered=rendered, page_manifest=page_manifest)
+
+
+def poll_source_path_render_result(
+    render_id: str,
+    source_path: Path,
+    *,
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    converter: DocxConverter | None = None,
+    page_renderer: PdfPageRenderer | None = None,
+    timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    owner_user_id: str = "",
+    wait_timeout_seconds: float = 0.0,
+    include_page_images: bool = True,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> DocumentRenderResult | None:
+    cached = peek_source_path_render_result(
+        source_path,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        owner_user_id=owner_user_id,
+        include_page_images=include_page_images,
+        dpi=dpi,
+    )
+    if cached is not None:
+        return cached
+    job = ensure_source_path_render_in_flight(
+        render_id,
+        source_path,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        converter=converter,
+        page_renderer=page_renderer,
+        timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
+        include_page_images=include_page_images,
+        dpi=dpi,
+    )
+    job.done.wait(timeout=wait_timeout_seconds)
+    return job.result if job.is_finished() and isinstance(job.result, DocumentRenderResult) else None
+
+
 def peek_page_image_manifest(
     rendered: RenderedDocument,
     *,
@@ -520,6 +619,19 @@ def peek_page_image_manifest(
         pdf_sha256=pdf_sha256,
         dpi=dpi,
     )
+
+
+def document_render_result(
+    rendered: RenderedDocument,
+    *,
+    include_page_images: bool = True,
+    page_renderer: PdfPageRenderer | None = None,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> DocumentRenderResult:
+    page_manifest = None
+    if include_page_images and rendered.status == READY_STATUS and rendered.pdf_path is not None:
+        page_manifest = render_pdf_page_image_manifest(rendered, renderer=page_renderer, dpi=dpi)
+    return DocumentRenderResult(rendered=rendered, page_manifest=page_manifest)
 
 
 def render_source_document_to_pdf(
@@ -841,6 +953,44 @@ def page_image_for_page_number(manifest: RenderedPdfPageImageManifest, page_numb
         if page.page_number == page_number:
             return page
     return None
+
+
+def page_image_for_render_result(result: DocumentRenderResult, page_number: int) -> RenderedPdfPageImage | None:
+    if result.page_manifest is None:
+        return None
+    return page_image_for_page_number(result.page_manifest, page_number)
+
+
+def ensure_source_path_render_in_flight(
+    render_id: str,
+    source_path: Path,
+    *,
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    converter: DocxConverter | None = None,
+    page_renderer: PdfPageRenderer | None = None,
+    timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    owner_user_id: str = "",
+    include_page_images: bool = True,
+    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
+) -> RenderJob:
+    def _render():
+        try:
+            return render_source_path_result(
+                source_path,
+                content_type=content_type,
+                cache_dir=cache_dir,
+                converter=converter,
+                page_renderer=page_renderer,
+                timeout_seconds=timeout_seconds,
+                owner_user_id=owner_user_id,
+                include_page_images=include_page_images,
+                dpi=dpi,
+            )
+        except DocxConverterBusy:
+            return None
+
+    return matter_render_coordinator().ensure_in_flight(render_id, _render)
 
 
 @dataclass

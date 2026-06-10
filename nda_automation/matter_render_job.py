@@ -34,7 +34,15 @@ class MatterRenderSource:
 @dataclass(frozen=True)
 class MatterRenderedDocument:
     matter: dict[str, Any]
-    rendered: document_rendering.RenderedDocument
+    render_result: document_rendering.DocumentRenderResult
+
+    @property
+    def rendered(self) -> document_rendering.RenderedDocument:
+        return self.render_result.rendered
+
+    @property
+    def page_manifest(self) -> document_rendering.RenderedPdfPageImageManifest | None:
+        return self.render_result.page_manifest
 
 
 @dataclass(frozen=True)
@@ -55,40 +63,27 @@ def render_status_payload(
     matter = resolved.matter
     source_path = resolved.source_path
 
-    rendered = document_rendering.peek_rendered_document(
+    render_result = document_rendering.poll_source_path_render_result(
+        matter_id or "",
         source_path,
         content_type=source_document_content_type(source_path),
         owner_user_id=resolved.owner_user_id,
+        wait_timeout_seconds=poll_grace_seconds,
     )
-    page_manifest = document_rendering.peek_page_image_manifest(rendered) if rendered is not None else None
-    if rendered is not None and page_manifest is not None:
+    if render_result is not None:
         return {
             "document_render": public_document_render(
                 matter_id or "",
-                rendered,
+                render_result.rendered,
                 matter=matter,
-                page_manifest=page_manifest,
+                page_manifest=render_result.page_manifest,
             )
         }
-
-    job = ensure_background_matter_render(matter, source_path, resolved.owner_user_id)
-    if job is not None:
-        job.done.wait(timeout=poll_grace_seconds)
-        if job.is_finished() and isinstance(job.result, tuple):
-            rendered, page_manifest = job.result
-            return {
-                "document_render": public_document_render(
-                    matter_id or "",
-                    rendered,
-                    matter=matter,
-                    page_manifest=page_manifest,
-                )
-            }
     return {"document_render": rendering_in_progress_payload(matter_id or "", source_path)}
 
 
 def render_pdf_file(matter_id: str | None, *, owner_user_id: str = "") -> MatterRenderFile:
-    result = render_matter_document(matter_id, owner_user_id=owner_user_id)
+    result = render_matter_document(matter_id, owner_user_id=owner_user_id, include_page_images=False)
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         error = rendered.error_message or "Rendered PDF is not available for this matter."
@@ -119,7 +114,9 @@ def render_page_image_file(
             },
             status=409,
         )
-    page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+    page_manifest = result.page_manifest
+    if page_manifest is None:
+        page_manifest = document_rendering.document_render_result(rendered).page_manifest
     if page_manifest.status != document_rendering.READY_STATUS:
         raise MatterRenderJobError(
             {
@@ -133,7 +130,10 @@ def render_page_image_file(
             },
             status=409,
         )
-    page = document_rendering.page_image_for_page_number(page_manifest, page_number)
+    page = document_rendering.page_image_for_render_result(
+        document_rendering.DocumentRenderResult(rendered=rendered, page_manifest=page_manifest),
+        page_number,
+    )
     if page is None or page.image_path is None:
         raise MatterRenderJobError(
             {
@@ -165,33 +165,6 @@ def resolve_matter_source(matter_id: str | None, *, owner_user_id: str = "") -> 
     return MatterRenderSource(matter=matter, source_path=source_path, owner_user_id=str(matter.get("owner_user_id") or ""))
 
 
-def ensure_background_matter_render(
-    matter: dict[str, Any],
-    source_path: Path,
-    owner_user_id: str,
-) -> document_rendering.RenderJob | None:
-    matter_id = str(matter.get("id") or "")
-    if not matter_id:
-        return None
-    content_type = source_document_content_type(source_path)
-
-    def _render():
-        try:
-            rendered = document_rendering.render_source_path_to_pdf(
-                source_path,
-                content_type=content_type,
-                owner_user_id=owner_user_id,
-            )
-        except document_rendering.DocxConverterBusy:
-            return None
-        manifest = None
-        if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
-            manifest = document_rendering.render_pdf_page_image_manifest(rendered)
-        return rendered, manifest
-
-    return document_rendering.matter_render_coordinator().ensure_in_flight(matter_id, _render)
-
-
 def rendering_in_progress_payload(matter_id: str, source_path: Path) -> dict[str, Any]:
     source_kind = "pdf" if source_path.suffix.lower() == ".pdf" else "docx"
     return {
@@ -203,13 +176,19 @@ def rendering_in_progress_payload(matter_id: str, source_path: Path) -> dict[str
     }
 
 
-def render_matter_document(matter_id: str | None, *, owner_user_id: str = "") -> MatterRenderedDocument:
+def render_matter_document(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    include_page_images: bool = True,
+) -> MatterRenderedDocument:
     resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id)
     try:
-        rendered = document_rendering.render_source_path_to_pdf(
+        render_result = document_rendering.render_source_path_result(
             resolved.source_path,
             content_type=source_document_content_type(resolved.source_path),
             owner_user_id=resolved.owner_user_id,
+            include_page_images=include_page_images,
         )
     except document_rendering.DocxConverterBusy as error:
         raise MatterRenderJobError(
@@ -217,7 +196,7 @@ def render_matter_document(matter_id: str | None, *, owner_user_id: str = "") ->
             status=503,
             headers={"Retry-After": "5"},
         ) from error
-    return MatterRenderedDocument(matter=resolved.matter, rendered=rendered)
+    return MatterRenderedDocument(matter=resolved.matter, render_result=render_result)
 
 
 def source_document_content_type(source_path: Path) -> str:
@@ -264,7 +243,7 @@ def public_document_render(
     if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
         payload["pdf_url"] = f"/api/matters/{matter_id}/render-pdf"
         if page_manifest is None:
-            page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
+            page_manifest = document_rendering.document_render_result(rendered).page_manifest
         attach_public_page_image_manifest(payload, matter_id, page_manifest)
         if matter is not None:
             payload["document_overlay"] = public_document_overlay(matter, matter_id, page_manifest)
