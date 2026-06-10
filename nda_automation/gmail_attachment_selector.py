@@ -7,8 +7,11 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from . import app_settings
-from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
+from .ai_runtime import (
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    configured_api_key as _runtime_configured_api_key,
+    trusted_https_context as _trusted_https_context,
+)
 from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
 
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
@@ -111,10 +114,7 @@ def select_nda_attachments(
 
 
 def _configured_api_key() -> str:
-    return (
-        os.environ.get(OPENROUTER_API_KEY_ENV, "").strip()
-        or app_settings.stored_ai_api_key()
-    )
+    return _runtime_configured_api_key("openrouter")
 
 
 def _configured_model() -> str:

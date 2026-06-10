@@ -16,10 +16,9 @@ THE GOLDEN RULE (the whole point of this module):
 
 Design notes
 ------------
-* Transport reuse: the call goes through the SAME OpenRouter transport and settings
-  the reviewer/summary use (``ai_review._ai_review_settings`` /
-  ``_configured_api_key`` / ``OPENROUTER_CHAT_COMPLETIONS_ENDPOINT`` /
-  ``_trusted_https_context``). No new HTTP client, no hardcoded key, no new model.
+* Transport reuse: the call goes through the shared AI runtime (settings/key
+  resolution, OpenRouter endpoint, trusted HTTPS context). No new HTTP client, no
+  hardcoded key, no new model.
   This mirrors ``matter_summary``.
 * Untrusted input: the user's query is attacker-controlled DATA, so it passes
   through ``neutralize_untrusted_text`` before entering the prompt, exactly like the
@@ -43,13 +42,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 from . import workflow
-from .ai_review import (
+from .ai_runtime import (
     DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-    _ai_review_settings,
-    _configured_api_key,
-    _sanitize_model_name,
-    _trusted_https_context,
+    ai_review_settings as _ai_review_settings,
+    configured_api_key as _configured_api_key,
+    sanitize_model_name as _sanitize_model_name,
+    trusted_https_context as _trusted_https_context,
 )
 from .untrusted_text import neutralize_untrusted_text
 

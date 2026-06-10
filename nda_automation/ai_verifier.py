@@ -35,6 +35,12 @@ import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
+from .ai_runtime import (
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    configured_api_key as _runtime_configured_api_key,
+    openrouter_response_text,
+    trusted_https_context,
+)
 from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
 from .review_state import (
     CLAUSE_DECISION_FAIL,
@@ -702,7 +708,7 @@ class VerifierError(RuntimeError):
 class OpenRouterVerifier:
     """Adversarial verifier backed by a strong Claude model via OpenRouter.
 
-    Reuses ai_review's HTTPS transport (trusted SSL context, response parsing) so
+    Reuses the shared AI runtime transport helpers so
     the verifier shares the project's single network seam rather than forking it.
     """
 
@@ -715,14 +721,6 @@ class OpenRouterVerifier:
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_VERIFIER_TIMEOUT_SECONDS))
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
-        # Import here to keep the network transport a single source of truth and to
-        # avoid a hard import cycle at module load.
-        from .ai_review import (
-            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            _openrouter_response_text,
-            _trusted_https_context,
-        )
-
         body = {
             "model": self.model,
             "messages": [
@@ -743,7 +741,7 @@ class OpenRouterVerifier:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=trusted_https_context()) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             message = error.read().decode("utf-8", errors="replace")[:300]
@@ -751,7 +749,7 @@ class OpenRouterVerifier:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise VerifierError(f"Verifier API request failed: {error}") from error
 
-        response_text = _openrouter_response_text(payload)
+        response_text = openrouter_response_text(payload)
         if not response_text:
             raise VerifierError("Verifier API returned no message content.")
         try:
@@ -793,14 +791,8 @@ def resolve_verifier() -> VerifierFn:
 
 
 def _verifier_api_key() -> str:
-    from .ai_review import OPENROUTER_API_KEY_ENV
-    from . import app_settings
-
-    env_key = str(os.environ.get(OPENROUTER_API_KEY_ENV, "")).strip()
-    if env_key:
-        return env_key
     try:
-        return str(app_settings.stored_ai_api_key() or "").strip()
+        return _runtime_configured_api_key("openrouter")
     except Exception:  # noqa: BLE001 - settings access must never break review
         return ""
 
