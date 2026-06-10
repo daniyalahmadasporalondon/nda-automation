@@ -15,7 +15,6 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .inline_diff import diff_text_operation_dicts
-from .redline_rationale import attach_redline_rationales
 from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
 from .ai_verifier import VerifierFn, apply_ai_verifier, refinalize_clause_grounding
 from .checks import CLAUSE_CHECKS
@@ -37,9 +36,7 @@ from .checks.common import (
     _paragraph_matches,
     _year_count_label,
 )
-from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
-from .reference_resolver import resolve_document_references
 from .playbook_rules import (
     PlaybookRulesError,
     is_dynamic_clause,
@@ -50,7 +47,6 @@ from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
     ParagraphAlignmentError as ParagraphAlignmentError,
-    align_document_paragraphs,
     split_document_paragraphs,
     validate_clause_evidence_trust,
 )
@@ -58,9 +54,16 @@ from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
     CLAUSE_DECISION_REVIEW,
-    aggregate_review_state,
     clause_review_state,
     reason_codes_for_clause,
+)
+from .review_result_assembly import (
+    aggregate_clause_results,
+    assemble_redline_edits,
+    build_review_context,
+    prepare_review_document,
+    refinalize_verifier_changed_clauses,
+    verify_evidence_trust,
 )
 from .decision_arbiter import (
     SEMANTIC_REVIEW_THRESHOLD,
@@ -156,13 +159,11 @@ def review_nda(
     verify: bool = True,
     ai_enabled: bool = True,
 ) -> Dict[str, object]:
-    source_text = text or ""
-    if paragraphs is None:
-        document_paragraphs = split_document_paragraphs(source_text)
-    else:
-        if not source_text:
-            source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
-        document_paragraphs = align_document_paragraphs(paragraphs, source_text)
+    source_text, document_paragraphs = prepare_review_document(
+        text,
+        paragraphs,
+        infer_text_from_paragraphs=True,
+    )
 
     normalized = _normalize(source_text)
     playbook = load_playbook()
@@ -170,14 +171,10 @@ def review_nda(
     playbook = normalize_playbook_policy(playbook)
     clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
 
-    contract_structure = build_contract_structure(document_paragraphs)
-    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
-    concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
-    review_context: Dict[str, object] = {
-        "contract_structure": contract_structure,
-        "reference_resolver": reference_resolver,
-        "concept_classifier": concept_classifier,
-    }
+    review_context = build_review_context(document_paragraphs)
+    contract_structure = review_context["contract_structure"]
+    reference_resolver = review_context["reference_resolver"]
+    concept_classifier = review_context["concept_classifier"]
 
     clause_results = []
     for clause_id, check in CLAUSE_CHECKS:
@@ -226,28 +223,22 @@ def review_nda(
     # Re-finalize the derived structures (structured evidence + audit trace) for any
     # clause the verifier rewrote, so the evidence-trust contract still holds.
     _refinalize_verifier_changes(clause_results, ai_verifier_review)
-    failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
-    review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
-    passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
-    redline_edits = _build_redline_edits(clause_results, document_paragraphs)
-    # Explain WHY each proposed redline exists, drawn from the Playbook clause and
-    # the clause's grounded citation. Only clauses that produced an edit get one.
-    attach_redline_rationales(clause_results, redline_edits, playbook_clauses_by_id=clauses_by_id)
-    review_state = aggregate_review_state(
+    review_summary = aggregate_clause_results(clause_results)
+    redline_edits = assemble_redline_edits(
         clause_results,
-        pass_count=len(passed),
-        review_count=len(review),
-        check_count=len(failed),
+        document_paragraphs,
+        playbook_clauses_by_id=clauses_by_id,
+        build_redline_edits=_build_redline_edits,
     )
 
     result = {
         "review_engine_version": REVIEW_ENGINE_VERSION,
-        "overall_status": review_state["overall_status"],
-        "review_state": review_state,
+        "overall_status": review_summary["overall_status"],
+        "review_state": review_summary["review_state"],
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "requirements_passed": len(passed),
-        "requirements_failed": len(failed),
-        "requirements_needs_review": len(review),
+        "requirements_passed": review_summary["requirements_passed"],
+        "requirements_failed": review_summary["requirements_failed"],
+        "requirements_needs_review": review_summary["requirements_needs_review"],
         "paragraphs": document_paragraphs,
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
@@ -263,10 +254,12 @@ def review_nda(
         # it does not touch clause results, statuses, counts, or the approve gate.
         "unmatched_sections": compute_unmatched_sections(contract_structure, clause_results),
     }
-    evidence_errors = validate_clause_evidence_trust(result, source_text)
-    if evidence_errors:
-        raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
-    result["evidence_trust"] = {"status": "verified", "errors": []}
+    verify_evidence_trust(
+        result,
+        source_text,
+        error_message="Clause evidence provenance drift detected: ",
+        evidence_validator=validate_clause_evidence_trust,
+    )
     return result
 
 
@@ -496,42 +489,11 @@ def _clean_draft_validation_redline(redline_edit: Dict[str, object], clause_id: 
 
 
 def _review_context_from_result(review_result: Dict[str, object], paragraphs: List[Paragraph]) -> Dict[str, object]:
-    contract_structure = review_result.get("contract_structure")
-    if not isinstance(contract_structure, dict):
-        contract_structure = build_contract_structure(paragraphs)
-
-    reference_resolver = review_result.get("reference_resolver")
-    if not isinstance(reference_resolver, dict):
-        reference_resolver = resolve_document_references(paragraphs, contract_structure)
-
-    concept_classifier = review_result.get("concept_classifier")
-    if not isinstance(concept_classifier, dict):
-        concept_classifier = classify_document_concepts(paragraphs, contract_structure)
-
-    return {
-        "contract_structure": contract_structure,
-        "reference_resolver": reference_resolver,
-        "concept_classifier": concept_classifier,
-    }
+    return build_review_context(paragraphs, review_result=review_result)
 
 
 def _aggregate_clause_results(clauses: List[ClauseResult]) -> Dict[str, object]:
-    failed = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_FAIL]
-    review = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_REVIEW]
-    passed = [clause for clause in clauses if clause.get("decision") == CLAUSE_DECISION_PASS]
-    review_state = aggregate_review_state(
-        clauses,
-        pass_count=len(passed),
-        review_count=len(review),
-        check_count=len(failed),
-    )
-    return {
-        "overall_status": review_state["overall_status"],
-        "review_state": review_state,
-        "requirements_passed": len(passed),
-        "requirements_failed": len(failed),
-        "requirements_needs_review": len(review),
-    }
+    return aggregate_clause_results(clauses)
 
 
 def _apply_clause_decision(clause: ClauseResult) -> None:
@@ -644,16 +606,7 @@ def _refinalize_verifier_changes(
     Re-running the same finalizers the decision step uses keeps the evidence-trust
     contract intact without the verifier reaching into checker internals.
     """
-    changed_ids = {
-        str(record.get("clause_id") or "")
-        for record in verifier_review.get("records", [])
-        if isinstance(record, dict) and record.get("changed")
-    }
-    if not changed_ids:
-        return
-    for clause in clause_results:
-        if str(clause.get("id") or "") not in changed_ids:
-            continue
+    def refinalize_clause(clause: ClauseResult) -> None:
         decision = str(clause.get("decision") or "")
         # When the verifier cleared a disproven finding it dropped the stale reason
         # code so the clause re-derives its natural one (e.g. a refuted prohibited
@@ -670,6 +623,8 @@ def _refinalize_verifier_changes(
         refinalize_clause_grounding(clause)
         clause["review_state"] = clause_review_state(clause, decision)
         _attach_audit_trace(clause, decision)
+
+    refinalize_verifier_changed_clauses(clause_results, verifier_review, refinalize_clause)
 
 
 def _audit_evidence_summary(
