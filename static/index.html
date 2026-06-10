@@ -38,16 +38,30 @@
             </button>
           </nav>
           <section class="session-strip" id="sessionStrip" aria-label="Account and Gmail status">
-            <div class="session-summary">
-              <span class="session-user" data-session-user>Checking account</span>
-              <span class="session-gmail" data-session-gmail>Checking Gmail</span>
-            </div>
-            <div class="session-actions">
+            <button class="account-control" type="button" data-session-account-toggle aria-haspopup="menu" aria-expanded="false">
+              <span class="account-avatar" data-session-avatar aria-hidden="true">
+                <img data-session-avatar-image alt="" hidden>
+                <span data-session-avatar-initial>?</span>
+              </span>
+              <span class="account-copy">
+                <span class="account-greeting" data-session-user>Checking account</span>
+                <span class="account-status" data-session-gmail>Checking Gmail</span>
+              </span>
+            </button>
+            <div class="account-menu" data-session-account-menu role="menu" hidden>
+              <div class="account-menu-profile" aria-hidden="true">
+                <span class="account-menu-avatar" data-session-menu-avatar>
+                  <img data-session-menu-avatar-image alt="" hidden>
+                  <span data-session-menu-avatar-initial>?</span>
+                </span>
+                <span class="account-menu-greeting" data-session-menu-greeting>Hi!</span>
+                <span class="account-menu-status" data-session-menu-status>Checking Gmail</span>
+              </div>
               <a class="session-action" data-session-login href="/auth/google/start" hidden>Sign in</a>
               <button class="session-action" data-session-gmail-connect type="button" hidden>Connect Gmail</button>
               <button class="session-action secondary" data-session-gmail-sync type="button" hidden>Sync now</button>
               <button class="session-action secondary" data-session-gmail-disconnect type="button" hidden>Disconnect Gmail</button>
-              <button class="session-action secondary" data-session-logout type="button" hidden>Sign out</button>
+              <button class="session-action secondary account-signout-action" data-session-logout type="button" hidden>Sign out</button>
             </div>
             <span class="session-warning" data-session-warning hidden></span>
           </section>
@@ -90,8 +104,46 @@
             </div>
           </section>
 
-          <section class="dashboard-search" aria-labelledby="dashboardSearchTitle" data-dashboard-search>
-            <h2 class="dashboard-search-title" id="dashboardSearchTitle">What are you looking for?</h2>
+          <section class="dashboard-metrics" aria-label="Repository overview">
+            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="gmail_demo">
+              <span class="dashboard-metric-icon inbox" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M4.75 6.75h14.5v10.5H4.75z"/>
+                  <path d="m5.25 7.25 6.75 5.25 6.75-5.25"/>
+                  <path d="m5.25 16.75 5.1-4.6"/>
+                  <path d="m18.75 16.75-5.1-4.6"/>
+                </svg>
+              </span>
+              <span class="dashboard-metric-copy">
+                <span class="dashboard-metric-number" data-repository-count="gmail_demo">0</span>
+                <span class="dashboard-metric-label">Inbox</span>
+              </span>
+            </button>
+            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="in_review">
+              <span class="dashboard-metric-icon review" aria-hidden="true">●</span>
+              <span class="dashboard-metric-copy">
+                <span class="dashboard-metric-number" data-repository-count="in_review">0</span>
+                <span class="dashboard-metric-label">In Review</span>
+              </span>
+            </button>
+            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="reviewed">
+              <span class="dashboard-metric-icon reviewed" aria-hidden="true">✓</span>
+              <span class="dashboard-metric-copy">
+                <span class="dashboard-metric-number" data-repository-count="reviewed">0</span>
+                <span class="dashboard-metric-label">Reviewed</span>
+              </span>
+            </button>
+            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="sent">
+              <span class="dashboard-metric-icon sent" aria-hidden="true">↗</span>
+              <span class="dashboard-metric-copy">
+                <span class="dashboard-metric-number" data-repository-count="sent">0</span>
+                <span class="dashboard-metric-label">Sent</span>
+              </span>
+            </button>
+          </section>
+
+          <section class="dashboard-search" aria-label="Search documents" data-dashboard-search>
+            <h2 class="dashboard-search-title sr-only" id="dashboardSearchTitle">Search documents</h2>
             <form class="dashboard-search-form" id="dashboardSearchForm" role="search" autocomplete="off">
               <div class="dashboard-search-field">
                 <input
@@ -103,7 +155,7 @@
                   aria-label="Search or ask about your documents"
                 >
                 <button class="dashboard-search-submit" type="submit" aria-label="Search">
-                  <span aria-hidden="true">↑</span>
+                  <span class="dashboard-search-sparkle" aria-hidden="true"></span>
                 </button>
               </div>
               <div class="dashboard-search-chips" id="dashboardSearchChips" role="group" aria-label="Quick filters"></div>
