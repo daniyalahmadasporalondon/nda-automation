@@ -166,10 +166,17 @@ def verify_export_content_coverage(
     source_text: str,
     *,
     expected_redline_edits: object = None,
+    clean_fills: object = None,
 ) -> List[str]:
     """Content gate the structural health check misses: an empty body or a
     redline that drops, reorders, duplicates, or misplaces source content.
-    Returns error strings (counts only, never source text, to avoid leaking NDA content)."""
+    Returns error strings (counts only, never source text, to avoid leaking NDA content).
+
+    ``clean_fills`` are inbound-NDA clean-mode fills baked into the base document
+    text (e.g. ``____`` -> ``Acme Ltd``). Their accepted-view substitution is applied
+    to the expected source paragraphs so a filled export is not flagged as diverging.
+    Tracked-mode fills need no handling here: they arrive as synthesized
+    replace-paragraph entries in ``expected_redline_edits``."""
     source_normalized = _normalize_export_text(source_text)
     if not source_normalized:
         return []
@@ -182,7 +189,9 @@ def verify_export_content_coverage(
             f"Exported text covers only {len(export_normalized)} of {len(source_normalized)} "
             "source characters; the redline may have dropped source content."
         ]
-    source_paragraphs = _source_paragraphs_from_text(source_text)
+    source_paragraphs = _apply_clean_fills_to_source_paragraphs(
+        _source_paragraphs_from_text(source_text), clean_fills
+    )
     if source_paragraphs:
         expected_accepted_paragraphs, expected_errors = _expected_accepted_source_paragraphs(
             source_paragraphs,
@@ -246,6 +255,37 @@ def _source_paragraphs_from_text(source_text: str) -> List[str]:
         for paragraph in re.split(r"\n\s*\n+", str(source_text or ""))
         if (normalized := _normalize_export_text(paragraph))
     ]
+
+
+def _apply_clean_fills_to_source_paragraphs(source_paragraphs: List[str], clean_fills: object) -> List[str]:
+    """Apply clean-mode fills (``find`` -> ``value``) to the expected source blocks.
+
+    Clean fills are baked into the exported base document but are not redline edits,
+    so the expected accepted-paragraph sequence must reflect them or every filled
+    paragraph reads as a divergence. A fill targets one block by its review
+    ``paragraph_id`` (``p<N>`` == the 1-based block ordinal, the same key the redline
+    expected-sequence uses); the value is normalized to match the export's normalized
+    accepted text.
+    """
+    if not isinstance(clean_fills, list) or not clean_fills:
+        return source_paragraphs
+    filled = list(source_paragraphs)
+    for fill in clean_fills:
+        if not isinstance(fill, dict):
+            continue
+        index = _fill_source_index(fill.get("paragraph_id"))
+        find = fill.get("find")
+        value = fill.get("value")
+        if index is None or not isinstance(find, str) or not find or not isinstance(value, str):
+            continue
+        if 1 <= index <= len(filled):
+            filled[index - 1] = _normalize_export_text(filled[index - 1].replace(find, value))
+    return filled
+
+
+def _fill_source_index(paragraph_id: object) -> int | None:
+    match = re.match(r"^p(\d+)$", str(paragraph_id or "").strip())
+    return int(match.group(1)) if match else None
 
 
 def _expected_accepted_source_paragraphs(
