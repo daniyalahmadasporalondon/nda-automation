@@ -64,6 +64,7 @@ const tests = [
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
+  ["surfaces generation self-check warnings while staging the artifact", testDraftIntakeGenerateSelfCheckWarning],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
@@ -2482,6 +2483,68 @@ async function testDraftIntakeGenerateNda(page) {
 
   await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/matters/mat_generated_1/source");
+}
+
+async function testDraftIntakeGenerateSelfCheckWarning(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  await page.route("**/api/generate-nda", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter_id: "mat_generated_warning",
+        artifact_id: "art_generated_warning",
+        status: "generated",
+        download_url: "/api/matters/mat_generated_warning/source",
+        self_check: {
+          dynamic_failures: [{ clause_id: "term", reason: "Term did not match Playbook preference." }],
+          native_failures: [],
+          overall_status: "check",
+          passed: false,
+        },
+        manifest: {
+          entity_id: "aspora_technology",
+          governing_law_value: "England and Wales",
+          term_years: 2,
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters/mat_generated_warning/source", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      body: "PK generated-warning-docx-bytes",
+    });
+  });
+
+  await page.locator("#generatorTab").click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
+  );
+  await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
+  await page.locator("#draftIntakeCounterpartyName").fill("Warning Corp");
+  await page.locator("#draftIntakeCounterpartyEmail").fill("legal@warning.example");
+  await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
+  await page.locator("#draftIntakeGenerateButton").click();
+
+  await waitForText(page, "#draftIntakeStatus", "self-check flagged it");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "Warning Corp");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales");
+  assert.equal(await page.locator("#draftIntakeStatus").evaluate((node) => node.classList.contains("error")), true);
+  await page.waitForSelector("#draftIntakeDownloadButton:not([disabled])");
+  await page.waitForSelector("#draftIntakeSendButton:not([disabled])");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#draftIntakeDownloadButton").click(),
+  ]);
+  assert.match(download.url(), /\/api\/matters\/mat_generated_warning\/source$/);
+
+  await page.unroute("**/api/generate-nda");
+  await page.unroute("**/api/matters/mat_generated_warning/source");
 }
 
 // When the endpoint is not deployed on this base (404 — generation lives on
@@ -6424,6 +6487,7 @@ async function testDashboardSmartSearchV2(page) {
 
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
+  await page.waitForFunction(() => typeof state !== "undefined" && Array.isArray(state.matters) && state.matters.length === 3);
 
   // --- Natural-language query -> AI-translated filter applied to real matters ---
   await page.fill("#dashboardSearchInput", "anything stuck in review for more than a week");
