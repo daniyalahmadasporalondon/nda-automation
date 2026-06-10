@@ -1937,7 +1937,7 @@ class ServerTests(unittest.TestCase):
         # The polled status endpoint must NOT rasterize synchronously on the
         # request thread: with a renderer that blocks past the grace window, the
         # poll returns a non-blocking "rendering" status instead of hanging.
-        from nda_automation.routes import matters as matters_routes
+        from nda_automation import matter_render_job
 
         block_render = threading.Event()
 
@@ -1964,7 +1964,7 @@ class ServerTests(unittest.TestCase):
                 patches = self.matter_store_patches(data_dir)
                 with patches[0], patches[1], patches[2], \
                         patch.object(document_rendering, "PyMuPdfPageRenderer", BlockingPdfPageRenderer), \
-                        patch.object(matters_routes, "RENDER_STATUS_POLL_GRACE_SECONDS", 0.1):
+                        patch.object(matter_render_job, "DEFAULT_RENDER_STATUS_POLL_GRACE_SECONDS", 0.1):
                     document_rendering.matter_render_coordinator().reset_for_tests()
                     matter = matter_store.create_matter(
                         source_filename="Slow NDA.pdf",

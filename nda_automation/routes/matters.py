@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 import binascii
 from pathlib import Path
-from urllib.parse import unquote
 
-from .. import document_rendering, gmail_integration, matter_store, matter_summary, matter_view, telemetry
+from .. import document_rendering, gmail_integration, matter_render_job, matter_store, matter_summary, matter_view, telemetry
 from ..ai_assessor import AIAssessorError
 from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
@@ -29,12 +28,6 @@ from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraph
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
 from .common import parse_matter_id, request_owner_user_id
-
-# Max seconds the render-status poll waits on the background render before
-# returning a non-blocking "rendering" status. A fast render (small NDA) still
-# resolves in one poll; a large NDA's rasterization stays on the worker thread
-# and the client polls again instead of holding the request thread.
-RENDER_STATUS_POLL_GRACE_SECONDS = 5.0
 
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
@@ -268,461 +261,55 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
 
 def handle_matter_render_status(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/render-status")
-    resolved = _resolve_matter_source(handler, matter_id, send_body=send_body)
-    if resolved is None:
-        return
-    matter, source_path, owner_user_id = resolved
-
-    # Fast path: serve straight from cache WITHOUT converting or rasterizing on
-    # the polled request thread.
-    rendered = document_rendering.peek_rendered_document(
-        source_path,
-        content_type=_source_document_content_type(source_path),
-        owner_user_id=owner_user_id,
-    )
-    page_manifest = document_rendering.peek_page_image_manifest(rendered) if rendered is not None else None
-    if rendered is not None and page_manifest is not None:
-        handler._send_json(
-            {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
-            send_body=send_body,
+    try:
+        payload = matter_render_job.render_status_payload(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
         )
+    except matter_render_job.MatterRenderJobError as error:
+        _send_render_job_error(handler, error, send_body=send_body)
         return
-
-    # Not fully cached: kick off (or attach to) a single background render for
-    # this matter. Concurrent pollers de-dup onto the same job rather than each
-    # launching a render. The rasterization runs on the worker thread, never on
-    # this request thread; we wait at most a short grace for a quick render to
-    # finish (so small NDAs still resolve in one poll) and otherwise return a
-    # non-blocking "rendering" status for the client to poll again.
-    job = _ensure_background_matter_render(matter, source_path, owner_user_id)
-    if job is not None:
-        job.done.wait(timeout=RENDER_STATUS_POLL_GRACE_SECONDS)
-        if job.is_finished() and isinstance(job.result, tuple):
-            rendered, page_manifest = job.result
-            # Surface the terminal outcome — ready OR a render error such as
-            # converter_unavailable / unsupported — not a perpetual "rendering".
-            handler._send_json(
-                {"document_render": _public_document_render(matter_id or "", rendered, matter=matter, page_manifest=page_manifest)},
-                send_body=send_body,
-            )
-            return
-    handler._send_json(
-        {"document_render": _rendering_in_progress_payload(matter_id or "", source_path)},
-        send_body=send_body,
-    )
+    handler._send_json(payload, send_body=send_body)
 
 
 def handle_matter_render_pdf(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/render-pdf")
-    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
-    if render_result is None:
+    try:
+        result = matter_render_job.render_pdf_file(matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_render_job.MatterRenderJobError as error:
+        _send_render_job_error(handler, error, send_body=send_body)
         return
-    matter, rendered = render_result
-    if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
-        error = rendered.error_message or "Rendered PDF is not available for this matter."
-        handler._send_json(
-            {
-                "error": error,
-                "document_render": _public_document_render(matter_id or "", rendered, matter=matter),
-            },
-            status=409,
-            send_body=send_body,
-        )
-        return
-    handler._send_file(rendered.pdf_path, content_type=document_rendering.PDF_CONTENT_TYPE, send_body=send_body)
+    handler._send_file(result.path, content_type=result.content_type, send_body=send_body)
 
 
 def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> None:
-    parsed = _parse_matter_render_page_path(path)
+    parsed = matter_render_job.parse_matter_render_page_path(path)
     if parsed is None:
         handler._send_json({"error": "Page image not found."}, status=404, send_body=send_body)
         return
     matter_id, page_number = parsed
-    render_result = _matter_render_result(handler, matter_id, send_body=send_body)
-    if render_result is None:
-        return
-    matter, rendered = render_result
-    if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
-        error = rendered.error_message or "Rendered PDF is not available for this matter."
-        handler._send_json(
-            {
-                "error": error,
-                "document_render": _public_document_render(matter_id, rendered, matter=matter),
-            },
-            status=409,
-            send_body=send_body,
-        )
-        return
-    page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
-    if page_manifest.status != document_rendering.READY_STATUS:
-        handler._send_json(
-            {
-                "error": page_manifest.error_message or "Rendered page image is not available for this matter.",
-                "document_render": _public_document_render(matter_id, rendered, matter=matter, page_manifest=page_manifest),
-            },
-            status=409,
-            send_body=send_body,
-        )
-        return
-    page = document_rendering.page_image_for_page_number(page_manifest, page_number)
-    if page is None or page.image_path is None:
-        handler._send_json(
-            {
-                "error": "Page image not found.",
-                "document_render": _public_document_render(matter_id, rendered, matter=matter, page_manifest=page_manifest),
-            },
-            status=404,
-            send_body=send_body,
-        )
-        return
-    handler._send_file(page.image_path, content_type=document_rendering.PAGE_IMAGE_CONTENT_TYPE, send_body=send_body)
-
-
-def _resolve_matter_source(
-    handler,
-    matter_id: str | None,
-    *,
-    send_body: bool,
-) -> tuple[dict, Path, str] | None:
-    """Ownership-gated resolution of a matter's source document, no rendering.
-
-    Returns (matter, source_path, owner_user_id) or None after emitting the
-    appropriate error response. Cheap enough to run on the polled endpoint.
-    """
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return None
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
-        return None
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return None
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None:
-        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
-        return None
-    return matter, source_path, str(matter.get("owner_user_id") or "")
-
-
-def _ensure_background_matter_render(
-    matter: dict, source_path: Path, owner_user_id: str
-) -> document_rendering.RenderJob | None:
-    """Schedule a single background render for this matter (in-flight de-dup).
-
-    The expensive convert + rasterize runs in a worker thread so the polled
-    status endpoint never blocks on it. The coordinator guarantees one render
-    per matter at a time; concurrent pollers attach to the running job. Returns
-    the RenderJob so the caller can briefly wait on it, or None if the matter
-    has no usable id.
-    """
-    matter_id = str(matter.get("id") or "")
-    if not matter_id:
-        return None
-    content_type = _source_document_content_type(source_path)
-
-    def _render():
-        # Full pipeline: source -> PDF (cache) -> page-image manifest (rasterize).
-        # Returns (rendered, manifest) so the poller can surface the terminal
-        # status (ready OR a render error like converter_unavailable) without
-        # re-running the work. DocxConverterBusy is transient backpressure: a
-        # later poll reschedules the render, so report None and let it retry.
-        try:
-            rendered = document_rendering.render_source_path_to_pdf(
-                source_path,
-                content_type=content_type,
-                owner_user_id=owner_user_id,
-            )
-        except document_rendering.DocxConverterBusy:
-            return None
-        manifest = None
-        if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
-            manifest = document_rendering.render_pdf_page_image_manifest(rendered)
-        return rendered, manifest
-
-    return document_rendering.matter_render_coordinator().ensure_in_flight(matter_id, _render)
-
-
-def _rendering_in_progress_payload(matter_id: str, source_path: Path) -> dict:
-    """Non-blocking 'rendering' status for a matter whose render is in flight."""
-    source_kind = "pdf" if source_path.suffix.lower() == ".pdf" else "docx"
-    return {
-        "status": document_rendering.RENDERING_STATUS,
-        "source_kind": source_kind,
-        "source_label": "Original PDF" if source_kind == "pdf" else "Converted DOCX",
-        "cached": False,
-        "matter_id": matter_id,
-    }
-
-
-def _matter_render_result(
-    handler,
-    matter_id: str | None,
-    *,
-    send_body: bool,
-) -> tuple[dict, document_rendering.RenderedDocument] | None:
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return None
-    try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
-        return None
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return None
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None:
-        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
-        return None
-    try:
-        rendered = document_rendering.render_source_path_to_pdf(
-            source_path,
-            content_type=_source_document_content_type(source_path),
-            owner_user_id=str(matter.get("owner_user_id") or ""),
+        result = matter_render_job.render_page_image_file(
+            matter_id,
+            page_number,
+            owner_user_id=request_owner_user_id(handler),
         )
-    except document_rendering.DocxConverterBusy as error:
-        # Conversion capacity is saturated; shed load with retryable backpressure
-        # instead of queueing another heavyweight soffice process.
+    except matter_render_job.MatterRenderJobError as error:
+        _send_render_job_error(handler, error, send_body=send_body)
+        return
+    handler._send_file(result.path, content_type=result.content_type, send_body=send_body)
+
+
+def _send_render_job_error(handler, error: matter_render_job.MatterRenderJobError, *, send_body: bool) -> None:
+    if error.headers:
         handler._send_json(
-            {"error": error.message},
-            status=503,
-            headers={"Retry-After": "5"},
+            error.payload,
+            status=error.status,
+            headers=error.headers,
             send_body=send_body,
         )
-        return None
-    return matter, rendered
-
-
-def _source_document_content_type(source_path: Path) -> str:
-    suffix = source_path.suffix.lower()
-    if suffix == ".pdf":
-        return document_rendering.PDF_CONTENT_TYPE
-    if suffix == ".docx":
-        return document_rendering.DOCX_CONTENT_TYPE
-    return ""
-
-
-def _parse_matter_render_page_path(path: str) -> tuple[str, int] | None:
-    prefix = "/api/matters/"
-    marker = "/render-page/"
-    if not path.startswith(prefix) or marker not in path:
-        return None
-    raw_matter_id, raw_page_number = path.removeprefix(prefix).split(marker, 1)
-    matter_id = unquote(raw_matter_id).strip("/")
-    if not matter_id or "/" in matter_id:
-        return None
-    page_number_value = raw_page_number.strip("/")
-    if not page_number_value.isdigit():
-        return None
-    page_number = int(page_number_value)
-    if page_number < 1:
-        return None
-    return matter_id, page_number
-
-
-def _public_document_render(
-    matter_id: str,
-    rendered: document_rendering.RenderedDocument,
-    *,
-    matter: dict | None = None,
-    page_manifest: document_rendering.RenderedPdfPageImageManifest | None = None,
-) -> dict:
-    payload = {
-        "status": rendered.status,
-        "source_kind": rendered.source_kind,
-        "source_label": "Original PDF" if rendered.source_kind == "pdf" else "Converted DOCX",
-        "cached": rendered.cached,
-        "cache_key": rendered.cache_key,
-    }
-    if rendered.status == document_rendering.READY_STATUS and rendered.pdf_path is not None:
-        payload["pdf_url"] = f"/api/matters/{matter_id}/render-pdf"
-        if page_manifest is None:
-            page_manifest = document_rendering.render_pdf_page_image_manifest(rendered)
-        _attach_public_page_image_manifest(payload, matter_id, page_manifest)
-        if matter is not None:
-            payload["document_overlay"] = _public_document_overlay(matter, matter_id, page_manifest)
-    if rendered.error_code:
-        payload["error"] = rendered.error_message
-        payload["error_code"] = rendered.error_code
-    return payload
-
-
-def _attach_public_page_image_manifest(
-    payload: dict,
-    matter_id: str,
-    page_manifest: document_rendering.RenderedPdfPageImageManifest,
-) -> None:
-    public_page_images = _public_page_image_manifest(matter_id, page_manifest)
-    payload["page_images"] = public_page_images
-    payload["page_image_status"] = page_manifest.status
-    payload["pages"] = public_page_images["pages"]
-    if page_manifest.dpi is not None:
-        payload["dpi"] = page_manifest.dpi
-    if page_manifest.scale is not None:
-        payload["scale"] = page_manifest.scale
-    if page_manifest.error_code:
-        payload["page_image_error"] = page_manifest.error_message
-        payload["page_image_error_code"] = page_manifest.error_code
-
-
-def _public_page_image_manifest(
-    matter_id: str,
-    page_manifest: document_rendering.RenderedPdfPageImageManifest,
-) -> dict:
-    payload = {
-        "status": page_manifest.status,
-        "cached": page_manifest.cached,
-        "pages": [_public_page_image(matter_id, page) for page in page_manifest.pages],
-    }
-    if page_manifest.dpi is not None:
-        payload["dpi"] = page_manifest.dpi
-    if page_manifest.scale is not None:
-        payload["scale"] = page_manifest.scale
-    if page_manifest.error_code:
-        payload["error"] = page_manifest.error_message
-        payload["error_code"] = page_manifest.error_code
-    return payload
-
-
-def _public_page_image(matter_id: str, page: document_rendering.RenderedPdfPageImage) -> dict:
-    payload = {
-        "page_number": page.page_number,
-        "image_url": f"/api/matters/{matter_id}/render-page/{page.page_number}",
-    }
-    if page.width is not None:
-        payload["width"] = page.width
-    if page.height is not None:
-        payload["height"] = page.height
-    if page.dpi is not None:
-        payload["dpi"] = page.dpi
-    if page.scale is not None:
-        payload["scale"] = page.scale
-    return payload
-
-
-def _public_document_overlay(
-    matter: dict,
-    matter_id: str,
-    page_manifest: document_rendering.RenderedPdfPageImageManifest,
-) -> dict:
-    public_pages = [_public_page_image(matter_id, page) for page in page_manifest.pages]
-    if page_manifest.status != document_rendering.READY_STATUS:
-        return {
-            "version": 1,
-            "status": "unavailable",
-            "precision": "none",
-            "fallback_mode": "text_dom_scroll",
-            "pages": public_pages,
-            "anchors": [],
-            "warnings": [page_manifest.error_message or "Page image metadata is unavailable."],
-        }
-
-    review_result = matter.get("review_result") if isinstance(matter.get("review_result"), dict) else {}
-    paragraphs = review_result.get("paragraphs", []) if isinstance(review_result, dict) else []
-    clauses = review_result.get("clauses", []) if isinstance(review_result, dict) else []
-    redlines = review_result.get("redline_edits", []) if isinstance(review_result, dict) else []
-    page_numbers = {page.page_number for page in page_manifest.pages}
-    paragraphs_by_id = {
-        str(paragraph.get("id")): paragraph
-        for paragraph in paragraphs
-        if isinstance(paragraph, dict) and paragraph.get("id") is not None
-    }
-    anchors: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
-
-    for clause in clauses if isinstance(clauses, list) else []:
-        if not isinstance(clause, dict):
-            continue
-        clause_id = str(clause.get("id") or "")
-        matched_paragraph_ids = clause.get("matched_paragraph_ids", [])
-        if not isinstance(matched_paragraph_ids, list):
-            continue
-        for paragraph_id in matched_paragraph_ids:
-            paragraph_id = str(paragraph_id)
-            anchor = _page_level_overlay_anchor(
-                paragraphs_by_id.get(paragraph_id),
-                target_type="evidence",
-                clause_id=clause_id,
-                paragraph_id=paragraph_id,
-                page_numbers=page_numbers,
-            )
-            if anchor is None:
-                continue
-            key = ("evidence", clause_id, paragraph_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            anchors.append(anchor)
-
-    for redline in redlines if isinstance(redlines, list) else []:
-        if not isinstance(redline, dict):
-            continue
-        paragraph_id = str(redline.get("paragraph_id") or "")
-        redline_id = str(redline.get("id") or "")
-        anchor = _page_level_overlay_anchor(
-            paragraphs_by_id.get(paragraph_id),
-            target_type="redline",
-            clause_id=str(redline.get("clause_id") or ""),
-            paragraph_id=paragraph_id,
-            page_numbers=page_numbers,
-            redline_id=redline_id,
-        )
-        if anchor is None:
-            continue
-        key = ("redline", redline_id, paragraph_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        anchors.append(anchor)
-
-    warnings: list[str] = []
-    if not anchors:
-        warnings.append("No page-level evidence anchors were available for this review.")
-    return {
-        "version": 1,
-        "status": "partial" if anchors else "unavailable",
-        "precision": "page" if anchors else "none",
-        "fallback_mode": "text_dom_scroll",
-        "pages": public_pages,
-        "anchors": anchors,
-        "warnings": warnings,
-    }
-
-
-def _page_level_overlay_anchor(
-    paragraph: dict | None,
-    *,
-    target_type: str,
-    clause_id: str,
-    paragraph_id: str,
-    page_numbers: set[int],
-    redline_id: str = "",
-) -> dict | None:
-    if not isinstance(paragraph, dict):
-        return None
-    page_number = paragraph.get("page_number")
-    if not isinstance(page_number, int) or page_number not in page_numbers:
-        return None
-    anchor = {
-        "target_type": target_type,
-        "clause_id": clause_id,
-        "paragraph_id": paragraph_id,
-        "page_number": page_number,
-        "boxes": [],
-        "confidence": 0.6,
-        "confidence_reason": "Page-level match only; no verified text coordinates.",
-        "fallback": {
-            "mode": "text_dom_scroll",
-            "selector": f"[data-paragraph-id=\"{paragraph_id}\"]",
-        },
-    }
-    if redline_id:
-        anchor["redline_id"] = redline_id
-    return anchor
+        return
+    handler._send_json(error.payload, status=error.status, send_body=send_body)
 
 
 def handle_matter_upload(handler, *, create_matter_from_document_func=create_matter_from_document) -> None:
