@@ -120,6 +120,34 @@ class SendDocumentTests(unittest.TestCase):
         self.assertEqual(stored[0]["last_outbound_message_id"], "msg_123")
         self.assertEqual(stored[0]["last_outbound_to"], "counterparty@example.com")
 
+    def test_send_document_sends_before_persisting_sent_matter_and_records_timeline(self):
+        matter_count_seen_during_send = []
+
+        def send_email(*_args, **_kwargs):
+            matter_count_seen_during_send.append(len(matter_store.list_matters("")))
+            return dict(_SENT_STUB)
+
+        handler = _FakeHandler(self._payload())
+        with (
+            patch.object(send_document_routes, "gmail_role_enabled", return_value=True),
+            patch.object(gmail_integration, "send_redline_email", side_effect=send_email),
+        ):
+            send_document_routes.handle_send_document(handler)
+
+        self.assertEqual(handler.status, 201, handler.response)
+        self.assertEqual(matter_count_seen_during_send, [0])
+        stored = matter_store.list_matters("")
+        self.assertEqual(len(stored), 1)
+        matter = stored[0]
+        self.assertEqual(matter["board_column"], "sent")
+        self.assertEqual(matter["last_outbound_account"], "legal@aspora.com")
+        self.assertEqual(matter["last_outbound_message_id"], "msg_123")
+        self.assertEqual(matter["last_outbound_subject"], "Engagement Letter")
+        timeline = matter.get("matter_timeline") or []
+        self.assertEqual([event.get("type") for event in timeline], ["sent"])
+        self.assertEqual(timeline[0].get("actor"), "legal@aspora.com")
+        self.assertEqual(timeline[0].get("detail"), "counterparty@example.com")
+
     def test_send_document_defaults_subject_to_filename_stem(self):
         handler, send_email = self._send(self._payload(subject=""))
 

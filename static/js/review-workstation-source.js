@@ -13,12 +13,12 @@ function manualExportRedlines() {
       // keeps its prior behaviour (no redline) rather than becoming a replace.
       if (originalText === replacementText) {
         const formatRedline = manualParagraphRedline(paragraph, baseline);
-        return formatRedline?.action === "format_paragraph" ? formatRedline : null;
+        return formatRedline?.action === redlineFormatParagraphAction() ? formatRedline : null;
       }
       const isDelete = !replacementText;
       const redline = {
         id: `manual-${paragraph.id}`,
-        clause_id: "manual_viewer_edit",
+        clause_id: manualViewerEditClauseId(),
         status: "proposed",
         action: isDelete ? REDLINE_DELETE_PARAGRAPH : REDLINE_REPLACE_PARAGRAPH,
         action_label: isDelete ? "Remove paragraph" : "Replace paragraph",

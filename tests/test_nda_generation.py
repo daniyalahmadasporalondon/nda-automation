@@ -10,6 +10,7 @@ zero failures, via the deterministic engine).
 from __future__ import annotations
 
 import datetime
+from copy import deepcopy
 
 import pytest
 from docx import Document
@@ -17,6 +18,7 @@ from docx import Document
 from nda_automation import nda_generation as gen
 from nda_automation.checker import load_playbook, review_nda
 from nda_automation.docx_text import extract_docx_text
+from nda_automation.playbook_runtime import ActivePlaybookBundle
 
 
 # --------------------------------------------------------------------------- #
@@ -203,6 +205,21 @@ class TestClauseAlignment:
     def test_term_is_capped_at_playbook_max(self, playbook):
         result = _generate(playbook, intake=_intake(term_years=10))
         assert result.manifest.term_years == 5  # Playbook max_term_years
+
+    def test_generate_for_entity_uses_active_bundle_snapshot(self, playbook):
+        active_playbook = deepcopy(playbook)
+        term = next(clause for clause in active_playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 3
+        bundle = ActivePlaybookBundle(playbook=active_playbook, runtime={})
+
+        result = gen.generate_nda_for_entity(
+            "aspora_technology",
+            _intake(term_years=10),
+            playbook_bundle=bundle,
+            use_ai=False,
+        )
+
+        assert result.manifest.term_years == 3
 
     def test_term_clause_injects_survival_carveout(self, playbook):
         text = extract_docx_text(_generate(playbook).docx_bytes)

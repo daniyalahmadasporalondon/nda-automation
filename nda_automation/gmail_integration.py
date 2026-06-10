@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
 from html import unescape
 from html.parser import HTMLParser
 import hashlib
@@ -15,16 +14,8 @@ from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-import urllib.error
-import urllib.parse
-import urllib.request
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
-    fcntl = None
-
-from . import app_settings, gmail_attachment_selector, google_identity, matter_store, user_store
+from . import app_settings, gmail_attachment_selector, google_connection, matter_store, user_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -127,41 +118,17 @@ EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
-ROLE_TOKEN_ENV = {
-    "inbound": "NDA_GMAIL_INBOUND_TOKEN_PATH",
-    "outbound": "NDA_GMAIL_OUTBOUND_TOKEN_PATH",
-    "drive": "NDA_DRIVE_TOKEN_PATH",
-}
-ROLE_LOCAL_TOKEN_FILENAME = {
-    "inbound": "inbound-token.json",
-    "outbound": "outbound-token.json",
-    "drive": "drive-token.json",
-}
+ROLE_TOKEN_ENV = google_connection.ROLE_TOKEN_ENV
+ROLE_LOCAL_TOKEN_FILENAME = google_connection.ROLE_LOCAL_TOKEN_FILENAME
 GMAIL_OAUTH_REDIRECT_URI_ENV = "NDA_GMAIL_OAUTH_REDIRECT_URI"
-GMAIL_OAUTH_AUTH_URL = google_identity.GOOGLE_AUTH_URL
-GMAIL_OAUTH_TOKEN_URL = google_identity.GOOGLE_TOKEN_URL
-GMAIL_OAUTH_SCOPES_BY_ROLE = {
-    "inbound": ("https://www.googleapis.com/auth/gmail.readonly",),
-    # gmail.send authorizes sending, but resolving the outbound account (and its
-    # readiness) reads emailAddress from Gmail's users.getProfile -- which gmail.send
-    # alone does NOT permit. Add gmail.metadata, the least-privilege read scope that
-    # allows getProfile (headers/labels metadata only, never message bodies), so the
-    # outbound account resolves instead of showing "Account: Not resolved".
-    "outbound": (
-        "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/gmail.metadata",
-    ),
-    # Least-privilege Drive access: drive.file lets the app touch only the files
-    # it creates, never the user's whole Drive. Used by the Save-to-Drive flow.
-    "drive": ("https://www.googleapis.com/auth/drive.file",),
-}
-_TOKEN_LOCK = threading.RLock()
+GMAIL_OAUTH_AUTH_URL = google_connection.GOOGLE_OAUTH_AUTH_URL
+GMAIL_OAUTH_TOKEN_URL = google_connection.GOOGLE_OAUTH_TOKEN_URL
+GMAIL_OAUTH_SCOPES_BY_ROLE = google_connection.GOOGLE_OAUTH_SCOPES_BY_ROLE
 _PROFILE_CACHE_LOCK = threading.RLock()
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
 
-class GmailIntegrationError(RuntimeError):
-    pass
+GmailIntegrationError = google_connection.GoogleConnectionError
 
 
 class RecipientConfirmationError(GmailIntegrationError):
@@ -275,49 +242,24 @@ def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:
     if token["source"] == "environment":
         return (
             f"{ROLE_TOKEN_ENV[role]} points to a missing token file. "
-            f"Fix it or unset it to use data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
+            f"Fix it or unset it to use data/google/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Google connection."
         )
-    return f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Gmail account."
+    return f"Set {ROLE_TOKEN_ENV[role]} or add data/google/{ROLE_LOCAL_TOKEN_FILENAME[role]} for the {role} Google connection."
 
 
 def gmail_role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
-    if role not in ROLE_TOKEN_ENV:
-        raise GmailIntegrationError("Unsupported Gmail role.")
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    if owner_user_id:
-        local_path = _user_token_path_for_role(role, owner_user_id)
-        if local_path.is_file():
-            return {
-                "configured": True,
-                "label": f"user_gmail/{role}-token.json",
-                "source": "user_data",
-            }
-        return {
-            "configured": False,
-            "label": f"Connect Gmail for {role}",
-            "source": "missing",
+    try:
+        token_status = google_connection.role_token_status(role, owner_user_id=owner_user_id)
+    except google_connection.GoogleConnectionError as exc:
+        raise GmailIntegrationError(str(exc)) from exc
+    if not owner_user_id and token_status.get("source") == "missing":
+        token_status = {
+            **token_status,
+            "label": f"{ROLE_TOKEN_ENV[role]} or data/google/{ROLE_LOCAL_TOKEN_FILENAME[role]}",
         }
-    env_name = ROLE_TOKEN_ENV[role]
-    local_label = f"data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]}"
-    configured_path = os.environ.get(env_name)
-    if configured_path:
-        return {
-            "configured": Path(configured_path).expanduser().is_file(),
-            "label": env_name,
-            "source": "environment",
-        }
-    local_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
-    if local_path.is_file():
-        return {
-            "configured": True,
-            "label": local_label,
-            "source": "local_data",
-        }
-    return {
-        "configured": False,
-        "label": f"{env_name} or {local_label}",
-        "source": "missing",
-    }
+    if owner_user_id and token_status.get("source") == "missing":
+        token_status = {**token_status, "label": f"Connect Gmail for {role}"}
+    return token_status
 
 
 def gmail_sync_owner_user_ids() -> list[str]:
@@ -937,194 +879,59 @@ def _gmail_profile_for_role(role: str, *, service: Any | None = None, owner_user
 
 
 def _credentials_for_role(role: str, owner_user_id: str = "") -> Any:
-    token_path = _token_path_for_role(role, owner_user_id=owner_user_id)
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-    except ImportError as exc:
-        raise GmailIntegrationError("Google API packages are not installed.") from exc
-
-    with _locked_token_file(token_path):
-        if not token_path.is_file():
-            raise GmailIntegrationError(f"Set {ROLE_TOKEN_ENV[role]} for the {role} Gmail account.")
-        try:
-            credentials = Credentials.from_authorized_user_file(str(token_path))
-        except Exception as exc:
-            raise GmailIntegrationError(f"Gmail {role} token could not be read.") from exc
-
-        if credentials and credentials.expired and credentials.refresh_token:
-            try:
-                credentials.refresh(Request())
-                _write_token_json_unlocked(token_path, credentials.to_json())
-            except GmailIntegrationError:
-                raise
-            except Exception as exc:
-                raise GmailIntegrationError(f"Gmail {role} token could not refresh.") from exc
-        if not credentials or not credentials.valid:
-            raise GmailIntegrationError(f"Gmail {role} token is not valid.")
-        return credentials
-
-
-@contextmanager
-def _locked_token_file(token_path: Path):
-    with _TOKEN_LOCK:
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = token_path.with_name(f".{token_path.name}.lock")
-        with lock_path.open("a+", encoding="utf-8") as lock_file:
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return google_connection.credentials_for_role(role, owner_user_id=owner_user_id, integration_label="Gmail")
 
 
 def _write_token_atomically(token_path: Path, token_json: str) -> None:
-    with _locked_token_file(token_path):
-        _write_token_json_unlocked(token_path, token_json)
+    with _gmail_fsync_parent_directory_patch():
+        google_connection.write_token_atomically(token_path, token_json)
 
 
 def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
-    temporary_path = token_path.with_name(f".{token_path.name}.tmp")
-    try:
-        with temporary_path.open("w", encoding="utf-8") as handle:
-            handle.write(token_json)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, token_path)
-        try:
-            os.chmod(token_path, 0o600)
-        except OSError:
-            pass
-        fsync_parent_directory(token_path)
-    except OSError as exc:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise GmailIntegrationError("Gmail token could not be saved.") from exc
+    with _gmail_fsync_parent_directory_patch():
+        google_connection.write_token_json_unlocked(token_path, token_json)
+
+
+def _gmail_fsync_parent_directory_patch():
+    class _Patch:
+        def __enter__(self):
+            self._original = google_connection.fsync_parent_directory
+            google_connection.fsync_parent_directory = fsync_parent_directory
+
+        def __exit__(self, exc_type, exc, traceback):
+            google_connection.fsync_parent_directory = self._original
+            return False
+
+    return _Patch()
 
 
 def _token_path_for_role(role: str, owner_user_id: str = "") -> Path:
-    if role not in ROLE_TOKEN_ENV:
-        raise GmailIntegrationError("Unsupported Gmail role.")
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    if owner_user_id:
-        return _user_token_path_for_role(role, owner_user_id)
-    configured_path = os.environ.get(ROLE_TOKEN_ENV[role])
-    if configured_path:
-        return Path(configured_path).expanduser()
-    local_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
-    if local_path.is_file():
-        return local_path
-    raise GmailIntegrationError(
-        f"Set {ROLE_TOKEN_ENV[role]} or add data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]} "
-        f"for the {role} Gmail account."
-    )
+    return google_connection.token_path_for_role(role, owner_user_id=owner_user_id, integration_label="Gmail")
 
 
 def build_gmail_authorization_url(
     *, redirect_uri: str, state: str, role: str = "all", login_hint: str = ""
 ) -> str:
-    if not google_identity.google_oauth_configured():
-        raise GmailIntegrationError("Google OAuth is not configured.")
-    params = {
-        "access_type": "offline",
-        "client_id": google_identity.google_client_id(),
-        "include_granted_scopes": "true",
-        # `select_account` forces Google to show the account chooser every time, so
-        # the operator can pick the right account (e.g. work vs personal) instead of
-        # Google silently reusing the browser's active session. `consent` keeps the
-        # refresh token coming back. Without `select_account`, connecting Drive can
-        # land on whatever Google account the browser happens to be signed into.
-        "prompt": "select_account consent",
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(_gmail_oauth_scopes_for_role(role)),
-        "state": state,
-    }
-    # Pre-select the signed-in app account so the chooser highlights the right one.
-    if login_hint:
-        params["login_hint"] = login_hint
-    query = urllib.parse.urlencode(params)
-    return f"{GMAIL_OAUTH_AUTH_URL}?{query}"
+    return google_connection.build_authorization_url(
+        redirect_uri=redirect_uri,
+        role=role,
+        state=state,
+        login_hint=login_hint,
+    )
 
 
 def exchange_gmail_oauth_code(code: str, *, redirect_uri: str) -> dict[str, Any]:
-    if not google_identity.google_oauth_configured():
-        raise GmailIntegrationError("Google OAuth is not configured.")
-    body = urllib.parse.urlencode({
-        "code": code,
-        "client_id": google_identity.google_client_id(),
-        "client_secret": google_identity.google_client_secret(),
-        "grant_type": "authorization_code",
-        "redirect_uri": redirect_uri,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        GMAIL_OAUTH_TOKEN_URL,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise GmailIntegrationError("Gmail OAuth token exchange failed.") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise GmailIntegrationError("Gmail OAuth token exchange failed.") from exc
-    if not isinstance(payload, dict):
-        raise GmailIntegrationError("Gmail OAuth token exchange failed.")
-    return payload
+    return google_connection.exchange_oauth_code(code, redirect_uri=redirect_uri)
 
 
 def save_user_gmail_oauth_token(owner_user_id: str, token_response: dict[str, Any], *, role: str = "all") -> list[str]:
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    if not owner_user_id:
-        raise GmailIntegrationError("A signed-in user is required to connect Gmail.")
-    access_token = str(token_response.get("access_token") or "").strip()
-    if not access_token:
-        raise GmailIntegrationError("Gmail OAuth response did not include an access token.")
-    saved_roles = _gmail_oauth_roles_for_role(role)
-    token_payloads: list[tuple[str, Path, dict[str, Any]]] = []
-    for save_role in saved_roles:
-        token_path = _user_token_path_for_role(save_role, owner_user_id)
-        existing = _read_token_json(token_path)
-        refresh_token = str(token_response.get("refresh_token") or existing.get("refresh_token") or "").strip()
-        if not refresh_token:
-            raise GmailIntegrationError("Google did not return a Gmail refresh token. Reconnect Gmail and approve offline access.")
-        token_payloads.append((save_role, token_path, {
-            "client_id": google_identity.google_client_id(),
-            "client_secret": google_identity.google_client_secret(),
-            "refresh_token": refresh_token,
-            "scopes": list(_gmail_oauth_scopes_for_role(save_role)),
-            "token": access_token,
-            "token_uri": GMAIL_OAUTH_TOKEN_URL,
-        }))
-    saved: list[str] = []
-    for save_role, token_path, token_payload in token_payloads:
-        _write_token_atomically(token_path, json.dumps(token_payload, indent=2) + "\n")
-        saved.append(save_role)
+    saved = google_connection.save_user_oauth_token(owner_user_id, token_response, role=role)
     _clear_profile_cache_for_owner(owner_user_id)
     return saved
 
 
 def disconnect_user_gmail(owner_user_id: str, *, role: str = "all") -> int:
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    if not owner_user_id:
-        raise GmailIntegrationError("A signed-in user is required to disconnect Gmail.")
-    removed = 0
-    for disconnect_role in _gmail_oauth_roles_for_role(role):
-        token_path = _user_token_path_for_role(disconnect_role, owner_user_id)
-        try:
-            token_path.unlink()
-            fsync_parent_directory(token_path)
-            removed += 1
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise GmailIntegrationError("Gmail token could not be removed.") from exc
+    removed = google_connection.disconnect_user_oauth(owner_user_id, role=role)
     _clear_profile_cache_for_owner(owner_user_id)
     return removed
 
@@ -1134,47 +941,23 @@ def configured_gmail_redirect_uri() -> str:
 
 
 def _gmail_oauth_scopes_for_role(role: str) -> tuple[str, ...]:
-    roles = _gmail_oauth_roles_for_role(role)
-    scopes: list[str] = []
-    for role_name in roles:
-        for scope in GMAIL_OAUTH_SCOPES_BY_ROLE[role_name]:
-            if scope not in scopes:
-                scopes.append(scope)
-    return tuple(scopes)
+    return google_connection.oauth_scopes_for_role(role)
 
 
 def _gmail_oauth_roles_for_role(role: str) -> tuple[str, ...]:
-    normalized_role = str(role or "all").strip().lower()
-    if normalized_role in {"all", "both"}:
-        # One Google connection covers everything: a single consent grants Gmail
-        # (readonly + send + metadata) AND Drive (drive.file), and saves all three
-        # role tokens. So "Connect Gmail" connects Drive in the same click.
-        return ("inbound", "outbound", "drive")
-    if normalized_role in GMAIL_OAUTH_SCOPES_BY_ROLE:
-        return (normalized_role,)
-    raise GmailIntegrationError("Unsupported Gmail OAuth role.")
+    return google_connection.oauth_roles_for_role(role)
 
 
 def _user_token_path_for_role(role: str, owner_user_id: str) -> Path:
-    owner_segment = _clean_user_token_segment(owner_user_id)
-    if owner_segment in {"", ".", ".."}:
-        raise GmailIntegrationError("A valid signed-in user is required to store Gmail tokens.")
-    return matter_store.DATA_DIR / "users" / "gmail" / owner_segment / ROLE_LOCAL_TOKEN_FILENAME[role]
+    return google_connection.user_token_path_for_role(role, owner_user_id, integration_label="Gmail")
 
 
 def _clean_user_token_segment(value: object) -> str:
-    return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
+    return google_connection.clean_user_token_segment(value)
 
 
 def _read_token_json(token_path: Path) -> dict[str, Any]:
-    if not token_path.is_file():
-        return {}
-    try:
-        with token_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return google_connection.read_token_json(token_path)
 
 
 def _profile_cache_key(role: str, owner_user_id: str = "") -> str:

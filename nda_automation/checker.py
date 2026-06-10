@@ -4,9 +4,8 @@ import json
 import re
 import string
 from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping
 
 from .redline_actions import (
     REDLINE_ACTION_LABELS,
@@ -67,6 +66,7 @@ from .decision_arbiter import (
     arbitrate,
     deterministic_decision,
 )
+from .review_result_contract import build_review_result, review_result_clause_counts
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
@@ -150,6 +150,7 @@ def review_nda(
     text: str,
     paragraphs: List[Paragraph] | None = None,
     *,
+    playbook: Mapping[str, Any] | None = None,
     semantic_evaluator: SemanticEvaluateFn | None = None,
     ai_reviewer: AIReviewFn | None = None,
     ai_verifier: VerifierFn | None = None,
@@ -165,10 +166,10 @@ def review_nda(
         document_paragraphs = align_document_paragraphs(paragraphs, source_text)
 
     normalized = _normalize(source_text)
-    playbook = load_playbook()
-    _validate_playbook_contract(playbook)
-    playbook = normalize_playbook_policy(playbook)
-    clauses_by_id = {clause["id"]: clause for clause in playbook["clauses"]}
+    review_playbook = dict(playbook) if isinstance(playbook, Mapping) else load_playbook()
+    _validate_playbook_contract(review_playbook)
+    review_playbook = normalize_playbook_policy(review_playbook)
+    clauses_by_id = {clause["id"]: clause for clause in review_playbook["clauses"]}
 
     contract_structure = build_contract_structure(document_paragraphs)
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
@@ -226,48 +227,40 @@ def review_nda(
     # Re-finalize the derived structures (structured evidence + audit trace) for any
     # clause the verifier rewrote, so the evidence-trust contract still holds.
     _refinalize_verifier_changes(clause_results, ai_verifier_review)
-    failed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_FAIL]
-    review = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_REVIEW]
-    passed = [clause for clause in clause_results if clause.get("decision") == CLAUSE_DECISION_PASS]
+    counts = review_result_clause_counts(clause_results)
     redline_edits = _build_redline_edits(clause_results, document_paragraphs)
     # Explain WHY each proposed redline exists, drawn from the Playbook clause and
     # the clause's grounded citation. Only clauses that produced an edit get one.
     attach_redline_rationales(clause_results, redline_edits, playbook_clauses_by_id=clauses_by_id)
     review_state = aggregate_review_state(
         clause_results,
-        pass_count=len(passed),
-        review_count=len(review),
-        check_count=len(failed),
+        pass_count=counts["passed"],
+        review_count=counts["needs_review"],
+        check_count=counts["failed"],
     )
 
-    result = {
-        "review_engine_version": REVIEW_ENGINE_VERSION,
-        "overall_status": review_state["overall_status"],
-        "review_state": review_state,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "requirements_passed": len(passed),
-        "requirements_failed": len(failed),
-        "requirements_needs_review": len(review),
-        "paragraphs": document_paragraphs,
-        "contract_structure": contract_structure,
-        "reference_resolver": reference_resolver,
-        "concept_classifier": concept_classifier,
-        "semantic_crosscheck": semantic_crosscheck,
-        "ai_review": ai_review,
-        "ai_verifier": ai_verifier_review,
-        "clauses": clause_results,
-        "redline_edits": redline_edits,
-        # Additive coverage metadata: document sections that no Playbook clause
-        # matched, surfaced so a reviewer sees full section coverage instead of
-        # only the handful of clauses the Playbook checks. Purely informational --
-        # it does not touch clause results, statuses, counts, or the approve gate.
-        "unmatched_sections": compute_unmatched_sections(contract_structure, clause_results),
-    }
-    evidence_errors = validate_clause_evidence_trust(result, source_text)
-    if evidence_errors:
-        raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
-    result["evidence_trust"] = {"status": "verified", "errors": []}
-    return result
+    return build_review_result(
+        source_text=source_text,
+        review_engine_version=REVIEW_ENGINE_VERSION,
+        review_state=review_state,
+        paragraphs=document_paragraphs,
+        contract_structure=contract_structure,
+        reference_resolver=reference_resolver,
+        concept_classifier=concept_classifier,
+        semantic_crosscheck=semantic_crosscheck,
+        ai_review=ai_review,
+        ai_verifier=ai_verifier_review,
+        clauses=clause_results,
+        redline_edits=redline_edits,
+        result_fields={
+            # Additive coverage metadata: document sections that no Playbook clause
+            # matched, surfaced so a reviewer sees full section coverage instead of
+            # only the handful of clauses the Playbook checks. Purely informational --
+            # it does not touch clause results, statuses, counts, or the approve gate.
+            "unmatched_sections": compute_unmatched_sections(contract_structure, clause_results),
+        },
+        evidence_error_prefix="Clause evidence provenance drift detected",
+    )
 
 
 def compute_unmatched_sections(

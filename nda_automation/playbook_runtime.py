@@ -11,6 +11,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -55,6 +56,14 @@ class PlaybookDraftConflict(RuntimeError):
         super().__init__(str(payload.get("error") or "Playbook draft conflict."))
         self.payload = payload
         self.status = status
+
+
+@dataclass(frozen=True)
+class ActivePlaybookBundle:
+    """The published Playbook snapshot and the runtime metadata for that snapshot."""
+
+    playbook: dict[str, Any]
+    runtime: dict[str, Any]
 
 
 @contextmanager
@@ -303,6 +312,34 @@ def ensure_active_playbook_runtime(
             actor=actor,
             source=source,
         )
+
+
+def ensure_active_playbook_bundle(
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+    actor: str = "system",
+    source: str = "bootstrap",
+) -> ActivePlaybookBundle:
+    with locked_playbook(playbook_path):
+        playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(playbook)
+        runtime = ensure_active_runtime_for_playbook(
+            playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            actor=actor,
+            source=source,
+        )
+        return ActivePlaybookBundle(playbook=playbook, runtime=runtime)
+
+
+def active_playbook_bundle_from_runtime(
+    runtime: dict[str, Any],
+    *,
+    playbook: dict[str, Any] | None = None,
+) -> ActivePlaybookBundle:
+    return ActivePlaybookBundle(playbook=playbook or {}, runtime=runtime)
 
 
 def ensure_active_runtime_for_playbook(

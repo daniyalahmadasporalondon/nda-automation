@@ -94,6 +94,9 @@ import {
   GenerationUnavailableError,
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
+import { GeneratorWorkstationModel } from "../../static/js/modules/generator-workstation-model.mjs";
+import { RedlineEditContract } from "../../static/js/modules/redline-edit-contract.mjs";
+import { ReviewWorkstationModel } from "../../static/js/modules/review-workstation-model.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -157,6 +160,256 @@ assert.deepEqual(fullReplacementOperations("Old", "New"), [
   { type: "delete", token: "Old" },
   { type: "insert", token: "New" },
 ]);
+
+const normalizedManualEdit = RedlineEditContract.normalizeRedlineEdit({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "manual-p1",
+  inline_diff_operations: [
+    { type: "equal", token: "Old" },
+    { type: "unknown", token: "dropped" },
+    { type: "insert", token: "New" },
+  ],
+  paragraph_id: "p1",
+  replacement_text: "New text",
+  whole_paragraph: false,
+});
+assert.equal(RedlineEditContract.isManualRedlineEdit(normalizedManualEdit), true);
+assert.equal(RedlineEditContract.redlineInlinePreviewMode(normalizedManualEdit), "operations");
+assert.equal(RedlineEditContract.redlineOperationPreviewMode(normalizedManualEdit), "operations");
+assert.deepEqual(normalizedManualEdit.inline_diff_operations, [
+  { type: "equal", token: "Old" },
+  { type: "insert", token: "New" },
+]);
+const normalizedClauseEdit = RedlineEditContract.normalizeRedlineEdit({
+  action: "replace_paragraph",
+  clause_id: "governing_law",
+  paragraph_id: "p2",
+  replacement_text: "English law applies.",
+});
+assert.equal(RedlineEditContract.redlineInlinePreviewMode(normalizedClauseEdit), "whole_paragraph");
+assert.equal(RedlineEditContract.redlineInlinePreviewMode({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p3",
+  replacement_text: "Manual",
+}), "character_diff");
+assert.equal(RedlineEditContract.redlineOperationPreviewMode({
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p3",
+  replacement_text: "Manual",
+}), "word_diff");
+assert.equal(RedlineEditContract.isKnownRedlineAction("unknown_action"), false);
+assert.equal(RedlineEditContract.isManualRedlineAction("insert_after_paragraph"), false);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({ action: "unknown_action", paragraph_id: "p1" }), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({ action: "replace_paragraph" }), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({
+  action: "insert_after_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p4",
+  replacement_text: "Manual insert should be rejected.",
+}), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({
+  action: "insert_after_paragraph",
+  is_manual: true,
+  paragraph_id: "p4",
+  replacement_text: "Manual insert should be rejected.",
+}), null);
+assert.deepEqual(RedlineEditContract.normalizeRedlineEdit({
+  action: "delete_paragraph",
+  is_manual: true,
+  original_text: "Delete this.",
+  paragraph_id: "p5",
+  replacement_text: "Delete this.",
+}), {
+  action: "delete_paragraph",
+  action_label: "Remove paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "",
+  is_manual: true,
+  original_text: "Delete this.",
+  paragraph_id: "p5",
+  replacement_text: "Delete this.",
+  status: "proposed",
+});
+assert.equal(RedlineEditContract.redlineReplacementText({
+  action: "delete_paragraph",
+  replacement_text: "Ignored for preview/export.",
+}), "");
+assert.equal(RedlineEditContract.redlineInlinePreviewMode({
+  action: "replace_paragraph",
+  clause_id: "server_clause",
+  paragraph_id: "p6",
+  replacement_text: "Server edit.",
+  whole_paragraph: false,
+}), "whole_paragraph");
+assert.equal(RedlineEditContract.redlineActionLabel({ action: "insert_after_paragraph" }), "Insert after paragraph");
+assert.equal(RedlineEditContract.redlineInsertedText({ insert_text: "Inserted", replacement_text: "Fallback" }), "Inserted");
+assert.deepEqual(RedlineEditContract.normalizeRedlineEdits([
+  { action: "replace_paragraph", clause_id: "clause", paragraph_id: "p1", replacement_text: "Server" },
+  { action: "insert_after_paragraph", clause_id: "manual_viewer_edit", paragraph_id: "p1", replacement_text: "Unsafe" },
+  { action: "format_paragraph", is_manual: true, paragraph_id: "p1", replacement_text: "Formatted", format_ops: [{ op: "align", value: "center" }] },
+]).map((edit) => edit.action), ["replace_paragraph", "format_paragraph"]);
+
+const workstation = {
+  exportClauseDecisions: { governing_law: true },
+  exportRedlineDecisions: { "redline-2": false },
+  redlineDraft: { saved_at: "2026-06-10T10:00:00Z" },
+  redlineDraftDirty: true,
+  redlineTemplateSelections: { "redline-1": "option-2" },
+  reviewClauses: [
+    { id: "governing_law", matched_paragraph_ids: ["p1"] },
+    { id: "term", matched_paragraph_ids: ["p2"] },
+  ],
+  reviewParagraphs: [
+    { id: "p1", text: "Old law." },
+    { id: "p2", text: "Term." },
+  ],
+  reviewRedlines: [
+    {
+      action: "replace_paragraph",
+      clause_id: "governing_law",
+      id: "redline-1",
+      paragraph_id: "p1",
+      replacement_text: "New law.",
+      template_options: [
+        { id: "option-1", replacement_text: "First" },
+        { id: "option-2", inline_diff_operations: [{ type: "insert", token: "Second" }], replacement_text: "Second" },
+      ],
+    },
+    {
+      action: "delete_paragraph",
+      clause_id: "term",
+      id: "redline-2",
+      paragraph_id: "p2",
+      replacement_text: "",
+    },
+  ],
+  selectedMatter: { id: "matter-1", review_refresh: { stale: true } },
+  selectedReviewClauseId: "governing_law",
+};
+assert.equal(ReviewWorkstationModel.hasReviewResults(workstation), true);
+assert.equal(ReviewWorkstationModel.selectedReviewClause(workstation).id, "governing_law");
+assert.equal(ReviewWorkstationModel.selectedReviewParagraph(workstation).id, "p1");
+assert.deepEqual(ReviewWorkstationModel.defaultExportClauseDecisions(workstation.reviewClauses, workstation.reviewRedlines), {
+  governing_law: true,
+  term: true,
+});
+assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation).length, 1);
+assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation)[0].replacement_text, "Second");
+const exportStabilityWorkstation = {
+  exportClauseDecisions: { server_clause: true },
+  exportRedlineDecisions: { "server-redline": true, "manual-redline": false },
+  redlineTemplateSelections: { "server-redline": "server-option" },
+  reviewRedlines: [
+    {
+      action: "replace_paragraph",
+      clause_id: "server_clause",
+      id: "server-redline",
+      paragraph_id: "p1",
+      replacement_text: "Default server replacement.",
+      template_options: [
+        { id: "default-option", replacement_text: "Default server replacement." },
+        { id: "server-option", inline_diff_operations: [{ type: "insert", token: "Selected" }], replacement_text: "Selected server replacement." },
+      ],
+    },
+    {
+      action: "replace_paragraph",
+      clause_id: "manual_viewer_edit",
+      id: "manual-redline",
+      paragraph_id: "p2",
+      replacement_text: "Manual replacement.",
+      whole_paragraph: false,
+    },
+  ],
+};
+assert.deepEqual(ReviewWorkstationModel.effectiveReviewRedlines(exportStabilityWorkstation), [{
+  action: "replace_paragraph",
+  clause_id: "server_clause",
+  id: "server-redline",
+  inline_diff_operations: [{ type: "insert", token: "Selected" }],
+  paragraph_id: "p1",
+  replacement_text: "Selected server replacement.",
+  template_options: [
+    { id: "default-option", replacement_text: "Default server replacement.", selected: false },
+    { id: "server-option", inline_diff_operations: [{ type: "insert", token: "Selected" }], replacement_text: "Selected server replacement.", selected: true },
+  ],
+}]);
+assert.equal(ReviewWorkstationModel.redlineExportIncluded({
+  exportClauseDecisions: { server_clause: false },
+  exportRedlineDecisions: { "server-redline": true },
+}, { clause_id: "server_clause", id: "server-redline" }), true);
+assert.equal(ReviewWorkstationModel.redlineExportIncluded({
+  exportClauseDecisions: { server_clause: true },
+  exportRedlineDecisions: { "server-redline": false },
+}, { clause_id: "server_clause", id: "server-redline" }), false);
+assert.deepEqual(ReviewWorkstationModel.exportDecisionTransition({ existing: true }, "", false), { existing: true });
+assert.deepEqual(ReviewWorkstationModel.exportDecisionTransition({ existing: true }, "server-redline", false), {
+  existing: true,
+  "server-redline": false,
+});
+assert.equal(ReviewWorkstationModel.reviewIsStale(workstation), true);
+assert.deepEqual(ReviewWorkstationModel.redlineDraftControlState(workstation), {
+  canDraft: true,
+  discardDisabled: false,
+  metaText: "Unsaved redline draft changes",
+  saveDisabled: false,
+});
+assert.deepEqual(ReviewWorkstationModel.nextClauseSelectionState(workstation, "term"), {
+  reviewInspectorView: "clause",
+  selectedReviewClauseId: "term",
+});
+assert.equal(ReviewWorkstationModel.selectedBackendRedline(workstation, "p1").id, "redline-1");
+assert.equal(ReviewWorkstationModel.gmailSendReadiness({
+  blockedLabel: "Needs Review",
+  canExport: true,
+  hasSendableMatter: true,
+  sendBlockReason: "Matter needs human review before a redline can be sent.",
+}).label, "Needs Review");
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: true,
+  hasSendableMatter: true,
+}), {
+  ariaDisabled: "false",
+  canSend: true,
+  interactive: true,
+  label: "Send Redline",
+  title: "Send Redline",
+});
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: true,
+  hasSendableMatter: true,
+  staleReview: true,
+}), {
+  ariaDisabled: "true",
+  canSend: false,
+  interactive: false,
+  label: "Send Redline",
+  title: "Refresh review before sending a redline",
+});
+assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
+  canExport: false,
+  hasSendableMatter: true,
+}), {
+  ariaDisabled: "true",
+  canSend: false,
+  interactive: false,
+  label: "Send Redline",
+  title: "Send Redline",
+});
+assert.equal(ReviewWorkstationModel.commentComposerState({ hasThreads: false }).scope, "paragraph");
+assert.deepEqual(ReviewWorkstationModel.annotationGeometryState({
+  page: 0,
+  rect: { x: -1, y: 0.25, w: 2, h: 0.1 },
+  selectedId: 42,
+  tool: "highlight",
+}), {
+  page: 1,
+  rect: { h: 0.1, w: 1, x: 0, y: 0.25 },
+  selectedId: "42",
+  tool: "highlight",
+});
 
 const matter = {
   can_send_redline: true,
@@ -767,6 +1020,91 @@ function generationResponse({ status = 200, headers = {}, json = null, blob = nu
 
 // The payload the entity picker produces — sent to the endpoint verbatim.
 const generationPayload = buildDraftPayload(validIntake);
+
+// --- Generator workstation model ------------------------------------------
+const generatedParagraphs = [
+  {
+    id: "p1",
+    index: 1,
+    runs: [{ text: "Generated", bold: true }],
+    source_index: 1,
+    text: "Generated",
+  },
+];
+const generatedState = GeneratorWorkstationModel.generatedGeneratorState({
+  matterId: "matter-generated",
+  paragraphs: generatedParagraphs,
+});
+assert.equal(generatedState.generatorMode, "generated");
+assert.equal(generatedState.generatorMatterId, "matter-generated");
+assert.deepEqual(generatedState.generatorOriginalParagraphs, generatedState.generatorParagraphs);
+generatedParagraphs[0].runs[0].text = "mutated";
+assert.equal(generatedState.generatorParagraphs[0].runs[0].text, "Generated");
+assert.equal(
+  GeneratorWorkstationModel.activeGeneratorParagraph({
+    ...generatedState,
+    generatorActiveParagraphId: "p1",
+  }).id,
+  "p1",
+);
+assert.deepEqual(GeneratorWorkstationModel.generatorEditSnapshot({
+  ...generatedState,
+  generatorActiveParagraphId: "p1",
+  generatorDraftTouched: true,
+  generatorParagraphs: [{
+    alignment: "center",
+    font: "Arial",
+    fontSize: 12,
+    id: "p1",
+    runs: [{ text: "Edited", bold: true }],
+    source_index: 1,
+    source_part: "body",
+    text: "Edited",
+  }],
+}), {
+  dirty: true,
+  matterId: "matter-generated",
+  mode: "generated",
+  paragraphs: [{
+    alignment: "center",
+    font: "Arial",
+    fontSize: 12,
+    id: "p1",
+    runs: [{ text: "Edited", bold: true }],
+    source_index: 1,
+    source_part: "body",
+    text: "Edited",
+  }],
+});
+assert.equal(GeneratorWorkstationModel.generatorExportReady(generatedState, [{ id: "edit-1" }]), true);
+assert.equal(GeneratorWorkstationModel.generatorExportReady({ ...generatedState, generatorMatterId: null }, [{ id: "edit-1" }]), false);
+assert.deepEqual(GeneratorWorkstationModel.draftGeneratorState([{ id: "draft-1", text: "Draft" }]), {
+  generatorActiveParagraphId: null,
+  generatorHistory: [],
+  generatorMatterId: null,
+  generatorMode: "draft",
+  generatorParagraphs: [{ id: "draft-1", text: "Draft" }],
+});
+assert.deepEqual(GeneratorWorkstationModel.clearGeneratorState(), {
+  generatorActiveParagraphId: null,
+  generatorDraftTouched: false,
+  generatorHistory: [],
+  generatorMatterId: null,
+  generatorMode: "draft",
+  generatorParagraphs: [],
+});
+assert.deepEqual(GeneratorWorkstationModel.pushGeneratorHistory(
+  [{ id: "old", text: "Old" }],
+  { alignment: "right", id: "p1", runs: [{ text: "Before", italic: true }], text: "Before" },
+  1,
+), [{
+  alignment: "right",
+  id: "p1",
+  runs: [{ text: "Before", italic: true }],
+  text: "Before",
+}]);
+assert.deepEqual(GeneratorWorkstationModel.generatorTouchedState({ generatorMode: "draft" }), { generatorDraftTouched: true });
+assert.deepEqual(GeneratorWorkstationModel.generatorTouchedState({ generatorMode: "generated" }), {});
 
 // DOCX-bytes response: returns kind "blob" with the bytes + the header filename.
 const docxCalls = [];

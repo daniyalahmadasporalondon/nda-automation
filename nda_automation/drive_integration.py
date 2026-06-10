@@ -2,15 +2,13 @@
 
 A thin client that files a matter's NDA documents into the signed-in user's
 Google Drive, reusing the role-parameterized Google OAuth machinery in
-``gmail_integration``. A dedicated ``"drive"`` OAuth role (added to
-``gmail_integration.GMAIL_OAUTH_SCOPES_BY_ROLE``) carries the least-privilege
+``google_connection``. A dedicated ``"drive"`` OAuth role carries the least-privilege
 ``drive.file`` scope, so this app can only ever see or modify files it creates,
 never the user's whole Drive.
 
-The OAuth token storage, refresh, locking and per-user token paths are all
-reused from ``gmail_integration`` via ``_credentials_for_role("drive", ...)`` —
-this module only adds the Drive API calls and the Drive-specific error taxonomy
-that mirrors the Gmail one.
+The OAuth token storage, refresh, locking and per-user token paths are owned by
+``google_connection``; this module only adds the Drive API calls and the
+Drive-specific error taxonomy that mirrors the Gmail one.
 
 Drive v2 — structured per-matter filing
 ========================================
@@ -47,7 +45,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any
 
-from . import artifact_registry, artifact_service, gmail_integration
+from . import artifact_registry, artifact_service, gmail_integration, google_connection
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 JSON_MIME = "application/json"
@@ -99,14 +97,13 @@ class DriveRateLimitError(DriveIntegrationError):
 def _drive_service(owner_user_id: str = "") -> Any:
     """Build an authenticated Drive v3 service for the signed-in user.
 
-    Reuses the Gmail OAuth credentials machinery under the ``"drive"`` role:
-    the token lives at ``data/users/gmail/{user_id}/drive-token.json`` and is
-    refreshed/locked exactly like the Gmail tokens. A missing/invalid token
-    surfaces as :class:`DriveNotConnectedError` so the route can prompt connect.
+    Reuses the shared Google OAuth credentials machinery under the ``"drive"``
+    role. A missing/invalid token surfaces as :class:`DriveNotConnectedError`
+    so the route can prompt connect.
     """
     try:
-        creds = gmail_integration._credentials_for_role("drive", owner_user_id=owner_user_id)
-    except gmail_integration.GmailIntegrationError as error:
+        creds = google_connection.credentials_for_role("drive", owner_user_id=owner_user_id, integration_label="Drive")
+    except google_connection.GoogleConnectionError as error:
         raise DriveNotConnectedError(str(error)) from error
     try:
         from googleapiclient.discovery import build
@@ -611,8 +608,8 @@ def drive_account_email(owner_user_id: str = "", *, service: Any | None = None) 
 def drive_connected(owner_user_id: str = "") -> bool:
     """Whether the signed-in user has a usable Drive credential."""
     try:
-        gmail_integration._credentials_for_role("drive", owner_user_id=owner_user_id)
-    except gmail_integration.GmailIntegrationError:
+        google_connection.credentials_for_role("drive", owner_user_id=owner_user_id, integration_label="Drive")
+    except google_connection.GoogleConnectionError:
         return False
     return True
 

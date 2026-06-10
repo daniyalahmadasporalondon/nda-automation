@@ -1,6 +1,6 @@
-"""Drive auto-intake: the third best-effort post-create hook in ingestion.
+"""Drive auto-intake: a best-effort Repository matter lifecycle hook.
 
-When a matter is created, ``_auto_sync_drive`` files it into Drive automatically
+When a matter is created, the lifecycle files it into Drive automatically
 (no manual "Save to Drive" click), gated on the owner having Drive connected AND
 the ``auto_intake`` setting being on. The sync runs OFF the intake path; these
 tests inject a SYNCHRONOUS runner so the background work is deterministic.
@@ -14,7 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from nda_automation import app_settings, drive_integration, telemetry
-from nda_automation import ingestion_service
+from nda_automation import matter_lifecycle
 from nda_automation.ingestion_service import create_matter_from_document
 
 NDA_PARAGRAPHS = [
@@ -194,7 +194,7 @@ def test_default_runner_is_a_daemon_thread():
     # blocks the intake path or process shutdown.
     captured = {}
 
-    real_thread_cls = ingestion_service.threading.Thread
+    real_thread_cls = matter_lifecycle.threading.Thread
 
     def fake_thread(*args, **kwargs):
         captured["daemon"] = kwargs.get("daemon")
@@ -203,8 +203,8 @@ def test_default_runner_is_a_daemon_thread():
         return thread
 
     ran = []
-    with patch.object(ingestion_service.threading, "Thread", side_effect=fake_thread):
-        ingestion_service._run_in_daemon_thread(lambda: ran.append(True))
+    with patch.object(matter_lifecycle.threading, "Thread", side_effect=fake_thread):
+        matter_lifecycle.run_in_daemon_thread(lambda: ran.append(True))
 
     assert captured["daemon"] is True
     assert captured["name"] == "drive-auto-intake"

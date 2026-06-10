@@ -4,7 +4,7 @@ from http.cookies import SimpleCookie
 import os
 from urllib.parse import parse_qs, urlparse
 
-from .. import app_settings, gmail_integration, google_identity, user_store
+from .. import app_settings, google_connection, google_identity, user_store
 from ..http_auth import _basic_auth_credentials, _basic_auth_matches
 
 
@@ -138,7 +138,7 @@ def handle_google_start(handler, *, send_body: bool = True) -> None:
     # the identity scopes plus the unified connect scopes, with offline access so
     # the callback can save a refresh token. The user grants everything once
     # instead of logging in and then separately connecting Gmail.
-    connect_scopes = gmail_integration._gmail_oauth_scopes_for_role("all")
+    connect_scopes = google_connection.oauth_scopes_for_role("all")
     scopes = list(google_identity.GOOGLE_IDENTITY_SCOPES) + [
         scope for scope in connect_scopes if scope not in google_identity.GOOGLE_IDENTITY_SCOPES
     ]
@@ -185,7 +185,7 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
     # Admin), so any failure here is swallowed.
     owner_user_id = str(user.get("id") or "")
     try:
-        connected_roles = gmail_integration.save_user_gmail_oauth_token(owner_user_id, token_response, role="all")
+        connected_roles = google_connection.save_user_oauth_token(owner_user_id, token_response, role="all")
         app_settings.update_gmail_settings({"inbound_enabled": True, "outbound_enabled": True})
         if "drive" in connected_roles:
             app_settings.update_drive_settings({"enabled": True})
@@ -233,18 +233,7 @@ def _google_redirect_uri(handler) -> str:
     configured = google_identity.configured_redirect_uri()
     if configured:
         return configured
-    return f"{_request_base_url(handler)}/auth/google/callback"
-
-
-def _request_base_url(handler) -> str:
-    scheme = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip() or "http"
-    host = handler.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
-    if not host:
-        host = handler.headers.get("Host", "").strip()
-    if not host:
-        server_host, server_port = handler.server.server_address[:2]
-        host = f"{server_host}:{server_port}"
-    return f"{scheme}://{host}"
+    return f"{google_connection.request_base_url(handler)}/auth/google/callback"
 
 
 def _cookie_value(handler, name: str) -> str:
@@ -288,6 +277,6 @@ def _cookie_header(handler, name: str, value: str, *, max_age: int) -> str:
         "SameSite=Lax",
         f"Max-Age={max_age}",
     ]
-    if _request_base_url(handler).startswith("https://"):
+    if google_connection.request_base_url(handler).startswith("https://"):
         parts.append("Secure")
     return "; ".join(parts)

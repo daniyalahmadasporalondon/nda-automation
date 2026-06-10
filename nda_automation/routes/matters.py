@@ -2,27 +2,32 @@ from __future__ import annotations
 
 import base64
 import binascii
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-from .. import document_rendering, export_service, gmail_integration, matter_store, matter_summary, matter_view, telemetry
-from ..ai_assessor import AIAssessorError, assess_nda_with_ai
-from ..checker import (
-    EvidenceProvenanceError,
-    ParagraphAlignmentError,
-    PlaybookTemplateError,
-)
+from .. import document_rendering, gmail_integration, matter_store, matter_summary, matter_view, telemetry
+from ..ai_assessor import AIAssessorError
+from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError, extract_docx_paragraphs
 from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
+from ..matter_lifecycle import (
+    MatterNotFoundError,
+    MatterReviewUnavailableError,
+    RedlineDraftError,
+    RepositoryMatterLifecycle,
+    ai_first_review_store_metadata as lifecycle_ai_first_review_store_metadata,
+    clean_bool_map as lifecycle_clean_bool_map,
+    clean_dict_list as lifecycle_clean_dict_list,
+    clean_redline_draft as lifecycle_clean_redline_draft,
+    clean_text_map as lifecycle_clean_text_map,
+)
+from ..matter_repository import DiskMatterRepository
 from ..pdf_text import PdfExtractionError
 from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
-from ..triage import triage_review_result
 from .common import parse_matter_id, request_owner_user_id
 
 # Max seconds the render-status poll waits on the background render before
@@ -35,9 +40,6 @@ AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
-MAX_REDLINE_DRAFT_ITEMS = 200
-
-
 def handle_matter_list(handler, *, send_body: bool = True) -> None:
     try:
         handler._send_json(
@@ -61,15 +63,17 @@ def handle_matter_review_refresh(handler, path: str) -> None:
     matter = _matter_for_review_response(handler, matter_id, send_body=True)
     if matter is None:
         return
-    was_stale = review_result_is_stale(matter.get("review_result"))
-    had_redline_draft = isinstance(matter.get("redline_draft"), dict)
-    refreshed_matter = refresh_stale_matter_review(matter)
+    refresh = RepositoryMatterLifecycle(DiskMatterRepository()).refresh_review(
+        matter,
+        review_engine_func=review_nda_with_active_engine,
+        review_staleness_func=review_result_is_stale,
+    )
     handler._send_json(_matter_review_payload(
-        refreshed_matter,
+        refresh.matter,
         matter_id,
-        was_stale=was_stale,
-        had_redline_draft=had_redline_draft,
-        refresh_attempted=True,
+        was_stale=refresh.was_stale,
+        had_redline_draft=refresh.had_redline_draft,
+        refresh_attempted=refresh.refresh_attempted,
     ))
 
 
@@ -227,44 +231,11 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
 
 
 def refresh_stale_matter_review(matter: dict) -> dict:
-    if not review_result_is_stale(matter.get("review_result")):
-        return matter
-    extracted_text = str(matter.get("extracted_text") or "")
-    if not extracted_text.strip():
-        return matter
-    # Re-extract the original .docx so the refreshed review keeps contract structure
-    # (clause/sub-clause numbering, indentation, run formatting). Passing the rich
-    # paragraphs aligns them to the stored text; a plain text refresh would flatten
-    # the document and drop every numbering marker.
-    paragraphs = _original_docx_paragraphs(matter)
-    try:
-        review_result = review_nda_with_active_engine(extracted_text, paragraphs=paragraphs)
-    except ParagraphAlignmentError:
-        if paragraphs is None:
-            return matter
-        try:
-            review_result = review_nda_with_active_engine(extracted_text)
-        except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
-            return matter
-    except (ActiveReviewEngineError, EvidenceProvenanceError, PlaybookTemplateError, ValueError):
-        return matter
-    triage = triage_review_result(review_result)
-    updated_matter = matter_store.update_matter_review(
-        str(matter.get("id") or ""),
-        review_result,
-        triage,
-        owner_user_id=str(matter.get("owner_user_id") or ""),
-    )
-    if updated_matter is not None:
-        return updated_matter
-    refreshed_matter = {
-        **matter,
-        "review_result": review_result,
-        **triage,
-        "human_reviewed": False,
-    }
-    refreshed_matter.pop("redline_draft", None)
-    return refreshed_matter
+    return RepositoryMatterLifecycle(DiskMatterRepository()).refresh_review(
+        matter,
+        review_engine_func=review_nda_with_active_engine,
+        review_staleness_func=review_result_is_stale,
+    ).matter
 
 
 def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
@@ -918,48 +889,28 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         )
         return
 
-    matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
-    extracted_text = str(matter.get("extracted_text") or "")
-    if not extracted_text.strip():
-        handler._send_json({"error": "Matter has no extracted text to assess."}, status=400)
-        return
-
-    started_at = datetime.now(timezone.utc).isoformat()
     try:
-        ai_first_review_result = assess_nda_with_ai(
-            extracted_text,
-            paragraphs=review_result_paragraphs(matter.get("review_result")),
+        ai_first_review = RepositoryMatterLifecycle(DiskMatterRepository()).run_ai_first_review(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
         )
     except AIAssessorError as error:
         handler._send_json({"error": str(error)}, status=502)
+        return
+    except MatterNotFoundError:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+    except MatterReviewUnavailableError as error:
+        handler._send_json({"error": str(error)}, status=400)
         return
     except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError) as error:
         handler._send_json({"error": f"AI-first review could not be completed: {error}"}, status=500)
         return
 
-    completed_at = datetime.now(timezone.utc).isoformat()
-    metadata = ai_first_review_store_metadata(
-        ai_first_review_result,
-        started_at=started_at,
-        completed_at=completed_at,
-    )
-    updated_matter = matter_store.update_matter_ai_first_review(
-        matter_id,
-        ai_first_review_result,
-        metadata,
-        owner_user_id=request_owner_user_id(handler),
-    )
-    if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
     handler._send_json({
-        "matter": matter_view.public_matter(updated_matter),
-        "ai_first_review_metadata": updated_matter.get("ai_first_review_metadata"),
-        "ai_first_review_result": ai_first_review_result,
+        "matter": matter_view.public_matter(ai_first_review.matter),
+        "ai_first_review_metadata": ai_first_review.matter.get("ai_first_review_metadata"),
+        "ai_first_review_result": ai_first_review.review_result,
     })
 
 
@@ -1014,38 +965,17 @@ def _matter_summary_transport(handler):
     return getattr(handler, "matter_summary_transport", None)
 
 
-def review_result_paragraphs(review_result: object) -> list[dict] | None:
-    if not isinstance(review_result, dict):
-        return None
-    paragraphs = review_result.get("paragraphs")
-    if not isinstance(paragraphs, list):
-        return None
-    cleaned = [paragraph for paragraph in paragraphs if isinstance(paragraph, dict)]
-    return cleaned or None
-
-
 def ai_first_review_store_metadata(
     ai_first_review_result: dict,
     *,
     started_at: str,
     completed_at: str,
 ) -> dict[str, object]:
-    result_metadata = ai_first_review_result.get("ai_first_review")
-    if not isinstance(result_metadata, dict):
-        result_metadata = {}
-    return {
-        "status": str(result_metadata.get("status") or "completed"),
-        "mode": str(result_metadata.get("mode") or "ai_first_assessor"),
-        "provider": str(result_metadata.get("provider") or ""),
-        "model": str(result_metadata.get("model") or ""),
-        "review_mode": str(ai_first_review_result.get("review_mode") or ""),
-        "review_engine_version": ai_first_review_result.get("review_engine_version"),
-        "started_at": started_at,
-        "completed_at": completed_at,
-        "requirements_passed": int(ai_first_review_result.get("requirements_passed") or 0),
-        "requirements_needs_review": int(ai_first_review_result.get("requirements_needs_review") or 0),
-        "requirements_failed": int(ai_first_review_result.get("requirements_failed") or 0),
-    }
+    return lifecycle_ai_first_review_store_metadata(
+        ai_first_review_result,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
 
 
 def handle_matter_redline_draft_update(handler, path: str) -> None:
@@ -1058,85 +988,35 @@ def handle_matter_redline_draft_update(handler, path: str) -> None:
     if payload is None:
         return
 
-    raw_draft = payload.get("redline_draft")
-    if raw_draft is None:
-        draft = None
-    elif isinstance(raw_draft, dict):
-        draft = clean_redline_draft(raw_draft)
-    else:
-        handler._send_json({"error": "Redline draft must be an object or null."}, status=400)
+    try:
+        matter = RepositoryMatterLifecycle(DiskMatterRepository()).save_redline_draft(
+            matter_id,
+            payload.get("redline_draft"),
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except RedlineDraftError as error:
+        handler._send_json({"error": str(error)}, status=400)
         return
-
-    matter = matter_store.update_redline_draft(
-        matter_id,
-        draft,
-        owner_user_id=request_owner_user_id(handler),
-    )
-    if matter is None:
+    except MatterNotFoundError:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
     handler._send_json({"matter": matter_view.public_matter(matter)})
 
 
 def clean_redline_draft(draft: dict) -> dict:
-    manual_redlines = [
-        cleaned
-        for cleaned in (
-            export_service.clean_manual_export_redline(redline)
-            for redline in clean_dict_list(draft.get("manual_redline_edits"))
-        )
-        if cleaned is not None
-    ]
-    cleaned = {
-        "clause_decisions": clean_bool_map(draft.get("clause_decisions")),
-        "redline_decisions": clean_bool_map(draft.get("redline_decisions")),
-        "template_selections": clean_text_map(draft.get("template_selections")),
-        "reviewed_clause_ids": clean_bool_map(draft.get("reviewed_clause_ids")),
-        "export_redline_edits": clean_dict_list(draft.get("export_redline_edits")),
-        "manual_redline_edits": manual_redlines,
-        "review_comments": export_service.clean_review_comments(draft.get("review_comments")),
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    cleaned["summary"] = {
-        "included_redline_count": len(cleaned["export_redline_edits"]),
-        "manual_redline_count": len(cleaned["manual_redline_edits"]),
-        "review_comment_count": len(cleaned["review_comments"]),
-    }
-    return cleaned
+    return lifecycle_clean_redline_draft(draft)
 
 
 def clean_bool_map(value: object) -> dict[str, bool]:
-    if not isinstance(value, dict):
-        return {}
-    cleaned = {}
-    for key, item in list(value.items())[:MAX_REDLINE_DRAFT_ITEMS]:
-        key = str(key).strip()[:120]
-        if key:
-            cleaned[key] = bool(item)
-    return cleaned
+    return lifecycle_clean_bool_map(value)
 
 
 def clean_text_map(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    cleaned = {}
-    for key, item in list(value.items())[:MAX_REDLINE_DRAFT_ITEMS]:
-        key = str(key).strip()[:120]
-        item = str(item).strip()[:240]
-        if key and item:
-            cleaned[key] = item
-    return cleaned
+    return lifecycle_clean_text_map(value)
 
 
 def clean_dict_list(value: object) -> list[dict]:
-    if not isinstance(value, list):
-        return []
-    cleaned = []
-    for item in value[:MAX_REDLINE_DRAFT_ITEMS]:
-        if not isinstance(item, dict):
-            continue
-        cleaned.append(json.loads(json.dumps(item)))
-    return cleaned
+    return lifecycle_clean_dict_list(value)
 
 
 def handle_matter_delete(handler, path: str) -> None:

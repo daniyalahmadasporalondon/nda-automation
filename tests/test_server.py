@@ -2563,7 +2563,10 @@ class ServerTests(unittest.TestCase):
                 )
                 with (
                     patch.dict(os.environ, {matter_routes.AI_FIRST_REVIEW_FEATURE_FLAG: "true"}),
-                    patch.object(matter_routes, "assess_nda_with_ai", return_value=deepcopy(ai_first_result)) as assessor,
+                    patch(
+                        "nda_automation.ai_assessor.assess_nda_with_ai",
+                        return_value=deepcopy(ai_first_result),
+                    ) as assessor,
                 ):
                     status, payload = self.request("POST", f"/api/matters/{matter['id']}/ai-first-review")
                 stored_matter = matter_store.get_matter(matter["id"])
@@ -3294,10 +3297,10 @@ class ServerTests(unittest.TestCase):
         self.assertIn('"mutual non-disclosure agreement"', status["inbound"]["query"])
         self.assertIn('"data processing agreement"', status["inbound"]["query"])
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
-        self.assertIn("data/gmail/inbound-token.json", status["inbound"]["error"])
+        self.assertIn("data/google/inbound-token.json", status["inbound"]["error"])
         self.assertEqual(status["inbound"]["token"], {
             "configured": False,
-            "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
+            "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/google/inbound-token.json",
             "source": "missing",
         })
 
@@ -3338,7 +3341,7 @@ class ServerTests(unittest.TestCase):
                 parsed_start = urlparse(start_location)
                 state = parse_qs(parsed_start.query)["state"][0]
                 with patch(
-                    "nda_automation.routes.gmail.gmail_integration.exchange_gmail_oauth_code",
+                    "nda_automation.routes.gmail.google_connection.exchange_oauth_code",
                     return_value={"access_token": "access-token", "refresh_token": "refresh-token"},
                 ) as exchange_code:
                     callback_status, callback_payload, callback_headers = self.request_with_headers(
@@ -3346,7 +3349,7 @@ class ServerTests(unittest.TestCase):
                         f"/auth/gmail/callback?code=gmail-code&state={state}",
                         headers=session_headers,
                     )
-                token_root = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                token_root = matter_store.DATA_DIR / "users" / "google" / user["id"]
                 inbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]
                 outbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]
                 self.assertEqual(callback_status, 302, callback_payload)

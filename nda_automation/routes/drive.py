@@ -5,8 +5,7 @@ Mirrors the Gmail outbound routes (``routes/gmail.py``) but for Google Drive:
 * ``GET /api/drive/status`` — is Drive connected + the configured upload folder.
 * ``GET /auth/drive/start`` / ``GET /auth/drive/callback`` — the OAuth consent
   flow, role fixed to ``"drive"`` (least-privilege ``drive.file`` scope). Reuses
-  the same ``oauth_state`` + token exchange + ``save_user_gmail_oauth_token`` as
-  the Gmail connect flow.
+  the same Google connection state as the Gmail connect flow.
 * ``POST /api/drive/upload-matter`` — SYNC a matter's whole artifact set into a
   structured per-matter Drive folder (Drive v2).
 * ``POST /api/admin/drive-settings`` — admin-only upload-folder + enable config.
@@ -25,14 +24,13 @@ from .. import (
     app_settings,
     artifact_registry,
     drive_integration,
-    gmail_integration,
+    google_connection,
     matter_store,
     matter_view,
     telemetry,
     user_store,
 )
 from .common import request_owner_user_id, require_admin
-from .gmail import gmail_owner_user_id
 
 DRIVE_CONNECT_URL = "/auth/drive/start"
 # Drive has its OWN OAuth callback path. It must not reuse the Gmail redirect
@@ -41,7 +39,7 @@ DRIVE_OAUTH_REDIRECT_URI_ENV = "NDA_DRIVE_OAUTH_REDIRECT_URI"
 
 
 def handle_drive_status(handler, *, send_body: bool = True) -> None:
-    owner_user_id = gmail_owner_user_id(handler)
+    owner_user_id = _google_owner_user_id(handler)
     settings = app_settings.drive_settings()
     connected = bool(owner_user_id) and drive_integration.drive_connected(owner_user_id)
     account = ""
@@ -63,7 +61,7 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
 
 
 def handle_drive_connect_start(handler, *, send_body: bool = True) -> None:
-    owner_user_id = gmail_owner_user_id(handler)
+    owner_user_id = _google_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in with Google before connecting Drive."}, status=403, send_body=send_body)
         return
@@ -76,20 +74,20 @@ def handle_drive_connect_start(handler, *, send_body: bool = True) -> None:
             next_path=next_path,
             metadata={"role": "drive"},
         )
-        authorization_url = gmail_integration.build_gmail_authorization_url(
+        authorization_url = google_connection.build_authorization_url(
             redirect_uri=_drive_redirect_uri(handler),
             role="drive",
             state=state,
-            login_hint=str((getattr(handler, "current_user", None) or {}).get("email") or ""),
+            login_hint=google_connection.login_hint(getattr(handler, "current_user", None)),
         )
-    except gmail_integration.GmailIntegrationError as error:
+    except google_connection.GoogleConnectionError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
         return
     handler._send_redirect(authorization_url, send_body=send_body)
 
 
 def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
-    owner_user_id = gmail_owner_user_id(handler)
+    owner_user_id = _google_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in with Google before connecting Drive."}, status=403, send_body=send_body)
         return
@@ -104,9 +102,9 @@ def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Drive connection state is invalid or expired."}, status=400, send_body=send_body)
         return
     try:
-        token_response = gmail_integration.exchange_gmail_oauth_code(code, redirect_uri=_drive_redirect_uri(handler))
-        gmail_integration.save_user_gmail_oauth_token(owner_user_id, token_response, role="drive")
-    except gmail_integration.GmailIntegrationError as error:
+        token_response = google_connection.exchange_oauth_code(code, redirect_uri=_drive_redirect_uri(handler))
+        google_connection.save_user_oauth_token(owner_user_id, token_response, role="drive")
+    except google_connection.GoogleConnectionError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
     # A fresh connection lands active: the single Drive toggle treats "connected"
@@ -126,16 +124,15 @@ def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
 def handle_drive_disconnect(handler) -> None:
     """Remove the signed-in user's Drive OAuth token (the toggle's Off action).
 
-    The Drive token is stored under the ``"drive"`` role via the Gmail credential
-    machinery, so disconnecting reuses ``disconnect_user_gmail(role="drive")``.
+    The Drive token is stored under the shared ``"drive"`` Google connection role.
     """
-    owner_user_id = gmail_owner_user_id(handler)
+    owner_user_id = _google_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in with Google before disconnecting Drive."}, status=403)
         return
     try:
-        removed = gmail_integration.disconnect_user_gmail(owner_user_id, role="drive")
-    except gmail_integration.GmailIntegrationError as error:
+        removed = google_connection.disconnect_user_oauth(owner_user_id, role="drive")
+    except google_connection.GoogleConnectionError as error:
         handler._send_json({"error": str(error)}, status=400)
         return
     # Off also turns the Drive feature off so a later reconnect starts clean.
@@ -167,7 +164,7 @@ def handle_drive_upload_matter(handler) -> None:
     matter_id = matter_id.strip()
 
     owner_user_id = request_owner_user_id(handler)
-    drive_token_owner_user_id = gmail_owner_user_id(handler)
+    drive_token_owner_user_id = _google_owner_user_id(handler)
 
     matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
@@ -299,6 +296,13 @@ def _needs_connect_payload() -> dict:
     }
 
 
+def _google_owner_user_id(handler) -> str:
+    return google_connection.connected_owner_user_id(
+        getattr(handler, "current_user", None),
+        owner_user_id=request_owner_user_id(handler),
+    )
+
+
 def _record_drive_settings_audit(previous: dict, current: dict) -> None:
     changes = []
     for key in ("enabled", "folder_id", "folder_name", "auto_intake"):
@@ -327,15 +331,4 @@ def _drive_redirect_uri(handler) -> str:
     configured = os.environ.get(DRIVE_OAUTH_REDIRECT_URI_ENV, "").strip()
     if configured:
         return configured
-    return f"{_request_base_url(handler)}/auth/drive/callback"
-
-
-def _request_base_url(handler) -> str:
-    scheme = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip() or "http"
-    host = handler.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
-    if not host:
-        host = handler.headers.get("Host", "").strip()
-    if not host:
-        server_host, server_port = handler.server.server_address[:2]
-        host = f"{server_host}:{server_port}"
-    return f"{scheme}://{host}"
+    return f"{google_connection.request_base_url(handler)}/auth/drive/callback"

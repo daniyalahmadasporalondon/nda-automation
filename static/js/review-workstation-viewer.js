@@ -416,11 +416,23 @@ function updateManualRedlinePreview(editable, paragraph) {
   if (!container) return;
   const manualRedline = manualParagraphRedline(paragraph, manualRedlineBaselineParagraphs());
   const backendRedline = selectedBackendRedline(paragraph.id);
-  const hasBackendRedline = effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id);
-  syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });
+  const previewState = reviewWorkstationModel()?.manualRedlinePreviewState({
+    backendRedline,
+    manualRedline,
+    paragraph,
+    workstation: state,
+  });
+  syncRenderedManualRedline(container, {
+    paragraph,
+    manualRedline,
+    backendRedline,
+    hasBackendRedline: previewState?.hasBackendRedline
+      ?? effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id),
+  });
 }
 
 function selectedBackendRedline(paragraphId) {
+  if (reviewWorkstationModel()) return reviewWorkstationModel().selectedBackendRedline(state, paragraphId);
   const paragraphRedlines = effectiveReviewRedlines().filter((edit) => edit.paragraph_id === paragraphId);
   return paragraphRedlines.find((edit) => edit.clause_id === state.selectedReviewClauseId) || paragraphRedlines[0] || null;
 }
@@ -579,9 +591,13 @@ function insertPlainTextAtSelection(text) {
 }
 
 function selectReviewClause(clauseId, options = {}) {
-  state.selectedReviewClauseId = clauseId;
-  if (state.reviewInspectorView !== "clause") {
-    state.reviewInspectorView = "clause";
+  const transition = reviewWorkstationModel()?.nextClauseSelectionState(state, clauseId) || {
+    reviewInspectorView: "clause",
+    selectedReviewClauseId: clauseId,
+  };
+  state.selectedReviewClauseId = transition.selectedReviewClauseId;
+  if (state.reviewInspectorView !== transition.reviewInspectorView) {
+    state.reviewInspectorView = transition.reviewInspectorView;
     updateReviewInspectorTabs();
   }
   renderStudioResult({ clauses: state.reviewClauses });

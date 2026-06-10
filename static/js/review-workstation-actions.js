@@ -451,7 +451,7 @@ function reviewComposerRecipient() {
 
 function reviewSendChangeSummary() {
   const clauseRedlines = effectiveReviewRedlines()
-    .filter((edit) => edit.clause_id && edit.clause_id !== "manual_viewer_edit");
+    .filter((edit) => edit.clause_id && edit.clause_id !== manualViewerEditClauseId());
   const manualRedlines = manualExportRedlines();
   const comments = currentReviewComments();
   const clauseNames = uniqueStrings(clauseRedlines.map((edit) => clauseNameForId(edit.clause_id)));
@@ -709,7 +709,7 @@ function matterReviewPayloadToMatter(payload) {
 }
 
 function reviewIsStale() {
-  return Boolean(state.selectedMatter?.review_refresh?.stale);
+  return reviewWorkstationModel()?.reviewIsStale(state) ?? Boolean(state.selectedMatter?.review_refresh?.stale);
 }
 
 function isStaleReviewError(error) {
@@ -764,29 +764,37 @@ function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the re
 }
 
 function markRedlineDraftDirty() {
-  if (!state.selectedMatter?.id || !state.reviewClauses.length) return;
-  state.redlineDraftDirty = true;
+  const transition = reviewWorkstationModel()?.redlineDraftTransition(state, { dirty: true });
+  if (transition) {
+    state.redlineDraftDirty = transition.redlineDraftDirty;
+  } else {
+    if (!state.selectedMatter?.id || !state.reviewClauses.length) return;
+    state.redlineDraftDirty = true;
+  }
   updateRedlineDraftControls();
 }
 
 function updateRedlineDraftControls() {
-  const canDraft = Boolean(state.selectedMatter?.id && state.reviewClauses.length);
+  const controlState = reviewWorkstationModel()?.redlineDraftControlState(state);
+  const canDraft = controlState?.canDraft ?? Boolean(state.selectedMatter?.id && state.reviewClauses.length);
   if (studioSaveDraftButton) {
-    studioSaveDraftButton.disabled = !canDraft || !state.redlineDraftDirty;
+    studioSaveDraftButton.disabled = controlState?.saveDisabled ?? (!canDraft || !state.redlineDraftDirty);
   }
   if (studioDiscardDraftButton) {
-    studioDiscardDraftButton.disabled = !canDraft || !state.redlineDraft;
+    studioDiscardDraftButton.disabled = controlState?.discardDisabled ?? (!canDraft || !state.redlineDraft);
   }
   if (!studioDraftMeta) return;
-  if (!canDraft) {
-    studioDraftMeta.textContent = "";
-  } else if (state.redlineDraftDirty) {
-    studioDraftMeta.textContent = "Unsaved redline draft changes";
-  } else if (state.redlineDraft) {
-    studioDraftMeta.textContent = "Draft redline saved";
-  } else {
-    studioDraftMeta.textContent = "";
+  if (controlState) {
+    studioDraftMeta.textContent = controlState.metaText;
+    return;
   }
+  studioDraftMeta.textContent = !canDraft
+    ? ""
+    : state.redlineDraftDirty
+      ? "Unsaved redline draft changes"
+      : state.redlineDraft
+        ? "Draft redline saved"
+        : "";
 }
 
 function currentRedlineDraftPayload() {

@@ -28,10 +28,16 @@ window.generatorEditor = (function () {
     ["genAlignJustify", "justify"],
   ];
 
+  function model() { return window.GeneratorWorkstationModel || null; }
   function renderEl() { return document.getElementById(RENDER_ID); }
-  function paragraphs() { return Array.isArray(state.generatorParagraphs) ? state.generatorParagraphs : []; }
-  function paragraphById(id) { return paragraphs().find((p) => String(p.id) === String(id)) || null; }
-  function activeParagraph() { return paragraphById(state.generatorActiveParagraphId); }
+  function paragraphs() {
+    return model()?.generatorParagraphs(state) || (Array.isArray(state.generatorParagraphs) ? state.generatorParagraphs : []);
+  }
+  function paragraphById(id) {
+    return model()?.generatorParagraphById(state, id)
+      || paragraphs().find((p) => String(p.id) === String(id)) || null;
+  }
+  function activeParagraph() { return model()?.activeGeneratorParagraph(state) || paragraphById(state.generatorActiveParagraphId); }
   function history() {
     if (!Array.isArray(state.generatorHistory)) state.generatorHistory = [];
     return state.generatorHistory;
@@ -46,11 +52,13 @@ window.generatorEditor = (function () {
     if (state.generatorDraftTouched && paragraphs().length) return;
     const source = sourceEl || document.getElementById(PREVIEW_ID);
     const derived = parseDraftParagraphs(source);
-    state.generatorMode = "draft";
-    state.generatorMatterId = null;
-    state.generatorParagraphs = derived;
-    state.generatorActiveParagraphId = null;
-    state.generatorHistory = [];
+    Object.assign(state, model()?.draftGeneratorState(derived) || {
+      generatorMode: "draft",
+      generatorMatterId: null,
+      generatorParagraphs: derived,
+      generatorActiveParagraphId: null,
+      generatorHistory: [],
+    });
     render();
   }
 
@@ -160,31 +168,34 @@ window.generatorEditor = (function () {
     }
     const result = matter.review_result || matter;
     const paras = Array.isArray(result.paragraphs) ? result.paragraphs : [];
-    state.generatorMode = "generated";
-    state.generatorMatterId = matterId;
-    state.generatorParagraphs = paras.map((p) => ({
-      ...p,
-      runs: Array.isArray(p.runs) ? p.runs.map((r) => ({ ...r })) : p.runs,
-    }));
-    // Snapshot the as-generated paragraphs so the clean export can diff edits.
-    state.generatorOriginalParagraphs = state.generatorParagraphs.map((p) => ({
-      ...p,
-      runs: Array.isArray(p.runs) ? p.runs.map((r) => ({ ...r })) : p.runs,
-    }));
-    state.generatorActiveParagraphId = null;
-    state.generatorDraftTouched = false;
-    state.generatorHistory = [];
+    Object.assign(state, model()?.generatedGeneratorState({ matterId, paragraphs: paras }) || {
+      generatorMode: "generated",
+      generatorMatterId: matterId,
+      generatorParagraphs: paras.map((p) => ({
+        ...p,
+        runs: Array.isArray(p.runs) ? p.runs.map((r) => ({ ...r })) : p.runs,
+      })),
+      generatorOriginalParagraphs: paras.map((p) => ({
+        ...p,
+        runs: Array.isArray(p.runs) ? p.runs.map((r) => ({ ...r })) : p.runs,
+      })),
+      generatorActiveParagraphId: null,
+      generatorDraftTouched: false,
+      generatorHistory: [],
+    });
     render();
     return true;
   }
 
   function clear() {
-    state.generatorParagraphs = [];
-    state.generatorMatterId = null;
-    state.generatorActiveParagraphId = null;
-    state.generatorDraftTouched = false;
-    state.generatorMode = "draft";
-    state.generatorHistory = [];
+    Object.assign(state, model()?.clearGeneratorState() || {
+      generatorParagraphs: [],
+      generatorMatterId: null,
+      generatorActiveParagraphId: null,
+      generatorDraftTouched: false,
+      generatorMode: "draft",
+      generatorHistory: [],
+    });
     render();
   }
 
@@ -341,7 +352,7 @@ window.generatorEditor = (function () {
   }
 
   function markTouched() {
-    if (state.generatorMode !== "generated") state.generatorDraftTouched = true;
+    Object.assign(state, model()?.generatorTouchedState(state) || (state.generatorMode !== "generated" ? { generatorDraftTouched: true } : {}));
   }
 
   // ---- Run re-tiling on text edits ---------------------------------------
@@ -496,7 +507,7 @@ window.generatorEditor = (function () {
 
   // ---- History / Undo -----------------------------------------------------
   function snapshotParagraph(paragraph) {
-    return {
+    return model()?.snapshotGeneratorParagraph(paragraph) || {
       id: paragraph.id,
       text: String(paragraph.text || ""),
       runs: Array.isArray(paragraph.runs) ? paragraph.runs.map((r) => ({ ...r })) : undefined,
@@ -508,6 +519,10 @@ window.generatorEditor = (function () {
 
   function pushHistory(paragraph) {
     if (!paragraph) return;
+    if (model()?.pushGeneratorHistory) {
+      state.generatorHistory = model().pushGeneratorHistory(history(), paragraph, HISTORY_LIMIT);
+      return;
+    }
     const stack = history();
     stack.push(snapshotParagraph(paragraph));
     if (stack.length > HISTORY_LIMIT) stack.shift();
@@ -714,7 +729,7 @@ window.generatorEditor = (function () {
 
   // The edited document, for the clean export (Download / Send).
   function edits() {
-    return {
+    return model()?.generatorEditSnapshot(state) || {
       matterId: state.generatorMatterId || null,
       mode: state.generatorMode || "draft",
       paragraphs: paragraphs().map((p) => ({
@@ -803,7 +818,9 @@ window.generatorEditor = (function () {
   }
 
   function hasEdits() {
-    return state.generatorMode === "generated" && Boolean(state.generatorMatterId) && exportRedlines().length > 0;
+    const redlines = exportRedlines();
+    return model()?.generatorExportReady(state, redlines)
+      || (state.generatorMode === "generated" && Boolean(state.generatorMatterId) && redlines.length > 0);
   }
 
   // POST the edits to the export endpoint in CLEAN mode and return the .docx blob

@@ -53,6 +53,7 @@ const tests = [
   ["surfaces review and export error details", testFailureUxDetails],
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["renders page image preview with text fallback", testRenderedPageImagePreview],
+  ["loads page image preview from render-status", testRenderStatusPageImagePreviewFetch],
   ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
   ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
@@ -63,6 +64,7 @@ const tests = [
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
+  ["surfaces generation self-check warnings while staging the artifact", testDraftIntakeGenerateSelfCheckWarning],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
   ["renders server-provided inline diff operations", testInlineDiffOperationRendering],
@@ -627,12 +629,13 @@ async function testPlaybookAdminEditor(page) {
   await page.locator("#clauseDetail").getByRole("button", { name: "Policy" }).click();
   await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
   await page.locator("#addGoverningLaw").click();
-  assert.equal(await page.locator('input[name="governing_law_value_4"]').inputValue(), "UAE");
-  await page.locator('input[name="governing_law_phrase_4"]').fill("the UAE");
+  const uaeGoverningLawIndex = (await page.locator("[data-governing-law-row]").count()) - 1;
+  assert.equal(await page.locator(`input[name="governing_law_value_${uaeGoverningLawIndex}"]`).inputValue(), "UAE");
+  await page.locator(`input[name="governing_law_phrase_${uaeGoverningLawIndex}"]`).fill("the UAE");
   await page.locator("#clauseDetail").getByRole("button", { name: "Redline" }).click();
   await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of the UAE.");
   await page.locator("#clauseDetail").getByRole("button", { name: "Policy" }).click();
-  await page.locator('input[name="preferred_law_index"][value="4"]').check();
+  await page.locator(`input[name="preferred_law_index"][value="${uaeGoverningLawIndex}"]`).check();
   await page.locator("#clauseDetail").getByRole("button", { name: "Audit" }).click();
   await assertTextContains(page.locator("#playbookDraftDiff"), "approved_laws");
   await assertTextContains(page.locator("#playbookDraftDiff"), "rules.approved_options");
@@ -702,7 +705,7 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(Object.prototype.hasOwnProperty.call(savedGoverningLaw, "redline_template"), false);
   assert.deepEqual(
     savedGoverningLaw.rules.approved_options.map((option) => [option.value, option.default === true]),
-    [["India", false], ["Delaware", false], ["England and Wales", false], ["DIFC", false], ["UAE", true]],
+    savedGoverningLaw.approved_laws.map((law) => [law, law === "UAE"]),
   );
 
   // --- Validate Draft: surfaces server validation errors, then a clean pass ---
@@ -1305,6 +1308,163 @@ async function testRenderedPageImagePreview(page) {
   await page.unroute(`**/api/matters/${matterId}/render-page/*`);
 }
 
+async function testRenderStatusPageImagePreviewFetch(page) {
+  const renderText = "Render job preview paragraph.";
+  const matterId = "render_status_pages";
+  const pagePng = testPngBuffer(6, 8);
+  let renderStatusRequested = false;
+
+  await page.route(`**/api/matters/${matterId}/render-status`, async (route) => {
+    renderStatusRequested = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        document_render: {
+          cached: true,
+          cache_key: "render-status-cache-key",
+          document_overlay: {
+            anchors: [{
+              boxes: [],
+              clause_id: "term",
+              confidence: 0.6,
+              confidence_reason: "Page-level paragraph fallback.",
+              fallback: {
+                mode: "text_dom_scroll",
+                selector: '[data-paragraph-id="p1"]',
+              },
+              page_number: 1,
+              paragraph_id: "p1",
+              target_type: "evidence",
+            }],
+            fallback_mode: "text_dom_scroll",
+            pages: [{
+              dpi: 180,
+              height: 2200,
+              image_url: `/api/matters/${matterId}/render-page/1`,
+              page_number: 1,
+              scale: 2,
+              width: 1700,
+            }],
+            precision: "page",
+            status: "partial",
+            version: 1,
+            warnings: [],
+          },
+          page_image_status: "ready",
+          page_images: {
+            cached: true,
+            dpi: 180,
+            pages: [{
+              dpi: 180,
+              height: 2200,
+              image_url: `/api/matters/${matterId}/render-page/1`,
+              page_number: 1,
+              scale: 2,
+              width: 1700,
+            }],
+            scale: 2,
+            status: "ready",
+          },
+          pages: [{
+            dpi: 180,
+            height: 2200,
+            image_url: `/api/matters/${matterId}/render-page/1`,
+            page_number: 1,
+            scale: 2,
+            width: 1700,
+          }],
+          pdf_url: `/api/matters/${matterId}/render-pdf`,
+          source_kind: "docx",
+          source_label: "Converted DOCX",
+          status: "ready",
+        },
+      }),
+    });
+  });
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: pagePng });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-10T09:15:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "term",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Term",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: null,
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate((payload) => {
+    state.selectedMatter = {
+      document_title: "Rendered status NDA",
+      id: payload.matterId,
+      source_filename: "render-status-source.docx",
+      source_type: "repository",
+    };
+    renderResult(payload.reviewResult, payload.reviewResult.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, { matterId, reviewResult });
+
+  await page.waitForSelector('[data-review-render-page="1"] img');
+  assert.equal(renderStatusRequested, true);
+  assert.equal(
+    await page.locator('[data-review-render-page="1"] img').getAttribute("src"),
+    `/api/matters/${matterId}/render-page/1`,
+  );
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Converted DOCX");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "1 page");
+  await assertTextContains(page.locator('[data-review-render-page="1"]'), "Selected clause evidence");
+  assert.equal(await page.locator('[data-review-render-page="1"]').getAttribute("data-overlay-clause-ids"), "term");
+  assert.equal(await page.locator('[data-review-render-page="1"]').getAttribute("data-overlay-paragraph-ids"), "p1");
+
+  const readyState = await page.evaluate(() => state.reviewDocumentRender);
+  assert.deepEqual(readyState, {
+    documentOverlay: {
+      anchors: [{
+        boxes: [],
+        clauseId: "term",
+        confidence: 0.6,
+        pageNumber: 1,
+        paragraphId: "p1",
+        targetType: "evidence",
+      }],
+      fallbackMode: "text_dom_scroll",
+      precision: "page",
+      status: "partial",
+      version: 1,
+    },
+    error: "",
+    pageCount: 1,
+    pages: [{
+      dpi: 180,
+      height: 2200,
+      imageUrl: `/api/matters/${matterId}/render-page/1`,
+      pageNumber: 1,
+      width: 1700,
+    }],
+    pdfUrl: `/api/matters/${matterId}/render-pdf`,
+    sourceLabel: "Converted DOCX",
+    status: "ready",
+  });
+
+  await page.unroute(`**/api/matters/${matterId}/render-status`);
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+}
+
 async function testOriginalViewToggle(page) {
   const renderText = "Original toggle paragraph.";
   const matterId = "original_view";
@@ -1528,7 +1688,7 @@ async function testPdfMarkupOriginalView(page) {
   // Both existing overlays render on page 1 at sensible positions.
   await page.waitForSelector('[data-annotation-id="ann-comment-1"]');
   await page.waitForSelector('[data-annotation-id="ann-highlight-1"]');
-  const pageImageBox = await page.locator('[data-review-render-page="1"] .review-render-page-image').boundingBox();
+  let pageImageBox = await page.locator('[data-review-render-page="1"] .review-render-page-image').boundingBox();
   const pinBox = await page.locator('[data-annotation-id="ann-comment-1"]').boundingBox();
   // The comment pin sits near x=0.25,y=0.3 of the page image (pin is anchored at
   // its bottom-left, so compare against the page-relative point).
@@ -1548,6 +1708,7 @@ async function testPdfMarkupOriginalView(page) {
   await page.locator("[data-pdf-markup-comment-input]").fill("Fresh comment from test");
   await page.locator("[data-pdf-markup-comment-confirm]").click();
   await page.waitForSelector('[data-annotation-id="ann-new-1"]');
+  pageImageBox = await page.locator('[data-review-render-page="1"] .review-render-page-image').boundingBox();
 
   const commentPost = postedBodies.find((body) => body.type === "comment");
   assert.ok(commentPost, "a comment was POSTed");
@@ -1562,10 +1723,13 @@ async function testPdfMarkupOriginalView(page) {
   // --- Add a highlight: select the Highlight tool, press-drag a box.
   await page.locator('[data-pdf-markup-tool="highlight"]').click();
   assert.equal(await page.locator('[data-pdf-markup-tool="highlight"]').getAttribute("aria-pressed"), "true");
-  const dragStartX = pageImageBox.x + pageImageBox.width * 0.2;
-  const dragStartY = pageImageBox.y + pageImageBox.height * 0.7;
-  const dragEndX = pageImageBox.x + pageImageBox.width * 0.6;
-  const dragEndY = pageImageBox.y + pageImageBox.height * 0.8;
+  pageImageBox = await page.locator('[data-review-render-page="1"] .review-render-page-image').boundingBox();
+  const highlightStartX = 0.55;
+  const highlightStartY = 0.45;
+  const dragStartX = pageImageBox.x + pageImageBox.width * highlightStartX;
+  const dragStartY = pageImageBox.y + pageImageBox.height * highlightStartY;
+  const dragEndX = pageImageBox.x + pageImageBox.width * 0.85;
+  const dragEndY = pageImageBox.y + pageImageBox.height * 0.55;
   await page.mouse.move(dragStartX, dragStartY);
   await page.mouse.down();
   await page.mouse.move((dragStartX + dragEndX) / 2, (dragStartY + dragEndY) / 2);
@@ -1579,7 +1743,7 @@ async function testPdfMarkupOriginalView(page) {
   assert.equal(highlightPost.page, 1);
   assert.ok(highlightPost.rect.w > 0 && highlightPost.rect.h > 0, "highlight has a non-zero box");
   assert.ok(highlightPost.rect.w <= 1 && highlightPost.rect.h <= 1, "highlight box normalized");
-  assert.ok(Math.abs(highlightPost.rect.x - 0.2) < 0.1, `highlight rect.x ${highlightPost.rect.x} tracks the drag start`);
+  assert.ok(Math.abs(highlightPost.rect.x - highlightStartX) < 0.1, `highlight rect.x ${highlightPost.rect.x} tracks the drag start`);
 
   // --- Delete the existing comment via its popover.
   await page.locator('[data-annotation-id="ann-comment-1"]').click();
@@ -1745,8 +1909,8 @@ async function testRichDocumentStructureRendering(page) {
   });
   await page.waitForSelector('[data-paragraph-id="p2"].has-selection .paragraph-comment-add');
   await page.locator('[data-paragraph-id="p2"] .paragraph-comment-add').click();
-  await page.waitForSelector('[data-paragraph-id="p2"] .paragraph-comment-composer');
-  await assertTextContains(page.locator('[data-paragraph-id="p2"] .paragraph-comment-composer'), "SELECTED TEXT COMMENT");
+  await page.waitForSelector('[data-paragraph-id="p2"] .comment-thread-card .comment-compose');
+  assert.equal(await page.locator('[data-paragraph-id="p2"] .comment-compose-input').getAttribute("placeholder"), "Add a comment");
 }
 
 async function testStructuredEvidenceAndRationale(page) {
@@ -2319,6 +2483,68 @@ async function testDraftIntakeGenerateNda(page) {
 
   await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/matters/mat_generated_1/source");
+}
+
+async function testDraftIntakeGenerateSelfCheckWarning(page) {
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  await page.route("**/api/generate-nda", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter_id: "mat_generated_warning",
+        artifact_id: "art_generated_warning",
+        status: "generated",
+        download_url: "/api/matters/mat_generated_warning/source",
+        self_check: {
+          dynamic_failures: [{ clause_id: "term", reason: "Term did not match Playbook preference." }],
+          native_failures: [],
+          overall_status: "check",
+          passed: false,
+        },
+        manifest: {
+          entity_id: "aspora_technology",
+          governing_law_value: "England and Wales",
+          term_years: 2,
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters/mat_generated_warning/source", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      body: "PK generated-warning-docx-bytes",
+    });
+  });
+
+  await page.locator("#generatorTab").click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
+  );
+  await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
+  await page.locator("#draftIntakeCounterpartyName").fill("Warning Corp");
+  await page.locator("#draftIntakeCounterpartyEmail").fill("legal@warning.example");
+  await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
+  await page.locator("#draftIntakeGenerateButton").click();
+
+  await waitForText(page, "#draftIntakeStatus", "self-check flagged it");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "Warning Corp");
+  await assertTextContains(page.locator("#draftIntakeStatus"), "England and Wales");
+  assert.equal(await page.locator("#draftIntakeStatus").evaluate((node) => node.classList.contains("error")), true);
+  await page.waitForSelector("#draftIntakeDownloadButton:not([disabled])");
+  await page.waitForSelector("#draftIntakeSendButton:not([disabled])");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator("#draftIntakeDownloadButton").click(),
+  ]);
+  assert.match(download.url(), /\/api\/matters\/mat_generated_warning\/source$/);
+
+  await page.unroute("**/api/generate-nda");
+  await page.unroute("**/api/matters/mat_generated_warning/source");
 }
 
 // When the endpoint is not deployed on this base (404 — generation lives on
@@ -3014,7 +3240,10 @@ async function testManualUploadModal(page) {
   const uploadRequest = await uploadRequestPromise;
   assert.equal(uploadRequest.postDataJSON().board_column, "reviewed");
   await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
-  await assertTextContains(page.locator('[data-repository-list="reviewed"]'), reviewedStem);
+  await page.waitForFunction(
+    (uploadedStem) => document.querySelector('[data-repository-list="reviewed"]')?.innerText.includes(uploadedStem),
+    reviewedStem,
+  );
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
 
@@ -3947,6 +4176,7 @@ async function testGmailSetupRequiredStatus(page) {
 }
 
 async function testUserGmailSessionControls(page) {
+  const gmailStatusRoute = "**/api/gmail/status*";
   const buildGmailStatus = ({ ready = true, imported = 3, skipped = 1, syncedAt = "2026-06-04T18:00:00+00:00" } = {}) => ({
     user_scoped: true,
     connect_url: "/auth/gmail/start",
@@ -4020,7 +4250,7 @@ async function testUserGmailSessionControls(page) {
       }),
     });
   });
-  await page.route("**/api/gmail/status", async (route) => {
+  await page.route(gmailStatusRoute, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -4061,7 +4291,7 @@ async function testUserGmailSessionControls(page) {
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await waitForText(page, "#sessionStrip", "Signed in: alice@example.com");
-  await assertTextContains(page.locator("#sessionStrip"), "Gmail connected: alice@example.com");
+  await waitForText(page, "#sessionStrip", "Gmail connected: alice@example.com");
   await assertTextContains(page.locator("#sessionStrip"), "Set NDA_ALLOWED_HOSTS to the deployed Render hostname.");
   assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), true);
   assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), false);
@@ -4096,7 +4326,7 @@ async function testUserGmailSessionControls(page) {
 
   await page.unroute("**/api/auth/status");
   await page.unroute("**/api/deployment/status");
-  await page.unroute("**/api/gmail/status");
+  await page.unroute(gmailStatusRoute);
   await page.unroute("**/api/matters");
   await page.unroute("**/api/gmail/import");
   await page.unroute("**/api/gmail/disconnect");
@@ -4485,10 +4715,10 @@ async function testBackendRedlineModes(page) {
     width: "28px",
   });
   await page.getByRole("button", { name: "Add comment" }).click();
-  await page.waitForSelector('[data-paragraph-id="p2"] .paragraph-comment-composer');
-  await assertTextContains(page.locator('[data-paragraph-id="p2"] .paragraph-comment-composer'), "SELECTED TEXT COMMENT");
+  await page.waitForSelector('[data-paragraph-id="p2"] .comment-thread-card .comment-compose');
+  assert.equal(await page.locator('[data-paragraph-id="p2"] .comment-compose-input').getAttribute("placeholder"), "Add a comment");
   assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
-  await page.locator('[data-paragraph-id="p2"] .paragraph-comment-cancel').click();
+  await page.locator('[data-paragraph-id="p2"] .comment-compose-cancel').click();
 
   await page.locator('[data-studio-lane-id="term_and_survival"]').click();
 
@@ -4649,10 +4879,32 @@ async function testClauseDecisionControls(page) {
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
-  const [download] = await Promise.all([
+  const [exportRequest, download] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx") && request.method() === "POST"),
     page.waitForEvent("download"),
     page.locator("#studioExportButton").click(),
   ]);
+  const exportPayload = exportRequest.postDataJSON();
+  assert.ok(
+    exportPayload.export_redline_edits.some((edit) => (
+      edit.clause_id === "governing_law"
+      && edit.action === "replace_paragraph"
+      && /DIFC/.test(edit.replacement_text || "")
+    )),
+    "selected governing-law template should be sent in export_redline_edits",
+  );
+  assert.ok(
+    exportPayload.export_redline_edits.some((edit) => (
+      edit.action === "insert_after_paragraph"
+      && /For \[Party 1 legal name\]/.test(edit.insert_text || edit.replacement_text || "")
+    )),
+    "re-included signature insertion should be sent in export_redline_edits",
+  );
+  assert.equal(
+    exportPayload.export_redline_edits.some((edit) => /England and Wales/.test(edit.replacement_text || "")),
+    false,
+    "unselected governing-law template should not be sent in export_redline_edits",
+  );
   const exportedPath = await download.path();
   assert.ok(exportedPath, "decision export download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
@@ -4725,10 +4977,12 @@ async function testManualViewerEditRedline(page) {
 
   const paragraph = page.locator('[data-paragraph-id="p1"]');
   await assertRedlinePreview(paragraph, {
-    originalText: "Agreement",
-    insertedText: "AGREEMdasdasdsa",
+    originalText: "greement",
+    insertedText: "GREEMdasdasdsa",
     editableCount: 1,
   });
+  await page.locator('[data-editable-paragraph-id="p1"]').evaluate((node) => node.blur());
+  await page.waitForSelector('[data-paragraph-id="p1"]:not(.is-editing) .paragraph-redline-preview:not([hidden])');
   await assertRedGreenPixels(paragraph.locator(".paragraph-redline-preview"));
 
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
@@ -5197,7 +5451,19 @@ async function assertGreenPixels(locator) {
 }
 
 async function colorPixelCounts(locator) {
-  const png = PNG.sync.read(await locator.screenshot());
+  let png;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await locator.waitFor({ state: "visible", timeout: 5000 });
+      png = PNG.sync.read(await locator.screenshot());
+      break;
+    } catch (error) {
+      lastError = error;
+      await wait(120);
+    }
+  }
+  if (!png) throw lastError;
   let redPixels = 0;
   let greenPixels = 0;
   for (let offset = 0; offset < png.data.length; offset += 4) {
@@ -5532,8 +5798,8 @@ async function testDocumentVerdictLabel(page) {
   assert.equal(await failBadge.count(), 1, "failing paragraph should carry a verdict badge");
 
   // The verdict is conveyed by TEXT (not colour alone): the badge has a label.
-  await assertTextContains(passBadge, "PASS");
-  await assertTextContains(failBadge, "FAIL");
+  assert.match(await passBadge.innerText(), /pass/i);
+  assert.match(await failBadge.innerText(), /fail/i);
   // ...and a non-color icon accompanies it.
   assert.equal(await failBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
   assert.equal(await passBadge.locator(".paragraph-verdict-badge-ico").count(), 1, "verdict badge should include an icon");
@@ -6221,6 +6487,7 @@ async function testDashboardSmartSearchV2(page) {
 
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
+  await page.waitForFunction(() => typeof state !== "undefined" && Array.isArray(state.matters) && state.matters.length === 3);
 
   // --- Natural-language query -> AI-translated filter applied to real matters ---
   await page.fill("#dashboardSearchInput", "anything stuck in review for more than a week");

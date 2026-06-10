@@ -1603,7 +1603,7 @@ class CheckerTests(unittest.TestCase):
 
     def test_review_fails_loudly_on_evidence_drift(self):
         with patch(
-            "nda_automation.checker.validate_clause_evidence_trust",
+            "nda_automation.review_result_contract.validate_clause_evidence_trust",
             return_value=["governing_law: matched_text does not equal matched source paragraphs"],
         ):
             with self.assertRaisesRegex(EvidenceProvenanceError, "Clause evidence provenance drift detected"):
