@@ -94,6 +94,7 @@ import {
   GenerationUnavailableError,
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
+import * as ReviewWorkstationModel from "../../static/js/review-workstation-model.mjs";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 const inlineDiffVectors = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "inline_diff_vectors.json"), "utf8"));
@@ -1196,3 +1197,231 @@ assert.equal(single[0].isCurrent, true);
 // The internal ordering index is not leaked on the returned nodes.
 assert.ok(!("_index" in single[0]));
 assert.ok(!("_index" in lineage[0]));
+
+// --- Review workstation model: load/apply/comment/export state operations ---
+const workstationState = {
+  approveServerBlocks: ["previous_block"],
+  clauseJumpIndexes: { review: 1 },
+  exportClauseDecisions: {},
+  exportRedlineDecisions: {},
+  latestReviewResult: null,
+  reasoningTrailOpen: { review: true },
+  redlineDraft: { stale: true },
+  redlineDraftDirty: true,
+  redlineTemplateSelections: {},
+  reviewClauses: [],
+  reviewComments: [{ id: "old", text: "Old comment" }],
+  reviewDocumentRender: null,
+  reviewEditHistory: [{ type: "paragraph_text" }],
+  reviewExportOriginalParagraphs: [],
+  reviewOriginalParagraphs: [],
+  reviewParagraphs: [],
+  reviewRedlines: [],
+  reviewResolution: { ok: true },
+  reviewSourceText: "",
+  reviewedClauseIds: { review: true },
+  selectedMatter: {
+    id: "matter-1",
+    human_reviewed: false,
+    send_block_reason: "Matter needs human review before a redline can be sent.",
+  },
+  selectedReviewClauseId: "old",
+};
+const workstationResult = {
+  clauses: [
+    { id: "confidentiality", decision: "pass", matched_paragraph_ids: ["p1"], name: "Confidentiality" },
+    {
+      id: "liability_cap",
+      decision: "review",
+      matched_paragraph_ids: ["p2"],
+      name: "Liability Cap",
+      review_state: { state: "review", requires_human_review: true },
+    },
+    { id: "term", decision: "pass", name: "Term" },
+  ],
+  paragraphs: [
+    { id: "p1", index: 1, source_index: 11, text: "Keep this confidential.", fontSize: 10, runs: [{ text: "Keep", bold: true }] },
+    { id: "p2", index: 2, source_index: 12, text: "Liability is unlimited." },
+  ],
+  redline_edits: [
+    {
+      id: "redline-liability",
+      action: "replace_paragraph",
+      clause_id: "liability_cap",
+      paragraph_id: "p2",
+      replacement_text: "Liability is capped at fees paid.",
+      template_options: [
+        { id: "fees", replacement_text: "Liability is capped at fees paid." },
+        { id: "fixed", selected: true, replacement_text: "Liability is capped at GBP 1,000,000." },
+      ],
+    },
+    {
+      id: "redline-confidentiality",
+      action: "insert_after_paragraph",
+      clause_id: "confidentiality",
+      paragraph_id: "p1",
+      insert_text: "This clause survives termination.",
+    },
+  ],
+};
+ReviewWorkstationModel.loadReviewResultState(workstationState, workstationResult, {
+  documentRender: { kind: "docx" },
+  reviewedText: "Reviewed text",
+});
+assert.equal(workstationState.reviewDocumentRender.kind, "docx");
+assert.equal(workstationState.selectedReviewClauseId, "liability_cap");
+assert.deepEqual(workstationState.exportClauseDecisions, {
+  confidentiality: true,
+  liability_cap: true,
+  term: false,
+});
+assert.deepEqual(workstationState.redlineTemplateSelections, { "redline-liability": "fixed" });
+assert.equal(workstationState.reviewOriginalParagraphs[0].fontSize, 10);
+assert.deepEqual(workstationState.reviewOriginalParagraphs[0].runs, [{ text: "Keep", bold: true }]);
+assert.deepEqual(workstationState.reviewComments, []);
+assert.deepEqual(workstationState.reviewedClauseIds, {});
+assert.equal(workstationState.reviewSourceText, "Reviewed text");
+
+const draftApply = ReviewWorkstationModel.applyRedlineDraftState(workstationState, {
+  clause_decisions: { liability_cap: true, missing_clause: false },
+  manual_redline_edits: [
+    { action: "replace_paragraph", paragraph_id: "p1", replacement_text: "Keep this confidential forever." },
+  ],
+  redline_decisions: { "redline-confidentiality": false, missing_redline: true },
+  review_comments: [
+    { clause_id: "liability_cap", text: "  Explain the cap.  " },
+    { paragraph_id: "p1", text: "  Paragraph note.  " },
+    { paragraph_id: "p2", text: "   " },
+  ],
+  reviewed_clause_ids: { liability_cap: true, missing_clause: true },
+  template_selections: { "redline-liability": "fees", missing_redline: "x" },
+}, {
+  baselineParagraphs: workstationState.reviewExportOriginalParagraphs,
+});
+assert.equal(draftApply.sourceTextChanged, true);
+assert.equal(workstationState.reviewParagraphs[0].text, "Keep this confidential forever.");
+assert.equal(workstationState.reviewSourceText, "Keep this confidential forever.\n\nLiability is unlimited.");
+assert.deepEqual(workstationState.exportRedlineDecisions, { "redline-confidentiality": false });
+assert.deepEqual(workstationState.reviewedClauseIds, { liability_cap: true });
+assert.equal(workstationState.redlineTemplateSelections["redline-liability"], "fees");
+assert.deepEqual(ReviewWorkstationModel.effectiveReviewRedlines(workstationState).map((edit) => edit.id), ["redline-liability"]);
+assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstationState)[0].replacement_text, "Liability is capped at fees paid.");
+
+ReviewWorkstationModel.setClauseReviewComment(workstationState, "liability_cap", "  Fresh clause note  ", {
+  now: "2026-06-10T10:00:00.000Z",
+});
+assert.equal(ReviewWorkstationModel.clauseReviewComment(workstationState, "liability_cap").text, "Fresh clause note");
+assert.deepEqual(
+  ReviewWorkstationModel.currentReviewComments(workstationState).map((comment) => ({
+    clause_id: comment.clause_id || "",
+    paragraph_id: comment.paragraph_id || "",
+    paragraph_index: comment.paragraph_index || 0,
+    source_index: comment.source_index || 0,
+    text: comment.text,
+  })),
+  [
+    {
+      clause_id: "",
+      paragraph_id: "p1",
+      paragraph_index: 1,
+      source_index: 11,
+      text: "Paragraph note.",
+    },
+    {
+      clause_id: "liability_cap",
+      paragraph_id: "p2",
+      paragraph_index: 2,
+      source_index: 12,
+      text: "Fresh clause note",
+    },
+  ],
+);
+
+const rootComment = ReviewWorkstationModel.buildParagraphReviewComment(workstationState, "p1", "Root", {
+  now: "2026-06-10T11:00:00.000Z",
+});
+ReviewWorkstationModel.upsertReviewComment(workstationState, rootComment);
+const replyComment = ReviewWorkstationModel.buildCommentReply(workstationState, rootComment.id, " Reply ", {
+  now: "2026-06-10T11:01:00.000Z",
+});
+ReviewWorkstationModel.upsertReviewComment(workstationState, replyComment);
+assert.equal(replyComment.id, "comment-reply-comment-paragraph-p1-1");
+const replyThread = ReviewWorkstationModel.paragraphCommentThreads(workstationState, "p1")
+  .find((thread) => thread.root.id === rootComment.id);
+assert.equal(replyThread.replies[0].text, "Reply");
+assert.equal(ReviewWorkstationModel.toggleReviewCommentResolved(workstationState, rootComment.id).resolved, true);
+ReviewWorkstationModel.removeReviewCommentThread(workstationState, rootComment.id);
+assert.equal(ReviewWorkstationModel.paragraphCommentThreads(workstationState, "p1").length, 1);
+
+const exportPayload = ReviewWorkstationModel.buildReviewExportPayload(workstationState, {
+  contentBase64: "ZmFrZQ==",
+  document: { name: "upload.docx" },
+  fills: [{ paragraph_id: "p2", find: "unlimited", value: "capped", mode: "tracked" }],
+  manualRedlineEdits: [{ id: "manual-p1" }],
+  reviewComments: ReviewWorkstationModel.currentReviewComments(workstationState),
+  text: workstationState.reviewSourceText,
+  title: "Uploaded NDA",
+});
+assert.equal(exportPayload.filename, "upload.docx");
+assert.equal(exportPayload.content_base64, "ZmFrZQ==");
+assert.equal(exportPayload.export_redline_edits.length, 1);
+assert.equal(exportPayload.manual_redline_edits[0].id, "manual-p1");
+assert.equal(exportPayload.fills[0].mode, "tracked");
+
+const matterPayload = ReviewWorkstationModel.buildReviewExportPayload(workstationState, {
+  matter: { id: "matter-1" },
+  text: "Matter text",
+  title: "Matter NDA",
+});
+assert.equal(matterPayload.matter_id, "matter-1");
+assert.ok(!("filename" in matterPayload));
+
+const sendPayload = ReviewWorkstationModel.buildReviewSendPayload(workstationState, {
+  body: " Body ",
+  recipient: "legal@example.com",
+  subject: " Subject ",
+  text: "Matter text",
+});
+assert.equal(sendPayload.matter_id, "matter-1");
+assert.equal(sendPayload.confirm_recipient, "legal@example.com");
+assert.equal(sendPayload.subject, "Subject");
+assert.equal(sendPayload.body, "Body");
+
+const acknowledgement = ReviewWorkstationModel.toggleReviewAcknowledgement(workstationState, { clauseId: "liability_cap" });
+assert.equal(acknowledgement.nextReviewed, false);
+assert.equal(acknowledgement.allReviewed, false);
+assert.equal(workstationState.selectedMatter.human_reviewed, false);
+const acknowledgementAgain = ReviewWorkstationModel.toggleReviewAcknowledgement(workstationState, { clauseId: "liability_cap" });
+assert.equal(acknowledgementAgain.nextReviewed, true);
+assert.equal(acknowledgementAgain.allReviewed, true);
+assert.equal(workstationState.selectedMatter.human_reviewed, true);
+assert.equal("send_block_reason" in workstationState.selectedMatter, false);
+
+ReviewWorkstationModel.applyViewerReviewDetectionState(workstationState, {
+  clauses: [
+    {
+      id: "liability_cap",
+      decision: "review",
+      matched_paragraph_ids: ["p2"],
+      review_state: { state: "review", requires_human_review: true },
+    },
+    { id: "new_clause", decision: "pass" },
+  ],
+  paragraphs: workstationResult.paragraphs,
+  redline_edits: [
+    {
+      id: "redline-liability",
+      action: "replace_paragraph",
+      clause_id: "liability_cap",
+      paragraph_id: "p2",
+      template_options: [
+        { id: "fees", replacement_text: "Liability is capped at fees paid." },
+        { id: "fixed", replacement_text: "Liability is capped at GBP 1,000,000." },
+      ],
+    },
+  ],
+}, "Refreshed text");
+assert.equal(workstationState.selectedReviewClauseId, "liability_cap");
+assert.deepEqual(workstationState.exportClauseDecisions, { liability_cap: true, new_clause: false });
+assert.equal(workstationState.redlineTemplateSelections["redline-liability"], "fees");
+assert.equal(workstationState.reviewSourceText, "Refreshed text");

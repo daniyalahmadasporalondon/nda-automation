@@ -369,46 +369,19 @@ async function refreshViewerReviewDetection(sequence) {
 }
 
 function applyViewerReviewDetectionResult(result, reviewedText) {
-  const previousSelectedClauseId = state.selectedReviewClauseId;
-  const previousExportDecisions = { ...state.exportClauseDecisions };
-  const previousTemplateSelections = { ...state.redlineTemplateSelections };
   const editSelection = snapshotViewerEditSelection();
-  state.latestReviewResult = result;
-  state.reviewClauses = result.clauses || [];
-  state.reviewParagraphs = result.paragraphs || [];
-  state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
-  if (!paragraphsAlignWithBaseline(state.reviewParagraphs, state.reviewExportOriginalParagraphs)) {
-    state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
-  }
-  state.reviewRedlines = result.redline_edits || [];
-  state.reviewSourceText = reviewedText;
-  state.clauseJumpIndexes = {};
-  state.selectedReviewClauseId = state.reviewClauses.some((clause) => clause.id === previousSelectedClauseId)
-    ? previousSelectedClauseId
-    : state.reviewClauses.find((clause) => !clausePasses(clause))?.id || state.reviewClauses[0]?.id || null;
-  reconcileExportDecisions(previousExportDecisions);
-  reconcileTemplateSelections(previousTemplateSelections);
+  ReviewWorkstationModel.applyViewerReviewDetectionState(state, result, reviewedText);
   renderStudioResult({ clauses: state.reviewClauses });
   restoreViewerEditSelection(editSelection);
   updateExportButtonState();
 }
 
 function reconcileExportDecisions(previousExportDecisions) {
-  const clauseIds = new Set(state.reviewClauses.map((clause) => clause.id));
-  state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
-  Object.entries(previousExportDecisions || {}).forEach(([clauseId, included]) => {
-    if (clauseIds.has(clauseId)) state.exportClauseDecisions[clauseId] = Boolean(included);
-  });
+  ReviewWorkstationModel.reconcileExportDecisions(state, previousExportDecisions);
 }
 
 function reconcileTemplateSelections(previousTemplateSelections) {
-  state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
-  state.reviewRedlines.forEach((edit) => {
-    const previousSelection = previousTemplateSelections?.[edit.id];
-    if (previousSelection && (edit.template_options || []).some((option) => option.id === previousSelection)) {
-      state.redlineTemplateSelections[edit.id] = previousSelection;
-    }
-  });
+  ReviewWorkstationModel.reconcileTemplateSelections(state, previousTemplateSelections);
 }
 
 function updateManualRedlinePreview(editable, paragraph) {
@@ -530,12 +503,8 @@ function clampTextOffset(offset, textLength) {
 }
 
 function syncReviewSourceFromParagraphs() {
-  const text = state.reviewParagraphs
-    .map((paragraph) => String(paragraph.text || "").trim())
-    .filter(Boolean)
-    .join("\n\n");
-  state.reviewSourceText = text;
-  setSourceText(text);
+  state.reviewSourceText = ReviewWorkstationModel.reviewSourceTextFromParagraphs(state.reviewParagraphs);
+  setSourceText(state.reviewSourceText);
 }
 
 function markSourceEdited(message, { preserveSourceDocument = false } = {}) {
@@ -579,9 +548,8 @@ function insertPlainTextAtSelection(text) {
 }
 
 function selectReviewClause(clauseId, options = {}) {
-  state.selectedReviewClauseId = clauseId;
-  if (state.reviewInspectorView !== "clause") {
-    state.reviewInspectorView = "clause";
+  const selection = ReviewWorkstationModel.selectReviewClauseState(state, clauseId);
+  if (selection.inspectorViewChanged) {
     updateReviewInspectorTabs();
   }
   renderStudioResult({ clauses: state.reviewClauses });
