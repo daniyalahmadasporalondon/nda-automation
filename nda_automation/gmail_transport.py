@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import app_settings, gmail_attachment_selector, matter_store
+from . import app_settings, gmail_attachment_selector
+from .matter_repository import DiskMatterRepository
 
 
 def _legacy() -> Any:
@@ -184,7 +185,7 @@ class GmailTransport:
         part_id: str = "",
         owner_user_id: str = "",
     ) -> bool:
-        return matter_store.find_gmail_attachment(
+        return DiskMatterRepository().find_gmail_attachment(
             message_id,
             attachment_id,
             attachment_filename=attachment_filename,

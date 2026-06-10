@@ -1,12 +1,18 @@
 import unittest
 from io import BytesIO
-from pathlib import Path
-from unittest import mock
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.review_document import align_document_paragraphs
 from nda_automation.routes import matters as matters_routes
+
+
+class _SourceRepository:
+    def __init__(self, document_bytes: bytes | None) -> None:
+        self.document_bytes = document_bytes
+
+    def get_source_document_bytes(self, matter: dict) -> bytes | None:
+        return self.document_bytes
 
 
 def _titled_numbered_docx() -> bytes:
@@ -49,8 +55,12 @@ def _flat_paragraphs(docx_bytes: bytes) -> list[dict]:
 
 
 class RestoreParagraphStructureTests(unittest.TestCase):
-    def _matter(self, docx_bytes: bytes, paragraphs: list[dict]) -> dict:
-        return {"id": "matter_x", "review_result": {"paragraphs": paragraphs}}
+    def _matter(self, docx_bytes: bytes, paragraphs: list[dict], *, source_filename: str = "nda.docx") -> dict:
+        return {
+            "id": "matter_x",
+            "source_filename": source_filename,
+            "review_result": {"paragraphs": paragraphs},
+        }
 
     def test_restores_numbering_and_title_style_onto_flat_paragraphs(self):
         docx = _titled_numbered_docx()
@@ -58,9 +68,10 @@ class RestoreParagraphStructureTests(unittest.TestCase):
         # Sanity: the stored paragraphs carry no structure.
         self.assertTrue(all(not p.get("structure_label") and not p.get("numbering") for p in flat))
         matter = self._matter(docx, flat)
-        with mock.patch.object(matters_routes.matter_store, "source_document_path", return_value=Path("nda.docx")), \
-             mock.patch.object(matters_routes.matter_store, "get_source_document_bytes", return_value=docx):
-            merged = matters_routes._restored_review_result_paragraphs(matter)
+        merged = matters_routes._restored_review_result_paragraphs(
+            matter,
+            repository=_SourceRepository(docx),
+        )
         self.assertIsNotNone(merged)
         title, clause = merged
         self.assertEqual(title["text"], "Non-Disclosure Agreement")
@@ -73,33 +84,38 @@ class RestoreParagraphStructureTests(unittest.TestCase):
         flat = _flat_paragraphs(docx)
         flat[1]["structure_label"] = "1."  # already structured
         matter = self._matter(docx, flat)
-        with mock.patch.object(matters_routes.matter_store, "source_document_path", return_value=Path("nda.docx")), \
-             mock.patch.object(matters_routes.matter_store, "get_source_document_bytes", return_value=docx):
-            self.assertIsNone(matters_routes._restored_review_result_paragraphs(matter))
+        self.assertIsNone(matters_routes._restored_review_result_paragraphs(
+            matter,
+            repository=_SourceRepository(docx),
+        ))
 
     def test_bails_when_stored_text_diverges_from_reextraction(self):
         docx = _titled_numbered_docx()
         flat = _flat_paragraphs(docx)
         flat[1]["text"] = "A completely different clause that won't align."
         matter = self._matter(docx, flat)
-        with mock.patch.object(matters_routes.matter_store, "source_document_path", return_value=Path("nda.docx")), \
-             mock.patch.object(matters_routes.matter_store, "get_source_document_bytes", return_value=docx):
-            self.assertIsNone(matters_routes._restored_review_result_paragraphs(matter))
+        self.assertIsNone(matters_routes._restored_review_result_paragraphs(
+            matter,
+            repository=_SourceRepository(docx),
+        ))
 
     def test_returns_none_for_non_docx_source(self):
         docx = _titled_numbered_docx()
-        matter = self._matter(docx, _flat_paragraphs(docx))
-        with mock.patch.object(matters_routes.matter_store, "source_document_path", return_value=Path("nda.pdf")):
-            self.assertIsNone(matters_routes._restored_review_result_paragraphs(matter))
+        matter = self._matter(docx, _flat_paragraphs(docx), source_filename="nda.pdf")
+        self.assertIsNone(matters_routes._restored_review_result_paragraphs(
+            matter,
+            repository=_SourceRepository(docx),
+        ))
 
     def test_with_restored_structure_leaves_structured_matter_untouched(self):
         docx = _titled_numbered_docx()
         flat = _flat_paragraphs(docx)
         flat[1]["numbering"] = {"label": "1."}
         matter = self._matter(docx, flat)
-        with mock.patch.object(matters_routes.matter_store, "source_document_path", return_value=Path("nda.docx")), \
-             mock.patch.object(matters_routes.matter_store, "get_source_document_bytes", return_value=docx):
-            result = matters_routes._with_restored_paragraph_structure(matter)
+        result = matters_routes._with_restored_paragraph_structure(
+            matter,
+            repository=_SourceRepository(docx),
+        )
         self.assertIs(result, matter)
 
 

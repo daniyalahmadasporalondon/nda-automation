@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from . import document_rendering, matter_store
+from . import document_rendering
+from .matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 
 DEFAULT_RENDER_STATUS_POLL_GRACE_SECONDS = 5.0
 
@@ -27,7 +28,8 @@ class MatterRenderJobError(RuntimeError):
 @dataclass(frozen=True)
 class MatterRenderSource:
     matter: dict[str, Any]
-    source_path: Path
+    source_bytes: bytes
+    source_filename: str
     owner_user_id: str
 
 
@@ -56,17 +58,20 @@ def render_status_payload(
     *,
     owner_user_id: str = "",
     poll_grace_seconds: float | None = None,
+    repository: MatterRepository | None = None,
 ) -> dict[str, Any]:
     if poll_grace_seconds is None:
         poll_grace_seconds = DEFAULT_RENDER_STATUS_POLL_GRACE_SECONDS
-    resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id)
+    resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id, repository=repository)
     matter = resolved.matter
-    source_path = resolved.source_path
+    source_bytes = resolved.source_bytes
+    source_filename = resolved.source_filename
 
-    render_result = document_rendering.poll_source_path_render_result(
+    render_result = document_rendering.poll_source_document_render_result(
         matter_id or "",
-        source_path,
-        content_type=source_document_content_type(source_path),
+        source_bytes,
+        source_filename=source_filename,
+        content_type=source_document_content_type(source_filename),
         owner_user_id=resolved.owner_user_id,
         wait_timeout_seconds=poll_grace_seconds,
     )
@@ -79,11 +84,21 @@ def render_status_payload(
                 page_manifest=render_result.page_manifest,
             )
         }
-    return {"document_render": rendering_in_progress_payload(matter_id or "", source_path)}
+    return {"document_render": rendering_in_progress_payload(matter_id or "", source_filename)}
 
 
-def render_pdf_file(matter_id: str | None, *, owner_user_id: str = "") -> MatterRenderFile:
-    result = render_matter_document(matter_id, owner_user_id=owner_user_id, include_page_images=False)
+def render_pdf_file(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    repository: MatterRepository | None = None,
+) -> MatterRenderFile:
+    result = render_matter_document(
+        matter_id,
+        owner_user_id=owner_user_id,
+        include_page_images=False,
+        repository=repository,
+    )
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         error = rendered.error_message or "Rendered PDF is not available for this matter."
@@ -102,8 +117,9 @@ def render_page_image_file(
     page_number: int,
     *,
     owner_user_id: str = "",
+    repository: MatterRepository | None = None,
 ) -> MatterRenderFile:
-    result = render_matter_document(matter_id, owner_user_id=owner_user_id)
+    result = render_matter_document(matter_id, owner_user_id=owner_user_id, repository=repository)
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         error = rendered.error_message or "Rendered PDF is not available for this matter."
@@ -150,23 +166,38 @@ def render_page_image_file(
     return MatterRenderFile(path=page.image_path, content_type=document_rendering.PAGE_IMAGE_CONTENT_TYPE)
 
 
-def resolve_matter_source(matter_id: str | None, *, owner_user_id: str = "") -> MatterRenderSource:
+def resolve_matter_source(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    repository: MatterRepository | None = None,
+) -> MatterRenderSource:
     if matter_id is None:
         raise MatterRenderJobError({"error": "Matter not found."}, status=404)
+    repository = repository or DiskMatterRepository()
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
-    except matter_store.MatterStoreError as error:
+        matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    except MatterRepositoryError as error:
         raise MatterRenderJobError({"error": str(error)}, status=500) from error
     if matter is None:
         raise MatterRenderJobError({"error": "Matter not found."}, status=404)
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None:
+    try:
+        source_bytes = repository.get_source_document_bytes(matter)
+    except MatterRepositoryError as error:
+        raise MatterRenderJobError({"error": str(error)}, status=500) from error
+    if source_bytes is None:
         raise MatterRenderJobError({"error": "No source document for this matter."}, status=404)
-    return MatterRenderSource(matter=matter, source_path=source_path, owner_user_id=str(matter.get("owner_user_id") or ""))
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    return MatterRenderSource(
+        matter=matter,
+        source_bytes=source_bytes,
+        source_filename=source_filename,
+        owner_user_id=str(matter.get("owner_user_id") or ""),
+    )
 
 
-def rendering_in_progress_payload(matter_id: str, source_path: Path) -> dict[str, Any]:
-    source_kind = "pdf" if source_path.suffix.lower() == ".pdf" else "docx"
+def rendering_in_progress_payload(matter_id: str, source_filename: str) -> dict[str, Any]:
+    source_kind = "pdf" if Path(source_filename).suffix.lower() == ".pdf" else "docx"
     return {
         "status": document_rendering.RENDERING_STATUS,
         "source_kind": source_kind,
@@ -181,12 +212,14 @@ def render_matter_document(
     *,
     owner_user_id: str = "",
     include_page_images: bool = True,
+    repository: MatterRepository | None = None,
 ) -> MatterRenderedDocument:
-    resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id)
+    resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id, repository=repository)
     try:
-        render_result = document_rendering.render_source_path_result(
-            resolved.source_path,
-            content_type=source_document_content_type(resolved.source_path),
+        render_result = document_rendering.render_source_document_result(
+            resolved.source_bytes,
+            source_filename=resolved.source_filename,
+            content_type=source_document_content_type(resolved.source_filename),
             owner_user_id=resolved.owner_user_id,
             include_page_images=include_page_images,
         )
@@ -199,8 +232,8 @@ def render_matter_document(
     return MatterRenderedDocument(matter=resolved.matter, render_result=render_result)
 
 
-def source_document_content_type(source_path: Path) -> str:
-    suffix = source_path.suffix.lower()
+def source_document_content_type(source_filename: str | Path) -> str:
+    suffix = Path(str(source_filename)).suffix.lower()
     if suffix == ".pdf":
         return document_rendering.PDF_CONTENT_TYPE
     if suffix == ".docx":
