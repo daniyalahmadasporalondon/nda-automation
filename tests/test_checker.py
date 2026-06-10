@@ -51,6 +51,24 @@ class CheckerTests(unittest.TestCase):
             for law in clause["approved_laws"]
         ]
 
+    def governing_law_clause(self, playbook=None):
+        playbook = playbook or load_playbook()
+        return next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+
+    def governing_law_redline_texts(self, clause):
+        return [
+            f"This Agreement shall be governed by the laws of {clause['law_phrases'][law]}."
+            for law in clause["approved_laws"]
+        ]
+
+    def natural_join(self, values):
+        values = list(values)
+        if len(values) <= 1:
+            return "".join(values)
+        if len(values) == 2:
+            return f"{values[0]} or {values[1]}"
+        return f"{', '.join(values[:-1])}, or {values[-1]}"
+
     def test_redline_registry_mirrors_checker_registry(self):
         self.assertEqual(
             [clause_id for clause_id, _builder in checker_module.REDLINE_BUILDERS],
@@ -1693,6 +1711,7 @@ class CheckerTests(unittest.TestCase):
                 self.assertEqual(edit["original_text"], paragraph["text"])
 
     def test_governing_law_requires_approved_law_in_governing_paragraph(self):
+        active_governing_law = self.governing_law_clause()
         result = review_nda(
             """
             This Agreement shall be governed by the laws of California.
@@ -1707,7 +1726,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(governing_law["matched_paragraph_ids"], ["p1"])
         self.assertEqual(governing_law["issue_type"], "present_but_wrong")
         self.assertEqual(governing_law["issue_label"], "Present but wrong")
-        self.assertIn("India, Delaware, England and Wales, DIFC, or Ontario, Canada", governing_law["what_to_fix"])
+        self.assertIn(self.natural_join(active_governing_law["approved_laws"]), governing_law["what_to_fix"])
         governing_law_redline = self.redline_for_clause(result, "governing_law")
         self.assertEqual(governing_law_redline["action"], "replace_paragraph")
         self.assertEqual(governing_law_redline["clause_id"], "governing_law")
@@ -1730,7 +1749,14 @@ class CheckerTests(unittest.TestCase):
         )
         self.assertEqual(
             [option["label"] for option in governing_law_redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
+            active_governing_law["approved_laws"],
+        )
+        self.assertEqual(
+            [option["id"] for option in governing_law_redline["template_options"]],
+            [
+                f"governing_law_{option['id']}"
+                for option in active_governing_law["rules"]["approved_options"]
+            ],
         )
         self.assertTrue(
             all(option["inline_diff_operations"] for option in governing_law_redline["template_options"])
@@ -1738,18 +1764,35 @@ class CheckerTests(unittest.TestCase):
         self.assertNotIn("selected_template_id", governing_law_redline)
         self.assertEqual(
             [option["id"] for option in governing_law_redline["template_options"] if option.get("selected")],
-            ["governing_law_england_and_wales"],
+            [
+                f"governing_law_{option['id']}"
+                for option in active_governing_law["rules"]["approved_options"]
+                if option.get("default")
+            ],
         )
         self.assertEqual(
             [option["text"] for option in governing_law_redline["template_options"]],
-            [
-                "This Agreement shall be governed by the laws of India.",
-                "This Agreement shall be governed by the laws of Delaware.",
-                "This Agreement shall be governed by the laws of England and Wales.",
-                "This Agreement shall be governed by the laws of the DIFC.",
-                "This Agreement shall be governed by the laws of the Province of Ontario and the federal laws of Canada applicable therein.",
-            ],
+            self.governing_law_redline_texts(active_governing_law),
         )
+
+    def test_each_approved_governing_law_option_passes_review(self):
+        active_governing_law = self.governing_law_clause()
+
+        for law in active_governing_law["approved_laws"]:
+            with self.subTest(law=law):
+                phrase = active_governing_law["law_phrases"][law]
+                result = review_nda(
+                    f"This Agreement shall be governed by and construed in accordance with the laws of {phrase}."
+                )
+
+                governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+                self.assertEqual(governing_law["status"], "match")
+                self.assertTrue(governing_law["passes"])
+                self.assertEqual(governing_law["decision"], "pass")
+                self.assertEqual(governing_law["reason_code"], "approved_governing_law")
+                self.assertEqual(governing_law["matched_paragraph_ids"], ["p1"])
+                self.assertEqual(governing_law["governing_law_analysis"]["approved_paragraph_ids"], ["p1"])
+                self.assertEqual(self.redlines_for_clause(result, "governing_law"), [])
 
     def test_governing_law_ignores_approved_law_outside_governing_value(self):
         result = review_nda(
@@ -2345,6 +2388,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(result_clause["matched_paragraph_ids"], [])
 
     def test_missing_governing_law_creates_insert_redline_with_jurisdiction_options(self):
+        active_governing_law = self.governing_law_clause()
         result = review_nda("The parties will discuss a possible transaction.")
 
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
@@ -2356,7 +2400,11 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(redline["insert_text"], "This Agreement shall be governed by the laws of England and Wales.")
         self.assertEqual(
             [option["label"] for option in redline["template_options"]],
-            ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
+            active_governing_law["approved_laws"],
+        )
+        self.assertEqual(
+            [option["text"] for option in redline["template_options"]],
+            self.governing_law_redline_texts(active_governing_law),
         )
 
     def test_missing_required_redlines_anchor_before_signature_blocks(self):

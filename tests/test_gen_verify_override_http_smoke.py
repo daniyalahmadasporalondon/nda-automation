@@ -9,7 +9,7 @@ the full gen-verify gate. This exercises the entire FE -> endpoint -> parser ->
 engine -> persistence -> download round-trip — the exact path the nesting bug lived
 on, where an internal-API smoke is blind.
 
-For all 4 entities (each overridden to a DIFFERENT approved law) it asserts the
+For each sampled entity overridden to a DIFFERENT approved law it asserts the
 fetched NDA NAMES the override law, the gate is CLEAR, and the manifest provenance
 is right. It also confirms a NON-override request still renders the entity default,
 so the parser fix did not break the default path.
@@ -75,9 +75,9 @@ def _law_value(option_id: str) -> str:
     raise KeyError(option_id)
 
 
-# The 4 approved options are coupled law+forum packages: an override to a given law
-# must also yield that option's proper FORUM (forum follows the override is correct
-# coherence). These are the option-derived forums the engine renders (task #7).
+# These sampled override options are coupled law+forum packages: an override to a
+# given law must also yield that option's proper FORUM (forum follows the override
+# is correct coherence). These are the option-derived forums the engine renders.
 _OPTION_FORUM = {
     "india": "Courts of India",
     "delaware": "Courts of the State of Delaware",
@@ -233,12 +233,12 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertIn(default_value, text, f"{entity_id}: default law not rendered")
 
     def test_override_forum_follows_the_chosen_option(self):
-        """FORUM-COUPLING coherence (task #7): the 4 approved options are coupled
-        law+forum packages, so an override to e.g. DIFC must yield DIFC law AND DIFC
-        courts. Through the full HTTP round-trip, the manifest forum must be the
-        OVERRIDE option's forum and appear in the rendered prose, and the entity's
-        default forum must not leak in. (Requires the option-derived-forum feature;
-        on a pre-#7 tip the forum falls back to the law value, which this catches.)
+        """FORUM-COUPLING coherence for sampled override options.
+
+        An override to e.g. DIFC must yield DIFC law AND DIFC courts. Through the
+        full HTTP round-trip, the manifest forum must be the OVERRIDE option's
+        forum and appear in the rendered prose, and the entity's default forum
+        must not leak in.
         """
         for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
             with self.subTest(entity_id=entity_id, override=override_opt):
