@@ -221,7 +221,9 @@ def clean_export_redline_contract(
         "original_text": normalized["original_text"],
         "replacement_text": normalized["replacement_text"],
         "anchor_text": str(normalized.get("anchor_text") or ""),
-        "insert_text": redline_inserted_text(normalized).strip(),
+        "insert_text": redline_inserted_text(normalized).strip()
+        if action == REDLINE_INSERT_AFTER_PARAGRAPH
+        else "",
     }
 
 

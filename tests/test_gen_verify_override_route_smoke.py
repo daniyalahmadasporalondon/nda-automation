@@ -11,7 +11,7 @@ broken (the same blind spot that made the generator's own test green).
 So this smoke drives the ROUTE PARSER: it feeds the EXACT shape
 static/js/modules/draft-intake.mjs:buildDraftPayload emits (override nested under
 signing_entity.governing_law.playbook_option_id) through the real
-routes.generation._intake_from_payload — the function the HTTP handler uses — then
+routing workflow intake parser — the function the HTTP handler uses — then
 runs the rendered NDA through the full adversarial gate. For all 4 entities, each
 overridden to a DIFFERENT approved law, it asserts the parser carried the nested
 override AND the rendered NDA names it, the forum tracks it, and the gate is CLEAR.
@@ -22,9 +22,9 @@ from __future__ import annotations
 import pytest
 
 from nda_automation import nda_generation as gen
+from nda_automation import nda_generation_workflow
 from nda_automation.checker import load_playbook
 from nda_automation.docx_text import extract_docx_text
-from nda_automation.routes import generation as route
 
 from tests.gen_verify_harness import (
     expectations_from_registry,
@@ -92,8 +92,8 @@ def test_route_override_smoke_through_full_gate(entity_id, laws):
 
     payload = _fe_payload(entity_id, override_option)
 
-    # Drive the REAL route parser (where the nesting bug lived).
-    parsed_entity_id, intake, governing_law_override = route._intake_from_payload(payload)
+    # Drive the REAL workflow parser used by the route (where the nesting bug lived).
+    parsed_entity_id, intake, governing_law_override = nda_generation_workflow.intake_from_payload(payload)
 
     # The parser must have CARRIED the nested override (not dropped it).
     assert parsed_entity_id == entity_id
@@ -147,7 +147,7 @@ def test_route_drops_nothing_regression_guard():
     the override from signing_entity.governing_law.playbook_option_id. If a future
     refactor reverts to top-level-only reading, this fails loudly."""
     payload = _fe_payload("aspora_technology", "england_and_wales")
-    _eid, _intake, override = route._intake_from_payload(payload)
+    _eid, _intake, override = nda_generation_workflow.intake_from_payload(payload)
     assert override == "england_and_wales", (
         "route parser must read the nested signing_entity.governing_law.playbook_option_id "
         "(the FE shape); a top-level-only parser silently drops the override"
