@@ -95,6 +95,7 @@ import {
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
 import { GeneratorWorkstationModel } from "../../static/js/modules/generator-workstation-model.mjs";
+import { PdfMarkupWorkstation } from "../../static/js/modules/pdf-markup-workstation.mjs";
 import { RedlineEditContract } from "../../static/js/modules/redline-edit-contract.mjs";
 import { ReviewWorkstationModel } from "../../static/js/modules/review-workstation-model.mjs";
 
@@ -410,6 +411,81 @@ assert.deepEqual(ReviewWorkstationModel.annotationGeometryState({
   selectedId: "42",
   tool: "highlight",
 });
+assert.deepEqual(PdfMarkupWorkstation.normalizeRect({ x: -1, y: 0.25, w: 2, h: 0.1 }, "highlight"), {
+  h: 0.1,
+  w: 1,
+  x: 0,
+  y: 0.25,
+});
+assert.deepEqual(PdfMarkupWorkstation.normalizeRect({ x: 0.4, y: 0.5, w: 0.8, h: 0.9 }, "comment"), {
+  h: 0,
+  w: 0,
+  x: 0.4,
+  y: 0.5,
+});
+assert.deepEqual(
+  PdfMarkupWorkstation.pointFromClientRect({ clientX: 150, clientY: 240 }, { left: 100, top: 200, width: 200, height: 100 }),
+  { x: 0.25, y: 0.4 },
+);
+assert.deepEqual(PdfMarkupWorkstation.rectFromPoints({ x: 0.8, y: 0.2 }, { x: 0.3, y: 0.6 }), {
+  h: 0.39999999999999997,
+  w: 0.5,
+  x: 0.3,
+  y: 0.2,
+});
+assert.equal(PdfMarkupWorkstation.dragHasDrawableArea({ w: 0.02, h: 0.02 }), true);
+assert.equal(PdfMarkupWorkstation.dragHasDrawableArea({ w: 0.02, h: 0.005 }), false);
+assert.deepEqual(PdfMarkupWorkstation.overlayStyle({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, { width: 200, height: 100 }), {
+  height: "40px",
+  left: "20px",
+  top: "20px",
+  width: "60px",
+});
+let markupState = PdfMarkupWorkstation.createInitialState();
+markupState = PdfMarkupWorkstation.setActiveTool(markupState, "highlight");
+assert.equal(markupState.activeTool, "highlight");
+assert.equal(PdfMarkupWorkstation.toolIsDrawing(markupState.activeTool), true);
+markupState = PdfMarkupWorkstation.startLoad(markupState, "matter-1");
+assert.equal(markupState.loadSequence, 1);
+markupState = PdfMarkupWorkstation.completeLoad(markupState, "matter-1", 1, [
+  { id: "ann-1", page: "2", type: "comment", rect: { x: 0.2, y: 0.3, w: 0.7, h: 0.8 }, text: "Note" },
+  { id: "bad", page: 1, type: "scribble", rect: {} },
+]);
+assert.deepEqual(markupState.annotations, [{
+  id: "ann-1",
+  page: 2,
+  rect: { h: 0, w: 0, x: 0.2, y: 0.3 },
+  text: "Note",
+  type: "comment",
+}]);
+markupState = PdfMarkupWorkstation.appendAnnotation(markupState, {
+  id: "ann-2",
+  page: 1,
+  rect: { h: 0.2, w: 0.4, x: 0.1, y: 0.1 },
+  type: "highlight",
+});
+assert.equal(markupState.annotations.length, 2);
+markupState = PdfMarkupWorkstation.togglePopover(markupState, "ann-1");
+assert.equal(markupState.openPopoverId, "ann-1");
+markupState = PdfMarkupWorkstation.removeAnnotation(markupState, "ann-1");
+assert.equal(markupState.openPopoverId, null);
+assert.deepEqual(markupState.annotations.map((annotation) => annotation.id), ["ann-2"]);
+assert.deepEqual(PdfMarkupWorkstation.annotationPayload({
+  page: "1",
+  rect: { x: -1, y: 0.5, w: 2, h: 0 },
+  text: "Comment",
+  type: "comment",
+}), {
+  page: 1,
+  rect: { h: 0, w: 0, x: 0, y: 0.5 },
+  text: "Comment",
+  type: "comment",
+});
+assert.equal(PdfMarkupWorkstation.annotationPayload({ page: 1, rect: {}, type: "scribble" }), null);
+assert.equal(
+  PdfMarkupWorkstation.markedUpFilename({ matterId: "matter-1", selectedMatter: { source_filename: "Counterparty NDA.final.pdf" } }),
+  "Counterparty-NDA-final-marked-up.pdf",
+);
 
 const matter = {
   can_send_redline: true,
