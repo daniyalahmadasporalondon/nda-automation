@@ -4816,10 +4816,32 @@ async function testClauseDecisionControls(page) {
   await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
   await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
 
-  const [download] = await Promise.all([
+  const [exportRequest, download] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx") && request.method() === "POST"),
     page.waitForEvent("download"),
     page.locator("#studioExportButton").click(),
   ]);
+  const exportPayload = exportRequest.postDataJSON();
+  assert.ok(
+    exportPayload.export_redline_edits.some((edit) => (
+      edit.clause_id === "governing_law"
+      && edit.action === "replace_paragraph"
+      && /DIFC/.test(edit.replacement_text || "")
+    )),
+    "selected governing-law template should be sent in export_redline_edits",
+  );
+  assert.ok(
+    exportPayload.export_redline_edits.some((edit) => (
+      edit.action === "insert_after_paragraph"
+      && /For \[Party 1 legal name\]/.test(edit.insert_text || edit.replacement_text || "")
+    )),
+    "re-included signature insertion should be sent in export_redline_edits",
+  );
+  assert.equal(
+    exportPayload.export_redline_edits.some((edit) => /England and Wales/.test(edit.replacement_text || "")),
+    false,
+    "unselected governing-law template should not be sent in export_redline_edits",
+  );
   const exportedPath = await download.path();
   assert.ok(exportedPath, "decision export download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
