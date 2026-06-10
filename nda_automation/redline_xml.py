@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import List, Tuple
 
 from .inline_diff import diff_text_char_operations, diff_text_operations
-from .docx_xml import _clone_element, _escape_xml, _w_tag, _word_paragraph_from_xml
+from .docx_xml import _clone_element, _escape_attr, _escape_xml, _w_tag, _word_paragraph_from_xml
 
 
 def _source_tracked_replace_paragraph(
@@ -40,6 +40,30 @@ def _source_tracked_replace_paragraph_char(
     source paragraph's appearance."""
     tracked_paragraph_xml, next_revision_id = _tracked_replace_paragraph_char(original, replacement, first_revision_id)
     return _merge_source_paragraph_properties(source_paragraph, _word_paragraph_from_xml(tracked_paragraph_xml)), next_revision_id
+
+def _source_tracked_replace_paragraph_runs(
+    source_paragraph: ET.Element,
+    original: str,
+    replacement_runs: List[dict],
+    first_revision_id: int,
+) -> Tuple[ET.Element, int]:
+    """Whole-paragraph tracked replace that re-emits the inserted text as FORMATTED
+    runs carried by ``replacement_runs`` (an array of ``{text, bold?, italic?, font?,
+    size?}``), rather than as plain ``<w:t>``.
+
+    Used when a text-edited paragraph's run model is attached to the replace redline so
+    the CLEAN export keeps the paragraph's bold/italic/font/size. The whole original is
+    tracked-deleted and the new formatted runs are tracked-inserted -- a minimal char
+    diff is unnecessary because the tracked view is flattened away on accept; only the
+    final clean runs matter. Mirrors :func:`_source_tracked_replace_paragraph`'s merge
+    of the source paragraph's pPr/run formatting onto the result."""
+    tracked_paragraph_xml, next_revision_id = _tracked_replace_paragraph_runs(
+        original, replacement_runs, first_revision_id
+    )
+    return (
+        _merge_source_paragraph_properties(source_paragraph, _word_paragraph_from_xml(tracked_paragraph_xml)),
+        next_revision_id,
+    )
 
 def _source_tracked_delete_paragraph(source_paragraph: ET.Element, text: str, revision_id: int) -> ET.Element:
     return _merge_source_paragraph_properties(
@@ -658,6 +682,96 @@ def _tracked_replace_paragraph_char(original: str, replacement: str, first_revis
 
     flush_current()
     return f"<w:p>{''.join(runs)}</w:p>", revision_id
+
+def _tracked_replace_paragraph_runs(
+    original: str,
+    replacement_runs: List[dict],
+    first_revision_id: int,
+) -> Tuple[str, int]:
+    """Build a whole-paragraph tracked replace: a single ``<w:del>`` of the whole
+    ``original`` followed by a single ``<w:ins>`` carrying the new FORMATTED runs.
+
+    The replacement runs each become a ``<w:r>`` with an ``<w:rPr>`` built from the
+    run-model toggles/font/size via the shared ET helpers (``_set_run_toggle`` /
+    ``_set_run_font`` / ``_set_run_font_size``), so the inserted text keeps its
+    formatting once the tracked view is flattened on accept. Two revision ids are
+    consumed (one for the delete, one for the insert)."""
+    delete_xml = _tracked_delete(str(original), first_revision_id)
+    insert_xml = _tracked_insert_formatted_runs(replacement_runs, first_revision_id + 1)
+    return f"<w:p>{delete_xml}{insert_xml}</w:p>", first_revision_id + 2
+
+
+def _tracked_insert_formatted_runs(replacement_runs: List[dict], revision_id: int) -> str:
+    runs = "".join(_formatted_run(run) for run in replacement_runs if isinstance(run, dict))
+    return f"<w:ins {_revision_attrs(revision_id)}>{runs}</w:ins>"
+
+
+def _formatted_run(run_model: dict) -> str:
+    """A single ``<w:r>`` carrying ``run_model['text']`` with the run-model's
+    bold/italic/font/size applied as an ``<w:rPr>``.
+
+    The text may contain newlines: each is emitted as a ``<w:br/>`` between ``<w:t>``
+    segments (matching :func:`_run`). The rPr is assembled by the same ET helpers the
+    tracked-format path uses (``_set_run_font``/``_set_run_toggle``/``_set_run_font_size``)
+    so toggle/font/size ordering stays schema-valid, then serialised back to a
+    ``w:``-prefixed string for the string-based tracked-insert path."""
+    run_properties = ET.Element(_w_tag("rPr"))
+    font = str(run_model.get("font") or "")
+    if font:
+        _set_run_font(run_properties, font)
+    if run_model.get("bold"):
+        _set_run_toggle(run_properties, "b", True)
+    if run_model.get("italic"):
+        _set_run_toggle(run_properties, "i", True)
+    size = run_model.get("size")
+    if size:
+        _set_run_font_size(run_properties, size)
+
+    rpr_xml = _run_properties_xml(run_properties)
+
+    text = str(run_model.get("text") or "")
+    parts: List[str] = []
+    for index, line in enumerate(text.split("\n")):
+        if index:
+            parts.append("<w:br/>")
+        parts.append(f'<w:t xml:space="preserve">{_escape_xml(line)}</w:t>')
+    return f"<w:r>{rpr_xml}{''.join(parts)}</w:r>"
+
+
+# CT_RPr child order (subset we emit): rFonts leads, then the b/i toggles, then
+# sz/szCs. The ET helpers each insert at the front, so a from-scratch build would
+# emit children in reverse call order; we re-sort to this canonical sequence so the
+# serialised rPr is schema-valid regardless of insertion order.
+_RPR_CHILD_ORDER = ("rFonts", "b", "bCs", "i", "iCs", "sz", "szCs")
+_RPR_CHILD_ORDER_INDEX = {tag: index for index, tag in enumerate(_RPR_CHILD_ORDER)}
+
+
+def _run_properties_xml(run_properties: ET.Element) -> str:
+    """Serialise a ``<w:rPr>`` element (built with the ET helpers, in Clark notation)
+    to a ``w:``-prefixed XML string suitable for embedding in the string-based
+    tracked-paragraph builders. Returns ``""`` for an empty rPr so a run with no
+    formatting carries no properties element.
+
+    ``ET.tostring`` would emit ``ns0:`` prefixes / redundant ``xmlns`` declarations, so
+    we serialise by hand: each child becomes ``<w:tag .../>`` with its ``w:``-named
+    attributes (the only attribute these helpers set is ``w:val``). Children are sorted
+    into CT_RPr schema order first."""
+    children = list(run_properties)
+    if not children:
+        return ""
+    children.sort(
+        key=lambda child: _RPR_CHILD_ORDER_INDEX.get(child.tag.split("}", 1)[-1], len(_RPR_CHILD_ORDER))
+    )
+    parts: List[str] = []
+    for child in children:
+        local_name = child.tag.split("}", 1)[-1]
+        attrs = "".join(
+            f' w:{key.split("}", 1)[-1]}="{_escape_attr(value)}"'
+            for key, value in child.attrib.items()
+        )
+        parts.append(f"<w:{local_name}{attrs}/>")
+    return f"<w:rPr>{''.join(parts)}</w:rPr>"
+
 
 def _tracked_insert_paragraphs(text: str, first_revision_id: int) -> List[str]:
     blocks = [block for block in str(text).split("\n\n") if block.strip()]

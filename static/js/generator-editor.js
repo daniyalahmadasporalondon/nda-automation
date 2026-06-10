@@ -142,10 +142,68 @@ window.generatorEditor = (function () {
   function render() {
     const el = renderEl();
     if (!el) return;
-    el.innerHTML = paragraphs().map(renderParagraph).join("");
+    el.innerHTML = renderParagraphs(paragraphs());
     bindEditing();
     bindToolbar();
     refreshToolbar();
+  }
+
+  // Walks the flat paragraph list and wraps each run of consecutive table-cell
+  // paragraphs (same table) into a presentational table grid so the signature
+  // block renders as the side-by-side columns the export has, instead of a flat
+  // vertical stack. Every paragraph frame inside the grid keeps its own id and
+  // editable hooks, so editing / export are unchanged.
+  function renderParagraphs(list) {
+    const out = [];
+    let i = 0;
+    while (i < list.length) {
+      const table = tableMeta(list[i]);
+      if (!table) {
+        out.push(renderParagraph(list[i]));
+        i += 1;
+        continue;
+      }
+      // Consume the whole table (all rows/cells) starting here.
+      const tableIndex = table.table_index;
+      let j = i;
+      while (j < list.length) {
+        const meta = tableMeta(list[j]);
+        if (!meta || meta.table_index !== tableIndex) break;
+        j += 1;
+      }
+      out.push(renderTable(list.slice(i, j)));
+      i = j;
+    }
+    return out.join("");
+  }
+
+  function tableMeta(paragraph) {
+    const table = paragraph && paragraph.table;
+    return table && typeof table === "object" ? table : null;
+  }
+
+  // Renders a contiguous block of table-cell paragraphs as a CSS grid of cells.
+  // Cells are keyed by (row_index, cell_index) and ordered by first appearance,
+  // so a single-row two-cell signature table becomes two side-by-side columns.
+  function renderTable(cellParagraphs) {
+    const cells = [];
+    const byKey = new Map();
+    cellParagraphs.forEach((paragraph) => {
+      const meta = tableMeta(paragraph) || {};
+      const key = `${meta.row_index ?? 0}:${meta.cell_index ?? 0}`;
+      let cell = byKey.get(key);
+      if (!cell) {
+        cell = { row: Number(meta.row_index) || 0, col: Number(meta.cell_index) || 0, paragraphs: [] };
+        byKey.set(key, cell);
+        cells.push(cell);
+      }
+      cell.paragraphs.push(paragraph);
+    });
+    const columnCount = cells.reduce((max, cell) => Math.max(max, cell.col), 0) || cells.length;
+    const inner = cells
+      .map((cell) => `<div class="generator-doc-table-cell">${cell.paragraphs.map(renderParagraph).join("")}</div>`)
+      .join("");
+    return `<div class="generator-doc-table" style="--gen-table-cols:${Math.max(columnCount, 1)}">${inner}</div>`;
   }
 
   function renderParagraph(paragraph) {
@@ -155,7 +213,16 @@ window.generatorEditor = (function () {
     const body = tiles ? runs.map((run) => renderFormattedRun(run, false)).join("") : escapeHtml(text);
     const id = escapeHtml(String(paragraph.id));
     const style = paragraphFormatStyleAttribute(paragraph);
-    return `<div class="studio-doc-paragraph generator-doc-paragraph" data-paragraph-id="${id}"${style}>`
+    // Reuse the Review editor's structure derivation so headings, numbered/lettered
+    // clauses (indent + captured marker) and signature-table cells render with the
+    // same fidelity as the exported .docx. These are global helpers from
+    // redline-rendering.js; the resulting classes/attributes are styled by the
+    // shared .studio-doc-paragraph.doc-* rules in styles.css.
+    const structureClasses = paragraphStructureClasses(paragraph);
+    const classAttr = ["studio-doc-paragraph", "generator-doc-paragraph", ...structureClasses].join(" ");
+    const structureAttrs = paragraphStructureAttributes(paragraph);
+    const frameAttrs = `data-paragraph-id="${id}"${structureAttrs ? ` ${structureAttrs}` : ""}${style}`;
+    return `<div class="${classAttr}" ${frameAttrs}>`
       + `<div class="paragraph-editable" contenteditable="plaintext-only" spellcheck="true" role="textbox"`
       + ` aria-multiline="true" data-editable-paragraph-id="${id}">${body}</div></div>`;
   }
@@ -459,6 +526,32 @@ window.generatorEditor = (function () {
   // taken at load -- mirrors the Review editor's manualExportRedlines, scoped to the
   // generator's own state. Text edits -> replace/delete; format-only edits ->
   // format_paragraph (which carries the run bold/italic/font/size ops).
+  // The edited paragraph's run model (bold/italic/font/size), normalised + trimmed so
+  // its joined text equals the stripped replacement_text -- attached to a replace
+  // redline so the CLEAN export keeps the paragraph's formatting, not just plain text.
+  // Null when the runs don't tile the current text (e.g. a free-form text edit dropped
+  // them) -> the export falls back to the plain replacement_text.
+  function replacementRunsFor(paragraph, replacementText) {
+    const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
+    if (!runs || !runs.length) return null;
+    if (runs.map((r) => String(r && r.text || "")).join("") !== String(paragraph.text || "")) return null;
+    const copy = runs.map((r) => {
+      const out = { text: String(r.text || "") };
+      if (r.bold) out.bold = true;
+      if (r.italic) out.italic = true;
+      const font = String(r.font || "").trim();
+      if (font) out.font = font;
+      const size = Number(r.size);
+      if (Number.isFinite(size) && size > 0) out.size = size;
+      return out;
+    });
+    copy[0].text = copy[0].text.replace(/^\s+/, "");
+    copy[copy.length - 1].text = copy[copy.length - 1].text.replace(/\s+$/, "");
+    const tidy = copy.filter((r) => r.text.length);
+    if (tidy.map((r) => r.text).join("") !== replacementText) return null;
+    return tidy;
+  }
+
   function exportRedlines() {
     const baseline = Array.isArray(state.generatorOriginalParagraphs) ? state.generatorOriginalParagraphs : [];
     const originalById = new Map(baseline.map((p) => [p.id, p]));
@@ -489,6 +582,12 @@ window.generatorEditor = (function () {
         redline.source_index = original.source_index !== undefined ? original.source_index : paragraph.source_index;
       }
       if (original.source_part) redline.source_part = original.source_part;
+      // Carry the run model through the replace path so the clean export preserves
+      // formatting applied to the edited text (bold/italic/font/size).
+      if (!isDelete) {
+        const runs = replacementRunsFor(paragraph, replacementText);
+        if (runs) redline.replacement_runs = runs;
+      }
       return redline;
     }).filter(Boolean);
   }

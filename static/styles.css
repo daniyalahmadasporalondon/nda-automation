@@ -883,6 +883,58 @@ h3 {
   padding: 0;
 }
 
+/* Structured paragraphs (numbered/lettered clauses, headings, signature-table
+   cells) keep the shared .studio-doc-paragraph padding so the .doc-list indent,
+   the captured list-marker ::before (positioned against the 8px top padding) and
+   the .doc-table-cell inset render exactly like the Review editor / export.
+   Plain body paragraphs stay flush (padding:0) as before. */
+.generator-document-render .studio-doc-paragraph.doc-heading,
+.generator-document-render .studio-doc-paragraph.doc-list,
+.generator-document-render .studio-doc-paragraph.doc-table-cell {
+  padding: 8px 11px;
+}
+
+/* The list indent is expressed as padding-left on the frame; with the editable's
+   own 2px/4px padding that nests cleanly under the captured marker. */
+.generator-document-render .studio-doc-paragraph.doc-list {
+  padding-left: 30px;
+}
+.generator-document-render .studio-doc-paragraph.doc-list-level-1 { padding-left: 52px; }
+.generator-document-render .studio-doc-paragraph.doc-list-level-2 { padding-left: 74px; }
+.generator-document-render .studio-doc-paragraph.doc-list-level-3 { padding-left: 96px; }
+.generator-document-render .studio-doc-paragraph.doc-list-level-4,
+.generator-document-render .studio-doc-paragraph.doc-list-level-5,
+.generator-document-render .studio-doc-paragraph.doc-list-level-6 { padding-left: 118px; }
+
+/* Signature / multi-cell table: presentational grid that lays the cell
+   paragraphs out in the columns the export has (one signatory per column),
+   instead of a flat vertical stack. Each cell keeps its own paragraph frames
+   (and their editable hooks) inside the column. */
+.generator-document-render .generator-doc-table {
+  display: grid;
+  grid-template-columns: repeat(var(--gen-table-cols, 2), minmax(0, 1fr));
+  gap: 16px;
+  margin: 0 0 14px;
+}
+
+.generator-document-render .generator-doc-table-cell {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+/* Inside the grid the per-paragraph .doc-table-cell treatment is redundant
+   (the column already provides the cell chrome): drop its left border/indent so
+   the column reads as one clean cell, and tighten paragraph spacing. */
+.generator-document-render .generator-doc-table-cell .studio-doc-paragraph.doc-table-cell {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0;
+  margin: 0 0 4px;
+  padding: 2px 0;
+}
+
 .generator-document-render .paragraph-editable {
   outline: none;
   padding: 2px 4px;

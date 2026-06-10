@@ -1380,6 +1380,83 @@ class DocxExportTests(unittest.TestCase):
         self.assertIn("Air India Private Limited is hereby named the FIRST PARTY.", full)
         self.assertNotIn("Air India Limited is hereby named", full)
 
+    def test_accept_all_revisions_keeps_replacement_run_formatting(self):
+        # A replace redline carrying replacement_runs (the edited paragraph's run model,
+        # here one bold run) -> build_source_redline_docx (tracked) ->
+        # accept_all_revisions -> a CLEAN doc whose new text keeps the run formatting:
+        # the bold word lands on a run with <w:b/>, and no <w:ins>/<w:del> remains.
+        original_text = "These obligations survive termination of this Agreement."
+        edited_text = "These obligations survive expiry of this Agreement."
+        body_paragraph = f"<w:p><w:r><w:t>{original_text}</w:t></w:r></w:p>"
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{body_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(p["text"]) for p in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        pid = next(str(p["id"]) for p in paragraphs if str(p["text"]) == original_text)
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "action_label": "Your edit",
+                    "is_manual": True,
+                    "whole_paragraph": False,
+                    "paragraph_id": pid,
+                    "original_text": original_text,
+                    "replacement_text": edited_text,
+                    # Run model: a plain head, a BOLD "expiry", then a plain tail. Its
+                    # joined text equals replacement_text.
+                    "replacement_runs": [
+                        {"text": "These obligations survive "},
+                        {"text": "expiry", "bold": True},
+                        {"text": " of this Agreement."},
+                    ],
+                }
+            ],
+        }
+        tracked = build_source_redline_docx(source_docx, review_result)
+        _s, tracked_root, _t = docx_xml_roots(tracked)
+        self.assertTrue(tracked_root.findall(".//w:ins", W_NS), "tracked doc should carry insertions")
+
+        clean = accept_all_revisions(tracked)
+        # Package + XML integrity (clean doc has Track Changes OFF).
+        with ZipFile(BytesIO(clean)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        _settings_root, clean_root, _c = docx_xml_roots(clean)
+        # No revision markup remains anywhere.
+        for tag in ("w:ins", "w:del", "w:delText", "w:rPrChange", "w:pPrChange"):
+            self.assertEqual(clean_root.findall(f".//{tag}", W_NS), [], f"clean doc still has {tag}")
+        # The edited text is applied and the original is gone.
+        full = "".join(n.text or "" for n in clean_root.findall(".//w:t", W_NS))
+        self.assertEqual(full.count("These obligations survive expiry of this Agreement."), 1)
+        self.assertNotIn("survive termination", full)
+        # The run model is honoured: the "expiry" run carries <w:b/>, and no other run
+        # of this paragraph does (the plain head/tail are not bolded).
+        bold_run_texts = []
+        for run in clean_root.findall(".//w:r", W_NS):
+            if run.find("w:rPr/w:b", W_NS) is None:
+                continue
+            bold_run_texts.append("".join(t.text or "" for t in run.findall("w:t", W_NS)))
+        self.assertIn("expiry", bold_run_texts)
+        self.assertNotIn("These obligations survive ", bold_run_texts)
+        self.assertNotIn(" of this Agreement.", bold_run_texts)
+
     def test_source_redline_format_paragraph_mixes_paragraph_and_run_ops(self):
         # One format_paragraph redline carrying BOTH a paragraph op (alignment) and a
         # run op (italic a slice): the paragraph gains a pPrChange AND the covered run

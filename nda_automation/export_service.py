@@ -152,6 +152,18 @@ def clean_manual_export_redline(redline: object) -> dict | None:
     if action == REDLINE_FORMAT_PARAGRAPH:
         cleaned["format_ops"] = _clean_format_ops(redline.get("format_ops"), common["original_text"])
 
+    # When a replace redline carries the edited paragraph's run model, preserve it so
+    # the export can re-emit the INSERTED text as formatted runs (bold/italic/font/
+    # size) rather than plain <w:t>. Only honoured for replace paragraphs and only
+    # when the runs' joined text exactly reconstructs the replacement_text; otherwise
+    # the field is dropped and the export falls back to the plain char/word diff.
+    if action == REDLINE_REPLACE_PARAGRAPH:
+        replacement_runs = _clean_replacement_runs(
+            redline.get("replacement_runs"), common["replacement_text"]
+        )
+        if replacement_runs is not None:
+            cleaned["replacement_runs"] = replacement_runs
+
     # Preserve whether this manual edit is a whole-paragraph replacement (e.g. a
     # clause/governing-law pick) vs. a free-form character-level edit, so the export
     # can route between the token/whole path and the char-level path. The sanitiser
@@ -173,6 +185,7 @@ _MANUAL_REDLINE_ACTION_LABELS = {
 
 MAX_FORMAT_OPS = 200
 MAX_FONT_NAME_CHARS = 120
+MAX_REPLACEMENT_RUNS = 2000
 _FORMAT_OP_SCOPES = {"paragraph", "run"}
 _FORMAT_OP_PROPERTIES = {"alignment", "font", "bold", "italic", "size"}
 _FORMAT_OP_ALIGNMENTS = {"left", "center", "right", "justify"}
@@ -229,6 +242,44 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
             clean_op["start"], clean_op["end"] = offsets
 
         cleaned.append(clean_op)
+    return cleaned
+
+
+def _clean_replacement_runs(replacement_runs: object, replacement_text: str) -> list[dict] | None:
+    """Sanitise the untrusted ``replacement_runs`` array carried by a replace redline.
+
+    The frontend attaches the edited paragraph's run model so the clean export can
+    re-emit the inserted text WITH its formatting (bold/italic/font/size) instead of
+    plain text. Every field is treated as hostile: ``text`` is coerced to str, the
+    boolean toggles to bool, ``font`` clamped to a bounded name, ``size`` clamped to
+    Word's valid point range, and unknown keys dropped. The run count is capped.
+
+    Returns the cleaned list ONLY when the runs' joined text exactly equals
+    ``replacement_text`` -- otherwise the run model disagrees with the text the export
+    is about to insert, so we return ``None`` and let the caller fall back to the plain
+    char/word diff. An empty/whitespace-only list is also rejected."""
+    if not isinstance(replacement_runs, list) or not replacement_runs:
+        return None
+
+    cleaned: list[dict] = []
+    for run in replacement_runs[:MAX_REPLACEMENT_RUNS]:
+        if not isinstance(run, dict):
+            return None
+        clean_run: dict = {"text": str(run.get("text") or "")}
+        if bool(run.get("bold")):
+            clean_run["bold"] = True
+        if bool(run.get("italic")):
+            clean_run["italic"] = True
+        font = str(run.get("font") or "").strip()[:MAX_FONT_NAME_CHARS]
+        if font:
+            clean_run["font"] = font
+        size = _clean_size_value(run.get("size"))
+        if size:
+            clean_run["size"] = size
+        cleaned.append(clean_run)
+
+    if "".join(run["text"] for run in cleaned) != replacement_text:
+        return None
     return cleaned
 
 

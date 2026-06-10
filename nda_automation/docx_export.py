@@ -31,6 +31,7 @@ from .redline_xml import (
     _source_tracked_insert_paragraphs,
     _source_tracked_replace_paragraph,
     _source_tracked_replace_paragraph_char,
+    _source_tracked_replace_paragraph_runs,
     _source_verbatim_paragraph,
     _strip_paragraph_property_revisions,
     _tracked_delete_paragraph,
@@ -800,6 +801,18 @@ def _source_tracked_primary_redline_paragraph(
     original_text = str(redline.get("original_text") or _paragraph_text(source_paragraph))
     action = redline.get("action")
     if action == REDLINE_REPLACE_PARAGRAPH:
+        # When the edited paragraph's run model is attached, re-emit the inserted text
+        # as FORMATTED runs (bold/italic/font/size) so the clean export keeps the
+        # paragraph's formatting. ADDITIVE and gated on replacement_runs being a
+        # non-empty list -- redlines without it keep the existing char/word diff path.
+        replacement_runs = redline.get("replacement_runs")
+        if isinstance(replacement_runs, list) and replacement_runs:
+            return _source_tracked_replace_paragraph_runs(
+                source_paragraph,
+                original_text,
+                replacement_runs,
+                revision_id,
+            )
         # A free-form manual viewer edit diffs at the CHARACTER level (mirroring the
         # frontend redline preview), so only the changed letters redline. Clause and
         # governing-law replacements stay whole-paragraph; they (and any manual edit
