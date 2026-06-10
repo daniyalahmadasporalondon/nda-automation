@@ -4,7 +4,7 @@ import json
 
 from .. import entity_registry
 from ..checker import PLAYBOOK_PATH
-from .playbook import read_playbook_from_path
+from ..playbook_runtime import read_playbook_from_path
 
 
 def handle_signing_entities(handler, *, send_body: bool = True) -> None:

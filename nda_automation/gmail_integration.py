@@ -3,30 +3,37 @@ from __future__ import annotations
 import base64
 from html import unescape
 from html.parser import HTMLParser
-import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
-from email.message import EmailMessage
-from email.utils import formatdate, getaddresses, parsedate_to_datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from . import app_settings, gmail_attachment_selector, google_connection, matter_store, user_store
-from .checker import ParagraphAlignmentError
+from . import (
+    app_settings,
+    gmail_attachment_selector,
+    gmail_matter_inbox,
+    gmail_matter_outbox,
+    google_connection,
+    matter_store,  # noqa: F401 - transport dependency for gmail_matter_inbox
+    user_store,
+)
+from .checker import ParagraphAlignmentError  # noqa: F401 - transport dependency for gmail_matter_inbox
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
 from .durable_io import fsync_parent_directory
 from .ingestion_service import (
-    create_matter_from_document,
+    create_matter_from_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
     extract_document_paragraphs,
     is_supported_document_filename,
 )
 from .pdf_text import PdfExtractionError
-from .review_engine import ActiveReviewEngineError
+from .review_engine import ActiveReviewEngineError  # noqa: F401 - transport dependency for gmail_matter_inbox
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 NDA_DETECTION_TERMS = (
@@ -114,7 +121,6 @@ NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND
 DEFAULT_INBOUND_QUERY = f"{GMAIL_INBOUND_BASE_QUERY} {NDA_MESSAGE_QUERY}"
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 MAX_GMAIL_IMPORT_LIMIT = 25
-EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
@@ -279,84 +285,12 @@ def gmail_sync_owner_user_ids() -> list[str]:
 
 
 def import_inbound_matters(*, limit: int = 10, query: str | None = None, owner_user_id: str = "") -> dict[str, Any]:
-    if not app_settings.gmail_role_enabled("inbound"):
-        raise GmailIntegrationError("Gmail inbound is disabled in Admin.")
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    service = _gmail_service_for_owner("inbound", owner_user_id)
-    profile = _gmail_profile_for_role("inbound", service=service, owner_user_id=owner_user_id)
-    inbound_query = query.strip() if isinstance(query, str) and query.strip() else _default_inbound_query()
-    try:
-        requested_limit = int(limit or 10)
-    except (TypeError, ValueError):
-        requested_limit = 10
-    import_limit = max(1, min(requested_limit, MAX_GMAIL_IMPORT_LIMIT))
-
-    account_email = str(profile.get("emailAddress") or "")
-    selector_enabled = gmail_attachment_selector.selector_configured()
-
-    try:
-        result = service.users().messages().list(
-            userId="me",
-            q=inbound_query,
-            maxResults=import_limit,
-        ).execute()
-    except Exception as exc:
-        _raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
-
-    imported: list[dict[str, Any]] = []
-    skipped: list[dict[str, str]] = []
-    for message_stub in result.get("messages") or []:
-        message_id = str(message_stub.get("id") or "")
-        if not message_id:
-            continue
-        try:
-            message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
-        except Exception as exc:
-            if _gmail_retry_after_epoch(exc):
-                _raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
-            skipped.append({"message_id": message_id, "reason": "message_unavailable"})
-            continue
-
-        if _is_self_or_outbound_message(message, account_email):
-            skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
-            continue
-
-        attachments = list(_reviewable_attachments(message.get("payload") or {}))
-        if not attachments:
-            skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
-            continue
-
-        detection = _message_nda_detection(message, attachments)
-        if not detection["matched"] and not selector_enabled:
-            # The header/body/filename scan cannot see inside a .docx/.pdf, but
-            # Gmail's query matches attachment text -- so e-signature forwards
-            # (Juro/DocuSign) whose NDA wording lives only in the attachment land
-            # here. Read the document content before giving up.
-            detection = _attachment_nda_detection(service, message_id, attachments)
-        if not detection["matched"] and not selector_enabled:
-            skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
-            continue
-
-        metadata = _message_selector_metadata(
-            message,
-            _message_metadata(message, account_email, detection=detection if detection["matched"] else None),
-        )
-        attachment_result = _import_inbound_attachments(
-            service,
-            message_id,
-            attachments,
-            metadata,
-            owner_user_id=owner_user_id,
-        )
-        imported.extend(attachment_result["imported"])
-        skipped.extend(attachment_result["skipped"])
-
-    return {
-        "account": account_email,
-        "imported": imported,
-        "query": inbound_query,
-        "skipped": skipped,
-    }
+    return gmail_matter_inbox.import_inbound_matters(
+        transport=_gmail_inbox_transport(),
+        limit=limit,
+        query=query,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _import_inbound_attachments(
@@ -367,59 +301,14 @@ def _import_inbound_attachments(
     *,
     owner_user_id: str = "",
 ) -> dict[str, list[dict[str, Any]]]:
-    prepared: list[dict[str, Any]] = []
-    skipped: list[dict[str, str]] = []
-    selector_enabled = gmail_attachment_selector.selector_configured()
-    for attachment in attachments:
-        candidate, skip = _prepare_inbound_attachment(
-            service,
-            message_id,
-            attachment,
-            metadata,
-            owner_user_id=owner_user_id,
-            require_deterministic_acceptance=not selector_enabled,
-        )
-        if skip is not None:
-            skipped.append(skip)
-        elif candidate is not None:
-            prepared.append(candidate)
-
-    selected_ids, selector_metadata = _selected_candidate_attachment_ids(metadata, prepared)
-    deterministic_fallback = selected_ids is None
-    imported: list[dict[str, Any]] = []
-    for candidate in prepared:
-        attachment_id = str(candidate.get("attachment_id") or "")
-        validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
-        if deterministic_fallback and not validation.get("accepted"):
-            skipped.append(_gmail_attachment_skip(
-                message_id,
-                str(candidate.get("filename") or ""),
-                "non_nda_attachment",
-                detail=str(validation.get("reason") or ""),
-                score=str(validation.get("score") or "0"),
-            ))
-            continue
-        if selected_ids is not None and attachment_id not in selected_ids:
-            skipped.append(_gmail_attachment_skip(
-                message_id,
-                str(candidate.get("filename") or ""),
-                "ai_not_selected_attachment",
-                detail=selector_metadata.get("reason", ""),
-                model=selector_metadata.get("model", ""),
-                confidence=selector_metadata.get("confidence", ""),
-            ))
-            continue
-        matter, skip = _create_matter_from_prepared_attachment(
-            candidate,
-            metadata,
-            selector_metadata=selector_metadata if selected_ids is not None else None,
-            owner_user_id=owner_user_id,
-        )
-        if skip is not None:
-            skipped.append(skip)
-        elif matter is not None:
-            imported.append(matter)
-    return {"imported": imported, "skipped": skipped}
+    return gmail_matter_inbox.import_inbound_attachments(
+        service,
+        message_id,
+        attachments,
+        metadata,
+        transport=_gmail_inbox_transport(),
+        owner_user_id=owner_user_id,
+    )
 
 
 def _import_inbound_attachment(
@@ -428,10 +317,13 @@ def _import_inbound_attachment(
     attachment: dict[str, Any],
     metadata: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    candidate, skip = _prepare_inbound_attachment(service, message_id, attachment, metadata)
-    if skip is not None or candidate is None:
-        return None, skip
-    return _create_matter_from_prepared_attachment(candidate, metadata)
+    return gmail_matter_inbox.import_inbound_attachment(
+        service,
+        message_id,
+        attachment,
+        metadata,
+        transport=_gmail_inbox_transport(),
+    )
 
 
 def _prepare_inbound_attachment(
@@ -443,77 +335,15 @@ def _prepare_inbound_attachment(
     owner_user_id: str = "",
     require_deterministic_acceptance: bool = True,
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    attachment_id = str(attachment.get("attachment_id") or "")
-    attachment_filename = str(attachment.get("filename") or "")
-    part_id = str(attachment.get("part_id") or "")
-
-    if _gmail_attachment_already_imported(message_id, attachment_id, part_id=part_id, owner_user_id=owner_user_id):
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
-
-    try:
-        document_bytes = _attachment_bytes(service, message_id, attachment)
-    except GmailIntegrationError:
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
-
-    try:
-        ensure_document_size(document_bytes)
-    except DocumentSizeError:
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_too_large")
-
-    attachment_sha256 = hashlib.sha256(document_bytes).hexdigest()
-    if _gmail_attachment_already_imported(
+    return gmail_matter_inbox.prepare_inbound_attachment(
+        service,
         message_id,
-        attachment_id,
-        attachment_filename=attachment_filename,
-        attachment_sha256=attachment_sha256,
-        part_id=part_id,
+        attachment,
+        metadata,
+        transport=_gmail_inbox_transport(),
         owner_user_id=owner_user_id,
-    ):
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
-
-    try:
-        _document_type, paragraphs = extract_document_paragraphs(attachment_filename, document_bytes)
-    except PdfExtractionError as error:
-        return None, _gmail_attachment_skip(
-            message_id,
-            attachment_filename,
-            _pdf_attachment_skip_reason(error),
-            detail=str(error),
-        )
-    except DocxExtractionError as error:
-        return None, _gmail_attachment_skip(
-            message_id,
-            attachment_filename,
-            "review_failed",
-            detail=str(error),
-        )
-
-    validation = _attachment_nda_validation(
-        attachment_filename,
-        paragraphs,
-        message_metadata=metadata,
+        require_deterministic_acceptance=require_deterministic_acceptance,
     )
-    if require_deterministic_acceptance and not validation["accepted"]:
-        return None, _gmail_attachment_skip(
-            message_id,
-            attachment_filename,
-            "non_nda_attachment",
-            detail=str(validation.get("reason") or ""),
-            score=str(validation.get("score") or "0"),
-        )
-
-    return {
-        "attachment": attachment,
-        "attachment_id": attachment_id,
-        "attachment_sha256": attachment_sha256,
-        "document_bytes": document_bytes,
-        "filename": attachment_filename,
-        "message_id": message_id,
-        "paragraphs": paragraphs,
-        "part_id": part_id,
-        "text_preview": _attachment_text_preview(paragraphs),
-        "validation": validation,
-    }, None
 
 
 def _create_matter_from_prepared_attachment(
@@ -523,85 +353,32 @@ def _create_matter_from_prepared_attachment(
     selector_metadata: dict[str, object] | None = None,
     owner_user_id: str = "",
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    message_id = str(candidate.get("message_id") or "")
-    attachment_id = str(candidate.get("attachment_id") or "")
-    attachment_filename = str(candidate.get("filename") or "")
-    attachment_sha256 = str(candidate.get("attachment_sha256") or "")
-    document_bytes = candidate.get("document_bytes")
-    part_id = str(candidate.get("part_id") or "")
-    validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
-
-    if not isinstance(document_bytes, bytes):
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
-
-    metadata = _attachment_validation_metadata(metadata, validation)
-    if selector_metadata:
-        metadata = _attachment_selector_metadata(metadata, selector_metadata)
-
-    try:
-        matter = create_matter_from_document(
-            filename=attachment_filename or "nda.docx",
-            document_bytes=document_bytes,
-            source_type="gmail_inbound",
-            board_column="gmail_demo",
-            intake_metadata={
-                **metadata,
-                "attachment_filename": attachment_filename or "nda.docx",
-                "gmail_attachment_id": attachment_id,
-                "gmail_attachment_sha256": attachment_sha256,
-                "gmail_part_id": part_id,
-            },
-            dedupe_gmail=True,
-            owner_user_id=owner_user_id,
-        )
-    except (ActiveReviewEngineError, DocxExtractionError, PdfExtractionError, ParagraphAlignmentError):
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "review_failed")
-
-    if matter.get("_existing_gmail_duplicate"):
-        return None, _gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
-    return matter, None
+    return gmail_matter_inbox.create_matter_from_prepared_attachment(
+        candidate,
+        metadata,
+        transport=_gmail_inbox_transport(),
+        selector_metadata=selector_metadata,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _selected_candidate_attachment_ids(
     metadata: dict[str, str],
     prepared: list[dict[str, Any]],
 ) -> tuple[set[str] | None, dict[str, object]]:
-    if not prepared or not gmail_attachment_selector.selector_configured():
-        return None, {}
-    try:
-        selection = gmail_attachment_selector.select_nda_attachments(
-            message_metadata=metadata,
-            candidates=prepared,
-        )
-    except gmail_attachment_selector.GmailAttachmentSelectorError:
-        return None, {}
-    if selection.get("status") != "selected":
-        return None, {}
-    selected_ids = {
-        str(attachment_id)
-        for attachment_id in selection.get("selected_attachment_ids", [])
-        if str(attachment_id)
-    }
-    return (selected_ids or None), selection
+    return gmail_matter_inbox.selected_candidate_attachment_ids(
+        metadata,
+        prepared,
+        transport=_gmail_inbox_transport(),
+    )
 
 
 def _message_selector_metadata(message: dict[str, Any], metadata: dict[str, str]) -> dict[str, str]:
-    body_preview = _message_body_text(message.get("payload") or {})
-    if not body_preview:
-        return metadata
-    return {
-        **metadata,
-        "message_body_preview": body_preview[:GMAIL_BODY_PREVIEW_LIMIT],
-    }
+    return gmail_matter_inbox.message_selector_metadata(message, metadata, transport=_gmail_inbox_transport())
 
 
 def _attachment_text_preview(paragraphs: list[dict[str, Any]]) -> str:
-    chunks: list[str] = []
-    for paragraph in paragraphs[:12]:
-        text = " ".join(str(paragraph.get("text") or "").split())
-        if text:
-            chunks.append(text)
-    return "\n".join(chunks)[:3000]
+    return gmail_matter_inbox.attachment_text_preview(paragraphs)
 
 
 def _gmail_attachment_already_imported(
@@ -613,27 +390,27 @@ def _gmail_attachment_already_imported(
     part_id: str = "",
     owner_user_id: str = "",
 ) -> bool:
-    return matter_store.find_gmail_attachment(
+    return gmail_matter_inbox.gmail_attachment_already_imported(
         message_id,
         attachment_id,
+        transport=_gmail_inbox_transport(),
         attachment_filename=attachment_filename,
         attachment_sha256=attachment_sha256,
         part_id=part_id,
         owner_user_id=owner_user_id,
-    ) is not None
+    )
 
 
 def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str, **details: object) -> dict[str, str]:
-    skip = {
-        "attachment_filename": attachment_filename,
-        "message_id": message_id,
-        "reason": reason,
-    }
-    for key, value in details.items():
-        cleaned = " ".join(str(value or "").split())
-        if cleaned:
-            skip[key] = cleaned[:500]
-    return skip
+    return gmail_matter_inbox.gmail_attachment_skip(message_id, attachment_filename, reason, **details)
+
+
+def _gmail_outbox_transport() -> Any:
+    return sys.modules[__name__]
+
+
+def _gmail_inbox_transport() -> Any:
+    return sys.modules[__name__]
 
 
 def send_redline_email(
@@ -647,44 +424,17 @@ def send_redline_email(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
-    recipient, service, outbound_account = _outbound_send_context(
+    return gmail_matter_outbox.send_redline_email(
         matter,
-        recipient_override=to,
+        attachment_bytes,
+        attachment_filename,
+        transport=_gmail_outbox_transport(),
+        body=body,
+        subject=subject,
+        to=to,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
-    outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
-    message = EmailMessage()
-    message["To"] = recipient
-    message["Subject"] = outbound_subject
-    message["Date"] = formatdate(localtime=True)
-    message.set_content(body or _default_outbound_body(matter))
-    message.add_attachment(
-        attachment_bytes,
-        maintype="application",
-        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=attachment_filename,
-    )
-
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-    gmail_payload: dict[str, Any] = {"raw": raw_message}
-    thread_id = str(matter.get("gmail_thread_id") or "").strip()
-    if thread_id and _can_reply_in_thread(matter, outbound_account):
-        gmail_payload["threadId"] = thread_id
-
-    try:
-        sent_message = service.users().messages().send(userId="me", body=gmail_payload).execute()
-    except Exception as exc:
-        _raise_gmail_api_error(exc, "Gmail outbound send failed.")
-
-    return {
-        "message_id": str(sent_message.get("id") or ""),
-        "outbound_account": outbound_account,
-        "sent_at": datetime.now(timezone.utc).isoformat(),
-        "subject": outbound_subject,
-        "thread_id": str(sent_message.get("threadId") or ""),
-        "to": recipient,
-    }
 
 
 def validate_outbound_send_ready(
@@ -694,13 +444,13 @@ def validate_outbound_send_ready(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
-    recipient, _service, outbound_account = _outbound_send_context(
+    return gmail_matter_outbox.validate_outbound_send_ready(
         matter,
-        recipient_override=to,
+        transport=_gmail_outbox_transport(),
+        to=to,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
-    return {"outbound_account": outbound_account, "to": recipient}
 
 
 def _outbound_send_context(
@@ -710,34 +460,13 @@ def _outbound_send_context(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> tuple[str, Any, str]:
-    operator_recipient = recipient_email(recipient_override)
-    recipient = operator_recipient or matter_reply_recipient(matter)
-    if not recipient:
-        raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
-    # The resolved recipient can come from attacker-controlled inbound headers
-    # (Reply-To / From), so a human must confirm the exact destination address
-    # before we transmit. A spoofed Reply-To therefore cannot silently redirect
-    # the outbound document — the send is refused unless the confirmed address
-    # matches the address we are about to send to. ``recipient_from_inbound_header``
-    # is True only when the recipient was derived from the matter's inbound
-    # headers rather than an operator-supplied ``to``.
-    _require_confirmed_recipient(
-        recipient,
-        confirmed_recipient,
-        recipient_from_inbound_header=not operator_recipient,
+    return gmail_matter_outbox.outbound_send_context(
+        matter,
+        transport=_gmail_outbox_transport(),
+        recipient_override=recipient_override,
+        confirmed_recipient=confirmed_recipient,
+        owner_user_id=owner_user_id,
     )
-    if not app_settings.gmail_role_enabled("outbound"):
-        raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
-
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    service = _gmail_service_for_owner("outbound", owner_user_id)
-    profile = _gmail_profile_for_role("outbound", service=service, owner_user_id=owner_user_id)
-    outbound_account = str(profile.get("emailAddress") or "")
-    if not _is_valid_email_address(outbound_account):
-        raise GmailIntegrationError("Gmail outbound profile did not include a valid email address.")
-    _ensure_recipient_is_not_own_account(matter, recipient, outbound_account)
-    _ensure_outbound_matches_inbound(matter, outbound_account)
-    return recipient, service, outbound_account
 
 
 def _require_confirmed_recipient(
@@ -746,58 +475,24 @@ def _require_confirmed_recipient(
     *,
     recipient_from_inbound_header: bool = True,
 ) -> None:
-    # CONTRACT: any send whose recipient was derived from inbound email headers
-    # (Reply-To / From) MUST pass ``confirmed_recipient`` — a human-confirmed
-    # destination address. ``confirmed_recipient is None`` is an opt-out reserved
-    # for callers that resolved the recipient from a TRUSTED source (e.g. an
-    # operator typed the ``to`` directly, as in Send Document). To stop a future
-    # caller from silently inheriting that opt-out for a header-fed recipient, the
-    # opt-out is refused here whenever the recipient came from an inbound header.
-    if confirmed_recipient is None:
-        if recipient_from_inbound_header:
-            raise RecipientConfirmationError(
-                "Confirm the outbound recipient email address before sending."
-            )
-        return
-    confirmed = recipient_email(confirmed_recipient)
-    if not confirmed:
-        raise RecipientConfirmationError(
-            "Confirm the outbound recipient email address before sending."
-        )
-    if not _email_addresses_match(confirmed, recipient):
-        raise RecipientConfirmationError(
-            "The confirmed recipient does not match the matter recipient; refusing to send. "
-            f"Confirm sending to {recipient}."
-        )
+    gmail_matter_outbox.require_confirmed_recipient(
+        recipient,
+        confirmed_recipient,
+        transport=_gmail_outbox_transport(),
+        recipient_from_inbound_header=recipient_from_inbound_header,
+    )
 
 
 def matter_reply_recipient(matter: dict[str, Any]) -> str:
-    return recipient_email(matter.get("reply_to")) or recipient_email(matter.get("sender"))
+    return gmail_matter_outbox.matter_reply_recipient(matter)
 
 
 def recipient_email(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    addresses = [(display.strip(), email.strip()) for display, email in getaddresses([value]) if email.strip()]
-    if len(addresses) != 1:
-        return ""
-    display_name, email_address = addresses[0]
-    if not _is_valid_email_address(email_address):
-        return ""
-    canonical_email = email_address.lower()
-    display_emails = re.findall(EMAIL_IN_TEXT_PATTERN, display_name, flags=re.IGNORECASE)
-    if any(display_email.lower() != canonical_email for display_email in display_emails):
-        return ""
-    return canonical_email
+    return gmail_matter_outbox.recipient_email(value)
 
 
 def _is_valid_email_address(email_address: str) -> bool:
-    if "@" not in email_address or any(character.isspace() for character in email_address):
-        return False
-    local_part, _at, domain = email_address.rpartition("@")
-    if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    return gmail_matter_outbox.is_valid_email_address(email_address)
 
 
 def _apply_account_consistency(status: dict[str, Any]) -> None:
@@ -1048,33 +743,24 @@ def _clear_gmail_profile_cache_for_tests() -> None:
 
 
 def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
-    inbound_account = str(matter.get("gmail_account") or "").strip().casefold()
-    return bool(inbound_account and outbound_account and inbound_account == outbound_account.strip().casefold())
+    return gmail_matter_outbox.can_reply_in_thread(matter, outbound_account)
 
 
 def _ensure_outbound_matches_inbound(matter: dict[str, Any], outbound_account: str) -> None:
-    inbound_account = str(matter.get("gmail_account") or "").strip()
-    if not inbound_account:
-        return
-    if inbound_account.casefold() == outbound_account.strip().casefold():
-        return
-    raise GmailIntegrationError(
-        "Outbound Gmail account "
-        f"{outbound_account or 'unknown'} does not match inbound Gmail account {inbound_account}. "
-        f"Reconnect the outbound Gmail token for {inbound_account} before sending this redline."
+    gmail_matter_outbox.ensure_outbound_matches_inbound(
+        matter,
+        outbound_account,
+        transport=_gmail_outbox_transport(),
     )
 
 
 def _ensure_recipient_is_not_own_account(matter: dict[str, Any], recipient: str, outbound_account: str) -> None:
-    own_accounts = [
-        str(matter.get("gmail_account") or ""),
+    gmail_matter_outbox.ensure_recipient_is_not_own_account(
+        matter,
+        recipient,
         outbound_account,
-    ]
-    if any(_email_addresses_match(recipient, own_account) for own_account in own_accounts):
-        raise GmailIntegrationError(
-            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
-            f"back to {recipient}."
-        )
+        transport=_gmail_outbox_transport(),
+    )
 
 
 def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) -> bool:
@@ -1087,7 +773,7 @@ def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) ->
 
 
 def _email_addresses_match(left: str, right: str) -> bool:
-    return bool(left and right and left.strip().casefold() == right.strip().casefold())
+    return gmail_matter_outbox.email_addresses_match(left, right)
 
 
 def _message_metadata(
@@ -1623,15 +1309,8 @@ def _decode_gmail_base64(value: str) -> bytes:
 
 
 def _reply_subject(subject: str) -> str:
-    cleaned = " ".join(subject.split()) or "NDA redline"
-    return cleaned if cleaned.lower().startswith("re:") else f"Re: {cleaned}"
+    return gmail_matter_outbox.reply_subject(subject)
 
 
 def _default_outbound_body(matter: dict[str, Any]) -> str:
-    subject = str(matter.get("subject") or matter.get("document_title") or "the NDA")
-    return (
-        f"Hi,\n\n"
-        f"Please find attached the redlined version of {subject}.\n\n"
-        f"Best,\n"
-        f"Aspora Legal"
-    )
+    return gmail_matter_outbox.default_outbound_body(matter)

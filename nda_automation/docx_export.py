@@ -8,10 +8,10 @@ from io import BytesIO
 from typing import Dict, List, NamedTuple, Tuple
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
+from . import redline_edit_contract
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_FORMAT_PARAGRAPH,
-    REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .docx_health import validate_docx_open_health as validate_docx_open_health
@@ -330,7 +330,7 @@ def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
         paragraph_id = str(paragraph.get("id", ""))
         paragraph_text = str(paragraph.get("text", ""))
         edits = redlines_by_paragraph.get(paragraph_id, [])
-        primary_edit = next((edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH), None)
+        primary_edit = next((edit for edit in edits if not redline_edit_contract.is_insertion_redline_edit(edit)), None)
 
         if primary_edit and primary_edit.get("action") == REDLINE_REPLACE_PARAGRAPH:
             paragraph_xml, revision_id = _tracked_replace_paragraph(
@@ -345,8 +345,8 @@ def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
         else:
             output.append(_paragraph(paragraph_text))
 
-        for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
-            for insert_paragraph in _tracked_insert_paragraphs(str(insertion.get("insert_text") or insertion.get("replacement_text") or ""), revision_id):
+        for insertion in [edit for edit in edits if redline_edit_contract.is_insertion_redline_edit(edit)]:
+            for insert_paragraph in _tracked_insert_paragraphs(redline_edit_contract.redline_inserted_text(insertion), revision_id):
                 output.append(insert_paragraph)
                 revision_id += 1
 
@@ -389,9 +389,9 @@ def _redline_section(redline: RedlineEdit) -> List[str]:
         _label_value("Target", target or "No paragraph target identified."),
     ]
 
-    if redline.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH:
+    if redline_edit_contract.is_insertion_redline_edit(redline):
         output.append(_label_value("Anchor paragraph", redline.get("anchor_text")))
-        output.append(_label_value("Insert text", redline.get("insert_text") or redline.get("replacement_text")))
+        output.append(_label_value("Insert text", redline_edit_contract.redline_inserted_text(redline)))
     elif redline.get("action") == REDLINE_DELETE_PARAGRAPH:
         output.append(_label_value("Remove paragraph", redline.get("original_text")))
     else:
@@ -416,7 +416,7 @@ def _redlines_by_clause(redlines: object) -> Dict[str, List[RedlineEdit]]:
     if not isinstance(redlines, list):
         return grouped
 
-    for redline in redlines:
+    for redline in redline_edit_contract.normalize_redline_edits(redlines):
         if not isinstance(redline, dict):
             continue
         clause_id = str(redline.get("clause_id", ""))
@@ -429,7 +429,7 @@ def _redlines_by_paragraph(redlines: object) -> Dict[str, List[RedlineEdit]]:
     if not isinstance(redlines, list):
         return grouped
 
-    for redline in redlines:
+    for redline in redline_edit_contract.normalize_redline_edits(redlines):
         if not isinstance(redline, dict):
             continue
         paragraph_id = str(redline.get("paragraph_id", ""))
@@ -458,10 +458,10 @@ def _redlines_by_source_paragraph(
     claimed_indexes: set[int] = set()
     resolved_by_review_key: Dict[Tuple, SourceParagraph] = {}
     for redline in sorted(
-        (redline for redline in redlines if isinstance(redline, dict)),
-        key=_redline_resolution_order,
+        redline_edit_contract.normalize_redline_edits(redlines, require_content=True),
+        key=redline_edit_contract.redline_resolution_order,
     ):
-        review_key = _redline_review_paragraph_key(redline)
+        review_key = redline_edit_contract.redline_review_paragraph_key(redline)
         source_paragraph = resolved_by_review_key.get(review_key) if review_key is not None else None
         if source_paragraph is None:
             source_paragraph = _resolve_source_paragraph(
@@ -550,27 +550,11 @@ def _physical_paragraph_blocks(text: str) -> List[str]:
 
 
 def _redline_review_paragraph_key(redline: RedlineEdit) -> Tuple | None:
-    """Identity of the review paragraph a redline targets, so multiple edits on one
-    paragraph share its resolved source paragraph. Falls back to the provenance
-    source_index when no paragraph_id is present."""
-    paragraph_id = str(redline.get("paragraph_id") or "").strip()
-    if paragraph_id:
-        return ("paragraph_id", paragraph_id)
-    source_index = _redline_source_index(redline)
-    if source_index is not None:
-        return ("source_index", source_index)
-    return None
+    return redline_edit_contract.redline_review_paragraph_key(redline)
 
 
 def _redline_resolution_order(redline: RedlineEdit) -> Tuple[int, int]:
-    """Document order for one-to-one anchor claiming: the unique review paragraph
-    index (then source_index) so earlier review paragraphs claim earlier matches."""
-    paragraph_index = redline.get("paragraph_index")
-    source_index = _redline_source_index(redline)
-    return (
-        paragraph_index if isinstance(paragraph_index, int) else 1_000_000,
-        source_index if isinstance(source_index, int) else 1_000_000,
-    )
+    return redline_edit_contract.redline_resolution_order(redline)
 
 
 def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, Paragraph]:
@@ -638,45 +622,15 @@ def _resolve_source_paragraph(
 
 
 def _redline_source_index(redline: RedlineEdit) -> int | None:
-    if redline.get("source_part"):
-        return None
-    source_index = redline.get("source_index", redline.get("paragraph_index"))
-    try:
-        return int(source_index)
-    except (TypeError, ValueError):
-        return None
+    return redline_edit_contract.redline_source_index(redline)
 
 
 def _redline_source_part(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> str:
-    source_part = str(redline.get("source_part") or "").strip()
-    if source_part:
-        return source_part
-    review_paragraph = review_paragraphs_by_id.get(str(redline.get("paragraph_id") or ""))
-    if isinstance(review_paragraph, dict):
-        return str(review_paragraph.get("source_part") or "").strip()
-    return ""
+    return redline_edit_contract.redline_source_part(redline, review_paragraphs_by_id)
 
 
 def _redline_anchor_texts(redline: RedlineEdit, review_paragraphs_by_id: Dict[str, Paragraph]) -> List[str]:
-    candidates: List[object] = []
-    if redline.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH:
-        candidates.extend([redline.get("anchor_text"), redline.get("original_text")])
-    else:
-        candidates.extend([redline.get("original_text"), redline.get("anchor_text")])
-
-    review_paragraph = review_paragraphs_by_id.get(str(redline.get("paragraph_id") or ""))
-    if review_paragraph:
-        candidates.append(review_paragraph.get("text"))
-
-    texts: List[str] = []
-    seen = set()
-    for candidate in candidates:
-        normalized = _normalize_paragraph_text(candidate)
-        if not normalized or normalized in seen:
-            continue
-        texts.append(str(candidate or ""))
-        seen.add(normalized)
-    return texts
+    return redline_edit_contract.redline_anchor_texts(redline, review_paragraphs_by_id)
 
 
 def _apply_redline_edits_to_source_document(
@@ -707,7 +661,7 @@ def _apply_redline_edits_to_source_document(
         except ValueError:
             continue
 
-        primary_edits = [edit for edit in edits if edit.get("action") != REDLINE_INSERT_AFTER_PARAGRAPH]
+        primary_edits = [edit for edit in edits if not redline_edit_contract.is_insertion_redline_edit(edit)]
         insert_position = paragraph_position + 1
         physical_blocks = _physical_paragraph_blocks(source_paragraph.text)
         block_paragraphs: List[ET.Element] = []
@@ -744,8 +698,8 @@ def _apply_redline_edits_to_source_document(
                     source_paragraph.parent[paragraph_position] = primary_paragraph
                     primary_applied = True
 
-        for insertion in [edit for edit in edits if edit.get("action") == REDLINE_INSERT_AFTER_PARAGRAPH]:
-            insert_text = str(insertion.get("insert_text") or insertion.get("replacement_text") or "")
+        for insertion in [edit for edit in edits if redline_edit_contract.is_insertion_redline_edit(edit)]:
+            insert_text = redline_edit_contract.redline_inserted_text(insertion)
             for inserted_paragraph in _source_tracked_insert_paragraphs(insert_text, revision_id):
                 source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
@@ -817,10 +771,7 @@ def _source_tracked_primary_redline_paragraph(
         # frontend redline preview), so only the changed letters redline. Clause and
         # governing-law replacements stay whole-paragraph; they (and any manual edit
         # explicitly flagged whole_paragraph) keep the token-level path.
-        is_freeform_manual_edit = (
-            redline.get("clause_id") == "manual_viewer_edit"
-            and not redline.get("whole_paragraph")
-        )
+        is_freeform_manual_edit = redline_edit_contract.is_freeform_manual_replace_edit(redline)
         replace_paragraph = (
             _source_tracked_replace_paragraph_char
             if is_freeform_manual_edit
