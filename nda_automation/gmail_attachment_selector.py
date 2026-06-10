@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .ai_runtime import (
-    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    AIRuntimeError,
+    OpenRouterJSONChatAdapter,
     configured_api_key as _runtime_configured_api_key,
-    trusted_https_context as _trusted_https_context,
+    openrouter_response_text,
 )
 from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
 
@@ -65,28 +64,10 @@ def select_nda_attachments(
     if not api_key:
         return {"status": "not_configured", "selected_attachment_ids": []}
 
-    request = urllib.request.Request(
-        OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-        data=json.dumps(_request_body(message_metadata, candidates)).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "nda-automation/1.0",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=DEFAULT_GMAIL_TRIAGE_TIMEOUT_SECONDS,
-            context=_trusted_https_context(),
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        message = error.read().decode("utf-8", errors="replace")[:500]
-        raise GmailAttachmentSelectorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-        raise GmailAttachmentSelectorError(f"OpenRouter API request failed: {error}") from error
+        payload = _openrouter_selector_adapter(api_key).chat(_request_body(message_metadata, candidates))
+    except AIRuntimeError as error:
+        raise GmailAttachmentSelectorError(str(error)) from error
 
     parsed = _parse_response(payload)
     # Constrain the model's selection to the actual attachments. An injected
@@ -119,6 +100,14 @@ def _configured_api_key() -> str:
 
 def _configured_model() -> str:
     return os.environ.get(GMAIL_TRIAGE_MODEL_ENV, "").strip() or DEFAULT_GMAIL_TRIAGE_MODEL
+
+
+def _openrouter_selector_adapter(api_key: str) -> OpenRouterJSONChatAdapter:
+    return OpenRouterJSONChatAdapter(
+        api_key=api_key,
+        model=_configured_model(),
+        timeout_seconds=DEFAULT_GMAIL_TRIAGE_TIMEOUT_SECONDS,
+    )
 
 
 def _request_body(message_metadata: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -209,12 +198,7 @@ def _neutralize_untrusted_text(value: object, max_chars: int) -> str:
 
 
 def _parse_response(payload: Mapping[str, Any]) -> dict[str, Any]:
-    content = ""
-    choices = payload.get("choices")
-    if isinstance(choices, list) and choices:
-        message = choices[0].get("message") if isinstance(choices[0], Mapping) else {}
-        if isinstance(message, Mapping):
-            content = str(message.get("content") or "")
+    content = openrouter_response_text(payload)
     if not content:
         raise GmailAttachmentSelectorError("OpenRouter API returned no message content.")
     try:
