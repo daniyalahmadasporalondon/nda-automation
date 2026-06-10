@@ -230,6 +230,7 @@ _POST_EXACT_ROUTES = {
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/generate-nda": generation_routes.handle_generate_nda,
+    "/api/dashboard/assistant": dashboard_routes.handle_dashboard_assistant,
     "/api/dashboard/search-intent": dashboard_routes.handle_dashboard_search_intent,
     "/api/send-document": _handle_send_document_post,
     "/api/gmail/import": gmail_routes.handle_gmail_import,
