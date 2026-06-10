@@ -3935,7 +3935,9 @@ h3 {
 /* Table-cell paragraphs: a safe bordered/indented "table" visual treatment.
    We deliberately keep these as individual paragraph frames (real <table>
    grouping would jeopardise per-paragraph clause/redline/comment anchoring), so
-   each cell paragraph retains its id and every data-hook. */
+   each cell paragraph retains its id and every data-hook. This is the fallback
+   for a lone cell paragraph; contiguous same-table cells are instead laid out
+   in the .studio-doc-table grid below (which keeps the same frames + hooks). */
 .studio-doc-paragraph.doc-table-cell {
   background: rgba(148, 163, 184, 0.06);
   border-color: rgba(148, 163, 184, 0.4);
@@ -3945,6 +3947,45 @@ h3 {
 }
 
 .studio-doc-paragraph.doc-table-cell.has-clause {
+  background: rgba(85, 35, 178, 0.05);
+}
+
+/* Review-panel signature / multi-cell table: a presentational grid that lays
+   the cell paragraphs out in the columns the export has (one signatory per
+   column) instead of a flat vertical stack. Scoped to the Review render only
+   (NOT .generator-document-render, which has its own .generator-doc-table), so
+   it never collides with the generator editor's grid. Each cell keeps its own
+   .studio-doc-paragraph frames (and their clause/redline/comment hooks) inside
+   the column -- the grid is purely presentational. */
+.studio-document-render:not(.generator-document-render) .studio-doc-table {
+  display: grid;
+  grid-template-columns: repeat(var(--studio-table-cols, 2), minmax(0, 1fr));
+  gap: 16px;
+  margin: 0 0 14px;
+}
+
+.studio-document-render:not(.generator-document-render) .studio-doc-table-cell {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+/* Inside the grid the per-paragraph .doc-table-cell chrome (left border + inset)
+   is redundant -- the column already reads as a cell -- so drop it and tighten
+   the paragraph spacing within the column. The frame, id and all data-hooks are
+   untouched; only its cosmetic table treatment is reset. */
+.studio-document-render:not(.generator-document-render)
+  .studio-doc-table-cell .studio-doc-paragraph.doc-table-cell {
+  background: transparent;
+  border-left: 0;
+  border-radius: 0;
+  margin: 0 0 4px;
+  margin-left: 0;
+}
+
+.studio-document-render:not(.generator-document-render)
+  .studio-doc-table-cell .studio-doc-paragraph.doc-table-cell.has-clause {
   background: rgba(85, 35, 178, 0.05);
 }
 

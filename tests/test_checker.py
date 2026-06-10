@@ -15,6 +15,7 @@ from nda_automation.checker import (
     ParagraphAlignmentError,
     PlaybookTemplateError,
     _paragraph_matches,
+    compute_unmatched_sections,
     load_playbook,
     review_nda,
     split_document_paragraphs,
@@ -2466,6 +2467,94 @@ class CheckerTests(unittest.TestCase):
         self.assertIn("redline_edits", result)
         self.assertNotIn("sc" + "ore", encoded)
         self.assertNotIn("esca" + "late", encoded)
+
+
+class UnmatchedSectionsTests(unittest.TestCase):
+    def _structure(self, sections):
+        return {"version": 2, "sections": sections}
+
+    def test_surfaces_section_no_clause_covers(self):
+        structure = self._structure([
+            {"id": "section-1", "label": "Clause 1", "heading": "Confidentiality", "kind": "clause",
+             "paragraph_ids": ["p1", "p2"], "start_index": 1, "end_index": 2},
+            {"id": "section-2", "label": "Clause 6", "heading": "Force Majeure", "kind": "clause",
+             "paragraph_ids": ["p3", "p4"], "start_index": 3, "end_index": 4},
+        ])
+        clauses = [{"id": "confidential_information", "matched_paragraph_ids": ["p2"]}]
+
+        unmatched = compute_unmatched_sections(structure, clauses)
+
+        self.assertEqual(len(unmatched), 1)
+        entry = unmatched[0]
+        self.assertEqual(entry["id"], "section-2")
+        self.assertEqual(entry["label"], "Clause 6")
+        self.assertEqual(entry["heading"], "Force Majeure")
+        self.assertEqual(entry["paragraph_ids"], ["p3", "p4"])
+        self.assertEqual(entry["paragraph_count"], 2)
+        self.assertEqual(entry["start_index"], 3)
+        self.assertEqual(entry["end_index"], 4)
+
+    def test_any_overlap_marks_section_covered(self):
+        structure = self._structure([
+            {"id": "section-1", "label": "Clause 5", "heading": "Notices", "kind": "clause",
+             "paragraph_ids": ["p9", "p10", "p11"]},
+        ])
+        # A single overlapping paragraph is enough to count the section as covered.
+        clauses = [{"id": "mutuality", "matched_paragraph_ids": ["p11"]}]
+
+        self.assertEqual(compute_unmatched_sections(structure, clauses), [])
+
+    def test_skips_sections_with_no_paragraph_ids(self):
+        structure = self._structure([
+            {"id": "section-1", "label": "Empty", "paragraph_ids": []},
+        ])
+        self.assertEqual(compute_unmatched_sections(structure, []), [])
+
+    def test_tolerates_malformed_inputs(self):
+        self.assertEqual(compute_unmatched_sections(None, []), [])
+        self.assertEqual(compute_unmatched_sections({}, []), [])
+        self.assertEqual(compute_unmatched_sections({"sections": "nope"}, []), [])
+        structure = self._structure([
+            {"id": "section-1", "label": "Clause 1", "paragraph_ids": ["p1"]},
+        ])
+        # Clauses with missing / non-list matched_paragraph_ids must not raise.
+        clauses = [{"id": "a"}, {"id": "b", "matched_paragraph_ids": None}, "junk"]
+        unmatched = compute_unmatched_sections(structure, clauses)
+        self.assertEqual([entry["id"] for entry in unmatched], ["section-1"])
+
+    def test_review_result_carries_unmatched_sections_field(self):
+        doc = "\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Clause 1: Definitions",
+            "Confidential Information means non-public information disclosed by either party.",
+            "Clause 2 - Confidentiality",
+            "Each Receiving Party shall not disclose the Disclosing Party Confidential Information.",
+            "Clause 3 Term and Termination",
+            "The confidentiality obligations survive for three years from disclosure.",
+            "Clause 4 Governing Law",
+            "This Agreement shall be governed by the laws of England and Wales.",
+            "Clause 6 Force Majeure",
+            "Neither party shall be liable for delay caused by events beyond its reasonable control.",
+        ])
+        result = review_nda(doc)
+
+        self.assertIn("unmatched_sections", result)
+        unmatched = result["unmatched_sections"]
+        self.assertIsInstance(unmatched, list)
+        # The Force Majeure section is not one of the Playbook clauses, so it must
+        # surface as an unmatched coverage entry.
+        headings = {entry["heading"] for entry in unmatched}
+        self.assertIn("Force Majeure", headings)
+        # Purely additive: clause results and counts are untouched.
+        self.assertEqual(
+            result["requirements_passed"]
+            + result["requirements_failed"]
+            + result["requirements_needs_review"],
+            len(result["clauses"]),
+        )
+        for entry in unmatched:
+            self.assertTrue(entry["paragraph_ids"])
+            self.assertEqual(entry["paragraph_count"], len(entry["paragraph_ids"]))
 
 
 if __name__ == "__main__":

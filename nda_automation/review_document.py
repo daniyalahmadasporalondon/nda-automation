@@ -5,6 +5,7 @@ from typing import Dict, List
 
 Paragraph = Dict[str, object]
 STRUCTURAL_METADATA_KEYS = (
+    "fontSize",
     "heading_level",
     "numbering",
     "outline_level",

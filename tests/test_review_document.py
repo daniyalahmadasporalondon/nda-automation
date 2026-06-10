@@ -49,6 +49,31 @@ class ReviewDocumentTests(unittest.TestCase):
         self.assertNotIn("runs", aligned[0])
         self.assertNotIn("runs", aligned[1])
 
+    def test_align_preserves_run_and_paragraph_font_sizes(self):
+        source_text = "Plain bold text."
+        runs = [
+            {"text": "Plain ", "bold": False, "italic": False, "underline": False, "size": 12},
+            {"text": "bold", "bold": True, "italic": False, "underline": False, "size": 18},
+            {"text": " text.", "bold": False, "italic": False, "underline": False, "size": 12},
+        ]
+        extracted_paragraphs = [
+            {
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "text": "Plain bold text.",
+                "runs": runs,
+                "fontSize": 12,
+            },
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        # Per-run ``size`` rides through inside the carried ``runs`` records.
+        self.assertEqual(aligned[0]["runs"], runs)
+        self.assertEqual([run["size"] for run in aligned[0]["runs"]], [12, 18, 12])
+        # Paragraph-level ``fontSize`` is carried as structural metadata.
+        self.assertEqual(aligned[0]["fontSize"], 12)
+
     def test_align_preserves_pdf_page_number_metadata(self):
         source_text = "First PDF block.\n\nSecond PDF block."
         extracted_paragraphs = [

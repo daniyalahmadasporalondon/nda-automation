@@ -21,17 +21,81 @@ function renderReviewDocument({
     redlinesByParagraphId.get(edit.paragraph_id).push(edit);
   });
 
-  return paragraphs
-    .map((paragraph) => renderDocumentParagraph(paragraphViewModel(paragraph, {
-      clauses,
-      clausesByParagraphId,
-      comments,
-      originalParagraphs,
-      redlinesByParagraphId,
-      selectedClauseId,
-      viewMode,
-    })))
+  const renderOne = (paragraph) => renderDocumentParagraph(paragraphViewModel(paragraph, {
+    clauses,
+    clausesByParagraphId,
+    comments,
+    originalParagraphs,
+    redlinesByParagraphId,
+    selectedClauseId,
+    viewMode,
+  }));
+  return renderReviewParagraphsWithTables(paragraphs, renderOne);
+}
+
+// Walks the flat paragraph list and wraps each run of consecutive table-cell
+// paragraphs (same table_index) into a presentational CSS grid so multi-cell
+// tables (e.g. signature blocks) render as side-by-side columns instead of a
+// flat vertical stack. Non-table paragraphs are emitted untouched. Every cell
+// paragraph is still rendered by `renderOne` -- it keeps its own
+// .studio-doc-paragraph frame, id and clause/redline/comment data-hooks (the
+// CSS comment at styles.css ~3935 explains why tables were left flat); we only
+// add a grid wrapper around the contiguous run, never nest or destroy frames.
+function renderReviewParagraphsWithTables(paragraphs, renderOne) {
+  const out = [];
+  let i = 0;
+  while (i < paragraphs.length) {
+    const table = reviewTableMeta(paragraphs[i]);
+    if (!table) {
+      out.push(renderOne(paragraphs[i]));
+      i += 1;
+      continue;
+    }
+    // Consume the whole table (all contiguous paragraphs sharing table_index).
+    const tableIndex = table.table_index;
+    let j = i;
+    while (j < paragraphs.length) {
+      const meta = reviewTableMeta(paragraphs[j]);
+      if (!meta || meta.table_index !== tableIndex) break;
+      j += 1;
+    }
+    out.push(renderReviewTable(paragraphs.slice(i, j), renderOne));
+    i = j;
+  }
+  return out.join("");
+}
+
+function reviewTableMeta(paragraph) {
+  const table = paragraph && paragraph.table;
+  return table && typeof table === "object" ? table : null;
+}
+
+// Renders a contiguous block of table-cell paragraphs as a CSS grid of cells.
+// Cells are keyed by (row_index, cell_index) and ordered by first appearance,
+// so a single-row two-cell signature table becomes two side-by-side columns and
+// multi-row tables stack their rows. Each cell wraps the already-rendered
+// .studio-doc-paragraph frames for that (row, cell) -- frames/ids/hooks intact.
+function renderReviewTable(cellParagraphs, renderOne) {
+  const cells = [];
+  const byKey = new Map();
+  cellParagraphs.forEach((paragraph) => {
+    const meta = reviewTableMeta(paragraph) || {};
+    const key = `${meta.row_index ?? 0}:${meta.cell_index ?? 0}`;
+    let cell = byKey.get(key);
+    if (!cell) {
+      cell = { row: Number(meta.row_index) || 0, col: Number(meta.cell_index) || 0, html: [] };
+      byKey.set(key, cell);
+      cells.push(cell);
+    }
+    cell.html.push(renderOne(paragraph));
+  });
+  // Column count is the distinct cell_index count (max index + 1), falling back
+  // to the cell count for a degenerate single-row table with no cell indices.
+  const columnCount = cells.reduce((max, cell) => Math.max(max, cell.col + 1), 0) || cells.length;
+  const inner = cells
+    .map((cell) => `<div class="studio-doc-table-cell">${cell.html.join("")}</div>`)
     .join("");
+  return `<div class="studio-doc-table" style="--studio-table-cols:${Math.max(columnCount, 1)}">${inner}</div>`;
 }
 
 function paragraphViewModel(paragraph, context) {

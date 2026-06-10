@@ -7,7 +7,7 @@ from typing import Any
 
 from . import app_settings
 from .ai_assessor import AIAssessorError, assess_nda_with_ai
-from .checker import review_nda
+from .checker import compute_unmatched_sections, review_nda
 from .review_document import Paragraph
 from . import telemetry
 from .routes import playbook as playbook_routes
@@ -119,6 +119,14 @@ def _with_active_engine_metadata(
     error: Exception | None = None,
 ) -> dict[str, Any]:
     updated = deepcopy(result)
+    # Coverage metadata is engine-agnostic. The deterministic engine already adds
+    # unmatched_sections, but the AI-first engine result doesn't carry it -- derive
+    # it here from the (engine-independent) contract structure + clause matches so
+    # both review paths surface uncovered document sections.
+    if "unmatched_sections" not in updated:
+        updated["unmatched_sections"] = compute_unmatched_sections(
+            updated.get("contract_structure"), updated.get("clauses")
+        )
     metadata: dict[str, Any] = {
         "selected_engine": selected_engine,
         "executed_engine": executed_engine,

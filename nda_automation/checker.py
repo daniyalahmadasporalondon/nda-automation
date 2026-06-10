@@ -112,6 +112,7 @@ __all__ = [
     "load_playbook",
     "review_nda",
     "build_contract_structure",
+    "compute_unmatched_sections",
     "split_document_paragraphs",
     "validate_playbook",
     "validate_clause_evidence_trust",
@@ -256,12 +257,75 @@ def review_nda(
         "ai_verifier": ai_verifier_review,
         "clauses": clause_results,
         "redline_edits": redline_edits,
+        # Additive coverage metadata: document sections that no Playbook clause
+        # matched, surfaced so a reviewer sees full section coverage instead of
+        # only the handful of clauses the Playbook checks. Purely informational --
+        # it does not touch clause results, statuses, counts, or the approve gate.
+        "unmatched_sections": compute_unmatched_sections(contract_structure, clause_results),
     }
     evidence_errors = validate_clause_evidence_trust(result, source_text)
     if evidence_errors:
         raise EvidenceProvenanceError("Clause evidence provenance drift detected: " + "; ".join(evidence_errors))
     result["evidence_trust"] = {"status": "verified", "errors": []}
     return result
+
+
+def compute_unmatched_sections(
+    contract_structure: Dict[str, object] | None,
+    clause_results: List[ClauseResult],
+) -> List[Dict[str, object]]:
+    """Return contract-structure sections that no clause covers, as neutral entries.
+
+    A section is "covered" when at least one clause's ``matched_paragraph_ids``
+    overlaps the section's ``paragraph_ids``. Sections with no overlap are surfaced
+    as coverage metadata so the reviewer sees document sections the Playbook never
+    examined (e.g. a 30-clause NDA where only 6 Playbook clauses match). This is
+    purely additive and deterministic: it reads existing structure + clause data and
+    never mutates either.
+    """
+    if not isinstance(contract_structure, dict):
+        return []
+    sections = contract_structure.get("sections")
+    if not isinstance(sections, list):
+        return []
+
+    matched_paragraph_ids: set[str] = set()
+    for clause in clause_results:
+        if not isinstance(clause, dict):
+            continue
+        clause_ids = clause.get("matched_paragraph_ids")
+        if not isinstance(clause_ids, list):
+            continue
+        for paragraph_id in clause_ids:
+            if paragraph_id is not None:
+                matched_paragraph_ids.add(str(paragraph_id))
+
+    unmatched: List[Dict[str, object]] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        paragraph_ids = [
+            str(paragraph_id)
+            for paragraph_id in section.get("paragraph_ids", [])
+            if isinstance(section.get("paragraph_ids"), list) and paragraph_id is not None
+        ]
+        if not paragraph_ids:
+            continue
+        if matched_paragraph_ids.intersection(paragraph_ids):
+            continue
+        unmatched.append(
+            {
+                "id": str(section.get("id") or ""),
+                "label": str(section.get("label") or section.get("heading") or "Section"),
+                "heading": str(section.get("heading") or ""),
+                "kind": str(section.get("kind") or ""),
+                "paragraph_ids": paragraph_ids,
+                "start_index": section.get("start_index") if isinstance(section.get("start_index"), int) else None,
+                "end_index": section.get("end_index") if isinstance(section.get("end_index"), int) else None,
+                "paragraph_count": len(paragraph_ids),
+            }
+        )
+    return unmatched
 
 
 def ai_second_opinion_for_clause(

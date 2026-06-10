@@ -825,7 +825,7 @@ function renderStudioClauseLane() {
     return;
   }
 
-  studioClauseLane.innerHTML = sourceClauses
+  const clauseMarkup = sourceClauses
     .map((clause) => {
       const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
       const status = clauseDisplayStatus(clause);
@@ -866,8 +866,42 @@ function renderStudioClauseLane() {
     })
     .join("");
 
+  studioClauseLane.innerHTML = clauseMarkup + renderStudioUnmatchedCoverage();
+
   bindClauseSelection(studioClauseLane, "[data-studio-lane-id]", "studioLaneId");
   bindClauseNavigatorScrollControls();
+}
+
+// Neutral coverage entries for document sections that no Playbook clause matched.
+// These sit after the clause cards purely so the reviewer can see the document's
+// full section coverage -- they are NOT clauses: they carry no pass/review/fail
+// status, are not selectable, and do not participate in counts or the approve gate.
+function renderStudioUnmatchedCoverage() {
+  if (!hasReviewResults()) return "";
+  const sections = state.latestReviewResult && Array.isArray(state.latestReviewResult.unmatched_sections)
+    ? state.latestReviewResult.unmatched_sections
+    : [];
+  if (!sections.length) return "";
+
+  return sections
+    .map((section) => {
+      const label = String((section && (section.label || section.heading)) || "Section").trim() || "Section";
+      const heading = String((section && section.heading) || "").trim();
+      const title = heading && heading !== label ? `${label}: ${heading}` : label;
+      const count = Number(section && section.paragraph_count) || 0;
+      const meta = count ? `${count} ${count === 1 ? "paragraph" : "paragraphs"}` : "";
+      return `
+        <article class="studio-clause-item unmatched-coverage" title="${escapeHtml(`${title} - not in Playbook (unreviewed)`)}">
+          <div class="studio-clause-select" aria-disabled="true">
+            <span class="studio-clause-dot"></span>
+            <span class="studio-clause-title" style="color: var(--ink-muted)">${escapeHtml(label)}</span>
+            <span class="studio-comment-state" style="color: var(--ink-muted)">Not in Playbook</span>
+            ${meta ? `<span class="studio-clause-title" style="color: var(--ink-faint, var(--ink-muted)); font-weight: 500">${escapeHtml(meta)}</span>` : ""}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function bindClauseNavigatorScrollControls() {

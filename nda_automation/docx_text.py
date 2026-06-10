@@ -361,6 +361,10 @@ def _paragraph_record(
     if font:
         record["font"] = font
 
+    font_size = _paragraph_font_size(paragraph, ppr)
+    if font_size is not None:
+        record["fontSize"] = font_size
+
     return record
 
 
@@ -402,6 +406,30 @@ def _paragraph_font(paragraph: ET.Element) -> str | None:
         ascii_font = _attr(rfonts, "ascii").strip()
         if ascii_font:
             return ascii_font
+    return None
+
+
+def _paragraph_font_size(paragraph: ET.Element, ppr: ET.Element | None) -> int | None:
+    """The paragraph's from-state font size in whole points, or ``None``.
+
+    Prefers the paragraph-mark run-default size (``<w:pPr>/<w:rPr>/<w:sz>``),
+    which Word applies to the whole paragraph mark; otherwise falls back to the
+    dominant-run size using the same first-run-with-rPr heuristic as
+    ``_paragraph_font``. Only returned when present, so the field is additive."""
+    if ppr is not None:
+        mark_rpr = ppr.find(f"{WORD_NS}rPr")
+        if mark_rpr is not None:
+            mark_size = _run_size(mark_rpr)
+            if mark_size is not None:
+                return mark_size
+
+    for run in paragraph.iter(f"{WORD_NS}r"):
+        rpr = run.find(f"{WORD_NS}rPr")
+        if rpr is None:
+            continue
+        size = _run_size(rpr)
+        if size is not None:
+            return size
     return None
 
 
@@ -717,6 +745,12 @@ def _run_formatting(run: ET.Element) -> Dict[str, object]:
     font = _run_font(rpr)
     if font:
         formatting["font"] = font
+    # ``size`` (integer points) is likewise additive: present only when the run
+    # carries an explicit ``<w:sz>``. It also drives the merge boundary so runs
+    # at different point sizes do not coalesce into one record.
+    size = _run_size(rpr)
+    if size is not None:
+        formatting["size"] = size
     return formatting
 
 
@@ -725,7 +759,11 @@ def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, o
         return False
     # Runs with different fonts must not merge -- a font change is itself a
     # formatting boundary (sets up the later inline-format milestone).
-    return str(existing.get("font") or "") == str(formatting.get("font") or "")
+    if str(existing.get("font") or "") != str(formatting.get("font") or ""):
+        return False
+    # A point-size change is likewise its own boundary so differently-sized runs
+    # stay distinct records.
+    return existing.get("size") == formatting.get("size")
 
 
 def _run_font(rpr: ET.Element | None) -> str:
@@ -735,6 +773,21 @@ def _run_font(rpr: ET.Element | None) -> str:
     if rfonts is None:
         return ""
     return _attr(rfonts, "ascii").strip()
+
+
+def _run_size(rpr: ET.Element | None) -> int | None:
+    """The run's explicit font size in whole points, or ``None`` when unset.
+
+    Word stores sizes in half-points (``<w:sz w:val>``), so points are
+    ``round(val / 2)``. ``<w:szCs>`` (complex-script size) is read as a fallback.
+    Returned only when present, so the field stays purely additive."""
+    if rpr is None:
+        return None
+    for local_name in ("sz", "szCs"):
+        half_points = _int_or_none(_val(rpr.find(f"{WORD_NS}{local_name}")))
+        if half_points is not None and half_points > 0:
+            return int(round(half_points / 2))
+    return None
 
 
 def _toggle_property(rpr: ET.Element | None, local_name: str) -> bool:

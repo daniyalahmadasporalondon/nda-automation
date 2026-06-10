@@ -155,6 +155,48 @@ class DocxTextTests(unittest.TestCase):
         # Plain paragraphs stay lean: no runs key, so the additive contract holds.
         self.assertNotIn("runs", paragraphs[1])
 
+    def test_extracts_run_and_paragraph_font_sizes(self):
+        # ``<w:sz>`` is in half-points: 24 -> 12pt, 36 -> 18pt. The third run has
+        # no explicit size, so it stays size-free (additive contract). The fourth
+        # paragraph takes its size from the paragraph-mark run default.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">twelve point </w:t></w:r>
+      <w:r><w:rPr><w:b/><w:sz w:val="36"/><w:szCs w:val="36"/></w:rPr><w:t>eighteen bold</w:t></w:r>
+      <w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve"> sizeless italic</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>
+      <w:r><w:rPr><w:b/></w:rPr><w:t>mark default ten point</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+        data = make_zip({"word/document.xml": document_xml}, compression=ZIP_DEFLATED)
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["runs"],
+            [
+                {"text": "twelve point ", "bold": False, "italic": False, "underline": False, "size": 12},
+                {"text": "eighteen bold", "bold": True, "italic": False, "underline": False, "size": 18},
+                {"text": " sizeless italic", "bold": False, "italic": True, "underline": False},
+            ],
+        )
+        # Runs must still tile the flat paragraph text byte-exactly.
+        self.assertEqual(
+            "".join(run["text"] for run in paragraphs[0]["runs"]),
+            paragraphs[0]["text"],
+        )
+        # Paragraph fontSize comes from the dominant (first sized) run when there
+        # is no paragraph-mark default.
+        self.assertEqual(paragraphs[0]["fontSize"], 12)
+        # The second paragraph prefers its paragraph-mark run-default size (20
+        # half-points -> 10pt) over the unsized body run.
+        self.assertEqual(paragraphs[1]["fontSize"], 10)
+
     def test_run_toggle_disabled_is_not_treated_as_formatting(self):
         document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">

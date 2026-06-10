@@ -265,13 +265,21 @@ window.generatorEditor = (function () {
       const para = paragraphById(editable.dataset.editableParagraphId);
       if (!para) return;
       const newText = editableParagraphText(editable);
-      if (String(para.text || "") === newText) return;
+      const oldText = String(para.text || "");
+      if (oldText === newText) return;
       // Capture the pre-edit paragraph ONCE per focus so Undo reverts the whole edit.
       if (editable.dataset.histRecorded !== "true") {
         pushHistory(para);
         editable.dataset.histRecorded = "true";
       }
+      // Re-tile the run model against the edited text BEFORE we move para.text on, so
+      // formatting on the characters that survived the edit is preserved (retained
+      // chars keep their run props, inserted chars inherit the adjacent run). Without
+      // this the runs go stale (stop tiling the new text), formatting visually drops
+      // and the clean export loses it. Capture the OLD runs first.
+      const retiled = retileRuns(para.runs, oldText, newText);
       para.text = newText;
+      if (retiled) para.runs = retiled; else delete para.runs;
       markTouched();
       refreshToolbar();
     });
@@ -282,6 +290,156 @@ window.generatorEditor = (function () {
 
   function markTouched() {
     if (state.generatorMode !== "generated") state.generatorDraftTouched = true;
+  }
+
+  // ---- Run re-tiling on text edits ---------------------------------------
+  // When a paragraph's TEXT is edited the run model must follow so the invariant
+  // `runs.map(r=>r.text).join("") === text` keeps holding (renderParagraph and the
+  // clean export's replacementRunsFor both fall back to plain text when it doesn't,
+  // dropping formatting). We re-derive runs from a character-level diff of old->new
+  // text: characters that survive keep their original run's formatting; inserted
+  // characters inherit the formatting of the preceding surviving character (or the
+  // following one at the very start). Returns the new run array (tidy, normalized),
+  // or null when no formatting is worth carrying so the caller drops para.runs.
+  function retileRuns(oldRuns, oldText, newText) {
+    const props = formatKeyMap(oldRuns, oldText);
+    // No source formatting at all -> nothing to preserve; let the model fall back to
+    // plain text (renderParagraph re-derives a single unformatted run as needed).
+    if (!props) return null;
+
+    const oldChars = [...oldText];
+    const newChars = [...newText];
+    // Guard pathological diffs (same budget as charDiffOperations): on a huge edit,
+    // re-tiling char-by-char isn't worth a stall -> drop runs to plain text.
+    if (oldChars.length * newChars.length > 1000000) return null;
+
+    const ops = typeof charDiffOperations === "function"
+      ? charDiffOperations(oldText, newText)
+      : null;
+    if (!ops) return null;
+
+    // Walk the diff, building a per-NEW-character format array. `props[oldIndex]` is
+    // the format object (or null) for each old character; retained chars copy their
+    // old format EXACTLY (an unformatted retained char stays unformatted), inserted
+    // chars inherit the PRECEDING retained char's format. `isInsert` records which
+    // new chars were inserted so the leading-insert prefix can be back-filled below
+    // without disturbing retained-unformatted chars.
+    const perChar = new Array(newChars.length);
+    const isInsert = new Array(newChars.length).fill(false);
+    let oldIndex = 0;
+    let newIndex = 0;
+    let lastRetainedFormat = null; // format of the most recent RETAINED (equal) char
+    let seenRetained = false;
+    for (const op of ops) {
+      const tokenChars = [...String(op.token || "")];
+      if (op.type === "equal") {
+        for (let k = 0; k < tokenChars.length; k += 1) {
+          const fmt = props[oldIndex] || null;
+          lastRetainedFormat = fmt;
+          seenRetained = true;
+          if (newIndex < perChar.length) perChar[newIndex] = fmt;
+          oldIndex += 1;
+          newIndex += 1;
+        }
+      } else if (op.type === "delete") {
+        oldIndex += tokenChars.length; // consumed from old, not present in new
+      } else { // insert
+        for (let k = 0; k < tokenChars.length; k += 1) {
+          // Inherit the preceding retained char's format. Before any retained char
+          // (a leading insert) this is null; the backward pass below patches it from
+          // the following retained char so it joins the adjacent run.
+          if (newIndex < perChar.length) {
+            perChar[newIndex] = seenRetained ? lastRetainedFormat : null;
+            isInsert[newIndex] = true;
+          }
+          newIndex += 1;
+        }
+      }
+    }
+
+    // Back-fill the leading-insert prefix (inserted chars before any retained char)
+    // from the first RETAINED char's format, so a prepend inherits the adjacent run.
+    // The first non-insert entry IS that retained char's format. Stop there:
+    // retained-but-unformatted chars keep their own (null) format untouched.
+    const firstRetainedIndex = isInsert.findIndex((ins) => !ins);
+    if (firstRetainedIndex > 0) {
+      const fill = perChar[firstRetainedIndex];
+      for (let i = 0; i < firstRetainedIndex; i += 1) perChar[i] = fill;
+    }
+
+    // Coalesce consecutive same-format characters back into runs, then normalize +
+    // merge so the run list is tidy and carries only set formatting keys.
+    const runs = [];
+    for (let i = 0; i < newChars.length; i += 1) {
+      const fmt = perChar[i] || {};
+      const last = runs.length ? runs[runs.length - 1] : null;
+      if (last && formatEquals(last._fmt, fmt)) {
+        last.text += newChars[i];
+      } else {
+        runs.push({ ...fmt, text: newChars[i], _fmt: fmt });
+      }
+    }
+    const tidy = runs.map((run) => {
+      delete run._fmt;
+      return typeof normalizeRun === "function" ? normalizeRun(run) : run;
+    });
+    const merged = typeof mergeAdjacentRuns === "function" ? mergeAdjacentRuns(tidy) : tidy;
+
+    // Invariant guard: the runs MUST tile the new text exactly. If anything drifted
+    // (it shouldn't), drop runs so callers fall back to plain text rather than
+    // shipping a broken model.
+    if (merged.map((r) => String(r.text || "")).join("") !== newText) return null;
+    // If no run carries any formatting, there's nothing to preserve -> let the model
+    // drop para.runs (a single unformatted run is re-derived on render/export).
+    if (!merged.some(hasAnyFormatting)) return null;
+    return merged;
+  }
+
+  // Build a per-character array of format objects (everything on the run except its
+  // text: bold/italic/underline/font/size). Returns null when the runs don't tile
+  // oldText or carry no formatting -> nothing to preserve.
+  function formatKeyMap(oldRuns, oldText) {
+    const runs = Array.isArray(oldRuns) ? oldRuns : null;
+    if (!runs || !runs.length) return null;
+    if (runs.map((r) => String(r && r.text || "")).join("") !== oldText) return null;
+    let anyFormat = false;
+    const map = [];
+    runs.forEach((run) => {
+      const chars = [...String(run && run.text || "")];
+      const fmt = runFormatOnly(run);
+      if (Object.keys(fmt).length) anyFormat = true;
+      chars.forEach(() => map.push(Object.keys(fmt).length ? fmt : null));
+    });
+    return anyFormat ? map : null;
+  }
+
+  // The formatting props of a run (no text). Mirrors normalizeRun's key set but
+  // keeps it generic so an unknown formatting key (e.g. underline) still rides along.
+  function runFormatOnly(run) {
+    const out = {};
+    if (run && run.bold) out.bold = true;
+    if (run && run.italic) out.italic = true;
+    if (run && run.underline) out.underline = true;
+    const font = String(run && run.font || "").trim();
+    if (font) out.font = font;
+    const size = Number(run && run.size);
+    if (Number.isFinite(size) && size > 0) out.size = size;
+    return out;
+  }
+
+  function hasAnyFormatting(run) {
+    return Boolean(run && (run.bold || run.italic || run.underline
+      || String(run.font || "").trim() || Number(run.size) > 0));
+  }
+
+  function formatEquals(a, b) {
+    const x = a || {};
+    const y = b || {};
+    return Boolean(x.bold) === Boolean(y.bold)
+      && Boolean(x.italic) === Boolean(y.italic)
+      && Boolean(x.underline) === Boolean(y.underline)
+      && String(x.font || "").trim() === String(y.font || "").trim()
+      && Number(x.size || 0) === Number(y.size || 0);
   }
 
   // ---- History / Undo -----------------------------------------------------
@@ -619,5 +777,10 @@ window.generatorEditor = (function () {
     return res.blob();
   }
 
-  return { showDraft, load, clear, isActive, edits, undo, render, hasEdits, exportCleanDocx };
+  return {
+    showDraft, load, clear, isActive, edits, undo, render, hasEdits, exportCleanDocx,
+    // Test seam: re-tiling logic is pure (old runs + old/new text -> new runs), so it
+    // can be verified directly without simulating typing/caret in a headless preview.
+    _retileRuns: retileRuns,
+  };
 })();
