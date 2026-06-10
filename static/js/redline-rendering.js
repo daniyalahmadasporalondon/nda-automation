@@ -701,10 +701,10 @@ function renderInlineRedline(paragraph, edit) {
   if (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length) {
     return renderDiffOperations(edit.inline_diff_operations);
   }
-  if (edit?.whole_paragraph) {
-    return renderDiffOperations(fullReplacementOperations(original, replacement));
+  if (isFreeformManualReplacement(edit)) {
+    return renderVerbatimDiffOperations(charDiffOperations(original, replacement));
   }
-  return renderVerbatimDiffOperations(charDiffOperations(original, replacement));
+  return renderDiffOperations(fullReplacementOperations(original, replacement));
 }
 
 function redlineDiffOperations(edit, original, replacement) {
@@ -713,10 +713,16 @@ function redlineDiffOperations(edit, original, replacement) {
   }
   // Clause-level redlines (and the governing-law picker) stay whole-paragraph; a
   // free-form manual edit diffs at the word level so only the changed words redline.
-  if (edit?.whole_paragraph) {
-    return fullReplacementOperations(original, replacement);
+  if (isFreeformManualReplacement(edit)) {
+    return wordDiffOperations(original, replacement);
   }
-  return wordDiffOperations(original, replacement);
+  return fullReplacementOperations(original, replacement);
+}
+
+function isFreeformManualReplacement(edit) {
+  return edit?.action === REDLINE_REPLACE_PARAGRAPH
+    && !edit?.whole_paragraph
+    && (edit?.clause_id === "manual_viewer_edit" || edit?.is_manual === true);
 }
 
 // Word-level diff (LCS) for free-form manual edits: emits equal/delete/insert word
