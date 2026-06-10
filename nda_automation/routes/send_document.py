@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from .. import gmail_integration, matter_store, matter_view, telemetry
+from .. import gmail_integration, matter_lifecycle, matter_view, telemetry
 from ..app_settings import gmail_role_enabled
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .common import request_owner_user_id
@@ -103,34 +101,16 @@ def handle_send_document(handler) -> None:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
 
-    matter = matter_store.create_matter(
-        source_filename=filename,
+    repository = matter_lifecycle.repository_for_handler(handler)
+    updated_matter = matter_lifecycle.create_sent_document_matter(
+        repository,
+        filename=filename,
         document_bytes=document_bytes,
-        extracted_text="",
-        review_result={},
-        triage=_send_document_triage(),
-        source_type="send_document",
-        board_column="sent",
-        intake_metadata=_send_document_metadata(filename, recipient, subject),
+        recipient=recipient,
+        subject=subject,
+        sent=sent,
         owner_user_id=owner_user_id,
     )
-    updated_matter = matter_store.update_matter_fields(
-        str(matter.get("id") or ""),
-        {
-            "board_column": "sent",
-            "last_outbound_account": sent.get("outbound_account", ""),
-            "last_outbound_at": sent.get("sent_at", ""),
-            "last_outbound_filename": filename,
-            "last_outbound_message_id": sent.get("message_id", ""),
-            "last_outbound_subject": sent.get("subject", ""),
-            "last_outbound_thread_id": sent.get("thread_id", ""),
-            "last_outbound_to": sent.get("to", ""),
-            "status": "active",
-        },
-        owner_user_id=owner_user_id,
-    )
-    if updated_matter is None:
-        updated_matter = matter
 
     telemetry.increment("send_document_sent")
     handler._send_json(
@@ -149,25 +129,3 @@ def is_supported_send_filename(filename: object) -> bool:
 
 def _default_subject(filename: str) -> str:
     return Path(str(filename or "")).stem or "Document"
-
-
-def _send_document_metadata(filename: str, recipient: str, subject: str) -> dict[str, str]:
-    return {
-        "sender": recipient,
-        "reply_to": recipient,
-        "subject": subject,
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "message_snippet": f"Sent {Path(str(filename or '')).name or 'document'} to {recipient}.",
-        "attachment_filename": filename,
-    }
-
-
-def _send_document_triage() -> dict[str, Any]:
-    return {
-        "triage_status": "sent",
-        "next_action": "Document sent",
-        "issue_count": 0,
-        "requirements_passed": 0,
-        "requirements_needs_review": 0,
-        "requirements_failed": 0,
-    }

@@ -33,7 +33,7 @@ from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
 from nda_automation import ingestion_service
-from nda_automation import matter_store
+from nda_automation import matter_lifecycle, matter_store
 from nda_automation import matter_view
 from nda_automation import server as server_module
 from nda_automation import telemetry
@@ -2115,7 +2115,7 @@ class ServerTests(unittest.TestCase):
                 )
                 with (
                     patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
-                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                    patch.object(matter_lifecycle, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
                 ):
                     status, payload = self.request("GET", f"/api/matters/{matter['id']}/review")
                 stored_matter = matter_store.get_matter(matter["id"])
@@ -2183,7 +2183,7 @@ class ServerTests(unittest.TestCase):
                 )
                 with (
                     patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
-                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                    patch.object(matter_lifecycle, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
                 ):
                     status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
                 stored_matter = matter_store.get_matter(matter["id"])
@@ -2246,7 +2246,7 @@ class ServerTests(unittest.TestCase):
                         "requirements_failed": 1,
                     },
                 )
-                with patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review:
+                with patch.object(matter_lifecycle, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review:
                     status, payload = self.request("GET", f"/api/matters/{matter['id']}/review?refresh=1")
                 stored_matter = matter_store.get_matter(matter["id"])
 
@@ -2336,7 +2336,7 @@ class ServerTests(unittest.TestCase):
                 self.assertIn("redline_draft", matter_store.get_matter(matter["id"]))
                 with (
                     patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
-                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)),
+                    patch.object(matter_lifecycle, "review_nda_with_active_engine", return_value=deepcopy(active_result)),
                 ):
                     review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
                 stored_after_refresh = matter_store.get_matter(matter["id"])

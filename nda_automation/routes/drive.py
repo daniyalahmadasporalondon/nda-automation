@@ -26,7 +26,7 @@ from .. import (
     artifact_registry,
     drive_integration,
     gmail_integration,
-    matter_store,
+    matter_lifecycle,
     matter_view,
     telemetry,
     user_store,
@@ -169,7 +169,8 @@ def handle_drive_upload_matter(handler) -> None:
     owner_user_id = request_owner_user_id(handler)
     drive_token_owner_user_id = gmail_owner_user_id(handler)
 
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=owner_user_id)
     if matter is None:
         telemetry.increment("drive_upload_failed")
         handler._send_json({"error": "Matter not found."}, status=400)
@@ -217,9 +218,10 @@ def handle_drive_upload_matter(handler) -> None:
         "synced_at": synced_at,
         "artifacts": synced["artifacts"],
     }
-    updated_matter = matter_store.update_matter_fields(
+    updated_matter = matter_lifecycle.update_matter_drive_sync(
+        repository,
         matter_id,
-        {"drive": drive_block},
+        drive_block,
         owner_user_id=owner_user_id,
     )
     if updated_matter is None:

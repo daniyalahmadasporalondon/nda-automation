@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
-from .. import app_settings, gmail_integration, matter_store, matter_view, redline_export_service, telemetry, workflow
+from .. import app_settings, gmail_integration, matter_lifecycle, matter_view, redline_export_service, telemetry
 from ..docx_export import DocxExportError
 from ..docx_text import DocxExtractionError
 from .common import request_owner_user_id
@@ -132,9 +132,13 @@ def handle_gmail_import(handler) -> None:
             query=payload.get("query") if isinstance(payload.get("query"), str) else None,
             owner_user_id=owner_user_id,
         )
+        repository = matter_lifecycle.repository_for_handler(handler)
         result = {
             **result,
-            "deduplicated_count": matter_store.deduplicate_gmail_matters(owner_user_id=owner_user_id),
+            "deduplicated_count": matter_lifecycle.deduplicate_gmail_matters(
+                repository,
+                owner_user_id=owner_user_id,
+            ),
         }
     except gmail_integration.GmailRateLimitError as error:
         finished_at = datetime.now(timezone.utc).isoformat()
@@ -237,7 +241,8 @@ def handle_gmail_send_redline(handler) -> None:
 
     owner_user_id = request_owner_user_id(handler)
     gmail_token_owner_user_id = gmail_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.get_matter(repository, matter_id.strip(), owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -256,7 +261,7 @@ def handle_gmail_send_redline(handler) -> None:
             status=400,
         )
         return
-    if matter_blocks_redline_send(matter):
+    if matter_lifecycle.matter_blocks_redline_send(matter):
         handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
         return
     if not app_settings.gmail_role_enabled("outbound"):
@@ -309,11 +314,11 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    send_matter = matter_store.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
+    send_matter = matter_lifecycle.get_matter(repository, matter_id.strip(), owner_user_id=owner_user_id)
     if send_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
-    if matter_blocks_redline_send(send_matter):
+    if matter_lifecycle.matter_blocks_redline_send(send_matter):
         handler._send_json({"error": "Matter needs human review before a redline can be sent."}, status=409)
         return
 
@@ -343,60 +348,21 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=gmail_send_error_status(error))
         return
 
-    updated_matter = matter_store.update_matter_fields(
+    updated_matter = matter_lifecycle.stamp_matter_sent(
+        repository,
         matter_id.strip(),
-        {
-            "board_column": "sent",
-            "last_outbound_account": sent.get("outbound_account", ""),
-            "last_outbound_at": sent.get("sent_at", ""),
-            "last_outbound_filename": redline_export.filename,
-            "last_outbound_message_id": sent.get("message_id", ""),
-            "last_outbound_subject": sent.get("subject", ""),
-            "last_outbound_thread_id": sent.get("thread_id", ""),
-            "last_outbound_to": sent.get("to", ""),
-            "status": "active",
-        },
+        sent,
+        filename=redline_export.filename,
         owner_user_id=owner_user_id,
     )
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
-    _stamp_sent_timeline(updated_matter, sent, owner_user_id=owner_user_id)
     handler._send_json({
         "filename": redline_export.filename,
         "matter": matter_view.public_matter(updated_matter),
         "sent": sent,
     })
-
-
-def _stamp_sent_timeline(matter: dict, sent: dict, *, owner_user_id: str = "") -> None:
-    """Append the Approval->Sent transition to the timeline backbone (best-effort).
-
-    The redline went out; record it on the append-only log referencing the
-    outbound message so the lifecycle is traceable. Never fails the send -- the
-    document is already delivered and the matter already stamped.
-    """
-    matter_id = str(matter.get("id") or "")
-    if not matter_id:
-        return
-    try:
-        matter_store.append_timeline_event(
-            matter_id,
-            workflow.build_timeline_event(
-                workflow.EVENT_SENT,
-                phase=workflow.PHASE_SENT,
-                status=workflow.STATUS_SENT_AWAITING_COUNTERPARTY,
-                actor=str(sent.get("outbound_account") or "system"),
-                detail=str(sent.get("to") or ""),
-            ),
-            owner_user_id=owner_user_id,
-        )
-    except Exception:
-        return
-
-
-def matter_blocks_redline_send(matter: dict) -> bool:
-    return matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed")
 
 
 def gmail_owner_user_id(handler) -> str:
