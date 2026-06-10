@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import unquote
 
-from .. import approval, matter_store, matter_view, redline_export_service, telemetry
+from .. import approval, matter_lifecycle, matter_view, redline_export_service, telemetry
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..pdf_text import PdfExtractionError
@@ -39,7 +38,8 @@ def handle_clause_decision(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -55,8 +55,12 @@ def handle_clause_decision(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    updated_matter = matter_store.set_clause_reviewer_decision(
-        matter_id, clause_id, reviewer_decision, owner_user_id=owner_user_id,
+    updated_matter = matter_lifecycle.record_clause_decision(
+        repository,
+        matter_id,
+        clause_id,
+        reviewer_decision,
+        owner_user_id=owner_user_id,
     )
     if updated_matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
@@ -77,45 +81,38 @@ def handle_matter_approve(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
-    if matter is None:
+    repository = matter_lifecycle.repository_for_handler(handler)
+    actor = _request_actor(handler)
+    approval_result = matter_lifecycle.approve_matter(
+        repository,
+        matter_id,
+        actor=actor,
+        owner_user_id=owner_user_id,
+    )
+    if approval_result.matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
-    blocks = approval.approval_blocks(matter)
-    if blocks:
+    if approval_result.blocks:
         telemetry.increment("matter_approvals_blocked")
         handler._send_json(
             {
                 "error": "Matter cannot be approved yet.",
-                "blocks_approval": blocks,
-                "resolution": approval.resolution_summary(matter),
+                "blocks_approval": approval_result.blocks,
+                "resolution": approval.resolution_summary(approval_result.matter),
             },
             status=409,
         )
         return
 
-    actor = _request_actor(handler)
-    approved_at = datetime.now(timezone.utc).isoformat()
-    timeline_event = approval.approval_timeline_event(actor=actor)
-    updated_matter = matter_store.record_matter_approval(
-        matter_id,
-        approver=actor,
-        approved_at=approved_at,
-        timeline_event=timeline_event,
-        owner_user_id=owner_user_id,
-    )
-    if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
+    updated_matter = approval_result.matter
     telemetry.increment("matter_approvals")
     handler._send_json({
         "matter": matter_view.public_matter(updated_matter),
         "status": "approved",
-        "approved_at": approved_at,
-        "approver": actor,
-        "timeline_event": timeline_event,
+        "approved_at": approval_result.approved_at,
+        "approver": approval_result.approver,
+        "timeline_event": approval_result.timeline_event,
         "resolution": approval.resolution_summary(updated_matter),
     })
 
@@ -127,7 +124,8 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         return
 
     owner_user_id = request_owner_user_id(handler)
-    matter = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
