@@ -199,8 +199,57 @@ assert.equal(RedlineEditContract.redlineOperationPreviewMode({
   paragraph_id: "p3",
   replacement_text: "Manual",
 }), "word_diff");
+assert.equal(RedlineEditContract.isKnownRedlineAction("unknown_action"), false);
+assert.equal(RedlineEditContract.isManualRedlineAction("insert_after_paragraph"), false);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({ action: "unknown_action", paragraph_id: "p1" }), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({ action: "replace_paragraph" }), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({
+  action: "insert_after_paragraph",
+  clause_id: "manual_viewer_edit",
+  paragraph_id: "p4",
+  replacement_text: "Manual insert should be rejected.",
+}), null);
+assert.equal(RedlineEditContract.normalizeRedlineEdit({
+  action: "insert_after_paragraph",
+  is_manual: true,
+  paragraph_id: "p4",
+  replacement_text: "Manual insert should be rejected.",
+}), null);
+assert.deepEqual(RedlineEditContract.normalizeRedlineEdit({
+  action: "delete_paragraph",
+  is_manual: true,
+  original_text: "Delete this.",
+  paragraph_id: "p5",
+  replacement_text: "Delete this.",
+}), {
+  action: "delete_paragraph",
+  action_label: "Remove paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "",
+  is_manual: true,
+  original_text: "Delete this.",
+  paragraph_id: "p5",
+  replacement_text: "Delete this.",
+  status: "proposed",
+});
+assert.equal(RedlineEditContract.redlineReplacementText({
+  action: "delete_paragraph",
+  replacement_text: "Ignored for preview/export.",
+}), "");
+assert.equal(RedlineEditContract.redlineInlinePreviewMode({
+  action: "replace_paragraph",
+  clause_id: "server_clause",
+  paragraph_id: "p6",
+  replacement_text: "Server edit.",
+  whole_paragraph: false,
+}), "whole_paragraph");
 assert.equal(RedlineEditContract.redlineActionLabel({ action: "insert_after_paragraph" }), "Insert after paragraph");
 assert.equal(RedlineEditContract.redlineInsertedText({ insert_text: "Inserted", replacement_text: "Fallback" }), "Inserted");
+assert.deepEqual(RedlineEditContract.normalizeRedlineEdits([
+  { action: "replace_paragraph", clause_id: "clause", paragraph_id: "p1", replacement_text: "Server" },
+  { action: "insert_after_paragraph", clause_id: "manual_viewer_edit", paragraph_id: "p1", replacement_text: "Unsafe" },
+  { action: "format_paragraph", is_manual: true, paragraph_id: "p1", replacement_text: "Formatted", format_ops: [{ op: "align", value: "center" }] },
+]).map((edit) => edit.action), ["replace_paragraph", "format_paragraph"]);
 
 const workstation = {
   exportClauseDecisions: { governing_law: true },
@@ -248,6 +297,44 @@ assert.deepEqual(ReviewWorkstationModel.defaultExportClauseDecisions(workstation
 });
 assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation).length, 1);
 assert.equal(ReviewWorkstationModel.effectiveReviewRedlines(workstation)[0].replacement_text, "Second");
+const exportStabilityWorkstation = {
+  exportClauseDecisions: { server_clause: true },
+  exportRedlineDecisions: { "server-redline": true, "manual-redline": false },
+  redlineTemplateSelections: { "server-redline": "server-option" },
+  reviewRedlines: [
+    {
+      action: "replace_paragraph",
+      clause_id: "server_clause",
+      id: "server-redline",
+      paragraph_id: "p1",
+      replacement_text: "Default server replacement.",
+      template_options: [
+        { id: "default-option", replacement_text: "Default server replacement." },
+        { id: "server-option", inline_diff_operations: [{ type: "insert", token: "Selected" }], replacement_text: "Selected server replacement." },
+      ],
+    },
+    {
+      action: "replace_paragraph",
+      clause_id: "manual_viewer_edit",
+      id: "manual-redline",
+      paragraph_id: "p2",
+      replacement_text: "Manual replacement.",
+      whole_paragraph: false,
+    },
+  ],
+};
+assert.deepEqual(ReviewWorkstationModel.effectiveReviewRedlines(exportStabilityWorkstation), [{
+  action: "replace_paragraph",
+  clause_id: "server_clause",
+  id: "server-redline",
+  inline_diff_operations: [{ type: "insert", token: "Selected" }],
+  paragraph_id: "p1",
+  replacement_text: "Selected server replacement.",
+  template_options: [
+    { id: "default-option", replacement_text: "Default server replacement.", selected: false },
+    { id: "server-option", inline_diff_operations: [{ type: "insert", token: "Selected" }], replacement_text: "Selected server replacement.", selected: true },
+  ],
+}]);
 assert.equal(ReviewWorkstationModel.reviewIsStale(workstation), true);
 assert.deepEqual(ReviewWorkstationModel.redlineDraftControlState(workstation), {
   canDraft: true,

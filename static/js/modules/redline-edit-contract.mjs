@@ -76,6 +76,8 @@ export function normalizeRedlineEdit(raw) {
   if (!isKnownRedlineAction(action)) return null;
   const paragraphId = String(raw.paragraph_id || "").trim();
   if (!paragraphId) return null;
+  const manualEdit = Boolean(raw.is_manual || raw.clause_id === MANUAL_VIEWER_EDIT_CLAUSE_ID);
+  if (manualEdit && !isManualRedlineAction(action)) return null;
 
   const edit = {
     ...raw,
