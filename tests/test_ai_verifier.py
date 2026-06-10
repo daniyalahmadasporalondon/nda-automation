@@ -7,6 +7,8 @@ Two layers:
   that pins the eval gate (the non_circumvention freedom-to-deal carve-out the
   keyword checker false-flags as a restriction).
 """
+import io
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -60,6 +62,23 @@ def _scripted(verdict, *, confidence=0.95, rationale="scripted"):
         return {"verdict": verdict, "confidence": confidence, "rationale": rationale}
 
     return verifier
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        return _FakeResponse(response_bytes)
+
+    return urlopen
 
 
 class ApplyVerifierTests(unittest.TestCase):
@@ -410,6 +429,30 @@ class ResolveVerifierTests(unittest.TestCase):
                 self.assertIsInstance(resolved, OpenRouterVerifier)
                 # Defaults to a strong Claude model.
                 self.assertIn("claude", resolved.model.lower())
+
+    def test_openrouter_verifier_uses_shared_runtime_adapter(self):
+        captured = []
+        provider_verdict = {
+            "verdict": VERIFIER_VERDICT_AFFIRM,
+            "confidence": 0.8,
+            "rationale": "Finding is supported.",
+        }
+        response = json.dumps(
+            {"choices": [{"message": {"content": json.dumps(provider_verdict)}}]}
+        ).encode("utf-8")
+        verifier = OpenRouterVerifier(api_key="sk-test", model="anthropic/claude-opus-4.1")
+
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            verdict = verifier({"clause_id": "governing_law", "engine_decision": "fail"})
+
+        self.assertEqual(verdict, provider_verdict)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer sk-test")
+        self.assertEqual(captured[0].headers["User-agent"], "nda-automation-verifier/1.0")
+        body = json.loads(captured[0].data.decode("utf-8"))
+        self.assertEqual(body["model"], "anthropic/claude-opus-4.1")
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertIn("governing_law", body["messages"][1]["content"])
 
     def test_summary_reports_offline_kind_by_default(self):
         # No env opt-in -> offline adversary, surfaced for observability.

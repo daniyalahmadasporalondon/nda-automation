@@ -8,9 +8,29 @@ failure mode raises a user-safe error rather than crashing.
 
 from __future__ import annotations
 
+import io
+import json
 import unittest
+from unittest.mock import patch
 
 from nda_automation import matter_summary
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        return _FakeResponse(response_bytes)
+
+    return urlopen
 
 
 def _stub_transport(text):
@@ -152,6 +172,19 @@ class SummarizeMatterTests(unittest.TestCase):
             )
         except matter_summary.MatterSummaryUnavailableError as error:
             self.assertEqual(str(error), matter_summary.SUMMARY_UNAVAILABLE_MESSAGE)
+
+    def test_openrouter_summary_transport_uses_shared_runtime_adapter(self):
+        captured = []
+        response = json.dumps({"choices": [{"message": {"content": "Grounded summary."}}]}).encode("utf-8")
+        body = {"model": "x-ai/grok-4.3", "messages": [{"role": "user", "content": "data"}], "temperature": 0}
+
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            payload = matter_summary._OpenRouterSummaryTransport(api_key="sk-test", timeout_seconds=20)(body)
+
+        self.assertEqual(matter_summary._summary_text_from_response(payload), "Grounded summary.")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer sk-test")
+        self.assertEqual(json.loads(captured[0].data.decode("utf-8")), body)
 
 
 if __name__ == "__main__":

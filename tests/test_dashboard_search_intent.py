@@ -12,10 +12,30 @@ These exercise the translator/validator directly to lock THE GOLDEN RULE contrac
 
 from __future__ import annotations
 
+import io
+import json
 import unittest
+from unittest.mock import patch
 
 from nda_automation import dashboard_search_intent as dsi
 from nda_automation import workflow
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+
+def _mock_urlopen(response_bytes, captured_requests):
+    def urlopen(request, *args, **kwargs):
+        captured_requests.append(request)
+        return _FakeResponse(response_bytes)
+
+    return urlopen
 
 
 def _stub(spec_json):
@@ -201,6 +221,19 @@ class TranslateSearchIntentTests(unittest.TestCase):
                 "Acme",
                 settings={"enabled": False, "provider": "openrouter", "model": "x", "timeout_seconds": 20},
             )
+
+    def test_openrouter_intent_transport_uses_shared_runtime_adapter(self):
+        captured = []
+        response = json.dumps({"choices": [{"message": {"content": '{"phase":"review"}'}}]}).encode("utf-8")
+        body = dsi.build_intent_request_body("review matters", model="x-ai/grok-4.3")
+
+        with patch("urllib.request.urlopen", _mock_urlopen(response, captured)):
+            payload = dsi._OpenRouterIntentTransport(api_key="sk-test", timeout_seconds=20)(body)
+
+        self.assertEqual(dsi.validate_filter_spec(dsi._spec_from_response(payload))["phase"], "review")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer sk-test")
+        self.assertEqual(json.loads(captured[0].data.decode("utf-8")), body)
 
 
 if __name__ == "__main__":

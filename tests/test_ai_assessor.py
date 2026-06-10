@@ -12,7 +12,7 @@ from nda_automation.ai_assessor import (
     configured_ai_assessment_reviewer,
     openrouter_ai_assessment_request_body,
 )
-from nda_automation.ai_review import DEFAULT_OPENROUTER_MODEL
+from nda_automation.ai_runtime import DEFAULT_OPENROUTER_MODEL
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 
 
@@ -237,7 +237,7 @@ class AIAssessorTests(unittest.TestCase):
             assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
 
     def test_ai_first_assessor_disabled_without_injected_reviewer(self):
-        with patch("nda_automation.ai_assessor._ai_review_settings", return_value={
+        with patch("nda_automation.ai_assessor.ai_review_settings", return_value={
             "enabled": False,
             "provider": "openrouter",
             "model": DEFAULT_OPENROUTER_MODEL,
@@ -314,7 +314,7 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
 
     def test_configured_reviewer_builds_openrouter_gemini(self):
         with (
-            patch("nda_automation.ai_assessor._configured_api_key", side_effect=lambda provider: f"{provider}-key"),
+            patch("nda_automation.ai_assessor.configured_api_key", side_effect=lambda provider: f"{provider}-key"),
         ):
             reviewer = configured_ai_assessment_reviewer({
                 "enabled": True,
