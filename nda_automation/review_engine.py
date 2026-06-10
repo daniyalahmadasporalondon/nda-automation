@@ -10,7 +10,7 @@ from .ai_assessor import AIAssessorError, assess_nda_with_ai
 from .checker import compute_unmatched_sections, review_nda
 from .review_document import Paragraph
 from . import telemetry
-from .routes import playbook as playbook_routes
+from .playbook_runtime import ensure_active_playbook_runtime
 
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
 REVIEW_ENGINE_DETERMINISTIC = "deterministic"
@@ -62,7 +62,7 @@ def review_nda_with_active_engine(
     paragraphs: Sequence[Paragraph] | None = None,
     deterministic_review_func: ReviewEngineFn = _offline_deterministic_review,
     ai_first_review_func: ReviewEngineFn = assess_nda_with_ai,
-    playbook_runtime_func: PlaybookRuntimeFn = playbook_routes.ensure_active_playbook_runtime,
+    playbook_runtime_func: PlaybookRuntimeFn = ensure_active_playbook_runtime,
     force_engine: str | None = None,
 ) -> dict[str, Any]:
     # force_engine lets a caller pin the engine regardless of the active config —

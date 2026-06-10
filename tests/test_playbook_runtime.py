@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nda_automation.checker import load_playbook
 from nda_automation.routes import playbook as playbook_routes
+from nda_automation import playbook_runtime
 from nda_automation import server as server_module
 
 
@@ -31,10 +32,10 @@ class PlaybookRuntimeTests(unittest.TestCase):
         second = {"clauses": [{"rules": {"a": 1, "b": 2}, "id": "one"}], "name": "Policy"}
 
         self.assertEqual(
-            playbook_routes.playbook_snapshot_hash(first),
-            playbook_routes.playbook_snapshot_hash(second),
+            playbook_runtime.playbook_snapshot_hash(first),
+            playbook_runtime.playbook_snapshot_hash(second),
         )
-        self.assertRegex(playbook_routes.playbook_snapshot_hash(first), r"^sha256:[a-f0-9]{64}$")
+        self.assertRegex(playbook_runtime.playbook_snapshot_hash(first), r"^sha256:[a-f0-9]{64}$")
 
     def test_active_runtime_bootstrap_creates_sidecar_metadata(self):
         playbook = deepcopy(load_playbook())
@@ -43,13 +44,13 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_path = Path(playbook_dir) / "playbook.json"
             playbook_path.write_text(json.dumps(playbook), encoding="utf-8")
 
-            runtime = playbook_routes.ensure_active_playbook_runtime(playbook_path=playbook_path)
+            runtime = playbook_runtime.ensure_active_playbook_runtime(playbook_path=playbook_path)
 
-            runtime_path = playbook_routes.runtime_path_for(playbook_path)
+            runtime_path = playbook_runtime.runtime_path_for(playbook_path)
             saved_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(runtime["version"], playbook_routes.PLAYBOOK_RUNTIME_VERSION)
-        self.assertEqual(runtime["active_hash"], playbook_routes.playbook_snapshot_hash(playbook))
+        self.assertEqual(runtime["version"], playbook_runtime.PLAYBOOK_RUNTIME_VERSION)
+        self.assertEqual(runtime["active_hash"], playbook_runtime.playbook_snapshot_hash(playbook))
         self.assertEqual(saved_runtime["active_hash"], runtime["active_hash"])
         self.assertEqual(runtime["published_by"], "system")
         self.assertEqual(runtime["source"], "bootstrap")
@@ -72,7 +73,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
         self.assertEqual(handler.response["active"]["playbook"]["name"], playbook["name"])
         self.assertEqual(
             handler.response["active"]["metadata"]["active_hash"],
-            playbook_routes.playbook_snapshot_hash(playbook),
+            playbook_runtime.playbook_snapshot_hash(playbook),
         )
         self.assertIsNone(handler.response["draft"])
 
@@ -89,12 +90,12 @@ class PlaybookRuntimeTests(unittest.TestCase):
 
             playbook_routes.handle_playbook_save(handler, playbook_path=playbook_path)
 
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
 
         self.assertEqual(handler.status, 200)
         self.assertEqual(handler.response["active"]["metadata"]["source"], "save")
         self.assertEqual(handler.response["active"]["metadata"]["published_by"], "legal-admin")
-        self.assertEqual(saved_runtime["active_hash"], playbook_routes.playbook_snapshot_hash(changed_playbook))
+        self.assertEqual(saved_runtime["active_hash"], playbook_runtime.playbook_snapshot_hash(changed_playbook))
         self.assertEqual(saved_runtime["source"], "save")
 
     def test_playbook_draft_save_validates_without_changing_active_playbook(self):
@@ -106,7 +107,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as playbook_dir:
             playbook_path = Path(playbook_dir) / "playbook.json"
             playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
-            runtime = playbook_routes.ensure_active_playbook_runtime(playbook_path=playbook_path)
+            runtime = playbook_runtime.ensure_active_playbook_runtime(playbook_path=playbook_path)
             handler = _JsonHandler({
                 "playbook": draft_playbook,
                 "actor": "legal-admin",
@@ -117,8 +118,8 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_draft_save(handler, playbook_path=playbook_path)
 
             active_after_save = json.loads(playbook_path.read_text(encoding="utf-8"))
-            saved_draft = json.loads(playbook_routes.draft_path_for(playbook_path).read_text(encoding="utf-8"))
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_draft = json.loads(playbook_runtime.draft_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
 
         self.assertEqual(handler.status, 200)
         self.assertEqual(active_after_save, original_playbook)
@@ -170,7 +171,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
 
         self.assertEqual(handler.status, 409)
         self.assertEqual(handler.response["code"], "playbook_conflict")
-        self.assertFalse(playbook_routes.draft_path_for(playbook_path).exists())
+        self.assertFalse(playbook_runtime.draft_path_for(playbook_path).exists())
 
     def test_playbook_draft_discard_removes_draft_sidecar_and_runtime_fields(self):
         original_playbook = deepcopy(load_playbook())
@@ -188,10 +189,10 @@ class PlaybookRuntimeTests(unittest.TestCase):
 
             playbook_routes.handle_playbook_draft_discard(discard_handler, playbook_path=playbook_path)
 
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
 
         self.assertEqual(discard_handler.status, 200)
-        self.assertFalse(playbook_routes.draft_path_for(playbook_path).exists())
+        self.assertFalse(playbook_runtime.draft_path_for(playbook_path).exists())
         self.assertNotIn("draft_id", saved_runtime)
         self.assertIsNone(discard_handler.response["draft"])
         self.assertEqual(discard_handler.response["history"][0]["action"], "draft_discard")
@@ -211,7 +212,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
 
             playbook_routes.handle_playbook_draft_save(save_handler, playbook_path=playbook_path)
             playbook_routes.handle_playbook_draft_discard(conflict_handler, playbook_path=playbook_path)
-            draft_still_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            draft_still_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(conflict_handler.status, 409)
         self.assertEqual(conflict_handler.response["code"], "playbook_draft_conflict")
@@ -226,7 +227,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as playbook_dir:
             playbook_path = Path(playbook_dir) / "playbook.json"
             playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
-            runtime = playbook_routes.ensure_active_playbook_runtime(playbook_path=playbook_path)
+            runtime = playbook_runtime.ensure_active_playbook_runtime(playbook_path=playbook_path)
             save_handler = _JsonHandler({
                 "playbook": draft_playbook,
                 "actor": "legal-admin",
@@ -243,15 +244,15 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_publish(publish_handler, playbook_path=playbook_path)
 
             active_after_publish = json.loads(playbook_path.read_text(encoding="utf-8"))
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
-            draft_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            draft_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(publish_handler.status, 200)
         self.assertEqual(active_after_publish, draft_playbook)
         self.assertFalse(draft_exists)
         self.assertEqual(saved_runtime["source"], "publish")
         self.assertEqual(saved_runtime["published_by"], "legal-admin")
-        self.assertEqual(saved_runtime["active_hash"], playbook_routes.playbook_snapshot_hash(draft_playbook))
+        self.assertEqual(saved_runtime["active_hash"], playbook_runtime.playbook_snapshot_hash(draft_playbook))
         self.assertNotIn("draft_id", saved_runtime)
         self.assertEqual(publish_handler.response["draft"], None)
         self.assertEqual(publish_handler.response["history"][0]["action"], "publish")
@@ -278,7 +279,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_publish(publish_handler, playbook_path=playbook_path)
 
             active_after_publish_attempt = json.loads(playbook_path.read_text(encoding="utf-8"))
-            draft_still_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            draft_still_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(publish_handler.status, 409)
         self.assertEqual(publish_handler.response["code"], "playbook_conflict")
@@ -309,7 +310,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_publish(publish_handler, playbook_path=playbook_path)
 
             active_after_publish_attempt = json.loads(playbook_path.read_text(encoding="utf-8"))
-            draft_still_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            draft_still_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(publish_handler.status, 409)
         self.assertEqual(publish_handler.response["code"], "playbook_draft_base_conflict")
@@ -332,7 +333,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_publish(publish_handler, playbook_path=playbook_path)
 
             active_after_publish_attempt = json.loads(playbook_path.read_text(encoding="utf-8"))
-            draft_still_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            draft_still_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(publish_handler.status, 409)
         self.assertEqual(publish_handler.response["code"], "playbook_draft_conflict")
@@ -353,7 +354,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_publish(handler, playbook_path=playbook_path)
 
             active_after_publish = json.loads(playbook_path.read_text(encoding="utf-8"))
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
 
         self.assertEqual(handler.status, 200)
         self.assertEqual(active_after_publish, publish_playbook)
@@ -408,7 +409,7 @@ class PlaybookRuntimeTests(unittest.TestCase):
             playbook_routes.handle_playbook_validate_draft(handler, playbook_path=playbook_path)
 
             active_after_validate = json.loads(playbook_path.read_text(encoding="utf-8"))
-            draft_exists = playbook_routes.draft_path_for(playbook_path).exists()
+            draft_exists = playbook_runtime.draft_path_for(playbook_path).exists()
 
         self.assertEqual(handler.status, 200)
         self.assertTrue(handler.response["valid"])

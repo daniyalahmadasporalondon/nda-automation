@@ -36,6 +36,7 @@ from nda_automation.checker import REVIEW_ENGINE_VERSION, load_playbook
 from nda_automation.review_staleness import review_result_staleness
 from nda_automation.routes import matters as matter_routes
 from nda_automation.routes import playbook as playbook_routes
+from nda_automation import playbook_runtime
 
 
 class _JsonHandler:
@@ -79,17 +80,17 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
         self.playbook_path = Path(self._dir.name) / "playbook.json"
         self.original_playbook = deepcopy(load_playbook())
         self.playbook_path.write_text(json.dumps(self.original_playbook), encoding="utf-8")
-        playbook_routes.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
+        playbook_runtime.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
 
     # --- helpers tied to the isolated active playbook ---------------------
 
     def _active_runtime(self) -> dict:
-        return playbook_routes.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
+        return playbook_runtime.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
 
     def _active_playbook(self) -> dict:
         # The active published playbook: the same file publish writes to and the
         # same content the live review path feeds into the packet builder.
-        return playbook_routes.read_playbook_from_path(self.playbook_path)
+        return playbook_runtime.read_playbook_from_path(self.playbook_path)
 
     def _active_packet(self) -> dict:
         return build_ai_assessment_packet("Sample NDA text.", playbook=self._active_playbook())

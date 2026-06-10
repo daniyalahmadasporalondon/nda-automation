@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .checker import REVIEW_ENGINE_VERSION
-from .routes import playbook as playbook_routes
+from .playbook_runtime import ensure_active_playbook_runtime, public_playbook_runtime
 
 STALE_REVIEW_EXPORT_MESSAGE = (
     "Review is stale. Refresh the review before exporting or sending a redline."
@@ -83,7 +83,7 @@ def review_result_stale_reasons(
 def review_result_staleness(
     review_result: object,
     *,
-    current_runtime_func: CurrentRuntimeFn = playbook_routes.ensure_active_playbook_runtime,
+    current_runtime_func: CurrentRuntimeFn = ensure_active_playbook_runtime,
 ) -> dict[str, Any]:
     current_runtime: dict[str, Any] | None = None
     current_runtime_error: Exception | None = None
@@ -101,7 +101,7 @@ def review_result_staleness(
         "stale": bool(reasons),
         "stale_reasons": reasons,
         "current_review_engine_version": REVIEW_ENGINE_VERSION,
-        "current_playbook": playbook_routes.public_playbook_runtime(current_runtime),
+        "current_playbook": public_playbook_runtime(current_runtime),
         "review_playbook": review_playbook_runtime_metadata(review_result),
     }
     if reasons:

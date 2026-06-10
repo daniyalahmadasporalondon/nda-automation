@@ -40,7 +40,7 @@ from nda_automation import telemetry
 from nda_automation import user_store
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
-from nda_automation.routes import playbook as playbook_routes
+from nda_automation import playbook_runtime
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -173,7 +173,7 @@ class ServerTests(unittest.TestCase):
         )
 
     def active_playbook_review_runtime(self):
-        runtime = playbook_routes.ensure_active_playbook_runtime()
+        runtime = playbook_runtime.ensure_active_playbook_runtime()
         return {
             "active_version_id": str(runtime.get("active_version_id") or ""),
             "active_hash": str(runtime.get("active_hash") or ""),

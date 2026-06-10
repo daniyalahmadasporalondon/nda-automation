@@ -18,9 +18,9 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from .playbook_runtime import ensure_active_playbook_runtime
 from .redline_actions import REDLINE_REPLACE_PARAGRAPH
 from .review_staleness import review_result_staleness
-from .routes import playbook as playbook_routes
 
 CurrentPlaybookHashFn = Callable[[], str]
 
@@ -155,7 +155,7 @@ def resolution_summary(matter: dict[str, Any]) -> dict[str, Any]:
 
 def _current_published_playbook_hash() -> str:
     try:
-        runtime = playbook_routes.ensure_active_playbook_runtime()
+        runtime = ensure_active_playbook_runtime()
     except Exception:  # Fail closed: an unreadable active playbook means stale.
         return ""
     return str(runtime.get("active_hash") or "")

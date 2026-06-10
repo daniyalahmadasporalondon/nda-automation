@@ -41,7 +41,7 @@ from .review_document import (
 )
 from .playbook_rules import normalize_playbook_policy
 from .redline_rationale import attach_redline_rationales
-from .routes.playbook import playbook_snapshot_hash
+from .playbook_runtime import playbook_snapshot_hash
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,

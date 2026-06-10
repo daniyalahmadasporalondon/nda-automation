@@ -36,6 +36,7 @@ from nda_automation.ai_first_review import build_ai_first_review_result
 from nda_automation.checker import REVIEW_ENGINE_VERSION, load_playbook, review_nda
 from nda_automation.redline_rationale import REDLINE_RATIONALE_VERSION
 from nda_automation.routes import playbook as playbook_routes
+from nda_automation import playbook_runtime
 
 
 def _runtime(**overrides):
@@ -142,7 +143,7 @@ class PlaybookVersionStampTests(unittest.TestCase):
         playbook = deepcopy(load_playbook())
         result = build_ai_first_review_result("Mutual NDA text.", [], playbook=playbook, verify=False)
         version = result["playbook_version"]
-        self.assertEqual(version["hash"], playbook_routes.playbook_snapshot_hash(playbook))
+        self.assertEqual(version["hash"], playbook_runtime.playbook_snapshot_hash(playbook))
         # No runtime to assign a published id when called directly.
         self.assertEqual(version["id"], "")
         self.assertTrue(version["label"])
@@ -157,10 +158,10 @@ class PlaybookVersionHashStabilityTests(unittest.TestCase):
         self.playbook_path = Path(self._dir.name) / "playbook.json"
         self.original_playbook = deepcopy(load_playbook())
         self.playbook_path.write_text(json.dumps(self.original_playbook), encoding="utf-8")
-        playbook_routes.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
+        playbook_runtime.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
 
     def _active_runtime(self):
-        return playbook_routes.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
+        return playbook_runtime.ensure_active_playbook_runtime(playbook_path=self.playbook_path)
 
     def _review(self):
         return review_engine.review_nda_with_active_engine(
@@ -173,7 +174,7 @@ class PlaybookVersionHashStabilityTests(unittest.TestCase):
         first = self._review()["playbook_version"]["hash"]
         second = self._review()["playbook_version"]["hash"]
         self.assertEqual(first, second)
-        self.assertEqual(first, playbook_routes.playbook_snapshot_hash(self.original_playbook))
+        self.assertEqual(first, playbook_runtime.playbook_snapshot_hash(self.original_playbook))
 
     def test_hash_changes_after_publishing_a_different_playbook(self):
         before = self._review()["playbook_version"]["hash"]

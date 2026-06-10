@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from nda_automation.checker import load_playbook
 from nda_automation import export_service, gmail_integration
-from nda_automation.routes import playbook as playbook_routes
+from nda_automation import playbook_runtime
 
 
 class DurableIoTests(unittest.TestCase):
@@ -16,8 +16,8 @@ class DurableIoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as playbook_dir:
             playbook_path = Path(playbook_dir) / "playbook.json"
 
-            with patch.object(playbook_routes, "fsync_parent_directory") as fsync_parent_directory:
-                playbook_routes.write_json_atomically({"ok": True}, playbook_path)
+            with patch.object(playbook_runtime, "fsync_parent_directory") as fsync_parent_directory:
+                playbook_runtime.write_json_atomically({"ok": True}, playbook_path)
 
         fsync_parent_directory.assert_called_once_with(playbook_path)
 
@@ -32,15 +32,15 @@ class DurableIoTests(unittest.TestCase):
             playbook_path = Path(playbook_dir) / "playbook.json"
             playbook_path.write_text(json.dumps(original_playbook), encoding="utf-8")
             runtime = {
-                "version": playbook_routes.PLAYBOOK_RUNTIME_VERSION,
-                **playbook_routes._active_runtime_from_playbook(
+                "version": playbook_runtime.PLAYBOOK_RUNTIME_VERSION,
+                **playbook_runtime._active_runtime_from_playbook(
                     changed_playbook,
                     actor="legal-admin",
                     source="save",
                 ),
             }
             history = [
-                playbook_routes._history_entry(
+                playbook_runtime._history_entry(
                     changed_playbook,
                     action="save",
                     actor="legal-admin",
@@ -54,7 +54,7 @@ class DurableIoTests(unittest.TestCase):
                     raise SystemExit("simulated crash")
 
             with self.assertRaises(SystemExit):
-                playbook_routes.write_active_playbook_bundle_atomically(
+                playbook_runtime.write_active_playbook_bundle_atomically(
                     changed_playbook,
                     runtime,
                     history,
@@ -62,17 +62,17 @@ class DurableIoTests(unittest.TestCase):
                     replace_file=crash_after_runtime_replace,
                 )
 
-            self.assertTrue(playbook_routes.transaction_path_for(playbook_path).exists())
+            self.assertTrue(playbook_runtime.transaction_path_for(playbook_path).exists())
             self.assertEqual(json.loads(playbook_path.read_text(encoding="utf-8")), original_playbook)
 
-            recovered = playbook_routes.recover_playbook_transaction(playbook_path=playbook_path)
+            recovered = playbook_runtime.recover_playbook_transaction(playbook_path=playbook_path)
 
-            saved_runtime = json.loads(playbook_routes.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
-            saved_history = json.loads(playbook_routes.history_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_runtime = json.loads(playbook_runtime.runtime_path_for(playbook_path).read_text(encoding="utf-8"))
+            saved_history = json.loads(playbook_runtime.history_path_for(playbook_path).read_text(encoding="utf-8"))
             self.assertTrue(recovered)
-            self.assertFalse(playbook_routes.transaction_path_for(playbook_path).exists())
+            self.assertFalse(playbook_runtime.transaction_path_for(playbook_path).exists())
             self.assertEqual(json.loads(playbook_path.read_text(encoding="utf-8")), changed_playbook)
-            self.assertEqual(saved_runtime["active_hash"], playbook_routes.playbook_snapshot_hash(changed_playbook))
+            self.assertEqual(saved_runtime["active_hash"], playbook_runtime.playbook_snapshot_hash(changed_playbook))
             self.assertEqual(saved_history["entries"][0]["action"], "save")
 
     def test_export_persist_fsyncs_parent_directory_after_replace(self):
