@@ -66,9 +66,58 @@ window.generatorEditor = (function () {
       const text = runs.map((run) => run.text).join("");
       if (!text.trim()) return;
       index += 1;
-      paras.push({ id: `draft-${index}`, index, text, runs: runs.length > 1 || runs[0].bold ? runs : undefined });
+      const para = { id: `draft-${index}`, index, text, runs: runs.length > 1 || runs[0].bold ? runs : undefined };
+      // For list items, derive the ordinal marker + nesting level from the source
+      // <ol>/<ul> so the draft shows clause numbers / sub-clause letters (1., (a))
+      // just like the generated document does (the shared structure renderer reads
+      // paragraph.numbering for the marker + indentation).
+      if (block.tagName === "LI") {
+        const numbering = draftListNumbering(block);
+        if (numbering) para.numbering = numbering;
+      }
+      paras.push(para);
     });
     return paras;
+  }
+
+  // Marker + nesting level for a draft <li>, from its position + depth in the source
+  // <ol>/<ul>. Level 0 -> "1.", level 1 -> "(a)", deeper -> "(i)". Shaped to match the
+  // generated document's numbering metadata so paragraphStructureClasses /
+  // paragraphStructureAttributes draw the same markers + indentation.
+  function draftListNumbering(li) {
+    const list = li.parentElement;
+    if (!list || (list.tagName !== "OL" && list.tagName !== "UL")) return null;
+    const ordinal = Array.from(list.children).filter((el) => el.tagName === "LI").indexOf(li) + 1;
+    if (ordinal < 1) return null;
+    let level = 0;
+    let ancestor = list.parentElement;
+    while (ancestor) {
+      if (ancestor.tagName === "OL" || ancestor.tagName === "UL") level += 1;
+      ancestor = ancestor.parentElement;
+    }
+    const label = level === 0 ? `${ordinal}.` : level === 1 ? `(${draftAlpha(ordinal)})` : `(${draftRoman(ordinal)})`;
+    return { level, value: ordinal, label };
+  }
+
+  function draftAlpha(n) {
+    let out = "";
+    let value = n;
+    while (value > 0) {
+      value -= 1;
+      out = String.fromCharCode(97 + (value % 26)) + out;
+      value = Math.floor(value / 26);
+    }
+    return out || "a";
+  }
+
+  function draftRoman(n) {
+    const numerals = [[10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]];
+    let value = n;
+    let out = "";
+    for (const [size, sym] of numerals) {
+      while (value >= size) { out += sym; value -= size; }
+    }
+    return out || "i";
   }
 
   // Flatten an element to {text, bold?} runs, treating <b>/<strong> as bold, then
@@ -81,6 +130,9 @@ window.generatorEditor = (function () {
           const text = child.nodeValue.replace(/\s+/g, " ");
           if (text) runs.push(bold ? { text, bold: true } : { text });
         } else if (child.nodeType === 1) {
+          // Nested lists become their own paragraphs -- don't fold their text into
+          // the parent list item's runs (the parent <li> keeps only its own intro).
+          if (child.tagName === "OL" || child.tagName === "UL") return;
           walk(child, bold || /^(B|STRONG)$/.test(child.tagName));
         }
       });
