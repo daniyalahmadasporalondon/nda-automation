@@ -7,15 +7,15 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
-from email.message import EmailMessage
-from email.utils import formatdate, getaddresses, parsedate_to_datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from . import app_settings, gmail_attachment_selector, google_connection, matter_store, user_store
+from . import app_settings, gmail_attachment_selector, gmail_matter_outbox, google_connection, matter_store, user_store
 from .checker import ParagraphAlignmentError
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
@@ -114,7 +114,6 @@ NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND
 DEFAULT_INBOUND_QUERY = f"{GMAIL_INBOUND_BASE_QUERY} {NDA_MESSAGE_QUERY}"
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 MAX_GMAIL_IMPORT_LIMIT = 25
-EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
@@ -636,6 +635,10 @@ def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: st
     return skip
 
 
+def _gmail_outbox_transport() -> Any:
+    return sys.modules[__name__]
+
+
 def send_redline_email(
     matter: dict[str, Any],
     attachment_bytes: bytes,
@@ -647,44 +650,17 @@ def send_redline_email(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
-    recipient, service, outbound_account = _outbound_send_context(
+    return gmail_matter_outbox.send_redline_email(
         matter,
-        recipient_override=to,
+        attachment_bytes,
+        attachment_filename,
+        transport=_gmail_outbox_transport(),
+        body=body,
+        subject=subject,
+        to=to,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
-    outbound_subject = subject or _reply_subject(str(matter.get("subject") or matter.get("document_title") or "NDA redline"))
-    message = EmailMessage()
-    message["To"] = recipient
-    message["Subject"] = outbound_subject
-    message["Date"] = formatdate(localtime=True)
-    message.set_content(body or _default_outbound_body(matter))
-    message.add_attachment(
-        attachment_bytes,
-        maintype="application",
-        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=attachment_filename,
-    )
-
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-    gmail_payload: dict[str, Any] = {"raw": raw_message}
-    thread_id = str(matter.get("gmail_thread_id") or "").strip()
-    if thread_id and _can_reply_in_thread(matter, outbound_account):
-        gmail_payload["threadId"] = thread_id
-
-    try:
-        sent_message = service.users().messages().send(userId="me", body=gmail_payload).execute()
-    except Exception as exc:
-        _raise_gmail_api_error(exc, "Gmail outbound send failed.")
-
-    return {
-        "message_id": str(sent_message.get("id") or ""),
-        "outbound_account": outbound_account,
-        "sent_at": datetime.now(timezone.utc).isoformat(),
-        "subject": outbound_subject,
-        "thread_id": str(sent_message.get("threadId") or ""),
-        "to": recipient,
-    }
 
 
 def validate_outbound_send_ready(
@@ -694,13 +670,13 @@ def validate_outbound_send_ready(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> dict[str, str]:
-    recipient, _service, outbound_account = _outbound_send_context(
+    return gmail_matter_outbox.validate_outbound_send_ready(
         matter,
-        recipient_override=to,
+        transport=_gmail_outbox_transport(),
+        to=to,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
     )
-    return {"outbound_account": outbound_account, "to": recipient}
 
 
 def _outbound_send_context(
@@ -710,34 +686,13 @@ def _outbound_send_context(
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
 ) -> tuple[str, Any, str]:
-    operator_recipient = recipient_email(recipient_override)
-    recipient = operator_recipient or matter_reply_recipient(matter)
-    if not recipient:
-        raise GmailIntegrationError("Matter does not have a valid reply recipient email address.")
-    # The resolved recipient can come from attacker-controlled inbound headers
-    # (Reply-To / From), so a human must confirm the exact destination address
-    # before we transmit. A spoofed Reply-To therefore cannot silently redirect
-    # the outbound document — the send is refused unless the confirmed address
-    # matches the address we are about to send to. ``recipient_from_inbound_header``
-    # is True only when the recipient was derived from the matter's inbound
-    # headers rather than an operator-supplied ``to``.
-    _require_confirmed_recipient(
-        recipient,
-        confirmed_recipient,
-        recipient_from_inbound_header=not operator_recipient,
+    return gmail_matter_outbox.outbound_send_context(
+        matter,
+        transport=_gmail_outbox_transport(),
+        recipient_override=recipient_override,
+        confirmed_recipient=confirmed_recipient,
+        owner_user_id=owner_user_id,
     )
-    if not app_settings.gmail_role_enabled("outbound"):
-        raise GmailIntegrationError("Gmail outbound is disabled in Admin.")
-
-    owner_user_id = _clean_user_token_segment(owner_user_id)
-    service = _gmail_service_for_owner("outbound", owner_user_id)
-    profile = _gmail_profile_for_role("outbound", service=service, owner_user_id=owner_user_id)
-    outbound_account = str(profile.get("emailAddress") or "")
-    if not _is_valid_email_address(outbound_account):
-        raise GmailIntegrationError("Gmail outbound profile did not include a valid email address.")
-    _ensure_recipient_is_not_own_account(matter, recipient, outbound_account)
-    _ensure_outbound_matches_inbound(matter, outbound_account)
-    return recipient, service, outbound_account
 
 
 def _require_confirmed_recipient(
@@ -746,58 +701,24 @@ def _require_confirmed_recipient(
     *,
     recipient_from_inbound_header: bool = True,
 ) -> None:
-    # CONTRACT: any send whose recipient was derived from inbound email headers
-    # (Reply-To / From) MUST pass ``confirmed_recipient`` — a human-confirmed
-    # destination address. ``confirmed_recipient is None`` is an opt-out reserved
-    # for callers that resolved the recipient from a TRUSTED source (e.g. an
-    # operator typed the ``to`` directly, as in Send Document). To stop a future
-    # caller from silently inheriting that opt-out for a header-fed recipient, the
-    # opt-out is refused here whenever the recipient came from an inbound header.
-    if confirmed_recipient is None:
-        if recipient_from_inbound_header:
-            raise RecipientConfirmationError(
-                "Confirm the outbound recipient email address before sending."
-            )
-        return
-    confirmed = recipient_email(confirmed_recipient)
-    if not confirmed:
-        raise RecipientConfirmationError(
-            "Confirm the outbound recipient email address before sending."
-        )
-    if not _email_addresses_match(confirmed, recipient):
-        raise RecipientConfirmationError(
-            "The confirmed recipient does not match the matter recipient; refusing to send. "
-            f"Confirm sending to {recipient}."
-        )
+    gmail_matter_outbox.require_confirmed_recipient(
+        recipient,
+        confirmed_recipient,
+        transport=_gmail_outbox_transport(),
+        recipient_from_inbound_header=recipient_from_inbound_header,
+    )
 
 
 def matter_reply_recipient(matter: dict[str, Any]) -> str:
-    return recipient_email(matter.get("reply_to")) or recipient_email(matter.get("sender"))
+    return gmail_matter_outbox.matter_reply_recipient(matter)
 
 
 def recipient_email(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    addresses = [(display.strip(), email.strip()) for display, email in getaddresses([value]) if email.strip()]
-    if len(addresses) != 1:
-        return ""
-    display_name, email_address = addresses[0]
-    if not _is_valid_email_address(email_address):
-        return ""
-    canonical_email = email_address.lower()
-    display_emails = re.findall(EMAIL_IN_TEXT_PATTERN, display_name, flags=re.IGNORECASE)
-    if any(display_email.lower() != canonical_email for display_email in display_emails):
-        return ""
-    return canonical_email
+    return gmail_matter_outbox.recipient_email(value)
 
 
 def _is_valid_email_address(email_address: str) -> bool:
-    if "@" not in email_address or any(character.isspace() for character in email_address):
-        return False
-    local_part, _at, domain = email_address.rpartition("@")
-    if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    return gmail_matter_outbox.is_valid_email_address(email_address)
 
 
 def _apply_account_consistency(status: dict[str, Any]) -> None:
@@ -1048,33 +969,24 @@ def _clear_gmail_profile_cache_for_tests() -> None:
 
 
 def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
-    inbound_account = str(matter.get("gmail_account") or "").strip().casefold()
-    return bool(inbound_account and outbound_account and inbound_account == outbound_account.strip().casefold())
+    return gmail_matter_outbox.can_reply_in_thread(matter, outbound_account)
 
 
 def _ensure_outbound_matches_inbound(matter: dict[str, Any], outbound_account: str) -> None:
-    inbound_account = str(matter.get("gmail_account") or "").strip()
-    if not inbound_account:
-        return
-    if inbound_account.casefold() == outbound_account.strip().casefold():
-        return
-    raise GmailIntegrationError(
-        "Outbound Gmail account "
-        f"{outbound_account or 'unknown'} does not match inbound Gmail account {inbound_account}. "
-        f"Reconnect the outbound Gmail token for {inbound_account} before sending this redline."
+    gmail_matter_outbox.ensure_outbound_matches_inbound(
+        matter,
+        outbound_account,
+        transport=_gmail_outbox_transport(),
     )
 
 
 def _ensure_recipient_is_not_own_account(matter: dict[str, Any], recipient: str, outbound_account: str) -> None:
-    own_accounts = [
-        str(matter.get("gmail_account") or ""),
+    gmail_matter_outbox.ensure_recipient_is_not_own_account(
+        matter,
+        recipient,
         outbound_account,
-    ]
-    if any(_email_addresses_match(recipient, own_account) for own_account in own_accounts):
-        raise GmailIntegrationError(
-            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
-            f"back to {recipient}."
-        )
+        transport=_gmail_outbox_transport(),
+    )
 
 
 def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) -> bool:
@@ -1087,7 +999,7 @@ def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) ->
 
 
 def _email_addresses_match(left: str, right: str) -> bool:
-    return bool(left and right and left.strip().casefold() == right.strip().casefold())
+    return gmail_matter_outbox.email_addresses_match(left, right)
 
 
 def _message_metadata(
@@ -1623,15 +1535,8 @@ def _decode_gmail_base64(value: str) -> bytes:
 
 
 def _reply_subject(subject: str) -> str:
-    cleaned = " ".join(subject.split()) or "NDA redline"
-    return cleaned if cleaned.lower().startswith("re:") else f"Re: {cleaned}"
+    return gmail_matter_outbox.reply_subject(subject)
 
 
 def _default_outbound_body(matter: dict[str, Any]) -> str:
-    subject = str(matter.get("subject") or matter.get("document_title") or "the NDA")
-    return (
-        f"Hi,\n\n"
-        f"Please find attached the redlined version of {subject}.\n\n"
-        f"Best,\n"
-        f"Aspora Legal"
-    )
+    return gmail_matter_outbox.default_outbound_body(matter)
