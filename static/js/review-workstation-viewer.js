@@ -1,4 +1,3 @@
-const REVIEW_EDIT_HISTORY_LIMIT = 50;
 const VIEWER_REVIEW_REFRESH_DELAY_MS = 650;
 
 let viewerReviewRefreshTimer = null;
@@ -123,17 +122,13 @@ function recordViewerEditHistoryEntry(editable) {
 }
 
 function pushReviewEditHistoryEntry(entry) {
-  if (!entry || typeof entry !== "object") return;
-  state.reviewEditHistory = [
-    ...(state.reviewEditHistory || []),
-    entry,
-  ].slice(-REVIEW_EDIT_HISTORY_LIMIT);
-  updateReviewUndoButtonState();
+  if (ReviewWorkstationModel.pushReviewEditHistoryEntry(state, entry)) {
+    updateReviewUndoButtonState();
+  }
 }
 
 function currentParagraphText(paragraphId) {
-  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
-  return String(paragraph?.text || "");
+  return ReviewWorkstationModel.currentParagraphText(state, paragraphId);
 }
 
 function undoLastViewerEdit() {
@@ -143,190 +138,51 @@ function undoLastViewerEdit() {
     return;
   }
 
-  if (lastEdit.type === "clause_export_decision") {
-    restoreClauseExportDecision(lastEdit);
-    return;
-  }
-
-  if (lastEdit.type === "redline_template_selection") {
-    restoreRedlineTemplateSelection(lastEdit);
-    return;
-  }
-
-  if (lastEdit.type === "redline_export_decision") {
-    restoreRedlineExportDecision(lastEdit);
-    return;
-  }
-
-  if (lastEdit.type === "review_comments") {
-    restoreReviewCommentsSnapshot(lastEdit);
-    return;
-  }
-
-  if (lastEdit.type === "paragraph_format") {
-    restoreParagraphFormat(lastEdit);
-    return;
-  }
-
-  const paragraph = state.reviewParagraphs.find((item) => item.id === lastEdit.paragraphId);
-  if (!paragraph) {
+  const restored = ReviewWorkstationModel.restoreReviewEditHistoryEntryState(state, lastEdit);
+  if (!restored.restored) {
     updateReviewUndoButtonState();
     return;
   }
 
-  paragraph.text = lastEdit.previousText;
-  syncReviewSourceFromParagraphs();
-  markRedlineDraftDirty();
-  markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });
-  renderStudioDocumentHighlights();
-  scheduleViewerReviewRefresh("Last viewer edit undone");
-  updateExportButtonState();
-  updateReviewUndoButtonState();
-}
-
-function restoreReviewCommentsSnapshot(historyEntry) {
-  state.reviewComments = Array.isArray(historyEntry.snapshot)
-    ? historyEntry.snapshot.map((comment) => ({ ...comment }))
-    : [];
-  if (typeof closeParagraphCommentComposers === "function") closeParagraphCommentComposers();
-  markRedlineDraftDirty();
-  renderStudioDocumentHighlights();
-  if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
-  updateExportButtonState();
-  setFileMeta("Undid comment change");
-  updateReviewUndoButtonState();
-}
-
-function restoreParagraphFormat(historyEntry) {
-  const paragraph = state.reviewParagraphs.find(
-    (item) => String(item.id) === String(historyEntry.paragraphId),
-  );
-  if (!paragraph) {
-    updateReviewUndoButtonState();
-    return;
+  if (restored.sourceTextChanged) {
+    setSourceText(state.reviewSourceText);
   }
-  // Restore the exact prior formatting; delete the property when it didn't exist
-  // before, so the derived format_paragraph redline recomputes (or disappears).
-  if (historyEntry.hadAlignment) {
-    paragraph.alignment = historyEntry.previousAlignment;
+  markRedlineDraftDirty();
+  if (restored.type === "clause_export_decision"
+    || restored.type === "redline_template_selection"
+    || restored.type === "redline_export_decision") {
+    renderStudioResult({ clauses: state.reviewClauses });
+    setFileMeta("Undid clause suggestion change");
+    studioResultMeta.textContent = "Clause suggestion change undone.";
   } else {
-    delete paragraph.alignment;
+    if (restored.type === "review_comments" && typeof closeParagraphCommentComposers === "function") {
+      closeParagraphCommentComposers();
+    }
+    renderStudioDocumentHighlights();
+    if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
+    if (restored.type === "paragraph_text") {
+      markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });
+      scheduleViewerReviewRefresh("Last viewer edit undone");
+    } else {
+      setFileMeta(restored.type === "review_comments" ? "Undid comment change" : "Undid formatting change");
+    }
   }
-  if (historyEntry.hadFont) {
-    paragraph.font = historyEntry.previousFont;
-  } else {
-    delete paragraph.font;
-  }
-  if (historyEntry.hadFontSize) {
-    paragraph.fontSize = historyEntry.previousFontSize;
-  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadFontSize")) {
-    delete paragraph.fontSize;
-  }
-  // Inline (bold/italic/per-selection font) edits paragraph.runs; restore the
-  // prior run list (or delete it). Guard on the field existing so older entries
-  // without run state never clobber runs.
-  if (historyEntry.hadRuns) {
-    paragraph.runs = Array.isArray(historyEntry.previousRuns)
-      ? historyEntry.previousRuns.map((run) => ({ ...run }))
-      : [];
-  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadRuns")) {
-    delete paragraph.runs;
-  }
-  markRedlineDraftDirty();
-  renderStudioDocumentHighlights();
-  if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
-  updateExportButtonState();
-  setFileMeta("Undid formatting change");
-  updateReviewUndoButtonState();
-}
-
-function restoreClauseExportDecision(historyEntry) {
-  if (!historyEntry.clauseId) {
-    updateReviewUndoButtonState();
-    return;
-  }
-  if (historyEntry.hadPrevious) {
-    state.exportClauseDecisions[historyEntry.clauseId] = Boolean(historyEntry.previousIncluded);
-  } else {
-    delete state.exportClauseDecisions[historyEntry.clauseId];
-  }
-  state.selectedReviewClauseId = historyEntry.clauseId;
-  markRedlineDraftDirty();
-  renderStudioResult({ clauses: state.reviewClauses });
-  setFileMeta("Undid clause suggestion change");
-  studioResultMeta.textContent = "Clause suggestion change undone.";
-  updateExportButtonState();
-  updateReviewUndoButtonState();
-}
-
-function restoreRedlineTemplateSelection(historyEntry) {
-  if (!historyEntry.editId) {
-    updateReviewUndoButtonState();
-    return;
-  }
-  if (historyEntry.hadPrevious) {
-    state.redlineTemplateSelections[historyEntry.editId] = historyEntry.previousOptionId;
-  } else {
-    delete state.redlineTemplateSelections[historyEntry.editId];
-  }
-  const edit = state.reviewRedlines.find((item) => item.id === historyEntry.editId);
-  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
-  markRedlineDraftDirty();
-  renderStudioResult({ clauses: state.reviewClauses });
-  setFileMeta("Undid clause suggestion change");
-  studioResultMeta.textContent = "Clause suggestion change undone.";
-  updateExportButtonState();
-  updateReviewUndoButtonState();
-}
-
-function restoreRedlineExportDecision(historyEntry) {
-  if (!historyEntry.editId) {
-    updateReviewUndoButtonState();
-    return;
-  }
-  if (historyEntry.hadPrevious) {
-    state.exportRedlineDecisions[historyEntry.editId] = Boolean(historyEntry.previousIncluded);
-  } else {
-    delete state.exportRedlineDecisions[historyEntry.editId];
-  }
-  const edit = state.reviewRedlines.find((item) => item.id === historyEntry.editId);
-  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
-  markRedlineDraftDirty();
-  renderStudioResult({ clauses: state.reviewClauses });
-  setFileMeta("Undid clause suggestion change");
-  studioResultMeta.textContent = "Clause suggestion change undone.";
   updateExportButtonState();
   updateReviewUndoButtonState();
 }
 
 function syncViewerParagraphEdit(editable) {
   const paragraphId = editable.dataset.editableParagraphId;
-  const paragraph = state.reviewParagraphs.find((item) => item.id === paragraphId);
-  if (!paragraph) return;
+  const edit = ReviewWorkstationModel.syncViewerParagraphEditState(state, paragraphId, editableParagraphText(editable));
+  if (!edit.paragraph) return;
 
-  // A free-form text edit invalidates any inline (bold/italic/per-selection-font)
-  // runs on this paragraph (their offsets tiled the OLD text). The runs are kept
-  // but go inert via the render/derive join==text guards, so the formatting drops
-  // out of the redline + export. Warn the user ONCE, on the first edit that breaks
-  // a previously-valid formatted run set, so the loss is explicit, not silent.
-  // (A text-undo restores the old text, re-tiles the runs, and the formatting
-  // reappears — so we deliberately do NOT delete the runs.)
-  const oldText = String(paragraph.text || "");
-  const newText = editableParagraphText(editable);
-  const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
-  const runsWereValid = runs && runs.map((run) => String(run?.text || "")).join("") === oldText;
-  const runsFormatted = runs && runs.some((run) => run && (run.bold || run.italic || String(run.font || "").trim()));
-  const droppedInlineFormat = newText !== oldText && runsWereValid && runsFormatted;
-
-  paragraph.text = newText;
-  paragraph.clauseRedlineWholeParagraph = false;  // free-form edit -> word-level diff
-  syncReviewSourceFromParagraphs();
-  updateManualRedlinePreview(editable, paragraph);
+  setSourceText(state.reviewSourceText);
+  updateManualRedlinePreview(editable, edit.paragraph);
   markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
   scheduleViewerReviewRefresh("Document edited");
   updateExportButtonState();
-  if (droppedInlineFormat) {
+  if (edit.droppedInlineFormat) {
     setFileMeta("Inline formatting on this paragraph was cleared by the text edit");
   }
 }
@@ -376,25 +232,17 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   updateExportButtonState();
 }
 
-function reconcileExportDecisions(previousExportDecisions) {
-  ReviewWorkstationModel.reconcileExportDecisions(state, previousExportDecisions);
-}
-
-function reconcileTemplateSelections(previousTemplateSelections) {
-  ReviewWorkstationModel.reconcileTemplateSelections(state, previousTemplateSelections);
-}
-
 function updateManualRedlinePreview(editable, paragraph) {
   const container = editable.closest(".studio-doc-paragraph");
   if (!container) return;
   const manualRedline = manualParagraphRedline(paragraph, manualRedlineBaselineParagraphs());
   const backendRedline = selectedBackendRedline(paragraph.id);
-  const hasBackendRedline = effectiveReviewRedlines().some((edit) => edit.paragraph_id === paragraph.id);
+  const hasBackendRedline = ReviewWorkstationModel.effectiveReviewRedlines(state).some((edit) => edit.paragraph_id === paragraph.id);
   syncRenderedManualRedline(container, { paragraph, manualRedline, backendRedline, hasBackendRedline });
 }
 
 function selectedBackendRedline(paragraphId) {
-  const paragraphRedlines = effectiveReviewRedlines().filter((edit) => edit.paragraph_id === paragraphId);
+  const paragraphRedlines = ReviewWorkstationModel.effectiveReviewRedlines(state).filter((edit) => edit.paragraph_id === paragraphId);
   return paragraphRedlines.find((edit) => edit.clause_id === state.selectedReviewClauseId) || paragraphRedlines[0] || null;
 }
 
@@ -711,7 +559,7 @@ function renderedClauseTargets(clauseId) {
   (clause?.matched_paragraph_ids || []).forEach((paragraphId) => {
     targetKeys.push({ type: "paragraph", id: paragraphId });
   });
-  effectiveReviewRedlines()
+  ReviewWorkstationModel.effectiveReviewRedlines(state)
     .filter((edit) => edit.clause_id === clauseId)
     .forEach((edit) => {
       if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH && edit.id) {

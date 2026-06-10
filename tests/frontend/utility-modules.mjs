@@ -1387,6 +1387,98 @@ assert.equal(sendPayload.confirm_recipient, "legal@example.com");
 assert.equal(sendPayload.subject, "Subject");
 assert.equal(sendPayload.body, "Body");
 
+const sendDraft = ReviewWorkstationModel.buildReviewSendDraft(workstationState, {
+  manualRedlineEdits: [{ id: "manual-p2", action: "replace_paragraph", replacement_text: "Manual replacement text." }],
+  recipient: "legal@example.com",
+  reviewComments: ReviewWorkstationModel.currentReviewComments(workstationState),
+  title: "Matter NDA",
+});
+assert.equal(sendDraft.recipient, "legal@example.com");
+assert.equal(sendDraft.subject, "Redline for Matter NDA");
+assert.equal(sendDraft.summary.clauseRedlineCount, 1);
+assert.equal(sendDraft.summary.manualCount, 1);
+assert.equal(sendDraft.summary.commentCount, 2);
+assert.deepEqual(sendDraft.summary.clauseNames, ["Liability Cap"]);
+assert.deepEqual(ReviewWorkstationModel.reviewSendSummaryLines(sendDraft.summary), [
+  "1 included clause redline: Liability Cap.",
+  "1 manual viewer edit.",
+  "Text added or replaced: Liability is capped at fees paid., Manual replacement text..",
+  "2 Word comments: Paragraph: Paragraph note., Liability Cap: Fresh clause note.",
+]);
+assert.ok(sendDraft.body.includes("Please find attached the redline for Matter NDA."));
+
+const editState = {
+  exportClauseDecisions: { liability_cap: true },
+  exportRedlineDecisions: { "redline-liability": true },
+  redlineTemplateSelections: { "redline-liability": "fees" },
+  reviewComments: [{ id: "c1", text: "Before" }],
+  reviewEditHistory: [],
+  reviewParagraphs: [{
+    id: "p1",
+    alignment: "center",
+    clauseRedlineWholeParagraph: true,
+    font: "Inter",
+    fontSize: 12,
+    runs: [{ text: "Alpha", bold: true }],
+    text: "Alpha",
+  }],
+  reviewRedlines: [{ id: "redline-liability", clause_id: "liability_cap" }],
+  reviewSourceText: "Alpha",
+  selectedReviewClauseId: "liability_cap",
+};
+assert.equal(ReviewWorkstationModel.currentParagraphText(editState, "p1"), "Alpha");
+assert.equal(ReviewWorkstationModel.pushReviewEditHistoryEntry(editState, { type: "one" }, { limit: 2 }), true);
+ReviewWorkstationModel.pushReviewEditHistoryEntry(editState, { type: "two" }, { limit: 2 });
+ReviewWorkstationModel.pushReviewEditHistoryEntry(editState, { type: "three" }, { limit: 2 });
+assert.deepEqual(editState.reviewEditHistory.map((entry) => entry.type), ["two", "three"]);
+const syncedParagraph = ReviewWorkstationModel.syncViewerParagraphEditState(editState, "p1", "Beta");
+assert.equal(syncedParagraph.droppedInlineFormat, true);
+assert.equal(editState.reviewParagraphs[0].text, "Beta");
+assert.equal(editState.reviewParagraphs[0].clauseRedlineWholeParagraph, false);
+assert.equal(editState.reviewSourceText, "Beta");
+const restoredText = ReviewWorkstationModel.restoreReviewEditHistoryEntryState(editState, {
+  paragraphId: "p1",
+  previousText: "Alpha",
+  type: "paragraph_text",
+});
+assert.equal(restoredText.restored, true);
+assert.equal(restoredText.sourceTextChanged, true);
+assert.equal(editState.reviewParagraphs[0].text, "Alpha");
+assert.equal(editState.reviewSourceText, "Alpha");
+const restoredFormat = ReviewWorkstationModel.restoreReviewEditHistoryEntryState(editState, {
+  hadAlignment: false,
+  hadFont: true,
+  hadFontSize: false,
+  hadRuns: true,
+  paragraphId: "p1",
+  previousFont: "Arial",
+  previousRuns: [{ text: "Alpha", italic: true }],
+  type: "paragraph_format",
+});
+assert.equal(restoredFormat.restored, true);
+assert.equal("alignment" in editState.reviewParagraphs[0], false);
+assert.equal(editState.reviewParagraphs[0].font, "Arial");
+assert.equal("fontSize" in editState.reviewParagraphs[0], false);
+assert.deepEqual(editState.reviewParagraphs[0].runs, [{ text: "Alpha", italic: true }]);
+ReviewWorkstationModel.restoreReviewEditHistoryEntryState(editState, {
+  clauseId: "liability_cap",
+  hadPrevious: true,
+  previousIncluded: false,
+  type: "clause_export_decision",
+});
+assert.equal(editState.exportClauseDecisions.liability_cap, false);
+ReviewWorkstationModel.restoreReviewEditHistoryEntryState(editState, {
+  editId: "redline-liability",
+  hadPrevious: false,
+  type: "redline_template_selection",
+});
+assert.equal("redline-liability" in editState.redlineTemplateSelections, false);
+ReviewWorkstationModel.restoreReviewEditHistoryEntryState(editState, {
+  snapshot: [{ id: "c2", text: "After" }],
+  type: "review_comments",
+});
+assert.deepEqual(editState.reviewComments, [{ id: "c2", text: "After" }]);
+
 const acknowledgement = ReviewWorkstationModel.toggleReviewAcknowledgement(workstationState, { clauseId: "liability_cap" });
 assert.equal(acknowledgement.nextReviewed, false);
 assert.equal(acknowledgement.allReviewed, false);
