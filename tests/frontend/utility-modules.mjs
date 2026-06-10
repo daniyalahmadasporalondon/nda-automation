@@ -94,6 +94,7 @@ import {
   GenerationUnavailableError,
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
+import { GeneratorWorkstationModel } from "../../static/js/modules/generator-workstation-model.mjs";
 import { RedlineEditContract } from "../../static/js/modules/redline-edit-contract.mjs";
 import { ReviewWorkstationModel } from "../../static/js/modules/review-workstation-model.mjs";
 
@@ -1019,6 +1020,91 @@ function generationResponse({ status = 200, headers = {}, json = null, blob = nu
 
 // The payload the entity picker produces — sent to the endpoint verbatim.
 const generationPayload = buildDraftPayload(validIntake);
+
+// --- Generator workstation model ------------------------------------------
+const generatedParagraphs = [
+  {
+    id: "p1",
+    index: 1,
+    runs: [{ text: "Generated", bold: true }],
+    source_index: 1,
+    text: "Generated",
+  },
+];
+const generatedState = GeneratorWorkstationModel.generatedGeneratorState({
+  matterId: "matter-generated",
+  paragraphs: generatedParagraphs,
+});
+assert.equal(generatedState.generatorMode, "generated");
+assert.equal(generatedState.generatorMatterId, "matter-generated");
+assert.deepEqual(generatedState.generatorOriginalParagraphs, generatedState.generatorParagraphs);
+generatedParagraphs[0].runs[0].text = "mutated";
+assert.equal(generatedState.generatorParagraphs[0].runs[0].text, "Generated");
+assert.equal(
+  GeneratorWorkstationModel.activeGeneratorParagraph({
+    ...generatedState,
+    generatorActiveParagraphId: "p1",
+  }).id,
+  "p1",
+);
+assert.deepEqual(GeneratorWorkstationModel.generatorEditSnapshot({
+  ...generatedState,
+  generatorActiveParagraphId: "p1",
+  generatorDraftTouched: true,
+  generatorParagraphs: [{
+    alignment: "center",
+    font: "Arial",
+    fontSize: 12,
+    id: "p1",
+    runs: [{ text: "Edited", bold: true }],
+    source_index: 1,
+    source_part: "body",
+    text: "Edited",
+  }],
+}), {
+  dirty: true,
+  matterId: "matter-generated",
+  mode: "generated",
+  paragraphs: [{
+    alignment: "center",
+    font: "Arial",
+    fontSize: 12,
+    id: "p1",
+    runs: [{ text: "Edited", bold: true }],
+    source_index: 1,
+    source_part: "body",
+    text: "Edited",
+  }],
+});
+assert.equal(GeneratorWorkstationModel.generatorExportReady(generatedState, [{ id: "edit-1" }]), true);
+assert.equal(GeneratorWorkstationModel.generatorExportReady({ ...generatedState, generatorMatterId: null }, [{ id: "edit-1" }]), false);
+assert.deepEqual(GeneratorWorkstationModel.draftGeneratorState([{ id: "draft-1", text: "Draft" }]), {
+  generatorActiveParagraphId: null,
+  generatorHistory: [],
+  generatorMatterId: null,
+  generatorMode: "draft",
+  generatorParagraphs: [{ id: "draft-1", text: "Draft" }],
+});
+assert.deepEqual(GeneratorWorkstationModel.clearGeneratorState(), {
+  generatorActiveParagraphId: null,
+  generatorDraftTouched: false,
+  generatorHistory: [],
+  generatorMatterId: null,
+  generatorMode: "draft",
+  generatorParagraphs: [],
+});
+assert.deepEqual(GeneratorWorkstationModel.pushGeneratorHistory(
+  [{ id: "old", text: "Old" }],
+  { alignment: "right", id: "p1", runs: [{ text: "Before", italic: true }], text: "Before" },
+  1,
+), [{
+  alignment: "right",
+  id: "p1",
+  runs: [{ text: "Before", italic: true }],
+  text: "Before",
+}]);
+assert.deepEqual(GeneratorWorkstationModel.generatorTouchedState({ generatorMode: "draft" }), { generatorDraftTouched: true });
+assert.deepEqual(GeneratorWorkstationModel.generatorTouchedState({ generatorMode: "generated" }), {});
 
 // DOCX-bytes response: returns kind "blob" with the bytes + the header filename.
 const docxCalls = [];
