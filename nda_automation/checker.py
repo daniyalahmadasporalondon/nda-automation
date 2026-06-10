@@ -13,18 +13,15 @@ from .redline_actions import (
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
-from .redline_rationale import attach_redline_rationales
 from .ai_review import AIReviewFn, apply_ai_review, validate_ai_draft_fix
-from .ai_verifier import VerifierFn, apply_ai_verifier, refinalize_clause_grounding
+from .ai_verifier import VerifierFn, refinalize_clause_grounding
 from .checks import CLAUSE_CHECKS
-from .semantic import SemanticEvaluateFn, apply_semantic_fallback
-from .semantic_crosscheck import apply_semantic_crosscheck
+from .semantic import SemanticEvaluateFn
 from .checks.common import (
     ClauseResult,
     PlaybookTemplateError,
     RedlineEdit,
     _approved_laws,
-    _normalize,
     _paragraph_matches,
 )
 from .concept_classifier import classify_document_concepts
@@ -33,14 +30,12 @@ from .reference_resolver import resolve_document_references
 from .playbook_rules import (
     PlaybookRulesError,
     is_dynamic_clause,
-    normalize_playbook_policy,
     validate_playbook_rules,
 )
 from .review_document import (
     EvidenceProvenanceError as EvidenceProvenanceError,
     Paragraph,
     ParagraphAlignmentError as ParagraphAlignmentError,
-    align_document_paragraphs,
     split_document_paragraphs,
     validate_clause_evidence_trust,
 )
@@ -55,9 +50,8 @@ from .review_state import (
 from .decision_arbiter import (
     SEMANTIC_REVIEW_THRESHOLD,
     arbitrate,
-    deterministic_decision,
 )
-from .review_result_contract import build_review_result, review_result_clause_counts
+from .review_orchestration import ReviewCommand, orchestrate_review
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYBOOK_PATH = ROOT / "playbook.json"
@@ -124,109 +118,17 @@ def review_nda(
     verify: bool = True,
     ai_enabled: bool = True,
 ) -> Dict[str, object]:
-    source_text = text or ""
-    if paragraphs is None:
-        document_paragraphs = split_document_paragraphs(source_text)
-    else:
-        if not source_text:
-            source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
-        document_paragraphs = align_document_paragraphs(paragraphs, source_text)
-
-    normalized = _normalize(source_text)
-    review_playbook = dict(playbook) if isinstance(playbook, Mapping) else load_playbook()
-    _validate_playbook_contract(review_playbook)
-    review_playbook = normalize_playbook_policy(review_playbook)
-    clauses_by_id = {clause["id"]: clause for clause in review_playbook["clauses"]}
-
-    contract_structure = build_contract_structure(document_paragraphs)
-    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
-    concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
-    review_context: Dict[str, object] = {
-        "contract_structure": contract_structure,
-        "reference_resolver": reference_resolver,
-        "concept_classifier": concept_classifier,
-    }
-
-    clause_results = []
-    for clause_id, check in CLAUSE_CHECKS:
-        clause = clauses_by_id[clause_id]
-        clause_result = check(source_text, normalized, clause, document_paragraphs, review_context)
-        clause_results.append(
-            apply_semantic_fallback(
-                text=source_text,
-                normalized=normalized,
-                clause=clause,
-                paragraphs=document_paragraphs,
-                current_result=clause_result,
-                evaluator=semantic_evaluator,
-            )
+    return orchestrate_review(
+        ReviewCommand(
+            text=text,
+            paragraphs=paragraphs,
+            playbook=playbook,
+            semantic_evaluator=semantic_evaluator,
+            ai_reviewer=ai_reviewer,
+            ai_verifier=ai_verifier,
+            verify=verify,
+            ai_enabled=ai_enabled,
         )
-    clause_results, semantic_crosscheck = apply_semantic_crosscheck(
-        clause_results=clause_results,
-        clauses_by_id=clauses_by_id,
-        paragraphs=document_paragraphs,
-    )
-    # Snapshot the deterministic verdict (checkers + crosscheck + fallback) before
-    # the AI overlay runs, so the arbiter compares against a verdict the AI never
-    # touched. AI is append-only from here; the arbiter owns final precedence.
-    for clause in clause_results:
-        clause["deterministic_decision"] = deterministic_decision(clause)
-    clause_results, ai_review = apply_ai_review(
-        clause_results=clause_results,
-        clauses_by_id=clauses_by_id,
-        paragraphs=document_paragraphs,
-        review_context=review_context,
-        reviewer=ai_reviewer,
-        ai_enabled=ai_enabled,
-    )
-    for clause in clause_results:
-        _apply_clause_decision(clause)
-    # Adversarial verifier pass: a focused second look that justifies-or-refutes each
-    # escalated finding against the clause text/evidence. Refuted findings are
-    # downgraded; unsubstantiated ones are flagged for human review. Additive overlay
-    # over already-finalized findings -- it never re-runs the checkers.
-    clause_results, ai_verifier_review = apply_ai_verifier(
-        clause_results,
-        source_text=source_text,
-        verifier=ai_verifier,
-        enabled=verify and ai_enabled,
-    )
-    # Re-finalize the derived structures (structured evidence + audit trace) for any
-    # clause the verifier rewrote, so the evidence-trust contract still holds.
-    _refinalize_verifier_changes(clause_results, ai_verifier_review)
-    counts = review_result_clause_counts(clause_results)
-    redline_edits = _build_redline_edits(clause_results, document_paragraphs)
-    # Explain WHY each proposed redline exists, drawn from the Playbook clause and
-    # the clause's grounded citation. Only clauses that produced an edit get one.
-    attach_redline_rationales(clause_results, redline_edits, playbook_clauses_by_id=clauses_by_id)
-    review_state = aggregate_review_state(
-        clause_results,
-        pass_count=counts["passed"],
-        review_count=counts["needs_review"],
-        check_count=counts["failed"],
-    )
-
-    return build_review_result(
-        source_text=source_text,
-        review_engine_version=REVIEW_ENGINE_VERSION,
-        review_state=review_state,
-        paragraphs=document_paragraphs,
-        contract_structure=contract_structure,
-        reference_resolver=reference_resolver,
-        concept_classifier=concept_classifier,
-        semantic_crosscheck=semantic_crosscheck,
-        ai_review=ai_review,
-        ai_verifier=ai_verifier_review,
-        clauses=clause_results,
-        redline_edits=redline_edits,
-        result_fields={
-            # Additive coverage metadata: document sections that no Playbook clause
-            # matched, surfaced so a reviewer sees full section coverage instead of
-            # only the handful of clauses the Playbook checks. Purely informational --
-            # it does not touch clause results, statuses, counts, or the approve gate.
-            "unmatched_sections": compute_unmatched_sections(contract_structure, clause_results),
-        },
-        evidence_error_prefix="Clause evidence provenance drift detected",
     )
 
 
