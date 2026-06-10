@@ -6,8 +6,8 @@ These exercise the translator/validator directly to lock THE GOLDEN RULE contrac
 * its output is VALIDATED against a fixed allowlist (out-of-enum dropped, ints
   clamped, bools coerced) before it leaves the module,
 * the allowlist is sourced from the real workflow.py state machine, and
-* every failure mode degrades to DashboardSearchIntentUnavailableError (the route
-  turns that into a graceful fallback), never a crash.
+* provider failure modes raise DashboardSearchIntentUnavailableError so the route
+  can use deterministic local filters or graceful fallback, never a crash.
 """
 
 from __future__ import annotations
@@ -125,6 +125,32 @@ class DescribeFilterSpecTests(unittest.TestCase):
         self.assertIn("older than 7 days", text)
         self.assertIn('matching "Acme"', text)
         self.assertIn("oldest first", text)
+
+
+class DeterministicSearchIntentTests(unittest.TestCase):
+    def test_common_counterparty_status_query_returns_usable_filter(self):
+        result = dsi.deterministic_search_intent(
+            "show me Acme docs awaiting approval",
+            reason=dsi.FALLBACK_REASON_AI_UNAVAILABLE,
+        )
+
+        self.assertTrue(result["deterministic"])
+        self.assertEqual(result["reason"], dsi.FALLBACK_REASON_AI_UNAVAILABLE)
+        self.assertEqual(result["filters"]["status"], workflow.STATUS_AWAITING_APPROVAL)
+        self.assertEqual(result["filters"]["phase"], workflow.PHASE_APPROVAL)
+        self.assertEqual(result["filters"]["text"], "Acme")
+        self.assertIn('matching "Acme"', result["interpreted"])
+
+    def test_common_stuck_review_query_maps_without_filler_text(self):
+        result = dsi.deterministic_search_intent("show me everything stuck in review for more than a week oldest first")
+
+        self.assertEqual(result["filters"]["phase"], workflow.PHASE_REVIEW)
+        self.assertIs(result["filters"]["needs_attention"], True)
+        self.assertEqual(result["filters"]["min_age_days"], 7)
+        self.assertEqual(result["filters"]["sort"], "oldest")
+        self.assertIsNone(result["filters"]["text"])
+        self.assertIn("In review", result["interpreted"])
+        self.assertIn("older than 7 days", result["interpreted"])
 
 
 class TranslateSearchIntentTests(unittest.TestCase):

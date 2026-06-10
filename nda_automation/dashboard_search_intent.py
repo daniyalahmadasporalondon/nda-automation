@@ -24,12 +24,13 @@ Design notes
 * Untrusted input: the user's query is attacker-controlled DATA, so it passes
   through ``neutralize_untrusted_text`` before entering the prompt, exactly like the
   review/summary/selector seams.
-* Graceful degradation: when AI is disabled / unconfigured / the call fails or
-  returns junk, the route returns a clean ``{"filters": null, "fallback": true,
-  "reason": "ai_unavailable"}`` signal with 200 (never a 500), so the frontend falls
-  back to v1 keyword search. This module raises
-  ``DashboardSearchIntentUnavailableError`` for those paths so the route can map it
-  to the fallback signal.
+* Graceful degradation: when AI is disabled / unconfigured / the call fails, this
+  module raises ``DashboardSearchIntentUnavailableError`` and the route first uses
+  the deterministic fallback in this module. If the query maps locally, the route
+  returns a normal validated filter spec with 200; only unmappable queries return
+  the clean ``{"filters": null, "fallback": true, "reason": "ai_unavailable"}``
+  signal so the frontend falls back to v1 keyword search. Junk model output still
+  collapses to an all-null spec instead of crashing.
 * Defense in depth: ``validate_filter_spec`` is the authoritative validator here;
   the frontend mirrors it (``validateFilterSpec`` in dashboard-search.mjs) so even a
   compromised path can't apply an out-of-schema filter.
@@ -37,6 +38,7 @@ Design notes
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -166,6 +168,199 @@ def validate_filter_spec(spec: object) -> dict[str, Any]:
 def filter_spec_is_empty(spec: Mapping[str, Any]) -> bool:
     """True when every dimension is null (the query mapped to nothing)."""
     return all(spec.get(key) is None for key in NULL_FILTER_SPEC)
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic fallback
+# --------------------------------------------------------------------------- #
+# When the AI provider is unavailable, the route still needs to return a usable
+# filter for common dashboard queries. This fallback intentionally stays small and
+# deterministic: it maps well-known status/phase/age words and extracts the
+# remaining counterparty/keyword terms into the same schema the AI path returns.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9&.'-]*")
+_TEXT_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "about",
+        "all",
+        "and",
+        "any",
+        "by",
+        "counterparty",
+        "deal",
+        "deals",
+        "doc",
+        "docs",
+        "document",
+        "documents",
+        "everything",
+        "find",
+        "for",
+        "from",
+        "in",
+        "linked",
+        "matter",
+        "matters",
+        "me",
+        "nda",
+        "ndas",
+        "of",
+        "please",
+        "show",
+        "the",
+        "to",
+        "with",
+    }
+)
+_FILTER_WORDS: frozenset[str] = frozenset(
+    {
+        "approval",
+        "approved",
+        "awaiting",
+        "blocked",
+        "cleared",
+        "counterparty",
+        "day",
+        "days",
+        "executed",
+        "failed",
+        "failure",
+        "first",
+        "fully",
+        "gate",
+        "human",
+        "issue",
+        "issues",
+        "machine",
+        "more",
+        "newest",
+        "old",
+        "older",
+        "oldest",
+        "over",
+        "pending",
+        "person",
+        "review",
+        "reviewing",
+        "sent",
+        "signature",
+        "signed",
+        "stuck",
+        "than",
+        "week",
+        "weeks",
+    }
+)
+
+
+def deterministic_search_intent(query: str, *, reason: str = "deterministic_fallback") -> dict[str, Any]:
+    """Return a best-effort local filter spec for common dashboard queries.
+
+    This is the provider-unavailable path: no model, no matter data, no fabricated
+    results. It returns the same validated filter shape as the AI path, so the
+    frontend can apply it to real matters deterministically.
+    """
+    filters = deterministic_filter_spec(query)
+    return {
+        "filters": filters,
+        "interpreted": describe_filter_spec(filters),
+        "version": DASHBOARD_SEARCH_INTENT_VERSION,
+        "deterministic": True,
+        "reason": reason,
+    }
+
+
+def deterministic_filter_spec(query: str) -> dict[str, Any]:
+    cleaned = neutralize_untrusted_text(str(query or ""), max_chars=MAX_QUERY_CHARS).strip()
+    spec = dict(NULL_FILTER_SPEC)
+    if not cleaned:
+        return spec
+
+    lowered = cleaned.lower()
+    _apply_deterministic_status_phase_flags(lowered, spec)
+    spec["min_age_days"] = _deterministic_min_age_days(lowered)
+    spec["sort"] = _deterministic_sort(lowered)
+    spec["text"] = _deterministic_text_terms(cleaned)
+    return validate_filter_spec(spec)
+
+
+def _apply_deterministic_status_phase_flags(lowered: str, spec: dict[str, Any]) -> None:
+    if _contains_any(lowered, ("pending approval", "awaiting approval", "waiting for approval", "needs approval")):
+        spec["status"] = workflow.STATUS_AWAITING_APPROVAL
+        spec["phase"] = workflow.PHASE_APPROVAL
+    elif _contains_any(lowered, ("approval blocked", "blocked approval")):
+        spec["status"] = workflow.STATUS_APPROVAL_BLOCKED
+        spec["phase"] = workflow.PHASE_APPROVAL
+    elif _contains_any(lowered, ("approved", "signed off")):
+        spec["status"] = workflow.STATUS_APPROVED
+        spec["phase"] = workflow.PHASE_APPROVAL
+
+    if _contains_any(lowered, ("awaiting signature", "waiting for signature", "awaiting counterparty")):
+        spec["status"] = workflow.STATUS_SENT_AWAITING_COUNTERPARTY
+        spec["phase"] = workflow.PHASE_SENT
+    elif _contains_any(lowered, ("fully signed", "executed")):
+        spec["status"] = workflow.STATUS_FULLY_SIGNED
+        spec["phase"] = workflow.PHASE_EXECUTED
+    elif _contains_any(lowered, ("sent", "sent out")) and spec.get("phase") is None:
+        spec["phase"] = workflow.PHASE_SENT
+
+    if _contains_any(lowered, ("review failed", "failed review")):
+        spec["status"] = workflow.STATUS_REVIEW_FAILED
+        spec["phase"] = workflow.PHASE_REVIEW
+        spec["needs_attention"] = True
+    elif _contains_any(lowered, ("in review", "under review", "ai reviewing", "reviewing")):
+        spec["phase"] = workflow.PHASE_REVIEW
+
+    if _contains_any(lowered, ("stuck", "failed", "needs attention", "blocked")):
+        spec["needs_attention"] = True
+    if _contains_any(lowered, ("human", "person", "manual", "lawyer", "legal review")):
+        spec["human_gate"] = True
+    if _contains_any(lowered, ("issue", "issues", "red flag", "red flags", "failed requirement")):
+        spec["has_issues"] = True
+
+
+def _deterministic_min_age_days(lowered: str) -> int | None:
+    if re.search(r"\b(?:older than|over|more than|for more than|stuck for)\s+(?:a|one)\s+week\b", lowered):
+        return 7
+    match = re.search(
+        r"\b(?:older than|over|more than|for more than|stuck for)\s+(\d{1,3})\s+days?\b",
+        lowered,
+    )
+    if match:
+        return _validate_min_age_days(match.group(1))
+    match = re.search(
+        r"\b(?:older than|over|more than|for more than|stuck for)\s+(\d{1,2})\s+weeks?\b",
+        lowered,
+    )
+    if match:
+        return _validate_min_age_days(int(match.group(1)) * 7)
+    return None
+
+
+def _deterministic_sort(lowered: str) -> str | None:
+    if _contains_any(lowered, ("oldest", "oldest first")):
+        return "oldest"
+    if _contains_any(lowered, ("newest", "latest", "recent")):
+        return "newest"
+    return None
+
+
+def _deterministic_text_terms(cleaned: str) -> str | None:
+    terms: list[str] = []
+    for token in _TOKEN_RE.findall(cleaned):
+        lowered = token.lower().strip("'")
+        if not lowered or lowered.isdigit():
+            continue
+        if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS:
+            continue
+        terms.append(token)
+    if not terms:
+        return None
+    return _validate_text(" ".join(terms))
+
+
+def _contains_any(text: str, phrases: Sequence[str]) -> bool:
+    return any(phrase in text for phrase in phrases)
 
 
 def _validate_enum(value: object, allowed: frozenset[str]) -> str | None:
