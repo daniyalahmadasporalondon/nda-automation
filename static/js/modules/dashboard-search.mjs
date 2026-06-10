@@ -215,6 +215,7 @@ function summaryErrorMessage(payload) {
 
 // The schema endpoint the controller POSTs the natural-language query to.
 const SEARCH_INTENT_ENDPOINT = "/api/dashboard/search-intent";
+const DASHBOARD_ASSISTANT_ENDPOINT = "/api/dashboard/assistant";
 
 // The allowlists MIRROR the backend (nda_automation/dashboard_search_intent.py +
 // workflow.py). Kept here so a compromised/garbled response can never apply an
@@ -579,6 +580,7 @@ function stripLineageInternal(node) {
 
 export {
   COUNTERPARTY_UNKNOWN,
+  DASHBOARD_ASSISTANT_ENDPOINT,
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
   SEARCH_INTENT_ENDPOINT,

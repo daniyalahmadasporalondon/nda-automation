@@ -59,6 +59,12 @@ const DashboardSearchView = (() => {
     // and the fetch is mockable. Optional — when absent the Summarize affordance is
     // simply not rendered.
     summarizeMatter,
+    // Assistant seam: POST a dashboard command/query to /api/dashboard/assistant.
+    // The payload is discriminated by `intent`. Search/filter responses are applied
+    // to real matters just like the legacy search-intent path; repository answers
+    // and action requests render as assistant cards.
+    assistantQuery,
+    confirmAssistantAction,
     // v2 async seam: POST a natural-language query to the search-intent endpoint
     // and resolve {ok, payload}. payload is either {filters, interpreted} (apply the
     // validated spec) or {fallback:true} (use v1 keyword search). Lives in app.js so
@@ -82,6 +88,7 @@ const DashboardSearchView = (() => {
     // is the v1 keyword fallback.
     let activeSpec = null;
     let activeInterpreted = "";
+    let assistantActions = new Map();
     // Monotonic token so a slow AI translation that resolves AFTER a newer
     // submit/reset can't clobber the current results (last-write-wins).
     let searchRunToken = 0;
@@ -155,6 +162,7 @@ const DashboardSearchView = (() => {
     }
 
     function renderResults(results, { emptyMessage }) {
+      assistantActions = new Map();
       if (!resultsList) return;
       if (!results.length) {
         resultsList.innerHTML = "";
@@ -172,6 +180,146 @@ const DashboardSearchView = (() => {
       }
       resultsList.hidden = false;
       resultsList.innerHTML = results.map((matter) => resultItemMarkup(matter)).join("");
+    }
+
+    function answerText(answer) {
+      if (answer && typeof answer === "object") return String(answer.text || "").trim();
+      return String(answer || "").trim();
+    }
+
+    function citationFacts(citations) {
+      if (!Array.isArray(citations)) return [];
+      return citations
+        .filter((citation) => citation && typeof citation === "object")
+        .map((citation) => {
+          const title = String(citation.title || citation.subject || citation.matter_id || "Matter").trim();
+          const bits = [];
+          if (citation.workflow_phase) bits.push(String(citation.workflow_phase).replace(/_/g, " "));
+          if (citation.last_outbound_at) bits.push(String(citation.last_outbound_at).slice(0, 10));
+          return bits.length ? `${title} · ${bits.join(" · ")}` : title;
+        });
+    }
+
+    function normalizeAssistantActions(payload) {
+      const action = String(payload?.action || "").trim();
+      if (String(payload?.intent || "") !== "draft_action_request" || action !== "open_generator") return [];
+      const generator = payload.generator && typeof payload.generator === "object" ? payload.generator : {};
+      return [{
+        id: "open_generator",
+        label: "Open Generator",
+        description: "No NDA is generated, saved, sent, or exported until you confirm again in the Generator.",
+        requiresConfirmation: payload.requires_confirmation !== false,
+        payload: {
+          action,
+          generator,
+          prompt: generator?.prefill?.prompt || "",
+          sideEffects: Array.isArray(payload.side_effects) ? payload.side_effects : [],
+        },
+      }];
+    }
+
+    function assistantCardMarkup({ type, title, message, facts = [], actions = [] }) {
+      const factMarkup = facts.length
+        ? `<ul class="dashboard-search-result-summary dashboard-assistant-facts">` +
+          facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("") +
+          `</ul>`
+        : "";
+      const actionMarkup = actions.length
+        ? `<div class="dashboard-search-result-relationships dashboard-assistant-actions">` +
+          actions.map((action) => (
+            `<button type="button" class="dashboard-search-result-summarize dashboard-assistant-action" ` +
+            `data-dashboard-assistant-action="${escapeHtml(action.id)}">` +
+            `${escapeHtml(action.requiresConfirmation ? `Confirm: ${action.label}` : action.label)}` +
+            `</button>` +
+            (action.description
+              ? `<p class="dashboard-search-summary-status">${escapeHtml(action.description)}</p>`
+              : "")
+          )).join("") +
+          `</div>`
+        : "";
+      return (
+        `<li class="dashboard-search-result dashboard-assistant-card" ` +
+        `data-dashboard-assistant-response="${escapeHtml(type)}">` +
+        `<div class="dashboard-search-result-row">` +
+        `<div class="dashboard-search-result-button dashboard-assistant-card-body">` +
+        `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
+        (message ? `<span class="dashboard-search-result-status">${escapeHtml(message)}</span>` : "") +
+        `</div>` +
+        `</div>` +
+        factMarkup +
+        actionMarkup +
+        `</li>`
+      );
+    }
+
+    function renderAssistantCard({ type, title, message, facts, actions, statusText }) {
+      activeSpec = null;
+      activeInterpreted = "";
+      assistantActions = new Map((actions || []).map((action) => [action.id, action]));
+      setInterpreted("");
+      if (resultsStatus) {
+        resultsStatus.hidden = false;
+        resultsStatus.textContent = statusText || title;
+      }
+      if (!resultsList) return true;
+      resultsList.hidden = false;
+      resultsList.innerHTML = assistantCardMarkup({ type, title, message, facts, actions });
+      return true;
+    }
+
+    function renderAssistantResponse(payload) {
+      if (!payload || typeof payload !== "object") return false;
+      const type = String(payload.intent || "").trim();
+      const message = String(payload.message || "").trim();
+      if (type === "search_filter") {
+        const search = payload.search && typeof payload.search === "object" ? payload.search : {};
+        const filters = search.filters && typeof search.filters === "object" ? search.filters : null;
+        const validate = lib().validateFilterSpec;
+        const apply = lib().applyFilterSpec;
+        if (!filters || typeof validate !== "function" || typeof apply !== "function") return false;
+        const validated = validate(filters);
+        const isEmpty = lib().filterSpecIsEmpty;
+        if (typeof isEmpty === "function" && isEmpty(validated)) return false;
+        activeSpec = validated;
+        activeInterpreted = String(search.interpreted || message || "");
+        assistantActions = new Map();
+        const results = apply(matters(), validated);
+        setInterpreted(activeInterpreted);
+        renderResults(results, { emptyMessage: "No documents match this assistant response." });
+        return true;
+      }
+      if (type === "repository_question") {
+        const text = answerText(payload.answer) || message;
+        if (!text) return false;
+        return renderAssistantCard({
+          type,
+          title: "Assistant answer",
+          message: text,
+          facts: citationFacts(payload.citations),
+          statusText: "Assistant answer",
+        });
+      }
+      if (type === "draft_action_request") {
+        return renderAssistantCard({
+          type,
+          title: "Action needs confirmation",
+          message: message || "Confirm before anything changes.",
+          facts: ["No document will be generated, saved, sent, exported, deleted, or approved from this dashboard prompt."],
+          actions: normalizeAssistantActions(payload),
+          statusText: "Action needs confirmation",
+        });
+      }
+      if (type === "unsupported") {
+        return renderAssistantCard({
+          type,
+          title: "Unsupported request",
+          message: message || "This assistant cannot do that request yet.",
+          facts: [],
+          actions: [],
+          statusText: "Unsupported request",
+        });
+      }
+      return false;
     }
 
     // v3 "Find documents linked to a counterparty": render the real matters grouped
@@ -260,7 +408,30 @@ const DashboardSearchView = (() => {
       activeQuery = query;
       renderChips();
 
-      // No AI seam wired -> v1 keyword search directly.
+      if (typeof assistantQuery === "function") {
+        const token = ++searchRunToken;
+        setInterpreted("");
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = "Interpreting…";
+        }
+        if (resultsList) {
+          resultsList.hidden = true;
+          resultsList.innerHTML = "";
+        }
+        let assistantOutcome = null;
+        try {
+          assistantOutcome = await assistantQuery(query);
+        } catch (error) {
+          assistantOutcome = null;
+        }
+        if (token !== searchRunToken) return;
+        if (assistantOutcome?.ok && renderAssistantResponse(assistantOutcome.payload)) {
+          return;
+        }
+      }
+
+      // No assistant/search seam wired -> v1 keyword search directly.
       if (typeof searchIntent !== "function") {
         renderKeywordResults(query);
         return;
@@ -339,6 +510,7 @@ const DashboardSearchView = (() => {
       // A chip win supersedes any in-flight AI translation.
       searchRunToken += 1;
       setInterpreted("");
+      assistantActions = new Map();
       renderChips();
       // v3: the "Find documents by counterparty" chip groups every matter instead of
       // filtering by status. Branch on its kind so its rendering path is distinct.
@@ -356,6 +528,7 @@ const DashboardSearchView = (() => {
       activeQuery = "";
       activeSpec = null;
       activeInterpreted = "";
+      assistantActions = new Map();
       // Supersede any in-flight AI translation so a late resolve can't repopulate.
       searchRunToken += 1;
       setInterpreted("");
@@ -596,11 +769,31 @@ const DashboardSearchView = (() => {
         runRelationships(relationshipsButton.dataset.dashboardSearchRelationships, relationshipsButton);
         return;
       }
+      const assistantButton = event.target.closest("[data-dashboard-assistant-action]");
+      if (assistantButton) {
+        runAssistantAction(assistantButton.dataset.dashboardAssistantAction, assistantButton);
+        return;
+      }
       const button = event.target.closest("[data-dashboard-search-open]");
       if (!button) return;
       const matterId = button.dataset.dashboardSearchOpen;
       if (matterId && typeof openMatter === "function") openMatter(matterId);
     });
+
+    async function runAssistantAction(actionId, button) {
+      const action = assistantActions.get(String(actionId || ""));
+      if (!action || typeof confirmAssistantAction !== "function") return;
+      if (button) button.disabled = true;
+      try {
+        await confirmAssistantAction(action.payload || action);
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = "Generator opened. Review the draft details before generating.";
+        }
+      } finally {
+        if (button?.isConnected) button.disabled = false;
+      }
+    }
 
     renderChips();
     reset();

@@ -6149,6 +6149,30 @@ async function testDashboardSmartSearch(page) {
       body: JSON.stringify({ matter }),
     });
   });
+  await page.route("**/api/dashboard/assistant", async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    const query = String(body.query || "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: "search_filter",
+        search: {
+          filters: {
+            status: null,
+            phase: null,
+            needs_attention: null,
+            human_gate: null,
+            has_issues: null,
+            text: query,
+            min_age_days: null,
+            sort: null,
+          },
+          interpreted: query ? `matching "${query}"` : "",
+        },
+      }),
+    });
+  });
   // The summary endpoint (v1.1 "Summarize a document"). Registered AFTER the
   // generic /api/matters/* route so it wins for the POST .../summary path. The
   // pending matter returns a grounded summary; the sent matter returns the
@@ -6385,11 +6409,10 @@ async function testDashboardSmartSearch(page) {
   );
 }
 
-// v2: the free-text box becomes a natural-language query. We mock /search-intent so
-// no AI/network is involved. THE GOLDEN RULE under test: the mock returns ONLY a
-// structured filter spec (never matters); the CLIENT validates + applies it to the
-// real state.matters and shows the interpreted line. We then exercise the
-// fall-back-to-keyword path (a {fallback:true} signal) so the box always works.
+// Assistant bar: the free-text box calls /dashboard/assistant. Search-filter
+// responses still validate + apply structured filters to real state.matters, while
+// repository answers, confirmation-required Generator actions, and unsupported
+// messages render as assistant cards.
 async function testDashboardSmartSearchV2(page) {
   const consoleErrors = [];
   page.on("console", (message) => {
@@ -6439,40 +6462,107 @@ async function testDashboardSmartSearchV2(page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters }) });
   });
 
-  // The search-intent endpoint. The model's only output is a structured filter
-  // spec (or a {fallback:true} signal) — NEVER matters. The first query maps to a
-  // real filter; the second query triggers the graceful fallback.
-  const intentRequests = [];
-  await page.route("**/api/dashboard/search-intent", async (route) => {
+  const assistantRequests = [];
+  await page.route("**/api/dashboard/assistant", async (route) => {
     const body = JSON.parse(route.request().postData() || "{}");
-    intentRequests.push(body.query);
-    if (/fall ?back|globex/i.test(body.query || "")) {
-      // Simulate AI degradation: the box must fall back to v1 keyword search.
+    const query = String(body.query || "");
+    assistantRequests.push(query);
+    if (/how many/i.test(query)) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ filters: null, fallback: true, reason: "ai_unavailable" }),
+        body: JSON.stringify({
+          intent: "repository_question",
+          question: "count_in_review",
+          answer: { text: "2 documents are in review.", count: 2, phase: "review" },
+          citations: [
+            { matter_id: "m_old_review", title: "Acme Mutual NDA", workflow_phase: "review" },
+            { matter_id: "m_fresh_review", title: "Globex One-Way NDA", workflow_phase: "review" },
+          ],
+        }),
       });
       return;
     }
-    // A validated spec: matters stuck in review for over a week. The CLIENT applies
-    // it to the real matters — only m_old_review qualifies (30 days old, in review).
+    if (/generate/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "draft_action_request",
+          action: "open_generator",
+          requires_confirmation: true,
+          message: "I can help start an NDA draft. Open the Generator, review the intake, then choose Generate when you are ready.",
+          generator: {
+            prefill: { source: "dashboard_assistant", prompt: query },
+            missing_fields: ["signing_entity", "counterparty_name", "purpose"],
+          },
+          side_effects: [],
+        }),
+      });
+      return;
+    }
+    if (/unsupported/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "unsupported",
+          message: "I can search matters, answer repository status questions, or help start an NDA draft. I cannot do that request yet.",
+        }),
+      });
+      return;
+    }
+    if (/globex/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "search_filter",
+          search: {
+            filters: {
+              status: null,
+              phase: null,
+              needs_attention: null,
+              human_gate: null,
+              has_issues: null,
+              text: "Globex",
+              min_age_days: null,
+              sort: null,
+            },
+            interpreted: 'matching "Globex"',
+          },
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        filters: {
-          status: null,
-          phase: "review",
-          needs_attention: null,
-          human_gate: null,
-          has_issues: null,
-          text: null,
-          min_age_days: 7,
-          sort: null,
+        intent: "search_filter",
+        search: {
+          filters: {
+            status: null,
+            phase: "review",
+            needs_attention: null,
+            human_gate: null,
+            has_issues: null,
+            text: null,
+            min_age_days: 7,
+            sort: null,
+          },
+          interpreted: "In review · older than 7 days",
         },
-        interpreted: "In review · older than 7 days",
       }),
+    });
+  });
+  let generateCalls = 0;
+  await page.route("**/api/generate-nda", async (route) => {
+    generateCalls += 1;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Generate should not be called by dashboard assistant confirmation." }),
     });
   });
   await page.route("**/api/gmail/status", async (route) => {
@@ -6507,23 +6597,47 @@ async function testDashboardSmartSearchV2(page) {
   assert.equal(await results.count(), 1);
   assert.equal(await results.first().getAttribute("data-dashboard-search-open"), "m_old_review");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
-  assert.ok(intentRequests.length >= 1, "expected a POST to the search-intent endpoint");
+  assert.ok(assistantRequests.length >= 1, "expected a POST to the assistant endpoint");
 
-  // --- Fallback path: AI degrades -> v1 deterministic keyword search runs --------
-  // "globex" triggers the {fallback:true} signal; the box must still work, filtering
-  // by keyword. The interpreted line is hidden on the fallback path.
+  // --- Assistant search_filter with keyword text still filters real matters -----
   await page.fill("#dashboardSearchInput", "globex");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForFunction(
     () => document.querySelector("#dashboardSearchResults")?.innerText.includes("Globex One-Way NDA"),
   );
   await assertTextContains(page.locator("#dashboardSearchResults"), "Globex One-Way NDA");
-  // Exactly the keyword match surfaces (not the AI-filter result), and the
-  // interpreted line is cleared since this is the v1 fallback.
   await page.waitForFunction(
     () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
   );
-  assert.equal(await page.locator("#dashboardSearchInterpreted").isHidden(), true);
+  await assertTextContains(page.locator("#dashboardSearchInterpreted"), 'Showing: matching "Globex"');
+
+  // --- Repository question renders a readable answer + citations ---------------
+  await page.fill("#dashboardSearchInput", "How many are in review?");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="repository_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "2 documents are in review.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
+
+  // --- Action request requires confirmation and only opens/prefills Generator ---
+  await page.fill("#dashboardSearchInput", "Generate an NDA for Acme");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="draft_action_request"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "No document will be generated");
+  await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#draftIntakeProjectPurpose").inputValue(), "Generate an NDA for Acme");
+  assert.equal(generateCalls, 0, "dashboard assistant must not silently call /api/generate-nda");
+
+  await page.locator("#dashboardTab").click();
+  await page.waitForSelector("#dashboardView:not([hidden])");
+
+  // --- Unsupported requests render a clear message -----------------------------
+  await page.fill("#dashboardSearchInput", "unsupported command please");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
 
   // The two v1 chips still work unchanged.
   await page.locator('[data-dashboard-search-chip="awaiting_signature"]').click();
@@ -6536,7 +6650,8 @@ async function testDashboardSmartSearchV2(page) {
   );
 
   await page.unroute("**/api/matters");
-  await page.unroute("**/api/dashboard/search-intent");
+  await page.unroute("**/api/dashboard/assistant");
+  await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/gmail/status");
 
   const unexpectedErrors = consoleErrors.filter((text) => !/escapeHtml is not defined/.test(text));
@@ -6635,6 +6750,7 @@ async function testInboundNotificationToast(page) {
 
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/*");
+  await page.unroute("**/api/dashboard/assistant");
   await page.unroute("**/api/gmail/status");
 }
 

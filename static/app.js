@@ -114,6 +114,8 @@ const dashboardSearchController = createDashboardSearchController({
   // the spec is validated server-side; the controller validates + applies it to
   // the real state.matters deterministically. On any failure/fallback the
   // controller falls back to the v1 keyword filter, so the box always works.
+  assistantQuery: (query) => dashboardAssistantForQuery(query),
+  confirmAssistantAction: (action) => confirmDashboardAssistantAction(action),
   searchIntent: (query) => searchIntentForQuery(query),
 });
 // In-app toast notifications for newly-arrived inbound NDAs. Fed by the matter
@@ -834,6 +836,51 @@ async function searchIntentForQuery(query) {
     // the raw error.
     return { ok: false, payload: {} };
   }
+}
+
+async function dashboardAssistantForQuery(query) {
+  const lib = window.DashboardSearch || {};
+  const url = typeof lib.DASHBOARD_ASSISTANT_ENDPOINT === "string"
+    ? lib.DASHBOARD_ASSISTANT_ENDPOINT
+    : "/api/dashboard/assistant";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: String(query == null ? "" : query) }),
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      payload = {};
+    }
+    return { ok: response.ok, payload, status: response.status };
+  } catch (networkError) {
+    return { ok: false, payload: {}, status: 0 };
+  }
+}
+
+async function confirmDashboardAssistantAction(action = {}) {
+  if (String(action.action || "") !== "open_generator") return;
+  activateTab("generator");
+  await draftIntakeController.activate();
+  const prompt = String(action.prompt || action.generator?.prefill?.prompt || "").trim();
+  if (prompt) {
+    setDraftInputValue(document.querySelector("#draftIntakeProjectPurpose"), prompt);
+    setDraftInputValue(
+      document.querySelector("#draftIntakeNotes"),
+      "Started from Dashboard Assistant. Review all details before generating.",
+      { onlyIfEmpty: true },
+    );
+  }
+  document.querySelector("#draftIntakeCounterpartyName")?.focus();
+}
+
+function setDraftInputValue(input, value, { onlyIfEmpty = false } = {}) {
+  if (!input || (onlyIfEmpty && String(input.value || "").trim())) return;
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function renderDashboardAiHealth(payload = {}) {
