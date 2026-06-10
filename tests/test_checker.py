@@ -1747,7 +1747,7 @@ class CheckerTests(unittest.TestCase):
                 "This Agreement shall be governed by the laws of Delaware.",
                 "This Agreement shall be governed by the laws of England and Wales.",
                 "This Agreement shall be governed by the laws of the DIFC.",
-                "This Agreement shall be governed by the laws of Province of Ontario and the federal laws of Canada applicable therein.",
+                "This Agreement shall be governed by the laws of the Province of Ontario and the federal laws of Canada applicable therein.",
             ],
         )
 
