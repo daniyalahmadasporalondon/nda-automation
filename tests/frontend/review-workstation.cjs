@@ -4785,6 +4785,7 @@ async function testManualViewerEditRedline(page) {
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
   await page.keyboard.type(editedTitle);
   await page.waitForSelector('[data-paragraph-id="p1"].manual-redline');
+  await page.locator("#studioDocTitle").click();
   assert.equal(await page.locator("#studioUndoEditButton").isEnabled(), true);
 
   const paragraph = page.locator('[data-paragraph-id="p1"]');
@@ -4793,6 +4794,7 @@ async function testManualViewerEditRedline(page) {
     insertedText: "GREEMdasdasdsa",
     editableCount: 1,
   });
+  await assertInlineRedlineStyles(paragraph.locator(".paragraph-redline-preview"));
 
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   await assertTextContains(page.locator("#studioFileMeta"), "Edited in viewer");
@@ -4808,6 +4810,7 @@ async function testManualViewerEditRedline(page) {
   assert.match(sideBySide.redline, /AGREEMdasdasdsa/);
   assert.ok(sideBySide.delCount >= 1, "manual side-by-side redline should show deletions");
   assert.ok(sideBySide.insCount >= 1, "manual side-by-side redline should show insertions");
+  await assertInlineRedlineStyles(page.locator('[data-paragraph-id="p1"] .clause-sxs'));
 
   await page.locator('[data-view-mode="redline"]').click();
   await page.locator("#studioUndoEditButton").click();
@@ -5241,6 +5244,44 @@ async function assertRedlinePreview(paragraphLocator, { originalText, insertedTe
   assert.equal(data.previewHidden, false);
   assert.match(normalizeWhitespace(data.deletedText), new RegExp(escapeRegExp(originalText)));
   assert.match(normalizeWhitespace(data.insertedText), new RegExp(escapeRegExp(insertedText)));
+}
+
+async function assertInlineRedlineStyles(locator) {
+  const styles = await locator.evaluate((node) => {
+    const styleFor = (selector) => {
+      const target = node.querySelector(selector);
+      if (!target) return null;
+      const styles = getComputedStyle(target);
+      const box = target.getBoundingClientRect();
+      return {
+        backgroundColor: styles.backgroundColor,
+        color: styles.color,
+        textDecorationLine: styles.textDecorationLine,
+        textDecorationThickness: styles.textDecorationThickness,
+        visible: box.width > 0 && box.height > 0,
+      };
+    };
+    return {
+      deleted: styleFor(".inline-del"),
+      inserted: styleFor(".inline-ins"),
+    };
+  });
+  assert.ok(styles.deleted, "redline should render deleted text with .inline-del");
+  assert.ok(styles.inserted, "redline should render inserted text with .inline-ins");
+  assert.deepEqual(styles.deleted, {
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    color: "rgb(162, 29, 22)",
+    textDecorationLine: "line-through",
+    textDecorationThickness: "1.6px",
+    visible: true,
+  });
+  assert.deepEqual(styles.inserted, {
+    backgroundColor: "rgba(16, 185, 129, 0.16)",
+    color: "rgb(5, 96, 58)",
+    textDecorationLine: "none",
+    textDecorationThickness: "auto",
+    visible: true,
+  });
 }
 
 async function assertRedGreenPixels(locator) {
