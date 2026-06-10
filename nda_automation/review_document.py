@@ -7,6 +7,7 @@ Paragraph = Dict[str, object]
 STRUCTURAL_METADATA_KEYS = (
     "fontSize",
     "heading_level",
+    "indent_left",
     "numbering",
     "outline_level",
     "page_number",

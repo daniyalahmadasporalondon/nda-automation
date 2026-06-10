@@ -353,6 +353,10 @@ def _paragraph_record(
         if structure_number:
             record["structure_number"] = structure_number
 
+    indent_left = _paragraph_indent_left_points(ppr, paragraph_numbering, numbering)
+    if indent_left is not None:
+        record["indent_left"] = indent_left
+
     alignment = _paragraph_alignment(ppr)
     if alignment:
         record["alignment"] = alignment
@@ -477,11 +481,18 @@ def _read_numbering(document: ZipFile) -> NumberingDefinitions:
             level_index = _int_or_none(_attr(level, "ilvl"))
             if level_index is None:
                 continue
-            levels[level_index] = {
+            level_record: Dict[str, object] = {
                 "start": _int_or_none(_val(level.find(f"{WORD_NS}start"))) or 1,
                 "format": _val(level.find(f"{WORD_NS}numFmt")) or "decimal",
                 "text": _val(level.find(f"{WORD_NS}lvlText")) or f"%{level_index + 1}.",
             }
+            # Capture the level's left indent (twips) so a paragraph that numbers
+            # at this level but carries no direct ``<w:ind>`` can still resolve its
+            # effective indentation from the numbering definition.
+            indent_left = _indent_left_twips(level.find(f"{WORD_NS}pPr"))
+            if indent_left is not None:
+                level_record["indent_left"] = indent_left
+            levels[level_index] = level_record
         abstract[abstract_id] = levels
 
     nums: Dict[str, str] = {}
@@ -518,6 +529,56 @@ def _paragraph_numbering(ppr: ET.Element | None, style: Dict[str, object]) -> Di
         return direct
     style_numbering = style.get("numbering")
     return style_numbering if isinstance(style_numbering, dict) else None
+
+
+def _indent_left_twips(ppr: ET.Element | None) -> int | None:
+    """The left indent from ``<w:pPr>/<w:ind w:left>`` in twips, or ``None``.
+
+    Word stores indentation in twentieths of a point (twips). Returned raw (twips)
+    so callers can resolve the effective indent before converting to points."""
+    if ppr is None:
+        return None
+    ind = ppr.find(f"{WORD_NS}ind")
+    if ind is None:
+        return None
+    return _int_or_none(_attr(ind, "left"))
+
+
+def _paragraph_indent_left_points(
+    ppr: ET.Element | None,
+    paragraph_numbering: Dict[str, int | str] | None,
+    numbering: NumberingDefinitions,
+) -> int | None:
+    """The paragraph's effective left indent in whole points, or ``None``.
+
+    Prefers the paragraph's own ``<w:pPr>/<w:ind w:left>``; otherwise falls back to
+    the indent stored on the numbering level the paragraph references (numId/ilvl),
+    which is how sub-clauses get their indentation even when they sit at ilvl 0.
+    Twips are converted to points (``round(twips / 20)``). Returned only when the
+    resolved indent is greater than zero, so the field stays purely additive."""
+    twips = _indent_left_twips(ppr)
+    if twips is None and paragraph_numbering:
+        twips = _numbering_level_indent_twips(paragraph_numbering, numbering)
+    if twips is None or twips <= 0:
+        return None
+    return int(round(twips / 20))
+
+
+def _numbering_level_indent_twips(
+    paragraph_numbering: Dict[str, int | str],
+    numbering: NumberingDefinitions,
+) -> int | None:
+    num_id = str(paragraph_numbering.get("num_id") or "")
+    level_index = int(paragraph_numbering.get("level") or 0)
+    nums = numbering.get("nums") if isinstance(numbering, dict) else {}
+    abstract = numbering.get("abstract") if isinstance(numbering, dict) else {}
+    abstract_id = nums.get(num_id) if isinstance(nums, dict) else None
+    levels = abstract.get(abstract_id) if isinstance(abstract, dict) and abstract_id is not None else None
+    level_definition = levels.get(level_index) if isinstance(levels, dict) else None
+    if not isinstance(level_definition, dict):
+        return None
+    indent_left = level_definition.get("indent_left")
+    return indent_left if isinstance(indent_left, int) else None
 
 
 def _num_pr(ppr: ET.Element | None) -> Dict[str, int | str] | None:
@@ -705,7 +766,15 @@ def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]]
         if not run_text:
             continue
         formatting = _run_formatting(run)
-        if formatting["bold"] or formatting["italic"] or formatting["underline"]:
+        if (
+            formatting["bold"]
+            or formatting["italic"]
+            or formatting["underline"]
+            or formatting.get("color")
+            or formatting.get("highlight")
+            or formatting.get("strike")
+            or formatting.get("vertAlign")
+        ):
             any_formatted = True
         if runs and _run_formatting_matches(runs[-1], formatting):
             runs[-1]["text"] = str(runs[-1]["text"]) + run_text
@@ -751,6 +820,21 @@ def _run_formatting(run: ET.Element) -> Dict[str, object]:
     size = _run_size(rpr)
     if size is not None:
         formatting["size"] = size
+    # ``color`` ("#rrggbb"), ``highlight`` (Word color-name string), ``strike``
+    # (True) and ``vertAlign`` ("superscript"/"subscript") are all additive: each
+    # is present only when the run carries it, and each drives the merge boundary
+    # so runs differing on any of them stay distinct records.
+    color = _run_color(rpr)
+    if color:
+        formatting["color"] = color
+    highlight = _run_highlight(rpr)
+    if highlight:
+        formatting["highlight"] = highlight
+    if _toggle_property(rpr, "strike"):
+        formatting["strike"] = True
+    vert_align = _run_vert_align(rpr)
+    if vert_align:
+        formatting["vertAlign"] = vert_align
     return formatting
 
 
@@ -763,7 +847,18 @@ def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, o
         return False
     # A point-size change is likewise its own boundary so differently-sized runs
     # stay distinct records.
-    return existing.get("size") == formatting.get("size")
+    if existing.get("size") != formatting.get("size"):
+        return False
+    # Color/highlight/vertAlign changes are each their own boundary so runs that
+    # differ on any of them do not coalesce.
+    if str(existing.get("color") or "") != str(formatting.get("color") or ""):
+        return False
+    if str(existing.get("highlight") or "") != str(formatting.get("highlight") or ""):
+        return False
+    if str(existing.get("vertAlign") or "") != str(formatting.get("vertAlign") or ""):
+        return False
+    # Strikethrough is a toggle boundary, mirroring bold/italic/underline.
+    return bool(existing.get("strike")) == bool(formatting.get("strike"))
 
 
 def _run_font(rpr: ET.Element | None) -> str:
@@ -788,6 +883,48 @@ def _run_size(rpr: ET.Element | None) -> int | None:
         if half_points is not None and half_points > 0:
             return int(round(half_points / 2))
     return None
+
+
+def _run_color(rpr: ET.Element | None) -> str:
+    """The run's explicit text color as ``"#rrggbb"``, or ``""`` when unset.
+
+    Reads ``<w:rPr>/<w:color w:val="RRGGBB"/>``. Word's ``auto`` (theme/automatic
+    color) carries no concrete RGB, so it is skipped. Returned lower-cased and
+    ``#``-prefixed; the field is present only when a concrete color is named."""
+    if rpr is None:
+        return ""
+    value = _val(rpr.find(f"{WORD_NS}color")).strip()
+    if not value or value.lower() == "auto":
+        return ""
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", value):
+        return f"#{value.lower()}"
+    return ""
+
+
+def _run_highlight(rpr: ET.Element | None) -> str:
+    """The run's highlight color name (e.g. ``"yellow"``), or ``""`` when unset.
+
+    Reads ``<w:rPr>/<w:highlight w:val="yellow"/>``; the value is one of Word's
+    named highlight colors, kept as the raw string. ``none`` is treated as unset."""
+    if rpr is None:
+        return ""
+    value = _val(rpr.find(f"{WORD_NS}highlight")).strip()
+    if not value or value.lower() == "none":
+        return ""
+    return value
+
+
+def _run_vert_align(rpr: ET.Element | None) -> str:
+    """The run's vertical alignment (``"superscript"``/``"subscript"``) or ``""``.
+
+    Reads ``<w:rPr>/<w:vertAlign w:val="superscript"/>``. ``baseline`` (the
+    default) is treated as unset so the field stays additive."""
+    if rpr is None:
+        return ""
+    value = _val(rpr.find(f"{WORD_NS}vertAlign")).strip().lower()
+    if value in {"superscript", "subscript"}:
+        return value
+    return ""
 
 
 def _toggle_property(rpr: ET.Element | None, local_name: str) -> bool:

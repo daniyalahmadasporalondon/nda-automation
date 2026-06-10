@@ -828,6 +828,43 @@ function fontCssStackForName(name) {
   return /\s/.test(fontName) ? `'${fontName}'` : fontName;
 }
 
+// Word highlight color NAME -> CSS color, for on-screen rendering. The run
+// carries the bare Word highlight name (the w:highlight values); this maps it to
+// a CSS color. A name with no entry falls back to itself so an unknown but
+// CSS-understood name (e.g. "orange") still renders.
+const HIGHLIGHT_NAME_CSS = {
+  yellow: "#ffff00",
+  green: "#00ff00",
+  cyan: "#00ffff",
+  magenta: "#ff00ff",
+  blue: "#0000ff",
+  red: "#ff0000",
+  darkYellow: "#808000",
+  darkGreen: "#008000",
+  darkCyan: "#008080",
+  darkMagenta: "#800080",
+  darkBlue: "#000080",
+  darkRed: "#800000",
+  lightGray: "#c0c0c0",
+  darkGray: "#808080",
+  black: "#000000",
+  white: "#ffffff",
+};
+
+function highlightCssColor(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return "";
+  if (Object.prototype.hasOwnProperty.call(HIGHLIGHT_NAME_CSS, raw)) {
+    return HIGHLIGHT_NAME_CSS[raw];
+  }
+  // Case-insensitive retry so "DarkYellow"/"darkyellow" still map.
+  const lower = raw.toLowerCase();
+  const key = Object.keys(HIGHLIGHT_NAME_CSS).find((k) => k.toLowerCase() === lower);
+  if (key) return HIGHLIGHT_NAME_CSS[key];
+  // Unknown name: hand the raw value to CSS, which understands many color names.
+  return raw;
+}
+
 const PARAGRAPH_TEXT_ALIGNMENTS = new Set(["left", "center", "right", "justify"]);
 
 // Inline `text-align` + `font-family` for a paragraph's own formatting. Returns
@@ -842,7 +879,27 @@ function paragraphFormatStyle(paragraph) {
   if (fontStack) declarations.push(`font-family:${fontStack}`);
   const size = Number(paragraph?.fontSize);
   if (Number.isFinite(size) && size > 0) declarations.push(`font-size:${size}pt`);
+  // Per-paragraph left indentation (points) so sub-clauses / indented text nest
+  // exactly as the source. This is the SOURCE-absolute indent: when present it
+  // must WIN over the level-class `.doc-list-level-N` padding rather than stack
+  // on top of it (which would double-indent). The level-class lives on the outer
+  // frame and this style on the inner body div, so they would otherwise compose;
+  // paragraphHasIndentLeft() tags the frame so CSS can neutralise the class
+  // padding. Only emitted when indent_left > 0, leaving unformatted paragraphs
+  // byte-identical to before.
+  const indentLeft = Number(paragraph?.indent_left);
+  if (Number.isFinite(indentLeft) && indentLeft > 0) {
+    declarations.push(`padding-left:${indentLeft}pt`);
+  }
   return declarations.join(";");
+}
+
+// True when the paragraph carries a source-absolute left indent. Used to add a
+// frame marker class so the `.doc-list-level-N` padding can be neutralised (the
+// absolute indent wins) instead of stacking with it.
+function paragraphHasIndentLeft(paragraph) {
+  const indentLeft = Number(paragraph?.indent_left);
+  return Number.isFinite(indentLeft) && indentLeft > 0;
 }
 
 function paragraphFormatStyleAttribute(paragraph) {
@@ -888,6 +945,16 @@ function renderFormattedRun(run, changed = false) {
   if (run?.bold) html = `<strong>${html}</strong>`;
   if (run?.italic) html = `<em>${html}</em>`;
   if (run?.underline) html = `<u>${html}</u>`;
+  // Document strikethrough is run formatting from the SOURCE, not a tracked
+  // deletion. It MUST use a dedicated class (never .inline-del / any redline
+  // class) so it is visually distinct from — and never confused with — a
+  // redline. Inner-most so it composes with bold/italic/underline above.
+  if (run?.strike) html = `<span class="doc-run-strike">${html}</span>`;
+  // Super/subscript: a real sup/sub element so it lifts/drops and shrinks like
+  // the source. Inner-most wrap, composing with the emphasis wrappers above.
+  const vertAlign = String(run?.vertAlign || "").trim().toLowerCase();
+  if (vertAlign === "superscript") html = `<sup>${html}</sup>`;
+  else if (vertAlign === "subscript") html = `<sub>${html}</sub>`;
   const runStyle = inlineRunStyle(run);
   if (runStyle) html = `<span style="${escapeHtml(runStyle)}">${html}</span>`;
   // Wrap a run whose formatting differs from baseline in the tracked-change
@@ -896,14 +963,20 @@ function renderFormattedRun(run, changed = false) {
   return html;
 }
 
-// Inline `font-family` + `font-size` for a run's own formatting. Size is in
-// POINTS (rendered at true point size; unsized runs inherit the document base).
+// Inline `font-family` + `font-size` + run COLOR + HIGHLIGHT for a run's own
+// formatting. Size is in POINTS (rendered at true point size; unsized runs
+// inherit the document base). color/highlight are source run formatting that the
+// extractor captures; they render as the run's text color / background swatch.
 function inlineRunStyle(run) {
   const declarations = [];
   const fontStack = fontCssStackForName(run?.font);
   if (fontStack) declarations.push(`font-family:${fontStack}`);
   const size = Number(run?.size);
   if (Number.isFinite(size) && size > 0) declarations.push(`font-size:${size}pt`);
+  const color = String(run?.color || "").trim();
+  if (color) declarations.push(`color:${color}`);
+  const highlight = highlightCssColor(run?.highlight);
+  if (highlight) declarations.push(`background-color:${highlight}`);
   return declarations.join(";");
 }
 
@@ -962,6 +1035,12 @@ function paragraphStructureClasses(paragraph) {
   }
   if (paragraph?.table && typeof paragraph.table === "object") {
     classes.push("doc-table-cell");
+  }
+  // A source-absolute left indent (rendered as padding-left on the body div by
+  // paragraphFormatStyle) supersedes the level-class padding so the two never
+  // stack into a double indent. Tag the frame so CSS can zero the class padding.
+  if (paragraphHasIndentLeft(paragraph)) {
+    classes.push("doc-indent-explicit");
   }
   return classes;
 }

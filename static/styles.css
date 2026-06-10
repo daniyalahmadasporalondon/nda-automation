@@ -906,6 +906,13 @@ h3 {
 .generator-document-render .studio-doc-paragraph.doc-list-level-5,
 .generator-document-render .studio-doc-paragraph.doc-list-level-6 { padding-left: 118px; }
 
+/* A paragraph carrying a source-absolute left indent (rendered as padding-left
+   on the inner body div) supersedes the level-class padding so the indent is not
+   counted twice. Reset the frame to the base list inset so the captured marker
+   ::before still sits in a sensible gutter while the body div alone supplies the
+   exact source indent. */
+.generator-document-render .studio-doc-paragraph.doc-indent-explicit { padding-left: 30px; }
+
 /* Signature / multi-cell table: presentational grid that lays the cell
    paragraphs out in the columns the export has (one signatory per column),
    instead of a flat vertical stack. Each cell keeps its own paragraph frames
@@ -3918,6 +3925,12 @@ h3 {
 .studio-doc-paragraph.doc-list-level-5,
 .studio-doc-paragraph.doc-list-level-6 { padding-left: 118px; }
 
+/* Source-absolute left indent wins over the level-class padding: the exact
+   indent is rendered as padding-left on the inner body div, so reset the frame
+   to the base list inset rather than letting the two stack into a double indent.
+   Keeps the marker ::before in a sensible gutter. */
+.studio-doc-paragraph.doc-indent-explicit { padding-left: 30px; }
+
 .studio-doc-paragraph.doc-list[data-structure-label]::before {
   color: var(--ink-soft);
   content: attr(data-structure-label);
@@ -4010,6 +4023,15 @@ h3 {
 
 .inline-del + .inline-ins {
   margin-left: 0.25ch;
+}
+
+/* Document (source) strikethrough run formatting. Deliberately NOT styled like
+   .inline-del: it keeps the running text color and adds only a neutral
+   ink-colored line-through (no red, no background pill), so authored strike text
+   is never mistaken for a tracked deletion / redline. */
+.doc-run-strike {
+  text-decoration: line-through;
+  text-decoration-color: currentColor;
 }
 
 .studio-doc-paragraph.has-clause {

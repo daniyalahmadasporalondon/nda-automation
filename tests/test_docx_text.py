@@ -197,6 +197,87 @@ class DocxTextTests(unittest.TestCase):
         # half-points -> 10pt) over the unsized body run.
         self.assertEqual(paragraphs[1]["fontSize"], 10)
 
+    def test_resolves_paragraph_indent_from_numbering_level(self):
+        # Sub-clauses a)/b)/c) often number at ilvl 0 and take their indent from
+        # the numbering level's ``<w:ind w:left>`` (twips), not the level depth.
+        # 1080 twips -> 54pt; the direct ``<w:ind>`` on the second paragraph wins.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>a) Sub-clause from numbering indent.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:ind w:left="720"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>b) Sub-clause with direct indent.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Flush paragraph with no indent at all.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="3">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="5"><w:abstractNumId w:val="3"/></w:num>
+</w:numbering>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/numbering.xml": numbering_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # ilvl 0 paragraph resolves its indent from the numbering level (1080 twips).
+        self.assertEqual(paragraphs[0]["numbering"]["level"], 0)
+        self.assertEqual(paragraphs[0]["indent_left"], 54)
+        # The paragraph's own ``<w:ind>`` (720 twips -> 36pt) takes precedence.
+        self.assertEqual(paragraphs[1]["indent_left"], 36)
+        # A flush paragraph keeps the additive contract: no indent_left key.
+        self.assertNotIn("indent_left", paragraphs[2])
+
+    def test_extracts_run_color_highlight_strike_and_vert_align(self):
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Plain </w:t></w:r>
+      <w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>red</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> </w:t></w:r>
+      <w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>highlighted</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> </w:t></w:r>
+      <w:r><w:rPr><w:strike/></w:rPr><w:t>struck</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> x</w:t></w:r>
+      <w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2</w:t></w:r>
+      <w:r><w:t>.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:rPr><w:color w:val="auto"/><w:strike w:val="false"/></w:rPr><w:t>Auto color, strike off.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+        data = make_zip({"word/document.xml": document_xml}, compression=ZIP_DEFLATED)
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["runs"],
+            [
+                {"text": "Plain ", "bold": False, "italic": False, "underline": False},
+                {"text": "red", "bold": False, "italic": False, "underline": False, "color": "#ff0000"},
+                {"text": " ", "bold": False, "italic": False, "underline": False},
+                {"text": "highlighted", "bold": False, "italic": False, "underline": False, "highlight": "yellow"},
+                {"text": " ", "bold": False, "italic": False, "underline": False},
+                {"text": "struck", "bold": False, "italic": False, "underline": False, "strike": True},
+                {"text": " x", "bold": False, "italic": False, "underline": False},
+                {"text": "2", "bold": False, "italic": False, "underline": False, "vertAlign": "superscript"},
+                {"text": ".", "bold": False, "italic": False, "underline": False},
+            ],
+        )
+        # The run-text tiling invariant must hold: runs concatenate to flat text.
+        self.assertEqual(
+            "".join(run["text"] for run in paragraphs[0]["runs"]),
+            paragraphs[0]["text"],
+        )
+        # ``auto`` color and an explicitly-disabled strike are not formatting, so
+        # the second paragraph stays lean with no runs key.
+        self.assertNotIn("runs", paragraphs[1])
+
     def test_run_toggle_disabled_is_not_treated_as_formatting(self):
         document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">

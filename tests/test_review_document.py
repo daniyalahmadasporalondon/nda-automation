@@ -74,6 +74,34 @@ class ReviewDocumentTests(unittest.TestCase):
         # Paragraph-level ``fontSize`` is carried as structural metadata.
         self.assertEqual(aligned[0]["fontSize"], 12)
 
+    def test_align_preserves_paragraph_indent_and_extended_run_formatting(self):
+        source_text = "Plain red struck text."
+        runs = [
+            {"text": "Plain ", "bold": False, "italic": False, "underline": False},
+            {"text": "red", "bold": False, "italic": False, "underline": False, "color": "#ff0000"},
+            {"text": " struck", "bold": False, "italic": False, "underline": False, "strike": True},
+            {"text": " text.", "bold": False, "italic": False, "underline": False, "highlight": "yellow"},
+        ]
+        extracted_paragraphs = [
+            {
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "text": "Plain red struck text.",
+                "runs": runs,
+                "indent_left": 54,
+            },
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        # Paragraph-level ``indent_left`` is carried as structural metadata.
+        self.assertEqual(aligned[0]["indent_left"], 54)
+        # The new run-level fields ride through inside the carried ``runs`` records.
+        self.assertEqual(aligned[0]["runs"], runs)
+        self.assertEqual(aligned[0]["runs"][1]["color"], "#ff0000")
+        self.assertEqual(aligned[0]["runs"][2]["strike"], True)
+        self.assertEqual(aligned[0]["runs"][3]["highlight"], "yellow")
+
     def test_align_preserves_pdf_page_number_metadata(self):
         source_text = "First PDF block.\n\nSecond PDF block."
         extracted_paragraphs = [
