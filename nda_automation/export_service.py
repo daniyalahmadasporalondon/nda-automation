@@ -5,10 +5,9 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from . import telemetry
+from . import redline_edit_contract, telemetry
 from .durable_io import fsync_parent_directory
 from .redline_actions import (
-    REDLINE_DELETE_PARAGRAPH,
     REDLINE_FORMAT_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
@@ -32,9 +31,7 @@ def apply_selected_export_redlines(review_result: dict, selected_redlines: objec
     if not isinstance(selected_redlines, list):
         return
 
-    server_redlines = review_result.get("redline_edits", [])
-    if not isinstance(server_redlines, list):
-        server_redlines = []
+    server_redlines = redline_edit_contract.normalize_redline_edits(review_result.get("redline_edits", []))
     server_redlines_by_id = {
         str(redline.get("id")): redline
         for redline in server_redlines
@@ -130,7 +127,7 @@ def clean_manual_export_redline(redline: object) -> dict | None:
 
     common = _clean_export_redline_contract(
         redline,
-        {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH, REDLINE_FORMAT_PARAGRAPH},
+        redline_edit_contract.MANUAL_REDLINE_ACTIONS,
     )
     if common is None:
         return None
@@ -140,10 +137,10 @@ def clean_manual_export_redline(redline: object) -> dict | None:
 
     cleaned = {
         "id": str(redline.get("id") or f"manual-{paragraph_id}"),
-        "clause_id": "manual_viewer_edit",
+        "clause_id": redline_edit_contract.MANUAL_VIEWER_EDIT_CLAUSE_ID,
         "status": "proposed",
         "action": action,
-        "action_label": _MANUAL_REDLINE_ACTION_LABELS.get(action, "Replace paragraph"),
+        "action_label": redline_edit_contract.redline_action_label(action),
         "paragraph_id": paragraph_id,
         "original_text": common["original_text"],
         "replacement_text": common["replacement_text"],
@@ -176,12 +173,6 @@ def clean_manual_export_redline(redline: object) -> dict | None:
         cleaned["source_part"] = source_part
     return cleaned
 
-
-_MANUAL_REDLINE_ACTION_LABELS = {
-    REDLINE_REPLACE_PARAGRAPH: "Replace paragraph",
-    REDLINE_DELETE_PARAGRAPH: "Remove paragraph",
-    REDLINE_FORMAT_PARAGRAPH: "Format paragraph",
-}
 
 MAX_FORMAT_OPS = 200
 MAX_FONT_NAME_CHARS = 120
@@ -454,44 +445,8 @@ def prune_saved_exports(protected_path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _clean_export_redline_contract(redline: dict, allowed_actions: set[str]) -> dict | None:
-    action = redline.get("action")
-    if action not in allowed_actions:
-        return None
-
-    paragraph_id = str(redline.get("paragraph_id") or "").strip()
-    if not paragraph_id:
-        return None
-
-    original_text = str(redline.get("original_text") or "").strip()
-    replacement_text = str(redline.get("replacement_text") or "").strip()
-    anchor_text = str(redline.get("anchor_text") or "").strip()
-    insert_text = str(redline.get("insert_text") or "").strip()
-    # A format_paragraph redline leaves the TEXT unchanged (original == replacement),
-    # so the empty-replacement reject must not fire for it -- require non-empty
-    # original_text instead, and echo it back as the (equal) replacement_text.
-    if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH, REDLINE_FORMAT_PARAGRAPH} and not original_text.strip():
-        return None
-    if action == REDLINE_REPLACE_PARAGRAPH and not replacement_text.strip():
-        return None
-    if action == REDLINE_INSERT_AFTER_PARAGRAPH and not insert_text.strip():
-        return None
-
-    if action == REDLINE_DELETE_PARAGRAPH:
-        cleaned_replacement_text = ""
-    elif action == REDLINE_FORMAT_PARAGRAPH:
-        cleaned_replacement_text = original_text
-    else:
-        cleaned_replacement_text = replacement_text
-
-    return {
-        "action": action,
-        "paragraph_id": paragraph_id,
-        "original_text": original_text,
-        "replacement_text": cleaned_replacement_text,
-        "anchor_text": anchor_text,
-        "insert_text": insert_text,
-    }
+def _clean_export_redline_contract(redline: object, allowed_actions: set[str] | frozenset[str]) -> dict | None:
+    return redline_edit_contract.clean_export_redline_contract(redline, allowed_actions)
 
 
 def _copy_redline_indexes(source: dict, target: dict, *, remove_invalid: bool = False) -> None:
