@@ -53,6 +53,7 @@ const tests = [
   ["surfaces review and export error details", testFailureUxDetails],
   ["renders progressive PDF preview with text fallback", testProgressivePdfPreviewFallback],
   ["renders page image preview with text fallback", testRenderedPageImagePreview],
+  ["loads page image preview from render-status", testRenderStatusPageImagePreviewFetch],
   ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
   ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
@@ -1303,6 +1304,163 @@ async function testRenderedPageImagePreview(page) {
     status: "ready",
   });
 
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+}
+
+async function testRenderStatusPageImagePreviewFetch(page) {
+  const renderText = "Render job preview paragraph.";
+  const matterId = "render_status_pages";
+  const pagePng = testPngBuffer(6, 8);
+  let renderStatusRequested = false;
+
+  await page.route(`**/api/matters/${matterId}/render-status`, async (route) => {
+    renderStatusRequested = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        document_render: {
+          cached: true,
+          cache_key: "render-status-cache-key",
+          document_overlay: {
+            anchors: [{
+              boxes: [],
+              clause_id: "term",
+              confidence: 0.6,
+              confidence_reason: "Page-level paragraph fallback.",
+              fallback: {
+                mode: "text_dom_scroll",
+                selector: '[data-paragraph-id="p1"]',
+              },
+              page_number: 1,
+              paragraph_id: "p1",
+              target_type: "evidence",
+            }],
+            fallback_mode: "text_dom_scroll",
+            pages: [{
+              dpi: 180,
+              height: 2200,
+              image_url: `/api/matters/${matterId}/render-page/1`,
+              page_number: 1,
+              scale: 2,
+              width: 1700,
+            }],
+            precision: "page",
+            status: "partial",
+            version: 1,
+            warnings: [],
+          },
+          page_image_status: "ready",
+          page_images: {
+            cached: true,
+            dpi: 180,
+            pages: [{
+              dpi: 180,
+              height: 2200,
+              image_url: `/api/matters/${matterId}/render-page/1`,
+              page_number: 1,
+              scale: 2,
+              width: 1700,
+            }],
+            scale: 2,
+            status: "ready",
+          },
+          pages: [{
+            dpi: 180,
+            height: 2200,
+            image_url: `/api/matters/${matterId}/render-page/1`,
+            page_number: 1,
+            scale: 2,
+            width: 1700,
+          }],
+          pdf_url: `/api/matters/${matterId}/render-pdf`,
+          source_kind: "docx",
+          source_label: "Converted DOCX",
+          status: "ready",
+        },
+      }),
+    });
+  });
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: pagePng });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-10T09:15:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "term",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Term",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: null,
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: renderText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate((payload) => {
+    state.selectedMatter = {
+      document_title: "Rendered status NDA",
+      id: payload.matterId,
+      source_filename: "render-status-source.docx",
+      source_type: "repository",
+    };
+    renderResult(payload.reviewResult, payload.reviewResult.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, { matterId, reviewResult });
+
+  await page.waitForSelector('[data-review-render-page="1"] img');
+  assert.equal(renderStatusRequested, true);
+  assert.equal(
+    await page.locator('[data-review-render-page="1"] img').getAttribute("src"),
+    `/api/matters/${matterId}/render-page/1`,
+  );
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "Converted DOCX");
+  await assertTextContains(page.locator("[data-review-pdf-surface]"), "1 page");
+  await assertTextContains(page.locator('[data-review-render-page="1"]'), "Selected clause evidence");
+  assert.equal(await page.locator('[data-review-render-page="1"]').getAttribute("data-overlay-clause-ids"), "term");
+  assert.equal(await page.locator('[data-review-render-page="1"]').getAttribute("data-overlay-paragraph-ids"), "p1");
+
+  const readyState = await page.evaluate(() => state.reviewDocumentRender);
+  assert.deepEqual(readyState, {
+    documentOverlay: {
+      anchors: [{
+        boxes: [],
+        clauseId: "term",
+        confidence: 0.6,
+        pageNumber: 1,
+        paragraphId: "p1",
+        targetType: "evidence",
+      }],
+      fallbackMode: "text_dom_scroll",
+      precision: "page",
+      status: "partial",
+      version: 1,
+    },
+    error: "",
+    pageCount: 1,
+    pages: [{
+      dpi: 180,
+      height: 2200,
+      imageUrl: `/api/matters/${matterId}/render-page/1`,
+      pageNumber: 1,
+      width: 1700,
+    }],
+    pdfUrl: `/api/matters/${matterId}/render-pdf`,
+    sourceLabel: "Converted DOCX",
+    status: "ready",
+  });
+
+  await page.unroute(`**/api/matters/${matterId}/render-status`);
   await page.unroute(`**/api/matters/${matterId}/render-page/*`);
 }
 
@@ -3019,7 +3177,10 @@ async function testManualUploadModal(page) {
   const uploadRequest = await uploadRequestPromise;
   assert.equal(uploadRequest.postDataJSON().board_column, "reviewed");
   await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
-  await assertTextContains(page.locator('[data-repository-list="reviewed"]'), reviewedStem);
+  await page.waitForFunction(
+    (uploadedStem) => document.querySelector('[data-repository-list="reviewed"]')?.innerText.includes(uploadedStem),
+    reviewedStem,
+  );
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
 
