@@ -4,7 +4,7 @@ import base64
 import binascii
 from pathlib import Path
 
-from .. import document_rendering, gmail_integration, matter_render_job, matter_summary, matter_view, telemetry
+from .. import gmail_integration, matter_render_job, matter_summary, matter_view, telemetry
 from ..ai_assessor import AIAssessorError
 from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
@@ -24,6 +24,7 @@ from ..matter_lifecycle import (
 )
 from ..matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 from ..pdf_text import PdfExtractionError
+from ..repository_board_workflow import RepositoryBoardWorkflow, RepositoryBoardWorkflowError
 from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
@@ -31,7 +32,6 @@ from .common import parse_matter_id, request_owner_user_id
 
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
-MATTER_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 
 
@@ -42,15 +42,29 @@ def _repository(handler) -> MatterRepository:
     return DiskMatterRepository()
 
 
+def _repository_board_workflow(handler) -> RepositoryBoardWorkflow:
+    workflow = getattr(handler, "repository_board_workflow", None)
+    if workflow is not None:
+        return workflow
+    return RepositoryBoardWorkflow(_repository(handler))
+
+
+def _send_repository_board_error(
+    handler,
+    error: RepositoryBoardWorkflowError,
+    *,
+    send_body: bool = True,
+) -> None:
+    handler._send_json(error.payload, status=error.status, send_body=send_body)
+
+
 def handle_matter_list(handler, *, send_body: bool = True) -> None:
-    repository = _repository(handler)
     try:
-        handler._send_json(
-            {"matters": matter_view.public_matters(repository.list_matters(request_owner_user_id(handler)))},
-            send_body=send_body,
-        )
-    except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        payload = _repository_board_workflow(handler).list_board(owner_user_id=request_owner_user_id(handler))
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error, send_body=send_body)
+        return
+    handler._send_json(payload, send_body=send_body)
 
 
 def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
@@ -230,19 +244,15 @@ def _matter_review_payload(
 
 def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path)
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return
-    repository = _repository(handler)
     try:
-        matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        payload = _repository_board_workflow(handler).detail_card(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error, send_body=send_body)
         return
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
-        return
-    handler._send_json({"matter": matter_view.public_matter(matter)}, send_body=send_body)
+    handler._send_json(payload, send_body=send_body)
 
 
 def refresh_stale_matter_review(matter: dict) -> dict:
@@ -447,54 +457,38 @@ def clean_intake_text(value: object, max_length: int = 500) -> str:
 
 def handle_matter_stage_update(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/stage")
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
     payload = handler._read_json_payload()
     if payload is None:
         return
 
-    board_column = payload.get("board_column", "")
-    if not isinstance(board_column, str) or board_column not in MATTER_BOARD_COLUMNS:
-        handler._send_json({"error": "Unsupported matter stage."}, status=400)
+    try:
+        response = _repository_board_workflow(handler).move_card(
+            matter_id,
+            payload.get("board_column", ""),
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error)
         return
-
-    matter = _repository(handler).update_matter_stage(
-        matter_id,
-        board_column,
-        owner_user_id=request_owner_user_id(handler),
-    )
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    handler._send_json({"matter": matter_view.public_matter(matter)})
+    handler._send_json(response)
 
 
 def handle_matter_reviewed_update(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/reviewed")
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
     payload = handler._read_json_payload()
     if payload is None:
         return
 
-    reviewed = payload.get("reviewed", True)
-    if not isinstance(reviewed, bool):
-        handler._send_json({"error": "reviewed must be true or false."}, status=400)
+    try:
+        response = _repository_board_workflow(handler).set_reviewed(
+            matter_id,
+            payload.get("reviewed", True),
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error)
         return
-
-    matter = _repository(handler).update_matter_fields(
-        matter_id,
-        {"human_reviewed": reviewed},
-        owner_user_id=request_owner_user_id(handler),
-    )
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    handler._send_json({"matter": matter_view.public_matter(matter)})
+    handler._send_json(response)
 
 
 def handle_matter_ai_first_review(handler, path: str) -> None:
@@ -647,40 +641,21 @@ def clean_dict_list(value: object) -> list[dict]:
 
 def handle_matter_delete(handler, path: str) -> None:
     matter_id = parse_matter_id(path)
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-
-    owner_user_id = request_owner_user_id(handler)
-    repository = _repository(handler)
-    # Capture the source bytes before deletion unlinks them, so the render-cache
-    # purge below can recompute the (content + owner) cache key. Reading is gated
-    # on ownership: a non-owner caller gets None and the matter is not deleted.
     try:
-        pre_delete = repository.get_matter(matter_id, owner_user_id=owner_user_id)
-        source_bytes = repository.get_source_document_bytes(pre_delete) if pre_delete else None
-    except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500)
-        return
-    source_filename = str(pre_delete.get("source_filename") or "") if pre_delete else ""
-
-    matter = repository.delete_matter(matter_id, owner_user_id=owner_user_id)
-    if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    # Stop tracking any in-flight background render for the now-deleted matter.
-    document_rendering.matter_render_coordinator().forget(matter_id)
-    if source_bytes is not None:
-        # Purge the deleted matter's rendered artifacts so they do not outlive
-        # the matter (and cannot be served to a later, unrelated matter).
-        document_rendering.purge_render_cache_for_source(
-            source_bytes,
-            owner_user_id=str(matter.get("owner_user_id") or owner_user_id),
-            source_filename=source_filename,
+        payload = _repository_board_workflow(handler).delete_card(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
         )
-    handler._send_json({"deleted": matter_view.public_matter(matter)})
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error)
+        return
+    handler._send_json(payload)
 
 
 def handle_demo_reset(handler) -> None:
-    removed_count = _repository(handler).reset_demo_repository(owner_user_id=request_owner_user_id(handler))
-    handler._send_json({"removed": removed_count, "matters": []})
+    try:
+        payload = _repository_board_workflow(handler).reset_board(owner_user_id=request_owner_user_id(handler))
+    except RepositoryBoardWorkflowError as error:
+        _send_repository_board_error(handler, error)
+        return
+    handler._send_json(payload)
