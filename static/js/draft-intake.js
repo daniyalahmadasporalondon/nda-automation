@@ -570,6 +570,9 @@ function createDraftIntakeController({
     setStagedActions(null);
     setStatus(status, status ? "success" : "");
     updateGenerateState();
+    if (window.generatorEditor && typeof window.generatorEditor.clear === "function") {
+      window.generatorEditor.clear();
+    }
   }
 
   // Called when the Generator tab is shown. Loads the live registry on first
