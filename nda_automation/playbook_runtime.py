@@ -384,6 +384,267 @@ def public_playbook_history(entries: list[dict[str, Any]]) -> list[dict[str, Any
     return public_entries
 
 
+def load_playbook_state(
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(playbook)
+        runtime = ensure_active_runtime_for_playbook(
+            playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            source="bootstrap",
+        )
+        draft = read_playbook_draft(playbook_path=playbook_path)
+        history = read_playbook_history(playbook_path=playbook_path)
+    return {
+        "playbook": playbook,
+        "runtime": runtime,
+        "draft": draft,
+        "history": history,
+    }
+
+
+def save_playbook_draft(
+    playbook: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        active_playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(active_playbook)
+        validate_playbook(playbook)
+        runtime = ensure_active_runtime_for_playbook(
+            active_playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            source="bootstrap",
+        )
+        conflict = _expected_active_conflict(payload, runtime)
+        if conflict:
+            raise PlaybookDraftConflict(conflict, status=409)
+        draft = _draft_payload_from_playbook(playbook, active_playbook, runtime, payload)
+        write_playbook_draft(draft, playbook_path=playbook_path, replace_file=replace_file)
+        runtime = {
+            **runtime,
+            **_runtime_fields_for_draft(draft),
+        }
+        write_playbook_runtime(runtime, playbook_path=playbook_path, replace_file=replace_file)
+        history = read_playbook_history(playbook_path=playbook_path)
+        history.insert(0, _draft_history_entry(draft, playbook, active_playbook))
+        write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+    return {
+        "active_playbook": active_playbook,
+        "runtime": runtime,
+        "draft": draft,
+        "history": history,
+    }
+
+
+def discard_playbook_draft(
+    payload: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        active_playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(active_playbook)
+        runtime = ensure_active_runtime_for_playbook(
+            active_playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            source="bootstrap",
+        )
+        draft = read_playbook_draft(playbook_path=playbook_path)
+        draft_id = str((draft or {}).get("draft_id") or runtime.get("draft_id") or "")
+        if not draft_id:
+            raise PlaybookDraftConflict({"error": "No Playbook draft exists."}, status=404)
+        requested_draft_id = str(payload.get("draft_id") or "").strip()
+        if requested_draft_id and requested_draft_id != draft_id:
+            raise PlaybookDraftConflict({
+                "error": "The Playbook draft changed while this request was open.",
+                "code": "playbook_draft_conflict",
+                "draft": public_playbook_draft_payload(runtime, draft),
+            }, status=409)
+
+        _remove_file_durably(draft_path_for(playbook_path))
+        runtime = {key: value for key, value in runtime.items() if key not in _DRAFT_RUNTIME_KEYS}
+        write_playbook_runtime(runtime, playbook_path=playbook_path, replace_file=replace_file)
+        history = read_playbook_history(playbook_path=playbook_path)
+        history.insert(0, _draft_discard_history_entry(active_playbook, draft, payload))
+        write_playbook_history(history, playbook_path=playbook_path, replace_file=replace_file)
+    return {
+        "active_playbook": active_playbook,
+        "runtime": runtime,
+        "history": history,
+    }
+
+
+def publish_playbook(
+    payload: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        active_playbook = read_playbook_from_path(playbook_path)
+        validate_playbook(active_playbook)
+        runtime = ensure_active_runtime_for_playbook(
+            active_playbook,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+            source="bootstrap",
+        )
+        conflict = _expected_active_conflict(payload, runtime)
+        if conflict:
+            raise PlaybookDraftConflict(conflict, status=409)
+
+        draft = read_playbook_draft(playbook_path=playbook_path)
+        candidate_playbook, source_draft = _publish_candidate_from_payload(payload, draft)
+        if candidate_playbook is None:
+            raise PlaybookDraftConflict({
+                "error": "Provide a Playbook draft id or playbook object to publish."
+            }, status=400)
+        conflict = _draft_base_conflict(source_draft, runtime)
+        if conflict:
+            raise PlaybookDraftConflict(conflict, status=409)
+        validate_playbook(candidate_playbook)
+
+        runtime = _active_runtime_from_playbook(
+            candidate_playbook,
+            actor=_actor_from_payload(payload),
+            source="publish",
+        )
+        history = read_playbook_history(playbook_path=playbook_path)
+        history.insert(0, _publish_history_entry(
+            candidate_playbook,
+            active_playbook,
+            runtime,
+            payload,
+            source_draft,
+        ))
+        write_active_playbook_bundle_atomically(
+            candidate_playbook,
+            runtime,
+            history,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+        )
+        if source_draft is not None:
+            _remove_file_durably(draft_path_for(playbook_path))
+    return {
+        "playbook": candidate_playbook,
+        "runtime": runtime,
+        "history": history,
+    }
+
+
+def save_playbook(
+    playbook: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        validate_playbook(playbook)
+        previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
+        history = read_playbook_history(playbook_path=playbook_path)
+        if previous_playbook and not history:
+            history.append(_history_entry(
+                previous_playbook,
+                action="baseline",
+                actor="system",
+                summary="Initial playbook snapshot before version history.",
+            ))
+        existing_runtime = read_playbook_runtime(playbook_path=playbook_path)
+        runtime = {
+            "version": PLAYBOOK_RUNTIME_VERSION,
+            **_active_runtime_from_playbook(
+                playbook,
+                actor=_actor_from_payload(payload),
+                source="save",
+            ),
+            **_draft_runtime_fields(existing_runtime),
+        }
+        history.insert(0, _history_entry(
+            playbook,
+            actor=_actor_from_payload(payload),
+            action="save",
+            previous_playbook=previous_playbook,
+        ))
+        write_active_playbook_bundle_atomically(
+            playbook,
+            runtime,
+            history,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+        )
+    return {
+        "playbook": playbook,
+        "runtime": runtime,
+        "history": history,
+    }
+
+
+def restore_playbook(
+    history_id: str,
+    payload: dict[str, Any],
+    *,
+    playbook_path=PLAYBOOK_PATH,
+    replace_file=os.replace,
+) -> dict[str, Any]:
+    with locked_playbook(playbook_path):
+        history = read_playbook_history(playbook_path=playbook_path)
+        source_entry = next((entry for entry in history if str(entry.get("id") or "") == history_id), None)
+        if source_entry is None:
+            raise PlaybookDraftConflict({"error": "Playbook history entry was not found."}, status=404)
+        snapshot = source_entry.get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise PlaybookDraftConflict({
+                "error": "Playbook history entry does not include a restorable snapshot."
+            }, status=409)
+        validate_playbook(snapshot)
+        previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
+        restored_playbook = json.loads(json.dumps(snapshot))
+        existing_runtime = read_playbook_runtime(playbook_path=playbook_path)
+        runtime = {
+            "version": PLAYBOOK_RUNTIME_VERSION,
+            **_active_runtime_from_playbook(
+                restored_playbook,
+                actor=_actor_from_payload(payload),
+                source="restore",
+            ),
+            **_draft_runtime_fields(existing_runtime),
+        }
+        history.insert(0, _history_entry(
+            restored_playbook,
+            actor=_actor_from_payload(payload),
+            action="restore",
+            previous_playbook=previous_playbook,
+            restored_from_id=history_id,
+            summary=f"Restored playbook version from {str(source_entry.get('recorded_at') or 'history')}.",
+        ))
+        write_active_playbook_bundle_atomically(
+            restored_playbook,
+            runtime,
+            history,
+            playbook_path=playbook_path,
+            replace_file=replace_file,
+        )
+    return {
+        "playbook": restored_playbook,
+        "runtime": runtime,
+        "history": history,
+    }
+
+
 def _history_entry(
     playbook: dict[str, Any],
     *,
