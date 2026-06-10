@@ -37,11 +37,9 @@ function createPdfMarkupController({
     { id: "highlight", label: "Highlight", title: "Draw a highlight box" },
     { id: "strikethrough", label: "Strikethrough", title: "Strike through a region" },
   ];
-  // Drags shorter than this (as a fraction of the page) are ignored so a stray
-  // click with the Highlight/Strikethrough tool does not create a zero-size box.
-  const MIN_DRAG_FRACTION = 0.01;
+  const model = () => (typeof window !== "undefined" && window.PdfMarkupWorkstation ? window.PdfMarkupWorkstation : null);
 
-  const markup = {
+  const markup = model() ? model().createInitialState() : {
     activeTool: "cursor",
     annotations: [],
     loadedMatterId: null,
@@ -86,11 +84,7 @@ function createPdfMarkupController({
   }
 
   function clamp01(value) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return 0;
-    if (number < 0) return 0;
-    if (number > 1) return 1;
-    return number;
+    return model() ? model().clamp01(value) : Math.max(0, Math.min(1, Number.isFinite(Number(value)) ? Number(value) : 0));
   }
 
   // ---- entry points called from the render funnel -------------------------
@@ -187,7 +181,7 @@ function createPdfMarkupController({
 
   function setActiveTool(toolId) {
     if (!TOOLS.some((tool) => tool.id === toolId)) return;
-    markup.activeTool = toolId;
+    Object.assign(markup, model() ? model().setActiveTool(markup, toolId) : { activeTool: toolId, openPopoverId: null });
     // Switching tools cancels an in-progress comment composer or drag.
     closeCommentComposer();
     activeDrag = null;
@@ -248,9 +242,9 @@ function createPdfMarkupController({
   // The layer only intercepts pointer events while a draw tool is active; with
   // the Cursor tool the page image is untouched (text selection etc. unaffected).
   function updatePageInteractivity() {
-    const drawing = markup.activeTool === "comment"
+    const drawing = model() ? model().toolIsDrawing(markup.activeTool) : (markup.activeTool === "comment"
       || markup.activeTool === "highlight"
-      || markup.activeTool === "strikethrough";
+      || markup.activeTool === "strikethrough");
     pageElements().forEach((pageEl) => {
       const host = pageImageHost(pageEl);
       const layer = host ? host.querySelector("[data-pdf-markup-layer]") : null;
@@ -315,7 +309,7 @@ function createPdfMarkupController({
       const current = pointFromEvent(host, event);
       const box = rectFromPoints(drag.start, current);
       if (drag.preview.parentNode) drag.preview.parentNode.removeChild(drag.preview);
-      if (box.w < MIN_DRAG_FRACTION || box.h < MIN_DRAG_FRACTION) return;
+      if (model() ? !model().dragHasDrawableArea(box) : (box.w < 0.01 || box.h < 0.01)) return;
       createAnnotation({
         page: pageNumberOf(drag.pageEl),
         rect: box,
@@ -327,11 +321,12 @@ function createPdfMarkupController({
   }
 
   function rectFromPoints(a, b) {
-    const x = Math.min(a.x, b.x);
-    const y = Math.min(a.y, b.y);
-    const w = Math.abs(a.x - b.x);
-    const h = Math.abs(a.y - b.y);
-    return { h: clamp01(h), w: clamp01(w), x: clamp01(x), y: clamp01(y) };
+    return model() ? model().rectFromPoints(a, b) : {
+      h: clamp01(Math.abs(a.y - b.y)),
+      w: clamp01(Math.abs(a.x - b.x)),
+      x: clamp01(Math.min(a.x, b.x)),
+      y: clamp01(Math.min(a.y, b.y)),
+    };
   }
 
   function positionPreview(drag, current) {
@@ -413,10 +408,13 @@ function createPdfMarkupController({
   // Position a box overlay/preview from a normalized rect against the page's
   // CURRENT displayed bounding box (so it tracks resize).
   function applyBoxStyle(node, box, rect, type) {
-    node.style.left = `${box.x * rect.width}px`;
-    node.style.top = `${box.y * rect.height}px`;
-    node.style.width = `${box.w * rect.width}px`;
-    node.style.height = `${box.h * rect.height}px`;
+    const style = model() ? model().overlayStyle(box, rect) : {
+      height: `${box.h * rect.height}px`,
+      left: `${box.x * rect.width}px`,
+      top: `${box.y * rect.height}px`,
+      width: `${box.w * rect.width}px`,
+    };
+    Object.assign(node.style, style);
     if (type === "strikethrough") node.classList.add("pdf-markup-strikethrough");
   }
 
@@ -517,14 +515,19 @@ function createPdfMarkupController({
   // ---- API calls -----------------------------------------------------------
 
   function loadAnnotations(matterId) {
-    const sequence = markup.loadSequence + 1;
-    markup.loadSequence = sequence;
+    const nextState = model() ? model().startLoad(markup, matterId) : { ...markup, loadSequence: markup.loadSequence + 1 };
+    Object.assign(markup, nextState);
+    const sequence = markup.loadSequence;
     fetch(`/api/matters/${encodeURIComponent(matterId)}/pdf-annotations`)
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("Annotations unavailable"))))
       .then((payload) => {
         if (sequence !== markup.loadSequence || selectedMatterId() !== matterId) return;
-        markup.annotations = normalizeAnnotations(payload && payload.annotations);
-        markup.loadedMatterId = matterId;
+        const loaded = model() ? model().completeLoad(markup, matterId, sequence, payload && payload.annotations) : {
+          ...markup,
+          annotations: normalizeAnnotations(payload && payload.annotations),
+          loadedMatterId: matterId,
+        };
+        Object.assign(markup, loaded);
         if (markup.mounted) renderAllOverlays();
       })
       .catch(() => {
@@ -538,9 +541,12 @@ function createPdfMarkupController({
   function createAnnotation({ page, type, rect, text, color }) {
     const matterId = selectedMatterId();
     if (!matterId || !page) return;
-    const body = { page, rect, type };
-    if (text != null) body.text = String(text);
-    if (color != null) body.color = String(color);
+    const body = model() ? model().annotationPayload({ page, rect, type, text, color }) : { page, rect, type };
+    if (!body) return;
+    if (!model()) {
+      if (text != null) body.text = String(text);
+      if (color != null) body.color = String(color);
+    }
     fetch(`/api/matters/${encodeURIComponent(matterId)}/pdf-annotations`, {
       body: JSON.stringify(body),
       headers: { "Content-Type": "application/json" },
@@ -551,7 +557,7 @@ function createPdfMarkupController({
         if (selectedMatterId() !== matterId) return;
         const annotation = normalizeAnnotation(payload && payload.annotation);
         if (!annotation) return;
-        markup.annotations.push(annotation);
+        Object.assign(markup, model() ? model().appendAnnotation(markup, annotation) : { annotations: [...markup.annotations, annotation] });
         if (markup.mounted) renderAllOverlays();
       })
       .catch(() => {
@@ -569,8 +575,11 @@ function createPdfMarkupController({
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("Could not delete annotation"))))
       .then(() => {
         if (selectedMatterId() !== matterId) return;
-        markup.annotations = markup.annotations.filter((annotation) => String(annotation.id) !== id);
-        if (markup.openPopoverId != null && String(markup.openPopoverId) === id) closePopover();
+        Object.assign(markup, model() ? model().removeAnnotation(markup, id) : {
+          annotations: markup.annotations.filter((annotation) => String(annotation.id) !== id),
+          openPopoverId: markup.openPopoverId != null && String(markup.openPopoverId) === id ? null : markup.openPopoverId,
+        });
+        if (markup.openPopoverId == null) closePopover();
         if (markup.mounted) renderAllOverlays();
       })
       .catch(() => {
@@ -605,7 +614,7 @@ function createPdfMarkupController({
       .join("")
       .replace(/^[-_]+/g, "")
       .replace(/[-_]+$/g, "");
-    return `${safe || "nda"}-marked-up.pdf`;
+    return model() ? model().markedUpFilename({ matterId, selectedMatter: state.selectedMatter || {} }) : `${safe || "nda"}-marked-up.pdf`;
   }
 
   // ---- normalization -------------------------------------------------------

@@ -30,6 +30,7 @@ import {
 import { createDraftIntake } from "./draft-intake.mjs";
 import { GeneratorWorkstationModel } from "./generator-workstation-model.mjs";
 import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
+import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs";
 import { RedlineEditContract } from "./redline-edit-contract.mjs";
 import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
 import {
@@ -84,6 +85,7 @@ Object.assign(window, {
   createGenerationApi,
   GenerationUnavailableError,
   GeneratorWorkstationModel,
+  PdfMarkupWorkstation,
   RedlineEditContract,
   ReviewWorkstationModel,
   // Dashboard smart-search (v1, deterministic). The DOM controller is a classic
