@@ -144,6 +144,17 @@ def build_source_redline_docx(
     *,
     clean_fills: object = None,
 ) -> bytes:
+    from .source_redline_docx import build_source_redline_docx as build_source_redline_docx_facade  # noqa: PLC0415
+
+    return build_source_redline_docx_facade(source_docx, review_result, clean_fills=clean_fills)
+
+
+def _build_source_redline_docx_package(
+    source_docx: bytes,
+    review_result: ReviewResult,
+    *,
+    clean_fills: object = None,
+) -> bytes:
     """Build the redlined source DOCX.
 
     ``clean_fills`` (optional) are inbound-NDA clean fills: blank-replacements

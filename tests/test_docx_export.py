@@ -24,7 +24,7 @@ from nda_automation.redline_xml import (
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
 )
-from nda_automation import docx_export, docx_health
+from nda_automation import docx_export, docx_health, source_redline_docx
 from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
@@ -734,6 +734,37 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_source_docx_facade_drops_manual_insert_before_rendering(self):
+        source_docx = make_source_docx(["Anchor paragraph."])
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": "Anchor paragraph."}],
+            "redline_edits": [
+                {
+                    "id": "manual-insert",
+                    "clause_id": "manual_viewer_edit",
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "insert_text": "Unsafe manual insertion.",
+                }
+            ],
+        }
+
+        redlined_docx = source_redline_docx.build_source_redline_docx(source_docx, review_result)
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        self.assertEqual(tracked_inserted_text(document_root), [])
+
+    def test_source_docx_facade_rejects_unhealthy_rendered_docx(self):
+        source_docx = make_source_docx(["Anchor paragraph."])
+
+        with patch.object(source_redline_docx, "validate_docx_open_health", return_value=["broken package"]):
+            with self.assertRaisesRegex(DocxExportError, "redline failed validation"):
+                source_redline_docx.build_source_redline_docx(
+                    source_docx,
+                    {"paragraphs": [], "redline_edits": []},
+                )
 
     def test_source_docx_export_collapses_duplicate_document_xml_entries(self):
         source_docx = duplicate_docx_part(
