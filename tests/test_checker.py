@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+from nda_automation import clause_outcomes
 from nda_automation import checker as checker_module
 from nda_automation import semantic as semantic_module
 from nda_automation.checks.common import _match
@@ -53,6 +54,13 @@ class CheckerTests(unittest.TestCase):
     def test_redline_registry_mirrors_checker_registry(self):
         self.assertEqual(
             [clause_id for clause_id, _builder in checker_module.REDLINE_BUILDERS],
+            [clause_id for clause_id, _check in checker_module.CLAUSE_CHECKS],
+        )
+
+    def test_checker_redline_registry_delegates_to_clause_outcomes(self):
+        self.assertIs(checker_module.REDLINE_BUILDERS, clause_outcomes.REDLINE_BUILDERS)
+        self.assertEqual(
+            clause_outcomes.redline_builder_ids(),
             [clause_id for clause_id, _check in checker_module.CLAUSE_CHECKS],
         )
 
