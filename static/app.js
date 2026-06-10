@@ -205,6 +205,7 @@ const draftIntakeController = createDraftIntakeController({
   onGenerate: generateNdaFromDraft,
   onDownloadGenerated: downloadGeneratedNda,
   onSendGenerated: sendGeneratedNda,
+  onEditGenerated: editGeneratedNda,
 });
 adminAiController = createAdminAiController({
   state,
@@ -553,13 +554,33 @@ async function generateNdaFromDraft(payload) {
 
 // Download the last generated NDA — from the in-memory blob or the saved matter
 // source URL. Wired to the staged "Download" button in the generator.
-function downloadGeneratedNda(generated) {
+async function downloadGeneratedNda(generated) {
   if (!generated) return;
+  // Prefer the clean edited version when the in-Generator editor has edits.
+  const editedBlob = await editedGeneratedBlob();
+  if (editedBlob) {
+    downloadBlob(editedBlob, generated.filename || "nda.docx");
+    return;
+  }
   if (generated.blob) {
     downloadBlob(generated.blob, generated.filename || "nda.docx");
   } else if (generated.downloadUrl) {
     downloadUrl(generated.downloadUrl, generated.filename || "nda.docx");
   }
+}
+
+// The clean .docx with the in-Generator editor's edits baked in, or null when the
+// editor has no edits (the caller then uses the original generated file).
+async function editedGeneratedBlob() {
+  if (window.generatorEditor && typeof window.generatorEditor.hasEdits === "function"
+    && window.generatorEditor.hasEdits()) {
+    try {
+      return await window.generatorEditor.exportCleanDocx();
+    } catch (error) {
+      return null;
+    }
+  }
+  return null;
 }
 
 // Open the Send Document modal pre-loaded with the generated NDA (+ counterparty
@@ -589,7 +610,11 @@ async function sendGeneratedNda(generated, { pending = false } = {}) {
   const docxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   try {
     let file = null;
-    if (generated.blob) {
+    // Prefer the clean edited version when the in-Generator editor has edits.
+    const editedBlob = await editedGeneratedBlob();
+    if (editedBlob) {
+      file = new File([editedBlob], generated.filename || "nda.docx", { type: docxType });
+    } else if (generated.blob) {
       file = new File([generated.blob], generated.filename || "nda.docx", { type: docxType });
     } else if (generated.downloadUrl) {
       const response = await fetch(generated.downloadUrl, { headers: { Accept: docxType } });
@@ -612,6 +637,16 @@ async function sendGeneratedNda(generated, { pending = false } = {}) {
       );
     }
   }
+}
+
+// Open the last generated NDA in the in-Generator document editor, where it can be
+// edited with the formatting toolbar right inside the Generator tab (no jump to
+// Review). The generated NDA is already a matter with extracted paragraphs, which
+// the editor loads from /api/matters/{id}/review. Download/Send then export the
+// edited document. The legacy in-memory blob path has no matter, so it no-ops.
+async function editGeneratedNda(generated) {
+  if (!generated || !generated.matterId || !window.generatorEditor) return;
+  await window.generatorEditor.load(generated.matterId);
 }
 
 // A short parenthetical summary of what the engine actually filled, from the

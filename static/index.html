@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260610d">
+    <link rel="stylesheet" href="/static/styles.css?v=20260610f">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -217,7 +217,72 @@
             </form>
 
             <aside class="generator-side-panel generator-preview-panel" aria-label="Live NDA preview">
-              <div class="nda-paper" id="draftIntakePreview" aria-live="polite"></div>
+              <div class="nda-paper" id="draftIntakePreview" aria-live="polite" hidden></div>
+              <div class="generator-editor" id="generatorEditor">
+                <div class="studio-format-toolbar" id="generatorFormatToolbar" role="toolbar" aria-label="Text formatting">
+                  <button class="fmt-btn" id="genUndo" type="button" aria-label="Undo" title="Undo" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg>
+                  </button>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <label class="fmt-font">
+                    <span class="sr-only">Font</span>
+                    <select id="genFontSelect" aria-label="Font">
+                      <option value="">Default font</option>
+                      <option value="Calibri">Calibri</option>
+                      <option value="Arial">Arial</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Cambria">Cambria</option>
+                      <option value="Garamond">Garamond</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Courier New">Courier New</option>
+                    </select>
+                  </label>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <label class="fmt-size">
+                    <span class="sr-only">Font size</span>
+                    <select id="genFontSize" aria-label="Font size">
+                      <option value="8">8</option>
+                      <option value="9">9</option>
+                      <option value="10">10</option>
+                      <option value="11" selected>11</option>
+                      <option value="12">12</option>
+                      <option value="14">14</option>
+                      <option value="16">16</option>
+                      <option value="18">18</option>
+                      <option value="20">20</option>
+                      <option value="22">22</option>
+                      <option value="24">24</option>
+                      <option value="28">28</option>
+                      <option value="32">32</option>
+                      <option value="36">36</option>
+                      <option value="48">48</option>
+                      <option value="72">72</option>
+                    </select>
+                  </label>
+                  <button class="fmt-btn fmt-btn-size" id="genFontSizeUp" type="button" aria-label="Increase font size" title="Increase font size"><span class="fmt-size-a fmt-size-a-lg">A</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 14 6-6 6 6"/></svg></button>
+                  <button class="fmt-btn fmt-btn-size" id="genFontSizeDown" type="button" aria-label="Decrease font size" title="Decrease font size"><span class="fmt-size-a fmt-size-a-sm">A</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 10 6 6 6-6"/></svg></button>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <button class="fmt-btn fmt-btn-bold" id="genFormatBold" type="button" aria-label="Bold" title="Bold" aria-pressed="false">B</button>
+                  <button class="fmt-btn fmt-btn-italic" id="genFormatItalic" type="button" aria-label="Italic" title="Italic" aria-pressed="false">I</button>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <button class="fmt-btn" id="genAlignLeft" type="button" aria-label="Align left" title="Align left" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h10M4 18h13"/></svg>
+                  </button>
+                  <button class="fmt-btn" id="genAlignCenter" type="button" aria-label="Align center" title="Align center" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M7 12h10M6 18h12"/></svg>
+                  </button>
+                  <button class="fmt-btn" id="genAlignRight" type="button" aria-label="Align right" title="Align right" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M10 12h10M7 18h13"/></svg>
+                  </button>
+                  <button class="fmt-btn" id="genAlignJustify" type="button" aria-label="Justify" title="Justify" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+                  </button>
+                </div>
+                <div class="studio-document-render generator-document-render" id="generatorDocumentRender"></div>
+              </div>
             </aside>
           </section>
         </main>
@@ -1643,10 +1708,10 @@
     <script src="/static/js/repository-send.js"></script>
     <script src="/static/js/repository-detail.js?v=20260607b"></script>
     <script src="/static/js/repository-actions.js?v=20260607c"></script>
-    <script src="/static/js/repository.js?v=20260607a"></script>
+    <script src="/static/js/repository.js?v=20260610d"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260606i"></script>
+    <script src="/static/js/draft-intake.js?v=20260610f"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
@@ -1666,6 +1731,7 @@
     <script src="/static/js/app-state.js?v=20260609a"></script>
     <script src="/static/js/dashboard-search.js?v=20260608b"></script>
     <script src="/static/js/notifications.js?v=20260608a"></script>
-    <script src="/static/app.js?v=20260609r"></script>
+    <script src="/static/js/generator-editor.js?v=20260610g"></script>
+    <script src="/static/app.js?v=20260610g"></script>
   </body>
 </html>

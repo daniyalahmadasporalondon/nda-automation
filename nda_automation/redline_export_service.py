@@ -12,6 +12,7 @@ from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
     DocxExportError,
+    accept_all_revisions,
     build_review_report_docx,
     build_source_redline_docx,
 )
@@ -128,10 +129,18 @@ def _build_redline_export(
         expected_source_text=expected_source_text,
         expected_redline_edits=expected_redline_edits,
     )
+    # Clean mode (the Generator's outbound draft): the tracked redline is built and
+    # validated above, then ACCEPTED into a clean document -- the recipient gets a
+    # finished NDA with the edits baked in, no strike-through / insertion marks. A
+    # clean export is ephemeral (a download), so it is never persisted as the
+    # matter's redline artifact.
+    clean = bool(payload.get("clean"))
+    if clean:
+        report_bytes = accept_all_revisions(report_bytes)
     return RedlineExport(
         data=report_bytes,
         filename=download_filename,
-        saved_path=export_service.persist_export(report_bytes, download_filename) if persist else None,
+        saved_path=export_service.persist_export(report_bytes, download_filename) if (persist and not clean) else None,
     )
 
 

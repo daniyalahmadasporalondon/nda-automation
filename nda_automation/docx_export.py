@@ -237,6 +237,82 @@ def build_source_redline_docx(
         raise DocxExportError("The uploaded Word document could not be redlined.") from exc
 
 
+def accept_all_revisions(docx_bytes: bytes) -> bytes:
+    """Return ``docx_bytes`` with every tracked change ACCEPTED, yielding a clean
+    document with no revision markup: ``<w:ins>`` is unwrapped (the insertion is
+    kept), ``<w:del>`` is removed (the deletion is applied), ``<w:rPrChange>`` /
+    ``<w:pPrChange>`` are dropped (the NEW formatting wins), and the track-revisions
+    / revisionView settings are cleared. Used to bake the Generator's edits into a
+    clean outbound NDA -- the recipient gets a finished document, not a redline."""
+    try:
+        validate_docx_bytes_before_open(docx_bytes)
+        with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
+            validate_docx_archive(source_archive)
+            source_names = set(source_archive.namelist())
+            overrides: Dict[str, bytes] = {}
+
+            document_root, document_namespaces = _parse_docx_xml_with_namespaces(
+                source_archive.read("word/document.xml"),
+                part_name="word/document.xml",
+            )
+            _accept_revisions_element(document_root)
+            overrides["word/document.xml"] = _xml_bytes(
+                document_root, namespace_declarations=document_namespaces
+            )
+
+            if "word/settings.xml" in source_names:
+                settings_root, settings_namespaces = _parse_docx_xml_with_namespaces(
+                    source_archive.read("word/settings.xml"),
+                    part_name="word/settings.xml",
+                )
+                for tag in ("trackRevisions", "revisionView"):
+                    for node in list(settings_root.findall(_w_tag(tag))):
+                        settings_root.remove(node)
+                overrides["word/settings.xml"] = _xml_bytes(
+                    settings_root, namespace_declarations=settings_namespaces
+                )
+
+            with BytesIO() as output:
+                with ZipFile(output, "w", ZIP_DEFLATED) as clean_archive:
+                    written: set[str] = set()
+                    for item in source_archive.infolist():
+                        if item.filename in written:
+                            continue
+                        data = overrides.pop(item.filename, None)
+                        if data is None:
+                            data = source_archive.read(item.filename)
+                        clean_archive.writestr(item, data)
+                        written.add(item.filename)
+                    for name, data in overrides.items():
+                        if name not in written:
+                            clean_archive.writestr(name, data)
+                return output.getvalue()
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
+        raise DocxExportError("The redlined document could not be flattened to a clean copy.") from exc
+
+
+def _accept_revisions_element(element: ET.Element) -> None:
+    """Recursively accept all tracked changes within ``element``, in place: drop
+    ``<w:del>`` and ``<w:rPrChange>``/``<w:pPrChange>`` entirely, and replace each
+    ``<w:ins>`` with its (already-accepted) children."""
+    ins_tag = _w_tag("ins")
+    del_tag = _w_tag("del")
+    drop_tags = {_w_tag("rPrChange"), _w_tag("pPrChange")}
+    result: List[ET.Element] = []
+    for child in list(element):
+        if child.tag == del_tag or child.tag in drop_tags:
+            continue
+        _accept_revisions_element(child)
+        if child.tag == ins_tag:
+            result.extend(list(child))
+        else:
+            result.append(child)
+    for child in list(element):
+        element.remove(child)
+    for child in result:
+        element.append(child)
+
+
 def _redlined_nda_section(review_result: ReviewResult) -> List[str]:
     paragraphs = review_result.get("paragraphs", [])
     if not isinstance(paragraphs, list) or not paragraphs:

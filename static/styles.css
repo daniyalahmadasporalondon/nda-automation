@@ -714,7 +714,7 @@ h3 {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 72px 24px 28px;
+  padding: 52px 24px 20px;
 }
 
 .generator-view.view.active {
@@ -728,8 +728,8 @@ h3 {
   border-radius: 20px;
   box-shadow: var(--shadow-sm);
   color: var(--ink);
-  margin-bottom: 18px;
-  padding: 28px 32px;
+  margin-bottom: 12px;
+  padding: 14px 28px;
 }
 
 .generator-hero .eyebrow {
@@ -738,8 +738,8 @@ h3 {
 
 .generator-hero h1 {
   color: var(--ink);
-  font-size: 28px;
-  margin: 4px 0 8px;
+  font-size: 22px;
+  margin: 2px 0 0;
 }
 
 .generator-hero-copy p:last-child {
@@ -845,6 +845,52 @@ h3 {
   max-height: calc(100vh - 112px);
   overflow-y: auto;
   padding: 34px 40px;
+}
+
+/* In-Generator editor: the generated NDA rendered editable (toolbar + document),
+   shown in place of the read-only preview after "Edit". The document area mirrors
+   the .nda-paper look; the toolbar reuses the Review .studio-format-toolbar/.fmt-*. */
+.generator-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.generator-editor .studio-format-toolbar {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  flex: 0 0 auto;
+}
+
+.generator-document-render {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+  flex: 1 1 auto;
+  font-size: 15px;
+  line-height: 1.72;
+  max-height: calc(100vh - 168px);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 34px 40px;
+}
+
+.generator-document-render .studio-doc-paragraph {
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.generator-document-render .paragraph-editable {
+  outline: none;
+  padding: 2px 4px;
+}
+
+.generator-document-render .paragraph-editable:focus {
+  background: rgba(85, 35, 178, 0.05);
+  border-radius: 6px;
 }
 
 /* Generator action row: Clear · Generate · (staged) Download · Send. */

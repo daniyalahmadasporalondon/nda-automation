@@ -50,6 +50,7 @@ function createDraftIntakeController({
   sendButton,
   onDownloadGenerated,
   onSendGenerated,
+  onEditGenerated,
   // Optional seam: a stubbed generation handler. When the Generic NDA template
   // ships, app.js can pass a real one; until then the default reports pending.
   onGenerate,
@@ -500,6 +501,11 @@ function createDraftIntakeController({
         <p class="nda-doc-foot">Live preview of the Generic NDA &middot; final wording, dates and signatories are set when you generate.</p>
       </article>
     `;
+    // Mirror the draft into the always-visible editor. The editor module guards the
+    // "user has edited the draft" and "a real NDA has been generated" cases itself.
+    if (window.generatorEditor && typeof window.generatorEditor.showDraft === "function") {
+      window.generatorEditor.showDraft(previewNode);
+    }
   }
 
   function updateGenerateState() {
@@ -531,6 +537,11 @@ function createDraftIntakeController({
         setStatus(outcome?.message || "NDA generated.", outcome?.tone || "success");
         // A real generation returns the saved-artifact handle; stage Download/Send.
         if (outcome?.generated) setStagedActions(outcome.generated);
+        // Load the generated NDA into the always-visible editor automatically (no
+        // separate "Edit" step) so its text can be edited immediately in place.
+        if (outcome?.generated && typeof onEditGenerated === "function") {
+          onEditGenerated(outcome.generated);
+        }
       } else {
         // Stub: the Generic NDA template has not arrived. Capture the inputs and
         // tell the user generation is pending rather than pretending to draft.

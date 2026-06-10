@@ -108,6 +108,7 @@ const RepositoryView = (() => {
       loadMatters: actions.loadMatters,
       markMatterRedlineReady: actions.markMatterRedlineReady,
       openMatter: actions.openMatter,
+      openMatterInReview: actions.openMatterInReview,
       renderBoard,
     };
   }

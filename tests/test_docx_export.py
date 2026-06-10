@@ -13,6 +13,7 @@ from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
     DocxExportError,
+    accept_all_revisions,
     build_review_report_docx,
     build_source_redline_docx,
     validate_docx_open_health,
@@ -1316,6 +1317,68 @@ class DocxExportTests(unittest.TestCase):
         # Schema order: sz before szCs, both before the pre-existing <w:u>.
         self.assertLess(children.index(sz_tag), children.index(szcs_tag))
         self.assertLess(children.index(szcs_tag), children.index(u_tag))
+
+    def test_accept_all_revisions_flattens_to_clean_doc(self):
+        # A tracked manual replace -> build_source_redline_docx (tracked) ->
+        # accept_all_revisions -> a CLEAN doc: the edit is applied with no <w:ins>,
+        # <w:del>, <w:rPrChange>, <w:pPrChange> or trackRevisions setting left.
+        original_text = "Air India Limited is hereby named the FIRST PARTY."
+        edited_text = "Air India Private Limited is hereby named the FIRST PARTY."
+        body_paragraph = f"<w:p><w:r><w:t>{original_text}</w:t></w:r></w:p>"
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{body_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(p["text"]) for p in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        pid = next(str(p["id"]) for p in paragraphs if str(p["text"]) == original_text)
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "action_label": "Your edit",
+                    "is_manual": True,
+                    "whole_paragraph": False,
+                    "paragraph_id": pid,
+                    "original_text": original_text,
+                    "replacement_text": edited_text,
+                }
+            ],
+        }
+        tracked = build_source_redline_docx(source_docx, review_result)
+        _s, tracked_root, _t = docx_xml_roots(tracked)
+        self.assertTrue(tracked_root.findall(".//w:ins", W_NS), "tracked doc should carry insertions")
+
+        clean = accept_all_revisions(tracked)
+        # A clean doc deliberately has Track Changes OFF, so the redline-oriented
+        # health check doesn't apply; assert package + XML integrity directly.
+        with ZipFile(BytesIO(clean)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+
+        settings_root, clean_root, _c = docx_xml_roots(clean)
+        # No revision markup remains anywhere.
+        for tag in ("w:ins", "w:del", "w:delText", "w:rPrChange", "w:pPrChange"):
+            self.assertEqual(clean_root.findall(f".//{tag}", W_NS), [], f"clean doc still has {tag}")
+        if settings_root is not None:
+            self.assertIsNone(settings_root.find("w:trackRevisions", W_NS), "trackRevisions should be cleared")
+        # The edit is applied: the new text is present and the replaced original gone.
+        full = "".join(n.text or "" for n in clean_root.findall(".//w:t", W_NS))
+        self.assertIn("Air India Private Limited is hereby named the FIRST PARTY.", full)
+        self.assertNotIn("Air India Limited is hereby named", full)
 
     def test_source_redline_format_paragraph_mixes_paragraph_and_run_ops(self):
         # One format_paragraph redline carrying BOTH a paragraph op (alignment) and a
