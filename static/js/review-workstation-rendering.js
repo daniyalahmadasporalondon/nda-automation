@@ -12,18 +12,10 @@ function renderResult(result, reviewedText) {
   requestMatterDocumentRenderPreview();
 }
 
-function snapshotReviewParagraphs(paragraphs) {
-  return ReviewWorkstationModel.snapshotReviewParagraphs(paragraphs);
-}
-
 function manualRedlineBaselineParagraphs() {
   return state.reviewExportOriginalParagraphs.length
     ? state.reviewExportOriginalParagraphs
     : state.reviewOriginalParagraphs;
-}
-
-function paragraphsAlignWithBaseline(paragraphs, baseline) {
-  return ReviewWorkstationModel.paragraphsAlignWithBaseline(paragraphs, baseline);
 }
 
 function renderStudioEmpty() {
@@ -186,20 +178,8 @@ function renderClauseCommentState(clause) {
   return '<span class="studio-comment-state">Comment</span>';
 }
 
-function reviewedClauseMap() {
-  return ReviewWorkstationModel.reviewedClauseMap(state);
-}
-
-function reviewClauseIds() {
-  return ReviewWorkstationModel.reviewClauseIds(state);
-}
-
 function clauseReviewAcknowledged(clauseId) {
   return ReviewWorkstationModel.clauseReviewAcknowledged(state, clauseId);
-}
-
-function humanReviewAcknowledged() {
-  return ReviewWorkstationModel.humanReviewAcknowledged(state);
 }
 
 function renderActiveClauseStatusToggle(clause, status) {
@@ -253,14 +233,6 @@ function hasReviewResults() {
   return state.reviewClauses.length > 0;
 }
 
-function defaultExportClauseDecisions(clauses, redlines) {
-  return ReviewWorkstationModel.defaultExportClauseDecisions(clauses, redlines);
-}
-
-function defaultRedlineTemplateSelections(redlines) {
-  return ReviewWorkstationModel.defaultRedlineTemplateSelections(redlines);
-}
-
 function applyMatterRedlineDraft(draft) {
   const result = ReviewWorkstationModel.applyRedlineDraftState(state, draft, {
     baselineParagraphs: manualRedlineBaselineParagraphs(),
@@ -286,34 +258,6 @@ function resetCurrentRedlineDraftToDefaults() {
   updateRedlineDraftControls();
 }
 
-function applyDraftClauseDecisions(decisions) {
-  ReviewWorkstationModel.applyDraftClauseDecisions(state, decisions);
-}
-
-function applyDraftRedlineDecisions(decisions) {
-  ReviewWorkstationModel.applyDraftRedlineDecisions(state, decisions);
-}
-
-function applyDraftReviewedClauseIds(reviewedIds) {
-  ReviewWorkstationModel.applyDraftReviewedClauseIds(state, reviewedIds);
-}
-
-function applyDraftTemplateSelections(selections) {
-  ReviewWorkstationModel.applyDraftTemplateSelections(state, selections);
-}
-
-function applyDraftManualRedlines(manualRedlines) {
-  if (ReviewWorkstationModel.applyDraftManualRedlines(state, manualRedlines, {
-    baselineParagraphs: manualRedlineBaselineParagraphs(),
-  })) {
-    setSourceText(state.reviewSourceText);
-  }
-}
-
-function applyDraftReviewComments(reviewComments) {
-  ReviewWorkstationModel.applyDraftReviewComments(state, reviewComments);
-}
-
 function normalizeReviewComments(reviewComments) {
   return ReviewWorkstationModel.normalizeReviewComments(reviewComments);
 }
@@ -332,14 +276,6 @@ function setClauseReviewComment(clauseId, text) {
   markRedlineDraftDirty();
   renderStudioClauseLane();
   updateExportButtonState();
-}
-
-function reviewCommentTargetForClause(clauseId) {
-  return ReviewWorkstationModel.reviewCommentTargetForClause(state, clauseId);
-}
-
-function reviewCommentTargetForParagraph(paragraphId) {
-  return ReviewWorkstationModel.reviewCommentTargetForParagraph(state, paragraphId);
 }
 
 function setParagraphReviewComment(paragraphId, text) {
@@ -373,26 +309,6 @@ function upsertReviewComment(comment) {
   updateExportButtonState();
 }
 
-function firstClauseParagraphId(clauseId, clause) {
-  return ReviewWorkstationModel.firstClauseParagraphId(state, clauseId, clause);
-}
-
-function clauseExportIncluded(clauseId) {
-  return ReviewWorkstationModel.clauseExportIncluded(state, clauseId);
-}
-
-function redlineExportIncluded(edit) {
-  return ReviewWorkstationModel.redlineExportIncluded(state, edit);
-}
-
-function effectiveReviewRedlines() {
-  return ReviewWorkstationModel.effectiveReviewRedlines(state);
-}
-
-function applyTemplateSelectionToRedline(edit) {
-  return ReviewWorkstationModel.applyTemplateSelectionToRedline(state, edit);
-}
-
 function getDisplayClauses() {
   return hasReviewResults()
     ? state.reviewClauses
@@ -404,7 +320,7 @@ function getSelectedReviewClause() {
 }
 
 function getSelectedRedlineEdits() {
-  return effectiveReviewRedlines().filter((edit) => edit.clause_id === state.selectedReviewClauseId);
+  return ReviewWorkstationModel.effectiveReviewRedlines(state).filter((edit) => edit.clause_id === state.selectedReviewClauseId);
 }
 
 function bindClauseSelection(container, selector, datasetKey) {
@@ -622,7 +538,7 @@ function renderStudioClauseLane() {
       const displayName = clauseDisplayName(clause);
       const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
       const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
-      const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !redlineExportIncluded(edit));
+      const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !ReviewWorkstationModel.redlineExportIncluded(state, edit));
       const reviewed = hasReviewResults() && clauseReviewAcknowledged(clause.id);
       const comment = hasReviewResults() && Boolean(clauseReviewComment(clause.id));
       const stateLabel = reviewed
@@ -1350,8 +1266,8 @@ function renderProposedRedlinesBlock(clause) {
 }
 
 function renderDetailRedlineEdit(edit, clauseRationale = null) {
-  const included = redlineExportIncluded(edit);
-  const selectedEdit = applyTemplateSelectionToRedline(edit);
+  const included = ReviewWorkstationModel.redlineExportIncluded(state, edit);
+  const selectedEdit = ReviewWorkstationModel.applyTemplateSelectionToRedline(state, edit);
   const replacement = renderRedlineReplacement(selectedEdit, "p");
   const original = selectedEdit.action === "insert_after_paragraph"
     ? renderRedlineAnchor(selectedEdit)
@@ -2129,7 +2045,7 @@ function renderStudioDocumentHighlights() {
     comments: currentReviewComments(),
     originalParagraphs: manualRedlineBaselineParagraphs(),
     paragraphs: state.reviewParagraphs,
-    redlines: effectiveReviewRedlines(),
+    redlines: ReviewWorkstationModel.effectiveReviewRedlines(state),
     selectedClauseId: state.selectedReviewClauseId,
     viewMode,
   });

@@ -2,6 +2,7 @@ import { clausePasses, clauseStatus } from "./modules/clause-status.mjs";
 
 export const REDLINE_DELETE_PARAGRAPH_ACTION = "delete_paragraph";
 export const REDLINE_INSERT_AFTER_PARAGRAPH_ACTION = "insert_after_paragraph";
+export const REVIEW_EDIT_HISTORY_LIMIT = 50;
 
 export function snapshotReviewParagraphs(paragraphs) {
   return (paragraphs || []).map((paragraph) => {
@@ -220,6 +221,152 @@ export function reviewSourceTextFromParagraphs(paragraphs) {
     .map((paragraph) => String(paragraph.text || "").trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+export function currentParagraphText(state, paragraphId) {
+  const paragraph = (state.reviewParagraphs || []).find((item) => item.id === paragraphId);
+  return String(paragraph?.text || "");
+}
+
+export function pushReviewEditHistoryEntry(state, entry, { limit = REVIEW_EDIT_HISTORY_LIMIT } = {}) {
+  if (!entry || typeof entry !== "object") return false;
+  const historyLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+    ? Number(limit)
+    : REVIEW_EDIT_HISTORY_LIMIT;
+  state.reviewEditHistory = [
+    ...(state.reviewEditHistory || []),
+    entry,
+  ].slice(-historyLimit);
+  return true;
+}
+
+export function restoreReviewEditHistoryEntryState(state, historyEntry) {
+  if (!historyEntry || typeof historyEntry !== "object") {
+    return { restored: false, type: "" };
+  }
+
+  if (historyEntry.type === "clause_export_decision") {
+    return restoreClauseExportDecisionState(state, historyEntry);
+  }
+
+  if (historyEntry.type === "redline_template_selection") {
+    return restoreRedlineTemplateSelectionState(state, historyEntry);
+  }
+
+  if (historyEntry.type === "redline_export_decision") {
+    return restoreRedlineExportDecisionState(state, historyEntry);
+  }
+
+  if (historyEntry.type === "review_comments") {
+    state.reviewComments = Array.isArray(historyEntry.snapshot)
+      ? historyEntry.snapshot.map((comment) => ({ ...comment }))
+      : [];
+    return { restored: true, type: "review_comments" };
+  }
+
+  if (historyEntry.type === "paragraph_format") {
+    return restoreParagraphFormatState(state, historyEntry);
+  }
+
+  return restoreParagraphTextState(state, historyEntry);
+}
+
+export function restoreParagraphTextState(state, historyEntry) {
+  const paragraph = (state.reviewParagraphs || []).find((item) => item.id === historyEntry.paragraphId);
+  if (!paragraph) return { restored: false, type: historyEntry.type || "paragraph_text" };
+
+  paragraph.text = historyEntry.previousText;
+  state.reviewSourceText = reviewSourceTextFromParagraphs(state.reviewParagraphs);
+  return { paragraph, restored: true, sourceTextChanged: true, type: "paragraph_text" };
+}
+
+export function restoreParagraphFormatState(state, historyEntry) {
+  const paragraph = (state.reviewParagraphs || []).find(
+    (item) => String(item.id) === String(historyEntry.paragraphId),
+  );
+  if (!paragraph) return { restored: false, type: "paragraph_format" };
+
+  if (historyEntry.hadAlignment) {
+    paragraph.alignment = historyEntry.previousAlignment;
+  } else {
+    delete paragraph.alignment;
+  }
+  if (historyEntry.hadFont) {
+    paragraph.font = historyEntry.previousFont;
+  } else {
+    delete paragraph.font;
+  }
+  if (historyEntry.hadFontSize) {
+    paragraph.fontSize = historyEntry.previousFontSize;
+  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadFontSize")) {
+    delete paragraph.fontSize;
+  }
+  if (historyEntry.hadRuns) {
+    paragraph.runs = Array.isArray(historyEntry.previousRuns)
+      ? historyEntry.previousRuns.map((run) => ({ ...run }))
+      : [];
+  } else if (Object.prototype.hasOwnProperty.call(historyEntry, "hadRuns")) {
+    delete paragraph.runs;
+  }
+  return { paragraph, restored: true, type: "paragraph_format" };
+}
+
+export function restoreClauseExportDecisionState(state, historyEntry) {
+  if (!historyEntry.clauseId) return { restored: false, type: "clause_export_decision" };
+  if (historyEntry.hadPrevious) {
+    state.exportClauseDecisions[historyEntry.clauseId] = Boolean(historyEntry.previousIncluded);
+  } else {
+    delete state.exportClauseDecisions[historyEntry.clauseId];
+  }
+  state.selectedReviewClauseId = historyEntry.clauseId;
+  return { restored: true, selectedClauseId: historyEntry.clauseId, type: "clause_export_decision" };
+}
+
+export function restoreRedlineTemplateSelectionState(state, historyEntry) {
+  if (!historyEntry.editId) return { restored: false, type: "redline_template_selection" };
+  if (historyEntry.hadPrevious) {
+    state.redlineTemplateSelections[historyEntry.editId] = historyEntry.previousOptionId;
+  } else {
+    delete state.redlineTemplateSelections[historyEntry.editId];
+  }
+  const edit = (state.reviewRedlines || []).find((item) => item.id === historyEntry.editId);
+  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
+  return { edit, restored: true, selectedClauseId: state.selectedReviewClauseId, type: "redline_template_selection" };
+}
+
+export function restoreRedlineExportDecisionState(state, historyEntry) {
+  if (!historyEntry.editId) return { restored: false, type: "redline_export_decision" };
+  if (historyEntry.hadPrevious) {
+    state.exportRedlineDecisions[historyEntry.editId] = Boolean(historyEntry.previousIncluded);
+  } else {
+    delete state.exportRedlineDecisions[historyEntry.editId];
+  }
+  const edit = (state.reviewRedlines || []).find((item) => item.id === historyEntry.editId);
+  if (edit?.clause_id) state.selectedReviewClauseId = edit.clause_id;
+  return { edit, restored: true, selectedClauseId: state.selectedReviewClauseId, type: "redline_export_decision" };
+}
+
+export function syncViewerParagraphEditState(state, paragraphId, newText) {
+  const paragraph = (state.reviewParagraphs || []).find((item) => item.id === paragraphId);
+  if (!paragraph) return { paragraph: null, changed: false, droppedInlineFormat: false };
+
+  const oldText = String(paragraph.text || "");
+  const nextText = String(newText || "");
+  const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
+  const runsWereValid = runs && runs.map((run) => String(run?.text || "")).join("") === oldText;
+  const runsFormatted = runs && runs.some((run) => run && (run.bold || run.italic || String(run.font || "").trim()));
+  const droppedInlineFormat = nextText !== oldText && runsWereValid && runsFormatted;
+
+  paragraph.text = nextText;
+  paragraph.clauseRedlineWholeParagraph = false;
+  state.reviewSourceText = reviewSourceTextFromParagraphs(state.reviewParagraphs);
+  return {
+    changed: nextText !== oldText,
+    droppedInlineFormat,
+    paragraph,
+    previousText: oldText,
+    reviewSourceText: state.reviewSourceText,
+  };
 }
 
 export function selectReviewClauseState(state, clauseId, { inspectorView = "clause" } = {}) {
@@ -670,6 +817,148 @@ export function buildReviewSendPayload(state, {
   };
 }
 
+export function buildReviewSendDraft(state, {
+  manualRedlineEdits = [],
+  recipient = "",
+  reviewComments = currentReviewComments(state),
+  title = "this NDA",
+} = {}) {
+  const summary = reviewSendChangeSummary(state, { manualRedlineEdits, reviewComments });
+  return {
+    body: reviewSendDefaultBody(title, summary),
+    recipient,
+    subject: reviewSendDefaultSubject(title),
+    summary,
+  };
+}
+
+export function reviewSendChangeSummary(state, {
+  manualRedlineEdits = [],
+  reviewComments = currentReviewComments(state),
+} = {}) {
+  const clauseRedlines = effectiveReviewRedlines(state)
+    .filter((edit) => edit.clause_id && edit.clause_id !== "manual_viewer_edit");
+  const clauseNames = uniqueStrings(clauseRedlines.map((edit) => clauseNameForId(state, edit.clause_id)));
+  const textSnippets = uniqueStrings([...clauseRedlines, ...(manualRedlineEdits || [])]
+    .map(redlineTextSnippet)
+    .filter(Boolean));
+  const commentSnippets = uniqueStrings((reviewComments || [])
+    .map((comment) => reviewCommentSnippet(state, comment))
+    .filter(Boolean));
+
+  return {
+    clauseNames,
+    clauseRedlineCount: clauseRedlines.length,
+    commentCount: (reviewComments || []).length,
+    commentSnippets,
+    manualCount: (manualRedlineEdits || []).length,
+    textSnippets,
+  };
+}
+
+export function reviewSendDefaultSubject(title) {
+  return truncateText(`Redline for ${reviewSendMatterTitle(title)}`, 80);
+}
+
+export function reviewSendDefaultBody(title, summary) {
+  const summaryLines = reviewSendSummaryLines(summary);
+  return [
+    "Hi,",
+    "",
+    `Please find attached the redline for ${reviewSendMatterTitle(title)}.`,
+    "",
+    "Summary of changes:",
+    ...summaryLines.map((line) => `- ${line}`),
+    "",
+    "Best,",
+    "Aspora",
+  ].join("\n");
+}
+
+export function reviewSendSummaryLines(summary = {}) {
+  const lines = [];
+  const clauseRedlineCount = Number(summary.clauseRedlineCount) || 0;
+  const manualCount = Number(summary.manualCount) || 0;
+  const commentCount = Number(summary.commentCount) || 0;
+  const textSnippets = Array.isArray(summary.textSnippets) ? summary.textSnippets : [];
+  if (clauseRedlineCount) {
+    lines.push(`${clauseRedlineCount} included clause ${plural("redline", clauseRedlineCount)}: ${formatCompactList(summary.clauseNames, 4)}.`);
+  }
+  if (manualCount) {
+    lines.push(`${manualCount} manual viewer ${plural("edit", manualCount)}.`);
+  }
+  if (textSnippets.length) {
+    lines.push(`Text added or replaced: ${formatCompactList(textSnippets, 3)}.`);
+  }
+  if (commentCount) {
+    lines.push(`${commentCount} Word ${plural("comment", commentCount)}: ${formatCompactList(summary.commentSnippets, 3)}.`);
+  }
+  if (!lines.length) {
+    lines.push("Redline generated from the current review state.");
+  }
+  return lines;
+}
+
+export function clauseNameForId(state, clauseId) {
+  const clause = (state.reviewClauses || []).find((item) => item.id === clauseId);
+  return clause?.name || humanizeClauseId(clauseId);
+}
+
+export function humanizeClauseId(clauseId) {
+  return String(clauseId || "Clause")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+export function redlineTextSnippet(edit) {
+  if (!edit || edit.action === REDLINE_DELETE_PARAGRAPH_ACTION) return "";
+  const text = edit.insert_text || edit.replacement_text || edit.text || "";
+  return truncateText(collapseWhitespace(text), 110);
+}
+
+export function reviewCommentSnippet(state, comment) {
+  const label = comment?.clause_name || (comment?.clause_id ? clauseNameForId(state, comment.clause_id) : "");
+  const scope = label || (comment?.selected_text ? "Selected text" : "Paragraph");
+  const text = truncateText(collapseWhitespace(comment?.text), 80);
+  return text ? `${scope}: ${text}` : scope;
+}
+
+export function uniqueStrings(values) {
+  const seen = new Set();
+  return (values || [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function formatCompactList(values, limit = 3) {
+  const cleanValues = uniqueStrings(values);
+  if (cleanValues.length <= limit) return cleanValues.join(", ");
+  return `${cleanValues.slice(0, limit).join(", ")} + ${cleanValues.length - limit} more`;
+}
+
+export function collapseWhitespace(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+export function truncateText(text, maxLength) {
+  const cleanText = String(text || "").trim();
+  if (cleanText.length <= maxLength) return cleanText;
+  return `${cleanText.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
+}
+
 function resolveNow(now) {
   return typeof now === "function" ? now() : now || new Date().toISOString();
+}
+
+function reviewSendMatterTitle(title) {
+  return String(title || "this NDA").trim() || "this NDA";
+}
+
+function plural(word, count) {
+  return count === 1 ? word : `${word}s`;
 }

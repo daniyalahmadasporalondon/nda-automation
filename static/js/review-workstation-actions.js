@@ -390,13 +390,12 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
 }
 
 function buildReviewSendDraft(recipient) {
-  const summary = reviewSendChangeSummary();
-  return {
-    body: reviewSendDefaultBody(summary),
+  return ReviewWorkstationModel.buildReviewSendDraft(state, {
+    manualRedlineEdits: manualExportRedlines(),
     recipient,
-    subject: reviewSendDefaultSubject(summary),
-    summary,
-  };
+    reviewComments: currentReviewComments(),
+    title: reviewSendMatterTitle(),
+  });
 }
 
 function isMissingRecipientSendBlock(reason) {
@@ -407,72 +406,10 @@ function reviewComposerRecipient() {
   return MatterUtils.emailAddress(studioSendTo?.value || studioSendTo?.textContent || "");
 }
 
-function reviewSendChangeSummary() {
-  const clauseRedlines = effectiveReviewRedlines()
-    .filter((edit) => edit.clause_id && edit.clause_id !== "manual_viewer_edit");
-  const manualRedlines = manualExportRedlines();
-  const comments = currentReviewComments();
-  const clauseNames = uniqueStrings(clauseRedlines.map((edit) => clauseNameForId(edit.clause_id)));
-  const textSnippets = uniqueStrings([...clauseRedlines, ...manualRedlines]
-    .map(redlineTextSnippet)
-    .filter(Boolean));
-  const commentSnippets = uniqueStrings(comments
-    .map(reviewCommentSnippet)
-    .filter(Boolean));
-
-  return {
-    clauseNames,
-    clauseRedlineCount: clauseRedlines.length,
-    commentCount: comments.length,
-    commentSnippets,
-    manualCount: manualRedlines.length,
-    textSnippets,
-  };
-}
-
-function reviewSendDefaultSubject(summary) {
-  return truncateText(`Redline for ${reviewSendMatterTitle()}`, 80);
-}
-
-function reviewSendDefaultBody(summary) {
-  const summaryLines = reviewSendSummaryLines(summary);
-  return [
-    "Hi,",
-    "",
-    `Please find attached the redline for ${reviewSendMatterTitle()}.`,
-    "",
-    "Summary of changes:",
-    ...summaryLines.map((line) => `- ${line}`),
-    "",
-    "Best,",
-    "Aspora",
-  ].join("\n");
-}
-
-function reviewSendSummaryLines(summary) {
-  const lines = [];
-  if (summary.clauseRedlineCount) {
-    lines.push(`${summary.clauseRedlineCount} included clause ${plural("redline", summary.clauseRedlineCount)}: ${formatCompactList(summary.clauseNames, 4)}.`);
-  }
-  if (summary.manualCount) {
-    lines.push(`${summary.manualCount} manual viewer ${plural("edit", summary.manualCount)}.`);
-  }
-  if (summary.textSnippets.length) {
-    lines.push(`Text added or replaced: ${formatSnippetList(summary.textSnippets, 3)}.`);
-  }
-  if (summary.commentCount) {
-    lines.push(`${summary.commentCount} Word ${plural("comment", summary.commentCount)}: ${formatCompactList(summary.commentSnippets, 3)}.`);
-  }
-  if (!lines.length) {
-    lines.push("Redline generated from the current review state.");
-  }
-  return lines;
-}
-
 function renderReviewSendSummary(summary) {
   if (!studioSendSummary) return;
   studioSendSummary.innerHTML = "";
-  reviewSendSummaryLines(summary).forEach((line) => {
+  ReviewWorkstationModel.reviewSendSummaryLines(summary).forEach((line) => {
     const item = document.createElement("li");
     item.textContent = line;
     studioSendSummary.append(item);
@@ -497,66 +434,6 @@ function reviewSendMatterTitle() {
       || studioDocTitle.textContent
       || "this NDA"
   ).trim();
-}
-
-function clauseNameForId(clauseId) {
-  const clause = state.reviewClauses.find((item) => item.id === clauseId);
-  return clause?.name || humanizeClauseId(clauseId);
-}
-
-function humanizeClauseId(clauseId) {
-  return String(clauseId || "Clause")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function redlineTextSnippet(edit) {
-  if (!edit || edit.action === "delete_paragraph") return "";
-  const text = edit.insert_text || edit.replacement_text || edit.text || "";
-  return truncateText(collapseWhitespace(text), 110);
-}
-
-function reviewCommentSnippet(comment) {
-  const label = comment.clause_name || (comment.clause_id ? clauseNameForId(comment.clause_id) : "");
-  const scope = label || (comment.selected_text ? "Selected text" : "Paragraph");
-  const text = truncateText(collapseWhitespace(comment.text), 80);
-  return text ? `${scope}: ${text}` : scope;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  return values
-    .map((value) => String(value || "").trim())
-    .filter((value) => {
-      const key = value.toLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function formatCompactList(values, limit = 3) {
-  const cleanValues = uniqueStrings(values);
-  if (cleanValues.length <= limit) return cleanValues.join(", ");
-  return `${cleanValues.slice(0, limit).join(", ")} + ${cleanValues.length - limit} more`;
-}
-
-function formatSnippetList(values, limit = 3) {
-  return formatCompactList(values, limit);
-}
-
-function plural(word, count) {
-  return count === 1 ? word : `${word}s`;
-}
-
-function collapseWhitespace(text) {
-  return String(text || "").replace(/\s+/g, " ").trim();
-}
-
-function truncateText(text, maxLength) {
-  const cleanText = String(text || "").trim();
-  if (cleanText.length <= maxLength) return cleanText;
-  return `${cleanText.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
 }
 
 function setReviewSendComposerBusy(busy) {
