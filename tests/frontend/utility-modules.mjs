@@ -39,6 +39,7 @@ import {
   versionTimestamp,
 } from "../../static/js/modules/playbook-draft.mjs";
 import { createPlaybookApi } from "../../static/js/modules/playbook-api.mjs";
+import { PlaybookAuthoringModel } from "../../static/js/modules/playbook-authoring-model.mjs";
 import {
   dashboardGreeting,
   firstNameFromDisplayName,
@@ -745,6 +746,105 @@ assert.equal(normalizeValidation(["broken"]).valid, false);
 assert.equal(validationSummary({ valid: true, errors: [] }), "Draft is valid.");
 assert.equal(validationSummary({ valid: false, errors: [{ message: "a" }] }), "1 validation issue found.");
 assert.equal(validationSummary({ valid: false, errors: [{ message: "a" }, { message: "b" }] }), "2 validation issues found.");
+
+// --- Playbook browser authoring model ---
+assert.equal(PlaybookAuthoringModel.resolveActivePanel({
+  clauseId: "mutuality",
+  mutualityPanel: "redline",
+}), "redline");
+assert.equal(PlaybookAuthoringModel.resolveActivePanel({
+  clauseId: "mutuality",
+  mutualityPanel: "unknown",
+}), "policy");
+assert.equal(PlaybookAuthoringModel.resolveActivePanel({
+  clauseId: "governing_law",
+  panelState: { governing_law: "audit" },
+  mutualityPanel: "redline",
+}), "audit");
+assert.deepEqual(PlaybookAuthoringModel.setClausePanel({
+  clauseId: "mutuality",
+  panel: "decision",
+  panelState: { governing_law: "audit" },
+  mutualityPanel: "policy",
+}), {
+  activePanel: "decision",
+  mutualityPanel: "decision",
+  panelState: { governing_law: "audit", mutuality: "decision" },
+});
+assert.deepEqual(PlaybookAuthoringModel.setClausePanel({
+  clauseId: "mutuality",
+  panel: "unsupported",
+  panelState: {},
+  mutualityPanel: "redline",
+}), {
+  activePanel: "policy",
+  mutualityPanel: "policy",
+  panelState: { mutuality: "policy" },
+});
+assert.deepEqual(PlaybookAuthoringModel.draftStatus({ hasUnsavedChanges: true, draftAhead: true }), {
+  note: "Unsaved changes - Save Draft to keep them.",
+  showDirtyDot: true,
+  state: "editing",
+});
+assert.deepEqual(PlaybookAuthoringModel.draftStatus({ draftAhead: true }), {
+  note: "Saved draft is ahead of the active version - Publish to make it live.",
+  showDirtyDot: false,
+  state: "ahead",
+});
+assert.deepEqual(PlaybookAuthoringModel.draftStatus(), {
+  note: "Matches the active published version.",
+  showDirtyDot: false,
+  state: "in-sync",
+});
+assert.equal(PlaybookAuthoringModel.canPublishDraft({ draftAhead: true }), true);
+assert.equal(PlaybookAuthoringModel.canPublishDraft({ draftAhead: true, hasUnsavedChanges: true }), false);
+assert.equal(PlaybookAuthoringModel.canPublishDraft({ draftAhead: true, hasTemplateValidationErrors: true }), false);
+assert.equal(PlaybookAuthoringModel.canPublishDraft({ draftAhead: true, validation: { valid: false } }), false);
+assert.equal(PlaybookAuthoringModel.canPublishDraft({ draftAhead: true, runtimeReady: false }), false);
+assert.equal(PlaybookAuthoringModel.shouldInvalidateValidation({
+  validation: { valid: true },
+  hasUnsavedChanges: true,
+}), true);
+assert.deepEqual(PlaybookAuthoringModel.validationView(null), {
+  errors: [],
+  hidden: true,
+  state: "idle",
+  title: "",
+});
+assert.deepEqual(PlaybookAuthoringModel.validationView({ valid: true, errors: [] }), {
+  errors: [],
+  hidden: false,
+  state: "valid",
+  title: "Draft passed validation.",
+});
+assert.deepEqual(PlaybookAuthoringModel.validationView({
+  valid: false,
+  errors: [{ message: "Name is required" }],
+}), {
+  errors: [{ message: "Name is required" }],
+  hidden: false,
+  state: "invalid",
+  title: "Resolve this issue before publishing:",
+});
+assert.deepEqual(PlaybookAuthoringModel.actionAvailability({
+  clauseHasDraft: true,
+  hasUnsavedChanges: true,
+  canPublish: false,
+}), {
+  discardDisabled: false,
+  publishDisabled: true,
+  saveDisabled: false,
+});
+assert.deepEqual(PlaybookAuthoringModel.actionAvailability({
+  clauseHasDraft: false,
+  hasUnsavedChanges: true,
+  hasTemplateValidationErrors: true,
+  canPublish: true,
+}), {
+  discardDisabled: true,
+  publishDisabled: false,
+  saveDisabled: true,
+});
 
 // --- Playbook draft/publish API wrapper (real endpoint contract) ---
 const playbookCalls = [];
