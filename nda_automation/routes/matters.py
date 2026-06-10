@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-from .. import document_rendering, export_service, gmail_integration, matter_store, matter_summary, matter_view, telemetry
+from .. import document_rendering, export_service, gmail_integration, matter_lifecycle, matter_summary, matter_view, telemetry
 from ..ai_assessor import AIAssessorError, assess_nda_with_ai
 from ..checker import (
     EvidenceProvenanceError,
@@ -15,14 +15,12 @@ from ..checker import (
     PlaybookTemplateError,
 )
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
-from ..docx_text import DocxExtractionError, extract_docx_paragraphs
+from ..docx_text import DocxExtractionError
 from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..pdf_text import PdfExtractionError
-from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
-from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
+from ..review_engine import ActiveReviewEngineError
 from ..review_staleness import review_result_is_stale, review_result_staleness
-from ..triage import triage_review_result
 from .common import parse_matter_id, request_owner_user_id
 
 # Max seconds the render-status poll waits on the background render before
@@ -40,11 +38,19 @@ MAX_REDLINE_DRAFT_ITEMS = 200
 
 def handle_matter_list(handler, *, send_body: bool = True) -> None:
     try:
+        repository = matter_lifecycle.repository_for_handler(handler)
         handler._send_json(
-            {"matters": matter_view.public_matters(matter_store.list_matters(request_owner_user_id(handler)))},
+            {
+                "matters": matter_view.public_matters(
+                    matter_lifecycle.list_matters(
+                        repository,
+                        owner_user_id=request_owner_user_id(handler),
+                    )
+                )
+            },
             send_body=send_body,
         )
-    except matter_store.MatterStoreError as error:
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
 
 
@@ -63,7 +69,7 @@ def handle_matter_review_refresh(handler, path: str) -> None:
         return
     was_stale = review_result_is_stale(matter.get("review_result"))
     had_redline_draft = isinstance(matter.get("redline_draft"), dict)
-    refreshed_matter = refresh_stale_matter_review(matter)
+    refreshed_matter = refresh_stale_matter_review(matter, handler=handler)
     handler._send_json(_matter_review_payload(
         refreshed_matter,
         matter_id,
@@ -78,99 +84,42 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
-    return _with_restored_paragraph_structure(matter)
+    return _with_restored_paragraph_structure(matter, handler=handler)
 
 
-def _restored_review_result_paragraphs(matter: dict) -> list[dict] | None:
-    """Best-effort: re-attach structural metadata (numbering, indentation, runs,
-    font size, style) to a matter's stored review paragraphs by re-extracting its
-    original .docx.
-
-    Matters reviewed before the extractor captured contract structure stored only
-    flat text paragraphs, so the review render shows no clause/sub-clause numbers.
-    Re-extracting the original .docx and merging its structural fields onto the
-    stored paragraphs restores that fidelity on open -- without re-running the AI
-    review or disturbing clause<->paragraph references (ids/text are unchanged).
-
-    Returns merged paragraphs, or None when restoration does not apply or cannot be
-    done safely (no original .docx, not a .docx, extraction fails, or the
-    re-extracted paragraphs do not line up 1:1 with the stored text).
-    """
-    review_result = matter.get("review_result")
-    if not isinstance(review_result, dict):
-        return None
-    paragraphs = review_result.get("paragraphs")
-    if not isinstance(paragraphs, list) or not paragraphs:
-        return None
-    # Already structured -- nothing to restore (and avoids re-extracting every open).
-    if any(
-        isinstance(paragraph, dict) and (paragraph.get("numbering") or paragraph.get("structure_label"))
-        for paragraph in paragraphs
-    ):
-        return None
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None or source_path.suffix.casefold() != ".docx":
-        return None
-    source_bytes = matter_store.get_source_document_bytes(matter)
-    if not source_bytes:
-        return None
-    try:
-        rich = extract_docx_paragraphs(source_bytes)
-        source_text = "\n\n".join(str(paragraph.get("text", "")) for paragraph in rich)
-        aligned = align_document_paragraphs(rich, source_text)
-    except (DocxExtractionError, ParagraphAlignmentError, ValueError, OSError):
-        return None
-    if len(aligned) != len(paragraphs):
-        return None
-    merged: list[dict] = []
-    for stored, fresh in zip(paragraphs, aligned):
-        if not isinstance(stored, dict):
-            return None
-        # Bail entirely on any text divergence: a partial/misaligned merge would
-        # mislabel paragraphs, which is worse than showing none.
-        if str(stored.get("text", "")).strip() != str(fresh.get("text", "")).strip():
-            return None
-        restored = dict(stored)
-        for key in STRUCTURAL_METADATA_KEYS:
-            if key in fresh and key not in restored:
-                restored[key] = fresh[key]
-        merged.append(restored)
-    return merged
+def _restored_review_result_paragraphs(
+    matter: dict,
+    *,
+    handler: object | None = None,
+) -> list[dict] | None:
+    repository = matter_lifecycle.repository_for_handler(handler)
+    return matter_lifecycle.restored_review_result_paragraphs(repository, matter)
 
 
-def _with_restored_paragraph_structure(matter: dict) -> dict:
-    merged = _restored_review_result_paragraphs(matter)
-    if merged is None:
-        return matter
-    review_result = matter.get("review_result")
-    return {**matter, "review_result": {**review_result, "paragraphs": merged}}
+def _with_restored_paragraph_structure(
+    matter: dict,
+    *,
+    handler: object | None = None,
+) -> dict:
+    repository = matter_lifecycle.repository_for_handler(handler)
+    return matter_lifecycle.with_restored_paragraph_structure(repository, matter)
 
 
-def _original_docx_paragraphs(matter: dict) -> list[dict] | None:
-    """Rich paragraphs re-extracted from the matter's original .docx, or None.
-
-    Used to restore contract structure on a review refresh. Returns None unless the
-    matter's original document is a .docx that extracts to at least one paragraph;
-    the caller aligns these against the stored extracted text.
-    """
-    source_path = matter_store.source_document_path(matter)
-    if source_path is None or source_path.suffix.casefold() != ".docx":
-        return None
-    source_bytes = matter_store.get_source_document_bytes(matter)
-    if not source_bytes:
-        return None
-    try:
-        rich = extract_docx_paragraphs(source_bytes)
-    except (DocxExtractionError, ValueError, OSError):
-        return None
-    return rich or None
+def _original_docx_paragraphs(
+    matter: dict,
+    *,
+    handler: object | None = None,
+) -> list[dict] | None:
+    repository = matter_lifecycle.repository_for_handler(handler)
+    return matter_lifecycle.original_docx_paragraphs(repository, matter)
 
 
 def _matter_review_payload(
@@ -216,8 +165,9 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
@@ -226,45 +176,9 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
     handler._send_json({"matter": matter_view.public_matter(matter)}, send_body=send_body)
 
 
-def refresh_stale_matter_review(matter: dict) -> dict:
-    if not review_result_is_stale(matter.get("review_result")):
-        return matter
-    extracted_text = str(matter.get("extracted_text") or "")
-    if not extracted_text.strip():
-        return matter
-    # Re-extract the original .docx so the refreshed review keeps contract structure
-    # (clause/sub-clause numbering, indentation, run formatting). Passing the rich
-    # paragraphs aligns them to the stored text; a plain text refresh would flatten
-    # the document and drop every numbering marker.
-    paragraphs = _original_docx_paragraphs(matter)
-    try:
-        review_result = review_nda_with_active_engine(extracted_text, paragraphs=paragraphs)
-    except ParagraphAlignmentError:
-        if paragraphs is None:
-            return matter
-        try:
-            review_result = review_nda_with_active_engine(extracted_text)
-        except (ActiveReviewEngineError, EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError):
-            return matter
-    except (ActiveReviewEngineError, EvidenceProvenanceError, PlaybookTemplateError, ValueError):
-        return matter
-    triage = triage_review_result(review_result)
-    updated_matter = matter_store.update_matter_review(
-        str(matter.get("id") or ""),
-        review_result,
-        triage,
-        owner_user_id=str(matter.get("owner_user_id") or ""),
-    )
-    if updated_matter is not None:
-        return updated_matter
-    refreshed_matter = {
-        **matter,
-        "review_result": review_result,
-        **triage,
-        "human_reviewed": False,
-    }
-    refreshed_matter.pop("redline_draft", None)
-    return refreshed_matter
+def refresh_stale_matter_review(matter: dict, *, handler: object | None = None) -> dict:
+    repository = matter_lifecycle.repository_for_handler(handler)
+    return matter_lifecycle.refresh_stale_matter_review(repository, matter)
 
 
 def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
@@ -274,14 +188,15 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return
-    source_path = matter_store.source_document_path(matter)
+    source_path = matter_lifecycle.source_document_path(matter)
     if source_path is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return
@@ -422,14 +337,15 @@ def _resolve_matter_source(
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
-    source_path = matter_store.source_document_path(matter)
+    source_path = matter_lifecycle.source_document_path(matter)
     if source_path is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return None
@@ -496,14 +412,15 @@ def _matter_render_result(
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
         return None
-    source_path = matter_store.source_document_path(matter)
+    source_path = matter_lifecycle.source_document_path(matter)
     if source_path is None:
         handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
         return None
@@ -868,7 +785,13 @@ def handle_matter_stage_update(handler, path: str) -> None:
         handler._send_json({"error": "Unsupported matter stage."}, status=400)
         return
 
-    matter = matter_store.update_matter_stage(matter_id, board_column, owner_user_id=request_owner_user_id(handler))
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.update_matter_stage(
+        repository,
+        matter_id,
+        board_column,
+        owner_user_id=request_owner_user_id(handler),
+    )
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -890,9 +813,11 @@ def handle_matter_reviewed_update(handler, path: str) -> None:
         handler._send_json({"error": "reviewed must be true or false."}, status=400)
         return
 
-    matter = matter_store.update_matter_fields(
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.set_matter_human_reviewed(
+        repository,
         matter_id,
-        {"human_reviewed": reviewed},
+        reviewed,
         owner_user_id=request_owner_user_id(handler),
     )
     if matter is None:
@@ -918,7 +843,8 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         )
         return
 
-    matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
@@ -947,7 +873,8 @@ def handle_matter_ai_first_review(handler, path: str) -> None:
         started_at=started_at,
         completed_at=completed_at,
     )
-    updated_matter = matter_store.update_matter_ai_first_review(
+    updated_matter = matter_lifecycle.update_matter_ai_first_review(
+        repository,
         matter_id,
         ai_first_review_result,
         metadata,
@@ -967,7 +894,7 @@ def handle_matter_summary(handler, path: str) -> None:
     """POST /api/matters/<id>/summary -- on-demand AI summary of one matter.
 
     Mirrors the other matter routes' auth/ownership shape: it runs after
-    _authorize_request (auth) and resolves the matter through matter_store with the
+    _authorize_request (auth) and resolves the matter through matter_lifecycle with the
     request's owner_user_id, so a caller can never summarize another tenant's matter.
 
     Grounding: the summary is derived ONLY from the matter's real document text and
@@ -983,8 +910,9 @@ def handle_matter_summary(handler, path: str) -> None:
         return
 
     try:
-        matter = matter_store.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
-    except matter_store.MatterStoreError as error:
+        repository = matter_lifecycle.repository_for_handler(handler)
+        matter = matter_lifecycle.get_matter(repository, matter_id, owner_user_id=request_owner_user_id(handler))
+    except matter_lifecycle.MatterLifecycleError as error:
         handler._send_json({"error": str(error)}, status=500)
         return
     if matter is None:
@@ -1067,7 +995,9 @@ def handle_matter_redline_draft_update(handler, path: str) -> None:
         handler._send_json({"error": "Redline draft must be an object or null."}, status=400)
         return
 
-    matter = matter_store.update_redline_draft(
+    repository = matter_lifecycle.repository_for_handler(handler)
+    matter = matter_lifecycle.update_redline_draft(
+        repository,
         matter_id,
         draft,
         owner_user_id=request_owner_user_id(handler),
@@ -1146,30 +1076,29 @@ def handle_matter_delete(handler, path: str) -> None:
         return
 
     owner_user_id = request_owner_user_id(handler)
-    # Capture the source bytes before deletion unlinks them, so the render-cache
-    # purge below can recompute the (content + owner) cache key. Reading is gated
-    # on ownership: a non-owner caller gets None and the matter is not deleted.
-    pre_delete = matter_store.get_matter(matter_id, owner_user_id=owner_user_id)
-    source_bytes = matter_store.get_source_document_bytes(pre_delete) if pre_delete else None
-    source_filename = str(pre_delete.get("source_filename") or "") if pre_delete else ""
-
-    matter = matter_store.delete_matter(matter_id, owner_user_id=owner_user_id)
+    repository = matter_lifecycle.repository_for_handler(handler)
+    deletion = matter_lifecycle.delete_matter(repository, matter_id, owner_user_id=owner_user_id)
+    matter = deletion.matter
     if matter is None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
     # Stop tracking any in-flight background render for the now-deleted matter.
     document_rendering.matter_render_coordinator().forget(matter_id)
-    if source_bytes is not None:
+    if deletion.source_bytes is not None:
         # Purge the deleted matter's rendered artifacts so they do not outlive
         # the matter (and cannot be served to a later, unrelated matter).
         document_rendering.purge_render_cache_for_source(
-            source_bytes,
+            deletion.source_bytes,
             owner_user_id=str(matter.get("owner_user_id") or owner_user_id),
-            source_filename=source_filename,
+            source_filename=deletion.source_filename,
         )
     handler._send_json({"deleted": matter_view.public_matter(matter)})
 
 
 def handle_demo_reset(handler) -> None:
-    removed_count = matter_store.reset_demo_repository(owner_user_id=request_owner_user_id(handler))
+    repository = matter_lifecycle.repository_for_handler(handler)
+    removed_count = matter_lifecycle.reset_demo_repository(
+        repository,
+        owner_user_id=request_owner_user_id(handler),
+    )
     handler._send_json({"removed": removed_count, "matters": []})

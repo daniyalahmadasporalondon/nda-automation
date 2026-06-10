@@ -30,7 +30,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from nda_automation import matter_store, review_engine
+from nda_automation import matter_lifecycle, matter_store, review_engine
 from nda_automation.ai_assessment_prompt import build_ai_assessment_packet
 from nda_automation.checker import REVIEW_ENGINE_VERSION, load_playbook
 from nda_automation.review_staleness import review_result_staleness
@@ -304,9 +304,9 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
                 patch.object(matter_store, "DATA_DIR", data_path),
                 patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
                 patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
-                # Redirect the matters module's active-playbook reads to the temp runtime.
-                patch.object(matter_routes, "review_nda_with_active_engine", review_against_temp_active),
-                patch.object(matter_routes, "review_result_is_stale", is_stale_against_temp_active),
+                # Redirect lifecycle's active-playbook reads to the temp runtime.
+                patch.object(matter_lifecycle, "review_nda_with_active_engine", review_against_temp_active),
+                patch.object(matter_lifecycle, "review_result_is_stale", is_stale_against_temp_active),
             ]
             with store_patches[0], store_patches[1], store_patches[2], store_patches[3], store_patches[4]:
                 initial_review = review_against_temp_active("Mutual NDA text.")
