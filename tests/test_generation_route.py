@@ -131,6 +131,18 @@ class GenerateNdaRouteTests(unittest.TestCase):
                             payload["download_url"],
                             f"/api/matters/{payload['matter_id']}/source",
                         )
+                        downloads = payload["document_downloads"]
+                        self.assertEqual(
+                            downloads["source"]["formats"]["docx"]["download_url"],
+                            payload["download_url"],
+                        )
+                        self.assertEqual(
+                            downloads["source"]["formats"]["pdf"].get("download_url"),
+                            payload["pdf_download_url"]
+                            if downloads["source"]["formats"]["pdf"]["available"]
+                            else None,
+                        )
+                        self.assertIn("reviewed", downloads)
                         # The whole point of the gate: the generated NDA passes
                         # its own Playbook with zero native + zero dynamic fails.
                         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])

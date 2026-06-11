@@ -13,6 +13,7 @@ PDF_EXPORT_VERIFICATION_HEADER = "document-to-pdf"
 PDF_CONVERTER_UNAVAILABLE_MESSAGE = (
     "PDF export requires LibreOffice/soffice for Word documents, but no converter executable was found."
 )
+DOCX_DOWNLOAD_MIME = document_rendering.DOCX_CONTENT_TYPE
 
 
 class PdfExportError(RuntimeError):
@@ -54,6 +55,113 @@ def converter_health(converter: document_rendering.DocxConverter | None = None) 
 def matter_pdf_download_url(matter_id: str) -> str:
     matter_id = str(matter_id or "").strip()
     return f"/api/matters/{quote(matter_id, safe='')}/source-pdf" if matter_id else ""
+
+
+def matter_source_download_url(matter_id: str) -> str:
+    matter_id = str(matter_id or "").strip()
+    return f"/api/matters/{quote(matter_id, safe='')}/source" if matter_id else ""
+
+
+def matter_reviewed_docx_download_url(matter_id: str) -> str:
+    matter_id = str(matter_id or "").strip()
+    return f"/api/matters/{quote(matter_id, safe='')}/reviewed-docx" if matter_id else ""
+
+
+def matter_reviewed_pdf_download_url(matter_id: str) -> str:
+    matter_id = str(matter_id or "").strip()
+    return f"/api/matters/{quote(matter_id, safe='')}/reviewed-pdf" if matter_id else ""
+
+
+def public_matter_document_downloads(
+    matter: dict[str, Any],
+    *,
+    converter: document_rendering.DocxConverter | None = None,
+) -> dict[str, Any]:
+    """UI-facing contract for one Download menu with format choices.
+
+    Existing route targets stay split by artifact/format; this payload tells the
+    browser which DOCX/PDF choices to show or disable without probing routes.
+    """
+    matter_id = str(matter.get("id") or "")
+    source_filename = str(matter.get("source_filename") or "")
+    source_ext = Path(source_filename).suffix.lower()
+    source_is_docx = source_ext == ".docx"
+    source_is_pdf = source_ext == ".pdf"
+    generated = str(matter.get("source_type") or "") == "generated"
+    reviewed_ready = str(matter.get("status") or "") == "approved"
+    health = converter_health(converter)
+
+    source_label = "Generated document" if generated else "Original document"
+    return {
+        "source": {
+            "label": source_label,
+            "formats": {
+                "docx": _download_option(
+                    "docx",
+                    available=source_is_docx,
+                    download_url=matter_source_download_url(matter_id) if source_is_docx else "",
+                    filename=source_filename if source_is_docx else _fallback_filename("document.docx"),
+                    content_type=DOCX_DOWNLOAD_MIME,
+                    unavailable_reason=(
+                        ""
+                        if source_is_docx
+                        else "The source document is a PDF; use the PDF option for a faithful download."
+                        if source_is_pdf
+                        else "A Word download is not available for this source document."
+                    ),
+                ),
+                "pdf": _download_option(
+                    "pdf",
+                    available=source_is_pdf or (source_is_docx and bool(health["available"])),
+                    download_url=matter_pdf_download_url(matter_id)
+                    if source_is_pdf or (source_is_docx and bool(health["available"]))
+                    else "",
+                    filename=pdf_download_filename(source_filename),
+                    content_type=PDF_EXPORT_MIME,
+                    unavailable_reason=(
+                        ""
+                        if source_is_pdf or (source_is_docx and bool(health["available"]))
+                        else str(health["message"])
+                        if source_is_docx
+                        else "A PDF download is not available for this source document."
+                    ),
+                    converter=health if source_is_docx else None,
+                ),
+            },
+        },
+        "reviewed": {
+            "label": "Reviewed redline",
+            "formats": {
+                "docx": _download_option(
+                    "docx",
+                    available=reviewed_ready,
+                    download_url=matter_reviewed_docx_download_url(matter_id) if reviewed_ready else "",
+                    filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.docx"),
+                    content_type=DOCX_DOWNLOAD_MIME,
+                    unavailable_reason=(
+                        "" if reviewed_ready else "Reviewed downloads are available after the matter is approved."
+                    ),
+                ),
+                "pdf": _download_option(
+                    "pdf",
+                    available=reviewed_ready and bool(health["available"]),
+                    download_url=matter_reviewed_pdf_download_url(matter_id)
+                    if reviewed_ready and bool(health["available"])
+                    else "",
+                    filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.pdf"),
+                    content_type=PDF_EXPORT_MIME,
+                    unavailable_reason=(
+                        ""
+                        if reviewed_ready and bool(health["available"])
+                        else "Reviewed downloads are available after the matter is approved."
+                        if not reviewed_ready
+                        else str(health["message"])
+                    ),
+                    converter=health,
+                ),
+            },
+        },
+    }
 
 
 def build_matter_source_pdf_export(
@@ -177,3 +285,32 @@ def pdf_download_filename(filename: str) -> str:
     safe_name = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in source_name)
     safe_name = safe_name.strip("-_") or "document"
     return f"{safe_name}.pdf"
+
+
+def _download_option(
+    output_format: str,
+    *,
+    available: bool,
+    download_url: str,
+    filename: str,
+    content_type: str,
+    unavailable_reason: str = "",
+    converter: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    option: dict[str, Any] = {
+        "format": output_format,
+        "available": bool(available),
+        "filename": _fallback_filename(filename),
+        "content_type": content_type,
+    }
+    if available and download_url:
+        option["download_url"] = download_url
+    if not available and unavailable_reason:
+        option["unavailable_reason"] = unavailable_reason
+    if converter is not None:
+        option["converter"] = converter
+    return option
+
+
+def _fallback_filename(filename: str) -> str:
+    return str(filename or "").strip() or "document"

@@ -40,7 +40,16 @@ def test_intake_from_payload_rejects_missing_required_fields():
         raise AssertionError("Expected missing counterparty to be rejected.")
 
 
-def test_workflow_response_payload_matches_generation_route_contract():
+def test_workflow_response_payload_matches_generation_route_contract(monkeypatch):
+    download_contract = {
+        "source": {"formats": {"docx": {"available": True}, "pdf": {"available": False}}},
+        "reviewed": {"formats": {"docx": {"available": False}, "pdf": {"available": False}}},
+    }
+    monkeypatch.setattr(
+        nda_generation_workflow.pdf_export_service,
+        "public_matter_document_downloads",
+        lambda matter: download_contract,
+    )
     manifest = nda_generation.GenerationManifest(
         entity_id="aspora_technology",
         entity_legal_name="Aspora Technology Services Private Limited",
@@ -62,7 +71,7 @@ def test_workflow_response_payload_matches_generation_route_contract():
     active_playbook = type("ActivePlaybook", (), {"playbook": {"clauses": []}})()
     workflow_result = nda_generation_workflow.GeneratedNdaWorkflowResult(
         result=result,
-        matter={"id": "matter 1"},
+        matter={"id": "matter 1", "source_filename": "NDA - Acme Ltd.docx", "source_type": "generated"},
         artifact=artifact,
         active_playbook=active_playbook,
         self_check=self_check,
@@ -74,6 +83,7 @@ def test_workflow_response_payload_matches_generation_route_contract():
         "status": "generated",
         "download_url": "/api/matters/matter%201/source",
         "pdf_download_url": "/api/matters/matter%201/source-pdf",
+        "document_downloads": download_contract,
         "self_check": {
             "passed": True,
             "overall_status": "meets_requirements",

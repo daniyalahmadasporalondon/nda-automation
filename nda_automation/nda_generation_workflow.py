@@ -29,6 +29,7 @@ class GeneratedNdaWorkflowResult:
             "status": "generated",
             "download_url": f"/api/matters/{quote(matter_id, safe='')}/source" if matter_id else "",
             "pdf_download_url": pdf_export_service.matter_pdf_download_url(matter_id),
+            "document_downloads": pdf_export_service.public_matter_document_downloads(self.matter),
             "self_check": {
                 "passed": self.self_check.passed,
                 "overall_status": self.self_check.overall_status,

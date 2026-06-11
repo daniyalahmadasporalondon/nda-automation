@@ -2828,6 +2828,8 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("review_result", public)
         self.assertNotIn("extracted_text", public)
         self.assertNotIn("redline_draft", public)
+        self.assertIn("document_downloads", public)
+        self.assertNotIn("internal.docx", str(public["document_downloads"]))
         self.assertEqual(public["has_redline_draft"], True)
 
     def test_public_matters_list_omits_heavy_detail_fields(self):

@@ -7,6 +7,7 @@ from . import artifact_registry
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient, recipient_email
+from .pdf_export_service import public_matter_document_downloads
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
@@ -23,6 +24,7 @@ class PublicMatter(TypedDict, total=False):
     counterparty: str
     created_at: str
     current_artifact_id: str
+    document_downloads: dict[str, Any]
     document_title: str
     gmail_account: str
     gmail_attachment_selector: str
@@ -152,6 +154,7 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     # "Unknown Counterparty". One source of truth: artifact_registry.derive_counterparty
     # (the same name drive_integration files under), so the UI and Drive never drift.
     public["counterparty"] = artifact_registry.derive_counterparty(matter)
+    public["document_downloads"] = public_matter_document_downloads(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
     # projection -- provenance the UI needs, never the storage internals
