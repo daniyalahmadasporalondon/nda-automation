@@ -937,7 +937,7 @@
                     <article>
                       <h3>Non-Circumvention</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/non_circumvention.py</dd></div>
+                        <div><dt>Source</dt><dd>AI-first Playbook guidance</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm the NDA does not contain prohibited non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restraints.</dd></div>
                         <div><dt>Inputs</dt><dd>Prohibited restraint terms, review-only commercial signals, lawful-circumvention guards, negated references, and shared structure context.</dd></div>
                         <div><dt>Pass</dt><dd>No operative non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity restriction appears.</dd></div>
@@ -1136,7 +1136,6 @@
                     <div class="runtime-field">
                       <label for="adminActiveReviewEngineSelect">Active review engine</label>
                       <select id="adminActiveReviewEngineSelect">
-                        <option value="deterministic">Deterministic</option>
                         <option value="ai_first">AI-first</option>
                       </select>
                     </div>
@@ -1252,7 +1251,7 @@
                         <dd data-admin-health="review-partial">—</dd>
                       </div>
                       <div>
-                        <dt>Deterministic completed</dt>
+                        <dt title="Explicit internal force_engine checks only; not a selectable review engine.">Internal checks</dt>
                         <dd data-admin-health="review-deterministic">—</dd>
                       </div>
                       <div>
@@ -1346,7 +1345,7 @@
                     </article>
                     <article>
                       <h3>Scope</h3>
-                      <p>AI-first is the default active engine for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Deterministic review remains available only when explicitly selected. Signatures remain separate.</p>
+                      <p>AI-first is the active review engine for Mutuality, Confidential Information, Governing Law, Term and Survival, and Non-Circumvention. Deterministic review remains internal-only for explicit generation checks. Signatures remain separate.</p>
                     </article>
                     <article>
                       <h3>Inputs</h3>

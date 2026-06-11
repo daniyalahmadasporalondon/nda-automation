@@ -52,6 +52,8 @@ services:
         value: "120"
       - key: NDA_AI_REVIEW_ENABLED
         value: "true"
+      - key: NDA_ACTIVE_REVIEW_ENGINE
+        value: ai_first
       - key: NDA_AI_PROVIDER
         value: openrouter
       - key: NDA_AI_MODEL

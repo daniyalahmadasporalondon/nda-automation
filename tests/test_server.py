@@ -119,6 +119,28 @@ class ServerTests(unittest.TestCase):
         finally:
             connection.close()
 
+    @contextmanager
+    def deterministic_review_requests(self):
+        original = server_module.review_nda_with_active_engine
+
+        def forced_deterministic_review(*args, **kwargs):
+            kwargs["force_engine"] = "deterministic"
+            return original(*args, **kwargs)
+
+        with patch.object(server_module, "review_nda_with_active_engine", side_effect=forced_deterministic_review):
+            yield
+
+    @contextmanager
+    def deterministic_matter_intake(self):
+        original = server_module.create_matter_from_document
+
+        def forced_deterministic_intake(*args, **kwargs):
+            kwargs["defer_ai_review"] = True
+            return original(*args, **kwargs)
+
+        with patch.object(server_module, "create_matter_from_document", side_effect=forced_deterministic_intake):
+            yield
+
     def raw_http_request(self, request_text):
         with socket.create_connection((self.host, self.port), timeout=5) as connection:
             connection.sendall(request_text.encode("utf-8"))
@@ -501,7 +523,9 @@ class ServerTests(unittest.TestCase):
             "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
             "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
             "NDA_GOOGLE_OAUTH_REDIRECT_URI": "http://127.0.0.1/auth/google/callback",
-            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+            ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+            "NDA_AI_REVIEW_ENABLED": "true",
+            "NDA_AI_ASSESSMENT_STUB": "1",
         }
         google_profile = {
             "aud": "google-client",
@@ -738,13 +762,17 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "alice@example.com",
             "NDA_AUTH_PASSWORD": "secret",
-            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+            ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+            "NDA_AI_REVIEW_ENABLED": "true",
+            "NDA_AI_ASSESSMENT_STUB": "1",
         }
         bob_env = {
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "bob@example.com",
             "NDA_AUTH_PASSWORD": "secret",
-            ACTIVE_REVIEW_ENGINE_ENV: "deterministic",
+            ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+            "NDA_AI_REVIEW_ENABLED": "true",
+            "NDA_AI_ASSESSMENT_STUB": "1",
         }
 
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1692,7 +1720,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(source_fidelity["pdf_fidelity"]["analysis_mode"], "extracted_text_only")
         self.assertEqual(source_fidelity["pdf_fidelity"]["layout_mode"], "original_pdf_page_preview")
         self.assertEqual(source_fidelity["pdf_fidelity"]["word_conversion"], "unsupported_for_fidelity")
-        self.assertEqual(source_fidelity["pdf_fidelity"]["redlined_docx"], "unavailable")
+        self.assertEqual(source_fidelity["pdf_fidelity"]["redlined_docx"], "reconstructed_not_fidelity_preserving")
 
     def test_matter_upload_creates_persisted_manual_matter(self):
         source_docx = make_docx([
@@ -1731,10 +1759,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["attachment_filename"], "Acme NDA.docx")
         self.assertEqual(matter["message_snippet"], "Manual upload of Acme NDA.docx.")
         self.assertIn("received_at", matter)
-        # non_circumvention is now a dynamic clause, so the deterministic upload triage
-        # no longer flags the "must not circumvent" line; the doc still needs a redline
-        # for its missing required clauses.
-        self.assertEqual(matter["triage_status"], "needs_redline")
+        # The normal upload path is now AI-first, so the dynamic non-circumvention
+        # clause is reviewed during intake and routes this matter to legal review.
+        self.assertEqual(matter["triage_status"], "legal_review")
         self.assertGreaterEqual(matter["issue_count"], 1)
         self.assertNotIn("review_result", matter)
         self.assertNotIn("extracted_text", matter)
@@ -2098,7 +2125,7 @@ class ServerTests(unittest.TestCase):
                         f"/api/matters/{matter['id']}/reviewed-docx",
                     )
 
-        self.assertEqual(status, 409)
+        self.assertEqual(status, 503)
         self.assertIn("pdf2docx", payload["error"])
 
     def test_reviewed_pdf_reports_converter_unavailable_for_approved_docx(self):
@@ -2873,7 +2900,7 @@ class ServerTests(unittest.TestCase):
                         "requirements_failed": 1,
                     },
                 )
-                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                     review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
                 stored_matter = matter_store.get_matter(matter["id"])
 
@@ -2884,11 +2911,13 @@ class ServerTests(unittest.TestCase):
         )
         self.assertEqual(review_status, 200)
         self.assertEqual(review_payload["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
-        self.assertEqual(term_clause["status"], "match")
-        self.assertTrue(term_clause["passes"])
+        self.assertEqual(review_payload["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
         self.assertEqual(term_clause["decision"], "review")
         self.assertTrue(term_clause["needs_review"])
-        self.assertIn("could not be fully resolved", term_clause["finding"])
+        self.assertEqual(term_clause["reason_code"], "ungrounded_finding")
+        self.assertIn("could not tie this to a specific quote", term_clause["finding"])
         self.assertEqual(stored_matter["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
         self.assertEqual(stored_matter["requirements_failed"], review_payload["review_result"]["requirements_failed"])
         self.assertEqual(stored_matter["requirements_needs_review"], review_payload["review_result"]["requirements_needs_review"])
@@ -4249,6 +4278,11 @@ class ServerTests(unittest.TestCase):
                         "/api/ai/settings",
                         {"active_review_engine": "random"},
                     )
+                    deterministic_status, deterministic_payload = self.request(
+                        "POST",
+                        "/api/ai/settings",
+                        {"active_review_engine": "deterministic"},
+                    )
                     runtime_settings = app_settings.review_runtime_settings()
                     telemetry_counters = telemetry.snapshot()["counters"]
 
@@ -4270,9 +4304,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(telemetry_counters["review_runtime_settings_updates"], 1)
         self.assertEqual(telemetry_counters["settings_audit_events"], 1)
         self.assertEqual(invalid_engine_status, 400)
-        self.assertEqual(invalid_engine_payload["error"], "Active review engine must be deterministic or ai_first.")
+        self.assertEqual(invalid_engine_payload["error"], "Active review engine must be ai_first.")
+        self.assertEqual(deterministic_status, 400)
+        self.assertEqual(deterministic_payload["error"], "Active review engine must be ai_first.")
 
-    def test_ai_settings_endpoint_blocks_environment_pinned_runtime_updates(self):
+    def test_ai_settings_endpoint_treats_environment_pin_as_noop(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -4287,7 +4323,7 @@ class ServerTests(unittest.TestCase):
                     engine_status, engine_payload = self.request(
                         "POST",
                         "/api/ai/settings",
-                        {"active_review_engine": "deterministic"},
+                        {"active_review_engine": "ai_first"},
                     )
                     runtime_settings = app_settings.review_runtime_settings()
                     telemetry_counters = telemetry.snapshot()["counters"]
@@ -4295,10 +4331,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["active_review_engine"]["engine_source"], "environment")
         self.assertIn("active_engine_environment_pinned", [warning["code"] for warning in payload["operational_warnings"]])
-        self.assertEqual(engine_status, 409)
-        self.assertEqual(engine_payload["error"], "Active review engine is pinned by the backend environment.")
+        self.assertEqual(engine_status, 200)
+        self.assertEqual(engine_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertIsNone(runtime_settings["active_review_engine"])
-        self.assertEqual(telemetry_counters["review_runtime_update_blocked_environment"], 1)
+        self.assertNotIn("review_runtime_update_blocked_environment", telemetry_counters)
 
     def test_ai_api_key_endpoint_saves_local_key_and_enables_ai(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -4722,7 +4758,7 @@ class ServerTests(unittest.TestCase):
                     dedupe_gmail=True,
                 )
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                         with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
                             result = gmail_integration.import_inbound_matters(limit=25)
                 stored = matter_store.list_matters()
@@ -4841,7 +4877,7 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                         with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
                             result = gmail_integration.import_inbound_matters(limit=25)
 
@@ -4929,7 +4965,7 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                         with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
                             result = gmail_integration.import_inbound_matters(limit=25)
 
@@ -5040,7 +5076,7 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                         with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
                             result = gmail_integration.import_inbound_matters(limit=25)
 
@@ -5127,7 +5163,7 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                     with patch.object(gmail_integration, "_attachment_nda_validation", side_effect=accepted_validation):
                         with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=True):
                             with patch.object(
@@ -5234,7 +5270,7 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
                         with patch.object(gmail_integration, "_gmail_service", return_value=service):
                             with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=True):
                                 with patch.object(
@@ -5618,7 +5654,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["sender"], "noreply@example.com")
         self.assertEqual(matter["reply_to"], "legal@example.com")
         self.assertEqual(matter["recipient_email"], "legal@example.com")
-        self.assertEqual(matter["can_send_redline"], True)
+        self.assertEqual(matter["can_send_redline"], False)
+        self.assertEqual(matter["send_block_reason"], "Matter needs human review before a redline can be sent.")
         self.assertEqual(matter["subject"], "Please review our NDA")
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
@@ -5985,7 +6022,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["source_filename"], "Acme NDA.pdf")
         self.assertNotIn("review_result", matter)
         self.assertEqual(stored_matter["review_result"]["source"]["type"], "pdf")
-        self.assertEqual(export_status, 409)
+        self.assertEqual(export_status, 503)
         self.assertIn("pdf2docx", export_payload["error"])
         self.assertNotIn("Content-Disposition", export_headers)
         self.assertEqual(render_status, 200)
@@ -6137,6 +6174,11 @@ class ServerTests(unittest.TestCase):
                         },
                     },
                 )
+                reviewed_status, _reviewed_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter['id']}/reviewed",
+                    body={"reviewed": True},
+                )
                 with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
@@ -6165,6 +6207,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(draft_status, 200)
+        self.assertEqual(reviewed_status, 200)
         self.assertEqual(export_status, 200)
         self.assertEqual(send_status, 200)
         self.assertEqual(captured_redline_counts, [0, 0])
@@ -6844,6 +6887,11 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter_id = matter["id"]
+                reviewed_status, _reviewed_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter_id}/reviewed",
+                    body={"reviewed": True},
+                )
                 with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                     with patch.object(server_module.gmail_integration, "send_redline_email", return_value={
                         "message_id": "msg_outbound",
@@ -6876,6 +6924,7 @@ class ServerTests(unittest.TestCase):
                         )
                         stored_matter = matter_store.get_matter(matter_id)
 
+        self.assertEqual(reviewed_status, 200)
         self.assertEqual(unconfirmed_status, 400)
         self.assertEqual(unconfirmed_payload["error"], "Confirm send is required before emailing a redline.")
         self.assertEqual(unconfirmed_recipient_status, 400)
@@ -6943,7 +6992,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 matter_id = matter["id"]
-                self.assertFalse(matter_view.matter_needs_human_review(matter))
+                matter_store.update_matter_fields(matter_id, {"human_reviewed": True})
+                self.assertTrue(matter_view.public_matter(matter_store.get_matter(matter_id))["can_send_redline"])
                 with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                     with patch.object(server_module.redline_export_service, "build_matter_redline", side_effect=make_matter_needs_review):
                         with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
@@ -6989,6 +7039,11 @@ class ServerTests(unittest.TestCase):
                 matter = create_payload["matter"]
                 stored_matter = matter_store.get_matter(matter["id"])
                 self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
+                reviewed_status, _reviewed_payload = self.request(
+                    "POST",
+                    f"/api/matters/{matter['id']}/reviewed",
+                    body={"reviewed": True},
+                )
                 with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
                         with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
@@ -7012,6 +7067,7 @@ class ServerTests(unittest.TestCase):
                                 )
 
         self.assertEqual(create_status, 201)
+        self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 200)
         self.assertEqual(send_payload["matter"]["board_column"], "sent")
         self.assertEqual(captured["redline_count"], 0)
@@ -7033,6 +7089,11 @@ class ServerTests(unittest.TestCase):
                         "sender": "legal@example.com",
                     },
                 )
+                reviewed_status, _reviewed_payload = self.request(
+                    "POST",
+                    f"/api/matters/{create_payload['matter']['id']}/reviewed",
+                    body={"reviewed": True},
+                )
                 with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
                     with patch.object(server_module.gmail_integration, "send_redline_email") as send_redline_email:
                         send_status, send_payload = self.request(
@@ -7050,6 +7111,7 @@ class ServerTests(unittest.TestCase):
                         )
 
         self.assertEqual(create_status, 201)
+        self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 409)
         self.assertIn("Matter source text was edited", send_payload["error"])
         send_redline_email.assert_not_called()
@@ -7091,11 +7153,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Clause evidence provenance drift detected.")
 
     def test_text_review_returns_structured_redline_edits(self):
-        status, payload = self.request(
-            "POST",
-            "/api/review",
-            {"text": "This Agreement shall be governed by the laws of California."},
-        )
+        with self.deterministic_review_requests():
+            status, payload = self.request(
+                "POST",
+                "/api/review",
+                {"text": "This Agreement shall be governed by the laws of California."},
+            )
 
         self.assertEqual(status, 200)
         governing_law_redline = next(edit for edit in payload["redline_edits"] if edit["clause_id"] == "governing_law")
@@ -7108,11 +7171,12 @@ class ServerTests(unittest.TestCase):
         )
 
     def test_text_review_returns_insert_redlines_for_missing_clauses(self):
-        status, payload = self.request(
-            "POST",
-            "/api/review",
-            {"text": "The parties will discuss a possible transaction."},
-        )
+        with self.deterministic_review_requests():
+            status, payload = self.request(
+                "POST",
+                "/api/review",
+                {"text": "The parties will discuss a possible transaction."},
+            )
 
         self.assertEqual(status, 200)
         redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
@@ -7128,17 +7192,18 @@ class ServerTests(unittest.TestCase):
         self.assertIn("For [Party 1 legal name]", redlines_by_clause["signatures"]["insert_text"])
 
     def test_text_review_returns_replace_redline_for_deficient_signature_block(self):
-        status, payload = self.request(
-            "POST",
-            "/api/review",
-            {
-                "text": (
-                    "This Agreement shall be governed by the laws of the DIFC.\n\n"
-                    "By: __________________\n"
-                    "Date: 2026-05-30"
-                )
-            },
-        )
+        with self.deterministic_review_requests():
+            status, payload = self.request(
+                "POST",
+                "/api/review",
+                {
+                    "text": (
+                        "This Agreement shall be governed by the laws of the DIFC.\n\n"
+                        "By: __________________\n"
+                        "Date: 2026-05-30"
+                    )
+                },
+            )
 
         self.assertEqual(status, 200)
         signatures_redline = next(edit for edit in payload["redline_edits"] if edit["clause_id"] == "signatures")
@@ -7148,13 +7213,12 @@ class ServerTests(unittest.TestCase):
         self.assertIn("For [Party 2 legal name]", signatures_redline["replacement_text"])
 
     def test_text_review_returns_term_redline(self):
-        # non_circumvention is now a dynamic clause reviewed by the AI-first engine;
-        # the deterministic /api/review path produces the native term redline.
-        status, payload = self.request(
-            "POST",
-            "/api/review",
-            {"text": "The confidentiality obligations survive for seven years."},
-        )
+        with self.deterministic_review_requests():
+            status, payload = self.request(
+                "POST",
+                "/api/review",
+                {"text": "The confidentiality obligations survive for seven years."},
+            )
 
         self.assertEqual(status, 200)
         redlines_by_clause = {edit["clause_id"]: edit for edit in payload["redline_edits"]}
@@ -7422,14 +7486,15 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Selected Source NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
-                )
+                with self.deterministic_matter_intake():
+                    create_status, create_payload = self.request(
+                        "POST",
+                        "/api/matters",
+                        {
+                            "filename": "Selected Source NDA.docx",
+                            "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                        },
+                    )
                 matter_id = create_payload["matter"]["id"]
                 stored_matter = matter_store.get_matter(matter_id)
                 governing_law_redline = next(
@@ -7672,14 +7737,15 @@ class ServerTests(unittest.TestCase):
         ])
         content_base64 = base64.b64encode(source_docx).decode("ascii")
 
-        review_status, review_payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "round-trip.docx",
-                "content_base64": content_base64,
-            },
-        )
+        with self.deterministic_review_requests():
+            review_status, review_payload = self.request(
+                "POST",
+                "/api/review-document",
+                {
+                    "filename": "round-trip.docx",
+                    "content_base64": content_base64,
+                },
+            )
         export_status, export_payload, export_headers = self.request_with_headers(
             "POST",
             "/api/export-review-docx",

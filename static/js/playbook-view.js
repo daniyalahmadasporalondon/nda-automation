@@ -1671,7 +1671,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         ],
       },
       non_circumvention: {
-        module: "nda_automation/checks/non_circumvention.py",
+        module: "AI-first Playbook guidance",
         purpose: "Confirm the NDA does not contain prohibited non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restraints.",
         inputs: "Prohibited restraint terms, review-only commercial signals, lawful-circumvention guards, negated references, and shared structure context.",
         pass: "No operative non-circumvention, introduced-party non-solicit, substitute-purpose, or exclusivity restriction appears.",

@@ -119,7 +119,7 @@ DEFAULT_PERSONALISATION_SETTINGS = {
     "signature": "Aspora Legal",
     "signature_block": "Best,\nAspora Legal",
 }
-SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
+SUPPORTED_ACTIVE_REVIEW_ENGINES = {"ai_first"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
 MAX_PERSONALISATION_SIGN_OFF_LENGTH = 120
@@ -442,7 +442,8 @@ def _valid_ai_setting(key: str, value: Any) -> bool:
 
 def _valid_review_runtime_setting(key: str, value: Any) -> bool:
     if key == "active_review_engine":
-        return value is None or _normalized_runtime_value(value) in SUPPORTED_ACTIVE_REVIEW_ENGINES
+        normalized = _normalized_runtime_value(value)
+        return value is None or normalized in SUPPORTED_ACTIVE_REVIEW_ENGINES or normalized in {"deterministic", "rules"}
     return False
 
 
@@ -450,6 +451,8 @@ def _clean_review_runtime_setting(key: str, value: Any) -> str | None:
     if value is None:
         return None
     normalized = _normalized_runtime_value(value)
+    if key == "active_review_engine" and normalized in {"deterministic", "rules"}:
+        return "ai_first"
     if key == "active_review_engine" and normalized in SUPPORTED_ACTIVE_REVIEW_ENGINES:
         return normalized
     return None
@@ -457,6 +460,8 @@ def _clean_review_runtime_setting(key: str, value: Any) -> str | None:
 
 def _stored_runtime_value(value: Any, supported: set[str]) -> str | None:
     normalized = _normalized_runtime_value(value)
+    if normalized in {"deterministic", "rules"}:
+        return "ai_first"
     return normalized if normalized in supported else None
 
 

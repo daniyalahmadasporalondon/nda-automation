@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from nda_automation import telemetry
+from nda_automation import app_settings, telemetry
 from nda_automation.ai_assessor import AIAssessorError
 from nda_automation.playbook_runtime import ActivePlaybookBundle
 from nda_automation.review_engine import (
@@ -107,7 +107,7 @@ class ReviewEngineTests(unittest.TestCase):
         self.assertEqual(counters["active_review_ai_first_attempted"], 1)
         self.assertEqual(counters["active_review_ai_first_completed"], 1)
 
-    def test_deterministic_engine_records_playbook_runtime_metadata(self):
+    def test_deterministic_environment_is_ignored_for_normal_review(self):
         deterministic = Mock(return_value={"review_mode": "deterministic"})
         ai_first = Mock(return_value={"review_mode": "ai_first_compat"})
 
@@ -116,7 +116,55 @@ class ReviewEngineTests(unittest.TestCase):
                 "Clause text",
                 deterministic_review_func=deterministic,
                 ai_first_review_func=ai_first,
+            )
+            status = active_review_engine_status()
+
+        deterministic.assert_not_called()
+        ai_first.assert_called_once_with("Clause text", paragraphs=None)
+        self.assertEqual(result["active_review_engine"]["selected_engine"], REVIEW_ENGINE_AI_FIRST)
+        self.assertEqual(result["active_review_engine"]["executed_engine"], REVIEW_ENGINE_AI_FIRST)
+        self.assertEqual(status["active_engine"], REVIEW_ENGINE_AI_FIRST)
+        self.assertEqual(status["engine_source"], "default")
+        self.assertEqual(status["environment_active_engine"], "")
+        self.assertNotIn(REVIEW_ENGINE_DETERMINISTIC, status["supported_engines"])
+
+    def test_stored_deterministic_engine_is_ignored_for_normal_review(self):
+        deterministic = Mock(return_value={"review_mode": "deterministic"})
+        ai_first = Mock(return_value={"review_mode": "ai_first_compat"})
+        self.runtime_settings["active_review_engine"] = REVIEW_ENGINE_DETERMINISTIC
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: ""}):
+            result = review_nda_with_active_engine(
+                "Clause text",
+                deterministic_review_func=deterministic,
+                ai_first_review_func=ai_first,
+            )
+            status = active_review_engine_status()
+
+        deterministic.assert_not_called()
+        ai_first.assert_called_once()
+        self.assertEqual(result["active_review_engine"]["selected_engine"], REVIEW_ENGINE_AI_FIRST)
+        self.assertEqual(result["active_review_engine"]["source"], "default")
+        self.assertEqual(status["active_engine"], REVIEW_ENGINE_AI_FIRST)
+        self.assertEqual(status["engine_source"], "default")
+
+    def test_stored_deterministic_setting_migrates_to_ai_first(self):
+        self.assertEqual(
+            app_settings.review_runtime_settings_from_payload({"active_review_engine": "deterministic"}),
+            {"active_review_engine": REVIEW_ENGINE_AI_FIRST},
+        )
+
+    def test_forced_deterministic_engine_records_playbook_runtime_metadata(self):
+        deterministic = Mock(return_value={"review_mode": "deterministic"})
+        ai_first = Mock(return_value={"review_mode": "ai_first_compat"})
+
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: ""}):
+            result = review_nda_with_active_engine(
+                "Clause text",
+                deterministic_review_func=deterministic,
+                ai_first_review_func=ai_first,
                 playbook_runtime_func=_playbook_runtime,
+                force_engine=REVIEW_ENGINE_DETERMINISTIC,
             )
 
         deterministic.assert_called_once_with("Clause text", paragraphs=None)
@@ -135,11 +183,12 @@ class ReviewEngineTests(unittest.TestCase):
             captured["playbook"] = playbook
             return {"review_mode": "deterministic"}
 
-        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: ""}):
             review_nda_with_active_engine(
                 "Clause text",
                 deterministic_review_func=deterministic,
                 playbook_runtime_func=lambda: _playbook_bundle(playbook),
+                force_engine=REVIEW_ENGINE_DETERMINISTIC,
             )
 
         self.assertIs(captured["playbook"], playbook)
@@ -211,12 +260,13 @@ class ReviewEngineTests(unittest.TestCase):
     def test_review_result_requires_complete_playbook_runtime_metadata(self):
         deterministic = Mock(return_value={"review_mode": "deterministic"})
 
-        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "deterministic"}):
+        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: ""}):
             with self.assertRaisesRegex(ActiveReviewEngineError, "active_hash"):
                 review_nda_with_active_engine(
                     "NDA text",
                     deterministic_review_func=deterministic,
                     playbook_runtime_func=lambda: {"active_version_id": "pbv_test"},
+                    force_engine=REVIEW_ENGINE_DETERMINISTIC,
                 )
 
     def test_ai_first_errors_are_normalized_for_routes(self):
@@ -238,6 +288,7 @@ class ReviewEngineTests(unittest.TestCase):
 
         self.assertEqual(status["active_engine"], REVIEW_ENGINE_AI_FIRST)
         self.assertIn(REVIEW_ENGINE_AI_FIRST, status["supported_engines"])
+        self.assertNotIn(REVIEW_ENGINE_DETERMINISTIC, status["supported_engines"])
 
 
 if __name__ == "__main__":

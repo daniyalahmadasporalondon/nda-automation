@@ -11,10 +11,9 @@ const { PNG } = require("pngjs");
 const ROOT = path.resolve(__dirname, "../..");
 const PORT = Number(process.env.FRONTEND_TEST_PORT || 19000 + Math.floor(Math.random() * 1000));
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-// Second server: AI-first engine + the deterministic, key-free AI assessment stub
-// (NDA_AI_ASSESSMENT_STUB). Used only by the AI-first tests so the dynamic
-// (engine=="dynamic") non_circumvention clause is exercised end to end on the
-// path it now lives on, without flipping the deterministic suite's engine.
+// Both test servers run the AI-first engine with the deterministic, key-free AI
+// assessment stub so review flows exercise the production review policy without
+// live provider calls.
 const AI_FIRST_PORT = PORT + 1;
 const AI_FIRST_BASE_URL = `http://127.0.0.1:${AI_FIRST_PORT}`;
 const PYTHON = process.env.PYTHON || "python3";
@@ -171,7 +170,9 @@ function startServer({ port = PORT, dataDir = TEST_DATA_DIR, env = {} } = {}) {
     cwd: ROOT,
     env: {
       ...process.env,
-      NDA_ACTIVE_REVIEW_ENGINE: "deterministic",
+      NDA_ACTIVE_REVIEW_ENGINE: "ai_first",
+      NDA_AI_REVIEW_ENABLED: "true",
+      NDA_AI_ASSESSMENT_STUB: "1",
       NDA_AI_FIRST_REVIEW_ENABLED: "true",
       NDA_DATA_DIR: dataDir,
       NDA_EXPORTS_DIR: path.join(ROOT, "exports"),
@@ -925,7 +926,7 @@ async function testContractStructureReviewPanel(page) {
       engine_source_key: runtimeSource === "runtime_settings" ? "review_runtime.active_review_engine" : "",
       stored_active_engine: runtimeSource === "runtime_settings" ? activeReviewEngine : null,
       environment_active_engine: "",
-      supported_engines: ["deterministic", "ai_first"],
+      supported_engines: ["ai_first"],
     },
     operational_warnings: [
       activeReviewEngine === "ai_first" && !aiKeyConfigured
@@ -954,7 +955,7 @@ async function testContractStructureReviewPanel(page) {
           actor: "admin",
           action: "admin_settings_update",
           changes: [
-            payload.active_review_engine ? { setting: "review_runtime.active_review_engine", before: "deterministic", after: payload.active_review_engine } : null,
+            payload.active_review_engine ? { setting: "review_runtime.active_review_engine", before: "", after: payload.active_review_engine } : null,
           ].filter(Boolean),
         }, ...settingsAudit];
       }
@@ -2144,15 +2145,15 @@ async function testStructuredEvidenceAndRationale(page) {
   // The Decision is folded into a first-class Assessment headline (issue type +
   // PASS/REVIEW/FAIL pill), not a separate "Issue type" tile or audit step.
   await assertTextContains(page.locator("#studioDetailPanel .assessment-headline"), "ASSESSMENT");
-  await assertTextContains(page.locator("#studioDetailPanel .assessment-decision-pill"), "FAIL");
-  await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Fail");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-decision-pill"), "REVIEW");
+  await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Needs review");
   assert.equal((await page.locator("#studioDetailPanel").innerText()).includes("ISSUE TYPE"), false);
   await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
-  // Evidence is now folded inline into the Assessment (a "¶N" paragraph), not a
-  // separate EVIDENCE block — the matched quote still proves it renders.
-  await assertTextContains(page.locator("#studioDetailPanel"), "This Agreement shall be governed by the laws of California.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "A governing law clause was found, but it does not use an approved law.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "approved operating set");
+  // Evidence is now folded inline into the Assessment. The AI-first stub does
+  // not cite governing-law evidence, so the UI should surface the no-quote
+  // human-review fallback rather than inventing evidence.
+  await assertTextContains(page.locator("#studioDetailPanel"), "No supporting quote was cited");
+  await assertTextContains(page.locator("#studioDetailPanel"), "Stub reviewer: no issue.");
   await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
 
   await page.evaluate(() => {
@@ -3011,7 +3012,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Manual upload");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "repository-matter-");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "KEY FAILED CLAUSES");
-  assert.equal(await page.getByRole("button", { name: "No Reply" }).isEnabled(), false);
+  assert.equal(await page.locator("#studioSendButton").isEnabled(), false);
 
   const [matterExportRequest, matterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
@@ -3021,9 +3022,10 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const matterExportPayload = matterExportRequest.postDataJSON();
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
   assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
+  await assertTextContains(page.locator("#repositoryMatterPanel"), "still needs human review");
+  await waitForRepositoryCount(page, "manual_upload", "1");
   await waitForRepositoryCount(page, "in_review", "0");
-  await waitForRepositoryCount(page, "reviewed", "1");
-  await assertTextContains(page.locator("#repositoryMatterPanel"), "Reviewed");
+  await waitForRepositoryCount(page, "reviewed", "0");
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
@@ -3047,9 +3049,9 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const reviewMatterExportPayload = reviewMatterExportRequest.postDataJSON();
   assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
   assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
-  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "manual_upload", "1");
   await waitForRepositoryCount(page, "in_review", "0");
-  await waitForRepositoryCount(page, "reviewed", "1");
+  await waitForRepositoryCount(page, "reviewed", "0");
   assert.equal(await page.getByRole("button", { name: "Review NDA" }).count(), 0);
 
   await page.getByRole("tab", { name: "Repository" }).click();
@@ -5032,7 +5034,7 @@ async function testMatterRedlineDraftPersistence(page) {
   assert.equal((await page.locator("#studioDraftMeta").innerText()).trim(), "");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
 
-  await page.getByRole("button", { name: /Governing Law/ }).click();
+  await page.getByRole("button", { name: /Non-Circumvention/ }).click();
   await page.locator("#studioDetailPanel [data-export-redline-id][data-export-decision=\"ignore\"]").first().click();
   await assertTextContains(page.locator("#studioDraftMeta"), "Unsaved redline draft changes");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), true);
@@ -5051,7 +5053,7 @@ async function testMatterRedlineDraftPersistence(page) {
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await waitForText(page, "#studioDraftMeta", "Draft redline saved");
-  await page.getByRole("button", { name: /Governing Law/ }).click();
+  await page.getByRole("button", { name: /Non-Circumvention/ }).click();
   const ignoredState = await page.locator('#studioDetailPanel [data-export-redline-id][data-export-decision="ignore"]').first().evaluate((node) => ({
     active: node.classList.contains("active"),
     pressed: node.getAttribute("aria-pressed"),
@@ -5396,67 +5398,6 @@ async function testBackendRedlineModes(page) {
   assert.equal(await page.locator('[data-paragraph-id="p2"] .comment-compose-input').getAttribute("placeholder"), "Add a comment");
   assert.equal(await page.getByRole("button", { name: "Add comment" }).count(), 0);
   await page.locator('[data-paragraph-id="p2"] .comment-compose-cancel').click();
-
-  await page.locator('[data-studio-lane-id="term_and_survival"]').click();
-
-  const termParagraph = page.locator('[data-paragraph-id="p1"]');
-  const termParagraphStyles = await termParagraph.evaluate((node) => {
-    const styles = getComputedStyle(node);
-    return {
-      backgroundColor: styles.backgroundColor,
-      borderLeftColor: styles.borderLeftColor,
-      boxShadow: styles.boxShadow,
-    };
-  });
-  assert.equal(termParagraphStyles.backgroundColor, "rgb(254, 226, 226)");
-  assert.equal(termParagraphStyles.borderLeftColor, "rgba(0, 0, 0, 0)");
-  assert.equal(termParagraphStyles.boxShadow, "none");
-  await assertRedlinePreview(termParagraph, {
-    originalText: "seven",
-    insertedText: "fixed period of up to five",
-    editableCount: 1,
-  });
-  await assertRedGreenPixels(termParagraph.locator(".paragraph-redline-preview"));
-
-  await page.getByRole("button", { name: "Clean" }).click();
-  const cleanText = await page.locator("#studioDocumentRender").innerText();
-  assert.match(cleanText, /fixed period of up to five years/);
-  assert.doesNotMatch(cleanText, /seven years/);
-  // The clean-view removed-anchor for a deleted prohibited paragraph is covered
-  // on the AI-first path by testDynamicProhibitedClauseRendering (the deterministic
-  // engine no longer deletes the non_circumvention paragraph, #12).
-
-  await page.getByRole("button", { name: "Side by Side" }).click();
-  const sideBySide = await page.locator('[data-paragraph-id="p1"]').evaluate((node) => ({
-    labels: Array.from(node.querySelectorAll(".clause-sxs-tag")).map((label) => label.textContent),
-    original: node.querySelector(".clause-sxs-col:first-child div")?.innerText || "",
-    redline: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
-    delCount: node.querySelectorAll(".clause-sxs-col.original .inline-del").length,
-    insCount: node.querySelectorAll(".clause-sxs-col.latest .inline-ins").length,
-  }));
-  assert.deepEqual(sideBySide.labels, ["Original", "Proposed"]);
-  assert.match(sideBySide.original, /seven years/);
-  assert.match(sideBySide.redline, /fixed period of up to five years/);
-  assert.ok(sideBySide.delCount >= 1, "side-by-side redline should show deletions");
-  assert.ok(sideBySide.insCount >= 1, "side-by-side redline should show insertions");
-  await assertRedPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.original'));
-  await assertGreenPixels(page.locator('[data-paragraph-id="p1"] .clause-sxs-col.latest'));
-
-  // The side-by-side rendering of a deleted prohibited paragraph is covered on the
-  // AI-first path by testDynamicProhibitedClauseRendering (see #12 note above).
-
-  const insertedBlocks = await page.locator('[data-redline-edit-id]').evaluateAll((nodes) => (
-    nodes.map((node) => ({
-      original: node.querySelector(".clause-sxs-col.original div")?.innerText || "",
-      proposed: node.querySelector(".clause-sxs-col.latest div")?.innerText || "",
-      proposedInserted: node.querySelectorAll(".clause-sxs-col.latest .inline-ins").length,
-    }))
-  ));
-  const insertedSideBySide = insertedBlocks.find((block) => block.proposed.includes("For [Party 1 legal name]"));
-  assert.ok(insertedSideBySide, "signature insertion should render as a side-by-side inserted block");
-  assert.equal(insertedSideBySide.original, "No source paragraph");
-  assert.match(insertedSideBySide.proposed, /For \[Party 1 legal name\]/);
-  assert.equal(insertedSideBySide.proposedInserted, 1);
 }
 
 // Runs on the AI-first + stub server, where non_circumvention (a dynamic,
@@ -5517,22 +5458,8 @@ async function testClauseAnchorCycling(page) {
 
 async function testClauseDecisionControls(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
-  const governingLawCard = page.locator('[data-studio-lane-id="governing_law"]');
   const signaturesCard = page.locator('[data-studio-lane-id="signatures"]');
   const detailPanel = page.locator("#studioDetailPanel");
-
-  await governingLawCard.click();
-  assert.deepEqual(
-    await detailPanel.locator(".redline-option strong").evaluateAll((nodes) => nodes.map((node) => node.innerText.trim())),
-    ["India", "Delaware", "England and Wales", "DIFC", "Ontario, Canada"],
-  );
-  await detailPanel.locator('[data-redline-option-id="governing_law_difc"]').click();
-  await assertTextContains(detailPanel.locator(".redline-option.selected"), "DIFC");
-  await assertTextContains(detailPanel, "the DIFC");
-  await page.locator("#studioUndoEditButton").click();
-  assert.equal(await detailPanel.locator(".redline-option.selected").filter({ hasText: "DIFC" }).count(), 0);
-  await detailPanel.locator('[data-redline-option-id="governing_law_difc"]').click();
-  await assertTextContains(detailPanel.locator(".redline-option.selected"), "DIFC");
 
   await signaturesCard.click();
   await detailPanel.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
@@ -5564,43 +5491,18 @@ async function testClauseDecisionControls(page) {
   const exportPayload = exportRequest.postDataJSON();
   assert.ok(
     exportPayload.export_redline_edits.some((edit) => (
-      edit.clause_id === "governing_law"
-      && edit.action === "replace_paragraph"
-      && /DIFC/.test(edit.replacement_text || "")
-    )),
-    "selected governing-law template should be sent in export_redline_edits",
-  );
-  assert.ok(
-    exportPayload.export_redline_edits.some((edit) => (
       edit.action === "insert_after_paragraph"
       && /For \[Party 1 legal name\]/.test(edit.insert_text || edit.replacement_text || "")
     )),
     "re-included signature insertion should be sent in export_redline_edits",
   );
-  assert.equal(
-    exportPayload.export_redline_edits.some((edit) => /England and Wales/.test(edit.replacement_text || "")),
-    false,
-    "unselected governing-law template should not be sent in export_redline_edits",
-  );
   const exportedPath = await download.path();
   assert.ok(exportedPath, "decision export download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
-  assert.ok(
-    exportedChanges.revisionParagraphs.some((paragraph) => (
-      normalizeWhitespace(paragraph.original) === "This Agreement shall be governed by the laws of California."
-      && normalizeWhitespace(paragraph.accepted) === "This Agreement shall be governed by the laws of the DIFC."
-    )),
-    "selected template option should drive the exported governing-law redline",
-  );
   assert.equal(
     exportedChanges.insertions.some((text) => text.includes("For [Party 1 legal name]")),
     true,
     "re-included signature redline should be exported",
-  );
-  assert.equal(
-    exportedChanges.insertions.some((text) => text.includes("England and Wales")),
-    false,
-    "default governing-law template should not leak after choosing DIFC",
   );
 }
 

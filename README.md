@@ -88,10 +88,10 @@ The active review path:
 1. **Playbook + document structure** define clause requirements, approved positions, source paragraphs, headings, sections, and references.
 2. **AI-first assessment** applies the playbook to the selected source paragraphs and produces the saved clause verdicts, issue types, rationale, citations, confidence, and proposed redlines. Output is held to a **grounding contract**: ungrounded fails are rejected and ungrounded pass/review verdicts are downgraded.
 3. **AI verifier** re-checks flagged clauses adversarially (e.g. "shall not be restricted from dealing" is freedom-preserving, not a prohibition) and can rewrite a decision before it is finalized.
-4. **Deterministic review + comparison** remain available for audit, explicit engine selection, reason-code comparison, and stale-review refresh guards.
+4. **Deterministic review + comparison** remain available for audit, generation/internal force-engine checks, reason-code comparison, and stale-review refresh guards.
 5. **Reviewer UI** presents the final clause cards, right-panel analysis, insertable redline options, comments, include/ignore choices, and per-clause reviewed toggles for human sign-off.
 
-The active engine defaults to **AI-first** and **fails closed**: if AI is unavailable, new review creation returns an error instead of silently substituting deterministic results. Admins can switch the active engine at runtime from **Admin → AI** when it is not pinned by environment variables; runtime changes are audit-logged without secrets.
+The active review engine is **AI-first** and **fails closed**: if AI is unavailable, new review creation returns an error instead of silently substituting deterministic results. Admin can view the runtime from **Admin → AI** and deterministic review remains internal-only for explicit generation checks.
 
 ## Quick start
 
@@ -156,7 +156,7 @@ Common environment variables:
 | `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
 | `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
 | `NDA_GMAIL_TRIAGE_MODEL` | Gmail triage model (e.g. `x-ai/grok-4.3`). |
-| `NDA_ACTIVE_REVIEW_ENGINE` | Optional pin: `ai_first` or `deterministic`. |
+| `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
 | `NDA_AI_FIRST_REVIEW_ENABLED` | Store AI-first shadow/comparison output. |
 | `NDA_ADMIN_USERS` | Comma-separated emails granted admin. |
 | `NDA_ALLOW_EPHEMERAL_DATA` | `true` only for short-lived demos on ephemeral storage. |

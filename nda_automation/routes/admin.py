@@ -8,7 +8,6 @@ from ..deployment import _deployment_status_for_host
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
-    REVIEW_ENGINE_DETERMINISTIC,
     active_review_engine_status,
 )
 from .common import request_owner_user_id, require_admin
@@ -103,8 +102,8 @@ def handle_ai_settings_update(handler) -> None:
         ai_updates["enabled"] = enabled
     if "active_review_engine" in payload:
         active_review_engine = _runtime_setting_value(payload.get("active_review_engine"))
-        if active_review_engine not in {REVIEW_ENGINE_DETERMINISTIC, REVIEW_ENGINE_AI_FIRST}:
-            handler._send_json({"error": "Active review engine must be deterministic or ai_first."}, status=400)
+        if active_review_engine != REVIEW_ENGINE_AI_FIRST:
+            handler._send_json({"error": "Active review engine must be ai_first."}, status=400)
             return
         pinned_engine = runtime_status.get("environment_active_engine")
         if pinned_engine:

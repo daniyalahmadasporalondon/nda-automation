@@ -309,7 +309,7 @@ const AdminAiView = (() => {
     }
 
     function engineLabel(engine) {
-      return engine === "ai_first" ? "AI-first" : "Deterministic";
+      return engine === "ai_first" ? "AI-first" : String(engine || "Unknown");
     }
 
     function keyMessage(status) {

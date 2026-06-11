@@ -52,9 +52,11 @@ class DeploymentConfigTests(unittest.TestCase):
 
     def test_render_blueprint_keeps_public_deploy_hardened(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn("plan: free", blueprint)
-        self.assertIn("startCommand: python -m nda_automation.server --host 0.0.0.0 --port $PORT", blueprint)
+        self.assertIn("runtime: docker", blueprint)
+        self.assertIn('CMD ["sh", "-c", "python -m nda_automation.server --host 0.0.0.0 --port ${PORT:-8787}"]', dockerfile)
         self.assertIn("healthCheckPath: /healthz", blueprint)
         self.assertRegex(blueprint, r"key:\s+NDA_REQUIRE_AUTH\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AUTH_PASSWORD\s+sync:\s+false")

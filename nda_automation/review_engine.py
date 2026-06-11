@@ -48,7 +48,7 @@ def active_review_engine_status() -> dict[str, Any]:
         "engine_source_key": engine_config["source_key"],
         "stored_active_engine": stored_settings.get("active_review_engine"),
         "environment_active_engine": _normalized_active_review_engine(os.environ.get(ACTIVE_REVIEW_ENGINE_ENV, "")),
-        "supported_engines": [REVIEW_ENGINE_DETERMINISTIC, REVIEW_ENGINE_AI_FIRST],
+        "supported_engines": [REVIEW_ENGINE_AI_FIRST],
     }
 
 
@@ -284,7 +284,7 @@ def _active_review_engine_config() -> dict[str, str]:
             "source_key": ACTIVE_REVIEW_ENGINE_ENV,
         }
     stored_value = app_settings.review_runtime_settings().get("active_review_engine")
-    if stored_value in {REVIEW_ENGINE_DETERMINISTIC, REVIEW_ENGINE_AI_FIRST}:
+    if stored_value == REVIEW_ENGINE_AI_FIRST:
         return {
             "value": str(stored_value),
             "source": REVIEW_ENGINE_SOURCE_RUNTIME_SETTINGS,
@@ -299,8 +299,6 @@ def _active_review_engine_config() -> dict[str, str]:
 
 def _normalized_active_review_engine(value: object) -> str:
     configured = str(value or "").strip().lower().replace("-", "_")
-    if configured in {"deterministic", "rules"}:
-        return REVIEW_ENGINE_DETERMINISTIC
     if configured in {"ai", "ai_first", "ai_first_review"}:
         return REVIEW_ENGINE_AI_FIRST
     return ""

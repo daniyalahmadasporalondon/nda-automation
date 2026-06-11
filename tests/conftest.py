@@ -8,14 +8,9 @@ import pytest
 _TEST_DATA_DIR = tempfile.mkdtemp(prefix="nda-automation-tests-")
 
 os.environ["NDA_DATA_DIR"] = _TEST_DATA_DIR
-os.environ["NDA_AI_REVIEW_ENABLED"] = ""
-# The production default active engine is ai_first + fail_closed (see
-# nda_automation/review_engine.py). With AI disabled in tests, that default would
-# make every review path raise ActiveReviewEngineError. Pin the deterministic
-# engine as the suite-wide baseline so review-path tests exercise the rules
-# engine. Tests that specifically verify engine selection/defaults override this
-# with their own patch.dict(os.environ, ...), so this does not mask them.
-os.environ["NDA_ACTIVE_REVIEW_ENGINE"] = "deterministic"
+os.environ["NDA_AI_REVIEW_ENABLED"] = "true"
+os.environ["NDA_AI_ASSESSMENT_STUB"] = "1"
+os.environ["NDA_ACTIVE_REVIEW_ENGINE"] = "ai_first"
 
 
 @pytest.fixture

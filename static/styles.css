@@ -1650,7 +1650,9 @@ h3 {
 .dashboard-health-list {
   align-items: center;
   display: flex;
-  gap: 16px;
+  column-gap: 22px;
+  row-gap: 8px;
+  flex-wrap: wrap;
   justify-content: center;
   margin-top: 8px;
   padding: 0;
@@ -1658,16 +1660,17 @@ h3 {
 
 .dashboard-health-item {
   align-items: center;
-  display: inline-flex;
-  gap: 6px;
-  min-width: 0;
+  display: flex;
+  flex: 0 0 auto;
+  min-width: max-content;
   padding: 0;
 }
 
 .dashboard-health-head {
   align-items: center;
-  display: inline-flex;
-  gap: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 8px max-content;
   justify-content: center;
   min-width: 0;
 }
@@ -1676,7 +1679,6 @@ h3 {
   background: rgba(255, 255, 255, 0.5);
   border-radius: var(--r-pill);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
-  flex: 0 0 8px;
   height: 8px;
   width: 8px;
 }

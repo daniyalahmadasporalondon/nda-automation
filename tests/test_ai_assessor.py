@@ -315,6 +315,7 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
     def test_configured_reviewer_builds_openrouter_gemini(self):
         with (
             patch("nda_automation.ai_assessor._configured_api_key", side_effect=lambda provider: f"{provider}-key"),
+            patch.dict("os.environ", {"NDA_AI_ASSESSMENT_STUB": ""}, clear=False),
         ):
             reviewer = configured_ai_assessment_reviewer({
                 "enabled": True,
@@ -327,13 +328,14 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
         self.assertEqual(reviewer.model, DEFAULT_OPENROUTER_MODEL)
 
     def test_configured_reviewer_rejects_old_provider(self):
-        with self.assertRaisesRegex(AIAssessorError, "Unsupported AI provider: legacy"):
-            configured_ai_assessment_reviewer({
-                "enabled": True,
-                "provider": "legacy",
-                "model": "legacy-model",
-                "timeout_seconds": 20,
-            })
+        with patch.dict("os.environ", {"NDA_AI_ASSESSMENT_STUB": ""}, clear=False):
+            with self.assertRaisesRegex(AIAssessorError, "Unsupported AI provider: legacy"):
+                configured_ai_assessment_reviewer({
+                    "enabled": True,
+                    "provider": "legacy",
+                    "model": "legacy-model",
+                    "timeout_seconds": 20,
+                })
 
 
 def _mock_urlopen(response_bytes, captured_requests):
