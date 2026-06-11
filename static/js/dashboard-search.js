@@ -53,13 +53,18 @@ const DashboardSearchView = (() => {
     // query. Optional — absent on an old cached page; the box still works.
     interpretedLine,
     getMatters,
-    ensureMatters,
     openMatter,
     // Async seam: POST to the summary endpoint and resolve the parsed JSON body
     // (plus the HTTP ok flag). Lives in app.js so this controller stays DOM-only
     // and the fetch is mockable. Optional — when absent the Summarize affordance is
     // simply not rendered.
     summarizeMatter,
+    // Assistant seam: POST a dashboard command/query to /api/dashboard/assistant.
+    // The payload is discriminated by `intent`. Search/filter responses are applied
+    // to real matters just like the legacy search-intent path; repository answers
+    // and action requests render as assistant cards.
+    assistantQuery,
+    confirmAssistantAction,
     // v2 async seam: POST a natural-language query to the search-intent endpoint
     // and resolve {ok, payload}. payload is either {filters, interpreted} (apply the
     // validated spec) or {fallback:true} (use v1 keyword search). Lives in app.js so
@@ -83,6 +88,7 @@ const DashboardSearchView = (() => {
     // is the v1 keyword fallback.
     let activeSpec = null;
     let activeInterpreted = "";
+    let assistantActions = new Map();
     // Monotonic token so a slow AI translation that resolves AFTER a newer
     // submit/reset can't clobber the current results (last-write-wins).
     let searchRunToken = 0;
@@ -90,17 +96,6 @@ const DashboardSearchView = (() => {
     function matters() {
       const list = typeof getMatters === "function" ? getMatters() : [];
       return Array.isArray(list) ? list : [];
-    }
-
-    async function ensureMatterList() {
-      if (typeof ensureMatters !== "function") return;
-      if (matters().length) return;
-      try {
-        await ensureMatters();
-      } catch (error) {
-        // load failures are rendered by the repository board; search still falls
-        // back to an empty deterministic result set instead of throwing.
-      }
     }
 
     function renderChips() {
@@ -166,55 +161,165 @@ const DashboardSearchView = (() => {
       );
     }
 
-    function renderResults(results, { emptyMessage, statusPrefix = "" }) {
+    function renderResults(results, { emptyMessage }) {
+      assistantActions = new Map();
       if (!resultsList) return;
       if (!results.length) {
         resultsList.innerHTML = "";
         resultsList.hidden = true;
         if (resultsStatus) {
           resultsStatus.hidden = false;
-          resultsStatus.textContent = [statusPrefix, emptyMessage].filter(Boolean).join(" ");
+          resultsStatus.textContent = emptyMessage;
         }
         return;
       }
       if (resultsStatus) {
         resultsStatus.hidden = false;
         const noun = results.length === 1 ? "document" : "documents";
-        resultsStatus.textContent = [statusPrefix, `${results.length} ${noun}`].filter(Boolean).join(" ");
+        resultsStatus.textContent = `${results.length} ${noun}`;
       }
       resultsList.hidden = false;
       resultsList.innerHTML = results.map((matter) => resultItemMarkup(matter)).join("");
     }
 
-    function isSystemInfoQuery(query) {
-      const normalized = String(query || "").toLowerCase();
-      return /\b(ai|artificial intelligence|system|app|dashboard|search|help|working|works|what can)\b/.test(normalized)
-        && /\b(system|app|dashboard|search|help|working|works|what can|do)\b/.test(normalized);
+    function answerText(answer) {
+      if (answer && typeof answer === "object") return String(answer.text || "").trim();
+      return String(answer || "").trim();
     }
 
-    function renderSystemInfo(query, { aiFallback = false } = {}) {
+    function citationFacts(citations) {
+      if (!Array.isArray(citations)) return [];
+      return citations
+        .filter((citation) => citation && typeof citation === "object")
+        .map((citation) => {
+          const title = String(citation.title || citation.subject || citation.matter_id || "Matter").trim();
+          const bits = [];
+          if (citation.workflow_phase) bits.push(String(citation.workflow_phase).replace(/_/g, " "));
+          if (citation.last_outbound_at) bits.push(String(citation.last_outbound_at).slice(0, 10));
+          return bits.length ? `${title} · ${bits.join(" · ")}` : title;
+        });
+    }
+
+    function normalizeAssistantActions(payload) {
+      const action = String(payload?.action || "").trim();
+      if (String(payload?.intent || "") !== "draft_action_request" || action !== "open_generator") return [];
+      const generator = payload.generator && typeof payload.generator === "object" ? payload.generator : {};
+      return [{
+        id: "open_generator",
+        label: "Open Generator",
+        description: "No NDA is generated, saved, sent, or exported until you confirm again in the Generator.",
+        requiresConfirmation: payload.requires_confirmation !== false,
+        payload: {
+          action,
+          generator,
+          prompt: generator?.prefill?.prompt || "",
+          sideEffects: Array.isArray(payload.side_effects) ? payload.side_effects : [],
+        },
+      }];
+    }
+
+    function assistantCardMarkup({ type, title, message, facts = [], actions = [] }) {
+      const factMarkup = facts.length
+        ? `<ul class="dashboard-search-result-summary dashboard-assistant-facts">` +
+          facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("") +
+          `</ul>`
+        : "";
+      const actionMarkup = actions.length
+        ? `<div class="dashboard-search-result-relationships dashboard-assistant-actions">` +
+          actions.map((action) => (
+            `<button type="button" class="dashboard-search-result-summarize dashboard-assistant-action" ` +
+            `data-dashboard-assistant-action="${escapeHtml(action.id)}">` +
+            `${escapeHtml(action.requiresConfirmation ? `Confirm: ${action.label}` : action.label)}` +
+            `</button>` +
+            (action.description
+              ? `<p class="dashboard-search-summary-status">${escapeHtml(action.description)}</p>`
+              : "")
+          )).join("") +
+          `</div>`
+        : "";
+      return (
+        `<li class="dashboard-search-result dashboard-assistant-card" ` +
+        `data-dashboard-assistant-response="${escapeHtml(type)}">` +
+        `<div class="dashboard-search-result-row">` +
+        `<div class="dashboard-search-result-button dashboard-assistant-card-body">` +
+        `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
+        (message ? `<span class="dashboard-search-result-status">${escapeHtml(message)}</span>` : "") +
+        `</div>` +
+        `</div>` +
+        factMarkup +
+        actionMarkup +
+        `</li>`
+      );
+    }
+
+    function renderAssistantCard({ type, title, message, facts, actions, statusText }) {
       activeSpec = null;
       activeInterpreted = "";
+      assistantActions = new Map((actions || []).map((action) => [action.id, action]));
       setInterpreted("");
       if (resultsStatus) {
         resultsStatus.hidden = false;
-        resultsStatus.textContent = aiFallback
-          ? "AI search is unavailable right now; keyword search is still active."
-          : "Dashboard AI search is available for document filters.";
+        resultsStatus.textContent = statusText || title;
       }
-      if (!resultsList) return;
+      if (!resultsList) return true;
       resultsList.hidden = false;
-      resultsList.innerHTML =
-        `<li class="dashboard-search-result dashboard-search-system-answer">` +
-        `<p class="dashboard-search-system-title">Dashboard AI search</p>` +
-        `<p class="dashboard-search-system-copy">` +
-        `This search bar translates natural-language document questions into safe repository filters. ` +
-        `It only shows real documents already loaded in your workspace; it does not invent answers or browse outside the system.` +
-        `</p>` +
-        `<p class="dashboard-search-system-copy">` +
-        `${aiFallback ? "The AI translator is currently unavailable, so the bar is using keyword search only." : "When AI is configured, it reads your query and returns a filter, then the browser applies that filter to your matter list."}` +
-        `</p>` +
-        `</li>`;
+      resultsList.innerHTML = assistantCardMarkup({ type, title, message, facts, actions });
+      return true;
+    }
+
+    function renderAssistantResponse(payload) {
+      if (!payload || typeof payload !== "object") return false;
+      const type = String(payload.intent || "").trim();
+      const message = String(payload.message || "").trim();
+      if (type === "search_filter") {
+        const search = payload.search && typeof payload.search === "object" ? payload.search : {};
+        const filters = search.filters && typeof search.filters === "object" ? search.filters : null;
+        const validate = lib().validateFilterSpec;
+        const apply = lib().applyFilterSpec;
+        if (!filters || typeof validate !== "function" || typeof apply !== "function") return false;
+        const validated = validate(filters);
+        const isEmpty = lib().filterSpecIsEmpty;
+        if (typeof isEmpty === "function" && isEmpty(validated)) return false;
+        activeSpec = validated;
+        activeInterpreted = String(search.interpreted || message || "");
+        assistantActions = new Map();
+        const results = apply(matters(), validated);
+        setInterpreted(activeInterpreted);
+        renderResults(results, { emptyMessage: "No documents match this assistant response." });
+        return true;
+      }
+      if (type === "repository_question") {
+        const text = answerText(payload.answer) || message;
+        if (!text) return false;
+        return renderAssistantCard({
+          type,
+          title: "Assistant answer",
+          message: text,
+          facts: citationFacts(payload.citations),
+          statusText: "Assistant answer",
+        });
+      }
+      if (type === "draft_action_request") {
+        return renderAssistantCard({
+          type,
+          title: "Action needs confirmation",
+          message: message || "Confirm before anything changes.",
+          facts: ["No document will be generated, saved, sent, exported, deleted, or approved from this dashboard prompt."],
+          actions: normalizeAssistantActions(payload),
+          statusText: "Action needs confirmation",
+        });
+      }
+      if (type === "unsupported") {
+        return renderAssistantCard({
+          type,
+          title: "Unsupported request",
+          message: message || "This assistant cannot do that request yet.",
+          facts: [],
+          actions: [],
+          statusText: "Unsupported request",
+        });
+      }
+      return false;
     }
 
     // v3 "Find documents linked to a counterparty": render the real matters grouped
@@ -279,12 +384,12 @@ const DashboardSearchView = (() => {
     // The v1 deterministic keyword filter — the always-available fallback. Used
     // directly when no AI seam is wired, and as the graceful fallback whenever the
     // AI endpoint returns {fallback:true}, errors, or yields an empty spec.
-    function renderKeywordResults(query, { statusPrefix = "" } = {}) {
+    function renderKeywordResults(query) {
       activeSpec = null;
       activeInterpreted = "";
       const results = (lib().filterMattersByText || (() => []))(matters(), query);
       setInterpreted("");
-      renderResults(results, { emptyMessage: "No documents match your search.", statusPrefix });
+      renderResults(results, { emptyMessage: "No documents match your search." });
     }
 
     // Run the free-text search. v2: translate the natural-language query into a
@@ -303,9 +408,30 @@ const DashboardSearchView = (() => {
       activeQuery = query;
       renderChips();
 
-      await ensureMatterList();
+      if (typeof assistantQuery === "function") {
+        const token = ++searchRunToken;
+        setInterpreted("");
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = "Interpreting…";
+        }
+        if (resultsList) {
+          resultsList.hidden = true;
+          resultsList.innerHTML = "";
+        }
+        let assistantOutcome = null;
+        try {
+          assistantOutcome = await assistantQuery(query);
+        } catch (error) {
+          assistantOutcome = null;
+        }
+        if (token !== searchRunToken) return;
+        if (assistantOutcome?.ok && renderAssistantResponse(assistantOutcome.payload)) {
+          return;
+        }
+      }
 
-      // No AI seam wired -> v1 keyword search directly.
+      // No assistant/search seam wired -> v1 keyword search directly.
       if (typeof searchIntent !== "function") {
         renderKeywordResults(query);
         return;
@@ -338,11 +464,7 @@ const DashboardSearchView = (() => {
 
       // Fallback signal, error, or no spec -> v1 keyword search.
       if (!ok || payload.fallback === true || spec == null) {
-        if (isSystemInfoQuery(query)) {
-          renderSystemInfo(query, { aiFallback: true });
-          return;
-        }
-        renderKeywordResults(query, { statusPrefix: "AI search is unavailable; showing keyword matches only." });
+        renderKeywordResults(query);
         return;
       }
 
@@ -353,15 +475,11 @@ const DashboardSearchView = (() => {
       // An all-null spec means the query didn't map to any dimension — the AI
       // couldn't structure it, so honor the user's words via v1 keyword search.
       if (typeof isEmpty === "function" && isEmpty(validated)) {
-        if (isSystemInfoQuery(query)) {
-          renderSystemInfo(query);
-          return;
-        }
         renderKeywordResults(query);
         return;
       }
       if (typeof apply !== "function") {
-        renderKeywordResults(query, { statusPrefix: "AI search is unavailable; showing keyword matches only." });
+        renderKeywordResults(query);
         return;
       }
 
@@ -392,6 +510,7 @@ const DashboardSearchView = (() => {
       // A chip win supersedes any in-flight AI translation.
       searchRunToken += 1;
       setInterpreted("");
+      assistantActions = new Map();
       renderChips();
       // v3: the "Find documents by counterparty" chip groups every matter instead of
       // filtering by status. Branch on its kind so its rendering path is distinct.
@@ -409,6 +528,7 @@ const DashboardSearchView = (() => {
       activeQuery = "";
       activeSpec = null;
       activeInterpreted = "";
+      assistantActions = new Map();
       // Supersede any in-flight AI translation so a late resolve can't repopulate.
       searchRunToken += 1;
       setInterpreted("");
@@ -649,11 +769,31 @@ const DashboardSearchView = (() => {
         runRelationships(relationshipsButton.dataset.dashboardSearchRelationships, relationshipsButton);
         return;
       }
+      const assistantButton = event.target.closest("[data-dashboard-assistant-action]");
+      if (assistantButton) {
+        runAssistantAction(assistantButton.dataset.dashboardAssistantAction, assistantButton);
+        return;
+      }
       const button = event.target.closest("[data-dashboard-search-open]");
       if (!button) return;
       const matterId = button.dataset.dashboardSearchOpen;
       if (matterId && typeof openMatter === "function") openMatter(matterId);
     });
+
+    async function runAssistantAction(actionId, button) {
+      const action = assistantActions.get(String(actionId || ""));
+      if (!action || typeof confirmAssistantAction !== "function") return;
+      if (button) button.disabled = true;
+      try {
+        await confirmAssistantAction(action.payload || action);
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = "Generator opened. Review the draft details before generating.";
+        }
+      } finally {
+        if (button?.isConnected) button.disabled = false;
+      }
+    }
 
     renderChips();
     reset();
@@ -661,13 +801,29 @@ const DashboardSearchView = (() => {
     // this classic script. By window "load" every deferred module has executed,
     // so re-render the chips then to guarantee they appear even if no search or
     // matter-load refresh has happened yet.
-    window.addEventListener("load", () => renderChips(), { once: true });
+    window.addEventListener("load", () => {
+      renderChips();
+      const initialQuery = initialQueryFromLocation();
+      if (initialQuery && input && !String(input.value || "").trim()) {
+        input.value = initialQuery;
+        runTextSearch();
+      }
+    }, { once: true });
 
     return { refresh, renderChips, reset };
   }
 
   return { createController };
 })();
+
+function initialQueryFromLocation() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return String(params.get("dashboardSearch") || "").trim();
+  } catch (error) {
+    return "";
+  }
+}
 
 function createDashboardSearchController(options) {
   return DashboardSearchView.createController(options);

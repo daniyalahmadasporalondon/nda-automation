@@ -293,13 +293,6 @@ async function testAccessibleControlState(page) {
   });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
 
-  await page.locator("[data-session-account-toggle]").click();
-  assert.equal(await page.locator("[data-session-account-menu]").isVisible(), true);
-  await assertTextContains(page.locator("[data-session-account-menu]"), "Sign out");
-  assert.equal(await page.locator("[data-session-logout]").isVisible(), true);
-  await page.keyboard.press("Escape");
-  assert.equal(await page.locator("[data-session-account-menu]").isVisible(), false);
-
   assert.equal(await page.locator("#studioResultMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.locator("#studioFileMeta").getAttribute("aria-live"), "polite");
   assert.equal(await page.getByRole("tablist", { name: "Workspace" }).count(), 1);
@@ -2637,23 +2630,23 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
-  assert.equal(await page.locator('.repository-board [data-repository-count="in_review"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill(deleteStem);
   assert.equal(await page.locator(".repository-card").count(), 1);
   await assertTextContains(page.locator(".repository-card"), deleteStem);
-  assert.equal(await page.locator('.repository-board [data-repository-count="in_review"]').innerText(), "1");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "1");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill("no matching nda");
   assert.equal(await page.locator(".repository-card").count(), 0);
   await assertTextContains(page.locator('[data-repository-list="in_review"]'), "No matching documents");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill("");
   assert.equal(await page.locator(".repository-card").count(), 2);
-  assert.equal(await page.locator('.repository-board [data-repository-count="in_review"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await assertTextContains(deleteCard, "Delete matter and stored document?");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
-  assert.equal(await page.locator('.repository-board [data-repository-count="in_review"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await deleteCard.getByRole("button", { name: "Cancel delete matter" }).click();
   assert.equal(await deleteCard.getByRole("group", { name: "Delete matter confirmation" }).count(), 0);
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
@@ -2661,7 +2654,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await waitForRepositoryCount(page, "in_review", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
-  assert.equal(await page.locator('.repository-board [data-repository-count="reviewed"]').innerText(), "0");
+  assert.equal(await page.locator('[data-repository-count="reviewed"]').innerText(), "0");
   await assertTextContains(page.locator(".repository-card"), "Manual upload");
   await assertTextContains(page.locator(".repository-card"), "Manual Upload");
   await assertTextContains(page.locator(".repository-card"), "Manual upload of repository-matter");
@@ -4238,12 +4231,7 @@ async function testUserGmailSessionControls(page) {
         google_oauth_configured: true,
         login_url: "/auth/google/start",
         logout_url: "/api/auth/logout",
-        user: {
-          email: "alice@example.com",
-          id: "user_alice",
-          name: "Alice Reviewer",
-          picture: "https://example.com/alice.png",
-        },
+        user: { email: "alice@example.com", id: "user_alice", name: "Alice Reviewer" },
       }),
     });
   });
@@ -4302,37 +4290,16 @@ async function testUserGmailSessionControls(page) {
   });
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => document.querySelector("[data-session-avatar-image]")?.hidden === false);
-  assert.match(await page.locator("[data-session-account-toggle]").getAttribute("aria-label"), /Hi, Alice!/);
-  assert.equal((await page.locator("#sessionStrip").innerText()).includes("Signed in:"), false);
-  assert.equal((await page.locator("#sessionStrip").innerText()).includes("Gmail connected:"), false);
-  assert.equal(await page.locator("[data-session-avatar-image]").isVisible(), true);
-  assert.equal(await page.locator("[data-session-avatar-image]").getAttribute("src"), "https://example.com/alice.png");
-  assert.equal(await page.locator("[data-session-avatar-initial]").isVisible(), false);
-  const accountControlStyles = await page.locator("[data-session-account-toggle]").evaluate((node) => {
-    const styles = getComputedStyle(node);
-    return { borderWidth: styles.borderWidth, boxShadow: styles.boxShadow };
-  });
-  assert.deepEqual(accountControlStyles, { borderWidth: "0px", boxShadow: "none" });
+  await waitForText(page, "#sessionStrip", "Signed in: alice@example.com");
+  await waitForText(page, "#sessionStrip", "Gmail connected: alice@example.com");
   await assertTextContains(page.locator("#sessionStrip"), "Set NDA_ALLOWED_HOSTS to the deployed Render hostname.");
-  assert.equal(await page.locator("[data-session-account-menu]").isVisible(), false);
-  await page.locator("[data-session-account-toggle]").click();
-  assert.equal(await page.locator("[data-session-account-toggle]").getAttribute("aria-expanded"), "true");
-  assert.equal(await page.locator("[data-session-account-menu]").isVisible(), true);
-  await assertTextContains(page.locator("[data-session-account-menu]"), "Hi, Alice!");
-  assert.match(await page.locator("[data-session-account-menu]").innerText(), /Gmail: alice@example.com|Gmail setup required/);
-  assert.equal(await page.locator("[data-session-menu-avatar-image]").isVisible(), true);
-  assert.equal(await page.locator("[data-session-menu-avatar-image]").getAttribute("src"), "https://example.com/alice.png");
-  assert.equal(await page.locator("[data-session-logout]").isVisible(), true);
-  await assertTextContains(page.locator("[data-session-account-menu]"), "Sign out");
+  assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), true);
+  assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), false);
 
-  if (await page.locator("[data-session-gmail-sync]").isVisible()) {
-    assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), false);
-    const syncRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/import"));
-    await page.locator("[data-session-gmail-sync]").click();
-    const syncRequest = await syncRequestPromise;
-    assert.deepEqual(syncRequest.postDataJSON(), { limit: 25 });
-  }
+  const syncRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/import"));
+  await page.locator("[data-session-gmail-sync]").click();
+  const syncRequest = await syncRequestPromise;
+  assert.deepEqual(syncRequest.postDataJSON(), { limit: 25 });
 
   await page.getByRole("tab", { name: "Repository" }).click();
   await waitForText(page, "[data-repository-sync-status]", "Your last sync");
@@ -4349,17 +4316,13 @@ async function testUserGmailSessionControls(page) {
   assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 0);
   await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
 
-  await page.locator("[data-session-account-toggle]").click();
-  assert.equal(await page.locator("[data-session-account-menu]").isVisible(), true);
-  if (await page.locator("[data-session-gmail-disconnect]").isVisible()) {
-    const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));
-    await page.locator("[data-session-gmail-disconnect]").click();
-    await disconnectRequestPromise;
-    assert.deepEqual(disconnectPayload, { role: "all" });
-    await waitForText(page, "[data-session-account-menu]", "Gmail needs connection");
-    assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), true);
-    assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), false);
-  }
+  const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));
+  await page.locator("[data-session-gmail-disconnect]").click();
+  await disconnectRequestPromise;
+  assert.deepEqual(disconnectPayload, { role: "all" });
+  await waitForText(page, "#sessionStrip", "Gmail needs connection");
+  assert.equal(await page.locator("[data-session-gmail-connect]").isVisible(), true);
+  assert.equal(await page.locator("[data-session-gmail-sync]").isVisible(), false);
 
   await page.unroute("**/api/auth/status");
   await page.unroute("**/api/deployment/status");
@@ -6104,9 +6067,10 @@ function testPngBuffer(width, height) {
 }
 
 // Dashboard smart-search (v1): the search bar renders on the dashboard with the
-// a plain white search bar, free-text filtering to a real result, and clicking
-// that result opens the matter (reusing the existing repository open-matter flow).
-// Also asserts the page loads with no console errors.
+// two solid chips, a chip filters the loaded matters by workflow_state.status to
+// a real result, and clicking that result opens the matter (reusing the existing
+// repository open-matter flow). Also asserts the page loads with no console
+// errors.
 async function testDashboardSmartSearch(page) {
   const consoleErrors = [];
   page.on("console", (message) => {
@@ -6185,6 +6149,30 @@ async function testDashboardSmartSearch(page) {
       body: JSON.stringify({ matter }),
     });
   });
+  await page.route("**/api/dashboard/assistant", async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    const query = String(body.query || "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: "search_filter",
+        search: {
+          filters: {
+            status: null,
+            phase: null,
+            needs_attention: null,
+            human_gate: null,
+            has_issues: null,
+            text: query,
+            min_age_days: null,
+            sort: null,
+          },
+          interpreted: query ? `matching "${query}"` : "",
+        },
+      }),
+    });
+  });
   // The summary endpoint (v1.1 "Summarize a document"). Registered AFTER the
   // generic /api/matters/* route so it wins for the POST .../summary path. The
   // pending matter returns a grounded summary; the sent matter returns the
@@ -6220,93 +6208,23 @@ async function testDashboardSmartSearch(page) {
     });
   });
 
-  const mattersLoaded = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname === "/api/matters" && response.request().method() === "GET";
-  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await mattersLoaded;
 
-  // The search bar renders as a quiet white bar, without the old visible prompt
-  // card or quick-filter chip row.
+  // The search bar renders on the dashboard with the heading and both chips.
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
-  assert.equal(await page.locator("#dashboardSearchTitle").evaluate((node) => node.classList.contains("sr-only")), true);
-  assert.equal(await page.locator("#dashboardSearchChips").isVisible(), false);
-  assert.equal(await page.locator(".dashboard-search-sparkle").count(), 1);
-  const searchStyles = await searchSection.evaluate((node) => {
-    const section = getComputedStyle(node);
-    const field = getComputedStyle(node.querySelector(".dashboard-search-field"));
-    const submit = getComputedStyle(node.querySelector(".dashboard-search-submit"));
-    const sparkle = getComputedStyle(node.querySelector(".dashboard-search-sparkle"));
-    return {
-      backgroundImage: section.backgroundImage,
-      fieldBackground: field.backgroundColor,
-      submitBorderRadius: submit.borderRadius,
-      sparkleClipPath: sparkle.clipPath,
-      sparkleHeight: sparkle.height,
-      sparkleWidth: sparkle.width,
-    };
-  });
-  assert.equal(searchStyles.backgroundImage, "none");
-  assert.equal(searchStyles.fieldBackground, "rgb(255, 255, 255)");
-  assert.equal(searchStyles.submitBorderRadius, "50%");
-  assert.notEqual(searchStyles.sparkleClipPath, "none");
-  assert.ok(Number.parseFloat(searchStyles.sparkleHeight) >= 18);
-  assert.ok(Number.parseFloat(searchStyles.sparkleWidth) >= 18);
-
-  const dashboardMetrics = page.locator(".dashboard-metrics");
-  await dashboardMetrics.waitFor({ state: "visible" });
-  assert.equal(await page.locator(".dashboard-metric-card").count(), 4);
-  assert.equal(await page.locator(".dashboard-metric-icon[aria-hidden='true']").count(), 4);
-  assert.equal(await page.locator(".dashboard-metric-icon[tabindex]").count(), 0);
-  assert.equal(await page.locator(".dashboard-metric-icon.inbox svg[focusable='false']").count(), 1);
-  const metricLayout = await page.locator("#dashboardView").evaluate(() => {
-    const hero = document.querySelector(".dashboard-hero")?.getBoundingClientRect();
-    const metrics = document.querySelector(".dashboard-metrics")?.getBoundingClientRect();
-    const search = document.querySelector("[data-dashboard-search]")?.getBoundingClientRect();
-    const card = document.querySelector(".dashboard-metric-card");
-    const icon = document.querySelector(".dashboard-metric-icon");
-    const cardStyles = card ? getComputedStyle(card) : null;
-    const iconStyles = icon ? getComputedStyle(icon) : null;
-    return {
-      cardBackground: cardStyles?.backgroundColor,
-      cardBorderRadius: cardStyles?.borderRadius,
-      iconBackground: iconStyles?.backgroundColor,
-      iconBorderWidth: iconStyles?.borderWidth,
-      iconPointerEvents: iconStyles?.pointerEvents,
-      heroBottom: hero?.bottom ?? 0,
-      heroLeft: hero?.left ?? 0,
-      heroWidth: hero?.width ?? 0,
-      metricsTop: metrics?.top ?? 0,
-      metricsBottom: metrics?.bottom ?? 0,
-      metricsLeft: metrics?.left ?? 0,
-      metricsWidth: metrics?.width ?? 0,
-      searchTop: search?.top ?? 0,
-    };
-  });
-  assert.match(metricLayout.cardBackground, /rgba\(255, 255, 255, 0\.(5|6|7|8)/);
-  assert.equal(metricLayout.cardBorderRadius, "14px");
-  assert.equal(metricLayout.iconBackground, "rgba(0, 0, 0, 0)");
-  assert.equal(metricLayout.iconBorderWidth, "0px");
-  assert.equal(metricLayout.iconPointerEvents, "none");
-  assert.ok(metricLayout.heroBottom <= metricLayout.metricsTop);
-  assert.ok(metricLayout.metricsBottom <= metricLayout.searchTop);
-  assert.ok(Math.abs(metricLayout.heroLeft - metricLayout.metricsLeft) <= 1);
-  assert.ok(Math.abs(metricLayout.heroWidth - metricLayout.metricsWidth) <= 1);
-  await page.locator('[data-dashboard-metric-column="sent"]').click();
-  await page.waitForFunction(() => document.querySelector('[data-view="repository"]')?.classList.contains("active"));
-  await page.waitForFunction(() => document.querySelector('[data-repository-list="sent"]')?.closest(".repository-column")?.classList.contains("is-dashboard-target"));
-  await page.locator('[data-tab="dashboard"]').click();
-
+  await assertTextContains(searchSection, "What are you looking for?");
   // Regression guard: the dashboard view owns its own vertical scroll, so a long
   // results list scrolls instead of being clipped by the fixed app-shell frame.
   const dashboardOverflowY = await page.locator("#dashboardView").evaluate((node) => getComputedStyle(node).overflowY);
   assert.equal(dashboardOverflowY, "auto");
+  const pendingChip = page.locator('[data-dashboard-search-chip="pending_approval"]');
+  const signatureChip = page.locator('[data-dashboard-search-chip="awaiting_signature"]');
+  await assertTextContains(pendingChip, "pending approval");
+  await assertTextContains(signatureChip, "awaiting signature");
 
-  // Free text can still filter to exactly the awaiting_approval matter.
-  await page.fill("#dashboardSearchInput", "awaiting approval");
-  await page.locator("#dashboardSearchForm").press("Enter");
+  // The "pending approval" chip filters to exactly the awaiting_approval matter.
+  await pendingChip.click();
   await page.waitForFunction(
     () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
   );
@@ -6314,29 +6232,7 @@ async function testDashboardSmartSearch(page) {
   assert.equal(await results.count(), 1);
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
   assert.equal(await results.first().getAttribute("data-dashboard-search-open"), "m_pending");
-  const resultStyles = await page.locator("#dashboardSearchResults .dashboard-search-result-row").first().evaluate((node) => {
-    const button = getComputedStyle(node.querySelector(".dashboard-search-result-button"));
-    const title = getComputedStyle(node.querySelector(".dashboard-search-result-title"));
-    const status = getComputedStyle(node.querySelector(".dashboard-search-result-status"));
-    const summarize = getComputedStyle(node.querySelector(".dashboard-search-result-summarize"));
-    const relationships = getComputedStyle(node.querySelector(".dashboard-search-result-relationships"));
-    return {
-      buttonBackground: button.backgroundColor,
-      titleColor: title.color,
-      statusColor: status.color,
-      summarizeColor: summarize.color,
-      relationshipsColor: relationships.color,
-    };
-  });
-  assert.notEqual(resultStyles.buttonBackground, "rgba(255, 255, 255, 0.1)");
-  assert.notEqual(resultStyles.titleColor, "rgb(255, 255, 255)");
-  assert.notEqual(resultStyles.statusColor, "rgb(255, 255, 255)");
-  assert.notEqual(resultStyles.summarizeColor, "rgb(255, 255, 255)");
-  assert.notEqual(resultStyles.relationshipsColor, "rgb(255, 255, 255)");
-  assert.equal(await dashboardMetrics.locator('[data-repository-count="gmail_demo"]').innerText(), "0");
-  assert.equal(await dashboardMetrics.locator('[data-repository-count="in_review"]').innerText(), "2");
-  assert.equal(await dashboardMetrics.locator('[data-repository-count="reviewed"]').innerText(), "0");
-  assert.equal(await dashboardMetrics.locator('[data-repository-count="sent"]').innerText(), "1");
+  assert.equal(await pendingChip.getAttribute("aria-pressed"), "true");
 
   // Free-text keyword search matches subject; non-matches show the empty state.
   await page.fill("#dashboardSearchInput", "globex");
@@ -6353,8 +6249,7 @@ async function testDashboardSmartSearch(page) {
   );
 
   // Clicking a result opens that matter via the existing repository flow.
-  await page.fill("#dashboardSearchInput", "mutual");
-  await page.locator("#dashboardSearchForm").press("Enter");
+  await pendingChip.click();
   await page.waitForFunction(
     () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
   );
@@ -6416,14 +6311,35 @@ async function testDashboardSmartSearch(page) {
     "Summary unavailable right now.",
   );
 
+  // --- "Find documents by counterparty" (v3 grouping chip) ------------------
+  // The chip groups every loaded matter under quiet counterparty-name headers, each
+  // reusing the standard result rows. Honest UX: the header is the derived name as-is.
+  const byCounterpartyChip = page.locator('[data-dashboard-search-chip="by_counterparty"]');
+  await assertTextContains(byCounterpartyChip, "by counterparty");
+  await byCounterpartyChip.click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("#dashboardSearchResults .dashboard-search-group").length === 2,
+  );
+  const groupNames = await page.$$eval(
+    "#dashboardSearchResults .dashboard-search-group-name",
+    (nodes) => nodes.map((n) => n.textContent.trim()),
+  );
+  // Two counterparties: Acme (first appearance) then Globex. Names shown as-is.
+  assert.deepEqual(groupNames, ["Acme Robotics Ltd", "Globex Ltd"]);
+  // The Acme group lists its two matters; both standard rows are present under it.
+  const acmeGroup = page.locator("#dashboardSearchResults .dashboard-search-group").first();
+  await assertTextContains(acmeGroup, "Acme Mutual NDA");
+  await assertTextContains(acmeGroup, "Initech Confidentiality Agreement");
+  assert.equal(
+    await acmeGroup.locator("[data-dashboard-search-open]").count(),
+    2,
+    "expected the Acme counterparty group to list both of its matters",
+  );
+  assert.equal(await byCounterpartyChip.getAttribute("aria-pressed"), "true");
+
   // --- "Show how documents relate" (v3 Relationships expander) ---------------
   // The per-row Relationships affordance expands that matter's document lineage inline
   // as a factual timeline — built from the matter's own artifacts, NOT an AI call.
-  await page.fill("#dashboardSearchInput", "mutual");
-  await page.locator("#dashboardSearchForm").press("Enter");
-  await page.waitForFunction(
-    () => document.querySelectorAll('#dashboardSearchResults [data-dashboard-search-relationships="m_pending"]').length === 1,
-  );
   const pendingRelationships = page.locator('[data-dashboard-search-relationships="m_pending"]').first();
   await pendingRelationships.click();
   const lineagePanel = page.locator('[data-dashboard-search-lineage-for="m_pending"]').first();
@@ -6456,11 +6372,6 @@ async function testDashboardSmartSearch(page) {
   );
 
   // A single-artifact matter shows the friendly "No earlier versions yet." line.
-  await page.fill("#dashboardSearchInput", "globex");
-  await page.locator("#dashboardSearchForm").press("Enter");
-  await page.waitForFunction(
-    () => document.querySelectorAll('#dashboardSearchResults [data-dashboard-search-relationships="m_sent"]').length === 1,
-  );
   const sentRelationships = page.locator('[data-dashboard-search-relationships="m_sent"]').first();
   await sentRelationships.click();
   await page.waitForFunction(
@@ -6498,11 +6409,10 @@ async function testDashboardSmartSearch(page) {
   );
 }
 
-// v2: the free-text box becomes a natural-language query. We mock /search-intent so
-// no AI/network is involved. THE GOLDEN RULE under test: the mock returns ONLY a
-// structured filter spec (never matters); the CLIENT validates + applies it to the
-// real state.matters and shows the interpreted line. We then exercise the
-// fall-back-to-keyword path (a {fallback:true} signal) so the box always works.
+// Assistant bar: the free-text box calls /dashboard/assistant. Search-filter
+// responses still validate + apply structured filters to real state.matters, while
+// repository answers, confirmation-required Generator actions, and unsupported
+// messages render as assistant cards.
 async function testDashboardSmartSearchV2(page) {
   const consoleErrors = [];
   page.on("console", (message) => {
@@ -6552,40 +6462,107 @@ async function testDashboardSmartSearchV2(page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters }) });
   });
 
-  // The search-intent endpoint. The model's only output is a structured filter
-  // spec (or a {fallback:true} signal) — NEVER matters. The first query maps to a
-  // real filter; the second query triggers the graceful fallback.
-  const intentRequests = [];
-  await page.route("**/api/dashboard/search-intent", async (route) => {
+  const assistantRequests = [];
+  await page.route("**/api/dashboard/assistant", async (route) => {
     const body = JSON.parse(route.request().postData() || "{}");
-    intentRequests.push(body.query);
-    if (/fall ?back|globex|initech|ai|system|help|working/i.test(body.query || "")) {
-      // Simulate AI degradation: the box must fall back to v1 keyword search.
+    const query = String(body.query || "");
+    assistantRequests.push(query);
+    if (/how many/i.test(query)) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ filters: null, fallback: true, reason: "ai_unavailable" }),
+        body: JSON.stringify({
+          intent: "repository_question",
+          question: "count_in_review",
+          answer: { text: "2 documents are in review.", count: 2, phase: "review" },
+          citations: [
+            { matter_id: "m_old_review", title: "Acme Mutual NDA", workflow_phase: "review" },
+            { matter_id: "m_fresh_review", title: "Globex One-Way NDA", workflow_phase: "review" },
+          ],
+        }),
       });
       return;
     }
-    // A validated spec: matters stuck in review for over a week. The CLIENT applies
-    // it to the real matters — only m_old_review qualifies (30 days old, in review).
+    if (/generate/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "draft_action_request",
+          action: "open_generator",
+          requires_confirmation: true,
+          message: "I can help start an NDA draft. Open the Generator, review the intake, then choose Generate when you are ready.",
+          generator: {
+            prefill: { source: "dashboard_assistant", prompt: query },
+            missing_fields: ["signing_entity", "counterparty_name", "purpose"],
+          },
+          side_effects: [],
+        }),
+      });
+      return;
+    }
+    if (/unsupported/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "unsupported",
+          message: "I can search matters, answer repository status questions, or help start an NDA draft. I cannot do that request yet.",
+        }),
+      });
+      return;
+    }
+    if (/globex/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "search_filter",
+          search: {
+            filters: {
+              status: null,
+              phase: null,
+              needs_attention: null,
+              human_gate: null,
+              has_issues: null,
+              text: "Globex",
+              min_age_days: null,
+              sort: null,
+            },
+            interpreted: 'matching "Globex"',
+          },
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        filters: {
-          status: null,
-          phase: "review",
-          needs_attention: null,
-          human_gate: null,
-          has_issues: null,
-          text: null,
-          min_age_days: 7,
-          sort: null,
+        intent: "search_filter",
+        search: {
+          filters: {
+            status: null,
+            phase: "review",
+            needs_attention: null,
+            human_gate: null,
+            has_issues: null,
+            text: null,
+            min_age_days: 7,
+            sort: null,
+          },
+          interpreted: "In review · older than 7 days",
         },
-        interpreted: "In review · older than 7 days",
       }),
+    });
+  });
+  let generateCalls = 0;
+  await page.route("**/api/generate-nda", async (route) => {
+    generateCalls += 1;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Generate should not be called by dashboard assistant confirmation." }),
     });
   });
   await page.route("**/api/gmail/status", async (route) => {
@@ -6596,15 +6573,11 @@ async function testDashboardSmartSearchV2(page) {
     });
   });
 
-  const mattersLoaded = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname === "/api/matters" && response.request().method() === "GET";
-  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await mattersLoaded;
 
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
+  await page.waitForFunction(() => typeof state !== "undefined" && Array.isArray(state.matters) && state.matters.length === 3);
 
   // --- Natural-language query -> AI-translated filter applied to real matters ---
   await page.fill("#dashboardSearchInput", "anything stuck in review for more than a week");
@@ -6624,40 +6597,50 @@ async function testDashboardSmartSearchV2(page) {
   assert.equal(await results.count(), 1);
   assert.equal(await results.first().getAttribute("data-dashboard-search-open"), "m_old_review");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
-  assert.ok(intentRequests.length >= 1, "expected a POST to the search-intent endpoint");
+  assert.ok(assistantRequests.length >= 1, "expected a POST to the assistant endpoint");
 
-  // --- Fallback path: AI degrades -> v1 deterministic keyword search runs --------
-  // "globex" triggers the {fallback:true} signal; the box must still work, filtering
-  // by keyword. The interpreted line is hidden on the fallback path.
+  // --- Assistant search_filter with keyword text still filters real matters -----
   await page.fill("#dashboardSearchInput", "globex");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForFunction(
     () => document.querySelector("#dashboardSearchResults")?.innerText.includes("Globex One-Way NDA"),
   );
   await assertTextContains(page.locator("#dashboardSearchResults"), "Globex One-Way NDA");
-  await assertTextContains(page.locator("#dashboardSearchResultsStatus"), "AI search is unavailable; showing keyword matches only.");
-  // Exactly the keyword match surfaces (not the AI-filter result), and the
-  // interpreted line is cleared since this is the v1 fallback.
   await page.waitForFunction(
     () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
   );
-  assert.equal(await page.locator("#dashboardSearchInterpreted").isHidden(), true);
+  await assertTextContains(page.locator("#dashboardSearchInterpreted"), 'Showing: matching "Globex"');
 
-  // --- System/help query: explain what the AI search does instead of looking broken.
-  await page.fill("#dashboardSearchInput", "is the AI search working in this system");
+  // --- Repository question renders a readable answer + citations ---------------
+  await page.fill("#dashboardSearchInput", "How many are in review?");
   await page.locator("#dashboardSearchForm").press("Enter");
-  await page.waitForFunction(
-    () => document.querySelector(".dashboard-search-system-answer")?.innerText.includes("Dashboard AI search"),
-  );
-  await assertTextContains(page.locator("#dashboardSearchResultsStatus"), "AI search is unavailable right now");
-  await assertTextContains(page.locator(".dashboard-search-system-answer"), "translates natural-language document questions");
-  await assertTextContains(page.locator(".dashboard-search-system-answer"), "keyword search only");
-  assert.equal(await page.locator("#dashboardSearchResults [data-dashboard-search-open]").count(), 0);
+  await page.waitForSelector('[data-dashboard-assistant-response="repository_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "2 documents are in review.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
 
-  // The simplified UI keeps filtering in the search bar rather than exposing
-  // quick-filter chips.
-  await page.fill("#dashboardSearchInput", "initech");
+  // --- Action request requires confirmation and only opens/prefills Generator ---
+  await page.goto(`${BASE_URL}/?dashboardSearch=Generate+an+NDA`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-dashboard-search]");
+  await page.waitForSelector('[data-dashboard-assistant-response="draft_action_request"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "No document will be generated");
+  await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#draftIntakeProjectPurpose").inputValue(), "Generate an NDA");
+  assert.equal(generateCalls, 0, "dashboard assistant must not silently call /api/generate-nda");
+
+  await page.locator("#dashboardTab").click();
+  await page.waitForSelector("#dashboardView:not([hidden])");
+
+  // --- Unsupported requests render a clear message -----------------------------
+  await page.fill("#dashboardSearchInput", "unsupported command please");
   await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
+
+  // The two v1 chips still work unchanged.
+  await page.locator('[data-dashboard-search-chip="awaiting_signature"]').click();
   await page.waitForFunction(
     () => document.querySelectorAll("#dashboardSearchResults [data-dashboard-search-open]").length === 1,
   );
@@ -6667,7 +6650,8 @@ async function testDashboardSmartSearchV2(page) {
   );
 
   await page.unroute("**/api/matters");
-  await page.unroute("**/api/dashboard/search-intent");
+  await page.unroute("**/api/dashboard/assistant");
+  await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/gmail/status");
 
   const unexpectedErrors = consoleErrors.filter((text) => !/escapeHtml is not defined/.test(text));
@@ -6766,6 +6750,7 @@ async function testInboundNotificationToast(page) {
 
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/*");
+  await page.unroute("**/api/dashboard/assistant");
   await page.unroute("**/api/gmail/status");
 }
 
@@ -6788,7 +6773,7 @@ async function waitForText(page, selector, expected) {
 
 async function waitForRepositoryCount(page, column, expected) {
   await page.waitForFunction(
-    ({ column, expected }) => document.querySelector(`.repository-board [data-repository-count="${column}"]`)?.textContent.trim() === expected,
+    ({ column, expected }) => document.querySelector(`[data-repository-count="${column}"]`)?.textContent.trim() === expected,
     { column, expected },
   );
 }

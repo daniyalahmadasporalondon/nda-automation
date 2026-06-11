@@ -48,6 +48,7 @@ import {
 } from "../../static/js/modules/greeting.mjs";
 import {
   COUNTERPARTY_UNKNOWN,
+  DASHBOARD_ASSISTANT_ENDPOINT,
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
   SUMMARY_LABEL,
@@ -1462,6 +1463,7 @@ assert.equal(matterTitle({}), "Untitled NDA");
 assert.equal(summaryEndpoint("matter_abc123"), "/api/matters/matter_abc123/summary");
 assert.equal(summaryEndpoint("a/b c"), "/api/matters/a%2Fb%20c/summary");
 assert.equal(summaryEndpoint(""), "/api/matters//summary");
+assert.equal(DASHBOARD_ASSISTANT_ENDPOINT, "/api/dashboard/assistant");
 
 // A successful payload is normalized to the rendered fields, always carrying the
 // "AI summary" label (the golden rule: a generated summary is never mistaken for
