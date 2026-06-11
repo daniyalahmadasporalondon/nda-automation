@@ -181,12 +181,16 @@ def _build_source_redline_docx_package(
                 from .fill_export import apply_clean_fills_to_source_document  # noqa: PLC0415
 
                 apply_clean_fills_to_source_document(document_root, list(clean_fills), review_result)
-            _apply_redline_edits_to_source_document(
+            source_paragraph_by_original_index = _targetable_source_paragraphs_by_index(document_root)
+            source_comments = _targeted_source_comments(
+                review_result,
+                source_paragraph_by_original_index,
+            )
+            source_paragraph_by_final_index = _apply_redline_edits_to_source_document(
                 document_root,
                 review_result.get("redline_edits", []),
                 review_result.get("paragraphs", []),
             )
-            source_comments = _targeted_source_comments(review_result, document_root)
             assigned_comments, comments_xml = _comments_xml_with_appended_comments(
                 source_archive.read("word/comments.xml") if "word/comments.xml" in source_names else None,
                 source_comments,
@@ -202,7 +206,10 @@ def _build_source_redline_docx_package(
                 else b""
             )
             if assigned_comments:
-                _apply_comment_anchors_to_source_document(document_root, assigned_comments)
+                _apply_comment_anchors_to_source_document(
+                    source_paragraph_by_final_index,
+                    assigned_comments,
+                )
             _ensure_document_section_properties(document_root)
 
             overrides: Dict[str, bytes] = {
@@ -648,8 +655,12 @@ def _apply_redline_edits_to_source_document(
     document_root: ET.Element,
     redlines: object,
     review_paragraphs: object = None,
-) -> None:
+) -> Dict[int, ET.Element]:
     source_paragraphs = _indexed_source_paragraphs(document_root)
+    source_paragraph_by_index = {
+        paragraph.source_index: paragraph.paragraph
+        for paragraph in source_paragraphs
+    }
     redlines_by_source_index, unresolved_redlines = _redlines_by_source_paragraph(
         redlines,
         source_paragraphs,
@@ -658,7 +669,7 @@ def _apply_redline_edits_to_source_document(
     if unresolved_redlines:
         raise DocxExportError(_unanchored_redline_error(unresolved_redlines))
     if not redlines_by_source_index:
-        return
+        return source_paragraph_by_index
 
     revision_id = _next_revision_id(document_root)
     for source_paragraph in reversed(source_paragraphs):
@@ -689,6 +700,7 @@ def _apply_redline_edits_to_source_document(
             )
         if block_paragraphs:
             source_paragraph.parent[paragraph_position] = block_paragraphs[0]
+            source_paragraph_by_index[source_paragraph.source_index] = block_paragraphs[0]
             for offset, block_paragraph in enumerate(block_paragraphs[1:], start=1):
                 source_paragraph.parent.insert(paragraph_position + offset, block_paragraph)
             insert_position = paragraph_position + len(block_paragraphs)
@@ -707,6 +719,7 @@ def _apply_redline_edits_to_source_document(
                     insert_position += 1
                 else:
                     source_paragraph.parent[paragraph_position] = primary_paragraph
+                    source_paragraph_by_index[source_paragraph.source_index] = primary_paragraph
                     primary_applied = True
 
         for insertion in [edit for edit in edits if redline_edit_contract.is_insertion_redline_edit(edit)]:
@@ -715,6 +728,7 @@ def _apply_redline_edits_to_source_document(
                 source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
                 revision_id += 1
+    return source_paragraph_by_index
 
 
 def _unanchored_redline_error(redlines: List[RedlineEdit]) -> str:
@@ -910,14 +924,16 @@ def _targeted_report_comments(review_result: ReviewResult) -> List[dict]:
     return targeted
 
 
-def _targeted_source_comments(review_result: ReviewResult, document_root: ET.Element) -> List[dict]:
+def _targeted_source_comments(
+    review_result: ReviewResult,
+    source_paragraph_by_index: Dict[int, ET.Element],
+) -> List[dict]:
     comments = _prepared_review_comments(review_result)
     review_paragraphs = _review_paragraphs_by_id(review_result.get("paragraphs", []))
-    source_paragraph_indexes = {paragraph.source_index for paragraph in _indexed_source_paragraphs(document_root)}
     targeted: List[dict] = []
     for comment in comments:
         source_index = _comment_source_index(comment, review_paragraphs)
-        if source_index is None or source_index not in source_paragraph_indexes:
+        if source_index is None or source_index not in source_paragraph_by_index:
             continue
         targeted.append({
             **comment,
@@ -1036,11 +1052,10 @@ def _apply_comment_anchors_to_report_document(
             _apply_comment_anchor(paragraph, comment)
 
 
-def _apply_comment_anchors_to_source_document(document_root: ET.Element, comments: List[dict]) -> None:
-    source_paragraph_by_index = {
-        paragraph.source_index: paragraph.paragraph
-        for paragraph in _indexed_source_paragraphs(document_root)
-    }
+def _apply_comment_anchors_to_source_document(
+    source_paragraph_by_index: Dict[int, ET.Element],
+    comments: List[dict],
+) -> None:
     for comment in comments:
         # Replies (non-empty parent_id) are comment entries with NO in-document
         # range; only the thread root gets the commentRangeStart/End + reference run.
@@ -1049,6 +1064,13 @@ def _apply_comment_anchors_to_source_document(document_root: ET.Element, comment
         paragraph = source_paragraph_by_index.get(comment.get("_source_index"))
         if paragraph is not None:
             _apply_comment_anchor(paragraph, comment)
+
+
+def _targetable_source_paragraphs_by_index(document_root: ET.Element) -> Dict[int, ET.Element]:
+    return {
+        paragraph.source_index: paragraph.paragraph
+        for paragraph in _indexed_source_paragraphs(document_root)
+    }
 
 
 def _label_value(label: str, value: object) -> str:

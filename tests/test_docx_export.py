@@ -2667,6 +2667,66 @@ class DocxExportTests(unittest.TestCase):
         self.assertLess(start_index, selected_index)
         self.assertLess(selected_index, end_index)
 
+    def test_source_docx_export_keeps_comment_anchor_on_original_paragraph_after_insert_redline(self):
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement includes ordinary operational terms.",
+            "Insert the new carve-out after this paragraph.",
+            "Comment target should remain here.",
+        ])
+        review_result = {
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": "Intro paragraph."},
+                {
+                    "id": "p2",
+                    "index": 2,
+                    "source_index": 2,
+                    "text": "This Agreement includes ordinary operational terms.",
+                },
+                {
+                    "id": "p3",
+                    "index": 3,
+                    "source_index": 3,
+                    "text": "Insert the new carve-out after this paragraph.",
+                },
+                {
+                    "id": "p4",
+                    "index": 4,
+                    "source_index": 4,
+                    "text": "Comment target should remain here.",
+                },
+            ],
+            "review_comments": [
+                {
+                    "author": "Reviewer",
+                    "paragraph_id": "p4",
+                    "text": "Comment belongs to the original fourth paragraph.",
+                }
+            ],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "paragraph_id": "p3",
+                    "paragraph_index": 3,
+                    "source_index": 3,
+                    "action": REDLINE_INSERT_AFTER_PARAGRAPH,
+                    "insert_text": "Inserted redline paragraph must not steal the comment.",
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _comments_root, document_root, comments_xml, _document_xml = docx_comments(redlined_docx)
+        self.assertIn("Comment belongs to the original fourth paragraph.", comments_xml)
+
+        anchored_paragraph = self._paragraph_with_comment_start(document_root, "0")
+        self.assertIsNotNone(anchored_paragraph)
+        anchored_text = revision_text_for_state(anchored_paragraph, accepted=True)
+        self.assertIn("Comment target should remain here.", anchored_text)
+        self.assertNotIn("Inserted redline paragraph must not steal the comment.", anchored_text)
+
     def test_review_report_docx_writes_native_word_comments(self):
         result = review_nda(
             "This Agreement shall be governed by the laws of California.\n\n"
@@ -2921,6 +2981,14 @@ class DocxExportTests(unittest.TestCase):
             if comment.attrib.get(f"{{{W_NS['w']}}}id") == "0":
                 paragraph = comment.find(".//w:p", W_NS)
                 return paragraph.attrib.get(f"{{{W14_NS['w14']}}}paraId")
+        return None
+
+    @staticmethod
+    def _paragraph_with_comment_start(document_root, comment_id):
+        for paragraph in document_root.findall(".//w:p", W_NS):
+            for marker in paragraph.findall(".//w:commentRangeStart", W_NS):
+                if marker.attrib.get(f"{{{W_NS['w']}}}id") == comment_id:
+                    return paragraph
         return None
 
     def test_source_docx_export_preserves_ignorable_namespace_prefixes(self):
