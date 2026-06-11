@@ -224,7 +224,7 @@ def handle_review_docx_export(handler) -> None:
         handler._send_json({"error": str(error)}, status=404)
         return
     except redline_export_service.PdfSourceRedlineUnavailableError as error:
-        handler._send_json({"error": str(error)}, status=409)
+        handler._send_json(error.payload, status=error.status)
         return
     except DocxExtractionError as error:
         handler._send_json({"error": str(error)}, status=400)

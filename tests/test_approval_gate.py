@@ -24,7 +24,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from nda_automation import approval, matter_store
-from nda_automation import pdf_export_service
+from nda_automation import pdf_docx_reconstruction, pdf_export_service
 from nda_automation import redline_export_service
 from nda_automation import server as server_module
 from nda_automation.redline_export_service import RedlineExport
@@ -276,9 +276,9 @@ class ApprovalEndpointTests(unittest.TestCase):
     def _seed_matter(self, *, resolve_all=False, source_docx=True):
         review_result = _review_result_with_runtime()
         triage = triage_review_result(review_result)
-        document_bytes = _docx(NDA_PARAGRAPHS) if source_docx else b"not-a-docx"
+        document_bytes = _docx(NDA_PARAGRAPHS) if source_docx else b"%PDF-1.7\nsource pdf\n%%EOF\n"
         matter = matter_store.create_matter(
-            source_filename="mutual-nda.docx",
+            source_filename="mutual-nda.docx" if source_docx else "mutual-nda.pdf",
             document_bytes=document_bytes,
             extracted_text="\n\n".join(NDA_PARAGRAPHS),
             review_result=review_result,
@@ -478,6 +478,40 @@ class ApprovalEndpointTests(unittest.TestCase):
 
         self.assertEqual(status, 503)
         self.assertIn("LibreOffice/soffice", payload["error"])
+
+    def test_reviewed_docx_reports_unavailable_pdf_reconstruction_engine(self):
+        matter_id, _flagged = self._seed_matter(resolve_all=True, source_docx=False)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
+
+        self.assertEqual(status, 503)
+        self.assertIn("pdf2docx", payload["error"])
+        reconstruction = payload["pdf_docx_reconstruction"]
+        self.assertEqual(reconstruction["status"], "unavailable")
+        self.assertEqual(reconstruction["filename"], "mutual-nda.docx")
+        self.assertEqual(reconstruction["converter"]["mode"], "pdf_to_docx_reconstruction")
+        self.assertEqual(reconstruction["fidelity"]["output"], "reviewed_docx")
+        self.assertEqual(
+            reconstruction["fidelity"]["message"],
+            pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE,
+        )
+
+    def test_reviewed_pdf_reports_unavailable_pdf_reconstruction_engine(self):
+        matter_id, _flagged = self._seed_matter(resolve_all=True, source_docx=False)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-pdf")
+
+        self.assertEqual(status, 503)
+        self.assertIn("pdf2docx", payload["error"])
+        reconstruction = payload["pdf_docx_reconstruction"]
+        self.assertEqual(reconstruction["status"], "unavailable")
+        self.assertEqual(reconstruction["filename"], "mutual-nda.docx")
+        self.assertEqual(reconstruction["converter"]["mode"], "pdf_to_docx_reconstruction")
+        self.assertEqual(reconstruction["fidelity"]["output"], "reviewed_docx")
 
     def test_reviewed_docx_missing_matter_is_404(self):
         status, payload, _ = self.request("GET", "/api/matters/matter_missing/reviewed-docx")

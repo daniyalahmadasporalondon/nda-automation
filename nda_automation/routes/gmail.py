@@ -302,7 +302,7 @@ def handle_gmail_send_redline(handler) -> None:
         }, status=409)
         return
     except redline_export_service.PdfSourceRedlineUnavailableError as error:
-        handler._send_json({"error": str(error)}, status=409)
+        handler._send_json(error.payload, status=error.status)
         return
     except DocxExtractionError as error:
         handler._send_json({"error": str(error)}, status=400)

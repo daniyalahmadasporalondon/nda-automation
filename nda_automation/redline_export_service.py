@@ -47,6 +47,19 @@ class MatterSourceTextChangedError(DocxExportError):
 class PdfSourceRedlineUnavailableError(DocxExportError):
     """Raised when a PDF-source matter is asked for a tracked-change Word export."""
 
+    def __init__(self, message: str, *, source_filename: str = ""):
+        super().__init__(message)
+        self.status = 503
+        self.payload = {
+            "error": message,
+            "pdf_docx_reconstruction": {
+                "status": "unavailable",
+                "filename": pdf_docx_reconstruction.reconstructed_docx_filename(source_filename),
+                "converter": pdf_docx_reconstruction.converter_health(),
+                "fidelity": pdf_docx_reconstruction.reconstruction_fidelity_payload(output_format="reviewed_docx"),
+            },
+        }
+
 
 class MatterNotFoundError(DocxExportError):
     pass
@@ -120,7 +133,8 @@ def _build_redline_export(
             reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(source_document_bytes, source_filename)
         except pdf_docx_reconstruction.PdfDocxReconstructionUnavailableError as exc:
             raise PdfSourceRedlineUnavailableError(
-                pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE
+                pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE,
+                source_filename=source_filename,
             ) from exc
         except pdf_docx_reconstruction.PdfDocxReconstructionFailedError as exc:
             raise DocxExportError(str(exc)) from exc
