@@ -5678,6 +5678,14 @@ button.active-clause-status:hover {
   gap: 10px;
 }
 
+.studio-detail-block.proposed-change-card.fail {
+  border-color: rgba(155, 64, 64, 0.24);
+}
+
+.studio-detail-block.proposed-change-card.review {
+  border-color: rgba(176, 118, 35, 0.26);
+}
+
 .proposed-change-head {
   align-items: center;
   display: flex;
@@ -5703,6 +5711,29 @@ button.active-clause-status:hover {
 
 .proposed-change-summary {
   margin: 0;
+}
+
+.proposed-change-outcome {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+}
+
+.proposed-change-outcome strong {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.proposed-change-outcome span {
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 
 .proposed-change-facts {
@@ -5777,11 +5808,13 @@ button.active-clause-status:hover {
 
 .proposed-change-rationale,
 .proposed-change-safety-note,
+.proposed-change-guidance,
 .proposed-change-empty {
   margin: 0;
 }
 
-.proposed-change-rationale strong {
+.proposed-change-rationale strong,
+.proposed-change-guidance strong {
   color: var(--ink-muted);
   display: block;
   font-size: 9px;
@@ -5792,6 +5825,7 @@ button.active-clause-status:hover {
 }
 
 .proposed-change-safety-note,
+.proposed-change-guidance,
 .proposed-change-empty {
   background: var(--bg-soft);
   border: 1px solid var(--border);

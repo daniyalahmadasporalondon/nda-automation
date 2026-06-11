@@ -1207,7 +1207,7 @@ function renderStudioDetail() {
   // data is present.
   const citation = renderClauseCitationBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
-  const proposedChange = renderProposedChangeBlock(clause);
+  const proposedChange = renderProposedChangeBlock(clause, status);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   // Audit/context detail beneath the primary finding, gathered into a single
   // collapsible Reasoning trail (#22). Self-gates to "" when the clause carries
@@ -1558,7 +1558,7 @@ function renderEvidenceBlock(clause) {
   return '<div class="studio-detail-block studio-detail-evidence muted"><small>Evidence</small><p>No matching paragraph identified.</p></div>';
 }
 
-function renderProposedChangeBlock(clause) {
+function renderProposedChangeBlock(clause, status = clauseDisplayStatus(clause)) {
   const change = proposedChangeForClause(clause);
   if (!change) return "";
   const action = String(change.action || "").trim();
@@ -1571,11 +1571,16 @@ function renderProposedChangeBlock(clause) {
   const safetyReason = String(safety.reason || "").trim();
   const requiresApproval = safety.requires_human_approval !== false;
   const actionClass = action.replace(/[^a-z0-9_-]/gi, "-") || "unknown";
+  const outcome = proposedChangeOutcome(change, clause, status, action, requiresApproval);
   return `
-    <div class="studio-detail-block proposed-change-card ${actionClass}">
+    <div class="studio-detail-block proposed-change-card ${actionClass} ${escapeHtml(outcome.tone)}">
       <div class="proposed-change-head">
-        <small>Proposed change</small>
+        <small>${escapeHtml(outcome.label)}</small>
         <span class="proposed-change-approval">${escapeHtml(requiresApproval ? "Requires human approval" : "Ready for review")}</span>
+      </div>
+      <div class="proposed-change-outcome">
+        <strong>${escapeHtml(outcome.title)}</strong>
+        <span>${escapeHtml(outcome.description)}</span>
       </div>
       <p class="proposed-change-summary">${escapeHtml(issueSummary || "Review the suggested clause change before export or send.")}</p>
       <dl class="proposed-change-facts">
@@ -1598,10 +1603,52 @@ function renderProposedChangeBlock(clause) {
       </dl>
       ${renderProposedChangeText(sourceText, proposedText, action)}
       ${renderProposedChangeEvidence(evidence)}
+      <p class="proposed-change-guidance"><strong>Reviewer action</strong>${escapeHtml(proposedChangeGuidance(action, requiresApproval))}</p>
       ${rationale ? `<p class="proposed-change-rationale"><strong>Rationale</strong>${escapeHtml(rationale)}</p>` : ""}
       ${safetyReason ? `<p class="proposed-change-safety-note">${escapeHtml(safetyReason)}</p>` : ""}
     </div>
   `;
+}
+
+function proposedChangeOutcome(change, clause, status, action, requiresApproval) {
+  const rawDecision = String(change.decision || clause?.decision || "").trim().toLowerCase();
+  const isReview = rawDecision === "review" || status?.needsReview || action === "needs_human_choice" || action === "comment_only";
+  const isFail = rawDecision === "fail" || status?.fails;
+  if (isReview && !isFail) {
+    return {
+      description: requiresApproval
+        ? "Human judgment is required before any wording changes are exported or sent."
+        : "Review the finding before deciding whether to change the document.",
+      label: "Review outcome",
+      title: action === "comment_only" ? "Reviewer comment only" : "Human judgment needed",
+      tone: "review",
+    };
+  }
+  return {
+    description: requiresApproval
+      ? "A concrete change is available, but it still waits for reviewer approval."
+      : "A concrete change is ready for reviewer verification.",
+    label: "Fail outcome",
+    title: proposedChangeActionHeadline(action),
+    tone: "fail",
+  };
+}
+
+function proposedChangeActionHeadline(action) {
+  switch (action) {
+    case "replace":
+      return "Redline replacement available";
+    case "insert":
+      return "Insertion available";
+    case "delete":
+      return "Deletion available";
+    case "comment_only":
+      return "Reviewer comment only";
+    case "needs_human_choice":
+      return "Human wording choice needed";
+    default:
+      return "Proposed change available";
+  }
 }
 
 function proposedChangeForClause(clause) {
@@ -1617,10 +1664,10 @@ function proposedChangeForClause(clause) {
 function renderProposedChangeText(sourceText, proposedText, action) {
   if (!sourceText && !proposedText) {
     if (action === "needs_human_choice") {
-      return '<p class="proposed-change-empty">The backend could not choose safe replacement wording. Pick the final wording manually before export.</p>';
+      return '<p class="proposed-change-empty">The backend could not choose safe replacement wording. Pick the final wording manually before export. No automatic edit will be applied.</p>';
     }
     if (action === "comment_only") {
-      return '<p class="proposed-change-empty">No safe redline text was generated. Treat this as a reviewer comment.</p>';
+      return '<p class="proposed-change-empty">No safe redline text was generated. Treat this as a reviewer comment. No automatic edit will be applied.</p>';
     }
     return "";
   }
@@ -1669,6 +1716,24 @@ function proposedChangeActionLabel(action) {
       return "Needs human choice";
     default:
       return action ? action.replace(/_/g, " ") : "Review change";
+  }
+}
+
+function proposedChangeGuidance(action, requiresApproval) {
+  const approval = requiresApproval ? " Reviewer approval is required before export or send." : "";
+  switch (action) {
+    case "replace":
+      return `Compare source and proposed wording, then approve or edit the replacement.${approval}`;
+    case "insert":
+      return `Confirm where the inserted wording belongs before approving the redline.${approval}`;
+    case "delete":
+      return `Confirm the deleted wording can be removed before approving the redline.${approval}`;
+    case "comment_only":
+      return "Use this as reviewer guidance. No redline will be applied automatically.";
+    case "needs_human_choice":
+      return "Choose final wording manually. No automatic edit will be applied.";
+    default:
+      return `Review the suggested outcome before changing the document.${approval}`;
   }
 }
 

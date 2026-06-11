@@ -6074,10 +6074,34 @@ async function testStructuredProposedChangePanel(page) {
         review_state: { state: "review" },
         status: "review",
       },
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p4", index: 4, text: "Assignment requires prior written consent." }],
+        id: "assignment",
+        issue_label: "Needs review",
+        name: "Assignment",
+        needs_review: true,
+        proposed_change: {
+          action: "comment_only",
+          confidence: 0.44,
+          evidence: { paragraph_id: "p4", quote: "Assignment requires prior written consent." },
+          issue_summary: "Assignment wording needs reviewer confirmation before any redline.",
+          playbook_rationale: "Reviewer should confirm whether this restriction matches the transaction context.",
+          safety: {
+            reason: "Comment-only finding because no safe automatic edit is available.",
+            requires_human_approval: true,
+            status: "comment_only",
+          },
+        },
+        reason: "Assignment restriction needs review.",
+        review_state: { state: "review" },
+        status: "review",
+      },
     ],
     paragraphs: [
       { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
       { id: "p3", index: 3, source_index: 3, text: "The Recipient shall not interfere with Company customers." },
+      { id: "p4", index: 4, source_index: 4, text: "Assignment requires prior written consent." },
     ],
     result: {
       proposed_changes: [
@@ -6105,6 +6129,9 @@ async function testStructuredProposedChangePanel(page) {
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
   const redlineBackedChange = detailPanel.locator(".proposed-change-card");
+  await assertTextContains(redlineBackedChange, "FAIL OUTCOME");
+  await assertTextContains(redlineBackedChange, "Redline replacement available");
+  await assertTextContains(redlineBackedChange, "A concrete change is available");
   await assertTextContains(redlineBackedChange, "Requires human approval");
   await assertTextContains(redlineBackedChange, "Unapproved California governing law");
   await assertTextContains(redlineBackedChange, "Replace text");
@@ -6112,17 +6139,32 @@ async function testStructuredProposedChangePanel(page) {
   await assertTextContains(redlineBackedChange, "Proposed redline available");
   await assertTextContains(redlineBackedChange, "laws of California");
   await assertTextContains(redlineBackedChange, "laws of Delaware");
+  await assertTextContains(redlineBackedChange, "Compare source and proposed wording");
   await assertTextContains(redlineBackedChange, "Use an approved governing law before export.");
   await assertTextContains(redlineBackedChange, "Reviewer must approve before export.");
 
   await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   const humanChoiceChange = detailPanel.locator(".proposed-change-card");
+  await assertTextContains(humanChoiceChange, "REVIEW OUTCOME");
+  await assertTextContains(humanChoiceChange, "Human judgment needed");
+  await assertTextContains(humanChoiceChange, "Human judgment is required");
   await assertTextContains(humanChoiceChange, "Needs human choice");
   await assertTextContains(humanChoiceChange, "38%");
   await assertTextContains(humanChoiceChange, "could not choose safe replacement wording");
+  await assertTextContains(humanChoiceChange, "No automatic edit will be applied");
+  await assertTextContains(humanChoiceChange, "Choose final wording manually");
   await assertTextContains(humanChoiceChange, "shall not interfere with Company customers");
   await assertTextContains(humanChoiceChange, "Preserve legitimate competitive freedom");
   await assertTextContains(humanChoiceChange, "needs business judgment");
+
+  await page.locator('[data-studio-lane-id="assignment"]').click();
+  const commentOnlyChange = detailPanel.locator(".proposed-change-card");
+  await assertTextContains(commentOnlyChange, "REVIEW OUTCOME");
+  await assertTextContains(commentOnlyChange, "Reviewer comment only");
+  await assertTextContains(commentOnlyChange, "Comment only");
+  await assertTextContains(commentOnlyChange, "No safe redline text was generated");
+  await assertTextContains(commentOnlyChange, "No redline will be applied automatically");
+  await assertTextContains(commentOnlyChange, "Assignment requires prior written consent.");
 }
 
 async function testRedlineRationaleBlock(page) {
