@@ -238,6 +238,111 @@ const DashboardSearchView = (() => {
       }];
     }
 
+    function assistantGuideActions(query = "") {
+      return [
+        {
+          id: "guide_open_repository",
+          label: "Open Repository",
+          description: "Inspect intake, review, sent, and uploaded matters.",
+          requiresConfirmation: false,
+          payload: {
+            action: "open_repository",
+            target: { tab: "repository" },
+            statusText: "Repository opened. Choose a matter before running review or export actions.",
+          },
+        },
+        {
+          id: "guide_open_generator",
+          label: "Open Generator",
+          description: "Start an NDA draft with this prompt as intake context.",
+          requiresConfirmation: false,
+          payload: {
+            action: "open_generator",
+            prompt: String(query || "").trim(),
+            generator: { prefill: { source: "dashboard_assistant", prompt: String(query || "").trim() } },
+            sideEffects: [],
+            statusText: "Generator opened. Review all intake fields before generating.",
+          },
+        },
+        {
+          id: "guide_open_admin",
+          label: "Open Admin",
+          description: "Check Gmail, Drive, AI, and Personalisation setup.",
+          requiresConfirmation: false,
+          payload: {
+            action: "open_admin",
+            target: { tab: "admin" },
+            statusText: "Admin opened. Connection status is shown from backend settings.",
+          },
+        },
+        {
+          id: "guide_open_playbook",
+          label: "Open Playbook",
+          description: "Review clause rules and publishing gates.",
+          requiresConfirmation: false,
+          payload: {
+            action: "open_playbook",
+            target: { tab: "playbook" },
+            statusText: "Playbook opened. Publishing still requires Playbook controls.",
+          },
+        },
+      ];
+    }
+
+    function assistantCapabilityFacts(payload) {
+      const facts = [];
+      const answer = payload?.answer && typeof payload.answer === "object" ? payload.answer : {};
+      const capabilities = Array.isArray(answer.capabilities) ? answer.capabilities : [];
+      const domains = Array.isArray(answer.domains) ? answer.domains : [];
+      if (domains.length) {
+        facts.push(`Covers: ${domains.map((domain) => String(domain).replace(/_/g, " ")).join(", ")}`);
+      }
+      capabilities.slice(0, 4).forEach((capability) => {
+        if (!capability || typeof capability !== "object") return;
+        const domain = String(capability.domain || "assistant").replace(/_/g, " ");
+        const description = String(capability.description || capability.name || "").trim();
+        if (description) facts.push(`${domain}: ${description}`);
+      });
+      return facts;
+    }
+
+    function unsupportedFacts() {
+      return [
+        "Ask repository questions like: How many are in review?",
+        "Ask system questions about the Playbook or email templates.",
+        "Request safe workflows like: Generate an NDA, sync Gmail, or open Admin.",
+      ];
+    }
+
+    function clarificationActions(questions) {
+      return questions
+        .map((question, index) => {
+          const text = String(question || "").trim();
+          const lowered = text.toLowerCase();
+          if (!text) return null;
+          if (lowered.includes("gmail") || lowered.includes("drive") || lowered.includes("admin") || lowered.includes("setting")) {
+            return {
+              ...assistantGuideActions()[2],
+              id: `clarify_admin_${index}`,
+              label: `Open ${text}`,
+            };
+          }
+          if (lowered.includes("generator") || lowered.includes("draft") || lowered.includes("nda")) {
+            return {
+              ...assistantGuideActions(text)[1],
+              id: `clarify_generator_${index}`,
+              label: `Open ${text}`,
+            };
+          }
+          return {
+            ...assistantGuideActions()[0],
+            id: `clarify_repository_${index}`,
+            label: `Open ${text}`,
+          };
+        })
+        .filter(Boolean);
+    }
+
     function assistantCardMarkup({ type, title, message, facts = [], actions = [] }) {
       const typeLabel = assistantResponseLabel(type);
       const factMarkup = facts.length
@@ -335,7 +440,7 @@ const DashboardSearchView = (() => {
           type,
           title: "Assistant answer",
           message: text,
-          facts: citationFacts(payload.citations),
+          facts: [...assistantCapabilityFacts(payload), ...citationFacts(payload.citations)],
           statusText: "Assistant answer",
         });
       }
@@ -362,8 +467,8 @@ const DashboardSearchView = (() => {
           type,
           title: "Unsupported request",
           message: message || "This assistant cannot do that request yet.",
-          facts: [],
-          actions: [],
+          facts: unsupportedFacts(),
+          actions: assistantGuideActions(payload.query || input?.value || ""),
           statusText: "Unsupported request",
         });
       }
@@ -376,7 +481,7 @@ const DashboardSearchView = (() => {
           title: "Clarification needed",
           message: message || "I need one more detail before I can help with that.",
           facts: questions,
-          actions: [],
+          actions: clarificationActions(questions),
           statusText: "Clarification needed",
         });
       }

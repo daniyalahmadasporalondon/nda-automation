@@ -2041,8 +2041,29 @@ h3 {
 }
 
 .dashboard-assistant-actions {
+  align-items: flex-start;
   box-shadow: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 0;
+}
+
+.dashboard-assistant-action {
+  background: rgba(91, 45, 145, 0.08);
+  border-color: rgba(91, 45, 145, 0.24);
+  color: #3e1f63;
+}
+
+.dashboard-assistant-action:hover,
+.dashboard-assistant-action:focus-visible {
+  background: rgba(91, 45, 145, 0.12);
+  border-color: rgba(91, 45, 145, 0.38);
+}
+
+.dashboard-assistant-actions .dashboard-search-summary-status {
+  flex: 1 0 100%;
+  margin-top: -2px;
 }
 
 .dashboard-search-result-button {

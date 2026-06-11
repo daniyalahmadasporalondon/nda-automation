@@ -7085,6 +7085,35 @@ async function testDashboardSmartSearchV2(page) {
     const body = JSON.parse(route.request().postData() || "{}");
     const query = String(body.query || "");
     assistantRequests.push(query);
+    if (/what can you do/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "system_question",
+          domain: "assistant",
+          question: "capability_catalog",
+          answer: {
+            text: "I can search matters, answer repository and Playbook questions, and start safe workflows with confirmation.",
+            domains: ["generation", "repository", "gmail", "playbook", "admin"],
+            capabilities: [
+              {
+                name: "generate_nda",
+                domain: "generation",
+                description: "Open/prefill the Generator after explicit confirmation; never silently generate.",
+              },
+              {
+                name: "count_in_review",
+                domain: "repository",
+                description: "Count owner-scoped matters currently in review.",
+              },
+            ],
+          },
+          citations: [],
+        }),
+      });
+      return;
+    }
     if (/playbook clauses/i.test(query)) {
       await route.fulfill({
         status: 200,
@@ -7337,6 +7366,12 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="system_question"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "Outbound redline emails default");
 
+  await page.fill("#dashboardSearchInput", "What can you do?");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="system_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Covers: generation, repository, gmail, playbook, admin");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "generation: Open/prefill the Generator");
+
   // --- Safe workflow requests render confirmation-gated action cards ----------
   await page.fill("#dashboardSearchInput", "Sync Gmail inbox");
   await page.locator("#dashboardSearchForm").press("Enter");
@@ -7367,6 +7402,15 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "UNSUPPORTED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Ask repository questions like: How many are in review?");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Open Repository");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Open Generator");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Open Admin");
+  await page.locator('[data-dashboard-assistant-action="guide_open_admin"]').click();
+  await page.waitForSelector("#clausesView[data-admin-surface='admin']");
+  assert.equal(await page.locator("#adminTab").getAttribute("aria-selected"), "true");
+  await page.locator("#dashboardTab").click();
+  await page.waitForSelector("#dashboardView:not([hidden])");
 
   await page.fill("#dashboardSearchInput", "clarify this request");
   await page.locator("#dashboardSearchForm").press("Enter");
@@ -7374,6 +7418,12 @@ async function testDashboardSmartSearchV2(page) {
   await assertTextContains(page.locator("#dashboardSearchResults"), "CLARIFICATION");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Which workflow should I inspect?");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Gmail inbox");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Open Gmail inbox");
+  await page.locator('[data-dashboard-assistant-action="clarify_admin_1"]').click();
+  await page.waitForSelector("#clausesView[data-admin-surface='admin']");
+  assert.equal(await page.locator("#adminTab").getAttribute("aria-selected"), "true");
+  await page.locator("#dashboardTab").click();
+  await page.waitForSelector("#dashboardView:not([hidden])");
 
   // Visible free-text search still returns the sent matter through the assistant
   // search_filter path.
