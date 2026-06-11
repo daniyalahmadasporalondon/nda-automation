@@ -340,6 +340,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/reviewed-docx"):
             approval_routes.handle_matter_reviewed_docx(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/reviewed-pdf"):
+            approval_routes.handle_matter_reviewed_pdf(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
             pdf_markup_routes.handle_pdf_annotations_list(self, path, send_body=send_body)
             return

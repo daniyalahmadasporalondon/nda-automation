@@ -100,6 +100,52 @@ def build_matter_source_pdf_export(
     )
 
 
+def build_docx_pdf_export(
+    docx_bytes: bytes,
+    filename: str,
+    *,
+    owner_user_id: str = "",
+    converter: document_rendering.DocxConverter | None = None,
+) -> MatterPdfExport:
+    rendered = document_rendering.render_source_document_to_pdf(
+        docx_bytes,
+        source_filename=filename,
+        owner_user_id=owner_user_id,
+        converter=converter,
+    )
+    if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
+        status = 503 if rendered.error_code in {"converter_unavailable", "conversion_busy"} else 500
+        message = (
+            PDF_CONVERTER_UNAVAILABLE_MESSAGE
+            if rendered.error_code == "converter_unavailable"
+            else rendered.error_message or "DOCX to PDF export failed."
+        )
+        raise PdfExportError(
+            {
+                "error": message,
+                "document_pdf_export": {
+                    "status": rendered.status,
+                    "source_kind": rendered.source_kind,
+                    "filename": pdf_download_filename(filename),
+                    "error_code": rendered.error_code,
+                    "error_message": rendered.error_message or message,
+                    "converter": converter_health(converter),
+                },
+            },
+            status=status,
+        )
+
+    return MatterPdfExport(
+        path=rendered.pdf_path,
+        filename=pdf_download_filename(filename),
+        content_type=PDF_EXPORT_MIME,
+        headers={
+            "X-PDF-Export-Verified": PDF_EXPORT_VERIFICATION_HEADER,
+            "X-PDF-Export-Source-Kind": rendered.source_kind,
+        },
+    )
+
+
 def public_matter_pdf_export(
     matter_id: str,
     rendered: document_rendering.RenderedDocument,

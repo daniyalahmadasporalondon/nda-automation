@@ -70,3 +70,35 @@ def test_public_matter_pdf_export_exposes_download_when_ready(tmp_path):
     assert payload["download_url"] == "/api/matters/matter%201/source-pdf"
     assert payload["filename"] == "Acme-NDA.pdf"
     assert payload["source_label"] == "Converted DOCX"
+
+
+def test_build_docx_pdf_export_converts_docx_with_available_converter():
+    export = pdf_export_service.build_docx_pdf_export(
+        b"PK\x03\x04fake-docx",
+        "mutual-nda-redlined.docx",
+        converter=AvailableConverter(),
+    )
+
+    assert export.path.read_bytes().startswith(b"%PDF-1.7")
+    assert export.filename == "mutual-nda-redlined.pdf"
+    assert export.content_type == pdf_export_service.PDF_EXPORT_MIME
+    assert export.headers == {
+        "X-PDF-Export-Verified": pdf_export_service.PDF_EXPORT_VERIFICATION_HEADER,
+        "X-PDF-Export-Source-Kind": "docx",
+    }
+
+
+def test_build_docx_pdf_export_reports_unavailable_converter():
+    try:
+        pdf_export_service.build_docx_pdf_export(
+            b"PK\x03\x04unavailable-fake-docx",
+            "mutual-nda-redlined.docx",
+            converter=UnavailableConverter(),
+        )
+    except pdf_export_service.PdfExportError as error:
+        assert error.status == 503
+        assert "LibreOffice/soffice" in error.payload["error"]
+        assert error.payload["document_pdf_export"]["error_code"] == "converter_unavailable"
+        assert error.payload["document_pdf_export"]["filename"] == "mutual-nda-redlined.pdf"
+    else:
+        raise AssertionError("expected converter-unavailable PDF export error")
