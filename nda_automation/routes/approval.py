@@ -157,6 +157,9 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     except redline_export_service.DocxOpenHealthError as error:
         handler._send_json({"error": str(error), "details": error.details}, status=500, send_body=send_body)
         return
+    except redline_export_service.PdfSourceRedlineUnavailableError as error:
+        handler._send_json({"error": str(error)}, status=409, send_body=send_body)
+        return
     except (DocxExtractionError, PdfExtractionError) as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
         return

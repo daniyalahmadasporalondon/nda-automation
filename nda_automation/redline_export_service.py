@@ -19,6 +19,10 @@ from .docx_health import validate_docx_open_health, verify_export_content_covera
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .review_staleness import review_result_staleness, stale_review_message
+from .source_document_policy import (
+    PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
+    source_filename_is_pdf,
+)
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
@@ -38,6 +42,10 @@ class DocxOpenHealthError(DocxExportError):
 
 class MatterSourceTextChangedError(DocxExportError):
     """Raised when a matter source edit would not be represented in the source DOCX export."""
+
+
+class PdfSourceRedlineUnavailableError(DocxExportError):
+    """Raised when a PDF-source matter is asked for a tracked-change Word export."""
 
 
 class MatterNotFoundError(DocxExportError):
@@ -107,6 +115,8 @@ def _build_redline_export(
         fill_export.synthesize_tracked_fill_redlines(tracked_mode_fills, review_result),
     )
 
+    if source_document_bytes is not None and source_filename_is_pdf(source_filename):
+        raise PdfSourceRedlineUnavailableError(PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE)
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
         package_result = docx_package_renderer.render_source_redline_package(
             source_document_bytes,

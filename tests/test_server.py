@@ -42,6 +42,7 @@ from nda_automation import user_store
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
 from nda_automation import playbook_runtime
+from nda_automation import redline_export_service
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -2860,6 +2861,22 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(public["review_state"]["blocks_send"])
         self.assertIn("human review", public["send_block_reason"])
 
+    def test_public_matter_blocks_redline_send_for_pdf_source(self):
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "sender": "Sender <sender@example.com>",
+            "source_filename": "Uploaded NDA.pdf",
+            "source_type": "pdf",
+            "subject": "NDA",
+        })
+
+        self.assertEqual(public["recipient_email"], "sender@example.com")
+        self.assertEqual(public["can_send_redline"], False)
+        self.assertEqual(
+            public["send_block_reason"],
+            redline_export_service.PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
+        )
+
     def test_public_matter_blocks_connected_account_sender(self):
         public = matter_view.public_matter({
             "id": "matter_1",
@@ -5459,7 +5476,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(captured["paragraph_texts"], [edited_text])
 
     @requires_pypdf
-    def test_pdf_matter_export_uses_review_report_docx(self):
+    def test_pdf_matter_export_rejects_redlined_docx_and_preserves_pdf_source(self):
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
 
         with tempfile.TemporaryDirectory() as data_dir:
@@ -5479,17 +5496,27 @@ class ServerTests(unittest.TestCase):
                     "/api/export-review-docx",
                     {"matter_id": matter["id"]},
                 )
+                render_status, render_payload = self.request("GET", f"/api/matters/{matter['id']}/render-status")
+                pdf_status, pdf_payload, pdf_headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/render-pdf",
+                )
 
         self.assertEqual(create_status, 201)
         self.assertEqual(matter["source_filename"], "Acme NDA.pdf")
         self.assertNotIn("review_result", matter)
         self.assertEqual(stored_matter["review_result"]["source"]["type"], "pdf")
-        self.assertEqual(export_status, 200)
-        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Acme-NDA-redlined.docx"')
-        with ZipFile(BytesIO(export_payload)) as archive:
-            document_xml = archive.read("word/document.xml").decode("utf-8")
-        self.assertIn("NDA Redline", document_xml)
-        self.assertIn("California", document_xml)
+        self.assertEqual(export_status, 409)
+        self.assertEqual(
+            export_payload["error"],
+            redline_export_service.PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
+        )
+        self.assertNotIn("Content-Disposition", export_headers)
+        self.assertEqual(render_status, 200)
+        self.assertEqual(render_payload["document_render"]["source_kind"], "pdf")
+        self.assertEqual(pdf_status, 200)
+        self.assertEqual(pdf_headers["Content-Type"], "application/pdf")
+        self.assertEqual(pdf_payload, source_pdf)
 
     def test_matter_export_fails_when_source_docx_is_missing(self):
         source_docx = make_docx([

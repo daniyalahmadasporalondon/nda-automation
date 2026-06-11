@@ -10,6 +10,7 @@ from .gmail_integration import matter_reply_recipient, recipient_email
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
+from .source_document_policy import PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE, matter_source_is_pdf
 from .workflow import workflow_state
 
 
@@ -119,6 +120,8 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
         )
     elif matter_needs_human_review(matter) and not matter.get("human_reviewed"):
         send_block_reason = "Matter needs human review before a redline can be sent."
+    elif matter_source_is_pdf(matter):
+        send_block_reason = PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE
     elif not recipient:
         send_block_reason = "Matter does not have a valid reply recipient email address."
     public = {
