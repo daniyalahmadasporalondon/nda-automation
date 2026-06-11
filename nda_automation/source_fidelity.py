@@ -288,6 +288,14 @@ def _limitations(source_type: str, *, pdf_visual_profile: dict[str, Any] | None 
             "code": "pdf_word_conversion_unsupported_for_fidelity",
             "message": "The backend preserves the original PDF for visual review instead of presenting extracted text as a faithful Word conversion.",
         })
+        if _pdf_visual_profile_unavailable(pdf_visual_profile):
+            limitations.append({
+                "code": "pdf_visual_profile_unavailable",
+                "message": (
+                    "PDF visual profiling is unavailable in this runtime, so the backend cannot verify tables, colors, "
+                    "borders, images, or exact layout from extracted text. Use the source PDF/page preview for visual review."
+                ),
+            })
         if _pdf_requires_source_preview(pdf_visual_profile):
             limitations.append({
                 "code": "pdf_visual_elements_detected",
@@ -312,6 +320,12 @@ def _pdf_requires_source_preview(pdf_visual_profile: dict[str, Any] | None) -> b
     if not isinstance(pdf_visual_profile, dict):
         return False
     return bool(pdf_visual_profile.get("requires_source_preview"))
+
+
+def _pdf_visual_profile_unavailable(pdf_visual_profile: dict[str, Any] | None) -> bool:
+    if not isinstance(pdf_visual_profile, dict):
+        return False
+    return str(pdf_visual_profile.get("status") or "").strip().lower() == "unavailable"
 
 
 def _pdf_fidelity_policy(pdf_visual_profile: dict[str, Any] | None) -> dict[str, Any]:

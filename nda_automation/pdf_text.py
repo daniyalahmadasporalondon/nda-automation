@@ -304,7 +304,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         return {
             "status": "unavailable",
             "reason": "pymupdf_not_installed",
-            "requires_source_preview": False,
+            "requires_source_preview": True,
         }
 
     try:
@@ -313,7 +313,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         return {
             "status": "unavailable",
             "reason": "visual_profile_failed",
-            "requires_source_preview": False,
+            "requires_source_preview": True,
         }
 
     try:
@@ -376,7 +376,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         return {
             "status": "unavailable",
             "reason": "visual_profile_failed",
-            "requires_source_preview": False,
+            "requires_source_preview": True,
         }
     finally:
         document.close()

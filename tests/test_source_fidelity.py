@@ -134,6 +134,42 @@ def test_source_fidelity_marks_pdf_as_source_preview_limited():
     }
 
 
+def test_source_fidelity_marks_missing_pdf_visual_profile_as_preview_required():
+    review_result = {
+        "source": {
+            "type": "pdf",
+            "extraction_quality": {
+                "visual_profile": {
+                    "status": "unavailable",
+                    "reason": "pymupdf_not_installed",
+                    "requires_source_preview": True,
+                }
+            },
+        },
+        "paragraphs": [
+            {"id": "p1", "index": 1, "text": "PDF text.", "source_part": "pdf", "page_number": 1},
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+
+    assert payload["source_type"] == "pdf"
+    assert payload["preferred_render_mode"] == "source_pdf_preview"
+    assert payload["capabilities"]["faithful_source_preview"] is True
+    assert payload["capabilities"]["pdf_visual_profile"] is True
+    assert payload["capabilities"]["pdf_visual_elements"] is True
+    assert payload["pdf_fidelity"]["requires_source_preview"] is True
+    assert payload["pdf_fidelity"]["visual_profile"]["reason"] == "pymupdf_not_installed"
+    assert {limitation["code"] for limitation in payload["limitations"]} == {
+        "pdf_text_extraction_not_layout",
+        "pdf_visual_elements_detected",
+        "pdf_visual_fidelity_requires_source_preview",
+        "pdf_visual_profile_unavailable",
+        "pdf_word_conversion_unsupported_for_fidelity",
+        "semantic_review_is_paragraph_based",
+    }
+
+
 def test_review_matter_exposes_additive_source_fidelity_contract():
     matter = {
         "id": "matter-1",

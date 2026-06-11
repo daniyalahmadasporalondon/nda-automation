@@ -198,6 +198,27 @@ class PdfTextTests(unittest.TestCase):
         self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
 
     @requires_pypdf
+    def test_quality_report_requires_source_preview_when_visual_profiler_missing(self):
+        real_import = builtins.__import__
+
+        def import_without_fitz(name, *args, **kwargs):
+            if name == "fitz":
+                raise ModuleNotFoundError("No module named 'fitz'")
+            return real_import(name, *args, **kwargs)
+
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        with patch("builtins.__import__", side_effect=import_without_fitz):
+            extraction = extract_pdf_document(data)
+
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "unavailable")
+        self.assertEqual(visual_profile["reason"], "pymupdf_not_installed")
+        self.assertTrue(visual_profile["requires_source_preview"])
+        warning_types = {warning["type"] for warning in extraction.quality["warnings"]}
+        self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
+
+    @requires_pypdf
     def test_rejects_pdf_with_too_many_pages(self):
         data = make_pdf_pages([
             ["This Agreement shall be governed by the laws of California."],
