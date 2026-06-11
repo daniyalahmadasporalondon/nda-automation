@@ -132,7 +132,7 @@ def test_public_matter_document_downloads_preserves_original_pdf_and_blocks_fake
         {
             "id": "matter-3",
             "source_filename": "Signed NDA.pdf",
-            "status": "review",
+            "status": "approved",
         },
         converter=UnavailableConverter(),
     )
@@ -147,7 +147,10 @@ def test_public_matter_document_downloads_preserves_original_pdf_and_blocks_fake
     reviewed = downloads["reviewed"]["formats"]
     assert reviewed["docx"]["available"] is False
     assert reviewed["pdf"]["available"] is False
-    assert "approved" in reviewed["docx"]["unavailable_reason"]
+    assert "source PDFs" in reviewed["docx"]["unavailable_reason"]
+    assert "source PDFs" in reviewed["pdf"]["unavailable_reason"]
+    assert "download_url" not in reviewed["docx"]
+    assert "download_url" not in reviewed["pdf"]
 
 
 def test_public_matter_document_downloads_does_not_expose_internal_stored_filename():

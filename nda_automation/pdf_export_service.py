@@ -89,6 +89,7 @@ def public_matter_document_downloads(
     source_is_pdf = source_ext == ".pdf"
     generated = str(matter.get("source_type") or "") == "generated"
     reviewed_ready = str(matter.get("status") or "") == "approved"
+    reviewed_source_supported = reviewed_ready and source_is_docx
     health = converter_health(converter)
 
     source_label = "Generated document" if generated else "Original document"
@@ -134,27 +135,33 @@ def public_matter_document_downloads(
             "formats": {
                 "docx": _download_option(
                     "docx",
-                    available=reviewed_ready,
-                    download_url=matter_reviewed_docx_download_url(matter_id) if reviewed_ready else "",
+                    available=reviewed_source_supported,
+                    download_url=matter_reviewed_docx_download_url(matter_id) if reviewed_source_supported else "",
                     filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.docx"),
                     content_type=DOCX_DOWNLOAD_MIME,
                     unavailable_reason=(
-                        "" if reviewed_ready else "Reviewed downloads are available after the matter is approved."
+                        ""
+                        if reviewed_source_supported
+                        else "Reviewed downloads are available after the matter is approved."
+                        if not reviewed_ready
+                        else "Reviewed DOCX export is not available for source PDFs; use the original/annotated PDF path."
                     ),
                 ),
                 "pdf": _download_option(
                     "pdf",
-                    available=reviewed_ready and bool(health["available"]),
+                    available=reviewed_source_supported and bool(health["available"]),
                     download_url=matter_reviewed_pdf_download_url(matter_id)
-                    if reviewed_ready and bool(health["available"])
+                    if reviewed_source_supported and bool(health["available"])
                     else "",
                     filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.pdf"),
                     content_type=PDF_EXPORT_MIME,
                     unavailable_reason=(
                         ""
-                        if reviewed_ready and bool(health["available"])
+                        if reviewed_source_supported and bool(health["available"])
                         else "Reviewed downloads are available after the matter is approved."
                         if not reviewed_ready
+                        else "Reviewed PDF export is not available for source PDFs; use the original/annotated PDF path."
+                        if not source_is_docx
                         else str(health["message"])
                     ),
                     converter=health,
