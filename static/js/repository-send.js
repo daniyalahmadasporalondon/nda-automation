@@ -1,8 +1,8 @@
 const RepositorySend = (() => {
-  function renderSendComposer({ confirmingSend, gmailStatus, matter, recipient }) {
+  function renderSendComposer({ confirmingSend, gmailStatus, matter, personalisation, recipient }) {
     if (!confirmingSend) return "";
     const subject = defaultOutboundSubject(matter);
-    const body = defaultOutboundBody(matter);
+    const body = defaultOutboundBody(matter, personalisation);
     return `
         <section class="repository-send-composer" aria-label="Outbound redline email">
           <dl class="repository-send-route">
@@ -39,9 +39,18 @@ const RepositorySend = (() => {
     return subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
   }
 
-  function defaultOutboundBody(matter) {
+  function defaultOutboundBody(matter, personalisation = null) {
     const subject = matter.subject || matter.document_title || matter.source_filename || "the NDA";
-    return `Hi,\n\nPlease find attached the redlined version of ${subject}.\n\nBest,\nAspora Legal`;
+    return `Hi,\n\nPlease find attached the redlined version of ${subject}.\n\n${personalisationSignatureBlock(personalisation)}`;
+  }
+
+  function personalisationSignatureBlock(personalisation = null) {
+    const signatureBlock = String(personalisation?.signature_block || "").trim();
+    if (signatureBlock) return signatureBlock;
+    const signOff = String(personalisation?.sign_off || "").trim();
+    const signature = String(personalisation?.signature || "").trim();
+    const parts = [signOff, signature].filter(Boolean);
+    return parts.length ? parts.join("\n") : "Best,\nAspora Legal";
   }
 
   function sendPayloadFromPanel(repositoryMatterPanel, matter) {
@@ -64,6 +73,7 @@ const RepositorySend = (() => {
     defaultOutboundBody,
     defaultOutboundSubject,
     outboundAccountLabel,
+    personalisationSignatureBlock,
     renderSendComposer,
     sendPayloadFromPanel,
   };

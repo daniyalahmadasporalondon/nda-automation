@@ -47,6 +47,45 @@ def handle_ai_settings(handler, *, send_body: bool = True) -> None:
     )
 
 
+def handle_personalisation_settings(handler, *, send_body: bool = True) -> None:
+    handler._send_json(
+        {
+            "personalisation": app_settings.personalisation_settings(),
+            "defaults": app_settings.DEFAULT_PERSONALISATION_SETTINGS,
+        },
+        send_body=send_body,
+    )
+
+
+def handle_personalisation_settings_update(handler) -> None:
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    unsupported = sorted(set(payload) - {"sign_off", "signature", "signature_block"})
+    if unsupported:
+        handler._send_json({"error": f"Unsupported personalisation setting: {unsupported[0]}."}, status=400)
+        return
+    if not any(key in payload for key in ("sign_off", "signature", "signature_block")):
+        handler._send_json({"error": "Provide a sign_off, signature, or signature_block setting to update."}, status=400)
+        return
+    if any(not isinstance(payload.get(key), str) for key in ("sign_off", "signature", "signature_block") if key in payload):
+        handler._send_json({"error": "Personalisation settings must be text values."}, status=400)
+        return
+
+    previous = app_settings.personalisation_settings()
+    personalisation = app_settings.update_personalisation_settings({
+        key: payload[key]
+        for key in ("sign_off", "signature", "signature_block")
+        if key in payload
+    })
+    _record_personalisation_audit_if_changed(previous, personalisation)
+    handler._send_json({
+        "personalisation": personalisation,
+        "defaults": app_settings.DEFAULT_PERSONALISATION_SETTINGS,
+        "settings_audit": app_settings.settings_audit_history(),
+    })
+
+
 def handle_ai_settings_update(handler) -> None:
     payload = handler._read_json_payload()
     if payload is None:
@@ -183,6 +222,24 @@ def _record_settings_audit_if_changed(
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "actor": "admin",
         "action": action,
+        "changes": changes,
+    })
+
+
+def _record_personalisation_audit_if_changed(previous: dict, current: dict) -> None:
+    changes = []
+    for key in ("sign_off", "signature", "signature_block"):
+        before = previous.get(key)
+        after = current.get(key)
+        if before != after:
+            changes.append({"setting": f"personalisation.{key}", "before": before, "after": after})
+    if not changes:
+        return
+    telemetry.increment("settings_audit_events")
+    app_settings.record_settings_audit_event({
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "actor": "admin",
+        "action": "personalisation_settings_update",
         "changes": changes,
     })
 

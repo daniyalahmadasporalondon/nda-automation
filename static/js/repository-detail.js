@@ -81,7 +81,13 @@ const RepositoryDetail = (() => {
               ${renderFailedClauses(attentionClauses)}
             </section>
 
-            ${RepositorySend.renderSendComposer({ confirmingSend, gmailStatus: state.gmailStatus, matter, recipient })}
+            ${RepositorySend.renderSendComposer({
+              confirmingSend,
+              gmailStatus: state.gmailStatus,
+              matter,
+              personalisation: state.personalisationSettings,
+              recipient,
+            })}
           </section>
 
           <aside class="repository-inspector-side" aria-label="Matter routing and timeline">

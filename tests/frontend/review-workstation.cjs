@@ -3319,6 +3319,24 @@ async function testRepositoryOutboundSendComposer(page) {
       }),
     });
   });
+  await page.route("**/api/admin/personalisation-settings", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        personalisation: {
+          sign_off: "Kind regards,",
+          signature: "Daniyal Ahmad",
+          signature_block: "Kind regards,\nDaniyal Ahmad\nAspora Legal",
+        },
+        defaults: {
+          sign_off: "Best,",
+          signature: "Aspora Legal",
+          signature_block: "Best,\nAspora Legal",
+        },
+      }),
+    });
+  });
   await page.route("**/api/matters", async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue();
@@ -3368,7 +3386,16 @@ async function testRepositoryOutboundSendComposer(page) {
     });
   });
 
+  const personalisationResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/admin/personalisation-settings")
+    && response.request().method() === "GET"
+    && response.ok()
+  ));
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await personalisationResponse;
+  await page.waitForFunction(() => (
+    eval("state.personalisationSettings")?.signature_block === "Kind regards,\nDaniyal Ahmad\nAspora Legal"
+  ));
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
   await page.locator(".repository-card").click();
@@ -3381,7 +3408,7 @@ async function testRepositoryOutboundSendComposer(page) {
   assert.equal(await page.locator("#repositorySendSubject").inputValue(), "Re: Please review NDA");
   assert.equal(
     await page.locator("#repositorySendBody").inputValue(),
-    "Hi,\n\nPlease find attached the redlined version of Please review NDA.\n\nBest,\nAspora Legal",
+    "Hi,\n\nPlease find attached the redlined version of Please review NDA.\n\nKind regards,\nDaniyal Ahmad\nAspora Legal",
   );
 
   await page.locator("#repositorySendSubject").fill("Re: Please review NDA - Aspora redline");
@@ -3405,6 +3432,7 @@ async function testRepositoryOutboundSendComposer(page) {
   await assertTextContains(panel, "legal@example.com");
 
   await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/admin/personalisation-settings");
   await page.unroute("**/api/matters");
   await page.unroute("**/api/matters/matter_send");
   await page.unroute("**/api/gmail/send-redline");
@@ -6384,6 +6412,29 @@ async function testDashboardSmartSearch(page) {
       }),
     });
   });
+  await page.route("**/api/dashboard/search-intent", async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    const query = String(body.query || "");
+    const normalized = query.toLowerCase();
+    const filters = {
+      status: normalized.includes("awaiting approval") ? "awaiting_approval" : null,
+      phase: null,
+      needs_attention: null,
+      human_gate: null,
+      has_issues: null,
+      text: normalized.includes("awaiting approval") ? null : query,
+      min_age_days: null,
+      sort: null,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        filters,
+        interpreted: filters.status ? "Awaiting approval" : (query ? `matching "${query}"` : ""),
+      }),
+    });
+  });
   // The summary endpoint (v1.1 "Summarize a document"). Registered AFTER the
   // generic /api/matters/* route so it wins for the POST .../summary path. The
   // pending matter returns a grounded summary; the sent matter returns the
@@ -6711,6 +6762,7 @@ async function testDashboardSmartSearch(page) {
   await page.unroute("**/api/matters/*/summary");
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/dashboard/assistant");
+  await page.unroute("**/api/dashboard/search-intent");
 
   // The dashboard search bar must add no console errors of its own. We ignore two
   // feature-independent messages:

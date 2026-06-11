@@ -282,6 +282,9 @@ adminPersonalisationController = createAdminPersonalisationController({
   message: document.querySelector("#adminPersonalisationMessage"),
   persistenceFact: document.querySelector('[data-admin-personalisation="persistence"]'),
   reviewErrorFromPayload,
+  onSettingsLoaded: (settings) => {
+    state.personalisationSettings = normalizePersonalisationSettings(settings);
+  },
 });
 authSessionController = createAuthSessionController({
   state,
@@ -398,6 +401,7 @@ Promise.resolve(repositoryController.loadMatters()).then(() => {
 repositoryController.loadGmailStatus();
 authSessionController.load();
 adminAiController.load();
+loadPersonalisationSettings();
 loadDashboardAiHealth();
 loadDashboardDriveHealth();
 adminIntegrationsController.load();
@@ -881,6 +885,28 @@ async function loadDashboardAiHealth() {
       tone: "blocked",
     });
   }
+}
+
+async function loadPersonalisationSettings() {
+  try {
+    const response = await fetch("/api/admin/personalisation-settings");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return;
+    state.personalisationSettings = normalizePersonalisationSettings(
+      payload.personalisation || payload.personalization || payload.settings || {},
+    );
+  } catch (error) {
+    state.personalisationSettings = null;
+  }
+}
+
+function normalizePersonalisationSettings(settings = {}) {
+  if (!settings || typeof settings !== "object") return null;
+  return {
+    sign_off: String(settings.sign_off ?? settings.signOff ?? "").trim(),
+    signature: String(settings.signature ?? "").trim(),
+    signature_block: String(settings.signature_block ?? settings.signatureBlock ?? "").trim(),
+  };
 }
 
 // POST for one matter's grounded AI summary. Returns {ok, payload} so the
