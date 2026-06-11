@@ -407,7 +407,7 @@ async function testAccessibleControlState(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(matterCardStyles.borderRadius, "18px");
+  assert.equal(matterCardStyles.borderRadius, "14px");
   assert.equal(matterCardStyles.boxShadow, "rgba(26, 19, 51, 0.2) 0px 10px 30px -20px");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
