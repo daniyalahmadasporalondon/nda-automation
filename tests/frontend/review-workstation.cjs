@@ -439,7 +439,7 @@ async function testFailureUxDetails(page) {
       }),
     });
   });
-  await page.getByRole("button", { name: "Export DOCX" }).click();
+  await chooseDownloadFormat(page.locator("#studioExportButton"), "docx");
   await waitForText(page, "#studioOverallTitle", "The exported Word document failed its open-health check.");
   await assertTextContains(page.locator("#studioOverallTitle"), "The exported Word document failed its open-health check.");
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
@@ -2487,6 +2487,27 @@ async function testDraftIntakeGenerateNda(page) {
         artifact_id: "art_generated_1",
         status: "generated",
         download_url: "/api/matters/mat_generated_1/source",
+        document_downloads: {
+          source: {
+            formats: {
+              docx: {
+                available: true,
+                content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                download_url: "/api/matters/mat_generated_1/source",
+                filename: "Acme-Corporation-NDA.docx",
+                format: "docx",
+              },
+              pdf: {
+                available: false,
+                content_type: "application/pdf",
+                filename: "Acme-Corporation-NDA.pdf",
+                format: "pdf",
+                unavailable_reason: "PDF conversion is not configured.",
+              },
+            },
+            label: "Generated document",
+          },
+        },
         self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
         manifest: {
           entity_id: "aspora_technology",
@@ -2541,9 +2562,14 @@ async function testDraftIntakeGenerateNda(page) {
   // which the browser surfaces as a download event (context has acceptDownloads).
   await page.waitForSelector("#draftIntakeDownloadButton:not([disabled])");
   await page.waitForSelector("#draftIntakeSendButton:not([disabled])");
+  const formatMenu = await openDownloadMenu(page.locator("#draftIntakeDownloadButton"));
+  await assertTextContains(formatMenu, "DOCX");
+  await assertTextContains(formatMenu, "PDF conversion is not configured.");
+  assert.equal(await formatMenu.locator('[data-download-format="pdf"]').isDisabled(), true);
+  await page.keyboard.press("Escape");
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.locator("#draftIntakeDownloadButton").click(),
+    chooseDownloadFormat(page.locator("#draftIntakeDownloadButton"), "docx"),
   ]);
   assert.match(download.url(), /\/api\/matters\/mat_generated_1\/source$/);
 
@@ -2627,7 +2653,7 @@ async function testDraftIntakeGenerateSelfCheckWarning(page) {
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.locator("#draftIntakeDownloadButton").click(),
+    chooseDownloadFormat(page.locator("#draftIntakeDownloadButton"), "docx"),
   ]);
   assert.match(download.url(), /\/api\/matters\/mat_generated_warning\/source$/);
 
@@ -2759,7 +2785,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const [matterExportRequest, matterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
     page.waitForEvent("download"),
-    page.getByRole("button", { name: "Export Redline" }).click(),
+    chooseDownloadFormat(page.getByRole("button", { name: "Download" }), "docx"),
   ]);
   const matterExportPayload = matterExportRequest.postDataJSON();
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
@@ -2785,7 +2811,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const [reviewMatterExportRequest, reviewMatterDownload] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx")),
     page.waitForEvent("download"),
-    page.getByRole("button", { name: "Export DOCX" }).click(),
+    chooseDownloadFormat(page.locator("#studioExportButton"), "docx"),
   ]);
   const reviewMatterExportPayload = reviewMatterExportRequest.postDataJSON();
   assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
@@ -5218,7 +5244,7 @@ async function testClauseDecisionControls(page) {
   const [exportRequest, download] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx") && request.method() === "POST"),
     page.waitForEvent("download"),
-    page.locator("#studioExportButton").click(),
+    chooseDownloadFormat(page.locator("#studioExportButton"), "docx"),
   ]);
   const exportPayload = exportRequest.postDataJSON();
   assert.ok(
@@ -5498,7 +5524,7 @@ async function testPreviewMatchesExportedDocx(page) {
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.locator("#studioExportButton").click(),
+    chooseDownloadFormat(page.locator("#studioExportButton"), "docx"),
   ]);
   const exportedPath = await download.path();
   assert.ok(exportedPath, "download path should be available");
@@ -5588,7 +5614,7 @@ async function testSourceRedlineExportRegression(page) {
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.locator("#studioExportButton").click(),
+    chooseDownloadFormat(page.locator("#studioExportButton"), "docx"),
   ]);
   assert.match(download.suggestedFilename(), /^Source-Redline-NDA-redlined(?:-[0-9a-f]{12})?\.docx$/);
   const exportedPath = await download.path();
@@ -5716,7 +5742,7 @@ async function testExportFlow(page) {
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    exportButton.click(),
+    chooseDownloadFormat(exportButton, "docx"),
   ]);
   assert.match(download.suggestedFilename(), /^nda-review-report(?:-[0-9a-f]{12})?\.docx$/);
   const downloadedPath = await download.path();
@@ -5739,7 +5765,7 @@ async function testExportFlow(page) {
 
   const [editedDownload] = await Promise.all([
     page.waitForEvent("download"),
-    exportButton.click(),
+    chooseDownloadFormat(exportButton, "docx"),
   ]);
   const editedDownloadedPath = await editedDownload.path();
   assert.ok(editedDownloadedPath, "edited export download path should be available");
@@ -7308,6 +7334,21 @@ async function waitForText(page, selector, expected) {
     ({ selector, expected }) => document.querySelector(selector)?.innerText.includes(expected),
     { selector, expected },
   );
+}
+
+async function openDownloadMenu(trigger) {
+  await trigger.click();
+  const menu = trigger.page().locator("[data-document-download-menu]");
+  await menu.waitFor({ state: "visible" });
+  return menu;
+}
+
+async function chooseDownloadFormat(trigger, format) {
+  const menu = await openDownloadMenu(trigger);
+  const option = menu.locator(`[data-download-format="${format.toLowerCase()}"]`).first();
+  assert.equal(await option.count(), 1, `expected ${format} download option`);
+  assert.equal(await option.isDisabled(), false, `${format} download option should be enabled`);
+  await option.click();
 }
 
 async function waitForRepositoryCount(page, column, expected) {

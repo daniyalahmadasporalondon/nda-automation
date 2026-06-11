@@ -35,8 +35,8 @@ function setupReviewWorkstationActions() {
     await resetReviewRedlineDraft();
   });
 
-  studioExportButton.addEventListener("click", async () => {
-    await exportReviewDocx();
+  studioExportButton.addEventListener("click", () => {
+    openReviewDownloadMenu();
   });
 
   studioRefreshReviewButton?.addEventListener("click", async () => {
@@ -70,6 +70,57 @@ function setupReviewWorkstationActions() {
     event.preventDefault();
     closeReviewSendComposer();
   });
+}
+
+function openReviewDownloadMenu() {
+  if (!studioExportButton || studioExportButton.disabled) return;
+  const matter = state.selectedMatter || null;
+  const pdfOption = DocumentDownloadMenu.option(matter?.document_downloads, "reviewed", "pdf");
+  const staleReview = Boolean(matter?.review_refresh?.stale);
+  const pdfChoice = staleReview
+    ? {
+        available: false,
+        format: "pdf",
+        label: "PDF",
+        unavailableReason: "Refresh review before downloading PDF.",
+      }
+    : DocumentDownloadMenu.contractChoice(pdfOption, {
+        label: "PDF",
+        onSelect: downloadReviewPdf,
+        unavailableReason: matter?.id
+          ? "PDF is not available for this reviewed document yet."
+          : "PDF is available after the review is saved as a matter.",
+      });
+  DocumentDownloadMenu.open(studioExportButton, {
+    label: "Download reviewed document",
+    sections: [{
+      label: "Reviewed redline",
+      choices: [
+        {
+          available: true,
+          description: "Current redline export",
+          format: "docx",
+          label: "DOCX",
+          onSelect: exportReviewDocx,
+        },
+        pdfChoice,
+      ],
+    }],
+  });
+}
+
+async function downloadReviewPdf(choice) {
+  if (!choice?.url) return;
+  if (reviewIsStale()) {
+    handleStaleReviewOperationError({ reviewRefresh: state.selectedMatter?.review_refresh }, "Download could not run.");
+    return;
+  }
+  if (state.selectedMatter?.id && state.redlineDraftDirty) {
+    await saveReviewRedlineDraft({ quiet: true });
+  }
+  const filename = choice.filename || "reviewed-document.pdf";
+  setFileMeta(`Downloading ${filename}.`);
+  downloadUrl(choice.url, filename);
 }
 
 async function exportReviewDocx() {
@@ -155,7 +206,7 @@ async function exportReviewDocx() {
       renderOperationError(error, "Export could not run.");
     }
   } finally {
-    studioExportButton.title = "Export DOCX";
+    studioExportButton.title = "Download";
     updateExportButtonState();
   }
 }

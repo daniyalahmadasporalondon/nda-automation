@@ -91,6 +91,7 @@ const repositoryController = createRepositoryController({
   repositoryMatterPanel: document.querySelector("#repositoryMatterPanel"),
   downloadBlob,
   downloadFilename,
+  downloadUrl,
   loadMatterIntoReview,
   prepareMatterReviewLoad,
   redlineDownloadFilename,
@@ -563,10 +564,14 @@ async function generateNdaFromDraft(payload) {
     // JSON response (the real contract): the document was generated, a matter +
     // tracked artifact were created, and download_url points at the matter source.
     // We no longer auto-download — the staged Download/Send buttons drive that.
+    const documentDownloads = result.document_downloads || null;
+    const generatedDocx = window.DocumentDownloadMenu?.option(documentDownloads, "source", "docx");
     const generated = {
+      documentDownloads,
       downloadUrl: result.download_url || null,
-      filename: result.filename || draftNdaDownloadFilename(payload),
+      filename: result.filename || generatedDocx?.filename || draftNdaDownloadFilename(payload),
       matterId: result.matter_id || null,
+      pdfDownloadUrl: result.pdf_download_url || null,
       counterpartyEmail,
       subject,
     };
@@ -609,8 +614,46 @@ async function generateNdaFromDraft(payload) {
 
 // Download the last generated NDA — from the in-memory blob or the saved matter
 // source URL. Wired to the staged "Download" button in the generator.
-async function downloadGeneratedNda(generated) {
+async function downloadGeneratedNda(generated, { sourceButton } = {}) {
   if (!generated) return;
+  const downloadMenu = window.DocumentDownloadMenu;
+  if (sourceButton && downloadMenu) {
+    const sourcePdf = downloadMenu.option(generated.documentDownloads, "source", "pdf")
+      || (generated.pdfDownloadUrl ? {
+        available: true,
+        content_type: "application/pdf",
+        download_url: generated.pdfDownloadUrl,
+        filename: String(generated.filename || "nda.docx").replace(/\.docx$/i, ".pdf"),
+        format: "pdf",
+      } : null);
+    downloadMenu.open(sourceButton, {
+      label: "Download generated NDA",
+      sections: [{
+        label: "Generated document",
+        choices: [
+          {
+            available: true,
+            filename: generated.filename || "nda.docx",
+            format: "docx",
+            label: "DOCX",
+            onSelect: () => downloadGeneratedDocx(generated),
+          },
+          downloadMenu.contractChoice(sourcePdf, {
+            label: "PDF",
+            onSelect: (choice) => downloadUrl(choice.url, choice.filename || "generated-nda.pdf"),
+            unavailableReason: generated.matterId
+              ? "PDF is not available for this generated NDA yet."
+              : "PDF is available after the NDA is saved as a matter.",
+          }),
+        ],
+      }],
+    });
+    return;
+  }
+  await downloadGeneratedDocx(generated);
+}
+
+async function downloadGeneratedDocx(generated) {
   // Prefer the clean edited version when the in-Generator editor has edits.
   const editedBlob = await editedGeneratedBlob();
   if (editedBlob) {

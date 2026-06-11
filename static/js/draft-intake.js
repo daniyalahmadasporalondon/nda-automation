@@ -203,7 +203,9 @@ function createDraftIntakeController({
   // document, so it generates first (if needed) then downloads.
   downloadButton?.addEventListener("click", async () => {
     if (!lastGenerated) await generate();
-    if (lastGenerated && typeof onDownloadGenerated === "function") onDownloadGenerated(lastGenerated);
+    if (lastGenerated && typeof onDownloadGenerated === "function") {
+      onDownloadGenerated(lastGenerated, { sourceButton: downloadButton });
+    }
   });
 
   // Send ALWAYS opens the email popup immediately — never blocked on generation —

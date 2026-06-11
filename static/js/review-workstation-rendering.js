@@ -96,7 +96,7 @@ function updateExportButtonState() {
   const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale);
   if (studioExportButton) {
     studioExportButton.disabled = !canExport || staleReview;
-    studioExportButton.title = staleReview ? "Refresh review before exporting" : "Export DOCX";
+    studioExportButton.title = staleReview ? "Refresh review before downloading" : "Download";
   }
   if (!studioSendButton) {
     updateRedlineDraftControls();

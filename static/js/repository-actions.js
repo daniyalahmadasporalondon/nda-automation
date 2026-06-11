@@ -3,6 +3,7 @@ const RepositoryActions = (() => {
     api,
     downloadBlob,
     downloadFilename,
+    downloadUrl,
     getPendingDeleteMatterId,
     getPendingSendMatterId,
     getSelectedMatter,
@@ -198,14 +199,43 @@ const RepositoryActions = (() => {
       }
     }
 
+    function openDownloadMenu(matter, anchor) {
+      if (!matter?.id || !anchor) return;
+      setPendingSendMatterId(null);
+      setPendingDeleteMatterId(null);
+      const reviewedDownloads = matter.document_downloads;
+      const reviewedDocx = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "docx");
+      const reviewedPdf = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "pdf");
+      DocumentDownloadMenu.open(anchor, {
+        label: "Download reviewed document",
+        sections: [{
+          label: "Reviewed redline",
+          choices: [
+            {
+              available: true,
+              filename: reviewedDocx?.filename || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx"),
+              format: "docx",
+              label: "DOCX",
+              onSelect: () => exportMatter(matter),
+            },
+            DocumentDownloadMenu.contractChoice(reviewedPdf, {
+              label: "PDF",
+              onSelect: (choice) => downloadMatterPdf(matter, choice),
+              unavailableReason: "PDF is not available for this reviewed document yet.",
+            }),
+          ],
+        }],
+      });
+    }
+
     async function exportMatter(matter) {
       setPendingSendMatterId(null);
       setPendingDeleteMatterId(null);
-      const exportButton = repositoryMatterPanel?.querySelector(".repository-export-redline");
+      const exportButton = repositoryMatterPanel?.querySelector(".repository-download-document");
       setPanelMessage("");
       if (exportButton) {
         exportButton.disabled = true;
-        exportButton.textContent = "Exporting";
+        exportButton.textContent = "Downloading";
       }
       try {
         const response = await api.exportReviewDocx(matter.id);
@@ -223,9 +253,21 @@ const RepositoryActions = (() => {
       } finally {
         if (exportButton?.isConnected) {
           exportButton.disabled = false;
-          exportButton.textContent = "Export Redline";
+          exportButton.textContent = "Download";
         }
       }
+    }
+
+    function downloadMatterPdf(matter, choice) {
+      const filename = choice?.filename || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.pdf").replace(/\.docx$/i, ".pdf");
+      if (!choice?.url) {
+        setPanelMessage("PDF is not available for this reviewed document yet.");
+        return;
+      }
+      if (typeof downloadUrl === "function") {
+        downloadUrl(choice.url, filename);
+      }
+      setPanelMessage(`Downloading ${filename}.`);
     }
 
     async function sendRedline(matter) {
@@ -410,6 +452,7 @@ const RepositoryActions = (() => {
       loadMatters,
       markMatterRedlineReady,
       moveMatterToColumn,
+      openDownloadMenu,
       openMatter,
       openMatterInReview,
       refreshMatterReview,

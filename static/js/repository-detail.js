@@ -121,7 +121,7 @@ const RepositoryDetail = (() => {
           <div class="repository-detail-actions">
             <button type="button" class="repository-open-review">Open Review</button>
             ${MatterUtils.reviewStale(matter) ? '<button type="button" class="secondary repository-refresh-review">Refresh Review</button>' : ""}
-            <button type="button" class="secondary repository-export-redline">Export Redline</button>
+            <button type="button" class="secondary repository-download-document" aria-haspopup="menu" aria-expanded="false">Download</button>
             <button type="button" class="secondary repository-save-to-drive">Save to Drive</button>
             <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">
               <span class="send-plane-icon" aria-hidden="true">
@@ -139,7 +139,7 @@ const RepositoryDetail = (() => {
     repositoryMatterPanel.querySelector(".repository-detail-close")?.addEventListener("click", handlers.closePanel);
     repositoryMatterPanel.querySelector(".repository-open-review")?.addEventListener("click", () => handlers.openMatterInReview(matter));
     repositoryMatterPanel.querySelector(".repository-refresh-review")?.addEventListener("click", () => handlers.refreshMatterReview?.(matter));
-    repositoryMatterPanel.querySelector(".repository-export-redline")?.addEventListener("click", () => handlers.exportMatter(matter));
+    repositoryMatterPanel.querySelector(".repository-download-document")?.addEventListener("click", (event) => handlers.openDownloadMenu(matter, event.currentTarget));
     repositoryMatterPanel.querySelector(".repository-save-to-drive")?.addEventListener("click", () => handlers.saveMatterToDrive(matter));
     repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => handlers.sendRedline(matter));
   }
