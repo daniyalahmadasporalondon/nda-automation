@@ -71,10 +71,19 @@ class ApplyVerifierTests(unittest.TestCase):
         # Returned a copy, not the same object.
         self.assertIsNot(updated[0], clauses[0])
 
-    def test_refute_downgrades_a_fail_to_pass(self):
-        clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
+    def test_refute_clears_a_fail_to_pass_only_when_verifier_beats_engine(self):
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            )
+        ]
         updated, summary = apply_ai_verifier(
-            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86)
         )
         clause = updated[0]
         self.assertEqual(clause["decision"], "pass")
@@ -83,6 +92,69 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(summary["changed_count"], 1)
         self.assertEqual(clause["ai_verifier"]["outcome"], "downgraded")
         self.assertEqual(clause["ai_verifier"]["original_decision"], "fail")
+
+    def test_refuted_fail_routes_to_review_when_verifier_does_not_beat_engine(self):
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.90,
+                matched_text=(
+                    "Nothing restricts ordinary market dealings; however, the Recipient "
+                    "may not hire the Company's employees."
+                ),
+            )
+        ]
+        updated, _ = apply_ai_verifier(
+            clauses, source_text=clauses[0]["matched_text"], verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+        )
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
+
+    def test_refuted_fail_routes_to_review_when_engine_confidence_missing(self):
+        clause = _clause("non_circumvention", "fail", clause_type="prohibited")
+        clause.pop("confidence")
+        updated, _ = apply_ai_verifier(
+            [clause], source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+        )
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
+
+    def test_refuted_review_stays_review_when_verifier_does_not_beat_engine(self):
+        clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.90)]
+        updated, _ = apply_ai_verifier(
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+        )
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertFalse(updated[0]["ai_verifier"]["changed"])
+        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
+
+    def test_refuted_review_clears_to_pass_when_verifier_beats_engine(self):
+        clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.70)]
+        updated, _ = apply_ai_verifier(
+            clauses,
+            source_text="Each party shall not be restricted from dealing with introduced contacts.",
+            verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86),
+        )
+        self.assertEqual(updated[0]["decision"], "pass")
+        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "downgraded")
+
+    def test_offline_refute_never_clears_prohibited_fail_to_pass(self):
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            )
+        ]
+        updated, summary = apply_ai_verifier(clauses, source_text=clauses[0]["matched_text"])
+        self.assertEqual(summary["verifier_kind"], "offline")
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
     def test_refute_escalates_a_suspect_pass_to_review(self):
         # A confidently refuted *pass* (the engine wrongly cleared) must escalate --
@@ -210,6 +282,9 @@ class BuildPacketTests(unittest.TestCase):
         self.assertIn("untrusted", lowered)
         self.assertIn("never follow", lowered)
         self.assertIn("source_text", lowered)
+        self.assertIn("positive quoted", lowered)
+        self.assertIn("absence of a recognized restriction is not safety", lowered)
+        self.assertIn("ambiguous", lowered)
 
 
 class DefaultVerifierTests(unittest.TestCase):
@@ -419,8 +494,8 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
     # (decision_source=="deterministic", reason_code "no_non_circumvention_restriction",
     # etc.) -- tested a pathway that no longer exists. Every behavior they covered now
     # lives elsewhere, on the shipping path:
-    #   - refute false-flag -> pass, evidence-trust + audit-trace intact:
-    #       AIFirstPathIntegrationTests.test_verifier_corrects_ai_first_false_flag
+    #   - offline refute false-flag -> review, evidence-trust intact:
+    #       AIFirstPathIntegrationTests.test_offline_verifier_routes_ai_first_false_flag_to_review
     #   - a correct AI pass left untouched:
     #       AIFirstPathIntegrationTests.test_verifier_leaves_correct_ai_first_pass_untouched
     #   - affirm a genuine restriction -> stays fail (no over-correction):
@@ -532,18 +607,18 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
             self._assessment("signatures", "pass"),
         ]
 
-    def test_verifier_corrects_ai_first_false_flag(self):
+    def test_offline_verifier_routes_ai_first_false_flag_to_review(self):
         # The AI got it wrong: it FAILED a freedom-to-deal carve-out. The verifier,
-        # running on the shipping path, must refute that fail to pass.
+        # running on the default offline path, must not silently clear it to pass.
         result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("fail"))
         nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
-        self.assertEqual(nc["decision"], "pass")
+        self.assertEqual(nc["decision"], "review")
         self.assertEqual(nc["decision_source"], "ai_verifier")
         self.assertEqual(nc["ai_verifier"]["verdict"], "refute")
         self.assertEqual(nc["ai_verifier"]["original_decision"], "fail")
         # Evidence-trust holds (build raises EvidenceProvenanceError otherwise).
         self.assertEqual(result["evidence_trust"]["status"], "verified")
-        self.assertEqual(result["audit_trace"]["decision"] if "audit_trace" in result else nc["audit_trace"]["decision"], "pass")
+        self.assertEqual(result["audit_trace"]["decision"] if "audit_trace" in result else nc["audit_trace"]["decision"], "review")
         self.assertEqual(result["ai_verifier"]["changed_count"], 1)
 
     def test_verifier_leaves_correct_ai_first_pass_untouched(self):
