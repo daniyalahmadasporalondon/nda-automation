@@ -75,8 +75,24 @@ function setupReviewWorkstationActions() {
 function openReviewDownloadMenu() {
   if (!studioExportButton || studioExportButton.disabled) return;
   const matter = state.selectedMatter || null;
+  const docxOption = DocumentDownloadMenu.option(matter?.document_downloads, "reviewed", "docx");
   const pdfOption = DocumentDownloadMenu.option(matter?.document_downloads, "reviewed", "pdf");
   const staleReview = Boolean(matter?.review_refresh?.stale);
+  const hasManagedDocxOption = Boolean(docxOption?.source_transform || docxOption?.label || docxOption?.fidelity);
+  const docxChoice = staleReview
+    ? {
+        available: false,
+        format: "docx",
+        label: "DOCX",
+        unavailableReason: "Refresh review before downloading DOCX.",
+      }
+    : DocumentDownloadMenu.contractChoice(docxOption, {
+        label: "DOCX",
+        onSelect: exportReviewDocx,
+        unavailableReason: matter?.id
+          ? "DOCX is not available for this reviewed document yet."
+          : "DOCX is available after the review is saved as a matter.",
+      });
   const pdfChoice = staleReview
     ? {
         available: false,
@@ -96,11 +112,10 @@ function openReviewDownloadMenu() {
     sections: [{
       label: "Reviewed redline",
       choices: [
-        {
+        hasManagedDocxOption || staleReview ? docxChoice : {
+          ...docxChoice,
           available: true,
           description: "Current redline export",
-          format: "docx",
-          label: "DOCX",
           onSelect: exportReviewDocx,
         },
         pdfChoice,

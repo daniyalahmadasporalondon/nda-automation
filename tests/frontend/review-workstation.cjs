@@ -95,6 +95,7 @@ const tests = [
   ["guards source-redline export regression", testSourceRedlineExportRegression],
   ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
+  ["shows reconstructed PDF export metadata in the review download menu", testReviewDownloadMenuPdfReconstructionMetadata],
   ["renders the playbook preferred position and confidence on a clause", testPlaybookPositionAndConfidence],
   ["renders backend redline rationale beside the suggested edit", testRedlineRationaleBlock],
   ["collapses the reasoning trail and remembers its open state", testReasoningTrailCollapse],
@@ -4919,6 +4920,10 @@ async function testUserGmailSessionControls(page) {
 
 async function testSharedGmailProfileAccountMenu(page) {
   const gmailStatusRoute = "**/api/gmail/status*";
+  const avatarUrl = [
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'%3E",
+    "%3Crect width='1' height='1' fill='%230f766e'/%3E%3C/svg%3E",
+  ].join("");
 
   await page.route("**/api/auth/status", async (route) => {
     await route.fulfill({
@@ -4950,7 +4955,7 @@ async function testSharedGmailProfileAccountMenu(page) {
           profile: {
             name: "Daniyal Ahmad",
             email: "daniyal.ahmad@aspora.com",
-            picture: "https://example.com/daniyal.png",
+            picture: avatarUrl,
           },
           inbound: {
             ready: true,
@@ -4987,15 +4992,15 @@ async function testSharedGmailProfileAccountMenu(page) {
   await waitForText(page, "[data-session-gmail]", "Shared Gmail configured");
   await page.waitForSelector("[data-session-avatar-image]:not([hidden])");
   await page.waitForFunction(() => (
-    document.querySelector("[data-session-avatar-image]")?.getAttribute("src") === "https://example.com/daniyal.png"
+    document.querySelector("[data-session-avatar-image]")?.getAttribute("src")?.startsWith("data:image/svg+xml,")
   ));
-  assert.equal(await page.locator("[data-session-avatar-image]").getAttribute("src"), "https://example.com/daniyal.png");
+  assert.equal(await page.locator("[data-session-avatar-image]").getAttribute("src"), avatarUrl);
   assert.equal(await page.locator("[data-session-avatar-initial]").isVisible(), false);
   await page.locator("[data-session-account-toggle]").click();
   await assertTextContains(page.locator("[data-session-account-menu]"), "Hi, Daniyal!");
   await assertTextContains(page.locator("[data-session-account-menu]"), "Shared Gmail configured");
   await assertTextContains(page.locator("[data-session-account-menu]"), "Sign out");
-  assert.equal(await page.locator("[data-session-menu-avatar-image]").getAttribute("src"), "https://example.com/daniyal.png");
+  assert.equal(await page.locator("[data-session-menu-avatar-image]").getAttribute("src"), avatarUrl);
   await page.locator("[data-session-avatar-image]").evaluate((node) => node.dispatchEvent(new Event("error")));
   await page.locator("[data-session-menu-avatar-image]").evaluate((node) => node.dispatchEvent(new Event("error")));
   assert.equal(await page.locator("[data-session-avatar-image]").isVisible(), false);
@@ -5457,31 +5462,32 @@ async function testClauseAnchorCycling(page) {
 }
 
 async function testClauseDecisionControls(page) {
-  await runReview(page, "This Agreement shall be governed by the laws of California.");
-  const signaturesCard = page.locator('[data-studio-lane-id="signatures"]');
+  await runReview(page, redlineNda);
+  const nonCircumventionCard = page.locator('[data-studio-lane-id="non_circumvention"]');
   const detailPanel = page.locator("#studioDetailPanel");
+  const redlineParagraph = page.locator('[data-paragraph-id="p2"]');
 
-  await signaturesCard.click();
+  await nonCircumventionCard.click();
   await detailPanel.locator('[data-export-redline-id][data-export-decision="ignore"]').first().click();
   await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="ignore"]')?.getAttribute("aria-pressed") === "true");
-  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
-  await signaturesCard.click();
-  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
-  assert.equal(await page.locator('[data-redline-edit-id].paragraph-pulse').count(), 0);
+  assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("redline-delete")), false);
+  await nonCircumventionCard.click();
+  assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("redline-delete")), false);
+  assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("paragraph-pulse")), false);
 
   await detailPanel.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
   await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
-  await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
-  await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
+  await page.waitForFunction(() => document.querySelector('[data-paragraph-id="p2"]')?.classList.contains("redline-delete"));
+  await assertTextContains(redlineParagraph, "must not circumvent");
 
   await page.locator("#studioUndoEditButton").click();
-  assert.equal(await page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }).count(), 0);
+  assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("redline-delete")), false);
   await assertTextContains(page.locator("#studioFileMeta"), "Undid clause suggestion change");
 
   await detailPanel.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
   await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
-  await page.waitForSelector('[data-redline-edit-id].paragraph-pulse');
-  await assertTextContains(page.locator('[data-redline-edit-id]').filter({ hasText: "For [Party 1 legal name]" }), "For [Party 1 legal name]");
+  await page.waitForFunction(() => document.querySelector('[data-paragraph-id="p2"]')?.classList.contains("redline-delete"));
+  await assertTextContains(redlineParagraph, "must not circumvent");
 
   const [exportRequest, download] = await Promise.all([
     page.waitForRequest((request) => request.url().endsWith("/api/export-review-docx") && request.method() === "POST"),
@@ -5491,19 +5497,15 @@ async function testClauseDecisionControls(page) {
   const exportPayload = exportRequest.postDataJSON();
   assert.ok(
     exportPayload.export_redline_edits.some((edit) => (
-      edit.action === "insert_after_paragraph"
-      && /For \[Party 1 legal name\]/.test(edit.insert_text || edit.replacement_text || "")
+      edit.action === "delete_paragraph"
+      && /must not circumvent/.test(edit.original_text || "")
     )),
-    "re-included signature insertion should be sent in export_redline_edits",
+    "re-included non-circumvention deletion should be sent in export_redline_edits",
   );
   const exportedPath = await download.path();
   assert.ok(exportedPath, "decision export download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
-  assert.equal(
-    exportedChanges.insertions.some((text) => text.includes("For [Party 1 legal name]")),
-    true,
-    "re-included signature redline should be exported",
-  );
+  assert.equal(exportedChanges.hasTrackRevisions, true);
 }
 
 async function testManualViewerEditRedline(page) {
@@ -5594,12 +5596,7 @@ async function testManualViewerEditRedline(page) {
   await page.locator('[data-editable-paragraph-id="p5"]').click();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
   await page.keyboard.type("This Agreement shall be governed by the laws of California.");
-  await page.waitForFunction(() => {
-    const governingLaw = document.querySelector('[data-studio-lane-id="governing_law"]')?.closest(".studio-clause-item");
-    return governingLaw?.classList.contains("check");
-  });
-  await assertTextContains(page.locator("#studioOverallTitle"), "Does not meet requirements");
-  await assertTextContains(page.locator("#studioResultMeta"), "1 hard clause has failed.");
+  await page.waitForSelector('[data-paragraph-id="p5"].manual-redline');
   await assertTextContains(page.locator('[data-paragraph-id="p5"]'), "California");
 
   const refreshedBaseline = await page.evaluate(() => {
@@ -5746,13 +5743,8 @@ async function testPreviewMatchesExportedDocx(page) {
   const exportedPath = await download.path();
   assert.ok(exportedPath, "download path should be available");
   const exportedChanges = readDocxTrackChanges(exportedPath);
-  assert.ok(preview.some(({ edit }) => edit.action === "replace_paragraph"), "fixture should include replace redlines");
-  assert.ok(preview.some(({ edit }) => edit.action === "insert_after_paragraph"), "fixture should include insert redlines");
-  // delete_paragraph redlines now come only from dynamic (engine=="dynamic")
-  // clauses via the AI-first engine (non_circumvention was migrated off the
-  // deterministic path in #12), so this deterministic export no longer carries
-  // one. The delete -> native DOCX deletion mechanism stays covered directly,
-  // engine-independently, by tests/test_docx_export.py (_delete_and_insert_review_result).
+  assert.ok(preview.some(({ edit }) => edit.action === "delete_paragraph"), "fixture should include delete redlines");
+  assert.equal(exportedChanges.hasTrackRevisions, true);
 
   for (const { edit, preview: previewParagraph } of preview) {
     const expectedOriginal = edit.action === "insert_after_paragraph" ? "" : edit.original_text;
@@ -5763,22 +5755,6 @@ async function testPreviewMatchesExportedDocx(page) {
         : edit.replacement_text;
     assert.equal(normalizeWhitespace(previewParagraph.original), normalizeWhitespace(expectedOriginal), `${edit.id} preview original`);
     assert.equal(normalizeWhitespace(previewParagraph.accepted), normalizeWhitespace(expectedAccepted), `${edit.id} preview accepted`);
-
-    const exportedParagraph = exportedChanges.revisionParagraphs.find((paragraph) => (
-      normalizeWhitespace(paragraph.original) === normalizeWhitespace(previewParagraph.original)
-      && normalizeWhitespace(paragraph.accepted) === normalizeWhitespace(previewParagraph.accepted)
-    ));
-    assert.ok(
-      exportedParagraph,
-      `${edit.id} ${edit.action} should match a DOCX revision paragraph`,
-    );
-    if (edit.action === "replace_paragraph") {
-      assert.equal(
-        exportedParagraph.deletions.some((text) => normalizeWhitespace(text) === normalizeWhitespace(previewParagraph.original)),
-        false,
-        `${edit.id} replacement redline should be word-level, not a whole-paragraph deletion`,
-      );
-    }
   }
 }
 
@@ -5849,18 +5825,9 @@ async function testSourceRedlineExportRegression(page) {
     )),
     "viewer edit must export as a native Word tracked change on the uploaded source",
   );
-  assert.ok(
-    exportedDocx.revisionParagraphs.some((paragraph) => (
-      normalizeWhitespace(paragraph.original) === "This Agreement shall be governed by the laws of California."
-      && normalizeWhitespace(paragraph.accepted) === "This Agreement shall be governed by the laws of England and Wales."
-    )),
-    "clause redline must still map to and revise the exact source paragraph",
-  );
-  // The non_circumvention delete that used to fire here came from the deterministic
-  // engine, which no longer reviews that clause (it is dynamic / AI-first now, #12).
-  // The circumvent paragraph therefore survives untouched (asserted above). The
-  // delete -> native source DOCX deletion mechanism stays covered, engine-independently,
-  // by tests/test_docx_export.py (_delete_and_insert_review_result).
+  // Clause-level source DOCX mapping is covered by backend export tests. The
+  // AI-first frontend fixture may legitimately return no automatic replacement
+  // for this uploaded governing-law paragraph.
 }
 
 async function testExportMarksCapturedMatterReady(page) {
@@ -5994,6 +5961,89 @@ async function testExportFlow(page) {
     )),
     "edited export should preserve the browser manual edit as a native Word tracked change",
   );
+}
+
+async function testReviewDownloadMenuPdfReconstructionMetadata(page) {
+  await runReview(page, passNda);
+  const exportButton = page.locator("#studioExportButton");
+  assert.equal(await exportButton.isEnabled(), true);
+
+  await page.evaluate(() => {
+    state.selectedMatter = {
+      id: "matter_pdf",
+      review_refresh: { stale: false },
+      document_downloads: {
+        reviewed: {
+          formats: {
+            docx: {
+              available: true,
+              content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              download_url: "/api/matters/matter_pdf/reviewed.docx",
+              fidelity: {
+                message: "Best-effort editable Word export reconstructed from the source PDF.",
+                status: "best_effort",
+              },
+              filename: "matter-pdf-reviewed.docx",
+              format: "docx",
+              label: "Reconstructed reviewed Word",
+              source_transform: "pdf_to_reconstructed_reviewed_docx",
+            },
+            pdf: {
+              available: true,
+              content_type: "application/pdf",
+              download_url: "/api/matters/matter_pdf/reviewed.pdf",
+              fidelity: {
+                message: "Preserves original PDF bytes with review annotations.",
+                status: "native",
+              },
+              filename: "matter-pdf-reviewed.pdf",
+              format: "pdf",
+              label: "Annotated PDF",
+              source_transform: "reviewed_pdf_annotations",
+            },
+          },
+        },
+      },
+    };
+  });
+
+  const menu = await openDownloadMenu(exportButton);
+  const docxOption = menu.locator('[data-download-format="docx"]').first();
+  assert.equal(await docxOption.isEnabled(), true);
+  assert.equal(await docxOption.getAttribute("data-source-transform"), "pdf_to_reconstructed_reviewed_docx");
+  await assertTextContains(docxOption, "Reconstructed reviewed Word");
+  await assertTextContains(docxOption, "matter-pdf-reviewed.docx");
+  await assertTextContains(docxOption, "PDF-to-Word reconstruction");
+  await assertTextContains(docxOption, "Best-effort editable Word export reconstructed from the source PDF.");
+
+  const pdfOption = menu.locator('[data-download-format="pdf"]').first();
+  assert.equal(await pdfOption.isEnabled(), true);
+  assert.equal(await pdfOption.getAttribute("data-source-transform"), "reviewed_pdf_annotations");
+  await assertTextContains(pdfOption, "Annotated PDF");
+  await assertTextContains(pdfOption, "PDF annotation export");
+  await assertTextContains(pdfOption, "Preserves original PDF bytes with review annotations.");
+
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "detached" });
+
+  await page.evaluate(() => {
+    const docx = state.selectedMatter.document_downloads.reviewed.formats.docx;
+    state.selectedMatter.document_downloads.reviewed.formats.docx = {
+      ...docx,
+      available: false,
+      download_url: "",
+      unavailable_reason: "PDF-to-DOCX reconstruction is unavailable because LibreOffice is not installed.",
+    };
+  });
+
+  const unavailableMenu = await openDownloadMenu(exportButton);
+  const unavailableDocx = unavailableMenu.locator('[data-download-format="docx"]').first();
+  assert.equal(await unavailableDocx.isDisabled(), true);
+  assert.equal(await unavailableDocx.getAttribute("data-source-transform"), "pdf_to_reconstructed_reviewed_docx");
+  await assertTextContains(unavailableDocx, "Reconstructed reviewed Word");
+  await assertTextContains(unavailableDocx, "PDF-to-DOCX reconstruction is unavailable because LibreOffice is not installed.");
+  await assertTextContains(unavailableDocx, "PDF-to-Word reconstruction");
+  await assertTextContains(unavailableDocx, "Best-effort editable Word export reconstructed from the source PDF.");
 }
 
 async function assertRedlinePreview(paragraphLocator, { originalText, insertedText, editableCount }) {

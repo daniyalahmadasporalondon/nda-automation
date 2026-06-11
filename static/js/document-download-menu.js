@@ -80,6 +80,7 @@ const DocumentDownloadMenu = (() => {
     button.type = "button";
     button.className = "document-download-option";
     button.dataset.downloadFormat = String(choice.format || "").toLowerCase();
+    if (choice.sourceTransform) button.dataset.sourceTransform = String(choice.sourceTransform);
     button.setAttribute("role", "menuitem");
     button.disabled = !available;
     button.setAttribute("aria-disabled", available ? "false" : "true");
@@ -92,9 +93,17 @@ const DocumentDownloadMenu = (() => {
     const meta = document.createElement("span");
     meta.className = "document-download-option-meta";
     meta.textContent = available
-      ? choice.filename || choice.description || "Ready"
+      ? choice.description || choice.filename || "Ready"
       : choice.unavailableReason || "Unavailable";
     button.appendChild(meta);
+
+    const detailText = [choice.detail, choice.fidelity?.message].filter(Boolean).join(" · ");
+    if (detailText) {
+      const detail = document.createElement("span");
+      detail.className = "document-download-option-detail";
+      detail.textContent = detailText;
+      button.appendChild(detail);
+    }
 
     if (available) {
       button.addEventListener("click", async () => {
@@ -126,13 +135,18 @@ const DocumentDownloadMenu = (() => {
     const format = option?.format || label || "download";
     const hasUrl = Boolean(option?.download_url);
     const available = Boolean(option?.available && hasUrl && onSelect);
+    const optionLabel = option?.label || label || formatLabel(format);
     return {
       available,
       contentType: option?.content_type || "",
+      description: option?.label && option?.filename ? option.filename : "",
+      detail: sourceTransformLabel(option?.source_transform),
+      fidelity: option?.fidelity || null,
       filename: option?.filename || "",
       format,
-      label: label || formatLabel(format),
+      label: optionLabel,
       onSelect,
+      sourceTransform: option?.source_transform || "",
       unavailableReason: available
         ? ""
         : option?.unavailable_reason || (!hasUrl && option?.available ? "Download URL unavailable" : unavailableReason || "Unavailable"),
@@ -142,6 +156,17 @@ const DocumentDownloadMenu = (() => {
 
   function option(documentDownloads, section, format) {
     return documentDownloads?.[section]?.formats?.[format] || null;
+  }
+
+  function sourceTransformLabel(sourceTransform) {
+    if (!sourceTransform) return "";
+    const labels = {
+      pdf_to_reconstructed_reviewed_docx: "PDF-to-Word reconstruction",
+      pdf_to_reconstructed_docx: "PDF-to-Word reconstruction",
+      docx_source_passthrough: "Source DOCX formatting",
+      reviewed_pdf_annotations: "PDF annotation export",
+    };
+    return labels[sourceTransform] || String(sourceTransform).replace(/_/g, " ");
   }
 
   return {

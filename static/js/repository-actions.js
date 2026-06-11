@@ -206,12 +206,20 @@ const RepositoryActions = (() => {
       const reviewedDownloads = matter.document_downloads;
       const reviewedDocx = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "docx");
       const reviewedPdf = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "pdf");
+      const hasManagedDocxOption = Boolean(reviewedDocx?.source_transform || reviewedDocx?.label || reviewedDocx?.fidelity);
+      const docxChoice = hasManagedDocxOption
+        ? DocumentDownloadMenu.contractChoice(reviewedDocx, {
+            label: "DOCX",
+            onSelect: () => exportMatter(matter),
+            unavailableReason: "DOCX is not available for this reviewed document yet.",
+          })
+        : null;
       DocumentDownloadMenu.open(anchor, {
         label: "Download reviewed document",
         sections: [{
           label: "Reviewed redline",
           choices: [
-            {
+            docxChoice || {
               available: true,
               filename: reviewedDocx?.filename || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx"),
               format: "docx",
