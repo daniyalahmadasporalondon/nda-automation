@@ -47,7 +47,7 @@ const RepositoryDetail = (() => {
               <dl class="repository-detail-meta repository-detail-meta-grid">
                 ${renderInspectorField("File name", fileName)}
                 ${renderInspectorField("Subject", subject)}
-                ${renderInspectorField("Status", RepositoryModel.boardColumnLabel(matter.board_column))}
+                ${renderInspectorField("Status", RepositoryModel.matterColumnLabel(matter))}
                 ${renderInspectorField("Review route", RepositoryModel.triageLabel(matter.triage_status))}
                 ${renderInspectorField("Date ingested", RepositoryModel.formatMatterDateTime(matter.created_at) || "-")}
                 ${renderInspectorField("Last updated", RepositoryModel.formatMatterDateTime(matter.updated_at) || "-")}

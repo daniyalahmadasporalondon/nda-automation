@@ -15,6 +15,7 @@ function createManualUploadController({
   allowedBoardColumns = ["in_review"],
   defaultBoardColumn = "in_review",
   boardColumnLabel = (boardColumn) => boardColumn || "In Review",
+  submissionBoardColumn = (boardColumn) => boardColumn,
   fileToBase64,
   repositoryController,
   activateTab,
@@ -123,7 +124,7 @@ function createManualUploadController({
           received_at: new Date().toISOString(),
           message_snippet: noteInput.value.trim() || `Manual upload of ${selectedFile.name}.`,
           attachment_filename: selectedFile.name,
-          board_column: targetBoardColumn,
+          board_column: submissionBoardColumn(targetBoardColumn),
         }),
       });
       const payload = await response.json();

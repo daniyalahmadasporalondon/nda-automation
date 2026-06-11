@@ -1,11 +1,14 @@
 const RepositoryModel = (() => {
   const BOARD_COLUMNS = [
     { id: "generated", label: "Generated" },
+    { id: "manual_upload", label: "Upload" },
     { id: "gmail_demo", label: "Inbox" },
     { id: "in_review", label: "In Review" },
     { id: "reviewed", label: "Reviewed" },
     { id: "sent", label: "Sent" },
   ];
+  const MANUAL_UPLOAD_COLUMN_ID = "manual_upload";
+  const MANUAL_UPLOAD_STORAGE_COLUMN_ID = "in_review";
   const BOARD_COLUMN_IDS = new Set(BOARD_COLUMNS.map((column) => column.id));
   const LEGACY_BOARD_COLUMN_IDS = {
     redline_ready: "reviewed",
@@ -49,7 +52,20 @@ const RepositoryModel = (() => {
   }
 
   function matterColumn(matter) {
-    return canonicalBoardColumn(matter?.board_column);
+    const boardColumn = canonicalBoardColumn(matter?.board_column);
+    if (matter?.source_type === "manual_upload" && boardColumn === MANUAL_UPLOAD_STORAGE_COLUMN_ID) {
+      return MANUAL_UPLOAD_COLUMN_ID;
+    }
+    return boardColumn;
+  }
+
+  function matterColumnLabel(matter) {
+    return boardColumnLabel(matterColumn(matter));
+  }
+
+  function manualUploadSubmissionColumn(boardColumn) {
+    const column = canonicalBoardColumn(boardColumn);
+    return column === MANUAL_UPLOAD_COLUMN_ID ? MANUAL_UPLOAD_STORAGE_COLUMN_ID : column;
   }
 
   function matterSubject(matter) {
@@ -121,7 +137,9 @@ const RepositoryModel = (() => {
     compareMatterRecency,
     formatMatterDate,
     formatMatterDateTime,
+    manualUploadSubmissionColumn,
     matterColumn,
+    matterColumnLabel,
     matterSender,
     matterSubject,
     playbookMatchLabel,

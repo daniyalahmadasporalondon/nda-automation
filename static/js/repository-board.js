@@ -45,7 +45,7 @@ const RepositoryBoard = (() => {
       matter?.document_title,
       matter?.received_at,
       RepositoryModel.sourceTypeLabel(matter?.source_type),
-      RepositoryModel.boardColumnLabel(matter?.board_column),
+      RepositoryModel.matterColumnLabel(matter),
       MatterUtils.reviewStale(matter) ? "stale" : "",
     ].filter(Boolean).join(" "));
   }
@@ -142,7 +142,7 @@ const RepositoryBoard = (() => {
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
-          <span>${escapeHtml(RepositoryModel.boardColumnLabel(matter.board_column))}</span>
+          <span>${escapeHtml(RepositoryModel.matterColumnLabel(matter))}</span>
         </span>
       </article>
     `;
