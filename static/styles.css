@@ -5503,6 +5503,135 @@ button.active-clause-status:hover {
   line-height: 1.4;
 }
 
+.studio-detail-block.proposed-change-card {
+  background: #ffffff;
+  border-color: var(--border);
+  display: grid;
+  gap: 10px;
+}
+
+.proposed-change-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.proposed-change-head small {
+  margin-bottom: 0;
+}
+
+.proposed-change-approval {
+  background: rgba(91, 45, 145, 0.08);
+  border: 1px solid rgba(91, 45, 145, 0.22);
+  border-radius: 999px;
+  color: #4b2674;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  padding: 3px 7px;
+}
+
+.proposed-change-summary {
+  margin: 0;
+}
+
+.proposed-change-facts {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  margin: 0;
+}
+
+.proposed-change-facts div {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.proposed-change-facts dt {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.proposed-change-facts dd {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.proposed-change-text-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.proposed-change-text-grid figure,
+.proposed-change-evidence {
+  background: #fbfbfd;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin: 0;
+  min-width: 0;
+  padding: 8px;
+}
+
+.proposed-change-text-grid figcaption,
+.proposed-change-evidence figcaption {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.proposed-change-text-grid blockquote,
+.proposed-change-evidence blockquote {
+  color: var(--ink);
+  font-family: var(--doc-font);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.proposed-change-rationale,
+.proposed-change-safety-note,
+.proposed-change-empty {
+  margin: 0;
+}
+
+.proposed-change-rationale strong {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.proposed-change-safety-note,
+.proposed-change-empty {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--ink-muted);
+  padding: 8px;
+}
+
 .clause-citation-block.ungrounded {
   border-left: 2px solid var(--warning, #c47f17);
 }

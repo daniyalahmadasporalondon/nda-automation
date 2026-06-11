@@ -1207,6 +1207,7 @@ function renderStudioDetail() {
   // data is present.
   const citation = renderClauseCitationBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
+  const proposedChange = renderProposedChangeBlock(clause);
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   // Audit/context detail beneath the primary finding, gathered into a single
   // collapsible Reasoning trail (#22). Self-gates to "" when the clause carries
@@ -1230,6 +1231,7 @@ function renderStudioDetail() {
       <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
       ${citation}
       ${playbookPosition}
+      ${proposedChange}
       ${proposedRedlines}
       ${reasoningTrail}
       ${commentBlock}
@@ -1554,6 +1556,140 @@ function renderEvidenceBlock(clause) {
     return `<div class="studio-detail-block studio-detail-evidence"><small>Evidence</small><p>${escapeHtml(clause.matched_text)}</p></div>`;
   }
   return '<div class="studio-detail-block studio-detail-evidence muted"><small>Evidence</small><p>No matching paragraph identified.</p></div>';
+}
+
+function renderProposedChangeBlock(clause) {
+  const change = proposedChangeForClause(clause);
+  if (!change) return "";
+  const action = String(change.action || "").trim();
+  const safety = change.safety && typeof change.safety === "object" ? change.safety : {};
+  const evidence = change.evidence && typeof change.evidence === "object" ? change.evidence : {};
+  const sourceText = String(change.source_text || "").trim();
+  const proposedText = String(change.proposed_text || "").trim();
+  const issueSummary = String(change.issue_summary || "").trim();
+  const rationale = String(change.playbook_rationale || "").trim();
+  const safetyReason = String(safety.reason || "").trim();
+  const requiresApproval = safety.requires_human_approval !== false;
+  const actionClass = action.replace(/[^a-z0-9_-]/gi, "-") || "unknown";
+  return `
+    <div class="studio-detail-block proposed-change-card ${actionClass}">
+      <div class="proposed-change-head">
+        <small>Proposed change</small>
+        <span class="proposed-change-approval">${escapeHtml(requiresApproval ? "Requires human approval" : "Ready for review")}</span>
+      </div>
+      <p class="proposed-change-summary">${escapeHtml(issueSummary || "Review the suggested clause change before export or send.")}</p>
+      <dl class="proposed-change-facts">
+        <div>
+          <dt>Action</dt>
+          <dd>${escapeHtml(proposedChangeActionLabel(action))}</dd>
+        </div>
+        ${change.confidence !== undefined ? `
+          <div>
+            <dt>Confidence</dt>
+            <dd>${escapeHtml(proposedChangeConfidence(change.confidence))}</dd>
+          </div>
+        ` : ""}
+        ${safety.status ? `
+          <div>
+            <dt>Safety</dt>
+            <dd>${escapeHtml(proposedChangeSafetyLabel(safety.status))}</dd>
+          </div>
+        ` : ""}
+      </dl>
+      ${renderProposedChangeText(sourceText, proposedText, action)}
+      ${renderProposedChangeEvidence(evidence)}
+      ${rationale ? `<p class="proposed-change-rationale"><strong>Rationale</strong>${escapeHtml(rationale)}</p>` : ""}
+      ${safetyReason ? `<p class="proposed-change-safety-note">${escapeHtml(safetyReason)}</p>` : ""}
+    </div>
+  `;
+}
+
+function proposedChangeForClause(clause) {
+  if (!clause) return null;
+  if (clause.proposed_change && typeof clause.proposed_change === "object") return clause.proposed_change;
+  const clauseId = String(clause.id || "");
+  const changes = Array.isArray(state.latestReviewResult?.proposed_changes)
+    ? state.latestReviewResult.proposed_changes
+    : [];
+  return changes.find((change) => String(change?.clause_id || "") === clauseId) || null;
+}
+
+function renderProposedChangeText(sourceText, proposedText, action) {
+  if (!sourceText && !proposedText) {
+    if (action === "needs_human_choice") {
+      return '<p class="proposed-change-empty">The backend could not choose safe replacement wording. Pick the final wording manually before export.</p>';
+    }
+    if (action === "comment_only") {
+      return '<p class="proposed-change-empty">No safe redline text was generated. Treat this as a reviewer comment.</p>';
+    }
+    return "";
+  }
+  return `
+    <div class="proposed-change-text-grid">
+      ${sourceText ? `
+        <figure>
+          <figcaption>Source text</figcaption>
+          <blockquote>${escapeHtml(sourceText)}</blockquote>
+        </figure>
+      ` : ""}
+      ${proposedText ? `
+        <figure>
+          <figcaption>Proposed text</figcaption>
+          <blockquote>${escapeHtml(proposedText)}</blockquote>
+        </figure>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderProposedChangeEvidence(evidence) {
+  const quote = String(evidence.quote || "").trim();
+  if (!quote) return "";
+  const paragraphId = String(evidence.paragraph_id || "").trim();
+  const label = paragraphId ? paragraphDisplayLabel(paragraphId) : "";
+  return `
+    <figure class="proposed-change-evidence">
+      <figcaption>${escapeHtml(label ? `Evidence · ${label}` : "Evidence")}</figcaption>
+      <blockquote>${escapeHtml(quote)}</blockquote>
+    </figure>
+  `;
+}
+
+function proposedChangeActionLabel(action) {
+  switch (action) {
+    case "replace":
+      return "Replace text";
+    case "insert":
+      return "Insert text";
+    case "delete":
+      return "Delete text";
+    case "comment_only":
+      return "Comment only";
+    case "needs_human_choice":
+      return "Needs human choice";
+    default:
+      return action ? action.replace(/_/g, " ") : "Review change";
+  }
+}
+
+function proposedChangeSafetyLabel(status) {
+  switch (status) {
+    case "proposed_redline_available":
+      return "Proposed redline available";
+    case "comment_only":
+      return "Comment only";
+    case "needs_human_choice":
+      return "Needs human choice";
+    default:
+      return String(status || "").replace(/_/g, " ");
+  }
+}
+
+function proposedChangeConfidence(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (number <= 1) return `${Math.round(number * 100)}%`;
+  return `${Math.round(number)}%`;
 }
 
 function renderProposedRedlinesBlock(clause) {

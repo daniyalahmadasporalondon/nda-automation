@@ -58,6 +58,7 @@ const tests = [
   ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
   ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
+  ["renders structured proposed changes in the review inspector", testStructuredProposedChangePanel],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
@@ -5943,6 +5944,93 @@ async function testPlaybookPositionAndConfidence(page) {
     await detailPanel.locator(".clause-confidence-fill").evaluate((node) => node.style.width),
     "92%",
   );
+}
+
+async function testStructuredProposedChangePanel(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "fail",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Fail",
+        name: "Governing Law",
+        reason: "Governing law is outside the approved set.",
+        review_state: { state: "check" },
+        status: "check",
+      },
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "The Recipient shall not interfere with Company customers." }],
+        id: "non_circumvention",
+        issue_label: "Needs review",
+        name: "Non-Circumvention",
+        needs_review: true,
+        proposed_change: {
+          action: "needs_human_choice",
+          confidence: 0.38,
+          evidence: { paragraph_id: "p3", quote: "shall not interfere with Company customers" },
+          issue_summary: "The restriction may overreach and needs reviewer wording.",
+          playbook_rationale: "Preserve legitimate competitive freedom while protecting active introductions.",
+          safety: {
+            reason: "No safe replacement was selected because the source wording needs business judgment.",
+            requires_human_approval: true,
+            status: "needs_human_choice",
+          },
+        },
+        reason: "Circumvention language needs human review.",
+        review_state: { state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+      { id: "p3", index: 3, source_index: 3, text: "The Recipient shall not interfere with Company customers." },
+    ],
+    result: {
+      proposed_changes: [
+        {
+          action: "replace",
+          confidence: 0.91,
+          evidence: { paragraph_id: "p2", quote: "This Agreement shall be governed by the laws of California." },
+          issue_summary: "Unapproved California governing law.",
+          clause_id: "governing_law",
+          clause_name: "Governing Law",
+          playbook_rationale: "Use an approved governing law before export.",
+          proposed_text: "This Agreement shall be governed by the laws of Delaware.",
+          safety: {
+            reason: "Reviewer must approve before export.",
+            requires_human_approval: true,
+            status: "proposed_redline_available",
+          },
+          source_text: "This Agreement shall be governed by the laws of California.",
+          version: 1,
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const redlineBackedChange = detailPanel.locator(".proposed-change-card");
+  await assertTextContains(redlineBackedChange, "Requires human approval");
+  await assertTextContains(redlineBackedChange, "Unapproved California governing law");
+  await assertTextContains(redlineBackedChange, "Replace text");
+  await assertTextContains(redlineBackedChange, "91%");
+  await assertTextContains(redlineBackedChange, "Proposed redline available");
+  await assertTextContains(redlineBackedChange, "laws of California");
+  await assertTextContains(redlineBackedChange, "laws of Delaware");
+  await assertTextContains(redlineBackedChange, "Use an approved governing law before export.");
+  await assertTextContains(redlineBackedChange, "Reviewer must approve before export.");
+
+  await page.locator('[data-studio-lane-id="non_circumvention"]').click();
+  const humanChoiceChange = detailPanel.locator(".proposed-change-card");
+  await assertTextContains(humanChoiceChange, "Needs human choice");
+  await assertTextContains(humanChoiceChange, "38%");
+  await assertTextContains(humanChoiceChange, "could not choose safe replacement wording");
+  await assertTextContains(humanChoiceChange, "shall not interfere with Company customers");
+  await assertTextContains(humanChoiceChange, "Preserve legitimate competitive freedom");
+  await assertTextContains(humanChoiceChange, "needs business judgment");
 }
 
 async function testRedlineRationaleBlock(page) {
