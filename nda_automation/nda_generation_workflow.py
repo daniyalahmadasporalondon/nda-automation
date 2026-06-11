@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from . import nda_generation, playbook_runtime
+from . import nda_generation, pdf_export_service, playbook_runtime
 from .nda_generation import CounterpartyIntake
 
 
@@ -28,6 +28,7 @@ class GeneratedNdaWorkflowResult:
             "artifact_id": str(getattr(self.artifact, "id", "") or ""),
             "status": "generated",
             "download_url": f"/api/matters/{quote(matter_id, safe='')}/source" if matter_id else "",
+            "pdf_download_url": pdf_export_service.matter_pdf_download_url(matter_id),
             "self_check": {
                 "passed": self.self_check.passed,
                 "overall_status": self.self_check.overall_status,

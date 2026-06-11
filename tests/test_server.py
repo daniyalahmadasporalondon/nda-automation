@@ -1733,6 +1733,10 @@ class ServerTests(unittest.TestCase):
                     "GET",
                     f"/api/matters/{matter['id']}/render-pdf",
                 )
+                pdf_download_status, pdf_download_payload, pdf_download_headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/source-pdf",
+                )
                 head_status, head_payload, head_headers = self.request_with_headers(
                     "HEAD",
                     f"/api/matters/{matter['id']}/render-pdf",
@@ -1746,6 +1750,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(pdf_status, 200)
         self.assertEqual(pdf_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
         self.assertEqual(pdf_payload, source_pdf)
+        self.assertEqual(pdf_download_status, 200)
+        self.assertEqual(pdf_download_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
+        self.assertEqual(pdf_download_headers["Content-Disposition"], 'attachment; filename="Acme-NDA.pdf"')
+        self.assertEqual(pdf_download_headers["X-PDF-Export-Verified"], "document-to-pdf")
+        self.assertEqual(pdf_download_headers["X-PDF-Export-Source-Kind"], "pdf")
+        self.assertEqual(pdf_download_payload, source_pdf)
         self.assertEqual(head_status, 200)
         self.assertEqual(head_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
         self.assertEqual(head_headers["Content-Length"], str(len(source_pdf)))
@@ -1933,6 +1943,21 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("pdf_url", render_payload)
         self.assertEqual(pdf_status, 409)
         self.assertEqual(pdf_payload["document_render"]["status"], document_rendering.UNAVAILABLE_STATUS)
+
+    def test_pdf_export_status_reports_converter_health(self):
+        class UnavailableConverter:
+            name = "test-unavailable"
+
+            def is_available(self):
+                return False
+
+        with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=UnavailableConverter()):
+            status, payload, _headers = self.request_with_headers("GET", "/api/pdf-export/status")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pdf_export"]["converter"], "test-unavailable")
+        self.assertFalse(payload["pdf_export"]["available"])
+        self.assertIn("LibreOffice/soffice", payload["pdf_export"]["message"])
 
     def test_render_status_poll_does_not_block_on_slow_rasterization(self):
         # The polled status endpoint must NOT rasterize synchronously on the
