@@ -6563,6 +6563,19 @@ async function testDashboardSmartSearchV2(page) {
       });
       return;
     }
+    if (/clarify/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "clarification",
+          domain: "assistant",
+          message: "Which workflow should I inspect?",
+          questions: ["Repository", "Gmail inbox", "Review queue"],
+        }),
+      });
+      return;
+    }
     if (/globex/i.test(query)) {
       await route.fulfill({
         status: 200,
@@ -6708,6 +6721,12 @@ async function testDashboardSmartSearchV2(page) {
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
+
+  await page.fill("#dashboardSearchInput", "clarify this request");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="clarification"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Which workflow should I inspect?");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Gmail inbox");
 
   // The two v1 chips still work unchanged.
   await page.locator('[data-dashboard-search-chip="awaiting_signature"]').click();

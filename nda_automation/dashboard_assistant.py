@@ -78,6 +78,7 @@ def handle_dashboard_assistant_command(
     owner_user_id: str = "",
     search_resolver: AssistantSearchResolver | None = None,
     playbook_provider: PlaybookProvider | None = None,
+    ai_model: Any | None = None,
 ) -> dict[str, Any]:
     """Return a typed, side-effect-free Dashboard assistant response."""
     cleaned_query = _clean_query(query)
@@ -91,11 +92,23 @@ def handle_dashboard_assistant_command(
         search_resolver=search_resolver,
         playbook_provider=playbook_provider,
     )
+    ai_response = _ai_assistant_response(context, ai_model=ai_model)
+    if ai_response is not None:
+        return ai_response
+
     for capability in ASSISTANT_CAPABILITIES:
         if capability.matcher(context):
             return capability.handler(context)
 
     return unsupported_response(cleaned_query)
+
+
+def _ai_assistant_response(context: AssistantContext, *, ai_model: Any | None) -> dict[str, Any] | None:
+    try:
+        from .dashboard_assistant_ai import run_ai_dashboard_assistant
+    except Exception:  # noqa: BLE001 - deterministic command catalog is the safe fallback.
+        return None
+    return run_ai_dashboard_assistant(context, model=ai_model)
 
 
 def count_in_review_response(context: AssistantContext) -> dict[str, Any]:

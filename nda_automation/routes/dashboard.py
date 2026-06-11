@@ -72,6 +72,7 @@ def handle_dashboard_assistant(handler) -> None:
                 search_query,
                 transport=_search_intent_transport(handler),
             ),
+            ai_model=_dashboard_assistant_model(handler),
         )
     except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500)
@@ -114,3 +115,8 @@ def _search_intent_transport(handler):
     transport from the configured reviewer settings.
     """
     return getattr(handler, "dashboard_search_intent_transport", None)
+
+
+def _dashboard_assistant_model(handler):
+    """Test seam: route tests may inject an assistant model without live API calls."""
+    return getattr(handler, "dashboard_assistant_model", None)

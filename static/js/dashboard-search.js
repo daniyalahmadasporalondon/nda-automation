@@ -336,6 +336,19 @@ const DashboardSearchView = (() => {
           statusText: "Unsupported request",
         });
       }
+      if (type === "clarification") {
+        const questions = Array.isArray(payload.questions)
+          ? payload.questions.map((question) => String(question || "").trim()).filter(Boolean)
+          : [];
+        return renderAssistantCard({
+          type,
+          title: "Clarification needed",
+          message: message || "I need one more detail before I can help with that.",
+          facts: questions,
+          actions: [],
+          statusText: "Clarification needed",
+        });
+      }
       return false;
     }
 
