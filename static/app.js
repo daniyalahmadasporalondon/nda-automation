@@ -1112,6 +1112,7 @@ function renderDashboardEmailHealth(gmailStatus = null) {
   if (!gmailStatus) {
     renderDashboardHealth("email", {
       tone: "checking",
+      detail: "Checking Gmail",
     });
     return;
   }
@@ -1122,30 +1123,33 @@ function renderDashboardEmailHealth(gmailStatus = null) {
   if (inboundReady && outboundReady) {
     renderDashboardHealth("email", {
       tone: "ready",
+      detail: "Gmail ready",
     });
     return;
   }
   if (inboundReady || outboundReady) {
     renderDashboardHealth("email", {
       tone: "warning",
+      detail: dashboardGmailHealthDetail(gmailStatus, inbound, outbound),
     });
     return;
   }
   renderDashboardHealth("email", {
     tone: "blocked",
+    detail: dashboardGmailHealthDetail(gmailStatus, inbound, outbound),
   });
 }
 
 async function loadDashboardDriveHealth() {
   if (!dashboardHealthItems.length) return;
-  renderDashboardHealth("drive", { tone: "checking" });
+  renderDashboardHealth("drive", { tone: "checking", detail: "Checking Drive" });
   try {
     const response = await fetch("/api/drive/status");
     const payload = await response.json();
     if (!response.ok) throw new Error("Drive status could not load");
     renderDashboardDriveHealth(payload);
   } catch (error) {
-    renderDashboardHealth("drive", { tone: "blocked" });
+    renderDashboardHealth("drive", { tone: "blocked", detail: "Drive status unavailable" });
   }
 }
 
@@ -1154,15 +1158,128 @@ function renderDashboardDriveHealth(status = {}) {
   // Drive is an OPTIONAL export integration: connected -> ready (green); not
   // connected -> warning (amber, "available but not set up") rather than blocked,
   // since an unconfigured optional feature is not an error.
-  renderDashboardHealth("drive", { tone: status.connected === true ? "ready" : "warning" });
+  renderDashboardHealth("drive", {
+    tone: status.connected === true ? "ready" : driveDashboardTone(status),
+    detail: dashboardDriveHealthDetail(status),
+  });
 }
 
-function renderDashboardHealth(kind, { tone }) {
+function renderDashboardHealth(kind, { tone, detail }) {
   const item = document.querySelector(`[data-dashboard-health="${kind}"]`);
   if (!item) return;
   const effectiveTone = ["ready", "warning", "blocked", "checking"].includes(tone) ? tone : "checking";
+  const name = item.querySelector(".dashboard-health-name")?.textContent?.trim() || kind;
+  const detailText = detail || defaultDashboardHealthDetail(kind, effectiveTone);
   item.classList.remove("ready", "warning", "blocked", "checking");
   item.classList.add(effectiveTone);
+  item.setAttribute("title", detailText);
+  item.setAttribute("aria-label", `${name}: ${detailText}`);
+  let detailNode = item.querySelector("[data-dashboard-health-detail]");
+  if (!detailNode) {
+    detailNode = document.createElement("span");
+    detailNode.className = "dashboard-health-detail";
+    detailNode.dataset.dashboardHealthDetail = "";
+    item.appendChild(detailNode);
+  }
+  detailNode.textContent = detailText;
+}
+
+function defaultDashboardHealthDetail(kind, tone) {
+  if (tone === "checking") return "Checking";
+  if (kind === "ai") return tone === "ready" ? "AI review ready" : "AI review needs setup";
+  if (kind === "email") return tone === "ready" ? "Gmail ready" : "Gmail needs setup";
+  if (kind === "drive") return tone === "ready" ? "Drive connected" : "Drive needs setup";
+  return tone;
+}
+
+function dashboardGmailHealthDetail(status, inbound, outbound) {
+  const setup = status?.setup || {};
+  if (
+    status?.google_oauth_configured === false
+    || status?.oauth_configured === false
+    || setup.state === "missing_oauth_config"
+    || setup.google_oauth_configured === false
+  ) {
+    return "Google OAuth not configured";
+  }
+  if (
+    (status?.user_scoped === true && status?.signed_in === false)
+    || setup.state === "sign_in_required"
+  ) {
+    return "Sign in with Google";
+  }
+  const missingScopes = dashboardMissingScopes(status, inbound, outbound);
+  if (missingScopes.length) return "Gmail scope needed";
+  const roleDetails = [
+    dashboardGmailRoleDetail("Inbound", inbound),
+    dashboardGmailRoleDetail("Outbound", outbound),
+  ].filter(Boolean);
+  return roleDetails.length ? roleDetails.join("; ") : "Gmail needs setup";
+}
+
+function dashboardGmailRoleDetail(label, account = {}) {
+  if (account.ready === true) return "";
+  if (account.enabled === false) return `${label} disabled`;
+  if (account.recovery?.state === "missing_token") return `${label} token missing`;
+  if (account.recovery?.state === "missing_scope") return `${label} scope needed`;
+  if (account.recovery?.state === "sign_in_required") return "Sign in with Google";
+  if (account.recovery?.state === "missing_oauth_config") return "Google OAuth not configured";
+  const token = account.token || {};
+  if (token.source === "missing" || token.configured === false) return `${label} token missing`;
+  if (account.connect_url) return `${label} needs connection`;
+  if (account.error) return `${label} needs setup`;
+  return `${label} needs setup`;
+}
+
+function driveDashboardTone(status = {}) {
+  if (status.connected === true) return "ready";
+  const setup = status.setup || {};
+  if (
+    status.google_oauth_configured === false
+    || status.oauth_configured === false
+    || setup.state === "missing_oauth_config"
+    || setup.google_oauth_configured === false
+  ) return "blocked";
+  if (status.error) return "blocked";
+  return "warning";
+}
+
+function dashboardDriveHealthDetail(status = {}) {
+  const setup = status.setup || {};
+  const recovery = status.recovery || {};
+  if (status.connected === true) return "Drive connected";
+  if (
+    status.google_oauth_configured === false
+    || status.oauth_configured === false
+    || setup.state === "missing_oauth_config"
+    || recovery.state === "missing_oauth_config"
+  ) {
+    return "Google OAuth not configured";
+  }
+  if (
+    (status.user_scoped === true && status.signed_in === false)
+    || setup.state === "sign_in_required"
+    || recovery.state === "sign_in_required"
+  ) return "Sign in with Google";
+  if (recovery.state === "missing_token") return "Drive token missing";
+  if (dashboardMissingScopes(status, recovery).length || recovery.state === "missing_scope") return "Drive scope needed";
+  if (status.needs_connect === true || status.connect_url) return "Drive access needed";
+  if (status.enabled === false) return "Drive uploads disabled";
+  if (status.token?.source === "missing" || status.token?.configured === false) return "Drive token missing";
+  return "Drive not connected";
+}
+
+function dashboardMissingScopes(...sources) {
+  const scopes = [];
+  sources.forEach((source) => {
+    if (Array.isArray(source?.missing_scopes)) scopes.push(...source.missing_scopes);
+    if (Array.isArray(source?.token?.missing_scopes)) scopes.push(...source.token.missing_scopes);
+    if (Array.isArray(source?.scope_status?.missing)) scopes.push(...source.scope_status.missing);
+    if (Array.isArray(source?.token?.scope_status?.missing)) scopes.push(...source.token.scope_status.missing);
+    if (source?.scope_status === "missing" || source?.token?.scope_status === "missing") scopes.push("required scope");
+    if (source?.scope_status?.ok === false || source?.token?.scope_status?.ok === false) scopes.push("required scope");
+  });
+  return scopes.filter(Boolean);
 }
 
 function activateAdminSurface(surfaceName) {

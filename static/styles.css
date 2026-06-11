@@ -1660,6 +1660,9 @@ h3 {
 }
 
 .dashboard-health-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
   padding: 0;
 }
 
@@ -1698,6 +1701,18 @@ h3 {
   font-size: 12px;
   font-weight: 780;
   line-height: 1.2;
+}
+
+.dashboard-health-detail {
+  color: rgba(255, 255, 255, 0.72);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.15;
+  max-width: 116px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dashboard-metrics {

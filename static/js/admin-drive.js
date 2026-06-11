@@ -109,10 +109,12 @@ const AdminDriveView = (() => {
       const connected = status.connected === true;
       const signedIn = status.signed_in === true;
       const needsConnect = status.needs_connect === true || (!connected && Boolean(status.connect_url));
-      const overallLabel = connected ? "Connected" : signedIn && needsConnect ? "Needs Drive access" : "Not connected";
+      const setupState = driveSetupState(status);
+      const overallLabel = connected ? "Connected" : signedIn && needsConnect ? "Needs Drive access" : setupState.statusLabel;
       // The toggle now reflects the connection itself (On = connected).
       setOverall(overallLabel, connected ? "ready" : "blocked");
       renderToggle(connected);
+      renderToggleIntent(status);
       renderConnect(status);
       renderFolderForm(status.folder || null);
       setFact("connection", overallLabel);
@@ -147,11 +149,10 @@ const AdminDriveView = (() => {
       }
       const signedIn = status.signed_in === true;
       const needsConnect = status.needs_connect === true || Boolean(status.connect_url);
-      const statusLabel = signedIn && needsConnect ? "Needs Drive access" : "Needs setup";
+      const setupState = driveSetupState(status);
+      const statusLabel = signedIn && needsConnect ? "Needs Drive access" : setupState.statusLabel;
       const accountLabel = status.account || (signedIn ? "Signed in Google session" : "Not connected");
-      const nextStep = signedIn && needsConnect
-        ? "Turn the Drive toggle on to grant Drive access for this signed-in account."
-        : "Turn the Drive toggle on to connect a Google account.";
+      const scopeCopy = scopeLabel(status);
       driveConnectPanel.innerHTML = `
         <div class="integration-connection-row blocked">
           <div class="integration-connection-top">
@@ -165,12 +166,18 @@ const AdminDriveView = (() => {
             </div>
             <div>
               <dt>Next step</dt>
-              <dd>${escapeHtml(nextStep)}</dd>
+              <dd>${escapeHtml(setupState.nextStep)}</dd>
             </div>
             <div>
               <dt>Token</dt>
-              <dd>${escapeHtml(signedIn && needsConnect ? "Drive token needed" : "No Drive token")}</dd>
+              <dd>${escapeHtml(tokenLabel(status))}</dd>
             </div>
+            ${scopeCopy ? `
+              <div>
+                <dt>Scope</dt>
+                <dd>${escapeHtml(scopeCopy)}</dd>
+              </div>
+            ` : ""}
           </dl>
         </div>
       `;
@@ -197,6 +204,15 @@ const AdminDriveView = (() => {
       driveEnabledToggle.setAttribute("aria-checked", enabled ? "true" : "false");
       driveEnabledToggle.classList.toggle("on", enabled);
       driveEnabledToggle.classList.toggle("off", !enabled);
+    }
+
+    function renderToggleIntent(status = {}) {
+      if (!driveEnabledToggle) return;
+      const label = status.connected === true
+        ? "Disconnect Google Drive"
+        : driveSetupState(status).actionLabel;
+      driveEnabledToggle.setAttribute("aria-label", label);
+      driveEnabledToggle.title = label;
     }
 
     function setToggleDisabled(disabled) {
@@ -236,6 +252,99 @@ const AdminDriveView = (() => {
       // Gmail callback (no /auth/drive/callback to register), grants Gmail + Drive
       // in one consent, and shows the account chooser. Avoids redirect_uri_mismatch.
       return String(status?.connect_url || "/auth/gmail/start");
+    }
+
+    function driveSetupState(status = {}) {
+      const setup = status.setup || {};
+      const recovery = status.recovery || {};
+      const state = recovery.state || setup.state || "";
+      const message = String(recovery.message || setup.message || "").trim();
+      if (status.connected === true) {
+        return {
+          actionLabel: "Disconnect Google Drive",
+          nextStep: "Drive is connected.",
+          statusLabel: "Connected",
+        };
+      }
+      if (
+        state === "missing_oauth_config"
+        || status.google_oauth_configured === false
+        || status.oauth_configured === false
+        || setup.google_oauth_configured === false
+      ) {
+        return {
+          actionLabel: "Google OAuth is not configured",
+          nextStep: message || "Configure the Google OAuth client ID and secret, then refresh this page.",
+          statusLabel: "Needs OAuth config",
+        };
+      }
+      if (
+        state === "sign_in_required"
+        || (status.user_scoped === true && status.signed_in === false)
+      ) {
+        return {
+          actionLabel: "Sign in with Google to connect Drive",
+          nextStep: message || "Turn the Drive toggle on to sign in with Google and grant Drive access.",
+          statusLabel: "Needs Google sign-in",
+        };
+      }
+      if (state === "missing_token") {
+        return {
+          actionLabel: "Connect Google Drive",
+          nextStep: message || "Turn the Drive toggle on to create a Drive token for this account.",
+          statusLabel: "Needs Drive token",
+        };
+      }
+      if (state === "missing_scope" || scopeLabel(status)) {
+        return {
+          actionLabel: "Reconnect Google Drive and approve Drive scope",
+          nextStep: message || "Turn the Drive toggle on to reconnect and approve the required Drive scope.",
+          statusLabel: "Needs Drive scope",
+        };
+      }
+      if (status.signed_in === true && (status.needs_connect === true || status.connect_url)) {
+        return {
+          actionLabel: "Grant Google Drive access",
+          nextStep: message || "Turn the Drive toggle on to grant Drive access for this signed-in account.",
+          statusLabel: "Needs Drive access",
+        };
+      }
+      if (status.enabled === false) {
+        return {
+          actionLabel: "Connect Google Drive uploads",
+          nextStep: "Turn the Drive toggle on to connect Google Drive uploads.",
+          statusLabel: "Needs setup",
+        };
+      }
+      return {
+        actionLabel: "Connect Google Drive",
+        nextStep: "Turn the Drive toggle on to connect a Google account.",
+        statusLabel: "Not connected",
+      };
+    }
+
+    function tokenLabel(status = {}) {
+      const token = status.token || {};
+      const label = String(token.label || "").trim();
+      if (token.source === "user_data" && token.configured === true) return `User Drive: ${label || status.account || "connected OAuth token"}`;
+      if (token.source === "legacy_gmail_scope") return `Legacy Gmail token: ${label || "visible with Drive scope"}`;
+      if (token.source === "legacy_gmail") return `Legacy Gmail token: ${label || "visible but Drive scope must be confirmed"}`;
+      if (token.source === "missing" || token.configured === false) return `Missing: ${label || "Drive token"}`;
+      if (status.signed_in === true && (status.needs_connect === true || status.connect_url)) return "Drive token needed";
+      if (status.connected === true) return "Configured";
+      return "No Drive token";
+    }
+
+    function scopeLabel(status = {}) {
+      const scopes = [];
+      if (Array.isArray(status.missing_scopes)) scopes.push(...status.missing_scopes);
+      if (Array.isArray(status.token?.missing_scopes)) scopes.push(...status.token.missing_scopes);
+      if (Array.isArray(status.token?.scope_status?.missing)) scopes.push(...status.token.scope_status.missing);
+      if (Array.isArray(status.recovery?.scope_status?.missing)) scopes.push(...status.recovery.scope_status.missing);
+      if (status.scope_status === "missing" || status.token?.scope_status === "missing") scopes.push("required Drive scope");
+      if (status.token?.scope_status?.ok === false || status.recovery?.scope_status?.ok === false) scopes.push("required Drive scope");
+      const unique = [...new Set(scopes.map((scope) => String(scope).trim()).filter(Boolean))];
+      return unique.length ? `Missing: ${unique.join(", ")}` : "";
     }
 
     return { load };

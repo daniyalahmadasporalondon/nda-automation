@@ -281,17 +281,19 @@ const AdminIntegrationsView = (() => {
       ];
       // The Gmail toggle above is the single connect/disconnect control, so the
       // setup panel shows the per-role rows as read-only status only.
-      const rows = roles.map((role) => renderConnectionRow(role)).join("");
+      const rows = roles.map((role) => renderConnectionRow(role, status)).join("");
       gmailSetupPanel.innerHTML = rows;
     }
 
-    function renderConnectionRow(role) {
+    function renderConnectionRow(role, status) {
       const account = role.account || {};
       const token = account.token || {};
       const paused = account.enabled === false;
       const ready = account.ready === true;
       const tone = ready ? "ready" : paused ? "pending" : "blocked";
-      const statusLabel = paused ? "Paused" : ready ? "Ready" : "Needs setup";
+      const setupState = gmailConnectionState(role.id, account, token, status);
+      const statusLabel = paused ? "Paused" : ready ? "Ready" : setupState.statusLabel;
+      const scopeCopy = gmailScopeLabel(account, token);
       return `
         <div class="integration-connection-row ${tone}">
           <div class="integration-connection-top">
@@ -309,8 +311,14 @@ const AdminIntegrationsView = (() => {
             </div>
             <div>
               <dt>Next step</dt>
-              <dd>${html(connectionNextStep(role.id, account, token))}</dd>
+              <dd>${html(setupState.nextStep)}</dd>
             </div>
+            ${scopeCopy ? `
+              <div>
+                <dt>Scope</dt>
+                <dd>${html(scopeCopy)}</dd>
+              </div>
+            ` : ""}
           </dl>
         </div>
       `;
@@ -425,7 +433,9 @@ const AdminIntegrationsView = (() => {
       const on = status.user_scoped === true
         ? (isUserConnected(inbound) || isUserConnected(outbound))
         : (inbound.enabled !== false && outbound.enabled !== false);
+      const ready = inbound.ready === true && outbound.ready === true;
       renderToggle(gmailToggle, on);
+      renderToggleIntent(status, on, ready);
       setFact("enabled-copy", on ? "On" : "Off");
     }
 
@@ -434,6 +444,22 @@ const AdminIntegrationsView = (() => {
       button.setAttribute("aria-checked", enabled ? "true" : "false");
       button.classList.toggle("on", enabled);
       button.classList.toggle("off", !enabled);
+    }
+
+    function renderToggleIntent(status, enabled, ready) {
+      if (!gmailToggle) return;
+      let label;
+      if (status.user_scoped === true) {
+        label = enabled ? "Disconnect Gmail" : gmailToggleLabel(status);
+      } else if (enabled && ready) {
+        label = "Pause Gmail sync and send";
+      } else if (enabled) {
+        label = "Gmail enabled; setup required";
+      } else {
+        label = "Resume Gmail sync and send";
+      }
+      gmailToggle.setAttribute("aria-label", label);
+      gmailToggle.title = label;
     }
 
     function setToggleDisabled(disabled) {
@@ -528,19 +554,106 @@ const AdminIntegrationsView = (() => {
     return terms.slice(0, 60);
   }
 
-  function connectionNextStep(role, account, token) {
-    if (account?.enabled === false) return `Turn on ${role} email when this mailbox should be active.`;
-    if (account?.ready === true) return role === "inbound" ? "Ready for scheduled sync." : "Ready to send redlines.";
+  function gmailConnectionState(role, account, token, status) {
+    const setup = status?.setup || {};
+    const recovery = account?.recovery || {};
+    const state = recovery.state || setup.state || "";
+    const message = String(recovery.message || setup.message || "").trim();
+    if (account?.enabled === false) {
+      return {
+        nextStep: `Turn on ${role} email when this mailbox should be active.`,
+        statusLabel: "Paused",
+      };
+    }
+    if (account?.ready === true) {
+      return {
+        nextStep: role === "inbound" ? "Ready for scheduled sync." : "Ready to send redlines.",
+        statusLabel: "Ready",
+      };
+    }
+    if (
+      state === "missing_oauth_config"
+      || status?.google_oauth_configured === false
+      || status?.oauth_configured === false
+      || setup.google_oauth_configured === false
+    ) {
+      return {
+        nextStep: message || "Configure the Google OAuth client ID and secret, then refresh this page.",
+        statusLabel: "Needs OAuth config",
+      };
+    }
+    if (
+      state === "sign_in_required"
+      || (status?.user_scoped === true && status?.signed_in === false)
+    ) {
+      return {
+        nextStep: message || "Sign in with Google, then use the Gmail switch to connect this mailbox.",
+        statusLabel: "Needs Google sign-in",
+      };
+    }
+    if (state === "missing_token") {
+      return {
+        nextStep: message || `Use the Gmail switch above to create this user's ${role} Gmail token.`,
+        statusLabel: "Needs token",
+      };
+    }
+    if (state === "missing_scope" || gmailScopeLabel(account, token)) {
+      return {
+        nextStep: message || `Reconnect Gmail and approve the required ${role} scope.`,
+        statusLabel: "Needs Gmail scope",
+      };
+    }
     if (account?.connect_url || token?.label === `Connect Gmail for ${role}`) {
-      return `Connect this user's ${role} Gmail account.`;
+      return {
+        nextStep: `Use the Gmail switch above to connect this user's ${role} Gmail account.`,
+        statusLabel: "Needs connection",
+      };
     }
     if (token?.source === "environment" && token?.configured === false) {
-      return `Fix ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"} or unset it to use data/gmail/${role}-token.json.`;
+      return {
+        nextStep: `Fix ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"} or unset it to use data/gmail/${role}-token.json.`,
+        statusLabel: "Needs setup",
+      };
     }
     if (token?.configured === false) {
-      return `Add data/gmail/${role}-token.json or set ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"}.`;
+      return {
+        nextStep: `Add data/gmail/${role}-token.json or set ${role === "inbound" ? "NDA_GMAIL_INBOUND_TOKEN_PATH" : "NDA_GMAIL_OUTBOUND_TOKEN_PATH"}.`,
+        statusLabel: "Needs setup",
+      };
     }
-    return account?.error || "Reconnect Gmail and refresh status.";
+    return {
+      nextStep: account?.error || "Reconnect Gmail and refresh status.",
+      statusLabel: "Needs setup",
+    };
+  }
+
+  function gmailToggleLabel(status = {}) {
+    const setup = status.setup || {};
+    if (
+      setup.state === "missing_oauth_config"
+      || status.google_oauth_configured === false
+      || status.oauth_configured === false
+      || setup.google_oauth_configured === false
+    ) {
+      return "Google OAuth is not configured";
+    }
+    if (
+      setup.state === "sign_in_required"
+      || (status.user_scoped === true && status.signed_in === false)
+    ) return "Sign in with Google to connect Gmail";
+    return "Connect Gmail";
+  }
+
+  function gmailScopeLabel(account, token) {
+    const scopes = [];
+    if (Array.isArray(account?.missing_scopes)) scopes.push(...account.missing_scopes);
+    if (Array.isArray(token?.missing_scopes)) scopes.push(...token.missing_scopes);
+    if (Array.isArray(token?.scope_status?.missing)) scopes.push(...token.scope_status.missing);
+    if (Array.isArray(account?.recovery?.scope_status?.missing)) scopes.push(...account.recovery.scope_status.missing);
+    if (account?.scope_status === "missing" || token?.scope_status === "missing") scopes.push("required Gmail scope");
+    if (token?.scope_status?.ok === false || account?.recovery?.scope_status?.ok === false) scopes.push("required Gmail scope");
+    const unique = [...new Set(scopes.map((scope) => String(scope).trim()).filter(Boolean))];
+    return unique.length ? `Missing: ${unique.join(", ")}` : "";
   }
 
   function isUserConnected(account) {

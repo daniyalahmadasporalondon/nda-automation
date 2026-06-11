@@ -296,6 +296,35 @@ async function testAccessibleControlState(page) {
       }),
     });
   });
+  await page.route("**/api/drive/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        connected: false,
+        connect_url: "/auth/drive/start",
+        enabled: false,
+        needs_connect: true,
+        recovery: {
+          action: "connect_google",
+          connect_url: "/auth/drive/start",
+          message: "Connect Drive to create a drive token for this account.",
+          state: "missing_token",
+        },
+        setup: {
+          action: "connect_google",
+          connect_url: "/auth/drive/start",
+          google_oauth_configured: true,
+          message: "Connect Drive for the signed-in Google account.",
+          signed_in: true,
+          state: "ready_to_connect",
+        },
+        signed_in: true,
+        token: { configured: false, label: "Connect Google for drive", source: "missing" },
+        user_scoped: true,
+      }),
+    });
+  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
 
   assert.equal(await page.locator("#studioResultMeta").getAttribute("aria-live"), "polite");
@@ -328,13 +357,17 @@ async function testAccessibleControlState(page) {
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="email"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="ai"]'), "AI Review");
   await assertTextContains(page.locator('[data-dashboard-health="email"]'), "Email");
+  await assertTextContains(page.locator('[data-dashboard-health="email"]'), "Outbound needs setup");
   const dashboardHealthText = await page.locator(".dashboard-health-list").innerText();
-  assert.doesNotMatch(dashboardHealthText, /Ready|Partial|OpenRouter review available|Gmail receive and send are available|Inbound ready/i);
+  assert.match(dashboardHealthText, /AI Review|Email|Drive/);
+  assertAttributeMatches(page.locator('[data-dashboard-health="email"]'), "aria-label", /Email: Outbound needs setup/);
   assert.equal(await page.locator('[data-dashboard-health="ai"]').evaluate((node) => node.classList.contains("ready")), true);
   assert.equal(await page.locator('[data-dashboard-health="email"]').evaluate((node) => node.classList.contains("warning")), true);
   // Drive is an optional integration: not connected in the harness -> warning (amber), not blocked.
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="drive"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="drive"]'), "Drive");
+  await assertTextContains(page.locator('[data-dashboard-health="drive"]'), "Drive token missing");
+  assertAttributeMatches(page.locator('[data-dashboard-health="drive"]'), "title", /Drive token missing/);
   assert.equal(await page.locator('[data-dashboard-health="drive"]').evaluate((node) => node.classList.contains("warning")), true);
   const dashboardHealthLayout = await page.evaluate(() => {
     const ai = document.querySelector('[data-dashboard-health="ai"]').getBoundingClientRect();
@@ -427,6 +460,7 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
   await page.unroute("**/api/ai/settings");
   await page.unroute(gmailStatusRoute);
+  await page.unroute("**/api/drive/status");
 }
 
 async function testFailureUxDetails(page) {
@@ -3989,6 +4023,35 @@ async function testAdminDriveSection(page) {
       needs_connect: true,
       signed_in: true,
       user_scoped: true,
+      token: {
+        configured: false,
+        label: "Connect Google for drive",
+        source: "missing",
+        scope_status: {
+          missing: ["https://www.googleapis.com/auth/drive.file"],
+          ok: false,
+          required: ["https://www.googleapis.com/auth/drive.file"],
+        },
+      },
+      setup: {
+        action: "connect_google",
+        connect_url: "/auth/drive/start",
+        google_oauth_configured: true,
+        message: "Connect Drive for the signed-in Google account.",
+        signed_in: true,
+        state: "ready_to_connect",
+      },
+      recovery: {
+        action: "connect_google",
+        connect_url: "/auth/drive/start",
+        message: "Connect Drive to create a drive token for this account.",
+        scope_status: {
+          missing: ["https://www.googleapis.com/auth/drive.file"],
+          ok: false,
+          required: ["https://www.googleapis.com/auth/drive.file"],
+        },
+        state: "missing_token",
+      },
     });
 
   await page.route("**/api/gmail/status", async (route) => {
@@ -4054,10 +4117,12 @@ async function testAdminDriveSection(page) {
   // separate Connect button, and the toggle reads Off while disconnected.
   assert.equal(await page.locator("#adminDriveConnectPanel a.integration-connection-action").count(), 0);
   assert.equal(await page.locator("#adminDriveEnabledToggle").getAttribute("aria-checked"), "false");
+  assertAttributeMatches(page.locator("#adminDriveEnabledToggle"), "aria-label", /Connect Google Drive/);
   await assertTextContains(page.locator("#adminDriveFacts"), "Needs Drive access");
   await assertTextContains(page.locator("#adminDriveFacts"), "alice@example.com");
-  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Turn the Drive toggle on to grant Drive access");
-  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Drive token needed");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Connect Drive to create a drive token");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Missing: Connect Google for drive");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "https://www.googleapis.com/auth/drive.file");
 
   // Save a target folder; assert the POST payload.
   await page.locator("#adminDriveFolderIdInput").fill("folder_xyz");
@@ -4558,27 +4623,57 @@ async function testGmailSetupRequiredStatus(page) {
               status: "error",
             }],
           },
+          setup: {
+            action: "configure_google_oauth",
+            connect_url: "/auth/google/start",
+            google_oauth_configured: false,
+            message: "Google OAuth is not configured. Set NDA_GOOGLE_OAUTH_CLIENT_ID and NDA_GOOGLE_OAUTH_CLIENT_SECRET, then restart the app.",
+            signed_in: false,
+            state: "missing_oauth_config",
+          },
           inbound: {
             configured: false,
             enabled: true,
             error: "Set NDA_GMAIL_INBOUND_TOKEN_PATH for the inbound Gmail account.",
+            recovery: {
+              action: "configure_google_oauth",
+              connect_url: "/auth/google/start",
+              message: "Google OAuth is not configured. Set NDA_GOOGLE_OAUTH_CLIENT_ID and NDA_GOOGLE_OAUTH_CLIENT_SECRET, then restart the app.",
+              state: "missing_oauth_config",
+            },
             query: "in:inbox has:attachment",
             ready: false,
             token: {
               configured: false,
               label: "NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json",
               source: "missing",
+              scope_status: {
+                missing: ["https://www.googleapis.com/auth/gmail.readonly"],
+                ok: false,
+                required: ["https://www.googleapis.com/auth/gmail.readonly"],
+              },
             },
           },
           outbound: {
             configured: false,
             enabled: true,
             error: "Set NDA_GMAIL_OUTBOUND_TOKEN_PATH for the outbound Gmail account.",
+            recovery: {
+              action: "configure_google_oauth",
+              connect_url: "/auth/google/start",
+              message: "Google OAuth is not configured. Set NDA_GOOGLE_OAUTH_CLIENT_ID and NDA_GOOGLE_OAUTH_CLIENT_SECRET, then restart the app.",
+              state: "missing_oauth_config",
+            },
             ready: false,
             token: {
               configured: false,
               label: "NDA_GMAIL_OUTBOUND_TOKEN_PATH or data/gmail/outbound-token.json",
               source: "missing",
+              scope_status: {
+                missing: ["https://www.googleapis.com/auth/gmail.send"],
+                ok: false,
+                required: ["https://www.googleapis.com/auth/gmail.send"],
+              },
             },
           },
         },
@@ -4598,6 +4693,8 @@ async function testGmailSetupRequiredStatus(page) {
   });
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await waitForText(page, '[data-dashboard-health="email"]', "Google OAuth not configured");
+  assertAttributeMatches(page.locator('[data-dashboard-health="email"]'), "aria-label", /Google OAuth not configured/);
   await page.getByRole("tab", { name: "Repository" }).click();
   const syncStatus = page.locator("[data-repository-sync-status]");
   await assertTextContains(syncStatus, "Gmail inbound setup required");
@@ -4610,7 +4707,8 @@ async function testGmailSetupRequiredStatus(page) {
   await assertTextContains(adminPanel, "NEEDS SETUP");
   await assertTextContains(adminPanel, "Gmail inbound setup required");
   await assertTextContains(adminPanel, "Missing: NDA_GMAIL_INBOUND_TOKEN_PATH or data/gmail/inbound-token.json");
-  await assertTextContains(adminPanel, "Add data/gmail/inbound-token.json or set NDA_GMAIL_INBOUND_TOKEN_PATH.");
+  await assertTextContains(adminPanel, "Google OAuth is not configured. Set NDA_GOOGLE_OAUTH_CLIENT_ID");
+  assertAttributeMatches(page.locator("#adminGmailEnabledToggle"), "aria-label", /Gmail enabled; setup required/);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters");
