@@ -35,7 +35,7 @@ PAGE_IMAGE_CONTENT_TYPE = "image/png"
 PAGE_IMAGE_DIRNAME = "pages"
 PAGE_IMAGE_MANIFEST_FILENAME = "manifest.json"
 PAGE_IMAGE_METADATA_VERSION = 1
-DEFAULT_PAGE_IMAGE_DPI = 192
+DEFAULT_PAGE_IMAGE_DPI = 288
 PDF_POINTS_PER_INCH = 72
 
 # Rasterization resource bounds. A pixmap costs width_px * height_px * channels
@@ -47,7 +47,7 @@ PDF_POINTS_PER_INCH = 72
 #     to whatever fits the budget, and a page whose budget cannot be met even at
 #     MIN_PAGE_IMAGE_DPI is rejected rather than rasterized.
 MAX_RASTERIZED_PAGES = 200
-MAX_PAGE_PIXMAP_BYTES = 64 * 1024 * 1024
+MAX_PAGE_PIXMAP_BYTES = 96 * 1024 * 1024
 MIN_PAGE_IMAGE_DPI = 36
 RASTERIZED_PIXMAP_CHANNELS = 3  # RGB, alpha=False
 

@@ -184,6 +184,8 @@ For local shared-token development you can still point at token files (`NDA_GMAI
 
 The app needs a Python web service because the static frontend calls API routes served by `nda_automation.server`. This repo ships a Render blueprint (`render.yaml`).
 
+The Render blueprint uses the repo `Dockerfile` instead of the native Python runtime so the Review faithful-source preview can install system rendering dependencies: LibreOffice for DOCX-to-PDF conversion, fontconfig, and metric-compatible Calibri/Cambria substitutes (Carlito/Caladea) plus Liberation/Noto/DejaVu fonts. Without those OS packages, DOCX page-image previews and PDF exports fall back to an unavailable-state message instead of silently flattening layout.
+
 The checked-in blueprint targets a **short-lived free demo**: free plan + ephemeral `/tmp` storage so it boots without a paid disk. Data, sessions, Gmail tokens, matters, drafts, and exports can disappear on restart/redeploy/sleep.
 
 For a real private beta, switch to a paid plan with a persistent disk at `/var/data`, set `NDA_DATA_DIR=/var/data`, `NDA_USERS_PATH=/var/data/users.json`, `NDA_EXPORTS_DIR=/var/data/exports`, and remove `NDA_ALLOW_EPHEMERAL_DATA=true`.

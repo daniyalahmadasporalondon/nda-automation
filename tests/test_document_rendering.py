@@ -11,6 +11,7 @@ from pathlib import Path
 
 from nda_automation import document_rendering
 from nda_automation.document_rendering import (
+    DEFAULT_PAGE_IMAGE_DPI,
     DOCX_CONTENT_TYPE,
     MAX_PAGE_PIXMAP_BYTES,
     MAX_RASTERIZED_PAGES,
@@ -30,6 +31,7 @@ from nda_automation.document_rendering import (
     document_render_cache_key,
     purge_render_cache_for_source,
     render_pdf_page_image_manifest,
+    render_source_document_result,
     render_source_document_to_pdf,
 )
 
@@ -85,6 +87,18 @@ class CountingPdfPageRenderer:
         ]
 
 
+class ColoredTablePdfDocxConverter:
+    name = "fake-colored-table-pdf"
+
+    def is_available(self) -> bool:
+        return True
+
+    def convert_docx_to_pdf(self, source_path: Path, output_dir: Path, *, timeout_seconds: int) -> Path:
+        output_path = output_dir / "source.pdf"
+        output_path.write_bytes(_colored_table_pdf_bytes())
+        return output_path
+
+
 class UnavailablePdfPageRenderer:
     name = "fake-page-unavailable"
 
@@ -93,6 +107,42 @@ class UnavailablePdfPageRenderer:
 
     def render_pdf_to_page_images(self, pdf_path: Path, output_dir: Path, *, dpi: int) -> list[RenderedPdfPageImage]:
         raise AssertionError("Unavailable page renderer should not be invoked.")
+
+
+def _fitz():
+    try:
+        import fitz
+    except ImportError:
+        return None
+    return fitz
+
+
+def _colored_table_pdf_bytes() -> bytes:
+    fitz = _fitz()
+    if fitz is None:
+        raise unittest.SkipTest("PyMuPDF is not installed")
+    document = fitz.open()
+    page = document.new_page(width=216, height=216)
+    page.draw_rect(fitz.Rect(36, 36, 108, 108), color=(0.8, 0, 0), fill=(0.8, 0, 0), width=1)
+    page.draw_rect(fitz.Rect(108, 36, 180, 108), color=(0, 0, 0.8), fill=(0, 0, 0.8), width=1)
+    page.draw_rect(fitz.Rect(36, 108, 108, 180), color=(0, 0.45, 0), fill=(0, 0.45, 0), width=1)
+    page.draw_rect(fitz.Rect(108, 108, 180, 180), color=(0, 0, 0), fill=None, width=2)
+    page.insert_text((46, 74), "Red", fontsize=14, color=(1, 1, 1))
+    return document.tobytes()
+
+
+def _png_contains_color(image_path: Path, predicate) -> bool:
+    fitz = _fitz()
+    if fitz is None:
+        raise unittest.SkipTest("PyMuPDF is not installed")
+    pixmap = fitz.Pixmap(str(image_path))
+    channels = pixmap.n
+    samples = pixmap.samples
+    for index in range(0, len(samples), channels):
+        r, g, b = samples[index], samples[index + 1], samples[index + 2]
+        if predicate(r, g, b):
+            return True
+    return False
 
 
 class DocumentRenderingTests(unittest.TestCase):
@@ -240,6 +290,47 @@ class DocumentRenderingTests(unittest.TestCase):
             self.assertTrue(cached.page_manifest.cached)
             self.assertEqual(cached.page_manifest.pages[0].image_path, result.page_manifest.pages[0].image_path)
 
+    def test_pdf_page_render_preserves_colored_table_pixels(self):
+        if _fitz() is None:
+            self.skipTest("PyMuPDF is not installed")
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            result = render_source_document_result(
+                _colored_table_pdf_bytes(),
+                source_filename="colored-table.pdf",
+                cache_dir=Path(cache_dir_name),
+                page_renderer=PyMuPdfPageRenderer(),
+                dpi=144,
+            )
+
+            self.assertEqual(result.rendered.status, READY_STATUS)
+            self.assertIsNotNone(result.page_manifest)
+            self.assertEqual(result.page_manifest.status, READY_STATUS)
+            image_path = result.page_manifest.pages[0].image_path
+            self.assertTrue(_png_contains_color(image_path, lambda r, g, b: r > 150 and g < 80 and b < 80))
+            self.assertTrue(_png_contains_color(image_path, lambda r, g, b: b > 150 and r < 80 and g < 80))
+
+    def test_docx_conversion_page_render_preserves_converted_pdf_colored_table_pixels(self):
+        if _fitz() is None:
+            self.skipTest("PyMuPDF is not installed")
+        with tempfile.TemporaryDirectory() as cache_dir_name:
+            result = render_source_document_result(
+                b"PK\x03\x04docx-ish",
+                source_filename="colored-table.docx",
+                content_type=DOCX_CONTENT_TYPE,
+                cache_dir=Path(cache_dir_name),
+                converter=ColoredTablePdfDocxConverter(),
+                page_renderer=PyMuPdfPageRenderer(),
+                dpi=144,
+            )
+
+            self.assertEqual(result.rendered.status, READY_STATUS)
+            self.assertEqual(result.rendered.source_kind, "docx")
+            self.assertIsNotNone(result.page_manifest)
+            self.assertEqual(result.page_manifest.status, READY_STATUS)
+            image_path = result.page_manifest.pages[0].image_path
+            self.assertTrue(_png_contains_color(image_path, lambda r, g, b: r > 150 and g < 80 and b < 80))
+            self.assertTrue(_png_contains_color(image_path, lambda r, g, b: b > 150 and r < 80 and g < 80))
+
     def test_pdf_page_manifest_reports_renderer_unavailable_without_crashing(self):
         pdf_bytes = b"%PDF-1.7\nsource pdf\n%%EOF\n"
         with tempfile.TemporaryDirectory() as cache_dir_name:
@@ -333,19 +424,30 @@ class _FakeFitzModule:
 
 
 class BudgetedPageDpiTests(unittest.TestCase):
+    def test_default_page_image_dpi_is_high_fidelity(self):
+        self.assertEqual(DEFAULT_PAGE_IMAGE_DPI, 288)
+
+    def test_letter_and_a4_pages_fit_default_dpi_budget(self):
+        for width_pts, height_pts in ((612, 792), (595, 842)):
+            with self.subTest(width_pts=width_pts, height_pts=height_pts):
+                self.assertEqual(
+                    _budgeted_page_dpi(width_pts, height_pts, requested_dpi=DEFAULT_PAGE_IMAGE_DPI),
+                    DEFAULT_PAGE_IMAGE_DPI,
+                )
+
     def test_returns_requested_dpi_when_page_fits_budget(self):
-        # US Letter (612x792 pts) at 192 DPI is ~10 MB, well under budget.
-        self.assertEqual(_budgeted_page_dpi(612, 792, requested_dpi=192), 192)
+        # US Letter (612x792 pts) at 288 DPI is ~23 MB, well under budget.
+        self.assertEqual(_budgeted_page_dpi(612, 792, requested_dpi=288), 288)
 
     def test_zero_or_unknown_rect_renders_at_requested_dpi(self):
         self.assertEqual(_budgeted_page_dpi(0, 0, requested_dpi=192), 192)
 
     def test_clamps_dpi_down_so_pixmap_stays_within_budget(self):
-        # A ~49x49 inch (3528 pt) MediaBox is ~265 MB at 192 DPI but fits the
+        # A ~49x49 inch (3528 pt) MediaBox is ~597 MB at 288 DPI but fits the
         # budget at a reduced DPI; the clamp must cut DPI without rejecting, and
         # the resulting pixmap must respect the byte budget.
-        clamped = _budgeted_page_dpi(3528, 3528, requested_dpi=192)
-        self.assertLess(clamped, 192)
+        clamped = _budgeted_page_dpi(3528, 3528, requested_dpi=288)
+        self.assertLess(clamped, 288)
         self.assertGreaterEqual(clamped, MIN_PAGE_IMAGE_DPI)
         area_inches = (3528 / 72) * (3528 / 72)
         pixmap_bytes = area_inches * (clamped**2) * 3
@@ -354,7 +456,7 @@ class BudgetedPageDpiTests(unittest.TestCase):
     def test_rejects_page_that_cannot_fit_even_at_floor_dpi(self):
         # Pathological MediaBox: even MIN_PAGE_IMAGE_DPI overflows the budget.
         with self.assertRaises(PdfPageTooLargeToRasterize):
-            _budgeted_page_dpi(200000, 200000, requested_dpi=192)
+            _budgeted_page_dpi(200000, 200000, requested_dpi=288)
 
     def test_never_returns_more_than_requested_even_for_tiny_page(self):
         self.assertEqual(_budgeted_page_dpi(10, 10, requested_dpi=72), 72)
@@ -368,9 +470,9 @@ class PyMuPdfRasterizationBoundsTests(unittest.TestCase):
         page = _FakePage(3528, 3528)
         renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
         with tempfile.TemporaryDirectory() as out_name:
-            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
         self.assertEqual(len(pages), 1)
-        self.assertLess(pages[0].dpi, 192)
+        self.assertLess(pages[0].dpi, 288)
         # The realized pixmap must respect the per-page byte budget (RGB = 3B/px).
         self.assertLessEqual(_FakePixmap.max_area_seen * 3, MAX_PAGE_PIXMAP_BYTES)
 
@@ -378,8 +480,8 @@ class PyMuPdfRasterizationBoundsTests(unittest.TestCase):
         page = _FakePage(612, 792)
         renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
         with tempfile.TemporaryDirectory() as out_name:
-            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
-        self.assertEqual(pages[0].dpi, 192)
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        self.assertEqual(pages[0].dpi, 288)
 
     def test_page_count_over_cap_is_rejected(self):
         pages = [_FakePage(612, 792) for _ in range(MAX_RASTERIZED_PAGES + 1)]
@@ -776,6 +878,32 @@ class MatterRenderCoordinatorTests(unittest.TestCase):
                 )
             finally:
                 source_path.unlink(missing_ok=True)
+
+
+class DocumentRenderingDeploymentConfigTests(unittest.TestCase):
+    def test_render_blueprint_uses_docker_runtime_for_system_rendering_dependencies(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        render_yaml = (repo_root / "render.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("runtime: docker", render_yaml)
+        self.assertNotIn("buildCommand: python -m pip install", render_yaml)
+
+    def test_dockerfile_bundles_libreoffice_and_metric_compatible_fonts(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+
+        for package in (
+            "libreoffice-writer",
+            "fontconfig",
+            "fonts-crosextra-carlito",
+            "fonts-crosextra-caladea",
+            "fonts-liberation",
+            "fonts-noto-core",
+        ):
+            with self.subTest(package=package):
+                self.assertIn(package, dockerfile)
+        self.assertIn("fc-cache -f", dockerfile)
+        self.assertNotIn("ttf-mscorefonts-installer", dockerfile)
 
 
 if __name__ == "__main__":
