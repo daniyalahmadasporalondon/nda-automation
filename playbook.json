@@ -439,20 +439,23 @@
         "confidentiality obligations continue",
         "obligations remain binding",
         "obligations remain in force",
-        "after termination"
+        "after termination",
+        "ordinary confidentiality obligations or the agreement term are subject to the five-year cap",
+        "audit, tax, payment, warranty, indemnity, insurance, employment, and records-retention periods are duration decoys unless they set the confidentiality term",
+        "long or indefinite survival can pass only when scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations"
       ],
       "rationale": "Ordinary confidentiality should be time-limited; indefinite language is only acceptable for narrow trade-secret or legal exceptions.",
-      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording.",
+      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording. Count only durations tied to the agreement term or ordinary confidentiality obligations; ignore audit, tax, payment, warranty, indemnity, insurance, employment, books-and-records, and records-retention periods unless they expressly set confidentiality survival. Long or indefinite survival is acceptable only when scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations; the same long period for ordinary confidentiality fails.",
       "rules": {
         "version": 1,
         "clause_type": "required",
-        "acceptable_position": "Ordinary confidentiality obligations have a fixed survival period of up to five years, while narrow trade-secret, legal, regulatory, or data-protection carve-outs may survive longer.",
+        "acceptable_position": "Ordinary confidentiality obligations and the agreement term have a fixed duration of up to five years. Narrow trade-secret, legal, regulatory, personal-data, or data-protection carve-outs may survive longer or indefinitely only to the extent the protected status or law requires.",
         "pass_conditions": [
           {
             "id": "fixed_survival_within_cap",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The term or ordinary confidentiality survival period is fixed and does not exceed five years.",
+            "description": "The agreement term or ordinary confidentiality survival period is fixed and does not exceed five years. Longer or indefinite language is acceptable only when it is expressly scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations.",
             "redline_action": "no_change"
           }
         ],
@@ -468,7 +471,7 @@
             "id": "ordinary_survival_exceeds_cap_or_is_indefinite",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "Ordinary confidentiality survival is indefinite, perpetual, relationship-based, tied to information remaining confidential, or longer than five years.",
+            "description": "Ordinary confidentiality survival is indefinite, perpetual, relationship-based, tied to information remaining confidential, or longer than five years. Do not fail merely because an unrelated audit, tax, payment, warranty, indemnity, insurance, employment, or records-retention period exceeds five years.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -477,7 +480,7 @@
             "id": "ambiguous_survival_scope",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The term language is ambiguous, cross-referenced, unresolved, or unclear about whether the long survival applies only to accepted carve-outs.",
+            "description": "The term language is ambiguous, cross-referenced, unresolved, or unclear about whether the long survival applies only to accepted carve-outs rather than ordinary confidentiality.",
             "redline_action": "no_change"
           }
         ],
@@ -485,7 +488,7 @@
           "quote_required": true,
           "minimum_evidence_for_pass": 1,
           "minimum_evidence_for_fail": 0,
-          "guidance": "Cite the term or survival paragraph, including the duration or indefinite wording. If missing, explain that no clear term or survival period was found."
+          "guidance": "Cite the term or survival paragraph, including the duration or indefinite wording. If missing, explain that no clear term or survival period was found. Do not cite unrelated audit, tax, payment, warranty, indemnity, insurance, employment, or records-retention periods as evidence of ordinary confidentiality duration."
         },
         "redline_guidance": {
           "default_action": "replace_paragraph",
@@ -519,10 +522,10 @@
     {
       "id": "non_circumvention",
       "name": "Non-Circumvention",
-      "requirement": "The NDA must not include non-circumvention, introduced-party non-solicit, or substitute-purpose exclusivity obligations.",
+      "requirement": "The NDA must not include non-circumvention, non-compete, introduced-party non-solicit or hiring restrictions, substitute-purpose exclusivity, IP assignment, penalty/liquidated-damages, auto-renewal lock, or similar prohibited business positions.",
       "type": "prohibited",
-      "preferred_position": "The NDA should not restrict direct dealings, introduced contacts, substitute transactions, exclusivity, or similar commercial conduct beyond confidentiality.",
-      "check_trigger": "Any non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction appears in the NDA.",
+      "preferred_position": "The NDA should not restrict direct dealings, introduced contacts, hiring/solicitation, competition, substitute transactions, exclusivity, ownership of IP, damages remedies, renewal/termination freedom, or similar commercial conduct beyond confidentiality.",
+      "check_trigger": "Any non-circumvention, non-compete, introduced-party non-solicit or hiring restriction, substitute-purpose, direct-dealing, bypassing, exclusivity/exclusive-dealing, IP-assignment, penalty/liquidated/punitive-damages, evergreen auto-renewal, or no-termination lock appears in the NDA.",
       "search_terms": [
         "non-circumvention",
         "non circumvention",
@@ -540,7 +543,18 @@
         "poach introduced",
         "competing products",
         "competing services",
-        "interfere with introduced contacts"
+        "interfere with introduced contacts",
+        "non-compete",
+        "competing business",
+        "solicit or hire",
+        "shall not solicit",
+        "intellectual property assignment",
+        "hereby assigns",
+        "liquidated damages",
+        "punitive damages",
+        "automatically renew",
+        "evergreen",
+        "may not terminate"
       ],
       "taxonomy_groups": [
         "prohibited_restriction",
@@ -553,20 +567,25 @@
         "unlisted verbs can still be prohibited when the sentence creates an operative business restraint beyond confidentiality",
         "a nearby freedom-preserving sentence does not cure a separate operative restraint; the genuine co-located prohibition controls",
         "negated references, disclaimers, and freedom-preserving carve-outs are not prohibited restrictions",
-        "references to lawful circumvention of laws, sanctions, or regulatory obligations are not non-circumvention restrictions"
+        "references to lawful circumvention of laws, sanctions, or regulatory obligations are not non-circumvention restrictions",
+        "non-compete or competition restraints are prohibited even if phrased as use of Confidential Information or introduced opportunities",
+        "non-solicitation includes unhyphenated and interposed wording such as shall not directly or indirectly solicit or hire introduced employees, consultants, customers, or suppliers",
+        "IP assignment language such as hereby assigns all right title and interest is prohibited in an NDA unless it is only a narrow confidentiality ownership acknowledgement",
+        "liquidated damages, penalty, punitive damages, or preset penalty amounts are prohibited legal positions",
+        "auto-renewal, evergreen, exclusive renewal, or may-not-terminate locks are prohibited business positions"
       ],
       "rationale": "Non-circumvention and substitute-purpose restrictions turn the NDA into a broader commercial restraint.",
-      "evidence_guidance": "For failures, cite the exact operative restriction that limits dealings, introduced contacts, substitute transactions, hiring/recruiting/poaching, competition, interference, or exclusivity. For review, cite the ambiguous span. Do not cite a negated reference, freedom-preserving carve-out, or lawful/regulatory circumvention reference as a prohibited restriction.",
+      "evidence_guidance": "For failures, cite the exact operative restriction that limits dealings, introduced contacts, substitute transactions, hiring/recruiting/poaching, competition, interference, exclusivity, IP ownership, damages remedies, renewal, or termination freedom. For review, cite the ambiguous span. Do not cite a negated reference, freedom-preserving carve-out, or lawful/regulatory circumvention reference as a prohibited restriction.",
       "rules": {
         "version": 1,
         "clause_type": "prohibited",
-        "acceptable_position": "The NDA does not impose non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, hiring/recruiting/poaching, interference, or similar commercial restraints beyond confidentiality. It may expressly preserve lawful dealings or say no non-circumvention obligation is created.",
+        "acceptable_position": "The NDA does not impose non-circumvention, non-compete, introduced-party non-solicit or hiring restrictions, substitute-purpose exclusivity, IP assignment, liquidated/punitive damages, auto-renewal locks, or similar commercial restraints beyond confidentiality. It may expressly preserve lawful dealings or say no non-circumvention obligation is created.",
         "pass_conditions": [
           {
             "id": "prohibited_restriction_absent",
             "decision": "pass",
             "issue_type": "none",
-            "description": "No operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction appears. Negated references, lawful-circumvention references, and freedom-preserving carve-outs pass when they do not impose the restriction.",
+            "description": "No operative non-circumvention, non-compete, introduced-party non-solicit or hiring restriction, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, exclusivity, IP-assignment, penalty/liquidated/punitive damages, auto-renewal, evergreen, or no-termination lock appears. Negated references, lawful-circumvention references, and freedom-preserving carve-outs pass when they do not impose the restriction.",
             "redline_action": "no_change"
           }
         ],
@@ -575,7 +594,7 @@
             "id": "prohibited_business_restraint_present",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The document includes an operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction. The exact verb is not controlling; fail any clear business restraint beyond confidentiality, including when it appears near freedom-preserving language.",
+            "description": "The document includes an operative non-circumvention, non-compete, introduced-party non-solicit or hiring restriction, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, exclusivity, IP-assignment, penalty/liquidated/punitive damages, auto-renewal, evergreen, no-termination lock, or similar prohibited position. The exact verb is not controlling; fail any clear business restraint beyond confidentiality, including when it appears near freedom-preserving language.",
             "redline_action": "delete_paragraph"
           }
         ],
@@ -584,7 +603,7 @@
             "id": "ambiguous_business_restraint",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The language mentions non-circumvention concepts or introduced-party conduct, but the scope, polarity, actor, condition, or operative effect is ambiguous enough that a human should decide.",
+            "description": "The language mentions a prohibited-position concept, but the scope, polarity, actor, condition, legal effect, or relationship to confidentiality is ambiguous enough that a human should decide.",
             "redline_action": "no_change"
           }
         ],
@@ -599,7 +618,7 @@
           "drafting_note": "Remove the prohibited restraint rather than replacing it with another commercial restriction."
         }
       },
-      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, hiring/recruiting/poaching, interference, or similar business restraint should appear in the NDA. Acceptable language may include freedom-preserving carve-outs saying that nothing restricts a party from dealing with third parties, that no non-circumvention obligation is created, or that parties must not circumvent applicable laws or regulatory obligations.",
+      "acceptable_language": "No non-circumvention, non-compete, introduced-party non-solicit or hiring restriction, substitute-purpose exclusivity, IP assignment, liquidated/punitive damages, auto-renewal lock, or similar prohibited business restraint should appear in the NDA. Acceptable language may include freedom-preserving carve-outs saying that nothing restricts a party from dealing with third parties, that no non-circumvention obligation is created, that IP ownership is unchanged, or that parties must not circumvent applicable laws or regulatory obligations.",
       "engine": "dynamic",
       "fallback": {
         "redline_action": "delete_paragraph"

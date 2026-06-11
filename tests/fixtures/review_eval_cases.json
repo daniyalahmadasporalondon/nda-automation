@@ -544,5 +544,112 @@
     "expected": {
       "decision": "review"
     }
+  },
+  {
+    "name": "term_non_confidential_duration_decoys_pass",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Long audit/tax/payment/records periods are decoys and should not be counted as ordinary confidentiality survival when confidentiality is capped.",
+    "text": "The parties shall retain audit, tax, payment, warranty, insurance, employment, and books and records files for seven (7) years. The confidentiality obligations survive for five (5) years after termination.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap"
+    }
+  },
+  {
+    "name": "term_trade_secret_legal_carveout_long_pass",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Long or indefinite survival is acceptable when scoped to trade secrets or legal/regulatory obligations, while ordinary confidentiality is capped.",
+    "text": "The confidentiality obligations survive for five (5) years, except that trade secrets and information subject to legal or regulatory obligations remain protected for as long as such protected status or law requires.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "term_survival_within_cap"
+    }
+  },
+  {
+    "name": "term_ordinary_confidentiality_seven_years_fail",
+    "clause_id": "term_and_survival",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "The same seven-year duration fails when tied to ordinary confidentiality rather than a narrow trade-secret/legal carve-out.",
+    "text": "All ordinary confidentiality obligations survive for seven (7) years after termination.",
+    "expected": {
+      "decision": "fail",
+      "reason_code": "term_survival_over_cap"
+    }
+  },
+  {
+    "name": "non_circumvention_non_compete_not_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Wave 2 prohibited-position family: non-compete language must not be silently passed by AI-only review.",
+    "text": "The Recipient shall not compete with the Discloser in any business using the disclosed opportunity for two years.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.95,
+      "rationale": "This is a prohibited non-compete restriction, not an acceptable NDA confidentiality term."
+    },
+    "expected": {
+      "decision": "review"
+    }
+  },
+  {
+    "name": "non_circumvention_ip_assignment_not_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Wave 2 prohibited-position family: broad IP assignment language belongs outside this NDA and must not silently pass.",
+    "text": "Recipient hereby assigns all right, title and interest in intellectual property developed from the Confidential Information to Discloser.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.95,
+      "rationale": "This is a prohibited IP assignment position in an NDA."
+    },
+    "expected": {
+      "decision": "review"
+    }
+  },
+  {
+    "name": "non_circumvention_liquidated_damages_not_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Wave 2 prohibited-position family: penalty/liquidated/punitive damages language should not be silently accepted.",
+    "text": "Any breach of this Agreement will require the Recipient to pay liquidated damages of $500,000 as a penalty, without proof of loss.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.95,
+      "rationale": "This is a prohibited liquidated-damages or penalty position."
+    },
+    "expected": {
+      "decision": "review"
+    }
+  },
+  {
+    "name": "non_circumvention_auto_renew_lock_not_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Wave 2 prohibited-position family: evergreen/auto-renew/no-termination lock should not silently pass.",
+    "text": "This Agreement automatically renews for successive one-year terms and the Recipient may not terminate while discussions continue.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.95,
+      "rationale": "This is a prohibited auto-renewal and no-termination lock."
+    },
+    "expected": {
+      "decision": "review"
+    }
   }
 ]

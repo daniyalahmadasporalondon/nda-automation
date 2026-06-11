@@ -153,6 +153,34 @@ class PlaybookRulesTests(unittest.TestCase):
             any("co-located prohibition controls" in signal for signal in non_circumvention["semantic_signals"])
         )
 
+    def test_ai_rules_packet_carries_wave_two_judgment_guidance(self):
+        packet = playbook_rules_for_ai(load_playbook())
+        clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}
+
+        term = clauses["term_and_survival"]
+        self.assertIn("audit, tax, payment", term["evidence_guidance"])
+        self.assertTrue(any("duration decoys" in signal for signal in term["semantic_signals"]))
+        self.assertIn("trade secrets, legal obligations, regulatory duties", term["evidence_guidance"])
+        self.assertIn("ordinary confidentiality", term["rules"]["review_triggers"][0]["description"])
+
+        non_circumvention = clauses["non_circumvention"]
+        active_non_circumvention = next(clause for clause in load_playbook()["clauses"] if clause["id"] == "non_circumvention")
+        search_terms = set(active_non_circumvention["search_terms"])
+        for expected in {
+            "non-compete",
+            "solicit or hire",
+            "intellectual property assignment",
+            "liquidated damages",
+            "automatically renew",
+            "may not terminate",
+        }:
+            with self.subTest(term=expected):
+                self.assertIn(expected, search_terms)
+        self.assertTrue(any("IP assignment" in signal for signal in non_circumvention["semantic_signals"]))
+        self.assertTrue(any("liquidated damages" in signal for signal in non_circumvention["semantic_signals"]))
+        self.assertIn("auto-renewal", non_circumvention["rules"]["acceptable_position"])
+        self.assertIn("no-termination lock", non_circumvention["rules"]["fail_conditions"][0]["description"])
+
     def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
