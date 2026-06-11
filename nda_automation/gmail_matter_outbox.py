@@ -7,6 +7,8 @@ from email.message import EmailMessage
 from email.utils import formatdate, getaddresses
 from typing import Any
 
+from . import app_settings
+
 
 EMAIL_IN_TEXT_PATTERN = r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
 
@@ -218,6 +220,18 @@ def default_outbound_body(matter: dict[str, Any]) -> str:
     return (
         f"Hi,\n\n"
         f"Please find attached the redlined version of {subject}.\n\n"
-        f"Best,\n"
-        f"Aspora Legal"
+        f"{personalisation_signature_block()}"
     )
+
+
+def personalisation_signature_block() -> str:
+    settings = app_settings.personalisation_settings()
+    signature_block = str(settings.get("signature_block") or "").strip()
+    if signature_block:
+        return signature_block
+    parts = [
+        str(settings.get("sign_off") or "").strip(),
+        str(settings.get("signature") or "").strip(),
+    ]
+    cleaned_parts = [part for part in parts if part]
+    return "\n".join(cleaned_parts) if cleaned_parts else "Best,\nAspora Legal"

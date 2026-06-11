@@ -14,6 +14,7 @@ const AdminPersonalisationView = (() => {
     message,
     persistenceFact,
     reviewErrorFromPayload,
+    onSettingsLoaded,
   }) {
     let loadedSettings = { ...EMPTY_SETTINGS };
     let endpointAvailable = false;
@@ -43,6 +44,7 @@ const AdminPersonalisationView = (() => {
         if (!response.ok) throw responseError(response, payload, "Personalisation settings could not load");
         endpointAvailable = true;
         loadedSettings = normaliseSettings(payload.personalisation || payload.personalization || payload.settings || {});
+        onSettingsLoaded?.(loadedSettings);
         renderFields(loadedSettings, payload.defaults || {});
         setControlsDisabled(false);
         setOverall("Ready", "ready");
@@ -81,6 +83,7 @@ const AdminPersonalisationView = (() => {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw responseError(response, payload, "Personalisation settings could not save");
         loadedSettings = normaliseSettings(payload.personalisation || payload.personalization || payload.settings || nextSettings);
+        onSettingsLoaded?.(loadedSettings);
         renderFields(loadedSettings, payload.defaults || {});
         setOverall("Saved", "ready");
         setMessage("Personalisation settings saved.");

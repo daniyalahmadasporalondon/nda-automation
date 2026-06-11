@@ -8,6 +8,7 @@ const AppState = (() => {
       matters: [],
       ...initialReviewState({ documentViewMode }),
       gmailStatus: null,
+      personalisationSettings: null,
     };
   }
 

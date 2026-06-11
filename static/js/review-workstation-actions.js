@@ -486,9 +486,18 @@ function reviewSendDefaultBody(summary) {
     "Summary of changes:",
     ...summaryLines.map((line) => `- ${line}`),
     "",
-    "Best,",
-    "Aspora",
+    reviewSendSignatureBlock(),
   ].join("\n");
+}
+
+function reviewSendSignatureBlock() {
+  const personalisation = state?.personalisationSettings || null;
+  const signatureBlock = String(personalisation?.signature_block || "").trim();
+  if (signatureBlock) return signatureBlock;
+  const signOff = String(personalisation?.sign_off || "").trim();
+  const signature = String(personalisation?.signature || "").trim();
+  const parts = [signOff, signature].filter(Boolean);
+  return parts.length ? parts.join("\n") : "Best,\nAspora";
 }
 
 function reviewSendSummaryLines(summary) {

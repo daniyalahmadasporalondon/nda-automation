@@ -3683,6 +3683,69 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_status, 400)
         self.assertEqual(missing_payload["error"], "Provide an AI or runtime review setting to update.")
 
+    def test_personalisation_settings_endpoint_persists_text(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                initial_status, initial_payload = self.request("GET", "/api/admin/personalisation-settings")
+                update_status, update_payload = self.request(
+                    "POST",
+                    "/api/admin/personalisation-settings",
+                    {
+                        "sign_off": "  Warm regards,  ",
+                        "signature": "  Daniyal Ahmad  ",
+                        "signature_block": "Warm regards,\r\n\r\nDaniyal Ahmad\nAspora Legal",
+                    },
+                )
+                persisted = app_settings.personalisation_settings()
+
+        self.assertEqual(initial_status, 200)
+        self.assertEqual(initial_payload["personalisation"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
+        self.assertEqual(initial_payload["defaults"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
+        self.assertEqual(update_status, 200)
+        self.assertEqual(update_payload["personalisation"], {
+            "sign_off": "Warm regards,",
+            "signature": "Daniyal Ahmad",
+            "signature_block": "Warm regards,\nDaniyal Ahmad\nAspora Legal",
+        })
+        self.assertEqual(update_payload["defaults"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
+        self.assertEqual(persisted, update_payload["personalisation"])
+        self.assertEqual(update_payload["settings_audit"][0]["action"], "personalisation_settings_update")
+        self.assertEqual(
+            [change["setting"] for change in update_payload["settings_audit"][0]["changes"]],
+            [
+                "personalisation.sign_off",
+                "personalisation.signature",
+                "personalisation.signature_block",
+            ],
+        )
+
+    def test_personalisation_settings_endpoint_rejects_invalid_payloads(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                unsupported_status, unsupported_payload = self.request(
+                    "POST",
+                    "/api/admin/personalisation-settings",
+                    {"display_name": "Daniyal"},
+                )
+                missing_status, missing_payload = self.request("POST", "/api/admin/personalisation-settings", {})
+                non_text_status, non_text_payload = self.request(
+                    "POST",
+                    "/api/admin/personalisation-settings",
+                    {"signature": 123},
+                )
+
+        self.assertEqual(unsupported_status, 400)
+        self.assertEqual(unsupported_payload["error"], "Unsupported personalisation setting: display_name.")
+        self.assertEqual(missing_status, 400)
+        self.assertEqual(
+            missing_payload["error"],
+            "Provide a sign_off, signature, or signature_block setting to update.",
+        )
+        self.assertEqual(non_text_status, 400)
+        self.assertEqual(non_text_payload["error"], "Personalisation settings must be text values.")
+
     def test_ai_settings_endpoint_updates_runtime_review_engine(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -6214,6 +6277,28 @@ class ServerTests(unittest.TestCase):
                         )
 
         gmail_service.assert_not_called()
+
+    def test_gmail_default_outbound_body_uses_personalisation_settings(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_personalisation_settings({
+                    "sign_off": "Warm regards,",
+                    "signature": "Daniyal Ahmad",
+                    "signature_block": "Warm regards,\nDaniyal Ahmad\nAspora Legal",
+                })
+                body = server_module.gmail_integration._default_outbound_body({
+                    "subject": "Partner NDA",
+                })
+
+        self.assertEqual(
+            body,
+            "Hi,\n\n"
+            "Please find attached the redlined version of Partner NDA.\n\n"
+            "Warm regards,\n"
+            "Daniyal Ahmad\n"
+            "Aspora Legal",
+        )
 
     def test_gmail_send_redline_rejects_display_name_email_spoof(self):
         matter = {

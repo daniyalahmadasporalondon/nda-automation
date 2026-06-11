@@ -114,10 +114,18 @@ DEFAULT_AI_SETTINGS = {
 DEFAULT_REVIEW_RUNTIME_SETTINGS = {
     "active_review_engine": None,
 }
+DEFAULT_PERSONALISATION_SETTINGS = {
+    "sign_off": "Best,",
+    "signature": "Aspora Legal",
+    "signature_block": "Best,\nAspora Legal",
+}
 SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
 GMAIL_TRIAGE_API_KEY_FILENAME = "gmail_triage_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
+MAX_PERSONALISATION_SIGN_OFF_LENGTH = 120
+MAX_PERSONALISATION_SIGNATURE_LENGTH = 200
+MAX_PERSONALISATION_SIGNATURE_BLOCK_LENGTH = 1000
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
@@ -150,6 +158,10 @@ def review_runtime_settings() -> dict[str, Any]:
     return _repository().read_section("review_runtime", review_runtime_settings_from_payload)
 
 
+def personalisation_settings() -> dict[str, Any]:
+    return _repository().read_section("personalisation", personalisation_settings_from_payload)
+
+
 def settings_audit_history() -> list[dict[str, Any]]:
     settings = _repository().read_settings()
     return settings_audit_history_from_payload(settings.get("settings_audit"))
@@ -177,6 +189,18 @@ def update_review_runtime_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return review_runtime_settings()
 
     return _repository().update_section("review_runtime", review_runtime_settings_from_payload, cleaned)
+
+
+def update_personalisation_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {
+        key: _clean_personalisation_setting(key, value)
+        for key, value in updates.items()
+        if _valid_personalisation_setting(key, value)
+    }
+    if not cleaned:
+        return personalisation_settings()
+
+    return _repository().update_section("personalisation", personalisation_settings_from_payload, cleaned)
 
 
 def record_settings_audit_event(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -384,6 +408,26 @@ def review_runtime_settings_from_payload(payload: dict[str, Any]) -> dict[str, A
     }
 
 
+def personalisation_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sign_off": _clean_personalisation_text(
+            payload.get("sign_off", DEFAULT_PERSONALISATION_SETTINGS["sign_off"]),
+            max_length=MAX_PERSONALISATION_SIGN_OFF_LENGTH,
+            multiline=False,
+        ),
+        "signature": _clean_personalisation_text(
+            payload.get("signature", DEFAULT_PERSONALISATION_SETTINGS["signature"]),
+            max_length=MAX_PERSONALISATION_SIGNATURE_LENGTH,
+            multiline=False,
+        ),
+        "signature_block": _clean_personalisation_text(
+            payload.get("signature_block", DEFAULT_PERSONALISATION_SETTINGS["signature_block"]),
+            max_length=MAX_PERSONALISATION_SIGNATURE_BLOCK_LENGTH,
+            multiline=True,
+        ),
+    }
+
+
 def settings_audit_event_from_payload(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {}
@@ -461,6 +505,12 @@ def _valid_drive_setting(key: str, value: Any) -> bool:
     return False
 
 
+def _valid_personalisation_setting(key: str, value: Any) -> bool:
+    if key in ("sign_off", "signature", "signature_block"):
+        return isinstance(value, str)
+    return False
+
+
 def _clean_drive_setting(key: str, value: Any) -> Any:
     if key in ("enabled", "auto_intake"):
         return bool(value)
@@ -469,6 +519,26 @@ def _clean_drive_setting(key: str, value: Any) -> Any:
     if key == "folder_name":
         return _clean_drive_folder_name(value)
     return value
+
+
+def _clean_personalisation_setting(key: str, value: Any) -> str:
+    if key == "sign_off":
+        return _clean_personalisation_text(value, max_length=MAX_PERSONALISATION_SIGN_OFF_LENGTH, multiline=False)
+    if key == "signature":
+        return _clean_personalisation_text(value, max_length=MAX_PERSONALISATION_SIGNATURE_LENGTH, multiline=False)
+    if key == "signature_block":
+        return _clean_personalisation_text(value, max_length=MAX_PERSONALISATION_SIGNATURE_BLOCK_LENGTH, multiline=True)
+    return ""
+
+
+def _clean_personalisation_text(value: object, *, max_length: int, multiline: bool) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if multiline:
+        lines = [" ".join(line.split()) for line in text.split("\n")]
+        cleaned = "\n".join(line for line in lines if line)
+    else:
+        cleaned = " ".join(text.split())
+    return cleaned[:max_length]
 
 
 def _clean_drive_folder_id(value: object) -> str:
