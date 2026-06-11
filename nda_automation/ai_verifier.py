@@ -38,6 +38,7 @@ from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
 from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
+from .openrouter_usage import record_openrouter_usage
 from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
@@ -792,6 +793,7 @@ class OpenRouterVerifier:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise VerifierError(f"Verifier API request failed: {error}") from error
 
+        record_openrouter_usage(payload, feature="verifier", model=self.model)
         response_text = _openrouter_response_text(payload)
         if not response_text:
             raise VerifierError("Verifier API returned no message content.")

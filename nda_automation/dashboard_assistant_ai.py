@@ -22,6 +22,7 @@ from .ai_review import (
     _sanitize_model_name,
     _trusted_https_context,
 )
+from .openrouter_usage import record_openrouter_usage
 
 SUPPORTED_INTENTS: frozenset[str] = frozenset(
     {
@@ -106,6 +107,7 @@ class OpenRouterDashboardAssistantModel:
             raise DashboardAssistantAIUnavailableError("OpenRouter API returned invalid JSON.") from error
         if not isinstance(parsed, Mapping):
             raise DashboardAssistantAIUnavailableError("OpenRouter API returned a non-object payload.")
+        record_openrouter_usage(parsed, feature="dashboard_assistant", model=self.settings.model)
         return parsed
 
 

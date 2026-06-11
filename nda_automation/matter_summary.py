@@ -44,6 +44,7 @@ from .ai_review import (
     _sanitize_model_name,
     _trusted_https_context,
 )
+from .openrouter_usage import record_openrouter_usage
 from .untrusted_text import neutralize_untrusted_text
 
 MATTER_SUMMARY_VERSION = 1
@@ -279,11 +280,17 @@ class _OpenRouterSummaryTransport:
             with urllib.request.urlopen(
                 request, timeout=self.timeout_seconds, context=_trusted_https_context()
             ) as response:
-                return json.loads(response.read().decode("utf-8"))
+                payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             # Never leak the provider error/stack to the user; the route turns this
             # into the friendly "Summary unavailable right now." message.
             raise MatterSummaryUnavailableError() from error
+        record_openrouter_usage(
+            payload,
+            feature="matter_summary",
+            model=str(request_body.get("model") or DEFAULT_OPENROUTER_MODEL),
+        )
+        return payload
 
 
 def _summary_text_from_response(payload: Mapping[str, Any]) -> str:

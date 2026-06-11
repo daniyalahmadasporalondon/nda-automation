@@ -9,6 +9,7 @@ from typing import Any
 
 from . import app_settings
 from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
+from .openrouter_usage import record_openrouter_usage
 from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
 
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
@@ -62,9 +63,10 @@ def select_nda_attachments(
     if not api_key:
         return {"status": "not_configured", "selected_attachment_ids": []}
 
+    request_body = _request_body(message_metadata, candidates)
     request = urllib.request.Request(
         OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-        data=json.dumps(_request_body(message_metadata, candidates)).encode("utf-8"),
+        data=json.dumps(request_body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -85,6 +87,11 @@ def select_nda_attachments(
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
         raise GmailAttachmentSelectorError(f"OpenRouter API request failed: {error}") from error
 
+    record_openrouter_usage(
+        payload,
+        feature="gmail_triage",
+        model=str(request_body.get("model") or _configured_model()),
+    )
     parsed = _parse_response(payload)
     # Constrain the model's selection to the actual attachments. An injected
     # instruction in the email cannot cause an attachment that was not offered as

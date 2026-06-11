@@ -34,6 +34,7 @@ from .ai_review import (
     OPENROUTER_API_KEY_ENV,
     _sanitize_model_name,
 )
+from .openrouter_usage import record_openrouter_usage
 from .prohibited_positions import ANY_PROHIBITED_POSITION
 
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
@@ -263,6 +264,7 @@ class OpenRouterClauseAdapter:
             raise ClauseAdaptationError(f"OpenRouter returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise ClauseAdaptationError(f"OpenRouter request failed: {error}") from error
+        record_openrouter_usage(payload, feature="generation", model=self.model)
         return _openrouter_response_text(payload)
 
 

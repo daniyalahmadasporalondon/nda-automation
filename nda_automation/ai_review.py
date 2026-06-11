@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Protocol, Tuple, runtime_checkable
 
 from . import app_settings
 from .checks.common import ClauseResult, Paragraph
+from .openrouter_usage import record_openrouter_usage
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
@@ -163,6 +164,7 @@ class OpenRouterAIReviewer:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise AIReviewError(f"OpenRouter API request failed: {error}") from error
 
+        record_openrouter_usage(payload, feature="review", model=self.model)
         response_text = _openrouter_response_text(payload)
         if not response_text:
             raise AIReviewError("OpenRouter API returned no message content.")

@@ -30,6 +30,7 @@ from .ai_review import (
     _trusted_https_context,
 )
 from .checker import load_playbook, validate_playbook
+from .openrouter_usage import record_openrouter_usage
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .review_state import REVIEW_STATE_CHECK, REVIEW_STATE_REVIEW
 
@@ -86,6 +87,7 @@ class OpenRouterAIAssessmentReviewer:
             raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
+        record_openrouter_usage(payload, feature="assessor", model=self.model)
         parsed = _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
         self.last_success_provider = "openrouter"
         self.last_success_model = self.model
