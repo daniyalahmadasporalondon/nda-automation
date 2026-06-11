@@ -857,6 +857,47 @@ class DocxExportTests(unittest.TestCase):
             self.assertIsNotNone(run.find("w:rPr/w:b", W_NS), "replaced paragraph lost source bold formatting")
             self.assertIsNotNone(run.find("w:rPr/w:color", W_NS), "replaced paragraph lost source color formatting")
 
+    def test_source_redline_maps_deleted_text_to_matching_source_run_formatting(self):
+        # Mixed-run edited paragraphs must not flatten every tracked run to the
+        # first source run's rPr. The deleted "California" text is in the second
+        # source run, so it must keep that run's bold/red formatting.
+        mixed_paragraph = (
+            "<w:p>"
+            "<w:r><w:t>This Agreement shall be governed by the laws of </w:t></w:r>"
+            '<w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>California</w:t></w:r>'
+            "<w:r><w:t>.</w:t></w:r>"
+            "</w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{mixed_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        result = review_nda("\n\n".join(str(paragraph["text"]) for paragraph in paragraphs), paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        california_runs = [
+            run
+            for run in document_root.findall(".//w:del/w:r", W_NS)
+            if "".join(node.text or "" for node in run.findall("w:delText", W_NS)) == "California"
+        ]
+        self.assertEqual(len(california_runs), 1, "expected exactly one tracked-deleted California run")
+        rpr = california_runs[0].find("w:rPr", W_NS)
+        self.assertIsNotNone(rpr, "deleted source run lost its rPr")
+        self.assertIsNotNone(rpr.find("w:b", W_NS), "deleted source run lost bold")
+        color = rpr.find("w:color", W_NS)
+        self.assertIsNotNone(color, "deleted source run lost color")
+        self.assertEqual(color.get(f"{{{W_NS['w']}}}val"), "FF0000")
+
     def test_source_redline_refuses_replace_that_would_drop_hyperlink(self):
         linked_text = "Click here to review the NDA."
         document_xml = (

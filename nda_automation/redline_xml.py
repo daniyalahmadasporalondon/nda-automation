@@ -282,7 +282,7 @@ def _run_offset_text(run: ET.Element) -> str:
     splitter must measure runs the same way."""
     parts: List[str] = []
     for node in run.iter():
-        if node.tag == _w_tag("t") and node.text:
+        if node.tag in {_w_tag("t"), _w_tag("delText")} and node.text:
             parts.append(node.text)
         elif node.tag == _w_tag("tab"):
             parts.append("\t")
@@ -534,25 +534,121 @@ def _merge_source_paragraph_properties(source_paragraph: ET.Element, tracked_par
     for child in list(tracked_paragraph):
         if child.tag != _w_tag("pPr"):
             merged.append(_clone_element(child))
-    # Carry the source paragraph's run formatting (bold/italic/underline/color/
-    # fonts) onto the tracked runs so a replace/delete redline does not silently
-    # strip the character formatting of the text it touches.
-    _apply_source_run_properties(merged, _dominant_run_properties(source_paragraph))
+    # Carry the source paragraph's run formatting onto retained/deleted tracked
+    # runs by mapping the emitted text back through the original run spans. This
+    # avoids the old first-run flattening where a mixed-format paragraph made
+    # every touched run inherit whichever rPr happened to appear first.
+    _apply_source_run_properties(merged, source_paragraph)
     return merged
 
-def _dominant_run_properties(source_paragraph: ET.Element) -> ET.Element | None:
-    for run in source_paragraph.iter(_w_tag("r")):
-        run_properties = run.find(_w_tag("rPr"))
-        if run_properties is not None:
-            return run_properties
-    return None
-
-def _apply_source_run_properties(paragraph: ET.Element, run_properties: ET.Element | None) -> None:
-    if run_properties is None:
+def _apply_source_run_properties(paragraph: ET.Element, source_paragraph: ET.Element) -> None:
+    source_spans = _source_run_property_spans(source_paragraph)
+    if not source_spans:
         return
-    for run in paragraph.iter(_w_tag("r")):
-        if run.find(_w_tag("rPr")) is None:
-            run.insert(0, _clone_element(run_properties))
+    source_offset = 0
+
+    def visit(parent: ET.Element, *, source_backed: bool) -> None:
+        nonlocal source_offset
+        children = list(parent)
+        for child in children:
+            if child.tag == _w_tag("ins"):
+                visit(child, source_backed=False)
+                continue
+            if child.tag == _w_tag("del"):
+                visit(child, source_backed=True)
+                continue
+            if child.tag == _w_tag("r"):
+                run_text = _run_offset_text(child)
+                if not run_text:
+                    continue
+                if not source_backed:
+                    if child.find(_w_tag("rPr")) is None:
+                        run_properties = _source_run_properties_at_offset(source_spans, source_offset)
+                        if run_properties is not None:
+                            child.insert(0, _clone_element(run_properties))
+                    continue
+                if child.find(_w_tag("rPr")) is not None or _run_has_flow_content(child):
+                    source_offset += len(run_text)
+                    continue
+                replacements = _split_run_by_source_properties(child, source_spans, source_offset)
+                source_offset += len(run_text)
+                if replacements:
+                    position = list(parent).index(child)
+                    parent.remove(child)
+                    for offset, replacement in enumerate(replacements):
+                        parent.insert(position + offset, replacement)
+                continue
+
+            visit(child, source_backed=source_backed)
+
+    visit(paragraph, source_backed=True)
+
+
+def _source_run_property_spans(source_paragraph: ET.Element) -> list[tuple[int, int, ET.Element | None]]:
+    spans: list[tuple[int, int, ET.Element | None]] = []
+    offset = 0
+    for run in source_paragraph.iter(_w_tag("r")):
+        text = _run_offset_text(run)
+        if not text:
+            continue
+        start = offset
+        offset += len(text)
+        spans.append((start, offset, run.find(_w_tag("rPr"))))
+    return spans
+
+
+def _source_run_properties_at_offset(
+    source_spans: list[tuple[int, int, ET.Element | None]],
+    offset: int,
+) -> ET.Element | None:
+    if not source_spans:
+        return None
+    for start, end, run_properties in source_spans:
+        if start <= offset < end:
+            return run_properties
+    return source_spans[-1][2]
+
+
+def _split_run_by_source_properties(
+    run: ET.Element,
+    source_spans: list[tuple[int, int, ET.Element | None]],
+    source_offset: int,
+) -> list[ET.Element]:
+    text_node = _single_run_text_node(run)
+    if text_node is None or not text_node.text:
+        return []
+    run_text = text_node.text
+    text_tag = text_node.tag
+    replacements: list[ET.Element] = []
+    local_offset = 0
+    while local_offset < len(run_text):
+        absolute_offset = source_offset + local_offset
+        span_end = source_offset + len(run_text)
+        run_properties = _source_run_properties_at_offset(source_spans, absolute_offset)
+        for start, end, candidate_properties in source_spans:
+            if start <= absolute_offset < end:
+                span_end = min(source_offset + len(run_text), end)
+                run_properties = candidate_properties
+                break
+        if span_end <= absolute_offset:
+            span_end = absolute_offset + 1
+        next_local_offset = span_end - source_offset
+        segment_text = run_text[local_offset:next_local_offset]
+        segment = ET.Element(_w_tag("r"))
+        if run_properties is not None:
+            segment.append(_clone_element(run_properties))
+        segment_text_node = ET.SubElement(segment, text_tag)
+        if text_node.get("{http://www.w3.org/XML/1998/namespace}space") == "preserve":
+            segment_text_node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        segment_text_node.text = segment_text
+        replacements.append(segment)
+        local_offset = next_local_offset
+    return replacements
+
+
+def _single_run_text_node(run: ET.Element) -> ET.Element | None:
+    text_nodes = [node for node in list(run) if node.tag in {_w_tag("t"), _w_tag("delText")}]
+    return text_nodes[0] if len(text_nodes) == 1 else None
 
 def _strip_paragraph_property_revisions(root: ET.Element) -> None:
     paragraph_properties = []
