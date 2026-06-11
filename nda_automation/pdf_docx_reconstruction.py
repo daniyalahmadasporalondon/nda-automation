@@ -17,6 +17,11 @@ PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE = (
 PDF_DOCX_RECONSTRUCTION_FAILED_MESSAGE = (
     "The PDF-to-Word reconstruction engine could not produce a valid Word document for this PDF."
 )
+PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE = (
+    "PDF-to-Word reconstruction is a best-effort editable Word export. It may not preserve "
+    "tables, colors, images, or page layout exactly; use the original PDF/page preview for "
+    "visual fidelity."
+)
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PDF_DOCX_RECONSTRUCTION_HEADER = "pdf2docx"
 
@@ -74,11 +79,24 @@ def converter_health(converter: PdfToDocxConverter | None = None) -> dict[str, o
     return {
         "available": available,
         "converter": getattr(active_converter, "name", "unknown"),
+        "mode": "pdf_to_docx_reconstruction",
+        "fidelity": reconstruction_fidelity_payload(output_format="docx"),
         "message": (
             "PDF-to-Word reconstruction is available."
             if available
             else PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE
         ),
+    }
+
+
+def reconstruction_fidelity_payload(*, output_format: str = "docx") -> dict[str, str]:
+    return {
+        "source": "pdf",
+        "output": output_format,
+        "mode": "best_effort_pdf_to_docx_reconstruction",
+        "visual_fidelity": "best_effort",
+        "faithful_visual_source": "original_pdf_page_preview",
+        "message": PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE,
     }
 
 

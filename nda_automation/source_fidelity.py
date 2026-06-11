@@ -333,11 +333,12 @@ def _pdf_fidelity_policy(pdf_visual_profile: dict[str, Any] | None) -> dict[str,
         "analysis_mode": "extracted_text_only",
         "layout_mode": "original_pdf_page_preview",
         "word_conversion": "unsupported_for_fidelity",
-        "redlined_docx": "unavailable",
+        "redlined_docx": "reconstructed_not_fidelity_preserving",
         "requires_source_preview": True,
         "message": (
-            "PDF matters use extracted text for clause analysis and the preserved original PDF/page preview for visual "
-            "fidelity. Extracted text must not be presented as a faithful Word conversion."
+            "PDF matters use extracted text for clause analysis, best-effort reconstructed Word for editable exports, "
+            "and the preserved original PDF/page preview for visual fidelity. Reconstructed Word must not be presented "
+            "as a faithful source conversion."
         ),
     }
     if pdf_visual_profile:

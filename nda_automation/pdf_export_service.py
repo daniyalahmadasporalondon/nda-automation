@@ -117,6 +117,21 @@ def public_matter_document_downloads(
     health = converter_health(converter)
     pdf_docx_health = pdf_docx_converter_health(pdf_docx_converter)
     reconstructed_pdf_docx_available = source_is_pdf and bool(pdf_docx_health["available"])
+    source_pdf_docx_fidelity = (
+        pdf_docx_reconstruction.reconstruction_fidelity_payload(output_format="docx")
+        if source_is_pdf
+        else None
+    )
+    reviewed_pdf_docx_fidelity = (
+        pdf_docx_reconstruction.reconstruction_fidelity_payload(output_format="reviewed_docx")
+        if source_is_pdf
+        else None
+    )
+    reviewed_pdf_fidelity = (
+        pdf_docx_reconstruction.reconstruction_fidelity_payload(output_format="reviewed_pdf")
+        if source_is_pdf
+        else None
+    )
 
     source_label = "Generated document" if generated else "Original document"
     return {
@@ -147,6 +162,9 @@ def public_matter_document_downloads(
                         else "A Word download is not available for this source document."
                     ),
                     converter=pdf_docx_health if source_is_pdf else None,
+                    transform="pdf_to_reconstructed_docx" if source_is_pdf else "",
+                    label="Reconstructed Word" if source_is_pdf else "",
+                    fidelity=source_pdf_docx_fidelity,
                 ),
                 "pdf": _download_option(
                     "pdf",
@@ -196,6 +214,9 @@ def public_matter_document_downloads(
                         else "Reviewed DOCX export is not available for this source document."
                     ),
                     converter=pdf_docx_health if source_is_pdf else None,
+                    transform="pdf_to_reconstructed_reviewed_docx" if source_is_pdf else "",
+                    label="Reconstructed reviewed Word" if source_is_pdf else "",
+                    fidelity=reviewed_pdf_docx_fidelity,
                 ),
                 "pdf": _download_option(
                     "pdf",
@@ -240,6 +261,9 @@ def public_matter_document_downloads(
                     }
                     if source_is_pdf
                     else health,
+                    transform="pdf_to_reconstructed_docx_to_pdf" if source_is_pdf else "",
+                    label="PDF from reconstructed Word" if source_is_pdf else "",
+                    fidelity=reviewed_pdf_fidelity,
                 ),
             },
         },
@@ -434,6 +458,9 @@ def _download_option(
     content_type: str,
     unavailable_reason: str = "",
     converter: dict[str, object] | None = None,
+    transform: str = "",
+    label: str = "",
+    fidelity: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     option: dict[str, Any] = {
         "format": output_format,
@@ -441,6 +468,12 @@ def _download_option(
         "filename": _fallback_filename(filename),
         "content_type": content_type,
     }
+    if transform:
+        option["source_transform"] = transform
+    if label:
+        option["label"] = label
+    if fidelity is not None:
+        option["fidelity"] = fidelity
     if available and download_url:
         option["download_url"] = download_url
     if not available and unavailable_reason:

@@ -120,7 +120,8 @@ def test_source_fidelity_marks_pdf_as_source_preview_limited():
     assert payload["pdf_fidelity"]["analysis_mode"] == "extracted_text_only"
     assert payload["pdf_fidelity"]["layout_mode"] == "original_pdf_page_preview"
     assert payload["pdf_fidelity"]["word_conversion"] == "unsupported_for_fidelity"
-    assert payload["pdf_fidelity"]["redlined_docx"] == "unavailable"
+    assert payload["pdf_fidelity"]["redlined_docx"] == "reconstructed_not_fidelity_preserving"
+    assert "best-effort reconstructed Word" in payload["pdf_fidelity"]["message"]
     assert payload["pdf_fidelity"]["visual_profile"]["visual_features"] == [
         "colored_text",
         "drawings_or_borders",

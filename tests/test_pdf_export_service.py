@@ -194,14 +194,31 @@ def test_public_matter_document_downloads_exposes_reconstructed_pdf_docx_when_av
     assert source["docx"]["available"] is True
     assert source["docx"]["download_url"] == "/api/matters/matter-5/source-docx"
     assert source["docx"]["filename"] == "Signed-NDA.docx"
+    assert source["docx"]["label"] == "Reconstructed Word"
+    assert source["docx"]["source_transform"] == "pdf_to_reconstructed_docx"
+    assert source["docx"]["fidelity"] == {
+        "source": "pdf",
+        "output": "docx",
+        "mode": "best_effort_pdf_to_docx_reconstruction",
+        "visual_fidelity": "best_effort",
+        "faithful_visual_source": "original_pdf_page_preview",
+        "message": pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE,
+    }
     assert source["docx"]["converter"]["converter"] == "fake-pdf2docx"
+    assert source["docx"]["converter"]["fidelity"]["visual_fidelity"] == "best_effort"
 
     reviewed = downloads["reviewed"]["formats"]
     assert reviewed["docx"]["available"] is True
     assert reviewed["docx"]["download_url"] == "/api/matters/matter-5/reviewed-docx"
     assert reviewed["docx"]["filename"] == "Signed-NDA-reviewed.docx"
+    assert reviewed["docx"]["label"] == "Reconstructed reviewed Word"
+    assert reviewed["docx"]["source_transform"] == "pdf_to_reconstructed_reviewed_docx"
+    assert reviewed["docx"]["fidelity"]["output"] == "reviewed_docx"
     assert reviewed["pdf"]["available"] is True
     assert reviewed["pdf"]["download_url"] == "/api/matters/matter-5/reviewed-pdf"
+    assert reviewed["pdf"]["label"] == "PDF from reconstructed Word"
+    assert reviewed["pdf"]["source_transform"] == "pdf_to_reconstructed_docx_to_pdf"
+    assert reviewed["pdf"]["fidelity"]["output"] == "reviewed_pdf"
     assert reviewed["pdf"]["converter"]["pdf_to_docx"]["converter"] == "fake-pdf2docx"
     assert reviewed["pdf"]["converter"]["docx_to_pdf"]["converter"] == "fake-available"
 

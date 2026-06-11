@@ -73,6 +73,15 @@ def test_converter_health_reports_available_converter():
     assert health["available"] is True
     assert health["converter"] == "fake-pdf2docx"
     assert "available" in health["message"]
+    assert health["mode"] == "pdf_to_docx_reconstruction"
+    assert health["fidelity"] == {
+        "source": "pdf",
+        "output": "docx",
+        "mode": "best_effort_pdf_to_docx_reconstruction",
+        "visual_fidelity": "best_effort",
+        "faithful_visual_source": "original_pdf_page_preview",
+        "message": pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE,
+    }
 
 
 def test_converter_health_reports_unavailable_converter():
@@ -80,6 +89,8 @@ def test_converter_health_reports_unavailable_converter():
 
     assert health["available"] is False
     assert health["converter"] == "fake-unavailable"
+    assert health["mode"] == "pdf_to_docx_reconstruction"
+    assert health["fidelity"]["visual_fidelity"] == "best_effort"
     assert "pdf2docx" in health["message"]
 
 
