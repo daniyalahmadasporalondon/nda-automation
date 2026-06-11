@@ -1821,6 +1821,135 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(head_headers["Content-Length"], str(len(source_pdf)))
         self.assertEqual(head_payload, b"")
 
+    def test_reviewed_pdf_streams_approved_docx_conversion(self):
+        class AvailableConverter:
+            name = "test-docx-pdf"
+
+            def is_available(self):
+                return True
+
+            def convert_docx_to_pdf(self, source_path, output_dir, *, timeout_seconds):
+                output_path = output_dir / "reviewed.pdf"
+                output_path.write_bytes(b"%PDF-1.7\nreviewed pdf\n%%EOF\n")
+                return output_path
+
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_docx = make_docx([source_text])
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Reviewed NDA.docx",
+                    document_bytes=source_docx,
+                    extracted_text=source_text,
+                    review_result=review_result,
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                matter_store.update_matter_fields(matter["id"], {"status": "approved"})
+                with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=AvailableConverter()):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/reviewed-pdf",
+                    )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="Reviewed-NDA-redlined.pdf"')
+        self.assertEqual(headers["X-PDF-Export-Verified"], "document-to-pdf")
+        self.assertEqual(headers["X-PDF-Export-Source-Kind"], "docx")
+        self.assertEqual(headers["X-Reviewed-Redline-Count"], "0")
+        self.assertEqual(payload, b"%PDF-1.7\nreviewed pdf\n%%EOF\n")
+
+    def test_reviewed_pdf_reports_converter_unavailable_for_approved_docx(self):
+        class UnavailableConverter:
+            name = "test-unavailable"
+
+            def is_available(self):
+                return False
+
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_docx = make_docx([source_text])
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Reviewed NDA.docx",
+                    document_bytes=source_docx,
+                    extracted_text=source_text,
+                    review_result=review_result,
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                matter_store.update_matter_fields(matter["id"], {"status": "approved"})
+                with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=UnavailableConverter()):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/reviewed-pdf",
+                    )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(payload["document_pdf_export"]["status"], document_rendering.UNAVAILABLE_STATUS)
+        self.assertEqual(payload["document_pdf_export"]["error_code"], "converter_unavailable")
+        self.assertEqual(payload["document_pdf_export"]["filename"], "Reviewed-NDA-redlined.pdf")
+        self.assertIn("LibreOffice/soffice", payload["error"])
+        self.assertIn("LibreOffice/soffice", payload["document_pdf_export"]["converter"]["message"])
+
     def test_matter_render_status_includes_page_manifest_and_streams_page_image(self):
         class FakePdfPageRenderer:
             name = "fake-pdf-pages"
