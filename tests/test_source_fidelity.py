@@ -90,7 +90,18 @@ def test_source_fidelity_groups_table_cells_and_preserves_color_runs():
 
 def test_source_fidelity_marks_pdf_as_source_preview_limited():
     review_result = {
-        "source": {"type": "pdf"},
+        "source": {
+            "type": "pdf",
+            "extraction_quality": {
+                "visual_profile": {
+                    "status": "ready",
+                    "requires_source_preview": True,
+                    "visual_features": ["colored_text", "drawings_or_borders"],
+                    "non_black_text_span_count": 3,
+                    "drawing_count": 2,
+                }
+            },
+        },
         "paragraphs": [
             {"id": "p1", "index": 1, "text": "PDF page one.", "source_part": "pdf", "page_number": 1},
             {"id": "p2", "index": 2, "text": "PDF page two.", "source_part": "pdf", "page_number": 2},
@@ -100,11 +111,26 @@ def test_source_fidelity_marks_pdf_as_source_preview_limited():
     payload = source_fidelity_payload(review_result, source=review_result["source"])
 
     assert payload["source_type"] == "pdf"
+    assert payload["preferred_render_mode"] == "source_pdf_preview"
     assert payload["capabilities"]["pdf_page_references"] is True
+    assert payload["capabilities"]["faithful_source_preview"] is True
+    assert payload["capabilities"]["pdf_visual_profile"] is True
+    assert payload["capabilities"]["pdf_visual_elements"] is True
     assert payload["summary"]["pdf_page_reference_count"] == 2
+    assert payload["pdf_fidelity"]["analysis_mode"] == "extracted_text_only"
+    assert payload["pdf_fidelity"]["layout_mode"] == "original_pdf_page_preview"
+    assert payload["pdf_fidelity"]["word_conversion"] == "unsupported_for_fidelity"
+    assert payload["pdf_fidelity"]["redlined_docx"] == "unavailable"
+    assert payload["pdf_fidelity"]["visual_profile"]["visual_features"] == [
+        "colored_text",
+        "drawings_or_borders",
+    ]
     assert {limitation["code"] for limitation in payload["limitations"]} == {
+        "pdf_text_extraction_not_layout",
+        "pdf_visual_elements_detected",
         "semantic_review_is_paragraph_based",
         "pdf_visual_fidelity_requires_source_preview",
+        "pdf_word_conversion_unsupported_for_fidelity",
     }
 
 

@@ -1678,6 +1678,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload["source"]["extraction_quality"]["page_count"], 1)
         self.assertEqual(payload["source"]["extraction_quality"]["pages_with_text"], 1)
         self.assertIn("warnings", payload["source"]["extraction_quality"])
+        source_fidelity = payload["source_fidelity"]
+        self.assertEqual(source_fidelity["source_type"], "pdf")
+        self.assertEqual(source_fidelity["preferred_render_mode"], "source_pdf_preview")
+        self.assertTrue(source_fidelity["capabilities"]["faithful_source_preview"])
+        self.assertEqual(source_fidelity["pdf_fidelity"]["analysis_mode"], "extracted_text_only")
+        self.assertEqual(source_fidelity["pdf_fidelity"]["layout_mode"], "original_pdf_page_preview")
+        self.assertEqual(source_fidelity["pdf_fidelity"]["word_conversion"], "unsupported_for_fidelity")
+        self.assertEqual(source_fidelity["pdf_fidelity"]["redlined_docx"], "unavailable")
 
     def test_matter_upload_creates_persisted_manual_matter(self):
         source_docx = make_docx([

@@ -44,11 +44,14 @@ def source_fidelity_payload(review_result: dict[str, Any], *, source: dict[str, 
     blocks = _source_blocks(paragraphs)
     summary = _summary(paragraphs, blocks)
     source_type = _source_type(source, paragraphs)
-    return {
+    extraction_quality = _extraction_quality(source)
+    pdf_visual_profile = _pdf_visual_profile(extraction_quality)
+    payload: dict[str, Any] = {
         "version": SOURCE_FIDELITY_CONTRACT_VERSION,
         "source_type": source_type,
         "analysis_model": "paragraphs",
         "render_model": "source_blocks",
+        "preferred_render_mode": "source_pdf_preview" if source_type == "pdf" else "source_blocks",
         "blocks": blocks,
         "capabilities": {
             "structured_tables": summary["table_count"] > 0,
@@ -57,10 +60,16 @@ def source_fidelity_payload(review_result: dict[str, Any], *, source: dict[str, 
             "inline_runs": summary["styled_run_count"] > 0,
             "run_colors": summary["color_run_count"] > 0,
             "pdf_page_references": summary["pdf_page_reference_count"] > 0,
+            "faithful_source_preview": source_type == "pdf",
+            "pdf_visual_profile": bool(pdf_visual_profile),
+            "pdf_visual_elements": _pdf_requires_source_preview(pdf_visual_profile),
         },
         "summary": summary,
-        "limitations": _limitations(source_type),
+        "limitations": _limitations(source_type, pdf_visual_profile=pdf_visual_profile),
     }
+    if source_type == "pdf":
+        payload["pdf_fidelity"] = _pdf_fidelity_policy(pdf_visual_profile)
+    return payload
 
 
 def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -259,7 +268,7 @@ def _hex_color(value: Any) -> str:
     return ""
 
 
-def _limitations(source_type: str) -> list[dict[str, str]]:
+def _limitations(source_type: str, *, pdf_visual_profile: dict[str, Any] | None = None) -> list[dict[str, str]]:
     limitations = [
         {
             "code": "semantic_review_is_paragraph_based",
@@ -271,7 +280,55 @@ def _limitations(source_type: str) -> list[dict[str, str]]:
             "code": "pdf_visual_fidelity_requires_source_preview",
             "message": "PDF extraction provides text and page references; faithful visual review should use the source PDF/page preview.",
         })
+        limitations.append({
+            "code": "pdf_text_extraction_not_layout",
+            "message": "PDF text extraction does not preserve tables, colors, borders, images, or exact page layout.",
+        })
+        limitations.append({
+            "code": "pdf_word_conversion_unsupported_for_fidelity",
+            "message": "The backend preserves the original PDF for visual review instead of presenting extracted text as a faithful Word conversion.",
+        })
+        if _pdf_requires_source_preview(pdf_visual_profile):
+            limitations.append({
+                "code": "pdf_visual_elements_detected",
+                "message": "The PDF contains visual layout signals that require Original PDF/page preview for a faithful review surface.",
+            })
     return limitations
+
+
+def _extraction_quality(source: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    value = source.get("extraction_quality")
+    return value if isinstance(value, dict) else {}
+
+
+def _pdf_visual_profile(extraction_quality: dict[str, Any]) -> dict[str, Any] | None:
+    value = extraction_quality.get("visual_profile")
+    return value if isinstance(value, dict) else None
+
+
+def _pdf_requires_source_preview(pdf_visual_profile: dict[str, Any] | None) -> bool:
+    if not isinstance(pdf_visual_profile, dict):
+        return False
+    return bool(pdf_visual_profile.get("requires_source_preview"))
+
+
+def _pdf_fidelity_policy(pdf_visual_profile: dict[str, Any] | None) -> dict[str, Any]:
+    policy: dict[str, Any] = {
+        "analysis_mode": "extracted_text_only",
+        "layout_mode": "original_pdf_page_preview",
+        "word_conversion": "unsupported_for_fidelity",
+        "redlined_docx": "unavailable",
+        "requires_source_preview": True,
+        "message": (
+            "PDF matters use extracted text for clause analysis and the preserved original PDF/page preview for visual "
+            "fidelity. Extracted text must not be presented as a faithful Word conversion."
+        ),
+    }
+    if pdf_visual_profile:
+        policy["visual_profile"] = pdf_visual_profile
+    return policy
 
 
 def _positive_int(value: Any) -> int | None:

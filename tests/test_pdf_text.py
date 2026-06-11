@@ -19,6 +19,8 @@ if PYPDF_AVAILABLE:
 else:
     PdfWriter = None
 requires_pypdf = unittest.skipUnless(PYPDF_AVAILABLE, "pypdf is not installed")
+PYMUPDF_AVAILABLE = importlib.util.find_spec("fitz") is not None
+requires_pymupdf = unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF is not installed")
 
 
 class PdfTextTests(unittest.TestCase):
@@ -178,6 +180,24 @@ class PdfTextTests(unittest.TestCase):
         self.assertIn("pdf_pages_without_text", warning_types)
 
     @requires_pypdf
+    @requires_pymupdf
+    def test_quality_report_flags_pdf_visual_features_that_text_extraction_drops(self):
+        data = make_visual_pdf()
+
+        extraction = extract_pdf_document(data)
+
+        self.assertIn("Red heading", extraction.paragraphs[0]["text"])
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "ready")
+        self.assertTrue(visual_profile["requires_source_preview"])
+        self.assertGreaterEqual(visual_profile["non_black_text_span_count"], 1)
+        self.assertGreaterEqual(visual_profile["drawing_count"], 1)
+        self.assertIn("colored_text", visual_profile["visual_features"])
+        self.assertIn("drawings_or_borders", visual_profile["visual_features"])
+        warning_types = {warning["type"] for warning in extraction.quality["warnings"]}
+        self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
+
+    @requires_pypdf
     def test_rejects_pdf_with_too_many_pages(self):
         data = make_pdf_pages([
             ["This Agreement shall be governed by the laws of California."],
@@ -307,3 +327,21 @@ def _pdf_package(objects):
             output.write(f"{offset:010d} 00000 n \n".encode("latin-1"))
         output.write(f"trailer << /Root 1 0 R /Size {len(objects) + 1} >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("latin-1"))
         return output.getvalue()
+
+
+def make_visual_pdf():
+    object_count = 5
+    stream = (
+        "q 0.5 0 0 rg BT /F1 12 Tf 14 TL 72 720 Td (Red heading) Tj ET Q "
+        "0 0 0 RG 72 660 220 42 re S "
+        "BT /F1 12 Tf 14 TL 82 684 Td (Table-like cell text) Tj ET\n"
+    )
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        f"/Resources << /Font << /F1 {object_count} 0 R >> >> /Contents 4 0 R >> endobj\n",
+        f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
+        f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return _pdf_package(objects)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import Any, List
 
 from .review_document import Paragraph
 
@@ -101,6 +101,7 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     if not paragraphs:
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+    visual_profile = _pdf_visual_profile(data)
     return PdfExtraction(
         paragraphs=paragraphs,
         quality=_pdf_quality_report(
@@ -110,6 +111,7 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             extracted_text=extracted_text,
             paragraph_count=len(paragraphs),
             repeated_margin_count=len(repeated_margins),
+            visual_profile=visual_profile,
         ),
     )
 
@@ -247,6 +249,7 @@ def _pdf_quality_report(
     extracted_text: str,
     paragraph_count: int,
     repeated_margin_count: int,
+    visual_profile: dict[str, object] | None = None,
 ) -> dict[str, object]:
     extracted_characters = len(extracted_text)
     warnings: list[dict[str, object]] = []
@@ -270,7 +273,15 @@ def _pdf_quality_report(
             "type": "pdf_garbled_text",
             "message": "The PDF extraction contains an unusual amount of symbols or spacing.",
         })
-    return {
+    if _visual_profile_requires_source_preview(visual_profile):
+        warnings.append({
+            "type": "pdf_visual_fidelity_requires_source_preview",
+            "message": (
+                "The PDF contains visual layout, color, image, or line-art signals that plain text extraction "
+                "cannot preserve. Use the original PDF/page preview for layout review."
+            ),
+        })
+    quality: dict[str, object] = {
         "page_count": page_count,
         "pages_with_text": pages_with_text,
         "pages_without_text": pages_without_text,
@@ -279,6 +290,133 @@ def _pdf_quality_report(
         "repeated_margin_lines_removed": repeated_margin_count,
         "warnings": warnings,
     }
+    if visual_profile:
+        quality["visual_profile"] = visual_profile
+    return quality
+
+
+def _pdf_visual_profile(data: bytes) -> dict[str, object]:
+    """Return best-effort PDF visual signals that text extraction cannot preserve."""
+
+    try:
+        import fitz
+    except ImportError:
+        return {
+            "status": "unavailable",
+            "reason": "pymupdf_not_installed",
+            "requires_source_preview": False,
+        }
+
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return {
+            "status": "unavailable",
+            "reason": "visual_profile_failed",
+            "requires_source_preview": False,
+        }
+
+    try:
+        text_span_count = 0
+        non_black_text_span_count = 0
+        image_count = 0
+        drawing_count = 0
+        pages_with_non_black_text = 0
+        pages_with_images = 0
+        pages_with_drawings = 0
+        unique_text_colors: set[int] = set()
+        page_count = document.page_count
+        profiled_pages = min(page_count, MAX_PDF_PAGES)
+        for page_index in range(profiled_pages):
+            page = document[page_index]
+            page_has_non_black_text = False
+            page_has_images = False
+            page_has_drawings = False
+            try:
+                blocks = page.get_text("dict").get("blocks", [])
+            except Exception:
+                blocks = []
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == 1:
+                    image_count += 1
+                    page_has_images = True
+                    continue
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines") or []:
+                    if not isinstance(line, dict):
+                        continue
+                    for span in line.get("spans") or []:
+                        if not isinstance(span, dict):
+                            continue
+                        text_span_count += 1
+                        color = _safe_int(span.get("color"))
+                        if color is None:
+                            continue
+                        unique_text_colors.add(color)
+                        if color != 0:
+                            non_black_text_span_count += 1
+                            page_has_non_black_text = True
+            try:
+                page_drawings = page.get_drawings()
+            except Exception:
+                page_drawings = []
+            if page_drawings:
+                drawing_count += len(page_drawings)
+                page_has_drawings = True
+            if page_has_non_black_text:
+                pages_with_non_black_text += 1
+            if page_has_images:
+                pages_with_images += 1
+            if page_has_drawings:
+                pages_with_drawings += 1
+    except Exception:
+        return {
+            "status": "unavailable",
+            "reason": "visual_profile_failed",
+            "requires_source_preview": False,
+        }
+    finally:
+        document.close()
+
+    visual_features: list[str] = []
+    if non_black_text_span_count:
+        visual_features.append("colored_text")
+    if drawing_count:
+        visual_features.append("drawings_or_borders")
+    if image_count:
+        visual_features.append("images")
+    requires_source_preview = bool(visual_features)
+    return {
+        "status": "ready",
+        "page_count": page_count,
+        "profiled_pages": profiled_pages,
+        "text_span_count": text_span_count,
+        "non_black_text_span_count": non_black_text_span_count,
+        "unique_text_color_count": len(unique_text_colors),
+        "drawing_count": drawing_count,
+        "image_count": image_count,
+        "pages_with_non_black_text": pages_with_non_black_text,
+        "pages_with_drawings": pages_with_drawings,
+        "pages_with_images": pages_with_images,
+        "visual_features": visual_features,
+        "requires_source_preview": requires_source_preview,
+    }
+
+
+def _visual_profile_requires_source_preview(visual_profile: dict[str, object] | None) -> bool:
+    if not isinstance(visual_profile, dict):
+        return False
+    return bool(visual_profile.get("requires_source_preview"))
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _garbled_text_ratio(text: str) -> float:
