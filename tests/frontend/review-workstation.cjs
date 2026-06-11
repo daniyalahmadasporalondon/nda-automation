@@ -2517,6 +2517,19 @@ async function testReviewSendAcceptsManualRecipient(page) {
   }, matter);
   await page.waitForSelector("#reviewView:not([hidden])");
   await page.waitForSelector("#studioSendButton.blocked");
+  assert.equal(await page.locator("#studioSendButton").getAttribute("aria-label"), "No Reply");
+  assert.match(await page.locator("#studioSendButton").getAttribute("title"), /valid reply recipient/);
+  assert.equal(await page.locator("#studioSendButton .send-button-label").innerText(), "No Reply");
+  const sendButtonLabelBox = await page.locator("#studioSendButton .send-button-label").evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const styles = getComputedStyle(node);
+    return {
+      height: rect.height,
+      position: styles.position,
+      width: rect.width,
+    };
+  });
+  assert.deepEqual(sendButtonLabelBox, { height: 1, position: "absolute", width: 1 });
 
   await page.locator("#studioSendButton").click();
   await page.waitForSelector("#studioSendModal:not([hidden])");

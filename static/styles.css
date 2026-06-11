@@ -1097,6 +1097,21 @@ h3 {
   width: 16px;
 }
 
+.studio-send-redline-button {
+  align-items: center;
+  border-radius: 9999px;
+  flex: 0 0 26px;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
+  width: 26px;
+}
+
+.studio-send-redline-button svg {
+  height: 14px;
+  width: 14px;
+}
+
 .send-plane-icon {
   align-items: center;
   display: inline-flex;
