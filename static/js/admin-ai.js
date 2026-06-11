@@ -138,14 +138,16 @@ const AdminAiView = (() => {
     function renderAiFromPayload(payload = {}) {
       renderAi(
         payload.ai_review || {},
+        payload.ai_verifier || {},
         payload.active_review_engine || {},
         Array.isArray(payload.operational_warnings) ? payload.operational_warnings : [],
         Array.isArray(payload.settings_audit) ? payload.settings_audit : [],
       );
     }
 
-    function renderAi(status, runtimeStatus = {}, warnings = [], settingsAudit = []) {
+    function renderAi(status, verifierStatus = {}, runtimeStatus = {}, warnings = [], settingsAudit = []) {
       state.aiReviewStatus = status;
+      state.aiVerifierStatus = verifierStatus;
       state.activeReviewEngineStatus = runtimeStatus;
       state.operationalWarnings = warnings;
       state.settingsAudit = settingsAudit;
@@ -161,6 +163,9 @@ const AdminAiView = (() => {
       setFact("api-key", apiKeyLabel(status));
       setFact("confidence-threshold", String(status.confidence_threshold ?? "-"));
       setFact("target-clauses", targetClausesLabel(status.target_clause_ids));
+      setFact("verifier-kind", verifierKindLabel(verifierStatus));
+      setFact("verifier-model", verifierModelLabel(verifierStatus));
+      setFact("verifier-key", verifierKeyLabel(verifierStatus));
       setFact("source", sourceLabel(status));
       setFact("key-message", keyMessage(status));
     }
@@ -173,6 +178,9 @@ const AdminAiView = (() => {
       setFact("api-key", "Unknown");
       setFact("confidence-threshold", "Unknown");
       setFact("target-clauses", "Unknown");
+      setFact("verifier-kind", "Unknown");
+      setFact("verifier-model", "Unknown");
+      setFact("verifier-key", "Unknown");
       setFact("source", "Unknown");
       setFact("key-message", message);
       setFact("active-engine", "Unknown");
@@ -258,6 +266,22 @@ const AdminAiView = (() => {
     function targetClausesLabel(values) {
       if (!Array.isArray(values) || !values.length) return "None";
       return values.join(", ");
+    }
+
+    function verifierKindLabel(status = {}) {
+      if (status.active_kind === "ai") return "AI via OpenRouter";
+      if (status.enabled === true) return "Offline fallback";
+      return "Offline fallback (AI verifier off)";
+    }
+
+    function verifierModelLabel(status = {}) {
+      return status.model || status.default_model || "deepseek/deepseek-v4-pro";
+    }
+
+    function verifierKeyLabel(status = {}) {
+      if (status.api_key_source === "environment") return "Configured in backend environment";
+      if (status.api_key_source === "local_settings") return "Configured from saved local OpenRouter key";
+      return status.enabled === true ? "Missing OpenRouter key" : "Not required while AI verifier is off";
     }
 
     function apiKeyLabel(status) {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .. import ai_review, app_settings, telemetry
+from .. import ai_review, ai_verifier, app_settings, telemetry
 from ..deployment import _deployment_status_for_host
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
@@ -39,6 +39,7 @@ def handle_ai_settings(handler, *, send_body: bool = True) -> None:
     handler._send_json(
         {
             "ai_review": ai_review.ai_review_status(),
+            "ai_verifier": ai_verifier.verifier_status(),
             "active_review_engine": active_review_engine_status(),
             "operational_warnings": _operational_warnings(),
             "settings_audit": app_settings.settings_audit_history(),
@@ -132,6 +133,7 @@ def handle_ai_settings_update(handler) -> None:
     )
     handler._send_json({
         "ai_review": ai_review.ai_review_status(),
+        "ai_verifier": ai_verifier.verifier_status(),
         "active_review_engine": active_review_engine_status(),
         "operational_warnings": _operational_warnings(),
         "settings_audit": app_settings.settings_audit_history(),
@@ -165,6 +167,7 @@ def handle_ai_api_key_update(handler) -> None:
     )
     handler._send_json({
         "ai_review": ai_review.ai_review_status(),
+        "ai_verifier": ai_verifier.verifier_status(),
         "active_review_engine": active_review_engine_status(),
         "operational_warnings": _operational_warnings(),
         "settings_audit": app_settings.settings_audit_history(),
@@ -185,6 +188,7 @@ def handle_ai_api_key_clear(handler) -> None:
     )
     handler._send_json({
         "ai_review": ai_review.ai_review_status(),
+        "ai_verifier": ai_verifier.verifier_status(),
         "active_review_engine": active_review_engine_status(),
         "operational_warnings": _operational_warnings(),
         "settings_audit": app_settings.settings_audit_history(),
@@ -247,6 +251,7 @@ def _record_personalisation_audit_if_changed(previous: dict, current: dict) -> N
 def _operational_warnings() -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     ai_status = ai_review.ai_review_status()
+    verifier_status = ai_verifier.verifier_status()
     runtime_status = active_review_engine_status()
     if runtime_status.get("active_engine") == REVIEW_ENGINE_AI_FIRST and not ai_status.get("api_key_configured"):
         warnings.append({
@@ -257,6 +262,11 @@ def _operational_warnings() -> list[dict[str, str]]:
         warnings.append({
             "code": "active_engine_environment_pinned",
             "message": "Active review engine is pinned by the backend environment.",
+        })
+    if verifier_status.get("enabled") and verifier_status.get("active_kind") == "offline":
+        warnings.append({
+            "code": "ai_verifier_offline_fallback",
+            "message": "AI verifier is enabled but is running the offline fallback. Configure an OpenRouter key for DeepSeek verification.",
         })
     stored_key_migration = ai_status.get("stored_key_migration")
     if isinstance(stored_key_migration, dict) and stored_key_migration.get("message"):

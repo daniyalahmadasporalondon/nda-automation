@@ -909,6 +909,16 @@ async function testContractStructureReviewPanel(page) {
       api_key_source: aiKeySource,
       target_clause_ids: ["mutuality", "confidential_information", "governing_law", "term_and_survival", "non_circumvention"],
     },
+    ai_verifier: {
+      version: 2,
+      enabled: true,
+      active_kind: aiKeyConfigured ? "ai" : "offline",
+      model: "deepseek/deepseek-v4-pro",
+      default_model: "deepseek/deepseek-v4-pro",
+      api_key_configured: aiKeyConfigured,
+      api_key_source: aiKeySource,
+      fallback_reason: aiKeyConfigured ? "" : "missing_openrouter_api_key",
+    },
     active_review_engine: {
       active_engine: activeReviewEngine,
       engine_source: runtimeSource,
@@ -917,9 +927,14 @@ async function testContractStructureReviewPanel(page) {
       environment_active_engine: "",
       supported_engines: ["deterministic", "ai_first"],
     },
-    operational_warnings: activeReviewEngine === "ai_first" && !aiKeyConfigured
-      ? [{ code: "ai_first_without_key", message: "AI-first is active but no AI API key is configured." }]
-      : [],
+    operational_warnings: [
+      activeReviewEngine === "ai_first" && !aiKeyConfigured
+        ? { code: "ai_first_without_key", message: "AI-first is active but no AI API key is configured." }
+        : null,
+      !aiKeyConfigured
+        ? { code: "ai_verifier_offline_fallback", message: "AI verifier is enabled but is running the offline fallback. Configure an OpenRouter key for DeepSeek verification." }
+        : null,
+    ].filter(Boolean),
     settings_audit: settingsAudit,
   });
   await page.route("**/api/ai/settings", async (route) => {
@@ -1119,6 +1134,8 @@ async function testContractStructureReviewPanel(page) {
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "false");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "Off");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Missing AI API key");
+  assert.equal(await page.locator('[data-admin-ai="verifier-kind"]').innerText(), "Offline fallback");
+  assert.equal(await page.locator('[data-admin-ai="verifier-key"]').innerText(), "Missing OpenRouter key");
   await page.locator("#adminAiApiKeyInput").fill("browser-gemini-local-key");
   await page.locator("#adminAiSaveKeyButton").click();
   await page.waitForFunction(() => document.querySelector("#adminAiEnabledToggle")?.getAttribute("aria-checked") === "true");
@@ -1128,6 +1145,9 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
   assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "x-ai/grok-4.3");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
+  assert.equal(await page.locator('[data-admin-ai="verifier-kind"]').innerText(), "AI via OpenRouter");
+  assert.equal(await page.locator('[data-admin-ai="verifier-model"]').innerText(), "deepseek/deepseek-v4-pro");
+  assert.equal(await page.locator('[data-admin-ai="verifier-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="source"]').innerText(), "Admin toggle");
   assert.equal(await page.locator('[data-admin-ai="active-engine"]').innerText(), "AI-first");
   assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Default runtime");

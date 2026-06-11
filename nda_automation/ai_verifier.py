@@ -37,6 +37,7 @@ import urllib.request
 from copy import deepcopy
 from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
+from . import telemetry
 from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
 from .openrouter_usage import record_openrouter_usage
 from .review_state import (
@@ -139,6 +140,7 @@ def apply_ai_verifier(
         try:
             raw_verdict = active_verifier(packet)
         except Exception as error:  # noqa: BLE001 - a flaky verifier must not break review
+            _record_verifier_error(verifier_kind)
             records.append(_skip_record(clause, reason=f"verifier_error: {error}"))
             continue
         verdict = _normalize_verdict(raw_verdict)
@@ -836,6 +838,28 @@ def verifier_enabled() -> bool:
     return str(os.environ.get(VERIFIER_ENV_ENABLED, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def verifier_status() -> Dict[str, object]:
+    """Expose the configured verifier resolver without making a live API call."""
+    enabled = verifier_enabled()
+    model = str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL
+    api_key_source = _verifier_api_key_source()
+    api_key_configured = bool(api_key_source)
+    active_kind = "ai" if enabled and api_key_configured else "offline"
+    fallback_reason = ""
+    if active_kind == "offline":
+        fallback_reason = "disabled" if not enabled else "missing_openrouter_api_key"
+    return {
+        "version": AI_VERIFIER_VERSION,
+        "enabled": enabled,
+        "active_kind": active_kind,
+        "model": model,
+        "default_model": DEFAULT_VERIFIER_MODEL,
+        "api_key_configured": api_key_configured,
+        "api_key_source": api_key_source,
+        "fallback_reason": fallback_reason,
+    }
+
+
 def resolve_verifier() -> VerifierFn:
     """Resolve the active verifier: an OpenRouter pass when enabled + keyed,
     else the always-available offline polarity adversary.
@@ -856,6 +880,27 @@ def resolve_verifier() -> VerifierFn:
         )
     except VerifierError:
         return default_verifier
+
+
+def _record_verifier_error(verifier_kind: str) -> None:
+    try:
+        telemetry.increment("ai_verifier_errors")
+        kind = re.sub(r"[^a-z0-9_]+", "_", str(verifier_kind or "unknown").strip().lower()).strip("_") or "unknown"
+        telemetry.increment(f"ai_verifier_errors__kind__{kind}")
+    except Exception:  # noqa: BLE001 - observability must never break review
+        return
+
+
+def _verifier_api_key_source() -> str:
+    from .ai_review import OPENROUTER_API_KEY_ENV
+    from . import app_settings
+
+    if str(os.environ.get(OPENROUTER_API_KEY_ENV, "")).strip():
+        return "environment"
+    try:
+        return "local_settings" if str(app_settings.stored_ai_api_key() or "").strip() else ""
+    except Exception:  # noqa: BLE001 - settings access must never break status
+        return ""
 
 
 def _verifier_api_key() -> str:

@@ -47,6 +47,7 @@ _OTHER_FAILURE_COUNTERS = (
     "docx_export_content_failures",
     "docx_export_health_failures",
     "export_copy_failures",
+    "ai_verifier_errors",
 )
 
 _HEALTH_NOTE = (

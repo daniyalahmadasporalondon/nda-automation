@@ -11,10 +11,11 @@ import os
 import unittest
 from unittest.mock import patch
 
-from nda_automation import ai_verifier
+from nda_automation import ai_verifier, telemetry
 from nda_automation.ai_verifier import (
     AI_VERIFIER_VERSION,
     VERIFIER_ENV_ENABLED,
+    VERIFIER_ENV_MODEL,
     VERIFIER_VERDICT_AFFIRM,
     VERIFIER_VERDICT_REFUTE,
     VERIFIER_VERDICT_UNCERTAIN,
@@ -23,6 +24,7 @@ from nda_automation.ai_verifier import (
     build_verifier_packet,
     default_verifier,
     resolve_verifier,
+    verifier_status,
     verifier_enabled,
 )
 from nda_automation.ai_assessment_contract import AI_REDLINE_NO_CHANGE
@@ -270,6 +272,7 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(called, ["governing_law"])
 
     def test_verifier_exception_is_recorded_not_raised(self):
+        telemetry.reset()
         clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
 
         def boom(_packet):
@@ -279,6 +282,9 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(updated[0]["decision"], "fail")  # finding preserved
         self.assertEqual(summary["records"][0]["outcome"], "skipped")
         self.assertIn("model exploded", summary["records"][0]["rationale"])
+        counters = telemetry.snapshot()["counters"]
+        self.assertEqual(counters["ai_verifier_errors"], 1)
+        self.assertEqual(counters["ai_verifier_errors__kind__injected"], 1)
 
     def test_invalid_verdict_is_treated_as_affirm(self):
         clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
@@ -603,6 +609,36 @@ class ResolveVerifierTests(unittest.TestCase):
                 self.assertIsInstance(resolved, OpenRouterVerifier)
                 self.assertEqual(resolved.model, ai_verifier.DEFAULT_VERIFIER_MODEL)
                 self.assertEqual(resolved.model, "deepseek/deepseek-v4-pro")
+
+    def test_status_surfaces_ai_verifier_kind_and_source(self):
+        with patch.dict(
+            os.environ,
+            {
+                VERIFIER_ENV_ENABLED: "true",
+                VERIFIER_ENV_MODEL: "deepseek/deepseek-v4-pro",
+                "OPENROUTER_API_KEY": "sk-test",
+            },
+            clear=False,
+        ):
+            status = verifier_status()
+
+        self.assertEqual(status["active_kind"], "ai")
+        self.assertEqual(status["model"], "deepseek/deepseek-v4-pro")
+        self.assertEqual(status["api_key_source"], "environment")
+        self.assertEqual(status["fallback_reason"], "")
+
+    def test_status_warns_when_enabled_verifier_falls_back_offline(self):
+        with patch.dict(
+            os.environ,
+            {VERIFIER_ENV_ENABLED: "true", "OPENROUTER_API_KEY": ""},
+            clear=False,
+        ):
+            with patch.object(ai_verifier, "_verifier_api_key_source", return_value=""):
+                status = verifier_status()
+
+        self.assertEqual(status["active_kind"], "offline")
+        self.assertEqual(status["fallback_reason"], "missing_openrouter_api_key")
+        self.assertEqual(status["api_key_configured"], False)
 
     def test_summary_reports_offline_kind_by_default(self):
         # No env opt-in -> offline adversary, surfaced for observability.
