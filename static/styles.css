@@ -3213,6 +3213,12 @@ h3 {
   width: 26px;
 }
 
+.studio-viewer-controls .vc-btn[hidden],
+.studio-viewer-controls .studio-reviewed-btn[hidden],
+.studio-viewer-controls .studio-approve-review[hidden] {
+  display: none;
+}
+
 .studio-viewer-controls .vc-btn:hover:not(:disabled) {
   background: var(--bg-panel);
   box-shadow: var(--shadow-xs);
@@ -6462,6 +6468,10 @@ button.active-clause-status:hover {
   border-radius: var(--r-pill);
   height: 32px;
   min-width: 98px;
+}
+
+.actions button[hidden] {
+  display: none;
 }
 
 .actions button.icon-only {

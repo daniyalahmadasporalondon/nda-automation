@@ -199,6 +199,7 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
         ? "Marked clause reviewed."
         : "Marked clause not reviewed.",
   );
+  renderStudioSummary(state.reviewClauses);
   renderStudioClauseLane();
   renderStudioDetail();
   updateExportButtonState();
@@ -220,10 +221,12 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
       if (allReviewed && !payload.matter.send_block_reason) delete merged.send_block_reason;
       state.selectedMatter = merged;
     }
+    renderStudioSummary(state.reviewClauses);
     updateExportButtonState();
   } catch (error) {
     state.reviewedClauseIds = previousReviewedClauseIds;
     if (previousMatter) state.selectedMatter = previousMatter;
+    renderStudioSummary(state.reviewClauses);
     renderStudioClauseLane();
     renderStudioDetail();
     updateExportButtonState();

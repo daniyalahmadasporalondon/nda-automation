@@ -61,6 +61,7 @@ const tests = [
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
+  ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
@@ -2055,6 +2056,88 @@ async function testPerClauseReviewedToggle(page) {
   await assertTextContains(activeReviewToggle, "NEEDS REVIEW");
   await assertAttributeMatches(confidentialCard, "aria-label", /Needs review/);
   await assertAttributeMatches(termCard, "aria-label", /Needs review/);
+}
+
+async function testReviewedMatterStatusSummary(page) {
+  let reviewedPayload = null;
+  await page.route("**/api/matters/matter_review_panel/reviewed", async (route) => {
+    reviewedPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter: {
+          id: "matter_review_panel",
+          can_send_redline: true,
+          human_reviewed: true,
+          recipient_email: "counterparty@example.com",
+        },
+      }),
+    });
+  });
+  await loadReviewWithMatter(page, {
+    matter: {
+      can_send_redline: true,
+      human_reviewed: false,
+      recipient_email: "counterparty@example.com",
+      review_result: {
+        overall_status: "needs_review",
+        requirements_failed: 0,
+        requirements_needs_review: 2,
+        requirements_passed: 0,
+      },
+    },
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Broad confidential information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "Survival applies as set out in the referenced schedule." }],
+        id: "term_and_survival",
+        issue_label: "Needs review",
+        name: "Term and Survival",
+        needs_review: true,
+        reason: "Survival reference needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "Survival applies as set out in the referenced schedule." },
+    ],
+    result: {
+      overall_status: "needs_review",
+      requirements_failed: 0,
+      requirements_needs_review: 2,
+      requirements_passed: 0,
+    },
+  });
+
+  await assertTextContains(page.locator("#studioOverallTitle"), "Needs review");
+  await assertTextContains(page.locator("#studioResultMeta"), "human review before send");
+  await assertTextContains(page.locator("#studioSendButton"), "Needs Review");
+  const reviewedButton = page.locator("#studioReviewedButton");
+  await page.waitForFunction(() => !document.querySelector("#studioReviewedButton")?.hidden);
+  await reviewedButton.click();
+  await page.waitForFunction(() => state.selectedMatter?.human_reviewed === true);
+  assert.deepEqual(reviewedPayload, { reviewed: true });
+  await assertTextContains(page.locator("#studioOverallTitle"), "Reviewed");
+  await assertTextContains(page.locator("#studioResultMeta"), "All human-review clauses have been reviewed.");
+  assert.equal((await page.locator("#studioOverallTitle").innerText()).includes("Needs review"), false);
+  assert.equal((await page.locator("#studioResultMeta").innerText()).includes("human review before send"), false);
+  assert.notEqual(await page.locator("#studioSendButton").innerText(), "Needs Review");
+  assert.equal(await reviewedButton.isHidden(), true);
+  await page.unroute("**/api/matters/matter_review_panel/reviewed");
 }
 
 async function testReviewSendUsesCurrentMatterAfterSwitch(page) {

@@ -176,27 +176,36 @@ function renderStudioSummary(clauses) {
   const passedCount = reviewStateCount(counts, "pass", clauses.filter((clause) => clauseStatus(clause).passes).length);
   const reviewCount = reviewStateCount(counts, "review", clauses.filter((clause) => clauseStatus(clause).needsReview).length);
   const failedCount = reviewStateCount(counts, "check", clauses.filter((clause) => clauseStatus(clause).fails).length);
+  const humanReviewComplete = reviewCount > 0 && humanReviewAcknowledged();
+  const unresolvedReviewCount = humanReviewComplete ? 0 : reviewCount;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
-  studioResultMark.textContent = failedCount ? "FAIL" : reviewCount ? "REVIEW" : "PASS";
-  studioResultMark.className = failedCount ? "check" : reviewCount ? "review" : "pass";
+  studioResultMark.textContent = failedCount ? "FAIL" : humanReviewComplete ? "REVIEWED" : reviewCount ? "REVIEW" : "PASS";
+  studioResultMark.className = failedCount ? "check" : humanReviewComplete ? "pass" : reviewCount ? "review" : "pass";
   studioOverallTitle.textContent = failedCount
     ? "Does not meet requirements"
-    : reviewCount
+    : unresolvedReviewCount
       ? "Needs review"
+      : humanReviewComplete
+        ? "Reviewed"
       : "Meets requirements";
   const warning = reviewWarningSummary();
-  studioResultMeta.textContent = warning || summaryStatusText(failedCount, reviewCount);
+  studioResultMeta.textContent = warning || summaryStatusText(failedCount, unresolvedReviewCount, { humanReviewComplete });
 }
 
-function summaryStatusText(failedCount, reviewCount) {
+function summaryStatusText(failedCount, reviewCount, { humanReviewComplete = false } = {}) {
+  const reviewedMessage = "All human-review clauses have been reviewed.";
   if (failedCount && reviewCount) {
     return `${failedCount} ${failedCount === 1 ? "clause needs" : "clauses need"} fixing; ${reviewCount} ${reviewCount === 1 ? "needs" : "need"} human review.`;
   }
   if (failedCount) {
-    return `${failedCount} hard ${failedCount === 1 ? "clause has" : "clauses have"} failed.`;
+    const failedMessage = `${failedCount} hard ${failedCount === 1 ? "clause has" : "clauses have"} failed.`;
+    return humanReviewComplete ? `${failedMessage} ${reviewedMessage}` : failedMessage;
   }
   if (reviewCount) {
     return `${reviewCount} ${reviewCount === 1 ? "clause needs" : "clauses need"} human review before send.`;
+  }
+  if (humanReviewComplete) {
+    return reviewedMessage;
   }
   return "All hard clauses are currently satisfied.";
 }
