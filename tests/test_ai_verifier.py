@@ -289,6 +289,49 @@ class DefaultVerifierTests(unittest.TestCase):
         text2 = "The Recipient shall not, in any manner whatsoever, solicit any introduced party."
         self.assertEqual(default_verifier(self._packet("fail", text2))["verdict"], VERIFIER_VERDICT_AFFIRM)
 
+    def test_affirms_colocated_freedom_with_new_restriction_action_vocabulary(self):
+        cases = {
+            "hire": "the Recipient may not hire the Company's employees.",
+            "recruit": "the Recipient shall not recruit the Company's employees.",
+            "employ": "the Recipient must not employ the Company's employees.",
+            "retain": "the Recipient shall not retain the Company's consultants.",
+            "induce": "the Recipient may not induce the Company's employees to leave.",
+            "entice": "the Recipient shall not entice the Company's employees away.",
+            "lure": "the Recipient shall not lure the Company's employees away.",
+            "headhunt": "the Recipient must not headhunt the Company's staff.",
+            "compete": "the Recipient shall not compete with the Company.",
+            "trade": "the Recipient shall not trade with introduced customers.",
+            "negotiate": "the Recipient may not negotiate with introduced customers.",
+            "interfere": "the Recipient shall not interfere with customer relationships.",
+            "disrupt": "the Recipient must not disrupt the Company's customer relationships.",
+            "undermine": "the Recipient shall not undermine the Company's supplier relationships.",
+            "disturb": "the Recipient may not disturb the Company's customer relationships.",
+            "encourage": "the Recipient shall not encourage customers to stop dealing with the Company.",
+            "persuade": "the Recipient must not persuade employees to leave the Company.",
+            "partner_with": "the Recipient shall not partner with introduced customers.",
+            "collaborate": "the Recipient must not collaborate with introduced customers.",
+            "associate": "the Recipient shall not associate with introduced customers.",
+            "introduce": "the Recipient shall not introduce introduced customers to competitors.",
+        }
+        prefix = (
+            "Nothing in this Agreement restricts either party from ordinary market dealings; however, "
+        )
+        for label, restriction in cases.items():
+            with self.subTest(label=label):
+                verdict = default_verifier(self._packet("fail", prefix + restriction))
+                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
+
+    def test_new_action_vocabulary_does_not_break_clean_freedom_controls(self):
+        controls = (
+            "Nothing in this Agreement restricts either party from contacting introduced parties.",
+            "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+            "Each party is free to do business with independently identified customers.",
+        )
+        for text in controls:
+            with self.subTest(text=text):
+                verdict = default_verifier(self._packet("fail", text))
+                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
+
     def test_does_not_refute_a_required_clause(self):
         # Freedom-to-deal text is off-topic for a required clause -> never refute it.
         # (A required clause's finding is about a missing/weak obligation, not a

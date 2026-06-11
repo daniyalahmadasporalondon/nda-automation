@@ -479,7 +479,9 @@ _FREEDOM_PRESERVING_PATTERN = re.compile(
 
 # Circumvention-shaped actions a genuine prohibition would bar.
 _CIRCUMVENTION_ACTION = (
-    r"(?:solicit|contact|deal|approach|poach|circumvent|bypass|pursu|engage|transact|divert|"
+    r"(?:solicit|contact|deal|approach|poach|hir|recruit|employ|retain|induc|entic|lur|"
+    r"headhunt|compet|trad|negotiat|interfer|disrupt|undermin|disturb|encourag|persuad|"
+    r"partner\s+with|collaborat|associat|introduc|circumvent|bypass|pursu|engage|transact|divert|"
     r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
 )
 # Interposition allowed between "not" and the barred action in a genuine ACTIVE
