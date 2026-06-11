@@ -94,15 +94,9 @@ function renderStudioEmpty() {
 function updateExportButtonState() {
   const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
   const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale);
-  const canExportAnnotatedPdf = Boolean(canExport && selectedMatterIsPdf());
   if (studioExportButton) {
     studioExportButton.disabled = !canExport || staleReview;
     studioExportButton.title = staleReview ? "Refresh review before exporting" : "Export DOCX";
-  }
-  if (studioExportPdfButton) {
-    studioExportPdfButton.hidden = !selectedMatterIsPdf();
-    studioExportPdfButton.disabled = !canExportAnnotatedPdf || staleReview;
-    studioExportPdfButton.title = staleReview ? "Refresh review before exporting" : "Export annotated PDF";
   }
   if (!studioSendButton) {
     updateRedlineDraftControls();
@@ -156,10 +150,6 @@ function updateExportButtonState() {
   updateRedlineDraftControls();
 }
 
-function selectedMatterIsPdf() {
-  return Boolean(state.selectedMatter?.id && String(state.selectedMatter?.source_filename || "").toLowerCase().endsWith(".pdf"));
-}
-
 function setStudioSendButtonLabel(label = "Send Redline", title = label) {
   if (!studioSendButton) return;
   const effectiveLabel = label || "Send Redline";
@@ -167,7 +157,7 @@ function setStudioSendButtonLabel(label = "Send Redline", title = label) {
   studioSendButton.title = title || effectiveLabel;
   studioSendButton.classList.toggle("confirming", effectiveLabel === "Confirm Send");
   studioSendButton.classList.toggle("sending", effectiveLabel === "Sending");
-  const textNode = studioSendButton.querySelector(".sr-only");
+  const textNode = studioSendButton.querySelector(".send-button-label, .sr-only");
   if (textNode) {
     textNode.textContent = effectiveLabel;
   }

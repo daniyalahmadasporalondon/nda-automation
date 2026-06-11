@@ -6,7 +6,6 @@ const studioCounterpartyMeta = document.querySelector("#studioCounterpartyMeta")
 const studioSaveDraftButton = document.querySelector("#studioSaveDraftButton");
 const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButton");
 const studioExportButton = document.querySelector("#studioExportButton");
-const studioExportPdfButton = document.querySelector("#studioExportPdfButton");
 const studioSendButton = document.querySelector("#studioSendButton");
 const studioReviewedButton = document.querySelector("#studioReviewedButton");
 const studioApproveReviewButton = document.querySelector("#studioApproveReviewButton");

@@ -3974,6 +3974,7 @@ async function testReviewOutboundSendModal(page) {
     }],
   };
   let capturedSendPayload = null;
+  let sendAttempts = 0;
 
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
@@ -4043,6 +4044,15 @@ async function testReviewOutboundSendModal(page) {
   });
   await page.route("**/api/gmail/send-redline", async (route) => {
     capturedSendPayload = route.request().postDataJSON();
+    sendAttempts += 1;
+    if (sendAttempts === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Gmail send unavailable." }),
+      });
+      return;
+    }
     matter = {
       ...matter,
       board_column: "sent",
@@ -4080,6 +4090,10 @@ async function testReviewOutboundSendModal(page) {
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await page.waitForSelector("#studioSendButton:not(:disabled):not(.blocked)");
+  assert.equal(await page.locator("#studioExportPdfButton").count(), 0);
+  await assertTextContains(page.locator("#studioSendButton"), "Send Redline");
+  const initialSendButtonBox = await page.locator("#studioSendButton").boundingBox();
+  assert.ok(initialSendButtonBox && initialSendButtonBox.width >= 96, "send button should keep a stable text-button width");
 
   await page.locator("#studioSendButton").click();
   await page.waitForSelector("#studioSendModal:not([hidden])");
@@ -4100,6 +4114,14 @@ async function testReviewOutboundSendModal(page) {
 
   await page.locator("#studioSendSubject").fill("Edited redline subject");
   await page.locator("#studioSendBody").fill("Edited body before sending.");
+  await page.locator("#studioSendConfirmButton").click();
+  await page.waitForSelector("#studioSendModal:not([hidden])");
+  await waitForText(page, "#studioSendStatus", "Gmail send unavailable.");
+  await assertTextContains(page.locator("#studioSendButton"), "Send Redline");
+  assert.equal(await page.locator("#studioSendButton.icon-only").count(), 0);
+  const failedSendButtonBox = await page.locator("#studioSendButton").boundingBox();
+  assert.ok(failedSendButtonBox && failedSendButtonBox.width >= 96, "send button should remain visible after a failed send");
+
   const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
   await page.locator("#studioSendConfirmButton").click();
   await sendRequest;
