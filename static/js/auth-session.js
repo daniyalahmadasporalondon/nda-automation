@@ -172,9 +172,10 @@ const AuthSessionView = (() => {
       const ready = inbound.ready === true && outbound.ready === true;
       const inboundOnlyReady = inbound.ready === true;
       const setupRequired = canUseUserGmail && (!inbound.ready || !outbound.ready);
+      const greetingName = greetingNameForUser(user, gmailStatus);
 
       if (userNode) {
-        const firstName = firstNameForUser(user, gmailStatus);
+        const firstName = greetingName || "there";
         userNode.textContent = authStatus === null
           ? "Checking account"
           : authenticated
@@ -183,7 +184,7 @@ const AuthSessionView = (() => {
           ? "Sign in required"
           : "Local session";
         if (menuGreeting) {
-          menuGreeting.textContent = authenticated ? `Hi, ${firstName}!` : "Hi!";
+          menuGreeting.textContent = greetingName ? `Hi, ${greetingName}!` : "Hi!";
         }
       }
       if (gmailNode) {
@@ -229,8 +230,8 @@ const AuthSessionView = (() => {
 
     function renderAvatar(user, status) {
       if (!avatarNode) return;
-      const picture = String(user?.picture || "").trim();
-      const initial = firstNameForUser(user, status).slice(0, 1).toUpperCase() || "A";
+      const picture = profilePictureForUser(user, status);
+      const initial = (greetingNameForUser(user, status) || "Account").slice(0, 1).toUpperCase() || "A";
       if (avatarInitial) avatarInitial.textContent = initial;
       if (avatarImage) {
         if (picture) {
@@ -258,15 +259,93 @@ const AuthSessionView = (() => {
     }
 
     function firstNameForUser(user, status) {
-      const name = String(user?.name || "").trim();
-      if (name && name !== String(user?.email || "").trim()) return name.split(/\s+/)[0] || "there";
-      const email = String(user?.email || status?.inbound?.email || status?.outbound?.email || "").trim();
-      if (email.includes("@")) {
-        const local = email.split("@")[0].replace(/[._-]+/g, " ").trim();
-        const first = local.split(/\s+/)[0] || "";
-        return first ? first.slice(0, 1).toUpperCase() + first.slice(1) : "there";
+      return greetingNameForUser(user, status) || "there";
+    }
+
+    function greetingNameForUser(user, status) {
+      const name = firstNameFromDisplayName(firstAvailableText(
+        user?.given_name,
+        user?.name,
+        status?.profile?.given_name,
+        status?.profile?.name,
+        status?.profile?.display_name,
+        status?.user?.given_name,
+        status?.user?.name,
+        status?.inbound?.profile?.given_name,
+        status?.inbound?.profile?.name,
+        status?.inbound?.profile?.display_name,
+        status?.outbound?.profile?.given_name,
+        status?.outbound?.profile?.name,
+        status?.outbound?.profile?.display_name,
+      ), { email: user?.email, id: user?.id });
+      if (name) return name;
+      return firstNameFromEmail(firstAvailableText(
+        user?.email,
+        status?.profile?.email,
+        status?.profile?.emailAddress,
+        status?.user?.email,
+        status?.inbound?.profile?.email,
+        status?.inbound?.profile?.emailAddress,
+        status?.inbound?.email,
+        status?.outbound?.profile?.email,
+        status?.outbound?.profile?.emailAddress,
+        status?.outbound?.email,
+      ));
+    }
+
+    function profilePictureForUser(user, status) {
+      return firstAvailableText(
+        user?.picture,
+        user?.avatar_url,
+        user?.photo_url,
+        status?.profile?.picture,
+        status?.profile?.avatar_url,
+        status?.profile?.photo_url,
+        status?.user?.picture,
+        status?.user?.avatar_url,
+        status?.user?.photo_url,
+        status?.inbound?.profile?.picture,
+        status?.inbound?.profile?.avatar_url,
+        status?.inbound?.profile?.photo_url,
+        status?.outbound?.profile?.picture,
+        status?.outbound?.profile?.avatar_url,
+        status?.outbound?.profile?.photo_url,
+      );
+    }
+
+    function firstAvailableText(...values) {
+      for (const value of values) {
+        const text = String(value || "").trim();
+        if (text) return text;
       }
-      return name || "there";
+      return "";
+    }
+
+    function firstNameFromDisplayName(name, { email, id } = {}) {
+      const text = String(name || "").trim();
+      if (!text || text.includes("@")) return "";
+      const lower = text.toLowerCase();
+      if (email && lower === String(email).trim().toLowerCase()) return "";
+      if (id && lower === String(id).trim().toLowerCase()) return "";
+      const first = text.split(/\s+/)[0] || "";
+      return titleCaseToken(first);
+    }
+
+    function firstNameFromEmail(email) {
+      const text = String(email || "").trim().toLowerCase();
+      if (text.includes("@")) {
+        const local = text.split("@")[0].split("+")[0];
+        const first = local.split(/[.\-_]/).filter(Boolean)[0] || local;
+        if (!first || first.length < 2 || /^\d+$/.test(first)) return "";
+        return titleCaseToken(first);
+      }
+      return "";
+    }
+
+    function titleCaseToken(token) {
+      return String(token || "")
+        .toLowerCase()
+        .replace(/(^|[-'])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
     }
 
     function deploymentWarning() {

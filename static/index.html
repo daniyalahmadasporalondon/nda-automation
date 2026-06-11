@@ -78,7 +78,12 @@
                 <span>Submit for Review</span>
               </button>
               <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
-                <span aria-hidden="true">↗</span>
+                <span class="send-plane-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M21 3 10.8 13.2"/>
+                    <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
+                  </svg>
+                </span>
                 <span>Send Document</span>
               </button>
               <div class="dashboard-health-list" aria-label="Pipeline health">
@@ -115,28 +120,39 @@
                 </svg>
               </span>
               <span class="dashboard-metric-copy">
-                <span class="dashboard-metric-number" data-repository-count="gmail_demo">0</span>
+                <span class="dashboard-metric-number" data-dashboard-repository-count="gmail_demo">0</span>
                 <span class="dashboard-metric-label">Inbox</span>
               </span>
             </button>
             <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="in_review">
-              <span class="dashboard-metric-icon review" aria-hidden="true">●</span>
+              <span class="dashboard-metric-icon review" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M20.2 12a8.2 8.2 0 1 1-2.4-5.8"/>
+                  <path d="M20.2 4.4v4.2h-4.2"/>
+                  <path d="M12 7.5v4.8l3.1 1.9"/>
+                </svg>
+              </span>
               <span class="dashboard-metric-copy">
-                <span class="dashboard-metric-number" data-repository-count="in_review">0</span>
+                <span class="dashboard-metric-number" data-dashboard-repository-count="in_review">0</span>
                 <span class="dashboard-metric-label">In Review</span>
               </span>
             </button>
             <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="reviewed">
               <span class="dashboard-metric-icon reviewed" aria-hidden="true">✓</span>
               <span class="dashboard-metric-copy">
-                <span class="dashboard-metric-number" data-repository-count="reviewed">0</span>
+                <span class="dashboard-metric-number" data-dashboard-repository-count="reviewed">0</span>
                 <span class="dashboard-metric-label">Reviewed</span>
               </span>
             </button>
             <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="sent">
-              <span class="dashboard-metric-icon sent" aria-hidden="true">↗</span>
+              <span class="dashboard-metric-icon sent" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M21 3 10.8 13.2"/>
+                  <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
+                </svg>
+              </span>
               <span class="dashboard-metric-copy">
-                <span class="dashboard-metric-number" data-repository-count="sent">0</span>
+                <span class="dashboard-metric-number" data-dashboard-repository-count="sent">0</span>
                 <span class="dashboard-metric-label">Sent</span>
               </span>
             </button>
@@ -164,6 +180,30 @@
               <p class="dashboard-search-interpreted" id="dashboardSearchInterpreted" aria-live="polite" hidden></p>
               <p class="dashboard-search-results-status" id="dashboardSearchResultsStatus" role="status" aria-live="polite" hidden></p>
               <ul class="dashboard-search-results" id="dashboardSearchResults" aria-label="Search results" hidden></ul>
+            </div>
+          </section>
+
+          <section class="dashboard-inbox" aria-labelledby="dashboardInboxTitle" data-dashboard-inbox>
+            <header class="dashboard-inbox-header">
+              <div>
+                <h2 id="dashboardInboxTitle">Intake Queue</h2>
+              </div>
+              <p class="dashboard-inbox-count" data-dashboard-inbox-count>0 documents</p>
+            </header>
+            <div class="dashboard-inbox-table-shell">
+              <table class="dashboard-inbox-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Document Name</th>
+                    <th scope="col">Counterparty</th>
+                    <th scope="col">Sender</th>
+                    <th scope="col">Date</th>
+                    <th scope="col">Action</th>
+                  </tr>
+                </thead>
+                <tbody data-dashboard-inbox-body></tbody>
+              </table>
+              <p class="dashboard-inbox-empty" data-dashboard-inbox-empty hidden>No Inbox NDAs yet.</p>
             </div>
           </section>
         </main>
@@ -261,7 +301,7 @@
                     <span>Download</span>
                   </button>
                   <button class="secondary icon-text" id="draftIntakeSendButton" type="button" title="Email the NDA" aria-label="Email the NDA">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.99 5.73a2 2 0 0 1-2.02 0L2 7"/></svg>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 3 10.8 13.2"/><path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/></svg>
                     <span>Send</span>
                   </button>
                 </div>
@@ -425,8 +465,8 @@
                   <div class="studio-toolbar-send actions" role="group" aria-label="Send actions">
                     <button id="studioSendButton" class="secondary icon-only" type="button" disabled aria-label="Send Redline" title="Send Redline">
                       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <rect x="2" y="4" width="20" height="16" rx="2"/>
-                        <path d="m22 7-8.99 5.73a2 2 0 0 1-2.02 0L2 7"/>
+                        <path d="M21 3 10.8 13.2"/>
+                        <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
                       </svg>
                       <span class="sr-only">Send Redline</span>
                     </button>
@@ -640,6 +680,10 @@
               <button class="admin-section-button" type="button" data-admin-section="email" data-admin-surface="admin" aria-pressed="false">
                 <strong>Gmail</strong>
                 <span>Accounts and sync state</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="personalisation" data-admin-surface="admin" aria-pressed="false">
+                <strong>Personalisation</strong>
+                <span>Email and document sign-off</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="drive" data-admin-surface="admin" aria-pressed="false">
                 <strong>Drive</strong>
@@ -1449,6 +1493,60 @@
               </section>
             </section>
 
+            <section class="admin-section-panel" id="adminPersonalisationPanel" data-admin-panel="personalisation" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">personalisation</p>
+                  <h1>Email and document sign-off</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminPersonalisationResetButton" type="button">Reset changes</button>
+                </div>
+              </header>
+
+              <section class="integrations-grid">
+                <article class="integration-card personalisation-card" id="adminPersonalisationCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">identity copy</p>
+                      <h2>Outbound signature</h2>
+                    </div>
+                    <span class="integration-status pending" id="adminPersonalisationOverall">Checking</span>
+                  </header>
+
+                  <form class="personalisation-form" id="adminPersonalisationForm">
+                    <label class="personalisation-field" for="adminSignOffInput">
+                      <span>Sign-Off</span>
+                      <input id="adminSignOffInput" name="sign_off" type="text" autocomplete="off" placeholder="Best,">
+                    </label>
+                    <label class="personalisation-field" for="adminSignatureInput">
+                      <span>Signature</span>
+                      <input id="adminSignatureInput" name="signature" type="text" autocomplete="off" placeholder="Aspora Legal">
+                    </label>
+                    <label class="personalisation-field personalisation-field-wide" for="adminSignatureBlockInput">
+                      <span>Signature Block</span>
+                      <textarea id="adminSignatureBlockInput" name="signature_block" rows="5" placeholder="Best,&#10;Aspora Legal"></textarea>
+                    </label>
+                    <div class="personalisation-actions">
+                      <p id="adminPersonalisationMessage">Checking personalisation settings</p>
+                      <button class="primary" id="adminPersonalisationSaveButton" type="submit" disabled>Save personalisation</button>
+                    </div>
+                  </form>
+
+                  <dl class="integration-facts compact">
+                    <div>
+                      <dt>Used by</dt>
+                      <dd>Email body defaults and document/email signature surfaces once backend support is available.</dd>
+                    </div>
+                    <div>
+                      <dt>Persistence</dt>
+                      <dd data-admin-personalisation="persistence">Checking backend support</dd>
+                    </div>
+                  </dl>
+                </article>
+              </section>
+            </section>
+
             <section class="admin-section-panel" id="adminDrivePanel" data-admin-panel="drive" hidden>
               <header class="admin-section-head">
                 <div>
@@ -1767,6 +1865,7 @@
     <script src="/static/js/admin-health.js?v=20260607a"></script>
     <script src="/static/js/admin-integrations.js?v=20260604a"></script>
     <script src="/static/js/admin-drive.js?v=20260607c"></script>
+    <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/contract-structure-view.js"></script>
     <script src="/static/js/review-fill.js?v=20260610c"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>

@@ -1097,6 +1097,27 @@ h3 {
   width: 16px;
 }
 
+.send-plane-icon {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 16px;
+  justify-content: center;
+  pointer-events: none;
+  width: 16px;
+}
+
+.send-plane-icon svg {
+  display: block;
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+  width: 16px;
+}
+
 /* Staged post-generation actions read as disabled until an NDA exists. */
 .draft-stage-action:disabled {
   cursor: not-allowed;
@@ -1589,16 +1610,20 @@ h3 {
   opacity: 0.92;
 }
 
-/* Leading icons on both hero buttons: the "+" on Submit and the "↗" send glyph
-   on Send Document. Matched size, a lighter (thinner) stroke than the bold label,
-   and a soft glow so they read as crafted marks rather than flat characters. */
+/* Leading icons on hero buttons. Keep the submit glyph and SVG send plane visually
+   balanced at small sizes so they read as controls, not decorative badges. */
 .dashboard-submit-button span:first-child,
-.dashboard-draft-nda-button span:first-child,
-.dashboard-send-document-button span:first-child {
+.dashboard-draft-nda-button span:first-child {
   font-size: 18px;
   font-weight: 400;
   line-height: 1;
   text-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+.dashboard-send-document-button .send-plane-icon {
+  color: currentColor;
+  height: 17px;
+  width: 17px;
 }
 
 /* The purple Draft pill carries a white "✎" glyph; its glow should darken (not
@@ -1732,12 +1757,22 @@ h3 {
   color: #5b36d1;
 }
 
+.dashboard-metric-icon.review svg {
+  height: 23px;
+  width: 23px;
+}
+
 .dashboard-metric-icon.reviewed {
   color: #256f4b;
 }
 
 .dashboard-metric-icon.sent {
   color: #5b36d1;
+}
+
+.dashboard-metric-icon.sent svg {
+  height: 23px;
+  width: 23px;
 }
 
 .dashboard-metric-copy {
@@ -1833,7 +1868,7 @@ h3 {
 
 .dashboard-search-submit {
   align-items: center;
-  background: #7c3aed;
+  background: var(--brand);
   border: none;
   border-radius: 50%;
   color: #ffffff;
@@ -1849,7 +1884,7 @@ h3 {
 
 .dashboard-search-submit:hover,
 .dashboard-search-submit:focus-visible {
-  background: #6d28d9;
+  background: var(--brand-bright);
   outline: none;
 }
 
@@ -2043,6 +2078,173 @@ h3 {
   background: rgba(124, 58, 237, 0.08);
   border-color: rgba(91, 54, 209, 0.34);
   outline: none;
+}
+
+.dashboard-inbox {
+  margin: 28px auto 0;
+  width: 100%;
+}
+
+.dashboard-inbox-header {
+  align-items: end;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.dashboard-inbox-count {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.dashboard-inbox-header h2 {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 780;
+  letter-spacing: 0;
+  line-height: 1.2;
+  margin: 4px 0 0;
+}
+
+.dashboard-inbox-table-shell {
+  background: rgba(255, 255, 255, 0.68);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(122, 92, 184, 0.16);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.dashboard-inbox-table {
+  border-collapse: collapse;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.dashboard-inbox-table th,
+.dashboard-inbox-table td {
+  border-bottom: 1px solid rgba(122, 92, 184, 0.12);
+  padding: 12px 18px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.dashboard-inbox-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.dashboard-inbox-table th {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.dashboard-inbox-table th:nth-child(1),
+.dashboard-inbox-table td:nth-child(1) {
+  width: 34%;
+}
+
+.dashboard-inbox-table th:nth-child(2),
+.dashboard-inbox-table td:nth-child(2) {
+  width: 22%;
+}
+
+.dashboard-inbox-table th:nth-child(3),
+.dashboard-inbox-table td:nth-child(3) {
+  width: 22%;
+}
+
+.dashboard-inbox-table th:nth-child(4),
+.dashboard-inbox-table td:nth-child(4) {
+  width: 10%;
+}
+
+.dashboard-inbox-table th:nth-child(5),
+.dashboard-inbox-table td:nth-child(5) {
+  text-align: right;
+  width: 12%;
+}
+
+.dashboard-inbox-document {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dashboard-inbox-document > span:last-child,
+.dashboard-inbox-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-inbox-document-icon {
+  align-items: center;
+  color: #5b36d1;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  opacity: 0.82;
+  width: 22px;
+}
+
+.dashboard-inbox-document-icon svg {
+  display: block;
+  fill: none;
+  height: 20px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 20px;
+}
+
+.dashboard-inbox-date {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-inbox-action {
+  background: rgba(91, 54, 209, 0.08);
+  border: 1px solid rgba(91, 54, 209, 0.18);
+  border-radius: 999px;
+  color: #4c1d95;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 8px 12px;
+  transition: background 120ms ease, border-color 120ms ease;
+  white-space: nowrap;
+}
+
+.dashboard-inbox-action:hover,
+.dashboard-inbox-action:focus-visible {
+  background: rgba(91, 54, 209, 0.14);
+  border-color: rgba(91, 54, 209, 0.34);
+  outline: none;
+}
+
+.dashboard-inbox-empty {
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  padding: 18px;
 }
 
 .dashboard-search-result-summarize:disabled {
@@ -6496,6 +6698,13 @@ body.modal-open {
   margin: -2px 0 0;
 }
 
+.repository-send-redline {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  justify-content: center;
+}
+
 .send-modal-actions {
   align-items: center;
   display: flex;
@@ -8503,6 +8712,86 @@ body.modal-open {
   margin: 0;
 }
 
+.personalisation-form {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 10px;
+}
+
+.personalisation-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.personalisation-field-wide,
+.personalisation-actions {
+  grid-column: 1 / -1;
+}
+
+.personalisation-field span {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.personalisation-field input,
+.personalisation-field textarea {
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  font: 650 12px/1.45 var(--font-body);
+  min-width: 0;
+  padding: 9px 10px;
+  width: 100%;
+}
+
+.personalisation-field input {
+  height: 36px;
+}
+
+.personalisation-field textarea {
+  min-height: 116px;
+  resize: vertical;
+}
+
+.personalisation-field input:focus,
+.personalisation-field textarea:focus {
+  border-color: var(--lotus);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.16);
+  outline: none;
+}
+
+.personalisation-field input:disabled,
+.personalisation-field textarea:disabled,
+.personalisation-actions button:disabled,
+#adminPersonalisationResetButton:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.personalisation-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.personalisation-actions p {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 0;
+}
+
 .integration-frequency-control {
   display: grid;
   gap: 7px;
@@ -9199,6 +9488,19 @@ body.modal-open {
 
   .dashboard-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-inbox-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dashboard-inbox-table-shell {
+    overflow-x: auto;
+  }
+
+  .dashboard-inbox-table {
+    min-width: 720px;
   }
 
   .dashboard-search {

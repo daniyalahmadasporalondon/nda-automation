@@ -117,7 +117,15 @@ const RepositoryDetail = (() => {
             ${MatterUtils.reviewStale(matter) ? '<button type="button" class="secondary repository-refresh-review">Refresh Review</button>' : ""}
             <button type="button" class="secondary repository-export-redline">Export Redline</button>
             <button type="button" class="secondary repository-save-to-drive">Save to Drive</button>
-            <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</button>
+            <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">
+              <span class="send-plane-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M21 3 10.8 13.2"/>
+                  <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
+                </svg>
+              </span>
+              <span>${sendBlockReason ? escapeHtml(sendBlockLabel) : confirmingSend ? "Confirm Send" : "Send Redline"}</span>
+            </button>
           </div>
         </footer>
       </section>
