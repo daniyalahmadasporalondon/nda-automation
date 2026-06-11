@@ -8,6 +8,8 @@ function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
   state.reviewDocumentRender = reviewDocumentRenderState(result);
   state.latestReviewResult = result;
+  state.documentViewMode = defaultDocumentViewModeForReviewResult(result, state.reviewDocumentRender);
+  syncDocumentViewModeButtons();
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
@@ -31,6 +33,34 @@ function renderResult(result, reviewedText) {
   renderStudioResult(result);
   updateExportButtonState();
   requestMatterDocumentRenderPreview();
+}
+
+function defaultDocumentViewModeForReviewResult(result, renderState) {
+  return reviewResultPrefersOriginalSurface(result, renderState) ? VIEW_MODE_ORIGINAL : VIEW_MODE_REDLINE;
+}
+
+function syncDocumentViewModeButtons() {
+  if (typeof updateDocumentViewModeButtons === "function") {
+    updateDocumentViewModeButtons();
+  }
+}
+
+function reviewResultPrefersOriginalSurface(result, renderState) {
+  if (renderState?.sourceFallback) return true;
+  return sourceFidelityPrefersOriginalSurface(result?.source_fidelity);
+}
+
+function sourceFidelityPrefersOriginalSurface(sourceFidelity) {
+  if (!sourceFidelity || typeof sourceFidelity !== "object") return false;
+  const preferredMode = stringValue(sourceFidelity.preferred_render_mode || sourceFidelity.preferredRenderMode).toLowerCase();
+  if (["source_pdf_preview", "original_pdf_preview", "source_preview", "original"].includes(preferredMode)) {
+    return true;
+  }
+  const pdfFidelity = sourceFidelity.pdf_fidelity && typeof sourceFidelity.pdf_fidelity === "object"
+    ? sourceFidelity.pdf_fidelity
+    : {};
+  const layoutMode = stringValue(pdfFidelity.layout_mode || pdfFidelity.layoutMode).toLowerCase();
+  return layoutMode === "original_pdf_page_preview" || pdfFidelity.requires_source_preview === true;
 }
 
 function snapshotReviewParagraphs(paragraphs) {

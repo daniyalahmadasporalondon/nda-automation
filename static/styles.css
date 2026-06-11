@@ -1667,13 +1667,16 @@ h3 {
 .dashboard-health-head {
   align-items: center;
   display: inline-flex;
+  gap: 8px;
   justify-content: center;
+  min-width: 0;
 }
 
 .dashboard-health-dot {
   background: rgba(255, 255, 255, 0.5);
   border-radius: var(--r-pill);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  flex: 0 0 8px;
   height: 8px;
   width: 8px;
 }

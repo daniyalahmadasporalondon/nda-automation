@@ -378,13 +378,24 @@ async function testAccessibleControlState(page) {
     const ai = document.querySelector('[data-dashboard-health="ai"]').getBoundingClientRect();
     const email = document.querySelector('[data-dashboard-health="email"]').getBoundingClientRect();
     const drive = document.querySelector('[data-dashboard-health="drive"]').getBoundingClientRect();
+    const dotLabelGaps = Array.from(document.querySelectorAll(".dashboard-health-head")).map((head) => {
+      const dot = head.querySelector(".dashboard-health-dot").getBoundingClientRect();
+      const label = head.querySelector(".dashboard-health-name").getBoundingClientRect();
+      return Math.round(label.left - dot.right);
+    });
     return {
+      clearDotLabelGaps: dotLabelGaps.every((gap) => gap >= 6),
       sameRow: Math.abs(ai.top - email.top) <= 2 && Math.abs(email.top - drive.top) <= 2,
       emailAfterAi: email.left > ai.left,
       driveAfterEmail: drive.left > email.left,
     };
   });
-  assert.deepEqual(dashboardHealthLayout, { sameRow: true, emailAfterAi: true, driveAfterEmail: true });
+  assert.deepEqual(dashboardHealthLayout, {
+    clearDotLabelGaps: true,
+    sameRow: true,
+    emailAfterAi: true,
+    driveAfterEmail: true,
+  });
   assert.equal(await page.locator("#clausesView").getAttribute("hidden"), "");
   assert.equal(await page.locator("#reviewView").getAttribute("hidden"), "");
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 0);
@@ -1709,7 +1720,8 @@ async function testOriginalViewToggle(page) {
       },
     }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
   }, reviewResult);
-  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector("[data-source-fidelity-surface]");
+  assert.equal(await page.locator('[data-view-mode="original"]').getAttribute("aria-pressed"), "true");
   await page.waitForSelector("[data-source-fidelity-surface]");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "PDF source analysis preview");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "preserved original PDF/page preview for visual fidelity");
@@ -1718,6 +1730,7 @@ async function testOriginalViewToggle(page) {
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "1 image item");
   await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
   await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
+  assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "true");
 
   // Graceful fallback: no render available (DOCX without a document server).
   await page.evaluate((payload) => {
