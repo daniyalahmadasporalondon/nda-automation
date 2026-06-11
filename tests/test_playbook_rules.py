@@ -115,6 +115,44 @@ class PlaybookRulesTests(unittest.TestCase):
         self.assertEqual(non_circumvention["evidence_guidance"], active_non_circumvention["evidence_guidance"])
         self.assertEqual(non_circumvention["semantic_signals"], active_non_circumvention["semantic_signals"])
 
+    def test_ai_rules_packet_carries_wave_one_judgment_guidance(self):
+        packet = playbook_rules_for_ai(load_playbook())
+        clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}
+
+        mutuality = clauses["mutuality"]
+        self.assertIn("non-mutual labels", mutuality["evidence_guidance"])
+        self.assertTrue(
+            any("administrative duties" in signal for signal in mutuality["semantic_signals"])
+        )
+        self.assertIn(
+            "Administrative one-way duties",
+            mutuality["rules"]["pass_conditions"][0]["description"],
+        )
+        self.assertIn(
+            "operative one-way confidentiality obligations",
+            mutuality["rules"]["fail_conditions"][1]["description"],
+        )
+
+        confidential_information = clauses["confidential_information"]
+        self.assertIn("negated prohibition", confidential_information["evidence_guidance"])
+        self.assertTrue(
+            any("reverse-engineering usage right" in signal for signal in confidential_information["semantic_signals"])
+        )
+        review_trigger_ids = {
+            trigger["id"] for trigger in confidential_information["rules"]["review_triggers"]
+        }
+        self.assertIn("unqualified_independent_development_exclusion", review_trigger_ids)
+        self.assertIn("usage_right_language_outside_exclusion", review_trigger_ids)
+        self.assertIn(
+            "no use of, access to, or reference to Confidential Information",
+            confidential_information["rules"]["pass_conditions"][0]["description"],
+        )
+
+        non_circumvention = clauses["non_circumvention"]
+        self.assertTrue(
+            any("co-located prohibition controls" in signal for signal in non_circumvention["semantic_signals"])
+        )
+
     def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")

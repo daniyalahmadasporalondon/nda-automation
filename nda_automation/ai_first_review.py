@@ -73,6 +73,7 @@ _PLAYBOOK_RESULT_FIELDS = (
     "exclusion_context_terms",
     "indefinite_terms",
     "semantic_signals",
+    "rules",
     "standard_exclusions_template",
     "taxonomy_groups",
     "term_years",

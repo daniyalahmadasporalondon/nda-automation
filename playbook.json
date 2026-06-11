@@ -26,10 +26,12 @@
         "each of the parties",
         "either party may disclose",
         "the parties may disclose confidential information to each other",
-        "each party acts as both disclosing party and receiving party"
+        "each party acts as both disclosing party and receiving party",
+        "a mutuality title, recital, definition, or non-mutual label is only a weak cue unless operative confidentiality obligations are reciprocal",
+        "one-way return, destroy, delete, certify, copy-control, or other administrative duties are not one-way confidentiality obligations by themselves"
       ],
       "rationale": "A one-way NDA creates asymmetric risk; Aspora's baseline is reciprocal confidentiality unless the matter is deliberately unilateral.",
-      "evidence_guidance": "Look for language tying both parties to disclosing and receiving roles, not only isolated defined terms.",
+      "evidence_guidance": "Look for operative language tying both parties to disclosing and receiving roles, not only isolated defined terms, titles, recitals, or non-mutual labels. Do not treat one-way return, destroy, delete, certify, copy-control, or other administrative duties as one-way confidentiality failures unless they are the operative confidentiality obligation.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -39,7 +41,7 @@
             "id": "reciprocal_party_roles",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The contract clearly makes each party both a Disclosing Party and a Receiving Party, or otherwise creates reciprocal confidentiality obligations.",
+            "description": "The contract clearly makes each party both a Disclosing Party and a Receiving Party, or otherwise creates reciprocal confidentiality obligations. Administrative one-way duties about returning, destroying, deleting, certifying, or controlling copies do not defeat a clear reciprocal confidentiality covenant.",
             "redline_action": "no_change"
           }
         ],
@@ -55,7 +57,7 @@
             "id": "one_way_party_roles",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The contract fixes only one party as the Receiving Party or otherwise creates one-way confidentiality obligations.",
+            "description": "The contract fixes only one party as the Receiving Party or otherwise creates operative one-way confidentiality obligations.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -64,7 +66,7 @@
             "id": "weak_or_separated_mutuality_signal",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "Mutuality appears only in a title, recital, definition, or separated role language that does not clearly create reciprocal obligations.",
+            "description": "Mutuality appears only in a title, recital, definition, separated role language, or negated/non-mutual label that does not clearly create reciprocal obligations.",
             "redline_action": "no_change"
           }
         ],
@@ -72,7 +74,7 @@
           "quote_required": true,
           "minimum_evidence_for_pass": 1,
           "minimum_evidence_for_fail": 1,
-          "guidance": "Cite the operative language that creates reciprocal roles, or cite the one-way language that fixes only one receiving party."
+          "guidance": "Cite the operative language that creates reciprocal roles, or cite the one-way confidentiality language that fixes only one receiving party. Do not cite a title alone or a non-mutual/without-reciprocity phrase as evidence of mutuality."
         },
         "redline_guidance": {
           "default_action": "insert_after_paragraph",
@@ -124,10 +126,14 @@
         "non-public information",
         "proprietary information",
         "information disclosed by either party",
-        "information whether oral written electronic or visual"
+        "information whether oral written electronic or visual",
+        "residual knowledge or residuals excluded from Confidential Information",
+        "reverse-engineering exclusion or reverse-engineering usage right",
+        "independent-development exclusion without use/access/reference qualification",
+        "separate usage-right language allowing use, retention, exploitation, or independent development outside the exclusion list"
       ],
       "rationale": "The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.",
-      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph for category breadth and nearby exclusion language.",
+      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph and nearby exclusion or usage-right language for category breadth, residuals, reverse engineering, and independent-development qualifications. A negated prohibition such as 'may not reverse engineer' is not a reverse-engineering carve-out.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -137,7 +143,7 @@
             "id": "broad_definition_with_standard_exclusions",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The definition covers the material categories in the playbook and contains only accepted exclusions.",
+            "description": "The definition covers the material categories in the playbook and contains only accepted exclusions, including independent-development language only when it is qualified by no use of, access to, or reference to Confidential Information.",
             "redline_action": "no_change"
           }
         ],
@@ -150,10 +156,17 @@
             "redline_action": "insert_after_paragraph"
           },
           {
-            "id": "definition_too_narrow_or_extra_exclusions",
+            "id": "definition_too_narrow",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The definition omits important protected categories or includes extra exclusions such as residuals, reverse engineering, or unqualified independent development.",
+            "description": "The definition omits important protected categories.",
+            "redline_action": "replace_paragraph"
+          },
+          {
+            "id": "problematic_residual_or_reverse_engineering_exclusion",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The definition or exclusion list excludes residual knowledge, residuals, reverse engineering, or a reverse-engineering right. Do not treat a negated prohibition on reverse engineering as an exclusion.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -164,13 +177,27 @@
             "issue_type": "unclear",
             "description": "The definition or nearby exclusions are ambiguous enough that a human should confirm whether protection is materially narrowed.",
             "redline_action": "no_change"
+          },
+          {
+            "id": "unqualified_independent_development_exclusion",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The definition uses a common independent-development carve-out but does not clearly tie it to development without use of, access to, or reference to Confidential Information.",
+            "redline_action": "no_change"
+          },
+          {
+            "id": "usage_right_language_outside_exclusion",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "Separate usage-right language may create an extra residual-knowledge, reverse-engineering, or unqualified independent-development carve-out outside the exclusion list.",
+            "redline_action": "no_change"
           }
         ],
         "evidence_requirements": {
           "quote_required": true,
           "minimum_evidence_for_pass": 1,
           "minimum_evidence_for_fail": 1,
-          "guidance": "Cite the defined term paragraph and any nearby exclusion language that supports the verdict."
+          "guidance": "Cite the defined term paragraph and any nearby exclusion or usage-right language that supports the verdict. For a pass on independent development, cite the no-use/no-access/no-reference qualification."
         },
         "redline_guidance": {
           "default_action": "replace_paragraph",
@@ -524,6 +551,7 @@
         "bypassing, avoiding, circumventing, cutting out, interfering with, inducing, recruiting, hiring, poaching, or otherwise diverting introduced parties away from the disclosing party",
         "exclusive dealing, substitute-purpose, competing-product, competing-service, or similar restraint that uses confidential information or introductions to block ordinary commercial freedom",
         "unlisted verbs can still be prohibited when the sentence creates an operative business restraint beyond confidentiality",
+        "a nearby freedom-preserving sentence does not cure a separate operative restraint; the genuine co-located prohibition controls",
         "negated references, disclaimers, and freedom-preserving carve-outs are not prohibited restrictions",
         "references to lawful circumvention of laws, sanctions, or regulatory obligations are not non-circumvention restrictions"
       ],
@@ -547,7 +575,7 @@
             "id": "prohibited_business_restraint_present",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The document includes an operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction. The exact verb is not controlling; fail any clear business restraint beyond confidentiality.",
+            "description": "The document includes an operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction. The exact verb is not controlling; fail any clear business restraint beyond confidentiality, including when it appears near freedom-preserving language.",
             "redline_action": "delete_paragraph"
           }
         ],

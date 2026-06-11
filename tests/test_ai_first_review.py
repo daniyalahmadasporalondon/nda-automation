@@ -90,6 +90,9 @@ class AIFirstReviewTests(unittest.TestCase):
             [clause["id"] for clause in result["clauses"]],
             [clause["id"] for clause in load_playbook()["clauses"]],
         )
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertIn("rules", mutuality)
+        self.assertIn("pass_conditions", mutuality["rules"])
 
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
         self.assertEqual(governing_law["decision"], "fail")

@@ -297,6 +297,13 @@ class BuildPacketTests(unittest.TestCase):
             requirement="No non-circumvention restriction.",
             matched_text="The Recipient must not circumvent the Company.",
             evidence=["The Recipient must not circumvent the Company."],
+            acceptable_language="Freedom-preserving language may be acceptable.",
+            evidence_guidance="Quote the operative restriction, not a negated reference.",
+            semantic_signals=["shall not circumvent", "freedom-preserving carve-out"],
+            rules={
+                "pass_conditions": [{"id": "absent", "description": "No operative restriction is present."}],
+                "fail_conditions": [{"id": "restriction", "description": "Operative restriction is present."}],
+            },
         )
         packet = build_verifier_packet(clause, source_text="full doc")
         self.assertEqual(packet["clause_id"], "non_circumvention")
@@ -304,6 +311,19 @@ class BuildPacketTests(unittest.TestCase):
         self.assertEqual(packet["clause_type"], "prohibited")
         self.assertIn("circumvent", packet["matched_text"])
         self.assertEqual(packet["source_text"], "full doc")
+        self.assertEqual(
+            packet["playbook_guidance"]["acceptable_language"],
+            "Freedom-preserving language may be acceptable.",
+        )
+        self.assertEqual(
+            packet["playbook_guidance"]["evidence_guidance"],
+            "Quote the operative restriction, not a negated reference.",
+        )
+        self.assertIn("freedom-preserving carve-out", packet["playbook_guidance"]["semantic_signals"])
+        self.assertEqual(
+            packet["playbook_guidance"]["rules"]["fail_conditions"][0]["id"],
+            "restriction",
+        )
 
     def test_injected_role_marker_and_control_char_are_neutralized_in_packet(self):
         # Injection defence: untrusted source_text / matched_text / evidence that try
@@ -335,6 +355,8 @@ class BuildPacketTests(unittest.TestCase):
         self.assertIn("untrusted", lowered)
         self.assertIn("never follow", lowered)
         self.assertIn("source_text", lowered)
+        self.assertIn("playbook_guidance", lowered)
+        self.assertIn("authoritative legal-review guidance", lowered)
         self.assertIn("positive quoted", lowered)
         self.assertIn("absence of a recognized restriction is not safety", lowered)
         self.assertIn("ambiguous", lowered)

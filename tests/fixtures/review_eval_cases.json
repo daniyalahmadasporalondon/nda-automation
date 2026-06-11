@@ -35,6 +35,32 @@
     }
   },
   {
+    "name": "mutuality_title_only_review",
+    "clause_id": "mutuality",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "A mutuality title or heading alone is not an operative reciprocal confidentiality obligation.",
+    "text": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThe Receiving Party shall protect the Company's Confidential Information and may use it only for the Purpose.",
+    "expected": {
+      "decision": "review",
+      "reason_code": "weak_mutuality_signal"
+    }
+  },
+  {
+    "name": "mutuality_non_mutual_label_not_positive_signal",
+    "clause_id": "mutuality",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Non-mutual / without-reciprocity wording must not be counted as a positive mutuality signal.",
+    "text": "This Agreement is not mutual and is without reciprocity. The Receiving Party shall protect the Company's Confidential Information.",
+    "expected": {
+      "decision": "fail",
+      "reason_code": "missing_mutuality_obligation"
+    }
+  },
+  {
     "name": "governing_law_difc_pass",
     "clause_id": "governing_law",
     "kind": "deterministic",
@@ -266,6 +292,32 @@
     "high_risk": true,
     "label_source": "engineering",
     "text": "Confidential Information means all non-public business, technical, and financial information disclosed by either party, whether orally or in writing. Confidential Information does not include information that was independently developed by personnel who had no access to the Confidential Information.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "broad_confidential_information_definition"
+    }
+  },
+  {
+    "name": "confidential_information_usage_right_outside_exclusion_review",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Separate usage-right language can create an extra independent-development carve-out even when the definition itself is broad.",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nThe Receiving Party may freely use anything it independently develops.",
+    "expected": {
+      "decision": "review",
+      "reason_code": "usage_right_language_needs_review"
+    }
+  },
+  {
+    "name": "confidential_information_negated_reverse_engineering_not_carveout_pass",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "A prohibition on reverse engineering is not a reverse-engineering exclusion or usage right.",
+    "text": "Confidential Information means any and all non-public business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party.\n\nThe Receiving Party may not reverse engineer Confidential Information or disclosed materials.",
     "expected": {
       "decision": "pass",
       "reason_code": "broad_confidential_information_definition"
