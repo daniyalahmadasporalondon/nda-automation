@@ -43,6 +43,7 @@ def render_source_redline_package(
             expected_source_text,
             expected_redline_edits=expected_redline_edits,
             clean_fills=clean_fills,
+            source_docx=source_docx,
         )
     )
     return DocxPackageRenderResult(

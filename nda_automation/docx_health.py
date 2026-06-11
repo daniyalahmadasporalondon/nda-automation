@@ -167,6 +167,7 @@ def verify_export_content_coverage(
     *,
     expected_redline_edits: object = None,
     clean_fills: object = None,
+    source_docx: bytes | None = None,
 ) -> List[str]:
     """Content gate the structural health check misses: an empty body or a
     redline that drops, reorders, duplicates, or misplaces source content.
@@ -192,6 +193,10 @@ def verify_export_content_coverage(
     source_paragraphs = _apply_clean_fills_to_source_paragraphs(
         _source_paragraphs_from_text(source_text), clean_fills
     )
+    if source_docx:
+        structural_errors = _verify_structural_counts(docx_bytes, source_docx)
+        if structural_errors:
+            return structural_errors
     if source_paragraphs:
         expected_accepted_paragraphs, expected_errors = _expected_accepted_source_paragraphs(
             source_paragraphs,
@@ -207,6 +212,63 @@ def verify_export_content_coverage(
                 "The redline may have misplaced, duplicated, or dropped source content."
             ]
     return []
+
+
+def _verify_structural_counts(docx_bytes: bytes, source_docx: bytes) -> List[str]:
+    export_counts = _docx_structural_counts(docx_bytes)
+    source_counts = _docx_structural_counts(source_docx)
+    if export_counts is None or source_counts is None:
+        return []
+    mismatches = {
+        key: {"source": source_counts.get(key, 0), "export": export_counts.get(key, 0)}
+        for key in sorted(source_counts)
+        if source_counts.get(key, 0) != export_counts.get(key, 0)
+    }
+    if not mismatches:
+        return []
+    details = ", ".join(
+        f"{key} source={counts['source']} export={counts['export']}"
+        for key, counts in mismatches.items()
+    )
+    return [
+        "Exported structural counts do not match the source document "
+        f"({details}); the redline may have dropped non-text document structure."
+    ]
+
+
+def _docx_structural_counts(docx_bytes: bytes) -> Dict[str, int] | None:
+    try:
+        validate_docx_bytes_before_open(docx_bytes)
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            validate_docx_archive(archive)
+            names = set(archive.namelist())
+            xml_parts = [
+                name
+                for name in names
+                if name == "word/document.xml"
+                or re.fullmatch(r"word/(header|footer)\d+\.xml", name)
+            ]
+            counts = {
+                "tables": 0,
+                "drawings": 0,
+                "pictures": 0,
+                "hyperlinks": 0,
+                "footnote_refs": 0,
+                "endnote_refs": 0,
+                "header_parts": sum(1 for name in names if re.fullmatch(r"word/header\d+\.xml", name)),
+                "footer_parts": sum(1 for name in names if re.fullmatch(r"word/footer\d+\.xml", name)),
+            }
+            for part_name in xml_parts:
+                root = parse_docx_xml(archive.read(part_name), part_name=part_name)
+                counts["tables"] += sum(1 for _ in root.iter(_w_tag("tbl")))
+                counts["drawings"] += sum(1 for _ in root.iter(_w_tag("drawing")))
+                counts["pictures"] += sum(1 for _ in root.iter(_w_tag("pict")))
+                counts["hyperlinks"] += sum(1 for _ in root.iter(_w_tag("hyperlink")))
+                counts["footnote_refs"] += sum(1 for _ in root.iter(_w_tag("footnoteReference")))
+                counts["endnote_refs"] += sum(1 for _ in root.iter(_w_tag("endnoteReference")))
+            return counts
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
+        return None
 
 
 def _export_revision_paragraphs(docx_bytes: bytes) -> List[Dict[str, str]]:

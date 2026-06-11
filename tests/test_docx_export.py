@@ -370,6 +370,35 @@ def make_source_docx_with_internal_blank_line_paragraph(prefix_paragraphs, inter
         return output.getvalue()
 
 
+def make_source_docx_with_table(before_paragraphs, table_cells, after_paragraphs):
+    before = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in before_paragraphs
+    )
+    rows = "".join(
+        "<w:tr>"
+        + "".join(
+            f"<w:tc><w:p><w:r><w:t>{escape_xml(cell)}</w:t></w:r></w:p></w:tc>"
+            for cell in row
+        )
+        + "</w:tr>"
+        for row in table_cells
+    )
+    table = f"<w:tbl>{rows}</w:tbl>"
+    after = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in after_paragraphs
+    )
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{before}{table}{after}</w:body>
+</w:document>"""
+    return replace_docx_parts(
+        make_source_docx([*before_paragraphs, *[cell for row in table_cells for cell in row], *after_paragraphs]),
+        {"word/document.xml": document_xml},
+    )
+
+
 def replace_docx_parts(docx_bytes, replacements):
     with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
         with BytesIO() as output:
@@ -2148,6 +2177,47 @@ class DocxExportTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_export_content_coverage_passes_when_source_table_survives(self):
+        source_docx = make_source_docx_with_table(
+            ["Intro paragraph."],
+            [["Table A", "Table B"]],
+            ["The confidentiality obligations survive for three years."],
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        result = review_nda(source_text, paragraphs=paragraphs)
+
+        redlined_docx = build_source_redline_docx(source_docx, result)
+
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=result["redline_edits"],
+                source_docx=source_docx,
+            ),
+            [],
+        )
+
+    def test_export_content_coverage_flags_structural_table_drop(self):
+        source_docx = make_source_docx_with_table(
+            ["Intro paragraph."],
+            [["Table A", "Table B"]],
+            ["Outro paragraph."],
+        )
+        dropped_table_docx = make_source_docx(["Intro paragraph.", "Table A", "Table B", "Outro paragraph."])
+
+        errors = verify_export_content_coverage(
+            dropped_table_docx,
+            "Intro paragraph.\n\nTable A\n\nTable B\n\nOutro paragraph.",
+            source_docx=source_docx,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("structural counts", errors[0])
+        self.assertIn("tables source=1 export=0", errors[0])
+        self.assertNotIn("Intro paragraph", errors[0])
 
     def test_export_content_coverage_flags_empty_body(self):
         empty_docx = make_source_docx([])
