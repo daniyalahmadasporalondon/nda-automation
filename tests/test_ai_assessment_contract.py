@@ -428,6 +428,9 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertNotEqual(clause["decision"], "pass")
         # And it carries the ungrounded reason code so the audit trail shows why.
         self.assertIn("ungrounded_finding", clause.get("reason_codes", []))
+        self.assertEqual(clause["proposed_change"]["action"], "needs_human_choice")
+        self.assertEqual(clause["proposed_change"]["safety"]["status"], "needs_human_choice")
+        self.assertIn("not grounded enough", clause["proposed_change"]["safety"]["reason"])
 
     def test_nonexistent_cited_paragraph_id_still_errors(self):
         # A paragraph_id the model invented (points at no reviewed paragraph) is a

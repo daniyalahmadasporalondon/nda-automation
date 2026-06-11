@@ -104,6 +104,15 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertNotIn("why_it_might_be_a_problem", governing_law)
         self.assertIn("sections", governing_law["structure_context"])
         self.assertEqual(governing_law["review_state"]["state"], "check")
+        self.assertEqual(governing_law["proposed_change"]["action"], "replace")
+        self.assertEqual(governing_law["proposed_change"]["source_text"], "This Agreement shall be governed by the laws of California.")
+        self.assertEqual(
+            governing_law["proposed_change"]["proposed_text"],
+            "This Agreement shall be governed by the laws of England and Wales.",
+        )
+        self.assertEqual(governing_law["proposed_change"]["evidence"]["paragraph_id"], "p3")
+        self.assertEqual(governing_law["proposed_change"]["safety"]["status"], "proposed_redline_available")
+        self.assertEqual(result["proposed_changes"], [governing_law["proposed_change"]])
 
         redline = next(edit for edit in result["redline_edits"] if edit["clause_id"] == "governing_law")
         self.assertEqual(redline["action"], "replace_paragraph")
