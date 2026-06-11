@@ -49,6 +49,7 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
     owner_user_id = _google_owner_user_id(handler)
     settings = app_settings.drive_settings()
     connected = bool(owner_user_id) and drive_integration.drive_connected(owner_user_id)
+    token_status = _drive_token_status(owner_user_id)
     account = ""
     if connected:
         account = drive_integration.drive_account_email(owner_user_id)
@@ -62,6 +63,11 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
             "account": account,
             "folder": folder,
             "enabled": bool(settings.get("enabled", False)),
+            "signed_in": bool(owner_user_id),
+            "user_scoped": bool(owner_user_id),
+            "needs_connect": bool(owner_user_id) and not connected,
+            "connect_url": _drive_connect_url(owner_user_id),
+            "token": token_status,
         },
         send_body=send_body,
     )
@@ -302,6 +308,22 @@ def _needs_connect_payload() -> dict:
         "needs_connect": True,
         "connect_url": DRIVE_CONNECT_URL,
     }
+
+
+def _drive_connect_url(owner_user_id: str) -> str:
+    if owner_user_id:
+        return DRIVE_CONNECT_URL
+    return "/auth/google/start"
+
+
+def _drive_token_status(owner_user_id: str) -> dict[str, object]:
+    if not owner_user_id:
+        return {
+            "configured": False,
+            "label": "Sign in with Google",
+            "source": "missing",
+        }
+    return google_connection.role_token_status("drive", owner_user_id=owner_user_id)
 
 
 def _google_owner_user_id(handler) -> str:
