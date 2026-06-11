@@ -1501,7 +1501,7 @@ h3 {
      its own scroll. The dashboard lacked this, so a long search-results list (e.g.
      18 in-review docs) overflowed the frame and was clipped with no way to scroll. */
   overflow-y: auto;
-  padding: 72px 24px 18px;
+  padding: 40px 24px 18px;
 }
 
 .dashboard-view.view.active {
@@ -1517,8 +1517,8 @@ h3 {
   display: flex;
   gap: 24px;
   justify-content: space-between;
-  min-height: 196px;
-  padding: 34px 32px;
+  min-height: 168px;
+  padding: 28px 32px;
 }
 
 .dashboard-hero-copy {
@@ -1689,7 +1689,7 @@ h3 {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 34px auto 0;
+  margin: 20px auto 0;
   width: 100%;
 }
 
@@ -1798,7 +1798,7 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: clamp(72px, 10vh, 128px) auto 0;
+  margin: clamp(28px, 5vh, 56px) auto 0;
   max-width: 1120px;
   padding: 0;
   width: min(100%, 1120px);
@@ -9494,7 +9494,7 @@ body.modal-open {
   }
 
   .dashboard-search {
-    margin-top: 64px;
+    margin-top: 28px;
   }
 
   .tab-button {
@@ -9544,14 +9544,14 @@ body.modal-open {
   }
 
   .dashboard-view {
-    padding: 48px 16px 16px;
+    padding: 28px 16px 16px;
   }
 
   .dashboard-hero {
     align-items: flex-start;
     flex-direction: column;
     min-height: 0;
-    padding: 24px;
+    padding: 22px;
   }
 
   .dashboard-hero-actions {
