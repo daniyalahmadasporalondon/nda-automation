@@ -156,6 +156,59 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(updated[0]["decision"], "review")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
+    def test_offline_verifier_does_not_clear_freedom_language_with_new_action_restrictions(self):
+        # Covers precise restriction-shaped additions already in _CIRCUMVENTION_ACTION:
+        # hiring/poaching, competition, interference, inducement, and relationship
+        # verbs. Broader terms like "meet", "speak", "support", or "assist" are
+        # intentionally excluded because they can describe innocuous business prose.
+        prefix = "Nothing in this Agreement restricts either party from ordinary market dealings; however, "
+        cases = {
+            "hiring_poaching": "the Recipient may not hire or recruit the Company's employees.",
+            "competition": "the Recipient shall not compete with or negotiate with introduced customers.",
+            "interference": "the Recipient must not interfere with or undermine customer relationships.",
+            "inducement": "the Recipient shall not induce or persuade employees to leave the Company.",
+            "relationship": "the Recipient may not partner with or collaborate with introduced customers.",
+        }
+        for label, restriction in cases.items():
+            with self.subTest(label=label):
+                text = prefix + restriction
+                clauses = [
+                    _clause(
+                        "non_circumvention",
+                        "fail",
+                        clause_type="prohibited",
+                        matched_text=text,
+                        evidence=[text],
+                    )
+                ]
+                updated, summary = apply_ai_verifier(clauses, source_text=text)
+                self.assertEqual(summary["verifier_kind"], "offline")
+                self.assertEqual(updated[0]["decision"], "fail")
+                self.assertFalse(updated[0]["ai_verifier"]["changed"])
+                self.assertEqual(updated[0]["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
+
+    def test_offline_verifier_still_refutes_clean_freedom_controls(self):
+        controls = (
+            "Nothing in this Agreement restricts either party from contacting introduced parties.",
+            "Each party shall not be restricted from dealing with any contact introduced by the other party.",
+            "Each party is free to do business with independently identified customers.",
+        )
+        for text in controls:
+            with self.subTest(text=text):
+                clauses = [
+                    _clause(
+                        "non_circumvention",
+                        "fail",
+                        clause_type="prohibited",
+                        matched_text=text,
+                        evidence=[text],
+                    )
+                ]
+                updated, summary = apply_ai_verifier(clauses, source_text=text)
+                self.assertEqual(summary["verifier_kind"], "offline")
+                self.assertEqual(updated[0]["decision"], "review")
+                self.assertEqual(updated[0]["ai_verifier"]["verdict"], VERIFIER_VERDICT_REFUTE)
+
     def test_refute_escalates_a_suspect_pass_to_review(self):
         # A confidently refuted *pass* (the engine wrongly cleared) must escalate --
         # the verifier never invents a fail, but it won't let a suspect clear stand.
