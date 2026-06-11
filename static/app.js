@@ -10,7 +10,6 @@ const studioSendButton = document.querySelector("#studioSendButton");
 const studioReviewedButton = document.querySelector("#studioReviewedButton");
 const studioApproveReviewButton = document.querySelector("#studioApproveReviewButton");
 const studioApproveBlockReasons = document.querySelector("#studioApproveBlockReasons");
-const studioReviewedDocxButton = document.querySelector("#studioReviewedDocxButton");
 const studioSendModal = document.querySelector("#studioSendModal");
 const studioSendForm = document.querySelector("#studioSendForm");
 const studioSendModalClose = document.querySelector("#studioSendModalClose");
@@ -110,7 +109,9 @@ const dashboardSearchController = createDashboardSearchController({
   resultsStatus: document.querySelector("#dashboardSearchResultsStatus"),
   interpretedLine: document.querySelector("#dashboardSearchInterpreted"),
   getMatters: () => state.matters,
-  ensureMatters: () => repositoryController.loadMatters(),
+  ensureMatters: () => Promise.resolve(repositoryController.loadMatters()).then(() => {
+    renderDashboardInboxTable();
+  }),
   openMatter: (matterId) => {
     // Reuse the repository open-matter flow, then surface the Repository tab so
     // the opened matter's detail panel is visible.

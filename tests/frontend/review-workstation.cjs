@@ -361,6 +361,9 @@ async function testAccessibleControlState(page) {
   await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
   await page.getByRole("tab", { name: "Review" }).click();
   assert.equal(await page.getByRole("textbox", { name: "NDA source text" }).count(), 1);
+  assert.equal(await page.locator("#studioReviewedDocxButton").count(), 0);
+  assert.equal(await page.locator("#studioExportButton").count(), 1);
+  assert.equal(await page.locator("#studioSendButton").count(), 1);
   const matterCardStyles = await page.locator(".studio-matter-card").evaluate((node) => {
     const styles = getComputedStyle(node);
     return {
@@ -368,7 +371,7 @@ async function testAccessibleControlState(page) {
       boxShadow: styles.boxShadow,
     };
   });
-  assert.equal(matterCardStyles.borderRadius, "22px");
+  assert.equal(matterCardStyles.borderRadius, "18px");
   assert.equal(matterCardStyles.boxShadow, "rgba(26, 19, 51, 0.2) 0px 10px 30px -20px");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
   assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
@@ -4543,7 +4546,13 @@ async function testSharedGmailProfileAccountMenu(page) {
   });
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => document.querySelector("[data-session-avatar-image]")?.hidden === false);
+  await page.waitForFunction(() => {
+    const image = document.querySelector("[data-session-avatar-image]");
+    const gmail = document.querySelector("[data-session-gmail]");
+    return image?.getAttribute("src") === "https://example.com/daniyal.png"
+      && image.hidden === false
+      && gmail?.textContent?.includes("Shared Gmail configured");
+  });
   assert.equal(await page.locator("[data-session-avatar-image]").getAttribute("src"), "https://example.com/daniyal.png");
   assert.equal(await page.locator("[data-session-avatar-initial]").isVisible(), false);
   await page.locator("[data-session-account-toggle]").click();

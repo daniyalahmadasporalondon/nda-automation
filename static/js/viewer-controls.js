@@ -17,12 +17,33 @@
     if (!scrollEl || !pageEl) return;
 
     // ---- Zoom (document zoom, like a PDF viewer) ----
-    const ZOOM_MIN = 50;
-    const ZOOM_MAX = 200;
+    const ZOOM_MIN = 70;
+    const ZOOM_MAX = 150;
     const ZOOM_STEP = 10;
-    let zoom = 100;
+    const ZOOM_DEFAULT = 90;
+    const PAGE_BASE_WIDTH = 938;
+    const PAGE_BASE_PADDING_Y = 34;
+    const PAGE_BASE_PADDING_X = 30;
+    const PAGE_BASE_FONT_SIZE = 15;
+    const PAGE_BASE_GAP = 10;
+    const PAGE_BASE_SUBTITLE_MARGIN = 16;
+    const PAGE_BASE_SUBTITLE_PADDING = 10;
+    const PAGE_BASE_PARAGRAPH_PADDING_Y = 7;
+    const PAGE_BASE_PARAGRAPH_PADDING_X = 10;
+    let zoom = ZOOM_DEFAULT;
+    function scaledPx(value) {
+      return (value * zoom) / 100 + "px";
+    }
     function applyZoom() {
-      pageEl.style.zoom = String(zoom / 100);
+      pageEl.style.setProperty("--review-page-width", scaledPx(PAGE_BASE_WIDTH));
+      pageEl.style.setProperty("--review-page-padding-y", scaledPx(PAGE_BASE_PADDING_Y));
+      pageEl.style.setProperty("--review-page-padding-x", scaledPx(PAGE_BASE_PADDING_X));
+      pageEl.style.setProperty("--review-page-font-size", scaledPx(PAGE_BASE_FONT_SIZE));
+      pageEl.style.setProperty("--review-page-gap", scaledPx(PAGE_BASE_GAP));
+      pageEl.style.setProperty("--review-page-subtitle-margin", scaledPx(PAGE_BASE_SUBTITLE_MARGIN));
+      pageEl.style.setProperty("--review-page-subtitle-padding", scaledPx(PAGE_BASE_SUBTITLE_PADDING));
+      pageEl.style.setProperty("--review-page-paragraph-padding-y", scaledPx(PAGE_BASE_PARAGRAPH_PADDING_Y));
+      pageEl.style.setProperty("--review-page-paragraph-padding-x", scaledPx(PAGE_BASE_PARAGRAPH_PADDING_X));
       if (zoomLevel) zoomLevel.textContent = zoom + "%";
       if (zoomOut) zoomOut.disabled = zoom <= ZOOM_MIN;
       if (zoomIn) zoomIn.disabled = zoom >= ZOOM_MAX;

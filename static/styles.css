@@ -69,10 +69,10 @@
   --doc-font: "Roboto Flex", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
   /* Radii */
-  --r-xl: 24px;
-  --r-lg: 22px;
-  --r-md: 16px;
-  --r-sm: 10px;
+  --r-xl: 20px;
+  --r-lg: 18px;
+  --r-md: 14px;
+  --r-sm: 9px;
   --r-pill: 9999px;
 
   /* Shadows — soft */
@@ -99,7 +99,7 @@ body {
     var(--bg-main);
   color: var(--ink);
   font-family: var(--text-font);
-  font-size: 13px;
+  font-size: 12.5px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   margin: 0;
@@ -122,11 +122,11 @@ button {
   cursor: pointer;
   display: inline-flex;
   font-family: var(--text-font);
-  font-size: 11.5px;
+  font-size: 11.2px;
   font-weight: 700;
-  height: 32px;
+  height: 30px;
   justify-content: center;
-  padding: 0 11px;
+  padding: 0 10px;
   transition: transform 0.14s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
@@ -266,15 +266,15 @@ h3 {
   color: var(--ink);
   display: flex;
   flex: 0 0 auto;
-  gap: 22px;
-  min-height: 68px;
-  padding: 0 28px;
+  gap: 18px;
+  min-height: 60px;
+  padding: 0 22px;
 }
 
 .product-lockup {
   align-items: center;
   display: flex;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -282,7 +282,7 @@ h3 {
   display: block;
   flex: 0 0 auto;
   height: auto;
-  width: 98px;
+  width: 88px;
 }
 
 .product-copy {
@@ -291,21 +291,21 @@ h3 {
   display: grid;
   gap: 3px;
   line-height: 1;
-  padding-left: 14px;
+  padding-left: 12px;
   white-space: nowrap;
 }
 
 .product-copy strong {
   color: var(--brand-deep);
   font-family: var(--display-font);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1;
 }
 
 .product-copy small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 1;
 }
@@ -313,7 +313,7 @@ h3 {
 .tabbar {
   align-self: stretch;
   display: flex;
-  gap: 26px;
+  gap: 20px;
   justify-content: flex-end;
   margin-left: auto;
   min-width: 0;
@@ -326,9 +326,9 @@ h3 {
   border-radius: 0;
   color: var(--ink-soft);
   display: inline-flex;
-  gap: 8px;
+  gap: 7px;
   font-family: var(--display-font);
-  font-size: 13px;
+  font-size: 12.4px;
   font-weight: 700;
   height: 100%;
   line-height: 1;
@@ -834,7 +834,7 @@ h3 {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 52px 24px 20px;
+  padding: 42px 22px 18px;
 }
 
 .generator-view.view.active {
@@ -845,11 +845,11 @@ h3 {
 .generator-hero {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 18px;
   box-shadow: var(--shadow-sm);
   color: var(--ink);
   margin-bottom: 12px;
-  padding: 14px 28px;
+  padding: 12px 24px;
 }
 
 .generator-hero .eyebrow {
@@ -858,13 +858,13 @@ h3 {
 
 .generator-hero h1 {
   color: var(--ink);
-  font-size: 22px;
+  font-size: 20px;
   margin: 2px 0 0;
 }
 
 .generator-hero-copy p:last-child {
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: 12.5px;
   margin: 0;
   max-width: 64ch;
 }
@@ -873,7 +873,7 @@ h3 {
 .generator-workspace {
   align-items: start;
   display: grid;
-  gap: 20px;
+  gap: 16px;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
@@ -883,8 +883,8 @@ h3 {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-sm);
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  gap: 14px;
+  padding: 16px;
 }
 
 /* The summary aside reuses .upload-side-panel styling; pin it so it stays beside
@@ -964,7 +964,7 @@ h3 {
   box-shadow: var(--shadow-sm);
   max-height: calc(100vh - 112px);
   overflow-y: auto;
-  padding: 34px 40px;
+  padding: 30px 36px;
 }
 
 /* In-Generator editor: the generated NDA rendered editable (toolbar + document),
@@ -990,12 +990,12 @@ h3 {
   box-shadow: var(--shadow-sm);
   color: var(--ink);
   flex: 1 1 auto;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.72;
   max-height: calc(100vh - 168px);
   min-height: 0;
   overflow-y: auto;
-  padding: 34px 40px;
+  padding: 30px 36px;
 }
 
 .generator-document-render .studio-doc-paragraph {
@@ -1501,7 +1501,7 @@ h3 {
      its own scroll. The dashboard lacked this, so a long search-results list (e.g.
      18 in-review docs) overflowed the frame and was clipped with no way to scroll. */
   overflow-y: auto;
-  padding: 40px 24px 18px;
+  padding: 32px 22px 16px;
 }
 
 .dashboard-view.view.active {
@@ -1512,13 +1512,13 @@ h3 {
   align-items: center;
   background:
     linear-gradient(100deg, #1d0d45 0%, #311276 56%, #4a24a1 100%);
-  border-radius: 20px;
+  border-radius: 18px;
   color: #ffffff;
   display: flex;
-  gap: 24px;
+  gap: 20px;
   justify-content: space-between;
-  min-height: 168px;
-  padding: 28px 32px;
+  min-height: 148px;
+  padding: 24px 28px;
 }
 
 .dashboard-hero-copy {
@@ -1528,7 +1528,7 @@ h3 {
 
 .dashboard-hero h1 {
   color: #ffffff;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 750;
   line-height: 1.15;
   margin: 0 0 8px;
@@ -1536,7 +1536,7 @@ h3 {
 
 .dashboard-hero p {
   color: rgba(255, 255, 255, 0.72);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 520;
   line-height: 1.45;
   margin: 0;
@@ -1551,9 +1551,9 @@ h3 {
 .dashboard-hero-actions {
   align-items: stretch;
   display: grid;
-  gap: 14px;
+  gap: 12px;
   justify-items: stretch;
-  min-width: 260px;
+  min-width: 240px;
 }
 
 .dashboard-submit-button,
@@ -1564,8 +1564,8 @@ h3 {
   color: #1f0b3c;
   flex: 0 0 auto;
   gap: 8px;
-  height: 42px;
-  padding: 0 20px;
+  height: 38px;
+  padding: 0 18px;
 }
 
 /* Draft NDA is the "from our paper" creator — a brand-purple pill so it reads as
@@ -1689,7 +1689,7 @@ h3 {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 20px auto 0;
+  margin: 16px auto 0;
   width: 100%;
 }
 
@@ -1704,8 +1704,8 @@ h3 {
   color: var(--ink);
   display: flex;
   gap: 13px;
-  min-height: 82px;
-  padding: 16px 18px;
+  min-height: 72px;
+  padding: 14px 16px;
   text-align: left;
 }
 
@@ -1774,7 +1774,7 @@ h3 {
 
 .dashboard-metric-number {
   color: var(--ink);
-  font-size: 26px;
+  font-size: 23px;
   font-weight: 780;
   letter-spacing: 0;
   line-height: 1;
@@ -1782,7 +1782,7 @@ h3 {
 
 .dashboard-metric-label {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -1798,7 +1798,7 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: clamp(28px, 5vh, 56px) auto 0;
+  margin: clamp(20px, 3.8vh, 42px) auto 0;
   max-width: 1120px;
   padding: 0;
   width: min(100%, 1120px);
@@ -1823,11 +1823,11 @@ h3 {
   align-items: center;
   background: #ffffff;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 16px;
   box-shadow: 0 18px 44px -34px rgba(26, 19, 51, 0.42);
   display: flex;
   gap: 8px;
-  padding: 7px 7px 7px 18px;
+  padding: 6px 6px 6px 16px;
 }
 
 .dashboard-search-input {
@@ -1837,12 +1837,12 @@ h3 {
   color: var(--ink);
   flex: 1 1 auto;
   font-family: inherit;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 520;
   line-height: 1.4;
   min-width: 0;
   outline: none;
-  padding: 10px 0;
+  padding: 8px 0;
 }
 
 .dashboard-search-input::placeholder {
@@ -1865,11 +1865,11 @@ h3 {
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
-  height: 42px;
+  height: 38px;
   justify-content: center;
   line-height: 1;
   transition: background 120ms ease;
-  width: 42px;
+  width: 38px;
 }
 
 .dashboard-search-submit:hover,
@@ -2485,17 +2485,17 @@ h3 {
   box-shadow: var(--shadow-sm);
   display: flex;
   flex: 0 0 auto;
-  gap: 16px;
+  gap: 12px;
   justify-content: space-between;
-  margin: 18px 24px 0;
-  min-height: 58px;
-  padding: 10px 14px;
+  margin: 12px 18px 0;
+  min-height: 50px;
+  padding: 8px 12px;
 }
 
 .studio-matter-left {
   align-items: center;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2508,12 +2508,12 @@ h3 {
   display: flex;
   flex: 0 0 auto;
   font-family: var(--display-font);
-  font-size: 18px;
-  height: 32px;
+  font-size: 17px;
+  height: 30px;
   justify-content: center;
   line-height: 1;
   transition: background 0.18s ease, transform 0.18s ease;
-  width: 32px;
+  width: 30px;
 }
 
 .back-dot:hover {
@@ -2523,7 +2523,7 @@ h3 {
 
 .studio-matter-card h1 {
   font-family: var(--display-font);
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: 0;
   line-height: 1.1;
@@ -2545,13 +2545,13 @@ h3 {
 .studio-matter-meta {
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(2, minmax(82px, max-content));
+  grid-template-columns: repeat(2, minmax(74px, max-content));
   margin: 0;
 }
 
 .studio-matter-meta div {
   border-left: 1px solid var(--border);
-  padding: 0 12px;
+  padding: 0 10px;
 }
 
 .studio-matter-meta dt {
@@ -2564,7 +2564,7 @@ h3 {
 
 .studio-matter-meta dd {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   margin: 2px 0 0;
   max-width: 190px;
@@ -2579,17 +2579,17 @@ h3 {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   justify-content: flex-end;
-  padding-left: 12px;
+  padding-left: 10px;
 }
 
 .studio-grid {
   display: grid;
   flex: 1;
-  gap: 14px;
-  grid-template-columns: minmax(460px, 1fr) minmax(440px, 560px);
-  margin: 14px 24px 18px;
+  gap: 10px;
+  grid-template-columns: minmax(520px, 1fr) minmax(340px, 460px);
+  margin: 10px 18px 14px;
   min-height: 0;
 }
 
@@ -2609,14 +2609,14 @@ h3 {
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   margin: 0;
-  padding: 16px 14px 12px;
+  padding: 12px 12px 9px;
 }
 
 .studio-clause-navigator-head {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .studio-clause-navigator-head span {
@@ -2632,7 +2632,7 @@ h3 {
   align-items: stretch;
   display: grid;
   gap: 6px;
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  grid-template-columns: 22px minmax(0, 1fr) 22px;
 }
 
 .studio-clause-scroll {
@@ -2655,7 +2655,7 @@ h3 {
   color: var(--ink-muted);
   display: inline-flex;
   justify-content: center;
-  min-height: 56px;
+  min-height: 48px;
   padding: 0;
   transition: background 0.18s ease, color 0.18s ease, opacity 0.18s ease;
 }
@@ -2672,12 +2672,12 @@ h3 {
 
 .studio-clause-scroll-btn svg {
   fill: none;
-  height: 18px;
+  height: 16px;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.4;
-  width: 18px;
+  width: 16px;
 }
 
 .studio-clause-head {
@@ -2695,7 +2695,7 @@ h3 {
   color: var(--brand);
   display: block;
   font-family: var(--display-font);
-  font-size: 24px;
+  font-size: 21px;
   font-weight: 700;
   line-height: 1;
 }
@@ -2711,8 +2711,8 @@ h3 {
   font-weight: 800;
   letter-spacing: 0.04em;
   line-height: 1;
-  min-height: 24px;
-  padding: 5px 8px;
+  min-height: 22px;
+  padding: 4px 7px;
   text-transform: uppercase;
 }
 
@@ -2739,7 +2739,7 @@ h3 {
   font-size: 12px;
   font-weight: 700;
   line-height: 1.2;
-  margin: 8px 0 2px;
+  margin: 6px 0 2px;
 }
 
 .studio-lane-meta {
@@ -2753,7 +2753,7 @@ h3 {
 .studio-clause-list {
   align-items: stretch;
   display: flex;
-  gap: 14px;
+  gap: 10px;
   min-width: max-content;
 }
 
@@ -2764,8 +2764,8 @@ h3 {
   color: var(--ink);
   display: block;
   flex: 0 0 auto;
-  min-height: 56px;
-  min-width: 120px;
+  min-height: 48px;
+  min-width: 106px;
   padding: 0;
   position: relative;
   text-align: left;
@@ -2774,7 +2774,7 @@ h3 {
 }
 
 .studio-clause-item:last-child {
-  min-height: 56px;
+  min-height: 48px;
 }
 
 .studio-clause-item:hover,
@@ -2803,12 +2803,12 @@ h3 {
   border: 0;
   color: inherit;
   display: grid;
-  gap: 7px;
+  gap: 5px;
   grid-template-columns: 1fr;
   height: 100%;
   justify-items: center;
-  min-height: 56px;
-  padding: 5px 4px;
+  min-height: 48px;
+  padding: 4px 3px;
   text-align: center;
   width: 100%;
 }
@@ -2914,9 +2914,9 @@ h3 {
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex: 0 0 auto;
-  height: 40px;
+  height: 34px;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 10px;
 }
 
 /* Second toolbar row: text formatting (font, bold/italic, alignment). */
@@ -2926,15 +2926,15 @@ h3 {
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex: 0 0 auto;
-  gap: 4px;
-  height: 40px;
-  padding: 0 12px;
+  gap: 3px;
+  height: 34px;
+  padding: 0 10px;
 }
 
 .studio-format-toolbar .fmt-sep {
   background: var(--border);
-  height: 20px;
-  margin: 0 4px;
+  height: 18px;
+  margin: 0 3px;
   width: 1px;
 }
 
@@ -2945,8 +2945,8 @@ h3 {
   color: var(--ink);
   cursor: pointer;
   font-family: var(--text-font);
-  font-size: 12.5px;
-  height: 28px;
+  font-size: 12px;
+  height: 26px;
   outline: none;
   padding: 0 8px;
 }
@@ -2962,11 +2962,11 @@ h3 {
   color: var(--ink);
   cursor: pointer;
   font-family: var(--text-font);
-  font-size: 12.5px;
-  height: 28px;
+  font-size: 12px;
+  height: 26px;
   outline: none;
   padding: 0 6px;
-  width: 58px;
+  width: 54px;
 }
 
 .fmt-size select:focus {
@@ -3006,10 +3006,10 @@ h3 {
   color: var(--ink-soft);
   cursor: pointer;
   display: inline-flex;
-  height: 28px;
+  height: 26px;
   justify-content: center;
   line-height: 1;
-  min-width: 28px;
+  min-width: 26px;
   padding: 0 6px;
 }
 
@@ -3025,8 +3025,8 @@ h3 {
 }
 
 .fmt-btn svg {
-  height: 17px;
-  width: 17px;
+  height: 16px;
+  width: 16px;
 }
 
 .fmt-btn-bold {
@@ -3044,14 +3044,14 @@ h3 {
 .studio-toolbar-left {
   align-items: center;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
 .studio-toolbar-center {
   align-items: center;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -3091,8 +3091,8 @@ h3 {
   border-radius: var(--r-pill);
   color: var(--amber-ink);
   flex: 0 0 auto;
-  height: 28px;
-  padding: 0 12px;
+  height: 26px;
+  padding: 0 10px;
 }
 
 .studio-refresh-review:hover:not(:disabled),
@@ -3112,10 +3112,10 @@ h3 {
   font-family: var(--text-font);
   font-size: 11px;
   font-weight: 700;
-  gap: 6px;
-  height: 30px;
+  gap: 5px;
+  height: 28px;
   justify-content: center;
-  padding: 0 11px;
+  padding: 0 10px;
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, opacity 0.18s ease;
 }
 
@@ -3146,7 +3146,7 @@ h3 {
   border-radius: 9999px;
   display: flex;
   gap: 3px;
-  padding: 3px;
+  padding: 2px;
 }
 
 .studio-view-switch .vs-label,
@@ -3155,7 +3155,7 @@ h3 {
   font-family: var(--text-font);
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 8px;
+  padding: 2px 7px;
 }
 
 .studio-view-switch .vs-btn {
@@ -3167,7 +3167,7 @@ h3 {
   font-size: 11px;
   font-weight: 600;
   height: auto;
-  padding: 4px 9px;
+  padding: 3px 8px;
 }
 
 .studio-view-switch .vs-btn:hover {
@@ -3183,7 +3183,7 @@ h3 {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -3194,7 +3194,7 @@ h3 {
   border-radius: 9999px;
   display: flex;
   gap: 1px;
-  padding: 2px;
+  padding: 1px;
 }
 
 .studio-viewer-controls .vc-btn {
@@ -3205,12 +3205,12 @@ h3 {
   color: var(--ink-soft);
   cursor: pointer;
   display: inline-flex;
-  flex: 0 0 28px;
-  height: 28px;
+  flex: 0 0 26px;
+  height: 26px;
   justify-content: center;
   padding: 0;
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
-  width: 28px;
+  width: 26px;
 }
 
 .studio-viewer-controls .vc-btn:hover:not(:disabled) {
@@ -3228,20 +3228,20 @@ h3 {
   display: block;
   fill: none;
   flex: 0 0 auto;
-  height: 15px;
+  height: 14px;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
-  width: 15px;
+  width: 14px;
 }
 
 .studio-viewer-controls .vc-solo {
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  flex-basis: 32px;
-  height: 32px;
-  width: 32px;
+  flex-basis: 30px;
+  height: 30px;
+  width: 30px;
 }
 
 .studio-viewer-controls .vc-solo:hover:not(:disabled) {
@@ -3253,7 +3253,7 @@ h3 {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  min-width: 40px;
+  min-width: 38px;
   padding: 0 3px;
   text-align: center;
 }
@@ -3276,21 +3276,30 @@ h3 {
 .studio-page-wrap {
   background: transparent;
   flex: 1;
-  margin: 18px 0 20px;
+  margin: 12px 0 14px;
   min-height: 0;
   overflow: auto;
-  padding: 0 16px;
+  padding: 0 12px;
 }
 
 .studio-page {
+  --review-page-width: 844px;
+  --review-page-padding-y: 31px;
+  --review-page-padding-x: 27px;
+  --review-page-font-size: 13.5px;
+  --review-page-gap: 9px;
+  --review-page-subtitle-margin: 14px;
+  --review-page-subtitle-padding: 9px;
+  --review-page-paragraph-padding-y: 6px;
+  --review-page-paragraph-padding-x: 9px;
   background: #fff;
   border: 1px solid rgba(230, 225, 240, 0.92);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-paper);
   margin: 0 auto 0 0;
-  max-width: 938px;
+  max-width: var(--review-page-width);
   min-height: calc(100% - 4px);
-  padding: 38px 34px;
+  padding: var(--review-page-padding-y) var(--review-page-padding-x);
   width: 100%;
 }
 
@@ -3318,8 +3327,8 @@ h3 {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0;
-  margin-bottom: 20px;
-  padding-bottom: 12px;
+  margin-bottom: var(--review-page-subtitle-margin);
+  padding-bottom: var(--review-page-subtitle-padding);
   text-align: center;
   text-transform: uppercase;
 }
@@ -3328,8 +3337,8 @@ h3 {
   color: #2a2540;
   display: grid;
   font-family: var(--doc-font);
-  font-size: 14px;
-  gap: 12px;
+  font-size: var(--review-page-font-size);
+  gap: var(--review-page-gap);
   grid-template-columns: minmax(0, 1fr);
   line-height: 1.56;
   min-width: 0;
@@ -3766,15 +3775,15 @@ h3 {
 
 .studio-doc-paragraph {
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   margin: 0;
   max-width: 100%;
   min-width: 0;
   overflow: visible;
   overflow-wrap: break-word;
-  padding: 8px 11px;
+  padding: var(--review-page-paragraph-padding-y) var(--review-page-paragraph-padding-x);
   position: relative;
-  scroll-margin-top: 20px;
+  scroll-margin-top: 16px;
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   white-space: pre-wrap;
 }
@@ -3786,8 +3795,8 @@ h3 {
   justify-content: flex-start;
   margin: 0;
   position: absolute;
-  left: calc(100% + 12px);
-  top: 8px;
+  left: calc(100% + 8px);
+  top: 6px;
   white-space: normal;
   z-index: 5;
 }
@@ -3875,12 +3884,12 @@ h3 {
 .paragraph-comment-composer {
   background: #ffffff;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 16px 34px -24px rgba(23, 10, 51, 0.35);
   display: grid;
   gap: 8px;
-  margin-top: 10px;
-  padding: 10px;
+  margin-top: 8px;
+  padding: 9px;
   position: relative;
   white-space: normal;
   z-index: 4;
@@ -3899,7 +3908,7 @@ h3 {
   border-left: 3px solid var(--brand);
   border-radius: 7px;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.35;
   margin: 0;
   max-height: 70px;
@@ -3915,9 +3924,9 @@ h3 {
   font-family: var(--text-font);
   font-size: 12px;
   line-height: 1.45;
-  min-height: 72px;
+  min-height: 64px;
   outline: none;
-  padding: 8px 9px;
+  padding: 7px 8px;
   resize: vertical;
   width: 100%;
 }
@@ -3938,8 +3947,8 @@ h3 {
   border-radius: var(--r-pill);
   font-size: 10px;
   font-weight: 800;
-  min-height: 26px;
-  padding: 5px 10px;
+  min-height: 24px;
+  padding: 4px 9px;
 }
 
 .paragraph-comment-save {
@@ -4031,7 +4040,7 @@ h3 {
 
 .comment-author {
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -4145,7 +4154,7 @@ h3 {
 
 .comment-text {
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   margin-top: 3px;
   white-space: pre-wrap;
@@ -4166,10 +4175,10 @@ h3 {
   font-family: var(--text-font);
   font-size: 12.5px;
   line-height: 1.45;
-  min-height: 64px;
+  min-height: 58px;
   outline: none;
   overflow: auto;
-  padding: 7px 9px;
+  padding: 7px 8px;
   resize: vertical;
   width: 100%;
 }
@@ -4195,7 +4204,7 @@ h3 {
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
-  padding: 5px 13px;
+  padding: 4px 11px;
 }
 
 .comment-edit-save,
@@ -4264,7 +4273,7 @@ h3 {
 
 .paragraph-redline-preview {
   cursor: pointer;
-  line-height: 1.72;
+  line-height: 1.64;
   min-width: 0;
   overflow-wrap: break-word;
 }
@@ -4768,11 +4777,11 @@ textarea::placeholder {
 .studio-playbook > h2 {
   background: #ffffff;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.06em;
   line-height: 1.1;
   margin: 0;
-  padding: 18px 18px 10px;
+  padding: 14px 14px 8px;
   position: sticky;
   text-transform: uppercase;
   top: 0;
@@ -4784,11 +4793,11 @@ textarea::placeholder {
   background: #ffffff;
   border-bottom: 1px solid var(--border);
   display: flex;
-  gap: 32px;
+  gap: 24px;
   justify-content: center;
-  padding: 12px 18px 0;
+  padding: 8px 14px 0;
   position: sticky;
-  top: 40px;
+  top: 33px;
   z-index: 2;
 }
 
@@ -4799,9 +4808,9 @@ textarea::placeholder {
   border-radius: 0;
   color: var(--ink-soft);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 800;
-  padding: 6px 4px 12px;
+  padding: 5px 3px 9px;
 }
 
 .studio-inspector-tabs button:hover {
@@ -4815,14 +4824,14 @@ textarea::placeholder {
 
 /* ── Inbound-fill tool (Fill inspector tab) ─────────────────────────────── */
 .fill-body {
-  padding: 16px 18px;
+  padding: 12px 14px;
 }
 
 .fill-empty {
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
-  padding: 18px 4px;
+  padding: 14px 3px;
 }
 
 .fill-picker {
@@ -4830,15 +4839,15 @@ textarea::placeholder {
   border-radius: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 14px;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
 }
 
 .fill-picker-fields {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .fill-field {
@@ -4859,9 +4868,9 @@ textarea::placeholder {
 .fill-field input {
   border: 1px solid var(--border);
   border-radius: 9px;
-  font-size: 13px;
-  min-height: 34px;
-  padding: 6px 9px;
+  font-size: 12.5px;
+  min-height: 31px;
+  padding: 5px 8px;
 }
 
 .fill-field-value {
@@ -4876,10 +4885,10 @@ textarea::placeholder {
   color: var(--ink);
   display: flex;
   flex-wrap: wrap;
-  font-size: 12px;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 9px 12px;
+  font-size: 11.5px;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
 }
 
 .fill-clear,
@@ -5270,7 +5279,7 @@ textarea::placeholder {
 
 .studio-detail-heading h3 {
   color: var(--ink);
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 850;
   line-height: 1.15;
   margin: 0;
@@ -5278,7 +5287,7 @@ textarea::placeholder {
 
 .active-clause-heading {
   border-bottom: 1px solid var(--border);
-  padding: 18px 18px 16px;
+  padding: 14px 14px 12px;
 }
 
 .active-clause-heading small {
@@ -5287,7 +5296,7 @@ textarea::placeholder {
   font-size: 9px;
   font-weight: 850;
   letter-spacing: 0.09em;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   text-transform: uppercase;
 }
 
@@ -5297,12 +5306,12 @@ textarea::placeholder {
   border-radius: 6px;
   color: var(--ink-soft);
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 850;
   letter-spacing: 0.04em;
   line-height: 1;
-  max-width: 190px;
-  padding: 7px 8px;
+  max-width: 174px;
+  padding: 6px 7px;
   text-transform: uppercase;
 }
 
@@ -5348,7 +5357,7 @@ button.active-clause-status:hover {
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
-  padding: 16px 18px;
+  padding: 13px 14px;
 }
 
 .studio-detail-block.requirement-block {
@@ -5362,15 +5371,15 @@ button.active-clause-status:hover {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.08em;
-  margin-bottom: 7px;
+  margin-bottom: 6px;
   text-transform: uppercase;
 }
 
 .studio-detail-block p {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1.42;
+  line-height: 1.4;
   margin-bottom: 0;
 }
 
@@ -5386,14 +5395,14 @@ button.active-clause-status:hover {
   border: 0;
   border-bottom: 1px solid var(--border);
   margin: 0;
-  padding: 16px 18px;
+  padding: 13px 14px;
 }
 
 .assessment-headline-row {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .assessment-headline-row small {
@@ -5402,18 +5411,18 @@ button.active-clause-status:hover {
 
 .assessment-issue-type {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
-  margin: 8px 0 0;
+  margin: 6px 0 0;
 }
 
 .assessment-decision-pill {
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 850;
   letter-spacing: 0.06em;
-  padding: 3px 10px;
+  padding: 3px 8px;
   text-transform: uppercase;
 }
 
@@ -5471,7 +5480,7 @@ button.active-clause-status:hover {
 }
 
 .playbook-position-block .playbook-position-approved {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .playbook-position-block .playbook-position-approved ul {
@@ -5484,8 +5493,8 @@ button.active-clause-status:hover {
 
 .playbook-position-block .playbook-position-approved li {
   color: var(--ink-muted);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .clause-citation-block.ungrounded {

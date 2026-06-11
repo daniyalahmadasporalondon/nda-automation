@@ -55,10 +55,6 @@ function setupReviewWorkstationActions() {
     await approveSelectedReview();
   });
 
-  studioReviewedDocxButton?.addEventListener("click", async () => {
-    await downloadReviewedDocx();
-  });
-
   studioSendModalClose?.addEventListener("click", () => closeReviewSendComposer());
   studioSendCancelButton?.addEventListener("click", () => closeReviewSendComposer());
   studioSendForm?.addEventListener("submit", async (event) => {
@@ -906,7 +902,6 @@ function updateApproveReviewControl() {
   const approved = isMatterApproved(matter);
   studioApproveReviewButton.hidden = !(hasReview && matter?.id);
   if (!hasReview || !matter?.id) {
-    renderReviewedDocxControl();
     return;
   }
   if (approved) {
@@ -917,7 +912,6 @@ function updateApproveReviewControl() {
     studioApproveReviewButton.title = approvedReviewTitle(matter);
     studioApproveReviewButton.setAttribute("aria-disabled", "true");
     renderApproveBlockReasons([]);
-    renderReviewedDocxControl();
     return;
   }
   const blocks = approveBlockReasons(matter);
@@ -931,7 +925,6 @@ function updateApproveReviewControl() {
     : "Approve this review";
   studioApproveReviewButton.setAttribute("aria-disabled", String(blocked));
   renderApproveBlockReasons(blocks);
-  renderReviewedDocxControl();
 }
 
 // Local prediction of the server's blocks_approval reason codes. The only
@@ -1035,53 +1028,4 @@ async function approveSelectedReview() {
     }
     updateApproveReviewControl();
   }
-}
-
-// The reviewed-DOCX download is offered only once the matter is approved.
-function renderReviewedDocxControl() {
-  if (!studioReviewedDocxButton) return;
-  const approved = isMatterApproved(state.selectedMatter) && Boolean(state.selectedMatter?.id);
-  studioReviewedDocxButton.hidden = !approved;
-  studioReviewedDocxButton.disabled = !approved;
-}
-
-async function downloadReviewedDocx() {
-  const matterId = state.selectedMatter?.id;
-  if (!matterId || !isMatterApproved(state.selectedMatter)) return;
-  const previousLabel = studioReviewedDocxButton?.textContent || "Download Reviewed DOCX";
-  if (studioReviewedDocxButton) {
-    studioReviewedDocxButton.disabled = true;
-    studioReviewedDocxButton.textContent = "Preparing…";
-  }
-  try {
-    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/reviewed-docx`);
-    if (!response.ok) {
-      let payload = {};
-      try {
-        payload = await response.json();
-      } catch (parseError) {
-        payload = {};
-      }
-      throw reviewErrorFromPayload(payload, "Reviewed DOCX could not download");
-    }
-    const blob = await response.blob();
-    downloadBlob(blob, suggestedReviewedDocxFilename());
-    setFileMeta("Reviewed DOCX downloaded.");
-  } catch (error) {
-    renderOperationError(error, "Reviewed DOCX could not download.");
-  } finally {
-    if (studioReviewedDocxButton?.isConnected) {
-      studioReviewedDocxButton.disabled = false;
-      studioReviewedDocxButton.textContent = previousLabel;
-    }
-    renderReviewedDocxControl();
-  }
-}
-
-function suggestedReviewedDocxFilename() {
-  const base = String(state.selectedMatter?.source_filename || "nda")
-    .replace(/\.[^.]+$/, "")
-    .replace(/[^A-Za-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "nda";
-  return `${base}-reviewed.docx`;
 }
