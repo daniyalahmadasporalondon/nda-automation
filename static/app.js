@@ -31,6 +31,9 @@ const studioDetailPanel = document.querySelector("#studioDetailPanel");
 const studioInspectorTitle = document.querySelector("#studioInspectorTitle");
 const reviewInspectorButtons = document.querySelectorAll("[data-review-inspector]");
 const dashboardSubmitButton = document.querySelector("[data-dashboard-submit]");
+const dashboardInboxTableBody = document.querySelector("[data-dashboard-inbox-body]");
+const dashboardInboxEmpty = document.querySelector("[data-dashboard-inbox-empty]");
+const dashboardInboxCount = document.querySelector("[data-dashboard-inbox-count]");
 const manualUploadModal = document.querySelector("#manualUploadModal");
 const manualUploadModalClose = document.querySelector("#manualUploadModalClose");
 const dashboardHealthItems = document.querySelectorAll("[data-dashboard-health]");
@@ -56,6 +59,16 @@ const REPOSITORY_REFRESH_INTERVAL_MS = 15_000;
 
 const state = AppState.createInitialState({ documentViewMode: VIEW_MODE_REDLINE });
 
+function htmlEscape(value) {
+  if (typeof window.escapeHtml === "function") return window.escapeHtml(value);
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // Inspector view config — declared early (before the controllers and any init-time
 // render that calls updateReviewInspectorTabs()) so REVIEW_INSPECTOR_VIEWS is never
 // referenced in its temporal dead zone, which would halt the whole script at load.
@@ -71,6 +84,7 @@ let adminAiController;
 let adminHealthController;
 let adminIntegrationsController;
 let adminDriveController;
+let adminPersonalisationController;
 
 const repositoryController = createRepositoryController({
   state,
@@ -266,6 +280,19 @@ adminDriveController = createAdminDriveController({
   driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),
   reviewErrorFromPayload,
 });
+adminPersonalisationController = createAdminPersonalisationController({
+  card: document.querySelector("#adminPersonalisationCard"),
+  form: document.querySelector("#adminPersonalisationForm"),
+  signOffInput: document.querySelector("#adminSignOffInput"),
+  signatureInput: document.querySelector("#adminSignatureInput"),
+  signatureBlockInput: document.querySelector("#adminSignatureBlockInput"),
+  saveButton: document.querySelector("#adminPersonalisationSaveButton"),
+  resetButton: document.querySelector("#adminPersonalisationResetButton"),
+  overall: document.querySelector("#adminPersonalisationOverall"),
+  message: document.querySelector("#adminPersonalisationMessage"),
+  persistenceFact: document.querySelector('[data-admin-personalisation="persistence"]'),
+  reviewErrorFromPayload,
+});
 authSessionController = createAuthSessionController({
   state,
   root: document.querySelector("#sessionStrip"),
@@ -373,6 +400,7 @@ playbookController.loadPlaybook();
 // a search run before data loaded picks up the real matters.
 Promise.resolve(repositoryController.loadMatters()).then(() => {
   dashboardSearchController.refresh();
+  renderDashboardInboxTable();
   // Silent seed: record the inbox already present at load so only genuinely new
   // inbound NDAs toast during the session.
   notificationsController.observe(state.matters);
@@ -386,6 +414,7 @@ adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
+      renderDashboardInboxTable();
       notificationsController.observe(state.matters);
     });
     repositoryController.loadGmailStatus();
@@ -429,20 +458,13 @@ document.querySelector("[data-dashboard-send-document]")?.addEventListener("clic
   sendDocumentController.openModal();
 });
 
-document.querySelectorAll("[data-dashboard-metric-column]").forEach((button) => {
-  button.addEventListener("click", () => {
-    const columnId = button.dataset.dashboardMetricColumn;
-    activateTab("repository");
-    requestAnimationFrame(() => {
-      const list = Array.from(document.querySelectorAll("[data-repository-list]"))
-        .find((node) => node.dataset.repositoryList === columnId);
-      const column = list?.closest(".repository-column");
-      column?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-      if (!column) return;
-      column.classList.add("is-dashboard-target");
-      window.setTimeout(() => column.classList.remove("is-dashboard-target"), 1400);
-    });
-  });
+document.querySelector("[data-dashboard-inbox]")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-dashboard-inbox-open]");
+  if (!button) return;
+  const matterId = button.dataset.dashboardInboxOpen;
+  if (!matterId) return;
+  repositoryController.openMatter(matterId);
+  activateTab("repository");
 });
 
 document.querySelectorAll("[data-repository-add-column]").forEach((button) => {
@@ -739,6 +761,7 @@ function activateTab(tabName) {
     loadDashboardAiHealth();
     loadDashboardDriveHealth();
     renderDashboardEmailHealth(state.gmailStatus);
+    renderDashboardInboxTable();
     // Re-run any active search against the freshest matters when returning to
     // the dashboard (the Repository tab may have loaded/changed the list).
     dashboardSearchController.refresh();
@@ -761,6 +784,7 @@ function activateTab(tabName) {
   }
   if (tabName === "repository") {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
+      renderDashboardInboxTable();
       notificationsController.observe(state.matters);
     });
     repositoryController.loadGmailStatus();
@@ -771,7 +795,7 @@ function activateTab(tabName) {
   }
   if (tabName === "admin") {
     activateAdminSurface("admin");
-    if (!["ai", "email"].includes(activeAdminSection())) {
+    if (!["ai", "health", "email", "personalisation", "drive"].includes(activeAdminSection())) {
       activateAdminSection("ai");
     } else {
       activateAdminSection(activeAdminSection());
@@ -785,6 +809,55 @@ function activateTab(tabName) {
       activateAdminSection(activeAdminSection());
     }
   }
+}
+
+function renderDashboardInboxTable() {
+  if (!dashboardInboxTableBody) return;
+  const inboxMatters = Array.isArray(state.matters)
+    ? state.matters
+      .filter((matter) => RepositoryModel.matterColumn(matter) === "gmail_demo")
+      .slice()
+      .sort(RepositoryModel.compareMatterRecency)
+    : [];
+  const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, 0]));
+  if (Array.isArray(state.matters)) {
+    state.matters.forEach((matter) => {
+      const column = RepositoryModel.matterColumn(matter);
+      mattersByColumn.set(column, (mattersByColumn.get(column) || 0) + 1);
+    });
+  }
+  document.querySelectorAll("[data-dashboard-repository-count]").forEach((count) => {
+    count.textContent = String(mattersByColumn.get(count.dataset.dashboardRepositoryCount) || 0);
+  });
+  if (dashboardInboxCount) {
+    const noun = inboxMatters.length === 1 ? "document" : "documents";
+    dashboardInboxCount.textContent = `${inboxMatters.length} ${noun}`;
+  }
+  if (dashboardInboxEmpty) dashboardInboxEmpty.hidden = inboxMatters.length > 0;
+  dashboardInboxTableBody.innerHTML = inboxMatters.map((matter) => {
+    const id = htmlEscape(String(matter?.id || ""));
+    const title = htmlEscape(RepositoryModel.matterSubject(matter));
+    const counterparty = htmlEscape(matter?.counterparty || matter?.counterparty_name || "Unknown counterparty");
+    const sender = htmlEscape(RepositoryModel.matterSender(matter));
+    const rawDate = matter?.received_at || matter?.imported_at || matter?.created_at || matter?.updated_at || "";
+    const date = rawDate ? RepositoryModel.formatMatterDate(rawDate) : "";
+    return (
+      `<tr>` +
+      `<td>` +
+      `<span class="dashboard-inbox-document">` +
+      `<span class="dashboard-inbox-document-icon" aria-hidden="true">` +
+      `<svg viewBox="0 0 24 24" focusable="false"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>` +
+      `</span>` +
+      `<span>${title}</span>` +
+      `</span>` +
+      `</td>` +
+      `<td>${counterparty}</td>` +
+      `<td>${sender}</td>` +
+      `<td><span class="dashboard-inbox-date">${htmlEscape(date || "—")}</span></td>` +
+      `<td><button class="dashboard-inbox-action" type="button" data-dashboard-inbox-open="${id}">Open review</button></td>` +
+      `</tr>`
+    );
+  }).join("");
 }
 
 async function loadDashboardAiHealth() {
@@ -890,22 +963,34 @@ async function dashboardAssistantForQuery(query) {
 async function confirmDashboardAssistantAction(action = {}) {
   const actionName = String(action.action || "").trim();
   if (actionName === "open_generator") {
-    activateTab("generator");
-    await draftIntakeController.activate();
     const prompt = String(
       action.prompt
       || action.generator?.prefill?.prompt
       || document.querySelector("#dashboardSearchInput")?.value
       || "",
     ).trim();
-    if (prompt) {
-      setDraftInputValue(document.querySelector("#draftIntakeProjectPurpose"), prompt);
-      setDraftInputValue(
-        document.querySelector("#draftIntakeNotes"),
-        "Started from Dashboard Assistant. Review all details before generating.",
-        { onlyIfEmpty: true },
-      );
-    }
+    const applyDashboardAssistantPrefill = ({ dispatch = true } = {}) => {
+      if (!prompt) return;
+      const purposeInput = document.querySelector("#draftIntakeProjectPurpose");
+      const notesInput = document.querySelector("#draftIntakeNotes");
+      if (dispatch) {
+        setDraftInputValue(purposeInput, prompt);
+        setDraftInputValue(
+          notesInput,
+          "Started from Dashboard Assistant. Review all details before generating.",
+          { onlyIfEmpty: true },
+        );
+        return;
+      }
+      if (purposeInput) purposeInput.value = prompt;
+      if (notesInput && !String(notesInput.value || "").trim()) {
+        notesInput.value = "Started from Dashboard Assistant. Review all details before generating.";
+      }
+    };
+    activateTab("generator");
+    applyDashboardAssistantPrefill({ dispatch: false });
+    await draftIntakeController.activate();
+    applyDashboardAssistantPrefill();
     document.querySelector("#draftIntakeCounterpartyName")?.focus();
     return;
   }
@@ -1051,6 +1136,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "drive") {
     adminDriveController.load();
+  }
+  if (sectionName === "personalisation") {
+    adminPersonalisationController.load();
   }
 }
 
