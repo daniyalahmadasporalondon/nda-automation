@@ -73,6 +73,7 @@ def test_workflow_response_payload_matches_generation_route_contract():
         "artifact_id": "artifact-1",
         "status": "generated",
         "download_url": "/api/matters/matter%201/source",
+        "pdf_download_url": "/api/matters/matter%201/source-pdf",
         "self_check": {
             "passed": True,
             "overall_status": "meets_requirements",

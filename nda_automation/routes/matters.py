@@ -4,7 +4,7 @@ import base64
 import binascii
 from pathlib import Path
 
-from .. import gmail_integration, matter_render_job, matter_summary, matter_view, telemetry
+from .. import gmail_integration, matter_render_job, matter_summary, matter_view, pdf_export_service, telemetry
 from ..ai_assessor import AIAssessorError
 from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
@@ -323,6 +323,26 @@ def handle_matter_render_pdf(handler, path: str, *, send_body: bool = True) -> N
         _send_render_job_error(handler, error, send_body=send_body)
         return
     handler._send_file(result.path, content_type=result.content_type, send_body=send_body)
+
+
+def handle_matter_source_pdf(handler, path: str, *, send_body: bool = True) -> None:
+    matter_id = parse_matter_id(path, suffix="/source-pdf")
+    try:
+        result = pdf_export_service.build_matter_source_pdf_export(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
+            repository=_repository(handler),
+        )
+    except pdf_export_service.PdfExportError as error:
+        handler._send_json(error.payload, status=error.status, headers=error.headers, send_body=send_body)
+        return
+    handler._send_download_file(
+        result.path,
+        result.filename,
+        result.content_type,
+        headers=result.headers,
+        send_body=send_body,
+    )
 
 
 def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> None:

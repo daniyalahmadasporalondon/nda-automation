@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
-from .. import approval, artifact_service, matter_document_artifacts, matter_view, redline_export_service, telemetry
+from .. import (
+    approval,
+    artifact_service,
+    matter_document_artifacts,
+    matter_view,
+    pdf_export_service,
+    redline_export_service,
+    telemetry,
+)
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..matter_lifecycle import MatterApprovalBlockedError, MatterNotFoundError, RepositoryMatterLifecycle
@@ -186,6 +194,85 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         redline_export.data,
         redline_export.filename,
         DOCX_MIME,
+        headers=headers,
+        send_body=send_body,
+    )
+
+
+def handle_matter_reviewed_pdf(handler, path: str, *, send_body: bool = True) -> None:
+    matter_id = parse_matter_id(path, suffix="/reviewed-pdf")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return
+
+    owner_user_id = request_owner_user_id(handler)
+    matter = _repository(handler).get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        return
+    if str(matter.get("status") or "") != approval.MATTER_STATUS_APPROVED:
+        handler._send_json(
+            {"error": "Reviewed PDF is available only after the matter is approved."},
+            status=409,
+            send_body=send_body,
+        )
+        return
+
+    try:
+        reviewed_docx = matter_document_artifacts.build_reviewed_docx(
+            matter_id,
+            matter,
+            owner_user_id=owner_user_id,
+        )
+        reviewed_pdf = pdf_export_service.build_docx_pdf_export(
+            reviewed_docx.export.data,
+            reviewed_docx.export.filename,
+            owner_user_id=owner_user_id,
+        )
+    except pdf_export_service.PdfExportError as error:
+        handler._send_json(error.payload, status=error.status, headers=error.headers, send_body=send_body)
+        return
+    except redline_export_service.StaleMatterReviewError as error:
+        handler._send_json(
+            {"error": str(error), "stale_reasons": error.reasons, "review_refresh": error.summary},
+            status=409,
+            send_body=send_body,
+        )
+        return
+    except redline_export_service.MatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404, send_body=send_body)
+        return
+    except redline_export_service.DocxOpenHealthError as error:
+        handler._send_json({"error": str(error), "details": error.details}, status=500, send_body=send_body)
+        return
+    except (DocxExtractionError, PdfExtractionError) as error:
+        handler._send_json({"error": str(error)}, status=400, send_body=send_body)
+        return
+    except ParagraphAlignmentError:
+        handler._send_json(
+            {"error": "The extracted document paragraphs could not be aligned to the extracted text."},
+            status=400,
+            send_body=send_body,
+        )
+        return
+    except DocxExportError as error:
+        handler._send_json({"error": str(error)}, status=400, send_body=send_body)
+        return
+    except artifact_service.ArtifactRegistryError as error:
+        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return
+
+    telemetry.increment("reviewed_pdf_exports")
+    headers = {
+        **reviewed_pdf.headers,
+        "X-Reviewed-Redline-Count": str(len(reviewed_docx.payload["export_redline_edits"])),
+    }
+    if reviewed_docx.artifact is not None:
+        headers["X-Reviewed-Artifact-ID"] = reviewed_docx.artifact.id
+    handler._send_download_file(
+        reviewed_pdf.path,
+        reviewed_pdf.filename,
+        reviewed_pdf.content_type,
         headers=headers,
         send_body=send_body,
     )

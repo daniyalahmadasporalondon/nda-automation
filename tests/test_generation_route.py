@@ -20,6 +20,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
+from nda_automation import document_rendering
 from nda_automation import matter_store
 from nda_automation import server as server_module
 from nda_automation import telemetry
@@ -162,6 +163,71 @@ class GenerateNdaRouteTests(unittest.TestCase):
         # A .docx is a zip: it starts with the PK signature.
         self.assertTrue(bytes(dl_body).startswith(b"PK"))
 
+    def test_pdf_download_url_serves_generated_docx_as_pdf_when_converter_available(self):
+        class FakeDocxToPdfConverter:
+            name = "fake-docx-to-pdf"
+
+            def is_available(self):
+                return True
+
+            def convert_docx_to_pdf(self, source_path, output_dir, *, timeout_seconds):
+                output_path = output_dir / "source.pdf"
+                output_path.write_bytes(b"%PDF-1.7\ngenerated pdf\n%%EOF\n")
+                return output_path
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        "signing_entity_id": "aspora_technology",
+                        "intake": {"counterparty_name": "Acme Corp Ltd"},
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+                self.assertEqual(status, 201, payload)
+                with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=FakeDocxToPdfConverter()):
+                    pdf_status, pdf_body, pdf_headers = self.request(
+                        "GET", payload["pdf_download_url"], headers=self.basic_auth_headers()
+                    )
+
+        self.assertEqual(pdf_status, 200)
+        self.assertEqual(pdf_headers["Content-Type"], "application/pdf")
+        self.assertEqual(pdf_headers["X-PDF-Export-Verified"], "document-to-pdf")
+        self.assertEqual(pdf_headers["X-PDF-Export-Source-Kind"], "docx")
+        self.assertTrue(bytes(pdf_body).startswith(b"%PDF-"))
+
+    def test_pdf_download_url_reports_converter_unavailable_for_generated_docx(self):
+        class UnavailableConverter:
+            name = "fake-unavailable"
+
+            def is_available(self):
+                return False
+
+            def convert_docx_to_pdf(self, source_path, output_dir, *, timeout_seconds):
+                raise AssertionError("unavailable converter should not be called")
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        "signing_entity_id": "aspora_technology",
+                        "intake": {"counterparty_name": "Acme Corp Ltd"},
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+                self.assertEqual(status, 201, payload)
+                with patch.object(document_rendering, "LibreOfficeDocxConverter", return_value=UnavailableConverter()):
+                    pdf_status, pdf_payload, _pdf_headers = self.request(
+                        "GET", payload["pdf_download_url"], headers=self.basic_auth_headers()
+                    )
+
+        self.assertEqual(pdf_status, 503)
+        self.assertEqual(pdf_payload["document_pdf_export"]["status"], document_rendering.UNAVAILABLE_STATUS)
+        self.assertEqual(pdf_payload["document_pdf_export"]["error_code"], "converter_unavailable")
+        self.assertIn("LibreOffice/soffice", pdf_payload["error"])
+
     def test_accepts_nested_signing_entity_and_flat_intake_aliases(self):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
@@ -211,6 +277,7 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(m["forum"], "Courts of England and Wales")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
+        self.assertEqual(payload["pdf_download_url"], f"/api/matters/{payload['matter_id']}/source-pdf")
 
     def test_fe_payload_without_override_keeps_entity_default(self):
         # signing_entity.governing_law present but matching the entity default ->

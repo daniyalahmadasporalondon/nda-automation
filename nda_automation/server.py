@@ -14,7 +14,16 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from . import app_settings, export_service, gmail_integration, matter_store, redline_export_service as redline_export_service, telemetry, user_store
+from . import (
+    app_settings,
+    export_service,
+    gmail_integration,
+    matter_store,
+    pdf_export_service,
+    redline_export_service as redline_export_service,
+    telemetry,
+    user_store,
+)
 from .checker import (
     PLAYBOOK_PATH,
     ai_validate_draft_fix,
@@ -207,6 +216,10 @@ _GET_EXACT_ROUTES = {
     "/auth/gmail/start": gmail_routes.handle_gmail_connect_start,
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
     "/api/drive/status": drive_routes.handle_drive_status,
+    "/api/pdf-export/status": lambda handler, *, send_body=True: handler._send_json(
+        {"pdf_export": pdf_export_service.converter_health()},
+        send_body=send_body,
+    ),
     "/auth/drive/start": drive_routes.handle_drive_connect_start,
     "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings,
@@ -315,6 +328,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/render-pdf"):
             matter_routes.handle_matter_render_pdf(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/source-pdf"):
+            matter_routes.handle_matter_source_pdf(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/") and "/render-page/" in path:
             matter_routes.handle_matter_render_page(self, path, send_body=send_body)
             return
@@ -323,6 +339,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/matters/") and path.endswith("/reviewed-docx"):
             approval_routes.handle_matter_reviewed_docx(self, path, send_body=send_body)
+            return
+        if path.startswith("/api/matters/") and path.endswith("/reviewed-pdf"):
+            approval_routes.handle_matter_reviewed_pdf(self, path, send_body=send_body)
             return
         if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
             pdf_markup_routes.handle_pdf_annotations_list(self, path, send_body=send_body)

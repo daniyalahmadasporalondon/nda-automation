@@ -11,17 +11,20 @@ from __future__ import annotations
 
 import http.client
 import json
+import tempfile
 import threading
 import unittest
 from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
 from nda_automation import approval, matter_store
+from nda_automation import pdf_export_service
 from nda_automation import redline_export_service
 from nda_automation import server as server_module
 from nda_automation.redline_export_service import RedlineExport
@@ -413,6 +416,68 @@ class ApprovalEndpointTests(unittest.TestCase):
         # and there are no manual overrides.
         self.assertIn("export_redline_edits", captured["payload"])
         self.assertEqual(captured["payload"]["manual_redline_edits"], [])
+
+    def test_reviewed_pdf_requires_approved_status(self):
+        matter_id, _ = self._seed_matter(resolve_all=True)
+        status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-pdf")
+        self.assertEqual(status, 409)
+        self.assertIn("approved", payload["error"])
+
+    def test_reviewed_pdf_builds_from_reviewed_docx_when_approved(self):
+        matter_id, _flagged = self._seed_matter(resolve_all=True)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        reviewed_docx = RedlineExport(data=b"PK\x03\x04reviewed-docx", filename="mutual-nda-redlined.docx")
+        tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp_pdf.write(b"%PDF-1.7\nreviewed\n%%EOF\n")
+        tmp_pdf.close()
+        pdf_path = Path(tmp_pdf.name)
+        pdf_export = pdf_export_service.MatterPdfExport(
+            path=pdf_path,
+            filename="mutual-nda-redlined.pdf",
+            content_type=pdf_export_service.PDF_EXPORT_MIME,
+            headers={
+                "X-PDF-Export-Verified": pdf_export_service.PDF_EXPORT_VERIFICATION_HEADER,
+                "X-PDF-Export-Source-Kind": "docx",
+            },
+        )
+        try:
+            with patch.object(redline_export_service, "build_matter_redline", return_value=reviewed_docx):
+                with patch.object(pdf_export_service, "build_docx_pdf_export", return_value=pdf_export) as build_pdf:
+                    status, body, headers = self.request("GET", f"/api/matters/{matter_id}/reviewed-pdf")
+        finally:
+            pdf_path.unlink(missing_ok=True)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"%PDF-1.7\nreviewed\n%%EOF\n")
+        self.assertEqual(headers.get("Content-Type"), pdf_export_service.PDF_EXPORT_MIME)
+        self.assertIn('filename="mutual-nda-redlined.pdf"', headers.get("Content-Disposition", ""))
+        self.assertEqual(headers.get("X-PDF-Export-Verified"), pdf_export_service.PDF_EXPORT_VERIFICATION_HEADER)
+        self.assertEqual(headers.get("X-PDF-Export-Source-Kind"), "docx")
+        build_pdf.assert_called_once_with(
+            b"PK\x03\x04reviewed-docx",
+            "mutual-nda-redlined.docx",
+            owner_user_id="",
+        )
+
+    def test_reviewed_pdf_reports_converter_unavailable(self):
+        matter_id, _flagged = self._seed_matter(resolve_all=True)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        reviewed_docx = RedlineExport(data=b"PK\x03\x04reviewed-docx", filename="mutual-nda-redlined.docx")
+        unavailable = pdf_export_service.PdfExportError(
+            {"error": pdf_export_service.PDF_CONVERTER_UNAVAILABLE_MESSAGE},
+            status=503,
+        )
+
+        with patch.object(redline_export_service, "build_matter_redline", return_value=reviewed_docx):
+            with patch.object(pdf_export_service, "build_docx_pdf_export", side_effect=unavailable):
+                status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-pdf")
+
+        self.assertEqual(status, 503)
+        self.assertIn("LibreOffice/soffice", payload["error"])
 
     def test_reviewed_docx_missing_matter_is_404(self):
         status, payload, _ = self.request("GET", "/api/matters/matter_missing/reviewed-docx")
