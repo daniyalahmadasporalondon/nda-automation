@@ -320,10 +320,14 @@
       "semantic_signals": [
         "this agreement is governed",
         "agreement shall be construed in accordance with",
-        "laws applicable to this agreement"
+        "laws applicable to this agreement",
+        "party incorporation or organization recitals are not governing-law clauses",
+        "conditional override wording such as unless otherwise agreed weakens an otherwise approved law and needs review",
+        "secondary or carve-out governing-law language for disputes, remedies, IP, enforcement, or other sections needs review when it conflicts with or qualifies the main law",
+        "approved-law aliases such as English law, Indian law, DIFC law, Delaware law, Ontario law, Canadian law, or Province of Ontario may count only when they describe the agreement governing law"
       ],
       "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be changed or reviewed.",
-      "evidence_guidance": "Use the governing-law sentence as evidence, not the whole dispute-resolution section unless needed.",
+      "evidence_guidance": "Use the operative governing-law sentence as evidence, not the whole dispute-resolution section. Do not treat a party recital saying it is incorporated, organized, formed, registered, domiciled, or existing under the laws of a jurisdiction as the agreement governing law. When an approved governing law is followed by unless otherwise agreed, subject to another agreement, chosen by a party, or a secondary carve-out for disputes, remedies, IP, enforcement, or another topic, cite that qualifying span and return review rather than pass. Approved-law aliases count only when they modify the agreement governing-law clause; do not use an approved jurisdiction appearing only in addresses, party descriptions, court venue, tax, employment, or regulatory references. For failures, cite the operative unapproved governing-law sentence; for missing, explain that no operative governing-law sentence was found.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -333,7 +337,7 @@
             "id": "approved_governing_law",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The governing-law clause names India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
+            "description": "The operative governing-law clause for this Agreement names India, Delaware, England and Wales, DIFC, or Ontario, Canada, including clear aliases such as English law, Indian law, DIFC law, Delaware law, Ontario law, or Canadian law, and is not qualified by a later override or competing governing-law carve-out.",
             "redline_action": "no_change"
           }
         ],
@@ -342,14 +346,14 @@
             "id": "governing_law_missing",
             "decision": "fail",
             "issue_type": "missing",
-            "description": "No governing-law clause is found.",
+            "description": "No operative governing-law clause is found. Party incorporation, organization, formation, registration, domicile, address, court venue, tax, employment, or regulatory-law references do not satisfy this requirement by themselves.",
             "redline_action": "insert_after_paragraph"
           },
           {
             "id": "unapproved_governing_law",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The governing-law clause names a jurisdiction outside the approved playbook list.",
+            "description": "The operative governing-law clause names a jurisdiction outside the approved playbook list. Do not fail merely because a party is incorporated or organized under an unapproved jurisdiction if the agreement itself is governed by an approved law.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -358,7 +362,7 @@
             "id": "unclear_or_conditional_governing_law",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The governing-law language is unclear, conditional, conflicting, heading-only, or mixed with non-approved jurisdiction language.",
+            "description": "The governing-law language is unclear, conditional, conflicting, heading-only, incorporated by reference, subject to later agreement, chosen by a party, or mixed with secondary governing-law carve-outs for disputes, remedies, IP, enforcement, or other sections.",
             "redline_action": "no_change"
           }
         ],
@@ -366,7 +370,7 @@
           "quote_required": true,
           "minimum_evidence_for_pass": 1,
           "minimum_evidence_for_fail": 0,
-          "guidance": "Cite the governing-law sentence. If missing, explain that no governing-law sentence was found."
+          "guidance": "Cite the operative governing-law sentence. If the issue is conditional or secondary governing-law language, cite the qualifying or conflicting span too. If missing, explain that no operative governing-law sentence was found. Do not cite a party-incorporation recital, address, venue-only, tax, employment, or regulatory reference as governing-law evidence."
         },
         "redline_guidance": {
           "default_action": "replace_paragraph",

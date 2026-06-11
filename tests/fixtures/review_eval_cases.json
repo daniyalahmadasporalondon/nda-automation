@@ -169,6 +169,44 @@
     }
   },
   {
+    "name": "governing_law_ontario_alias_pass",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "label_source": "engineering",
+    "label_note": "Approved-law aliases count only when they modify the operative governing-law clause.",
+    "text": "This Agreement shall be governed by Ontario laws.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "approved_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_approved_secondary_unapproved_review",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "A secondary unapproved carve-out is not a clean approved-law pass; it needs human review to decide which law controls that topic.",
+    "text": "This Agreement shall be governed by the laws of India, provided that enforcement of equitable remedies shall be governed by the laws of Singapore.",
+    "expected": {
+      "decision": "review",
+      "reason_code": "unclear_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_approved_conditional_choice_review",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "An approved law subject to a later agreement is not a fail, but it is not a stable governing-law pass.",
+    "text": "This Agreement shall be governed by the laws of Delaware unless otherwise agreed by the parties.",
+    "expected": {
+      "decision": "review",
+      "reason_code": "unclear_governing_law"
+    }
+  },
+  {
     "name": "term_three_years_pass",
     "clause_id": "term_and_survival",
     "kind": "deterministic",

@@ -181,6 +181,29 @@ class PlaybookRulesTests(unittest.TestCase):
         self.assertIn("auto-renewal", non_circumvention["rules"]["acceptable_position"])
         self.assertIn("no-termination lock", non_circumvention["rules"]["fail_conditions"][0]["description"])
 
+    def test_ai_rules_packet_carries_wave_three_governing_law_and_grounding_guidance(self):
+        packet = playbook_rules_for_ai(load_playbook())
+        clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}
+
+        governing_law = clauses["governing_law"]
+        self.assertIn("party recital", governing_law["evidence_guidance"])
+        self.assertIn("secondary carve-out", governing_law["evidence_guidance"])
+        self.assertIn("Approved-law aliases", governing_law["evidence_guidance"])
+        self.assertTrue(any("incorporation" in signal for signal in governing_law["semantic_signals"]))
+        self.assertTrue(any("secondary" in signal for signal in governing_law["semantic_signals"]))
+        self.assertIn(
+            "Party incorporation",
+            governing_law["rules"]["fail_conditions"][0]["description"],
+        )
+        self.assertIn(
+            "later agreement",
+            governing_law["rules"]["review_triggers"][0]["description"],
+        )
+        self.assertIn(
+            "Cite",
+            governing_law["rules"]["evidence_requirements"]["guidance"],
+        )
+
     def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
