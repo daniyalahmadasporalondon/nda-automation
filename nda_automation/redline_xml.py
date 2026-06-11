@@ -177,7 +177,7 @@ def _apply_tracked_run_format(
         for op in run_ops
         if isinstance(op, dict)
         and op.get("scope") == "run"
-        and op.get("property") in ("bold", "italic", "font", "size")
+        and op.get("property") in ("bold", "italic", "font", "size", "underline", "strike", "color", "highlight")
         and isinstance(op.get("start"), int)
         and isinstance(op.get("end"), int)
         and int(op["start"]) < int(op["end"])
@@ -346,6 +346,14 @@ def _run_format_changed_rpr(
             _set_run_font(new_rpr, str(op.get("to") or ""))
         elif prop == "size":
             _set_run_font_size(new_rpr, op.get("to"))
+        elif prop == "underline":
+            _set_run_underline(new_rpr, bool(op.get("to")))
+        elif prop == "strike":
+            _set_run_toggle(new_rpr, "strike", bool(op.get("to")))
+        elif prop == "color":
+            _set_run_color(new_rpr, str(op.get("to") or ""))
+        elif prop == "highlight":
+            _set_run_highlight(new_rpr, str(op.get("to") or ""))
 
     # The from-state record: a clean clone of the ORIGINAL rPr (its own rPrChange
     # stripped) wrapped in <w:rPrChange> so Word can roll the formatting back.
@@ -370,7 +378,7 @@ def _set_run_toggle(run_properties: ET.Element, tag: str, enabled: bool) -> None
     existing = run_properties.find(_w_tag(tag))
     if enabled:
         if existing is None:
-            run_properties.insert(0, ET.Element(_w_tag(tag)))
+            _insert_run_property_child(run_properties, ET.Element(_w_tag(tag)))
         else:
             existing.attrib.pop(_w_tag("val"), None)
             existing.attrib.pop("val", None)
@@ -385,8 +393,7 @@ def _set_run_font(run_properties: ET.Element, font: str) -> None:
     rfonts = run_properties.find(_w_tag("rFonts"))
     if rfonts is None:
         rfonts = ET.Element(_w_tag("rFonts"))
-        # rFonts leads CT_RPr; place it before any existing children.
-        run_properties.insert(0, rfonts)
+        _insert_run_property_child(run_properties, rfonts)
     for attr in ("ascii", "hAnsi", "cs"):
         rfonts.set(_w_tag(attr), font)
 
@@ -433,12 +440,56 @@ def _set_size_on_rpr(run_properties: ET.Element, half_points: int) -> None:
     szcs.set(_w_tag("val"), str(half_points))
 
 
+def _insert_run_property_child(run_properties: ET.Element, child: ET.Element) -> None:
+    target_index = _RPR_CHILD_ORDER_INDEX.get(child.tag.split("}", 1)[-1], len(_RPR_CHILD_ORDER))
+    for index, existing in enumerate(list(run_properties)):
+        existing_index = _RPR_CHILD_ORDER_INDEX.get(existing.tag.split("}", 1)[-1], len(_RPR_CHILD_ORDER))
+        if existing_index > target_index:
+            run_properties.insert(index, child)
+            return
+    run_properties.append(child)
+
+
 def _set_run_font_size(run_properties: ET.Element, size: object) -> None:
     """Set the run's point size as `<w:sz>`/`<w:szCs>` (half-points)."""
     half_points = _size_half_points(size)
     if half_points is None:
         return
     _set_size_on_rpr(run_properties, half_points)
+
+
+def _set_run_underline(run_properties: ET.Element, enabled: bool) -> None:
+    existing = run_properties.find(_w_tag("u"))
+    if enabled:
+        if existing is None:
+            existing = ET.Element(_w_tag("u"))
+            _insert_run_property_child(run_properties, existing)
+        existing.set(_w_tag("val"), "single")
+        return
+    for node in list(run_properties.findall(_w_tag("u"))):
+        run_properties.remove(node)
+
+
+def _set_run_color(run_properties: ET.Element, color: str) -> None:
+    value = str(color or "").strip().lstrip("#").upper()
+    if len(value) != 6 or any(character not in "0123456789ABCDEF" for character in value):
+        return
+    color_element = run_properties.find(_w_tag("color"))
+    if color_element is None:
+        color_element = ET.Element(_w_tag("color"))
+        _insert_run_property_child(run_properties, color_element)
+    color_element.set(_w_tag("val"), value)
+
+
+def _set_run_highlight(run_properties: ET.Element, highlight: str) -> None:
+    value = str(highlight or "").strip().lower()
+    if not value:
+        return
+    highlight_element = run_properties.find(_w_tag("highlight"))
+    if highlight_element is None:
+        highlight_element = ET.Element(_w_tag("highlight"))
+        _insert_run_property_child(run_properties, highlight_element)
+    highlight_element.set(_w_tag("val"), value)
 
 
 def _set_paragraph_alignment(properties: ET.Element, alignment: str) -> None:
@@ -804,7 +855,7 @@ def _tracked_insert_formatted_runs(replacement_runs: List[dict], revision_id: in
 
 def _formatted_run(run_model: dict) -> str:
     """A single ``<w:r>`` carrying ``run_model['text']`` with the run-model's
-    bold/italic/font/size applied as an ``<w:rPr>``.
+    formatting applied as an ``<w:rPr>``.
 
     The text may contain newlines: each is emitted as a ``<w:br/>`` between ``<w:t>``
     segments (matching :func:`_run`). The rPr is assembled by the same ET helpers the
@@ -819,6 +870,16 @@ def _formatted_run(run_model: dict) -> str:
         _set_run_toggle(run_properties, "b", True)
     if run_model.get("italic"):
         _set_run_toggle(run_properties, "i", True)
+    if run_model.get("underline"):
+        _set_run_underline(run_properties, True)
+    if run_model.get("strike"):
+        _set_run_toggle(run_properties, "strike", True)
+    color = str(run_model.get("color") or "")
+    if color:
+        _set_run_color(run_properties, color)
+    highlight = str(run_model.get("highlight") or "")
+    if highlight:
+        _set_run_highlight(run_properties, highlight)
     size = run_model.get("size")
     if size:
         _set_run_font_size(run_properties, size)
@@ -834,11 +895,24 @@ def _formatted_run(run_model: dict) -> str:
     return f"<w:r>{rpr_xml}{''.join(parts)}</w:r>"
 
 
-# CT_RPr child order (subset we emit): rFonts leads, then the b/i toggles, then
-# sz/szCs. The ET helpers each insert at the front, so a from-scratch build would
-# emit children in reverse call order; we re-sort to this canonical sequence so the
-# serialised rPr is schema-valid regardless of insertion order.
-_RPR_CHILD_ORDER = ("rFonts", "b", "bCs", "i", "iCs", "sz", "szCs")
+# CT_RPr child order (subset we emit). The ET helpers insert in this canonical
+# sequence, and the string serializer re-sorts to the same order so the emitted
+# rPr stays schema-valid regardless of operation order.
+_RPR_CHILD_ORDER = (
+    "rFonts",
+    "b",
+    "bCs",
+    "i",
+    "iCs",
+    "strike",
+    "dstrike",
+    "color",
+    "sz",
+    "szCs",
+    "highlight",
+    "u",
+    "rPrChange",
+)
 _RPR_CHILD_ORDER_INDEX = {tag: index for index, tag in enumerate(_RPR_CHILD_ORDER)}
 
 

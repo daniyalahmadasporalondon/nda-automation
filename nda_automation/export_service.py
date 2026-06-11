@@ -178,8 +178,48 @@ MAX_FORMAT_OPS = 200
 MAX_FONT_NAME_CHARS = 120
 MAX_REPLACEMENT_RUNS = 2000
 _FORMAT_OP_SCOPES = {"paragraph", "run"}
-_FORMAT_OP_PROPERTIES = {"alignment", "font", "bold", "italic", "size"}
+_FORMAT_OP_PROPERTIES = {
+    "alignment",
+    "font",
+    "bold",
+    "italic",
+    "size",
+    "underline",
+    "strike",
+    "color",
+    "highlight",
+}
+_FORMAT_OP_PARAGRAPH_PROPERTIES = {"alignment", "font", "size"}
+_FORMAT_OP_RUN_PROPERTIES = {
+    "bold",
+    "italic",
+    "font",
+    "size",
+    "underline",
+    "strike",
+    "color",
+    "highlight",
+}
 _FORMAT_OP_ALIGNMENTS = {"left", "center", "right", "justify"}
+_FORMAT_OP_HIGHLIGHTS = {
+    "black": "black",
+    "blue": "blue",
+    "cyan": "cyan",
+    "darkblue": "darkBlue",
+    "darkcyan": "darkCyan",
+    "darkgray": "darkGray",
+    "darkgreen": "darkGreen",
+    "darkmagenta": "darkMagenta",
+    "darkred": "darkRed",
+    "darkyellow": "darkYellow",
+    "green": "green",
+    "lightgray": "lightGray",
+    "magenta": "magenta",
+    "none": "none",
+    "red": "red",
+    "white": "white",
+    "yellow": "yellow",
+}
 
 
 def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
@@ -204,6 +244,10 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
         prop = str(op.get("property") or "").strip().lower()
         if prop not in _FORMAT_OP_PROPERTIES:
             continue
+        if scope == "paragraph" and prop not in _FORMAT_OP_PARAGRAPH_PROPERTIES:
+            continue
+        if scope == "run" and prop not in _FORMAT_OP_RUN_PROPERTIES:
+            continue
 
         clean_op: dict = {"scope": scope, "property": prop}
         if prop == "alignment":
@@ -220,9 +264,18 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
         elif prop == "size":
             clean_op["to"] = _clean_size_value(op.get("to"))
             clean_op["from"] = _clean_size_value(op.get("from"))
+        elif prop == "color":
+            clean_op["to"] = _clean_hex_color(op.get("to"))
+            clean_op["from"] = _clean_hex_color(op.get("from"))
+            if not clean_op["to"]:
+                continue
+        elif prop == "highlight":
+            clean_op["to"] = _clean_highlight_value(op.get("to"))
+            clean_op["from"] = _clean_highlight_value(op.get("from"))
+            if not clean_op["to"]:
+                continue
         else:
-            # bold/italic: carry the truthy intent through for the later inline
-            # milestone; the paragraph emitter ignores run-scope ops for now.
+            # Boolean run toggles.
             clean_op["to"] = bool(op.get("to"))
             clean_op["from"] = bool(op.get("from"))
 
@@ -261,12 +314,22 @@ def _clean_replacement_runs(replacement_runs: object, replacement_text: str) -> 
             clean_run["bold"] = True
         if bool(run.get("italic")):
             clean_run["italic"] = True
+        if bool(run.get("underline")):
+            clean_run["underline"] = True
+        if bool(run.get("strike")):
+            clean_run["strike"] = True
         font = str(run.get("font") or "").strip()[:MAX_FONT_NAME_CHARS]
         if font:
             clean_run["font"] = font
         size = _clean_size_value(run.get("size"))
         if size:
             clean_run["size"] = size
+        color = _clean_hex_color(run.get("color"))
+        if color:
+            clean_run["color"] = color
+        highlight = _clean_highlight_value(run.get("highlight"))
+        if highlight:
+            clean_run["highlight"] = highlight
         cleaned.append(clean_run)
 
     if "".join(run["text"] for run in cleaned) != replacement_text:
@@ -288,6 +351,18 @@ def _clean_size_value(value: object) -> int:
     if size <= 0:
         return 0
     return min(max(size, 1), 1638)
+
+
+def _clean_hex_color(value: object) -> str:
+    normalized = str(value or "").strip().lstrip("#").upper()
+    if len(normalized) != 6:
+        return ""
+    return normalized if all(character in "0123456789ABCDEF" for character in normalized) else ""
+
+
+def _clean_highlight_value(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return _FORMAT_OP_HIGHLIGHTS.get(normalized, "")
 
 
 def _clean_run_offsets(start: object, end: object, text_length: int) -> tuple[int, int] | None:

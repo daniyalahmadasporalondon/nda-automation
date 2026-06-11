@@ -24,7 +24,7 @@ from nda_automation.redline_xml import (
     _strip_paragraph_property_revisions,
     _tracked_replace_paragraph,
 )
-from nda_automation import docx_export, docx_health, source_redline_docx
+from nda_automation import docx_export, docx_health, export_service, source_redline_docx
 from nda_automation.docx_health import verify_export_content_coverage
 from nda_automation.inline_diff import diff_text_operations
 from nda_automation import docx_text
@@ -1547,9 +1547,9 @@ class DocxExportTests(unittest.TestCase):
 
     def test_accept_all_revisions_keeps_replacement_run_formatting(self):
         # A replace redline carrying replacement_runs (the edited paragraph's run model,
-        # here one bold run) -> build_source_redline_docx (tracked) ->
+        # here one rich formatted run) -> build_source_redline_docx (tracked) ->
         # accept_all_revisions -> a CLEAN doc whose new text keeps the run formatting:
-        # the bold word lands on a run with <w:b/>, and no <w:ins>/<w:del> remains.
+        # the formatted word lands on a run with its rPr, and no <w:ins>/<w:del> remains.
         original_text = "These obligations survive termination of this Agreement."
         edited_text = "These obligations survive expiry of this Agreement."
         body_paragraph = f"<w:p><w:r><w:t>{original_text}</w:t></w:r></w:p>"
@@ -1581,11 +1581,19 @@ class DocxExportTests(unittest.TestCase):
                     "paragraph_id": pid,
                     "original_text": original_text,
                     "replacement_text": edited_text,
-                    # Run model: a plain head, a BOLD "expiry", then a plain tail. Its
-                    # joined text equals replacement_text.
+                    # Run model: a plain head, a formatted "expiry", then a plain tail.
+                    # Its joined text equals replacement_text.
                     "replacement_runs": [
                         {"text": "These obligations survive "},
-                        {"text": "expiry", "bold": True},
+                        {
+                            "text": "expiry",
+                            "bold": True,
+                            "underline": True,
+                            "strike": True,
+                            "color": "00AAFF",
+                            "highlight": "yellow",
+                            "size": 12,
+                        },
                         {"text": " of this Agreement."},
                     ],
                 }
@@ -1611,16 +1619,32 @@ class DocxExportTests(unittest.TestCase):
         full = "".join(n.text or "" for n in clean_root.findall(".//w:t", W_NS))
         self.assertEqual(full.count("These obligations survive expiry of this Agreement."), 1)
         self.assertNotIn("survive termination", full)
-        # The run model is honoured: the "expiry" run carries <w:b/>, and no other run
-        # of this paragraph does (the plain head/tail are not bolded).
+        # The run model is honoured: the "expiry" run carries the widened formatting,
+        # and no other run of this paragraph carries the bold flag.
         bold_run_texts = []
+        expiry_rpr = None
         for run in clean_root.findall(".//w:r", W_NS):
+            run_text_value = "".join(t.text or "" for t in run.findall("w:t", W_NS))
+            if run_text_value == "expiry":
+                expiry_rpr = run.find("w:rPr", W_NS)
             if run.find("w:rPr/w:b", W_NS) is None:
                 continue
-            bold_run_texts.append("".join(t.text or "" for t in run.findall("w:t", W_NS)))
+            bold_run_texts.append(run_text_value)
         self.assertIn("expiry", bold_run_texts)
         self.assertNotIn("These obligations survive ", bold_run_texts)
         self.assertNotIn(" of this Agreement.", bold_run_texts)
+        self.assertIsNotNone(expiry_rpr, "formatted replacement run missing rPr")
+        self.assertIsNotNone(expiry_rpr.find("w:strike", W_NS))
+        self.assertEqual(expiry_rpr.find("w:color", W_NS).get(f"{{{W_NS['w']}}}val"), "00AAFF")
+        self.assertEqual(expiry_rpr.find("w:highlight", W_NS).get(f"{{{W_NS['w']}}}val"), "yellow")
+        self.assertEqual(expiry_rpr.find("w:u", W_NS).get(f"{{{W_NS['w']}}}val"), "single")
+        self.assertEqual(expiry_rpr.find("w:sz", W_NS).get(f"{{{W_NS['w']}}}val"), "24")
+        self.assertEqual(expiry_rpr.find("w:szCs", W_NS).get(f"{{{W_NS['w']}}}val"), "24")
+        expiry_child_tags = [child.tag.rsplit("}", 1)[-1] for child in list(expiry_rpr)]
+        self.assertEqual(
+            expiry_child_tags,
+            ["b", "strike", "color", "sz", "szCs", "highlight", "u"],
+        )
 
     def test_source_redline_format_paragraph_mixes_paragraph_and_run_ops(self):
         # One format_paragraph redline carrying BOTH a paragraph op (alignment) and a
@@ -2196,6 +2220,156 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(run_text(formatted), formatted_text)
         self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
         self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+
+    def test_manual_export_redline_sanitizes_widened_format_ops(self):
+        cleaned = export_service.clean_manual_export_redline(
+            {
+                "id": "fmt-rich",
+                "action": REDLINE_FORMAT_PARAGRAPH,
+                "paragraph_id": "p1",
+                "original_text": "Alpha beta gamma delta.",
+                "replacement_text": "Alpha beta gamma delta.",
+                "format_ops": [
+                    {"scope": "run", "property": "underline", "start": 0, "end": 5, "to": True},
+                    {"scope": "run", "property": "strike", "start": 6, "end": 10, "to": True},
+                    {"scope": "run", "property": "color", "start": 11, "end": 16, "to": "#00aaff"},
+                    {"scope": "run", "property": "highlight", "start": 17, "end": 22, "to": "yellow"},
+                    {"scope": "run", "property": "color", "start": 0, "end": 5, "to": "not-a-color"},
+                    {"scope": "run", "property": "highlight", "start": 0, "end": 5, "to": "sparkle"},
+                    {"scope": "paragraph", "property": "underline", "to": True},
+                    {"scope": "paragraph", "property": "color", "to": "#00aaff"},
+                ],
+            }
+        )
+
+        self.assertIsNotNone(cleaned)
+        self.assertEqual(
+            cleaned["format_ops"],
+            [
+                {"scope": "run", "property": "underline", "to": True, "from": False, "start": 0, "end": 5},
+                {"scope": "run", "property": "strike", "to": True, "from": False, "start": 6, "end": 10},
+                {"scope": "run", "property": "color", "to": "00AAFF", "from": "", "start": 11, "end": 16},
+                {"scope": "run", "property": "highlight", "to": "yellow", "from": "", "start": 17, "end": 22},
+            ],
+        )
+
+    def test_manual_export_redline_sanitizes_widened_replacement_runs(self):
+        cleaned = export_service.clean_manual_export_redline(
+            {
+                "id": "replace-rich",
+                "action": REDLINE_REPLACE_PARAGRAPH,
+                "paragraph_id": "p1",
+                "original_text": "These obligations survive termination.",
+                "replacement_text": "These obligations survive expiry.",
+                "replacement_runs": [
+                    {"text": "These obligations survive "},
+                    {
+                        "text": "expiry",
+                        "bold": True,
+                        "underline": True,
+                        "strike": True,
+                        "color": "#00aaff",
+                        "highlight": "yellow",
+                        "size": 12,
+                    },
+                    {"text": "."},
+                ],
+            }
+        )
+
+        self.assertIsNotNone(cleaned)
+        self.assertEqual(
+            cleaned["replacement_runs"],
+            [
+                {"text": "These obligations survive "},
+                {
+                    "text": "expiry",
+                    "bold": True,
+                    "underline": True,
+                    "strike": True,
+                    "size": 12,
+                    "color": "00AAFF",
+                    "highlight": "yellow",
+                },
+                {"text": "."},
+            ],
+        )
+
+    def test_source_redline_format_paragraph_emits_widened_tracked_run_properties(self):
+        formatted_text = "Alpha beta gamma delta."
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"<w:p><w:r><w:t>{formatted_text}</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-rich-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": [
+                        {"scope": "run", "property": "underline", "start": 0, "end": 5, "from": False, "to": True},
+                        {"scope": "run", "property": "strike", "start": 6, "end": 10, "from": False, "to": True},
+                        {"scope": "run", "property": "color", "start": 11, "end": 16, "from": "", "to": "00AAFF"},
+                        {"scope": "run", "property": "highlight", "start": 17, "end": 22, "from": "", "to": "yellow"},
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        formatted = next(
+            paragraph
+            for paragraph in document_root.findall(".//w:body/w:p", W_NS)
+            if "".join(node.text or "" for node in paragraph.findall(".//w:t", W_NS)) == formatted_text
+        )
+        self.assertEqual(formatted.findall(".//w:ins", W_NS), [])
+        self.assertEqual(formatted.findall(".//w:del", W_NS), [])
+
+        runs_by_text = {
+            "".join(node.text or "" for node in run.findall("w:t", W_NS)): run
+            for run in formatted.findall("w:r", W_NS)
+        }
+        alpha_rpr = runs_by_text["Alpha"].find("w:rPr", W_NS)
+        beta_rpr = runs_by_text["beta"].find("w:rPr", W_NS)
+        gamma_rpr = runs_by_text["gamma"].find("w:rPr", W_NS)
+        delta_rpr = runs_by_text["delta"].find("w:rPr", W_NS)
+        self.assertEqual(alpha_rpr.find("w:u", W_NS).get(f"{{{W_NS['w']}}}val"), "single")
+        self.assertIsNotNone(beta_rpr.find("w:strike", W_NS))
+        self.assertEqual(gamma_rpr.find("w:color", W_NS).get(f"{{{W_NS['w']}}}val"), "00AAFF")
+        self.assertEqual(delta_rpr.find("w:highlight", W_NS).get(f"{{{W_NS['w']}}}val"), "yellow")
+        for rpr in (alpha_rpr, beta_rpr, gamma_rpr, delta_rpr):
+            self.assertIsNotNone(rpr.find("w:rPrChange", W_NS), "tracked run format missing rollback state")
+            child_tags = [
+                child.tag.rsplit("}", 1)[-1]
+                for child in list(rpr)
+            ]
+            self.assertEqual(child_tags[-1], "rPrChange", "rPrChange must remain the final rPr child")
+            self.assertEqual(child_tags, sorted(child_tags, key=("strike", "color", "highlight", "u", "rPrChange").index))
 
     def test_export_content_coverage_passes_for_full_source_redline(self):
         source_docx = make_source_docx([
