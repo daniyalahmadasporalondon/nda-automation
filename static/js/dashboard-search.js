@@ -65,6 +65,7 @@ const DashboardSearchView = (() => {
     // and action requests render as assistant cards.
     assistantQuery,
     confirmAssistantAction,
+    ensureMatters,
     // v2 async seam: POST a natural-language query to the search-intent endpoint
     // and resolve {ok, payload}. payload is either {filters, interpreted} (apply the
     // validated spec) or {fallback:true} (use v1 keyword search). Lives in app.js so
@@ -96,6 +97,16 @@ const DashboardSearchView = (() => {
     function matters() {
       const list = typeof getMatters === "function" ? getMatters() : [];
       return Array.isArray(list) ? list : [];
+    }
+
+    async function ensureSearchMatters() {
+      if (typeof ensureMatters !== "function") return;
+      try {
+        await ensureMatters();
+      } catch (error) {
+        // Search remains graceful when the repository list cannot refresh; the
+        // caller will render against the current in-memory list, which may be empty.
+      }
     }
 
     function renderChips() {
@@ -450,11 +461,13 @@ const DashboardSearchView = (() => {
           resultsList.innerHTML = "";
         }
         let assistantOutcome = null;
+        const matterLoad = ensureSearchMatters();
         try {
           assistantOutcome = await assistantQuery(query);
         } catch (error) {
           assistantOutcome = null;
         }
+        await matterLoad;
         if (token !== searchRunToken) return;
         if (assistantOutcome?.ok && renderAssistantResponse(assistantOutcome.payload)) {
           return;
@@ -463,6 +476,7 @@ const DashboardSearchView = (() => {
 
       // No assistant/search seam wired -> v1 keyword search directly.
       if (typeof searchIntent !== "function") {
+        await ensureSearchMatters();
         renderKeywordResults(query);
         return;
       }
@@ -480,11 +494,13 @@ const DashboardSearchView = (() => {
       }
 
       let outcome = null;
+      const matterLoad = ensureSearchMatters();
       try {
         outcome = await searchIntent(query);
       } catch (error) {
         outcome = null;
       }
+      await matterLoad;
       // A newer submit/reset superseded this run — drop the stale result.
       if (token !== searchRunToken) return;
 
@@ -525,7 +541,7 @@ const DashboardSearchView = (() => {
     }
 
     // Run a quick chip's backing status filter.
-    function runChipSearch(chipId) {
+    async function runChipSearch(chipId) {
       const chip = (lib().chipById || (() => null))(chipId);
       if (!chip) return;
       // Re-clicking the active chip clears it (toggle off).
@@ -538,10 +554,12 @@ const DashboardSearchView = (() => {
       activeQuery = "";
       if (input) input.value = "";
       // A chip win supersedes any in-flight AI translation.
-      searchRunToken += 1;
+      const token = ++searchRunToken;
       setInterpreted("");
       assistantActions = new Map();
       renderChips();
+      await ensureSearchMatters();
+      if (token !== searchRunToken) return;
       // v3: the "Find documents by counterparty" chip groups every matter instead of
       // filtering by status. Branch on its kind so its rendering path is distinct.
       if (chip.kind === "group") {
