@@ -32,6 +32,8 @@ def test_attach_document_source_adds_canonical_source_metadata_and_warnings():
         "extraction_quality": {"page_count": 2, "warnings": ["Scanned page skipped."]},
     }
     assert updated["review_warnings"] == ["Scanned page skipped."]
+    assert updated["source_fidelity"]["source_type"] == "pdf"
+    assert updated["source_fidelity"]["capabilities"]["pdf_page_references"] is False
 
 
 def test_extracted_text_from_paragraphs_uses_review_result_separator():

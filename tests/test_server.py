@@ -1602,6 +1602,33 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assert_review_payload_contract(payload, expected_source_type="docx")
 
+    def test_review_document_exposes_source_fidelity_for_tables_and_colors(self):
+        source_docx = make_rich_docx_with_table_and_color()
+
+        status, payload = self.request(
+            "POST",
+            "/api/review-document",
+            {
+                "filename": "rich-uploaded.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        source_fidelity = payload["source_fidelity"]
+        self.assertEqual(source_fidelity["source_type"], "docx")
+        self.assertEqual(source_fidelity["analysis_model"], "paragraphs")
+        self.assertEqual(source_fidelity["render_model"], "source_blocks")
+        self.assertTrue(source_fidelity["capabilities"]["structured_tables"])
+        self.assertTrue(source_fidelity["capabilities"]["run_colors"])
+        self.assertEqual(source_fidelity["summary"]["table_count"], 1)
+        table = next(block for block in source_fidelity["blocks"] if block["type"] == "table")
+        self.assertEqual(table["rows"][0]["cells"][0]["paragraph_ids"], ["p2"])
+        self.assertEqual(table["rows"][0]["cells"][1]["paragraph_ids"], ["p3"])
+        intro = source_fidelity["blocks"][0]
+        self.assertEqual(intro["runs"][1]["text"], "red")
+        self.assertEqual(intro["runs"][1]["color"], "#ff0000")
+
     def test_docx_review_and_matter_upload_reject_xml_dtd_entities(self):
         source_docx = make_unsafe_docx()
 
@@ -7728,6 +7755,30 @@ def make_docx(paragraphs):
     document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>{body}</w:body>
+</w:document>"""
+    with BytesIO() as output:
+        with ZipFile(output, "w") as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return output.getvalue()
+
+
+def make_rich_docx_with_table_and_color():
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Intro </w:t></w:r>
+      <w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>red</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> text.</w:t></w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Party</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Signature</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>This Agreement shall be governed by the laws of California.</w:t></w:r></w:p>
+  </w:body>
 </w:document>"""
     with BytesIO() as output:
         with ZipFile(output, "w") as archive:

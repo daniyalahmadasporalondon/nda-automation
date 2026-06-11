@@ -11,6 +11,7 @@ from .pdf_export_service import public_matter_document_downloads
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
 from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
+from .source_fidelity import source_fidelity_payload
 from .workflow import workflow_state
 
 
@@ -235,7 +236,17 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
     }
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
-        review_payload["review_result"] = review_result_with_structure(review_result, extracted_text)
+        structured_review_result = review_result_with_structure(review_result, extracted_text)
+        review_payload["review_result"] = structured_review_result
+        source_fidelity = structured_review_result.get("source_fidelity")
+        review_payload["source_fidelity"] = (
+            source_fidelity
+            if isinstance(source_fidelity, dict)
+            else source_fidelity_payload(
+                structured_review_result,
+                source=structured_review_result.get("source") if isinstance(structured_review_result.get("source"), dict) else None,
+            )
+        )
     ai_first_review_metadata = matter.get("ai_first_review_metadata")
     if isinstance(ai_first_review_metadata, dict):
         review_payload["ai_first_review_metadata"] = ai_first_review_metadata

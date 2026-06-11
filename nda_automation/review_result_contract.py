@@ -12,6 +12,7 @@ from .redline_actions import (
 )
 from .redline_edit_contract import normalize_redline_edits, redline_inserted_text, redline_replacement_text
 from .review_document import EvidenceProvenanceError, validate_clause_evidence_trust
+from .source_fidelity import source_fidelity_payload
 
 PROPOSED_CHANGE_CONTRACT_VERSION = 1
 PROPOSED_CHANGE_REPLACE = "replace"
@@ -338,6 +339,7 @@ def attach_document_source(
         review_result["source"]["extraction_quality"] = extraction_quality
         _append_extraction_warnings(review_result, extraction_quality)
     review_result["extracted_text"] = resolved_text
+    review_result["source_fidelity"] = source_fidelity_payload(review_result, source=review_result["source"])
     return review_result
 
 
