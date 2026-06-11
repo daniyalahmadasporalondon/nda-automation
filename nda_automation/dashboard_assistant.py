@@ -463,10 +463,16 @@ def _looks_like_generation_request(lowered: str) -> bool:
 
 
 def _looks_like_playbook_clause_count_question(lowered: str) -> bool:
-    return "playbook" in lowered and _contains_any(lowered, ("clause", "clauses")) and _contains_any(
+    if not _contains_any(lowered, ("clause", "clauses")) or not _contains_any(
         lowered,
         ("how many", "number of", "count", "do we have"),
-    )
+    ):
+        return False
+    if "playbook" in lowered:
+        return True
+    if _contains_any(lowered, ("this nda", "the nda", "this contract", "the contract", "this document", "the document")):
+        return False
+    return _contains_any(lowered, ("do we have", "we have", "our clauses", "our nda clauses"))
 
 
 def _looks_like_playbook_law_question(lowered: str) -> bool:

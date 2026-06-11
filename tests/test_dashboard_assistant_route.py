@@ -153,18 +153,26 @@ class DashboardAssistantRouteTests(unittest.TestCase):
         self.assertEqual(self.repository.list_matters(owner_user_id="nda-admin"), [])
 
     def test_answers_playbook_system_question_from_active_playbook(self):
-        with self._env(self.auth_env()):
-            status, payload, _ = self.assistant(
-                "How many playbook clauses do we have?",
-                headers=self.basic_auth_headers(),
-            )
+        phrasings = [
+            "How many clauses do we have?",
+            "How many playbook clauses do we have?",
+            "How many clauses are in the playbook?",
+            "count playbook clauses",
+        ]
 
-        self.assertEqual(status, 200, payload)
-        self.assertEqual(payload["intent"], "system_question")
-        self.assertEqual(payload["domain"], "playbook")
-        self.assertEqual(payload["question"], "playbook_clause_count")
-        self.assertGreaterEqual(payload["answer"]["count"], 1)
-        self.assertIn("clause", payload["answer"]["text"])
+        for phrasing in phrasings:
+            with self.subTest(phrasing=phrasing), self._env(self.auth_env()):
+                status, payload, _ = self.assistant(
+                    phrasing,
+                    headers=self.basic_auth_headers(),
+                )
+
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(payload["intent"], "system_question")
+            self.assertEqual(payload["domain"], "playbook")
+            self.assertEqual(payload["question"], "playbook_clause_count")
+            self.assertGreaterEqual(payload["answer"]["count"], 1)
+            self.assertIn("clause", payload["answer"]["text"])
 
     def test_answers_email_template_system_question(self):
         with self._env(self.auth_env()):

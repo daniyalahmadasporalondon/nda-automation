@@ -132,22 +132,42 @@ def test_capability_catalog_exposes_major_command_center_domains():
 
 
 def test_playbook_clause_count_answers_from_active_playbook_provider():
-    response = dashboard_assistant.handle_dashboard_assistant_command(
+    playbook = {
+        "name": "Test NDA Playbook",
+        "version": "2026.1",
+        "clauses": [{"id": "mutuality"}, {"id": "governing_law"}],
+    }
+    phrasings = [
+        "How many clauses do we have?",
         "How many playbook clauses do we have?",
+        "How many clauses are in the playbook?",
+        "count playbook clauses",
+    ]
+
+    for phrasing in phrasings:
+        response = dashboard_assistant.handle_dashboard_assistant_command(
+            phrasing,
+            repository=InMemoryMatterRepository(),
+            playbook_provider=lambda: playbook,
+        )
+
+        assert response["intent"] == "system_question"
+        assert response["domain"] == "playbook"
+        assert response["question"] == "playbook_clause_count"
+        assert response["answer"]["count"] == 2
+        assert response["answer"]["playbook_name"] == "Test NDA Playbook"
+        assert "2 clauses" in response["answer"]["text"]
+
+
+def test_document_specific_clause_count_remains_unsupported():
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many clauses are in this NDA?",
         repository=InMemoryMatterRepository(),
-        playbook_provider=lambda: {
-            "name": "Test NDA Playbook",
-            "version": "2026.1",
-            "clauses": [{"id": "mutuality"}, {"id": "governing_law"}],
-        },
+        search_resolver=lambda _query: {"filters": None, "fallback": True},
+        playbook_provider=lambda: {"clauses": [{"id": "mutuality"}]},
     )
 
-    assert response["intent"] == "system_question"
-    assert response["domain"] == "playbook"
-    assert response["question"] == "playbook_clause_count"
-    assert response["answer"]["count"] == 2
-    assert response["answer"]["playbook_name"] == "Test NDA Playbook"
-    assert "2 clauses" in response["answer"]["text"]
+    assert response["intent"] == "unsupported"
 
 
 def test_playbook_governing_law_question_reads_approved_options():
