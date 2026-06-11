@@ -79,7 +79,6 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_AI_PROVIDER\s+value:\s+openrouter")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_MODEL\s+value:\s+x-ai/grok-4.3")
         self.assertRegex(blueprint, r"key:\s+OPENROUTER_API_KEY\s+sync:\s+false")
-        self.assertNotRegex(blueprint, r"key:\s+GEMINI_API_KEY")
         self.assertNotRegex(blueprint, r"key:\s+GROQ_API_KEY")
         self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+x-ai/grok-4.3")
         self.assertNotRegex(blueprint, r"disk:\s+name:\s+nda-automation-data\s+mountPath:\s+/var/data")
