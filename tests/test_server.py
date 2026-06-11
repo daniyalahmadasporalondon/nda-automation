@@ -32,6 +32,7 @@ from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
+from nda_automation import google_connection
 from nda_automation import ingestion_service
 from nda_automation import matter_store
 from nda_automation import matter_view
@@ -524,7 +525,14 @@ class ServerTests(unittest.TestCase):
                 state = parse_qs(parsed_start.query)["state"][0]
                 state_cookie = self.cookie_header(start_headers["Set-Cookie"])
 
-                with patch("nda_automation.routes.auth.google_identity.exchange_google_code", return_value={"id_token": "id-token"}), patch(
+                with patch(
+                    "nda_automation.routes.auth.google_identity.exchange_google_code",
+                    return_value={
+                        "id_token": "id-token",
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                    },
+                ), patch(
                     "nda_automation.routes.auth.google_identity.verify_google_id_token",
                     return_value=google_profile,
                 ):
@@ -535,6 +543,16 @@ class ServerTests(unittest.TestCase):
                     )
 
                 session_cookie = self.cookie_header(callback_headers["Set-Cookie"])
+                google_owner_user_id = "google:google-user-123"
+                connected_token_payloads = {
+                    role: json.loads(
+                        google_connection.user_token_path_for_role(role, google_owner_user_id).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    for role in ("inbound", "outbound", "drive")
+                }
+                drive_settings = app_settings.drive_settings()
                 authed_status, authed_payload = self.request(
                     "GET",
                     "/api/auth/status",
@@ -581,6 +599,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(callback_payload, b"")
         self.assertEqual(callback_headers["Location"], "/api/matters")
         self.assertIn("nda_session=", callback_headers["Set-Cookie"])
+        self.assertEqual(set(connected_token_payloads), {"inbound", "outbound", "drive"})
+        self.assertEqual(
+            connected_token_payloads["drive"]["scopes"],
+            ["https://www.googleapis.com/auth/drive.file"],
+        )
+        self.assertTrue(drive_settings["enabled"])
         self.assertEqual(authed_status, 200)
         self.assertTrue(authed_payload["authenticated"])
         self.assertEqual(authed_payload["user"]["id"], "google:google-user-123")

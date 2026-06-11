@@ -838,11 +838,97 @@ class DriveRouteTests(unittest.TestCase):
                 )
                 status, payload, _headers = self.request("GET", "/api/drive/status")
         self.assertEqual(status, 200)
-        self.assertEqual(set(payload.keys()), {"connected", "account", "folder", "enabled"})
+        self.assertEqual(
+            set(payload.keys()),
+            {
+                "connected",
+                "account",
+                "folder",
+                "enabled",
+                "signed_in",
+                "user_scoped",
+                "needs_connect",
+                "connect_url",
+                "token",
+            },
+        )
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["folder"], {"id": "folder_1", "name": "NDAs"})
         # No Google session in the loopback test client, so not connected.
         self.assertFalse(payload["connected"])
+        self.assertFalse(payload["signed_in"])
+        self.assertFalse(payload["user_scoped"])
+        self.assertFalse(payload["needs_connect"])
+        self.assertEqual(payload["connect_url"], "/auth/google/start")
+        self.assertEqual(payload["token"]["label"], "Sign in with Google")
+
+    def test_drive_status_signed_in_without_token_points_to_drive_connect(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                user = user_store.upsert_google_user({
+                    "sub": "drive-status-missing-token",
+                    "email": "missing-drive@example.com",
+                    "name": "Missing Drive",
+                    "picture": "",
+                })
+                token = user_store.create_session(user["id"])
+                status, payload, _headers = self.request(
+                    "GET",
+                    "/api/drive/status",
+                    headers={"Cookie": f"{user_store.SESSION_COOKIE_NAME}={token}"},
+                )
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["connected"])
+        self.assertTrue(payload["signed_in"])
+        self.assertTrue(payload["user_scoped"])
+        self.assertTrue(payload["needs_connect"])
+        self.assertEqual(payload["connect_url"], "/auth/drive/start")
+        self.assertEqual(payload["token"]["source"], "missing")
+
+    def test_drive_status_signed_in_with_drive_token_reports_connected(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                user = user_store.upsert_google_user({
+                    "sub": "drive-status-token",
+                    "email": "drive-token@example.com",
+                    "name": "Drive Token",
+                    "picture": "",
+                })
+                google_connection.save_user_oauth_token(
+                    user["id"],
+                    {"access_token": "access", "refresh_token": "refresh"},
+                    role="drive",
+                )
+                token = user_store.create_session(user["id"])
+                with patch.object(drive_integration, "drive_connected", return_value=True):
+                    with patch.object(drive_integration, "drive_account_email", return_value="drive-token@example.com"):
+                        status, payload, _headers = self.request(
+                            "GET",
+                            "/api/drive/status",
+                            headers={"Cookie": f"{user_store.SESSION_COOKIE_NAME}={token}"},
+                        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["connected"])
+        self.assertFalse(payload["needs_connect"])
+        self.assertEqual(payload["connect_url"], "/auth/drive/start")
+        self.assertEqual(payload["account"], "drive-token@example.com")
+        self.assertEqual(payload["token"]["source"], "user_data")
 
     def test_drive_settings_update_persists_via_route(self):
         with tempfile.TemporaryDirectory() as data_dir:
