@@ -135,7 +135,10 @@ def test_global_token_path_falls_back_to_legacy_gmail_data_tokens(tmp_path, monk
     monkeypatch.delenv(google_connection.ROLE_TOKEN_ENV["inbound"], raising=False)
     legacy_token = tmp_path / "gmail" / google_connection.ROLE_LOCAL_TOKEN_FILENAME["inbound"]
     legacy_token.parent.mkdir(parents=True)
-    legacy_token.write_text("{}", encoding="utf-8")
+    legacy_token.write_text(
+        json.dumps({"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}),
+        encoding="utf-8",
+    )
 
     token_path = google_connection.token_path_for_role("inbound")
     status = google_connection.role_token_status("inbound")
@@ -145,7 +148,108 @@ def test_global_token_path_falls_back_to_legacy_gmail_data_tokens(tmp_path, monk
         "configured": True,
         "label": "data/gmail/inbound-token.json",
         "source": "local_data",
+        "scope_status": {
+            "required": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "granted": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "missing": [],
+            "ok": True,
+        },
     }
+
+
+def test_drive_token_path_can_recover_legacy_gmail_token_with_drive_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.delenv(google_connection.ROLE_TOKEN_ENV["drive"], raising=False)
+    legacy_token = tmp_path / "gmail" / google_connection.ROLE_LOCAL_TOKEN_FILENAME["inbound"]
+    legacy_token.parent.mkdir(parents=True)
+    legacy_token.write_text(
+        json.dumps({
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/drive.file",
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    token_path = google_connection.token_path_for_role("drive")
+    status = google_connection.role_token_status("drive")
+
+    assert token_path == legacy_token
+    assert status["configured"] is True
+    assert status["source"] == "legacy_gmail_scope"
+    assert status["scope_status"]["ok"] is True
+    assert status["scope_status"]["missing"] == []
+
+
+def test_user_drive_token_path_can_recover_legacy_gmail_token_with_drive_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    legacy_token = google_connection.legacy_user_token_path_for_role("inbound", "google:alice")
+    legacy_token.parent.mkdir(parents=True)
+    legacy_token.write_text(
+        json.dumps({
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/drive.file",
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    token_path = google_connection.token_path_for_role("drive", owner_user_id="google:alice")
+    status = google_connection.role_token_status("drive", owner_user_id="google:alice")
+
+    assert token_path == legacy_token
+    assert status["configured"] is True
+    assert status["source"] == "legacy_gmail_scope"
+    assert status["scope_status"]["ok"] is True
+    assert status["scope_status"]["missing"] == []
+
+
+def test_role_recovery_status_distinguishes_missing_oauth_from_missing_token(monkeypatch):
+    monkeypatch.delenv("NDA_GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+
+    missing_oauth = google_connection.role_recovery_status(
+        "drive",
+        owner_user_id="",
+        connect_url="/auth/google/start",
+        integration="Drive",
+    )
+
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_ID", "client")
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "secret")
+    missing_token = google_connection.role_recovery_status(
+        "drive",
+        owner_user_id="google:alice",
+        connect_url="/auth/drive/start",
+        integration="Drive",
+    )
+
+    assert missing_oauth["state"] == "missing_oauth_config"
+    assert missing_oauth["action"] == "configure_google_oauth"
+    assert missing_token["state"] == "missing_token"
+    assert missing_token["action"] == "connect_google"
+
+
+def test_role_recovery_status_reports_missing_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_ID", "client")
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "secret")
+    token = google_connection.user_token_path_for_role("drive", "google:alice")
+    token.parent.mkdir(parents=True)
+    token.write_text(json.dumps({"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}), encoding="utf-8")
+
+    recovery = google_connection.role_recovery_status(
+        "drive",
+        owner_user_id="google:alice",
+        connect_url="/auth/drive/start",
+        integration="Drive",
+    )
+
+    assert recovery["state"] == "missing_scope"
+    assert recovery["action"] == "reconnect_google"
+    assert recovery["scope_status"]["missing"] == ["https://www.googleapis.com/auth/drive.file"]
 
 
 def test_build_authorization_url_uses_google_scopes_and_login_hint(monkeypatch):

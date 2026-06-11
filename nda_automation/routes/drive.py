@@ -50,6 +50,21 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
     settings = app_settings.drive_settings()
     connected = bool(owner_user_id) and drive_integration.drive_connected(owner_user_id)
     token_status = _drive_token_status(owner_user_id)
+    setup_status = google_connection.connection_setup_status(
+        owner_user_id=owner_user_id,
+        connect_url=_drive_connect_url(owner_user_id),
+        integration="Drive",
+    )
+    recovery_status = (
+        google_connection.role_recovery_status(
+            "drive",
+            owner_user_id=owner_user_id,
+            connect_url=_drive_connect_url(owner_user_id),
+            integration="Drive",
+        )
+        if owner_user_id
+        else setup_status
+    )
     account = ""
     if connected:
         account = drive_integration.drive_account_email(owner_user_id)
@@ -68,6 +83,8 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
             "needs_connect": bool(owner_user_id) and not connected,
             "connect_url": _drive_connect_url(owner_user_id),
             "token": token_status,
+            "setup": setup_status,
+            "recovery": recovery_status,
         },
         send_body=send_body,
     )

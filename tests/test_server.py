@@ -3402,11 +3402,14 @@ class ServerTests(unittest.TestCase):
         self.assertIn('"data processing agreement"', status["inbound"]["query"])
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
         self.assertIn("data/google/inbound-token.json", status["inbound"]["error"])
-        self.assertEqual(status["inbound"]["token"], {
-            "configured": False,
-            "label": "NDA_GMAIL_INBOUND_TOKEN_PATH or data/google/inbound-token.json",
-            "source": "missing",
-        })
+        self.assertFalse(status["inbound"]["token"]["configured"])
+        self.assertEqual(
+            status["inbound"]["token"]["label"],
+            "NDA_GMAIL_INBOUND_TOKEN_PATH or data/google/inbound-token.json",
+        )
+        self.assertEqual(status["inbound"]["token"]["source"], "missing")
+        self.assertEqual(status["inbound"]["token"]["scope_status"]["ok"], False)
+        self.assertEqual(status["inbound"]["recovery"]["state"], "missing_oauth_config")
 
     def test_user_gmail_oauth_connect_status_and_disconnect_are_owner_scoped(self):
         class FakeExecutable:
@@ -3501,14 +3504,20 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("access-token", json.dumps(status_payload))
         self.assertEqual(status_status, 200)
         self.assertTrue(status_payload["gmail"]["user_scoped"])
+        self.assertEqual(status_payload["gmail"]["setup"]["state"], "ready_to_connect")
         self.assertEqual(status_payload["gmail"]["inbound"]["token"]["source"], "user_data")
         self.assertEqual(status_payload["gmail"]["outbound"]["token"]["source"], "user_data")
+        self.assertEqual(status_payload["gmail"]["inbound"]["token"]["scope_status"]["missing"], [])
+        self.assertEqual(status_payload["gmail"]["outbound"]["token"]["scope_status"]["missing"], [])
+        self.assertEqual(status_payload["gmail"]["inbound"]["recovery"]["state"], "ready")
+        self.assertEqual(status_payload["gmail"]["outbound"]["recovery"]["state"], "ready")
         self.assertTrue(status_payload["gmail"]["inbound"]["ready"])
         self.assertEqual(disconnect_status, 200)
         self.assertEqual(disconnect_payload["disconnected"], 1)
         self.assertFalse(inbound_token_exists_after_disconnect)
         self.assertTrue(outbound_token_exists_after_disconnect)
         self.assertEqual(disconnect_payload["gmail"]["inbound"]["token"]["source"], "missing")
+        self.assertEqual(disconnect_payload["gmail"]["inbound"]["recovery"]["state"], "missing_token")
         self.assertEqual(disconnect_payload["gmail"]["outbound"]["token"]["source"], "user_data")
 
     def test_gmail_settings_updates_inbound_search_terms(self):

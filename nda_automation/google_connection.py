@@ -85,6 +85,7 @@ def role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
                 "configured": True,
                 "label": f"user_google/{role}-token.json",
                 "source": "user_data",
+                "scope_status": token_scope_status(role, local_path),
             }
         legacy_path = legacy_user_token_path_for_role(role, owner_user_id)
         if legacy_path.is_file():
@@ -92,20 +93,33 @@ def role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
                 "configured": True,
                 "label": f"user_gmail/{role}-token.json",
                 "source": "user_data",
+                "scope_status": token_scope_status(role, legacy_path),
             }
+        if role == "drive":
+            legacy_gmail_path = legacy_gmail_token_with_role_scope(role, owner_user_id=owner_user_id)
+            if legacy_gmail_path is not None:
+                return {
+                    "configured": True,
+                    "label": f"user_gmail/{legacy_gmail_path.name} (Drive scope)",
+                    "source": "legacy_gmail_scope",
+                    "scope_status": token_scope_status(role, legacy_gmail_path),
+                }
         return {
             "configured": False,
             "label": f"Connect Google for {role}",
             "source": "missing",
+            "scope_status": missing_scope_status(role),
         }
     env_name = ROLE_TOKEN_ENV[role]
     local_label = f"data/google/{ROLE_LOCAL_TOKEN_FILENAME[role]}"
     configured_path = os.environ.get(env_name)
     if configured_path:
+        token_path = Path(configured_path).expanduser()
         return {
-            "configured": Path(configured_path).expanduser().is_file(),
+            "configured": token_path.is_file(),
             "label": env_name,
             "source": "environment",
+            "scope_status": token_scope_status(role, token_path) if token_path.is_file() else missing_scope_status(role),
         }
     local_path = matter_store.DATA_DIR / "google" / ROLE_LOCAL_TOKEN_FILENAME[role]
     if local_path.is_file():
@@ -113,6 +127,7 @@ def role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
             "configured": True,
             "label": local_label,
             "source": "local_data",
+            "scope_status": token_scope_status(role, local_path),
         }
     legacy_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
     if legacy_path.is_file():
@@ -120,11 +135,22 @@ def role_token_status(role: str, owner_user_id: str = "") -> dict[str, object]:
             "configured": True,
             "label": f"data/gmail/{ROLE_LOCAL_TOKEN_FILENAME[role]}",
             "source": "local_data",
+            "scope_status": token_scope_status(role, legacy_path),
         }
+    if role == "drive":
+        legacy_gmail_path = legacy_gmail_token_with_role_scope(role)
+        if legacy_gmail_path is not None:
+            return {
+                "configured": True,
+                "label": f"data/gmail/{legacy_gmail_path.name} (Drive scope)",
+                "source": "legacy_gmail_scope",
+                "scope_status": token_scope_status(role, legacy_gmail_path),
+            }
     return {
         "configured": False,
         "label": f"{env_name} or {local_label}",
         "source": "missing",
+        "scope_status": missing_scope_status(role),
     }
 
 
@@ -144,6 +170,10 @@ def token_path_for_role(
         legacy_path = legacy_user_token_path_for_role(role, owner_user_id, integration_label=integration_label)
         if legacy_path.is_file():
             return legacy_path
+        if role == "drive":
+            legacy_gmail_path = legacy_gmail_token_with_role_scope(role, owner_user_id=owner_user_id)
+            if legacy_gmail_path is not None:
+                return legacy_gmail_path
         return local_path
     configured_path = os.environ.get(ROLE_TOKEN_ENV[role])
     if configured_path:
@@ -154,6 +184,10 @@ def token_path_for_role(
     legacy_path = matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME[role]
     if legacy_path.is_file():
         return legacy_path
+    if role == "drive":
+        legacy_gmail_path = legacy_gmail_token_with_role_scope(role)
+        if legacy_gmail_path is not None:
+            return legacy_gmail_path
     raise GoogleConnectionError(
         f"Set {ROLE_TOKEN_ENV[role]} or add data/google/{ROLE_LOCAL_TOKEN_FILENAME[role]} "
         f"for the {role} {integration_label} account."
@@ -320,6 +354,135 @@ def oauth_roles_for_role(role: str) -> tuple[str, ...]:
     if normalized_role in GOOGLE_OAUTH_SCOPES_BY_ROLE:
         return (normalized_role,)
     raise GoogleConnectionError("Unsupported Google OAuth role.")
+
+
+def token_scope_status(role: str, token_path: Path) -> dict[str, object]:
+    required = list(oauth_scopes_for_role(role))
+    payload = read_token_json(token_path)
+    granted = token_scopes(payload)
+    missing = [scope for scope in required if scope not in granted]
+    return {
+        "required": required,
+        "granted": granted,
+        "missing": missing,
+        "ok": not missing,
+    }
+
+
+def missing_scope_status(role: str) -> dict[str, object]:
+    return {
+        "required": list(oauth_scopes_for_role(role)),
+        "granted": [],
+        "missing": list(oauth_scopes_for_role(role)),
+        "ok": False,
+    }
+
+
+def token_scopes(token_payload: Mapping[str, Any]) -> list[str]:
+    scopes = token_payload.get("scopes")
+    if isinstance(scopes, str):
+        return [scope for scope in scopes.split() if scope]
+    if isinstance(scopes, list):
+        return [str(scope).strip() for scope in scopes if str(scope).strip()]
+    scope = token_payload.get("scope")
+    if isinstance(scope, str):
+        return [item for item in scope.split() if item]
+    return []
+
+
+def legacy_gmail_token_with_role_scope(role: str, owner_user_id: str = "") -> Path | None:
+    if role != "drive":
+        return None
+    required = set(oauth_scopes_for_role(role))
+    owner_segment = clean_user_token_segment(owner_user_id)
+    if owner_segment:
+        candidates = [
+            legacy_user_token_path_for_role("inbound", owner_segment),
+            legacy_user_token_path_for_role("outbound", owner_segment),
+        ]
+    else:
+        candidates = [
+            matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME["inbound"],
+            matter_store.DATA_DIR / "gmail" / ROLE_LOCAL_TOKEN_FILENAME["outbound"],
+        ]
+    for token_path in candidates:
+        if not token_path.is_file():
+            continue
+        if required.issubset(set(token_scopes(read_token_json(token_path)))):
+            return token_path
+    return None
+
+
+def connection_setup_status(
+    *,
+    owner_user_id: str = "",
+    connect_url: str,
+    integration: str,
+) -> dict[str, object]:
+    oauth_configured = google_identity.google_oauth_configured()
+    signed_in = bool(clean_user_token_segment(owner_user_id))
+    if not oauth_configured:
+        state = "missing_oauth_config"
+        action = "configure_google_oauth"
+        message = (
+            "Google OAuth is not configured. Set NDA_GOOGLE_OAUTH_CLIENT_ID and "
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET, then restart the app."
+        )
+    elif not signed_in:
+        state = "sign_in_required"
+        action = "sign_in_with_google"
+        message = f"Sign in with Google before connecting {integration}."
+    else:
+        state = "ready_to_connect"
+        action = "connect_google"
+        message = f"Connect {integration} for the signed-in Google account."
+    return {
+        "state": state,
+        "action": action,
+        "message": message,
+        "google_oauth_configured": oauth_configured,
+        "signed_in": signed_in,
+        "connect_url": connect_url,
+    }
+
+
+def role_recovery_status(
+    role: str,
+    *,
+    owner_user_id: str = "",
+    connect_url: str,
+    integration: str,
+) -> dict[str, object]:
+    token = role_token_status(role, owner_user_id=owner_user_id)
+    setup = connection_setup_status(
+        owner_user_id=owner_user_id,
+        connect_url=connect_url,
+        integration=integration,
+    )
+    if token.get("configured") and (token.get("scope_status") or {}).get("ok", True):
+        return {
+            "state": "ready",
+            "action": "none",
+            "message": f"{integration} {role} token is configured.",
+            "connect_url": connect_url,
+        }
+    if token.get("configured"):
+        return {
+            "state": "missing_scope",
+            "action": "reconnect_google",
+            "message": f"Reconnect {integration} so Google grants the required {role} scope.",
+            "connect_url": connect_url,
+            "scope_status": token.get("scope_status") or missing_scope_status(role),
+        }
+    if setup["state"] != "ready_to_connect":
+        return setup
+    return {
+        "state": "missing_token",
+        "action": "connect_google",
+        "message": f"Connect {integration} to create a {role} token for this account.",
+        "connect_url": connect_url,
+        "scope_status": token.get("scope_status") or missing_scope_status(role),
+    }
 
 
 def user_token_path_for_role(

@@ -163,6 +163,11 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "sync": user_store.gmail_sync_status(owner_user_id) if owner_user_id else _global_gmail_sync_status(settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),
+        "setup": google_connection.connection_setup_status(
+            owner_user_id=owner_user_id,
+            connect_url="/auth/gmail/start",
+            integration="Gmail",
+        ),
     }
     for role in ("inbound", "outbound"):
         enabled = bool(settings.get(f"{role}_enabled", True))
@@ -175,6 +180,12 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
             "role": role,
             "token": gmail_role_token_status(role, owner_user_id=owner_user_id),
         }
+        role_status["recovery"] = google_connection.role_recovery_status(
+            role,
+            owner_user_id=owner_user_id,
+            connect_url=role_status["connect_url"] or "/auth/google/start",
+            integration="Gmail",
+        )
         if role == "inbound":
             role_status["query"] = _default_inbound_query()
             role_status["parsing"] = gmail_inbound_parsing_summary()

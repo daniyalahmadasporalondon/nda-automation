@@ -850,6 +850,8 @@ class DriveRouteTests(unittest.TestCase):
                 "needs_connect",
                 "connect_url",
                 "token",
+                "setup",
+                "recovery",
             },
         )
         self.assertTrue(payload["enabled"])
@@ -861,6 +863,8 @@ class DriveRouteTests(unittest.TestCase):
         self.assertFalse(payload["needs_connect"])
         self.assertEqual(payload["connect_url"], "/auth/google/start")
         self.assertEqual(payload["token"]["label"], "Sign in with Google")
+        self.assertEqual(payload["setup"]["state"], "missing_oauth_config")
+        self.assertEqual(payload["recovery"]["state"], "missing_oauth_config")
 
     def test_drive_status_signed_in_without_token_points_to_drive_connect(self):
         auth_env = {
@@ -892,6 +896,9 @@ class DriveRouteTests(unittest.TestCase):
         self.assertTrue(payload["needs_connect"])
         self.assertEqual(payload["connect_url"], "/auth/drive/start")
         self.assertEqual(payload["token"]["source"], "missing")
+        self.assertEqual(payload["setup"]["state"], "ready_to_connect")
+        self.assertEqual(payload["recovery"]["state"], "missing_token")
+        self.assertEqual(payload["recovery"]["action"], "connect_google")
 
     def test_drive_status_signed_in_with_drive_token_reports_connected(self):
         auth_env = {
@@ -929,6 +936,8 @@ class DriveRouteTests(unittest.TestCase):
         self.assertEqual(payload["connect_url"], "/auth/drive/start")
         self.assertEqual(payload["account"], "drive-token@example.com")
         self.assertEqual(payload["token"]["source"], "user_data")
+        self.assertEqual(payload["token"]["scope_status"]["missing"], [])
+        self.assertEqual(payload["recovery"]["state"], "ready")
 
     def test_drive_settings_update_persists_via_route(self):
         with tempfile.TemporaryDirectory() as data_dir:
