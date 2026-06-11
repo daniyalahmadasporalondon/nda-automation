@@ -112,6 +112,102 @@ def test_generate_nda_returns_confirmation_required_action_without_side_effects(
     assert repo.list_matters() == []
 
 
+def test_capability_catalog_exposes_major_command_center_domains():
+    names = {capability.name for capability in dashboard_assistant.ASSISTANT_CAPABILITIES}
+    domains = {capability.domain for capability in dashboard_assistant.ASSISTANT_CAPABILITIES}
+
+    assert {
+        "matter_search_filter",
+        "count_in_review",
+        "last_sent",
+        "playbook_clause_count",
+        "outbound_email_templates",
+        "generate_nda",
+        "gmail_sync",
+        "drive_export",
+        "open_admin",
+        "review_workflow",
+    } <= names
+    assert {"repository", "playbook", "generation", "review", "gmail", "drive", "admin"} <= domains
+
+
+def test_playbook_clause_count_answers_from_active_playbook_provider():
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many playbook clauses do we have?",
+        repository=InMemoryMatterRepository(),
+        playbook_provider=lambda: {
+            "name": "Test NDA Playbook",
+            "version": "2026.1",
+            "clauses": [{"id": "mutuality"}, {"id": "governing_law"}],
+        },
+    )
+
+    assert response["intent"] == "system_question"
+    assert response["domain"] == "playbook"
+    assert response["question"] == "playbook_clause_count"
+    assert response["answer"]["count"] == 2
+    assert response["answer"]["playbook_name"] == "Test NDA Playbook"
+    assert "2 clauses" in response["answer"]["text"]
+
+
+def test_playbook_governing_law_question_reads_approved_options():
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "What approved governing laws are in the playbook?",
+        repository=InMemoryMatterRepository(),
+        playbook_provider=lambda: {
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "rules": {
+                        "approved_options": [
+                            {"id": "england_and_wales", "label": "England and Wales"},
+                            {"id": "delaware", "label": "Delaware"},
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response["intent"] == "system_question"
+    assert response["domain"] == "playbook"
+    assert response["question"] == "approved_governing_laws"
+    assert response["answer"]["options"] == ["England and Wales", "Delaware"]
+
+
+def test_email_template_question_answers_from_outbound_contract():
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "What is the message template that we have for emails that we send?",
+        repository=InMemoryMatterRepository(),
+    )
+
+    assert response["intent"] == "system_question"
+    assert response["domain"] == "gmail"
+    assert response["question"] == "outbound_email_templates"
+    assert response["answer"]["templates"][0]["context"] == "redline_send"
+    assert "Please find attached the redlined version of Example NDA." in response["answer"]["templates"][0]["body"]
+    assert "send_document" in {template["context"] for template in response["answer"]["templates"]}
+
+
+def test_workflow_requests_return_typed_action_requests_without_side_effects():
+    repo = InMemoryMatterRepository()
+
+    playbook = dashboard_assistant.handle_dashboard_assistant_command("Open the Playbook", repository=repo)
+    gmail = dashboard_assistant.handle_dashboard_assistant_command("Sync Gmail inbox", repository=repo)
+    drive = dashboard_assistant.handle_dashboard_assistant_command("Save this to Drive", repository=repo)
+
+    assert playbook["intent"] == "action_request"
+    assert playbook["action"] == "open_playbook"
+    assert playbook["requires_confirmation"] is False
+    assert playbook["side_effects"] == []
+    assert gmail["intent"] == "action_request"
+    assert gmail["requires_confirmation"] is True
+    assert gmail["side_effects"] == ["gmail_import_or_sync"]
+    assert drive["intent"] == "action_request"
+    assert drive["requires_confirmation"] is True
+    assert drive["side_effects"] == ["drive_upload_or_export"]
+
+
 def test_search_filter_delegates_to_search_resolver():
     repo = InMemoryMatterRepository()
 
@@ -138,4 +234,15 @@ def test_unsupported_intent_returns_clear_message():
     )
 
     assert response["intent"] == "unsupported"
-    assert "cannot do that request yet" in response["message"].lower()
+    assert "search matters" in response["message"].lower()
+
+
+def test_unknown_system_question_does_not_become_document_search_empty_state():
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many company holidays do we have?",
+        repository=InMemoryMatterRepository(),
+        search_resolver=lambda _query: {"filters": {"text": "company holidays"}, "fallback": False},
+    )
+
+    assert response["intent"] == "unsupported"
+    assert "search" in response["message"].lower()

@@ -152,6 +152,46 @@ class DashboardAssistantRouteTests(unittest.TestCase):
         self.assertEqual(payload["side_effects"], [])
         self.assertEqual(self.repository.list_matters(owner_user_id="nda-admin"), [])
 
+    def test_answers_playbook_system_question_from_active_playbook(self):
+        with self._env(self.auth_env()):
+            status, payload, _ = self.assistant(
+                "How many playbook clauses do we have?",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["intent"], "system_question")
+        self.assertEqual(payload["domain"], "playbook")
+        self.assertEqual(payload["question"], "playbook_clause_count")
+        self.assertGreaterEqual(payload["answer"]["count"], 1)
+        self.assertIn("clause", payload["answer"]["text"])
+
+    def test_answers_email_template_system_question(self):
+        with self._env(self.auth_env()):
+            status, payload, _ = self.assistant(
+                "What is the message template that we have for emails that we send?",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["intent"], "system_question")
+        self.assertEqual(payload["domain"], "gmail")
+        self.assertEqual(payload["question"], "outbound_email_templates")
+        self.assertIn("redline emails", payload["answer"]["text"].lower())
+
+    def test_safe_workflow_request_returns_action_payload(self):
+        with self._env(self.auth_env()):
+            status, payload, _ = self.assistant(
+                "Sync Gmail inbox",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["intent"], "action_request")
+        self.assertEqual(payload["action"], "open_gmail_sync")
+        self.assertIs(payload["requires_confirmation"], True)
+        self.assertEqual(payload["side_effects"], ["gmail_import_or_sync"])
+
     def test_search_filter_intent_reuses_existing_search_response_shape(self):
         with self._env(self.auth_env() | {"OPENROUTER_API_KEY": ""}):
             status, payload, _ = self.assistant(
@@ -174,7 +214,8 @@ class DashboardAssistantRouteTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["intent"], "unsupported")
-        self.assertIn("cannot do that request yet", payload["message"].lower())
+        self.assertIn("search matters", payload["message"].lower())
+        self.assertIn("playbook", payload["message"].lower())
 
     def test_non_string_query_is_a_400(self):
         with self._env(self.auth_env()):

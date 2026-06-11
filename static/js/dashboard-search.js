@@ -202,18 +202,27 @@ const DashboardSearchView = (() => {
 
     function normalizeAssistantActions(payload) {
       const action = String(payload?.action || "").trim();
-      if (String(payload?.intent || "") !== "draft_action_request" || action !== "open_generator") return [];
+      const intent = String(payload?.intent || "");
+      if (!["draft_action_request", "action_request"].includes(intent) || !action) return [];
       const generator = payload.generator && typeof payload.generator === "object" ? payload.generator : {};
+      const target = payload.target && typeof payload.target === "object" ? payload.target : {};
+      const label = String(payload.label || (action === "open_generator" ? "Open Generator" : "Open")).trim();
+      const sideEffects = Array.isArray(payload.side_effects) ? payload.side_effects : [];
       return [{
-        id: "open_generator",
-        label: "Open Generator",
-        description: "No NDA is generated, saved, sent, or exported until you confirm again in the Generator.",
+        id: action,
+        label,
+        description: action === "open_generator"
+          ? "No NDA is generated, saved, sent, or exported until you confirm again in the Generator."
+          : sideEffects.length
+          ? "This request only opens the relevant controls. It does not run, send, export, import, approve, or delete anything from the dashboard prompt."
+          : "This opens the relevant workspace without changing documents or settings.",
         requiresConfirmation: payload.requires_confirmation !== false,
         payload: {
           action,
           generator,
+          target,
           prompt: generator?.prefill?.prompt || "",
-          sideEffects: Array.isArray(payload.side_effects) ? payload.side_effects : [],
+          sideEffects,
         },
       }];
     }
@@ -288,7 +297,7 @@ const DashboardSearchView = (() => {
         renderResults(results, { emptyMessage: "No documents match this assistant response." });
         return true;
       }
-      if (type === "repository_question") {
+      if (type === "repository_question" || type === "system_question") {
         const text = answerText(payload.answer) || message;
         if (!text) return false;
         return renderAssistantCard({
@@ -299,13 +308,21 @@ const DashboardSearchView = (() => {
           statusText: "Assistant answer",
         });
       }
-      if (type === "draft_action_request") {
+      if (type === "draft_action_request" || type === "action_request") {
+        const actions = normalizeAssistantActions(payload);
+        const hasSideEffects = Array.isArray(payload.side_effects) && payload.side_effects.length > 0;
         return renderAssistantCard({
           type,
           title: "Action needs confirmation",
           message: message || "Confirm before anything changes.",
-          facts: ["No document will be generated, saved, sent, exported, deleted, or approved from this dashboard prompt."],
-          actions: normalizeAssistantActions(payload),
+          facts: [
+            String(payload.action || "") === "open_generator"
+              ? "No document will be generated, saved, sent, exported, deleted, or approved from this dashboard prompt."
+              : hasSideEffects
+              ? "No workflow runs until you confirm again in the destination workspace."
+              : "No document or setting changes from this dashboard prompt.",
+          ],
+          actions,
           statusText: "Action needs confirmation",
         });
       }
@@ -788,7 +805,7 @@ const DashboardSearchView = (() => {
         await confirmAssistantAction(action.payload || action);
         if (resultsStatus) {
           resultsStatus.hidden = false;
-          resultsStatus.textContent = "Generator opened. Review the draft details before generating.";
+          resultsStatus.textContent = action.payload?.statusText || "Assistant action opened. Review before making changes.";
         }
       } finally {
         if (button?.isConnected) button.disabled = false;

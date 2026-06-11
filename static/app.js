@@ -862,19 +862,32 @@ async function dashboardAssistantForQuery(query) {
 }
 
 async function confirmDashboardAssistantAction(action = {}) {
-  if (String(action.action || "") !== "open_generator") return;
-  activateTab("generator");
-  await draftIntakeController.activate();
-  const prompt = String(action.prompt || action.generator?.prefill?.prompt || "").trim();
-  if (prompt) {
-    setDraftInputValue(document.querySelector("#draftIntakeProjectPurpose"), prompt);
-    setDraftInputValue(
-      document.querySelector("#draftIntakeNotes"),
-      "Started from Dashboard Assistant. Review all details before generating.",
-      { onlyIfEmpty: true },
-    );
+  const actionName = String(action.action || "").trim();
+  if (actionName === "open_generator") {
+    activateTab("generator");
+    await draftIntakeController.activate();
+    const prompt = String(
+      action.prompt
+      || action.generator?.prefill?.prompt
+      || document.querySelector("#dashboardSearchInput")?.value
+      || "",
+    ).trim();
+    if (prompt) {
+      setDraftInputValue(document.querySelector("#draftIntakeProjectPurpose"), prompt);
+      setDraftInputValue(
+        document.querySelector("#draftIntakeNotes"),
+        "Started from Dashboard Assistant. Review all details before generating.",
+        { onlyIfEmpty: true },
+      );
+    }
+    document.querySelector("#draftIntakeCounterpartyName")?.focus();
+    return;
   }
-  document.querySelector("#draftIntakeCounterpartyName")?.focus();
+  const targetTab = String(action.target?.tab || "").trim();
+  const allowedTabs = new Set(["repository", "playbook", "admin"]);
+  if (allowedTabs.has(targetTab)) {
+    activateTab(targetTab);
+  }
 }
 
 function setDraftInputValue(input, value, { onlyIfEmpty = false } = {}) {

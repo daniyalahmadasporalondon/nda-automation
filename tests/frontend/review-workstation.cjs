@@ -6467,6 +6467,57 @@ async function testDashboardSmartSearchV2(page) {
     const body = JSON.parse(route.request().postData() || "{}");
     const query = String(body.query || "");
     assistantRequests.push(query);
+    if (/playbook clauses/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "system_question",
+          domain: "playbook",
+          question: "playbook_clause_count",
+          answer: {
+            text: "Aspora NDA hard clauses has 6 clauses.",
+            count: 6,
+            playbook_name: "Aspora NDA hard clauses",
+          },
+          citations: [{ source: "playbook", title: "Aspora NDA hard clauses", version: "0.1.0" }],
+        }),
+      });
+      return;
+    }
+    if (/message template/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "system_question",
+          domain: "gmail",
+          question: "outbound_email_templates",
+          answer: {
+            text: "Outbound redline emails default to a reply-style subject and a short Aspora Legal body.",
+          },
+          citations: [{ source: "code", title: "nda_automation/gmail_matter_outbox.py" }],
+        }),
+      });
+      return;
+    }
+    if (/sync gmail/i.test(query)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "action_request",
+          domain: "gmail",
+          action: "open_gmail_sync",
+          label: "Review Gmail sync",
+          requires_confirmation: true,
+          message: "I can take you to the Gmail controls. Sync/import is not started from the assistant response.",
+          target: { tab: "admin" },
+          side_effects: ["gmail_import_or_sync"],
+        }),
+      });
+      return;
+    }
     if (/how many/i.test(query)) {
       await route.fulfill({
         status: 200,
@@ -6617,6 +6668,25 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="repository_question"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "2 documents are in review.");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
+
+  // --- System questions render as assistant answers, not document no-results ---
+  await page.fill("#dashboardSearchInput", "How many playbook clauses do we have?");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="system_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Aspora NDA hard clauses has 6 clauses.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Aspora NDA hard clauses");
+
+  await page.fill("#dashboardSearchInput", "What is the message template that we have for emails that we send?");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="system_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Outbound redline emails default");
+
+  // --- Safe workflow requests render confirmation-gated action cards ----------
+  await page.fill("#dashboardSearchInput", "Sync Gmail inbox");
+  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.waitForSelector('[data-dashboard-assistant-response="action_request"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "No workflow runs");
 
   // --- Action request requires confirmation and only opens/prefills Generator ---
   await page.goto(`${BASE_URL}/?dashboardSearch=Generate+an+NDA`, { waitUntil: "domcontentloaded" });
