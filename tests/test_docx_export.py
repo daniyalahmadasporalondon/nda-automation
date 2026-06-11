@@ -828,6 +828,70 @@ class DocxExportTests(unittest.TestCase):
             self.assertIsNotNone(run.find("w:rPr/w:b", W_NS), "replaced paragraph lost source bold formatting")
             self.assertIsNotNone(run.find("w:rPr/w:color", W_NS), "replaced paragraph lost source color formatting")
 
+    def test_source_redline_refuses_replace_that_would_drop_hyperlink(self):
+        linked_text = "Click here to review the NDA."
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            '<w:p><w:hyperlink w:anchor="bookmark"><w:r><w:t>'
+            f"{linked_text}"
+            "</w:t></w:r></w:hyperlink></w:p>"
+            "</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder"]),
+            {"word/document.xml": document_xml},
+        )
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": linked_text}],
+            "redline_edits": [
+                {
+                    "id": "edit-1",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": linked_text,
+                    "replacement_text": "Click this link to review the NDA.",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(DocxExportError, "inline objects, hyperlinks, fields, or note references"):
+            build_source_redline_docx(source_docx, review_result)
+
+    def test_source_redline_refuses_delete_that_would_drop_inline_drawing(self):
+        drawing_text = "Logo clause."
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p><w:r><w:t>Logo clause.</w:t><w:drawing><w:inline/></w:drawing></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder"]),
+            {"word/document.xml": document_xml},
+        )
+        review_result = {
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": drawing_text}],
+            "redline_edits": [
+                {
+                    "id": "edit-1",
+                    "status": "proposed",
+                    "action": REDLINE_DELETE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": drawing_text,
+                    "replacement_text": "",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(DocxExportError, "inline objects, hyperlinks, fields, or note references"):
+            build_source_redline_docx(source_docx, review_result)
+
     def test_source_redline_format_paragraph_emits_tracked_pprchange(self):
         # A format_paragraph redline (alignment left->center AND font ->Arial)
         # must emit the new pPr (jc=center, run-default rFonts=Arial) plus a

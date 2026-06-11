@@ -765,6 +765,13 @@ def _source_tracked_primary_redline_paragraph(
 ) -> Tuple[ET.Element | None, int]:
     original_text = str(redline.get("original_text") or _paragraph_text(source_paragraph))
     action = redline.get("action")
+    if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH} and _paragraph_has_nontext_inline_content(
+        source_paragraph
+    ):
+        raise DocxExportError(
+            "The uploaded Word document cannot safely redline an edited paragraph that contains "
+            "inline objects, hyperlinks, fields, or note references without dropping source content."
+        )
     if action == REDLINE_REPLACE_PARAGRAPH:
         # When the edited paragraph's run model is attached, re-emit the inserted text
         # as FORMATTED runs (bold/italic/font/size) so the clean export keeps the
@@ -810,6 +817,28 @@ def _source_tracked_primary_redline_paragraph(
         formatted, revision_id = _apply_tracked_run_format(formatted, run_ops, revision_id)
         return formatted, revision_id
     return None, revision_id
+
+
+def _paragraph_has_nontext_inline_content(paragraph: ET.Element) -> bool:
+    """Return True when a replace/delete would flatten non-text inline content.
+
+    Whole-paragraph replace/delete paths rebuild the paragraph from plain tracked
+    text. If the source paragraph carries drawings/pictures, hyperlinks, fields,
+    or note references, rebuilding would silently discard those structures. Fail
+    safe until a run-level object-preserving edit path exists.
+    """
+    risky_tags = {
+        _w_tag("drawing"),
+        _w_tag("pict"),
+        _w_tag("object"),
+        _w_tag("hyperlink"),
+        _w_tag("fldSimple"),
+        _w_tag("instrText"),
+        _w_tag("fldChar"),
+        _w_tag("footnoteReference"),
+        _w_tag("endnoteReference"),
+    }
+    return any(node.tag in risky_tags for node in paragraph.iter())
 
 
 def _combined_block_aware_redline_paragraphs(
