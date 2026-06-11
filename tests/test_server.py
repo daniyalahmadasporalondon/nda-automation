@@ -3739,11 +3739,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["ready"], True)
         self.assertEqual(status["outbound"]["ready"], True)
         self.assertEqual(status["inbound"]["email"], "legal@aspora.com")
-        self.assertEqual(status["inbound"]["token"], {
-            "configured": True,
-            "label": "data/gmail/inbound-token.json",
-            "source": "local_data",
-        })
+        self.assertEqual(status["inbound"]["token"]["configured"], True)
+        self.assertEqual(status["inbound"]["token"]["label"], "data/gmail/inbound-token.json")
+        self.assertEqual(status["inbound"]["token"]["source"], "local_data")
+        self.assertEqual(status["inbound"]["token"]["scope_status"]["ok"], False)
+        self.assertIn(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            status["inbound"]["token"]["scope_status"]["missing"],
+        )
 
     def test_gmail_status_surfaces_and_caches_profile_rate_limit(self):
         class FakeRateLimitError(Exception):
@@ -3835,11 +3838,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["ready"], True)
         self.assertEqual(status["outbound"]["ready"], False)
         self.assertIn("does not match inbound Gmail account inbound@aspora.com", status["outbound"]["error"])
-        self.assertEqual(status["inbound"]["token"], {
-            "configured": True,
-            "label": gmail_integration.ROLE_TOKEN_ENV["inbound"],
-            "source": "environment",
-        })
+        self.assertEqual(status["inbound"]["token"]["configured"], True)
+        self.assertEqual(status["inbound"]["token"]["label"], gmail_integration.ROLE_TOKEN_ENV["inbound"])
+        self.assertEqual(status["inbound"]["token"]["source"], "environment")
+        self.assertEqual(status["inbound"]["token"]["scope_status"]["ok"], False)
+        self.assertIn(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            status["inbound"]["token"]["scope_status"]["missing"],
+        )
         self.assertNotIn(str(token_path), json.dumps(status))
 
     def test_gmail_settings_endpoint_persists_toggles(self):
