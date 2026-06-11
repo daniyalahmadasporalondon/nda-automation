@@ -1535,6 +1535,75 @@ async function testOriginalViewToggle(page) {
   assert.equal(await page.locator('[data-original-surface]').count(), 0);
   await assertTextContains(page.locator("#studioDocumentRender"), renderText);
 
+  // DOCX source-fidelity fallback: when exact page images are unavailable but
+  // the backend exposes source blocks, Original shows the extracted source
+  // layout rather than a dead-end unavailable panel.
+  await page.evaluate((payload) => {
+    renderResult({
+      ...payload,
+      document_render: null,
+      source_fidelity: {
+        version: 1,
+        source_type: "docx",
+        analysis_model: "paragraphs",
+        render_model: "source_blocks",
+        capabilities: {
+          structured_tables: true,
+          inline_runs: true,
+          run_colors: true,
+          pdf_page_references: false,
+        },
+        summary: {
+          paragraph_count: 3,
+          block_count: 2,
+          table_count: 1,
+          styled_run_count: 1,
+          color_run_count: 1,
+          pdf_page_reference_count: 0,
+        },
+        limitations: [],
+        blocks: [
+          {
+            id: "p1",
+            index: 1,
+            text: "Intro red text.",
+            type: "paragraph",
+            runs: [
+              { text: "Intro " },
+              { text: "red", color: "#ff0000" },
+              { text: " text." },
+            ],
+          },
+          {
+            table_index: 1,
+            type: "table",
+            rows: [{
+              cells: [
+                { paragraph_ids: ["p2"], blocks: [{ id: "p2", text: "Party", type: "paragraph" }] },
+                { paragraph_ids: ["p3"], blocks: [{ id: "p3", text: "Signature", type: "paragraph", style: { style_name: "Table Text" } }] },
+              ],
+            }],
+          },
+        ],
+      },
+    }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector("[data-source-fidelity-surface]");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "DOCX source layout preview");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "1 table");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "Intro red text.");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "Signature");
+  assert.equal(await page.locator(".source-fidelity-table td").count(), 2);
+  const redRunColor = await page.locator("[data-source-fidelity-surface]").evaluate((surface) => {
+    const spans = Array.from(surface.querySelectorAll("span"));
+    const redRun = spans.find((span) => span.textContent === "red");
+    return redRun ? getComputedStyle(redRun).color : "";
+  });
+  assert.ok(/rgb\(255,\s*0,\s*0\)/.test(redRunColor), `expected red source run, got ${redRunColor}`);
+  await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
+  await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
+
   // Graceful fallback: no render available (DOCX without a document server).
   await page.evaluate((payload) => {
     state.selectedMatter = null;

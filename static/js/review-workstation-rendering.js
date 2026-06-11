@@ -2873,7 +2873,122 @@ function renderOriginalDocumentSurface(renderState) {
     `;
   }
 
+  const sourceFidelity = state.latestReviewResult?.source_fidelity;
+  if (sourceFidelityPreviewAvailable(sourceFidelity)) {
+    return renderSourceFidelitySurface(sourceFidelity, renderState, status);
+  }
+
   return renderOriginalUnavailableFallback(renderState, status);
+}
+
+function sourceFidelityPreviewAvailable(sourceFidelity) {
+  return Boolean(
+    sourceFidelity
+    && typeof sourceFidelity === "object"
+    && sourceFidelity.render_model === "source_blocks"
+    && Array.isArray(sourceFidelity.blocks)
+    && sourceFidelity.blocks.length,
+  );
+}
+
+function renderSourceFidelitySurface(sourceFidelity, renderState, status) {
+  const summary = sourceFidelity.summary && typeof sourceFidelity.summary === "object" ? sourceFidelity.summary : {};
+  const capabilities = sourceFidelity.capabilities && typeof sourceFidelity.capabilities === "object" ? sourceFidelity.capabilities : {};
+  const sourceType = String(sourceFidelity.source_type || "").trim().toUpperCase();
+  const tableCount = Number(summary.table_count) || 0;
+  const colorRunCount = Number(summary.color_run_count) || 0;
+  const capabilityLabels = [
+    tableCount ? `${tableCount} ${tableCount === 1 ? "table" : "tables"}` : "",
+    colorRunCount ? `${colorRunCount} coloured ${colorRunCount === 1 ? "run" : "runs"}` : "",
+    capabilities.inline_runs ? "inline runs" : "",
+  ].filter(Boolean);
+  const statusNote = sourceFidelityStatusNote(renderState, status, sourceFidelity);
+  return `
+    <section class="review-original-surface source-fidelity-surface ready" data-review-pdf-surface data-original-surface data-source-fidelity-surface data-render-status="source-fidelity" aria-label="Original source layout preview">
+      <div class="review-pdf-status source-fidelity-status">
+        <strong>${escapeHtml(sourceType ? `${sourceType} source layout preview` : "Source layout preview")}</strong>
+        <span>${escapeHtml(capabilityLabels.length ? capabilityLabels.join(" · ") : "Source blocks from the original document")}</span>
+      </div>
+      ${statusNote ? `<p class="source-fidelity-note">${escapeHtml(statusNote)}</p>` : ""}
+      <div class="source-fidelity-document" data-source-fidelity-document>
+        ${sourceFidelity.blocks.map(renderSourceFidelityBlock).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function sourceFidelityStatusNote(renderState, status, sourceFidelity) {
+  if (status === "loading") {
+    return "Exact page images are still rendering. This source layout preview preserves available tables, runs, and colour data meanwhile.";
+  }
+  if (status === "error") {
+    const detail = stringValue(renderState?.error);
+    return detail
+      ? `${detail} Showing the source layout preview instead.`
+      : "Exact page images could not be rendered. Showing the source layout preview instead.";
+  }
+  const limitations = Array.isArray(sourceFidelity?.limitations) ? sourceFidelity.limitations : [];
+  const limitation = limitations.find((item) => item && typeof item === "object" && item.message);
+  if (limitation) return String(limitation.message || "").trim();
+  return "This preview uses the source blocks extracted for review. Redline and Clean remain editable text views.";
+}
+
+function renderSourceFidelityBlock(block) {
+  if (!block || typeof block !== "object") return "";
+  if (block.type === "table") return renderSourceFidelityTable(block);
+  return renderSourceFidelityParagraphBlock(block);
+}
+
+function renderSourceFidelityTable(table) {
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  return `
+    <table class="source-fidelity-table" data-source-fidelity-table="${escapeHtml(table.table_index || "")}">
+      <tbody>
+        ${rows.map(renderSourceFidelityTableRow).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderSourceFidelityTableRow(row) {
+  const cells = Array.isArray(row?.cells) ? row.cells : [];
+  return `
+    <tr>
+      ${cells.map(renderSourceFidelityTableCell).join("")}
+    </tr>
+  `;
+}
+
+function renderSourceFidelityTableCell(cell) {
+  const blocks = Array.isArray(cell?.blocks) ? cell.blocks : [];
+  const paragraphIds = Array.isArray(cell?.paragraph_ids) ? cell.paragraph_ids : [];
+  return `
+    <td data-source-fidelity-paragraph-ids="${escapeHtml(paragraphIds.join(" "))}">
+      ${blocks.length ? blocks.map(renderSourceFidelityParagraphBlock).join("") : "&nbsp;"}
+    </td>
+  `;
+}
+
+function renderSourceFidelityParagraphBlock(block) {
+  const paragraphId = String(block?.id || "").trim();
+  const text = String(block?.text || "").trim();
+  const style = block?.style && typeof block.style === "object" ? block.style : {};
+  const styleName = String(block?.style_name || style.style_name || "").trim();
+  const classes = ["source-fidelity-paragraph", styleName ? "has-style" : ""].filter(Boolean).join(" ");
+  const body = sourceFidelityParagraphBody(block);
+  return `
+    <p class="${classes}" ${paragraphId ? `data-paragraph-id="${escapeHtml(paragraphId)}"` : ""}>
+      ${styleName ? `<span class="source-fidelity-style">${escapeHtml(styleName)}</span>` : ""}
+      ${body || escapeHtml(text)}
+    </p>
+  `;
+}
+
+function sourceFidelityParagraphBody(block) {
+  if (typeof renderParagraphRichText === "function") return renderParagraphRichText(block);
+  const runs = Array.isArray(block?.runs) ? block.runs : [];
+  if (!runs.length) return escapeHtml(String(block?.text || ""));
+  return runs.map((run) => escapeHtml(String(run?.text || ""))).join("");
 }
 
 // Graceful "Original" fallback: when no faithful page-image render exists (DOCX
