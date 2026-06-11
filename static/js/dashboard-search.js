@@ -801,13 +801,29 @@ const DashboardSearchView = (() => {
     // this classic script. By window "load" every deferred module has executed,
     // so re-render the chips then to guarantee they appear even if no search or
     // matter-load refresh has happened yet.
-    window.addEventListener("load", () => renderChips(), { once: true });
+    window.addEventListener("load", () => {
+      renderChips();
+      const initialQuery = initialQueryFromLocation();
+      if (initialQuery && input && !String(input.value || "").trim()) {
+        input.value = initialQuery;
+        runTextSearch();
+      }
+    }, { once: true });
 
     return { refresh, renderChips, reset };
   }
 
   return { createController };
 })();
+
+function initialQueryFromLocation() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return String(params.get("dashboardSearch") || "").trim();
+  } catch (error) {
+    return "";
+  }
+}
 
 function createDashboardSearchController(options) {
   return DashboardSearchView.createController(options);

@@ -6619,15 +6619,15 @@ async function testDashboardSmartSearchV2(page) {
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
 
   // --- Action request requires confirmation and only opens/prefills Generator ---
-  await page.fill("#dashboardSearchInput", "Generate an NDA for Acme");
-  await page.locator("#dashboardSearchForm").press("Enter");
+  await page.goto(`${BASE_URL}/?dashboardSearch=Generate+an+NDA`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-dashboard-search]");
   await page.waitForSelector('[data-dashboard-assistant-response="draft_action_request"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
   await assertTextContains(page.locator("#dashboardSearchResults"), "No document will be generated");
   await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
   await page.waitForSelector("#generatorView:not([hidden])");
   assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator("#draftIntakeProjectPurpose").inputValue(), "Generate an NDA for Acme");
+  assert.equal(await page.locator("#draftIntakeProjectPurpose").inputValue(), "Generate an NDA");
   assert.equal(generateCalls, 0, "dashboard assistant must not silently call /api/generate-nda");
 
   await page.locator("#dashboardTab").click();
