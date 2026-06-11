@@ -121,6 +121,7 @@ OPENROUTER_API_KEY="your-openrouter-api-key"
 ```
 
 You can also paste/save the OpenRouter key from **Admin → AI** after the app is running; saved keys are stored under ignored app data and are never returned to the browser. Connect Gmail and Drive from **Admin** after signing in with Google.
+The optional adversarial verifier uses the same OpenRouter key but is an independent second-opinion pass; set `NDA_AI_VERIFIER=true` and `NDA_AI_VERIFIER_MODEL=deepseek/deepseek-v4-pro` to run it with DeepSeek V4 Pro while keeping the main reviewer on Grok.
 
 **Optional extras**
 
@@ -151,6 +152,7 @@ Common environment variables:
 | `NDA_AI_REVIEW_ENABLED` | Enables provider-backed AI review. |
 | `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
 | `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
+| `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
 | `NDA_GMAIL_TRIAGE_MODEL` | Gmail triage model (e.g. `x-ai/grok-4.3`). |
 | `NDA_ACTIVE_REVIEW_ENGINE` | Optional pin: `ai_first` or `deterministic`. |
 | `NDA_AI_FIRST_REVIEW_ENABLED` | Store AI-first shadow/comparison output. |

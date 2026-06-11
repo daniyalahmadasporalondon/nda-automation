@@ -433,7 +433,7 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
 
 
 class ResolveVerifierTests(unittest.TestCase):
-    """The prod resolver gates the paid Claude pass and fails safe to offline."""
+    """The prod resolver gates the paid OpenRouter pass and fails safe to offline."""
 
     def test_disabled_resolves_to_offline_adversary(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
@@ -446,13 +446,13 @@ class ResolveVerifierTests(unittest.TestCase):
                 self.assertTrue(verifier_enabled())
                 self.assertIs(resolve_verifier(), default_verifier)
 
-    def test_enabled_with_key_resolves_claude_backed_verifier(self):
+    def test_enabled_with_key_resolves_deepseek_backed_verifier(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "true"}, clear=False):
             with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
                 resolved = resolve_verifier()
                 self.assertIsInstance(resolved, OpenRouterVerifier)
-                # Defaults to a strong Claude model.
-                self.assertIn("claude", resolved.model.lower())
+                self.assertEqual(resolved.model, ai_verifier.DEFAULT_VERIFIER_MODEL)
+                self.assertEqual(resolved.model, "deepseek/deepseek-v4-pro")
 
     def test_summary_reports_offline_kind_by_default(self):
         # No env opt-in -> offline adversary, surfaced for observability.

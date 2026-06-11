@@ -58,6 +58,12 @@ services:
         value: openrouter
       - key: NDA_AI_MODEL
         value: x-ai/grok-4.3
+      # Independent adversarial second-opinion verifier on OpenRouter. It uses a
+      # different model family from the main Grok reviewer on purpose.
+      - key: NDA_AI_VERIFIER
+        value: "true"
+      - key: NDA_AI_VERIFIER_MODEL
+        value: deepseek/deepseek-v4-pro
       - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL

@@ -12,9 +12,9 @@ Design constraints (see task #15):
   finalized clause-result dicts and returns updated copies plus an audit record.
 - Provider-agnostic seam. ``VerifierFn`` mirrors ``ai_review.AIReviewFn``: a
   callable mapping a verifier packet to a verdict dict (or ``None``). Tests inject
-  a deterministic verifier across the real seam; prod resolves a strong Claude
-  model. A built-in polarity heuristic is the offline fallback so the pass adds
-  value even with no API key.
+  a deterministic verifier across the real seam; prod resolves an independent
+  DeepSeek verifier model. A built-in polarity heuristic is the offline fallback
+  so the pass adds value even with no API key.
 - Cost-aware. High-confidence ``pass`` findings are skipped by default -- the
   verifier exists to catch *misclassifications*, and an adversarial second look
   is most valuable on escalations (fail/review) and low-confidence clears.
@@ -46,12 +46,12 @@ from .untrusted_text import neutralize_untrusted_text
 
 AI_VERIFIER_VERSION = 2
 
-# The adversarial judgement is the accuracy lever, so the prod path defaults to a
-# strong Claude model (routed via OpenRouter, the existing transport). Overridable
-# with NDA_AI_VERIFIER_MODEL. Verification is opt-in via NDA_AI_VERIFIER so it never
-# spends tokens unless explicitly enabled; the offline polarity adversary still runs
-# as the always-on fallback.
-DEFAULT_VERIFIER_MODEL = "anthropic/claude-opus-4.1"
+# The adversarial judgement is the accuracy lever, so the prod path defaults to
+# an independent DeepSeek model (routed via OpenRouter, the existing transport).
+# Overridable with NDA_AI_VERIFIER_MODEL. Verification is opt-in via
+# NDA_AI_VERIFIER so it never spends tokens unless explicitly enabled; the
+# offline polarity adversary still runs as the always-on fallback.
+DEFAULT_VERIFIER_MODEL = "deepseek/deepseek-v4-pro"
 VERIFIER_ENV_ENABLED = "NDA_AI_VERIFIER"
 VERIFIER_ENV_MODEL = "NDA_AI_VERIFIER_MODEL"
 VERIFIER_ENV_TIMEOUT = "NDA_AI_VERIFIER_TIMEOUT_SECONDS"
@@ -118,8 +118,8 @@ def apply_ai_verifier(
         return updated, _summary(status="disabled", records=[])
 
     # Injected verifier crosses the seam as-is (tests, callers). Otherwise resolve
-    # the active one: a Claude-backed pass when explicitly enabled + keyed, else the
-    # always-available offline polarity adversary.
+    # the active one: an OpenRouter-backed pass when explicitly enabled + keyed,
+    # else the always-available offline polarity adversary.
     if verifier is not None:
         active_verifier = verifier
         verifier_kind = "injected"
@@ -674,7 +674,7 @@ def _fallback_grounding(clause: dict) -> dict:
     return clause
 
 
-# --- Production resolver + Claude-backed verifier --------------------------
+# --- Production resolver + OpenRouter-backed verifier -----------------------
 
 _VERIFIER_SYSTEM_PROMPT = (
     "You are an adversarial QA reviewer auditing an automated NDA clause finding. "
@@ -702,7 +702,7 @@ class VerifierError(RuntimeError):
 
 
 class OpenRouterVerifier:
-    """Adversarial verifier backed by a strong Claude model via OpenRouter.
+    """Adversarial verifier backed by an independent model via OpenRouter.
 
     Reuses ai_review's HTTPS transport (trusted SSL context, response parsing) so
     the verifier shares the project's single network seam rather than forking it.
@@ -766,14 +766,14 @@ class OpenRouterVerifier:
 def verifier_enabled() -> bool:
     """True when the AI-backed verifier is explicitly enabled via env.
 
-    The offline polarity adversary always runs; only the *paid* Claude pass is gated,
-    so verification stays free-by-default and a deploy opts in deliberately.
+    The offline polarity adversary always runs; only the provider-backed pass is
+    gated, so verification stays free-by-default and a deploy opts in deliberately.
     """
     return str(os.environ.get(VERIFIER_ENV_ENABLED, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_verifier() -> VerifierFn:
-    """Resolve the active verifier: a Claude-backed pass when enabled + keyed,
+    """Resolve the active verifier: an OpenRouter pass when enabled + keyed,
     else the always-available offline polarity adversary.
 
     Never raises: a misconfigured AI verifier degrades to the offline one rather
