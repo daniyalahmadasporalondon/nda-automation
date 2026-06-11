@@ -3893,10 +3893,13 @@ async function testAdminDriveSection(page) {
     }
     : {
       connected: false,
-      account: "",
+      account: "alice@example.com",
       folder: null,
       enabled: false,
       connect_url: "/auth/drive/start",
+      needs_connect: true,
+      signed_in: true,
+      user_scoped: true,
     });
 
   await page.route("**/api/gmail/status", async (route) => {
@@ -3952,7 +3955,7 @@ async function testAdminDriveSection(page) {
   // The overall status pill is CSS-uppercased, so match the rendered text.
   await page.locator('[data-admin-section="drive"]').click();
   await page.waitForSelector("#adminDrivePanel:not([hidden])");
-  await waitForText(page, "#adminDriveOverall", "NOT CONNECTED");
+  await waitForText(page, "#adminDriveOverall", "NEEDS DRIVE ACCESS");
   await assertTextContains(page.locator("#adminDrivePanel"), "Google Drive uploads");
   // Drive v2 relabel: the folder setting is the optional NDAs root + helper copy.
   // The subsection <h3> is CSS-uppercased, so match the rendered text.
@@ -3962,7 +3965,10 @@ async function testAdminDriveSection(page) {
   // separate Connect button, and the toggle reads Off while disconnected.
   assert.equal(await page.locator("#adminDriveConnectPanel a.integration-connection-action").count(), 0);
   assert.equal(await page.locator("#adminDriveEnabledToggle").getAttribute("aria-checked"), "false");
-  await assertTextContains(page.locator("#adminDriveFacts"), "Not connected");
+  await assertTextContains(page.locator("#adminDriveFacts"), "Needs Drive access");
+  await assertTextContains(page.locator("#adminDriveFacts"), "alice@example.com");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Turn the Drive toggle on to grant Drive access");
+  await assertTextContains(page.locator("#adminDriveConnectPanel"), "Drive token needed");
 
   // Save a target folder; assert the POST payload.
   await page.locator("#adminDriveFolderIdInput").fill("folder_xyz");

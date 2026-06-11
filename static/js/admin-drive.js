@@ -107,13 +107,16 @@ const AdminDriveView = (() => {
     function renderDrive(status = {}) {
       state.driveStatus = status;
       const connected = status.connected === true;
+      const signedIn = status.signed_in === true;
+      const needsConnect = status.needs_connect === true || (!connected && Boolean(status.connect_url));
+      const overallLabel = connected ? "Connected" : signedIn && needsConnect ? "Needs Drive access" : "Not connected";
       // The toggle now reflects the connection itself (On = connected).
-      setOverall(connected ? "Connected" : "Not connected", connected ? "ready" : "blocked");
+      setOverall(overallLabel, connected ? "ready" : "blocked");
       renderToggle(connected);
       renderConnect(status);
       renderFolderForm(status.folder || null);
-      setFact("connection", connected ? "Connected" : "Not connected");
-      setFact("account", status.account || (connected ? "Connected account" : "No account connected"));
+      setFact("connection", overallLabel);
+      setFact("account", status.account || (connected ? "Connected account" : signedIn ? "Signed in Google session" : "No account connected"));
       setFact("folder", folderLabel(status.folder));
       setFact("enabled-copy", connected ? "On" : "Off");
     }
@@ -142,20 +145,31 @@ const AdminDriveView = (() => {
         `;
         return;
       }
+      const signedIn = status.signed_in === true;
+      const needsConnect = status.needs_connect === true || Boolean(status.connect_url);
+      const statusLabel = signedIn && needsConnect ? "Needs Drive access" : "Needs setup";
+      const accountLabel = status.account || (signedIn ? "Signed in Google session" : "Not connected");
+      const nextStep = signedIn && needsConnect
+        ? "Turn the Drive toggle on to grant Drive access for this signed-in account."
+        : "Turn the Drive toggle on to connect a Google account.";
       driveConnectPanel.innerHTML = `
         <div class="integration-connection-row blocked">
           <div class="integration-connection-top">
             <strong>Google Drive</strong>
-            <span>Needs setup</span>
+            <span>${escapeHtml(statusLabel)}</span>
           </div>
           <dl>
             <div>
               <dt>Account</dt>
-              <dd>Not connected</dd>
+              <dd>${escapeHtml(accountLabel)}</dd>
             </div>
             <div>
               <dt>Next step</dt>
-              <dd>Turn the Drive toggle on to connect a Google account.</dd>
+              <dd>${escapeHtml(nextStep)}</dd>
+            </div>
+            <div>
+              <dt>Token</dt>
+              <dd>${escapeHtml(signedIn && needsConnect ? "Drive token needed" : "No Drive token")}</dd>
             </div>
           </dl>
         </div>
