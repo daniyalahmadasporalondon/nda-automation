@@ -955,9 +955,9 @@ def _write_signature_cell(cell: Any, *, party_name: str, signatory_name: str, si
     cell's existing paragraphs are reused in order and any surplus is cleared.
     """
 
+    party_line = f"For {party_name}".strip() if party_name else "For _______________________"
     lines = [
-        "Signed for and on behalf of",
-        party_name,
+        party_line,
         "By: _______________________________",
         f"Name: {signatory_name}".rstrip() if signatory_name else "Name: _______________________",
         f"Title: {signatory_title}".rstrip() if signatory_title else "Title: _______________________",

@@ -185,6 +185,14 @@ class TestSlotFill:
             result.docx_bytes, playbook=playbook
         ).native_failures
 
+    def test_signature_blocks_use_for_entity_party_lines(self, playbook):
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+
+        assert "For Acme Innovations Pvt Ltd" in text
+        assert "For Real Transfer Limited" in text
+        assert "Signed for and on behalf of" not in text
+        assert text.count("By: _______________________________") == 2
+
     def test_incorporation_jurisdiction_consumes_registry_field(self, playbook):
         # When the registry supplies an explicit incorporation_jurisdiction, the
         # engine uses it (distinct from the governing-law value).
