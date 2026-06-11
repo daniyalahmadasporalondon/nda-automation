@@ -233,29 +233,29 @@ const AuthSessionView = (() => {
       const picture = profilePictureForUser(user, status);
       const initial = (greetingNameForUser(user, status) || "Account").slice(0, 1).toUpperCase() || "A";
       if (avatarInitial) avatarInitial.textContent = initial;
-      if (avatarImage) {
-        if (picture) {
-          avatarImage.src = picture;
-          avatarImage.hidden = false;
-          if (avatarInitial) avatarInitial.hidden = true;
-        } else {
-          avatarImage.removeAttribute("src");
-          avatarImage.hidden = true;
-          if (avatarInitial) avatarInitial.hidden = false;
-        }
-      }
+      showAvatarImage(avatarImage, avatarInitial, picture);
       if (menuAvatarInitial) menuAvatarInitial.textContent = initial;
-      if (menuAvatarImage) {
-        if (picture) {
-          menuAvatarImage.src = picture;
-          menuAvatarImage.hidden = false;
-          if (menuAvatarInitial) menuAvatarInitial.hidden = true;
-        } else {
-          menuAvatarImage.removeAttribute("src");
-          menuAvatarImage.hidden = true;
-          if (menuAvatarInitial) menuAvatarInitial.hidden = false;
-        }
+      showAvatarImage(menuAvatarImage, menuAvatarInitial, picture);
+    }
+
+    function showAvatarFallback(imageNode, initialNode) {
+      if (!imageNode) return;
+      imageNode.removeAttribute("src");
+      imageNode.hidden = true;
+      if (initialNode) initialNode.hidden = false;
+    }
+
+    function showAvatarImage(imageNode, initialNode, picture) {
+      if (!imageNode) return;
+      if (picture) {
+        imageNode.onerror = () => showAvatarFallback(imageNode, initialNode);
+        imageNode.src = picture;
+        imageNode.hidden = false;
+        if (initialNode) initialNode.hidden = true;
+        return;
       }
+      imageNode.onerror = null;
+      showAvatarFallback(imageNode, initialNode);
     }
 
     function firstNameForUser(user, status) {

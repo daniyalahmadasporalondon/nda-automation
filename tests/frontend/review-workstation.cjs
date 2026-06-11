@@ -357,17 +357,22 @@ async function testAccessibleControlState(page) {
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="email"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="ai"]'), "AI Review");
   await assertTextContains(page.locator('[data-dashboard-health="email"]'), "Email");
-  await assertTextContains(page.locator('[data-dashboard-health="email"]'), "Outbound needs setup");
   const dashboardHealthText = await page.locator(".dashboard-health-list").innerText();
   assert.match(dashboardHealthText, /AI Review|Email|Drive/);
   assertAttributeMatches(page.locator('[data-dashboard-health="email"]'), "aria-label", /Email: Outbound needs setup/);
+  assert.equal(await page.locator('[data-dashboard-health="email"] .dashboard-health-name').isVisible(), true);
+  assert.equal(await page.locator('[data-dashboard-health="email"] .dashboard-health-detail').evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.position === "absolute" && rect.width <= 1 && rect.height <= 1;
+  }), true);
   assert.equal(await page.locator('[data-dashboard-health="ai"]').evaluate((node) => node.classList.contains("ready")), true);
   assert.equal(await page.locator('[data-dashboard-health="email"]').evaluate((node) => node.classList.contains("warning")), true);
   // Drive is an optional integration: not connected in the harness -> warning (amber), not blocked.
   await page.waitForFunction(() => document.querySelector('[data-dashboard-health="drive"]')?.classList.contains("warning"));
   await assertTextContains(page.locator('[data-dashboard-health="drive"]'), "Drive");
-  await assertTextContains(page.locator('[data-dashboard-health="drive"]'), "Drive token missing");
   assertAttributeMatches(page.locator('[data-dashboard-health="drive"]'), "title", /Drive token missing/);
+  assert.equal(await page.locator('[data-dashboard-health="drive"] .dashboard-health-name').isVisible(), true);
   assert.equal(await page.locator('[data-dashboard-health="drive"]').evaluate((node) => node.classList.contains("warning")), true);
   const dashboardHealthLayout = await page.evaluate(() => {
     const ai = document.querySelector('[data-dashboard-health="ai"]').getBoundingClientRect();
@@ -3472,6 +3477,7 @@ async function testRepositoryLoadErrorClearsBoard(page) {
   await waitForRepositoryCount(page, "in_review", "0");
   await waitForRepositoryCount(page, "reviewed", "1");
   assert.equal(await page.locator(".repository-card").count(), 2);
+  await assertTextContains(page.locator(".repository-card").filter({ hasText: "Ready NDA" }).locator(".repository-source-badge"), "Mail");
 
   failMattersLoad = true;
   await page.evaluate(() => repositoryController.loadMatters());
@@ -4693,7 +4699,9 @@ async function testGmailSetupRequiredStatus(page) {
   });
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await waitForText(page, '[data-dashboard-health="email"]', "Google OAuth not configured");
+  await page.waitForFunction(() => (
+    document.querySelector('[data-dashboard-health="email"]')?.getAttribute("aria-label")?.includes("Google OAuth not configured")
+  ));
   assertAttributeMatches(page.locator('[data-dashboard-health="email"]'), "aria-label", /Google OAuth not configured/);
   await page.getByRole("tab", { name: "Repository" }).click();
   const syncStatus = page.locator("[data-repository-sync-status]");
@@ -4953,6 +4961,14 @@ async function testSharedGmailProfileAccountMenu(page) {
   await assertTextContains(page.locator("[data-session-account-menu]"), "Shared Gmail configured");
   await assertTextContains(page.locator("[data-session-account-menu]"), "Sign out");
   assert.equal(await page.locator("[data-session-menu-avatar-image]").getAttribute("src"), "https://example.com/daniyal.png");
+  await page.locator("[data-session-avatar-image]").evaluate((node) => node.dispatchEvent(new Event("error")));
+  await page.locator("[data-session-menu-avatar-image]").evaluate((node) => node.dispatchEvent(new Event("error")));
+  assert.equal(await page.locator("[data-session-avatar-image]").isVisible(), false);
+  assert.equal(await page.locator("[data-session-avatar-image]").getAttribute("src"), null);
+  assert.equal(await page.locator("[data-session-avatar-initial]").isVisible(), true);
+  assert.equal(await page.locator("[data-session-menu-avatar-image]").isVisible(), false);
+  assert.equal(await page.locator("[data-session-menu-avatar-image]").getAttribute("src"), null);
+  assert.equal(await page.locator("[data-session-menu-avatar-initial]").isVisible(), true);
 
   await page.unroute("**/api/auth/status");
   await page.unroute("**/api/deployment/status");

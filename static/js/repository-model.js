@@ -28,7 +28,7 @@ const RepositoryModel = (() => {
   function sourceTypeLabel(sourceType) {
     const labels = {
       gmail_demo: "Gmail Demo",
-      gmail_inbound: "Gmail Inbound",
+      gmail_inbound: "Mail",
       manual_upload: "Manual Upload",
       generated: "Generated",
     };

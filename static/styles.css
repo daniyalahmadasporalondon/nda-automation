@@ -1650,15 +1650,16 @@ h3 {
 .dashboard-health-list {
   align-items: center;
   display: flex;
-  gap: 14px;
+  gap: 16px;
   justify-content: center;
   margin-top: 8px;
   padding: 0;
 }
 
 .dashboard-health-item {
+  align-items: center;
   display: inline-flex;
-  gap: 0;
+  gap: 6px;
   min-width: 0;
   padding: 0;
 }
@@ -1693,15 +1694,11 @@ h3 {
 }
 
 .dashboard-health-name {
-  border: 0;
-  clip: rect(0, 0, 0, 0);
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  padding: 0;
-  position: absolute;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.2;
   white-space: nowrap;
-  width: 1px;
 }
 
 .dashboard-health-detail {
