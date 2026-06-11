@@ -23,13 +23,40 @@ def test_ai_tool_registry_exposes_strict_major_app_capability_tools():
     } <= set(tools)
     assert {tool.domain for tool in tools.values()} >= {"repository", "playbook", "gmail", "actions"}
     for tool in tools.values():
-        schema = tool.responses_tool()["parameters"]
-        assert tool.responses_tool()["strict"] is True
+        provider_tool = tool.provider_tool()
+        schema = provider_tool["function"]["parameters"]
+        assert provider_tool["type"] == "function"
         assert schema["additionalProperties"] is False
 
 
+def test_configured_assistant_model_uses_existing_openrouter_ai_settings(monkeypatch):
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "_ai_review_settings",
+        lambda: {
+            "enabled": True,
+            "provider": "openrouter",
+            "model": "x-ai/grok-4.3",
+            "timeout_seconds": 17,
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "_configured_api_key",
+        lambda provider: "sk-or-test" if provider == "openrouter" else "",
+    )
+
+    model = dashboard_assistant_ai.configured_dashboard_assistant_model()
+
+    assert isinstance(model, dashboard_assistant_ai.OpenRouterDashboardAssistantModel)
+    assert model.settings.provider == "openrouter"
+    assert model.settings.model == "x-ai/grok-4.3"
+    assert model.settings.timeout_seconds == 17
+    assert model.settings.api_key == "sk-or-test"
+
+
 def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
-    class FakeResponsesModel:
+    class FakeProviderModel:
         def __init__(self):
             self.requests = []
 
@@ -37,17 +64,24 @@ def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
             self.requests.append(request_body)
             if len(self.requests) == 1:
                 return {
-                    "id": "resp_1",
-                    "output": [
+                    "choices": [
                         {
-                            "type": "function_call",
-                            "name": "get_playbook_facts",
-                            "arguments": "{}",
-                            "call_id": "call_playbook",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_playbook",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_playbook_facts",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            }
                         }
                     ],
                 }
-            output = json.loads(self.requests[1]["input"][-1]["output"])
+            output = json.loads(self.requests[1]["messages"][-1]["content"])
             return {
                 "assistant_response": {
                     "intent": "system_question",
@@ -61,7 +95,7 @@ def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
                 }
             }
 
-    model = FakeResponsesModel()
+    model = FakeProviderModel()
 
     response = dashboard_assistant.handle_dashboard_assistant_command(
         "How many clauses do we have?",
@@ -78,12 +112,15 @@ def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
     assert response["domain"] == "playbook"
     assert response["answer"]["count"] == 3
     assert "Test Playbook has 3 clauses" in response["answer"]["text"]
-    assert model.requests[0]["reasoning"]["effort"] == "low"
-    assert "previous_response_id" in model.requests[1]
+    assert model.requests[0]["messages"][0]["role"] == "system"
+    assert model.requests[0]["model"] == "x-ai/grok-4.3"
+    assert model.requests[0]["response_format"] == {"type": "json_object"}
+    assert "previous_response_id" not in model.requests[1]
+    assert model.requests[1]["messages"][-1]["role"] == "tool"
 
 
 def test_ai_orchestrator_can_return_email_template_answer_from_code_read_model():
-    class FakeResponsesModel:
+    class FakeProviderModel:
         def __init__(self):
             self.requests = []
 
@@ -91,17 +128,24 @@ def test_ai_orchestrator_can_return_email_template_answer_from_code_read_model()
             self.requests.append(request_body)
             if len(self.requests) == 1:
                 return {
-                    "id": "resp_1",
-                    "output": [
+                    "choices": [
                         {
-                            "type": "function_call",
-                            "name": "get_outbound_email_templates",
-                            "arguments": "{}",
-                            "call_id": "call_email",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_email",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_outbound_email_templates",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            }
                         }
                     ],
                 }
-            output = json.loads(self.requests[1]["input"][-1]["output"])
+            output = json.loads(self.requests[1]["messages"][-1]["content"])
             return {
                 "assistant_response": {
                     "intent": "system_question",
@@ -118,7 +162,7 @@ def test_ai_orchestrator_can_return_email_template_answer_from_code_read_model()
     response = dashboard_assistant.handle_dashboard_assistant_command(
         "What is the message template for emails we send?",
         repository=InMemoryMatterRepository(),
-        ai_model=FakeResponsesModel(),
+        ai_model=FakeProviderModel(),
     )
 
     assert response["intent"] == "system_question"
@@ -127,7 +171,7 @@ def test_ai_orchestrator_can_return_email_template_answer_from_code_read_model()
 
 
 def test_ai_action_response_is_confirmation_gated_when_side_effectful():
-    class FakeResponsesModel:
+    class FakeProviderModel:
         def __call__(self, _request_body):
             return {
                 "assistant_response": {
@@ -143,7 +187,7 @@ def test_ai_action_response_is_confirmation_gated_when_side_effectful():
     response = dashboard_assistant.handle_dashboard_assistant_command(
         "Sync Gmail",
         repository=InMemoryMatterRepository(),
-        ai_model=FakeResponsesModel(),
+        ai_model=FakeProviderModel(),
     )
 
     assert response["intent"] == "action_request"
@@ -152,7 +196,7 @@ def test_ai_action_response_is_confirmation_gated_when_side_effectful():
 
 
 def test_ai_clarification_response_is_preserved_for_ambiguous_system_request():
-    class FakeResponsesModel:
+    class FakeProviderModel:
         def __call__(self, _request_body):
             return {
                 "assistant_response": {
@@ -166,7 +210,7 @@ def test_ai_clarification_response_is_preserved_for_ambiguous_system_request():
     response = dashboard_assistant.handle_dashboard_assistant_command(
         "What is happening?",
         repository=InMemoryMatterRepository(),
-        ai_model=FakeResponsesModel(),
+        ai_model=FakeProviderModel(),
     )
 
     assert response["intent"] == "clarification"

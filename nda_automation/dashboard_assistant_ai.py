@@ -1,34 +1,27 @@
-"""OpenAI-backed Dashboard assistant orchestration.
+"""Provider-backed Dashboard assistant orchestration.
 
 The deterministic command catalog in ``dashboard_assistant`` is still the safe
-fallback. This module adds the production LLM seam: a Responses API transport,
-strict function-tool catalog, read-only tool handlers, and response validation.
-Tests inject a fake model transport, so CI never calls the live API.
+fallback. This module adds the production LLM seam using the same OpenRouter
+provider settings as the review, summary, and generation AI paths. Tests inject a
+fake model transport, so CI never calls the live API.
 """
 from __future__ import annotations
 
 import json
-import os
-import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .ai_review import _trusted_https_context
-
-OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
-DASHBOARD_ASSISTANT_AI_ENABLED_ENV = "NDA_DASHBOARD_ASSISTANT_AI_ENABLED"
-DASHBOARD_ASSISTANT_MODEL_ENV = "NDA_DASHBOARD_ASSISTANT_MODEL"
-DASHBOARD_ASSISTANT_REASONING_EFFORT_ENV = "NDA_DASHBOARD_ASSISTANT_REASONING_EFFORT"
-DASHBOARD_ASSISTANT_TIMEOUT_ENV = "NDA_DASHBOARD_ASSISTANT_TIMEOUT_SECONDS"
-DASHBOARD_ASSISTANT_ENDPOINT_ENV = "NDA_DASHBOARD_ASSISTANT_ENDPOINT"
-
-DEFAULT_DASHBOARD_ASSISTANT_MODEL = "gpt-5.5"
-DEFAULT_DASHBOARD_ASSISTANT_REASONING_EFFORT = "low"
-DEFAULT_DASHBOARD_ASSISTANT_TIMEOUT_SECONDS = 20.0
-DEFAULT_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
+from .ai_review import (
+    DEFAULT_OPENROUTER_MODEL,
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+    _ai_review_settings,
+    _configured_api_key,
+    _sanitize_model_name,
+    _trusted_https_context,
+)
 
 SUPPORTED_INTENTS: frozenset[str] = frozenset(
     {
@@ -48,7 +41,7 @@ class DashboardAssistantAIUnavailableError(RuntimeError):
 
 
 class DashboardAssistantModel(Protocol):
-    """Callable model seam used by tests and the production Responses transport."""
+    """Callable model seam used by tests and the production provider transport."""
 
     def __call__(self, request_body: dict[str, Any]) -> Mapping[str, Any]:
         """Return a provider-shaped response mapping."""
@@ -57,10 +50,9 @@ class DashboardAssistantModel(Protocol):
 @dataclass(frozen=True)
 class DashboardAssistantAISettings:
     enabled: bool
+    provider: str
     model: str
-    reasoning_effort: str
-    timeout_seconds: float
-    endpoint: str
+    timeout_seconds: int
     api_key: str
 
 
@@ -72,24 +64,25 @@ class DashboardAssistantTool:
     parameters: Mapping[str, Any]
     handler: Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
-    def responses_tool(self) -> dict[str, Any]:
+    def provider_tool(self) -> dict[str, Any]:
         return {
             "type": "function",
-            "name": self.name,
-            "description": self.description,
-            "parameters": dict(self.parameters),
-            "strict": True,
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": dict(self.parameters),
+            },
         }
 
 
-class OpenAIResponsesDashboardAssistantModel:
+class OpenRouterDashboardAssistantModel:
     def __init__(self, settings: DashboardAssistantAISettings) -> None:
         self.settings = settings
 
     def __call__(self, request_body: dict[str, Any]) -> Mapping[str, Any]:
         encoded = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(
-            self.settings.endpoint,
+            OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
             data=encoded,
             headers={
                 "Authorization": f"Bearer {self.settings.api_key}",
@@ -110,33 +103,22 @@ class OpenAIResponsesDashboardAssistantModel:
         try:
             parsed = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DashboardAssistantAIUnavailableError("Responses API returned invalid JSON.") from error
+            raise DashboardAssistantAIUnavailableError("OpenRouter API returned invalid JSON.") from error
         if not isinstance(parsed, Mapping):
-            raise DashboardAssistantAIUnavailableError("Responses API returned a non-object payload.")
+            raise DashboardAssistantAIUnavailableError("OpenRouter API returned a non-object payload.")
         return parsed
 
 
-def dashboard_assistant_ai_settings(env: Mapping[str, str] | None = None) -> DashboardAssistantAISettings:
-    source = env if env is not None else os.environ
-    enabled = _truthy(source.get(DASHBOARD_ASSISTANT_AI_ENABLED_ENV))
-    model = _sanitize_model_name(source.get(DASHBOARD_ASSISTANT_MODEL_ENV) or DEFAULT_DASHBOARD_ASSISTANT_MODEL)
-    effort = str(source.get(DASHBOARD_ASSISTANT_REASONING_EFFORT_ENV) or DEFAULT_DASHBOARD_ASSISTANT_REASONING_EFFORT).strip().lower()
-    if effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
-        effort = DEFAULT_DASHBOARD_ASSISTANT_REASONING_EFFORT
-    try:
-        timeout = float(source.get(DASHBOARD_ASSISTANT_TIMEOUT_ENV) or DEFAULT_DASHBOARD_ASSISTANT_TIMEOUT_SECONDS)
-    except (TypeError, ValueError):
-        timeout = DEFAULT_DASHBOARD_ASSISTANT_TIMEOUT_SECONDS
-    timeout = min(max(timeout, 1.0), 60.0)
-    endpoint = str(source.get(DASHBOARD_ASSISTANT_ENDPOINT_ENV) or DEFAULT_RESPONSES_ENDPOINT).strip() or DEFAULT_RESPONSES_ENDPOINT
-    api_key = str(source.get(OPENAI_API_KEY_ENV) or "").strip()
+def dashboard_assistant_ai_settings(settings: Mapping[str, Any] | None = None) -> DashboardAssistantAISettings:
+    resolved = dict(settings or _ai_review_settings())
+    provider = str(resolved.get("provider") or "openrouter").strip().lower()
+    timeout = int(resolved.get("timeout_seconds") or 20)
     return DashboardAssistantAISettings(
-        enabled=enabled,
-        model=model,
-        reasoning_effort=effort,
-        timeout_seconds=timeout,
-        endpoint=endpoint,
-        api_key=api_key,
+        enabled=bool(resolved.get("enabled")),
+        provider=provider,
+        model=_sanitize_model_name(str(resolved.get("model") or DEFAULT_OPENROUTER_MODEL)),
+        timeout_seconds=max(1, timeout),
+        api_key=_configured_api_key(provider) if provider == "openrouter" else "",
     )
 
 
@@ -145,9 +127,9 @@ def configured_dashboard_assistant_model(
     settings: DashboardAssistantAISettings | None = None,
 ) -> DashboardAssistantModel | None:
     active_settings = settings or dashboard_assistant_ai_settings()
-    if not active_settings.enabled or not active_settings.api_key:
+    if not active_settings.enabled or active_settings.provider != "openrouter" or not active_settings.api_key:
         return None
-    return OpenAIResponsesDashboardAssistantModel(active_settings)
+    return OpenRouterDashboardAssistantModel(active_settings)
 
 
 def run_ai_dashboard_assistant(
@@ -177,7 +159,6 @@ def run_ai_dashboard_assistant(
                 tools,
                 tool_calls=tool_calls,
                 tool_outputs=tool_outputs,
-                previous_response_id=str(first_response.get("id") or ""),
                 settings=settings,
             )
         )
@@ -282,20 +263,24 @@ def _initial_request(
     active_settings = settings or dashboard_assistant_ai_settings()
     return {
         "model": active_settings.model,
-        "reasoning": {"effort": active_settings.reasoning_effort},
-        "input": [
-            {"role": "developer", "content": _developer_instructions()},
-            {"role": "user", "content": query},
+        "messages": [
+            {"role": "system", "content": _developer_instructions()},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "instruction": "Answer or prepare an action for QUERY using tools and only real app facts.",
+                        "QUERY": query,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
         ],
-        "tools": [tool.responses_tool() for tool in tools.values()],
+        "tools": [tool.provider_tool() for tool in tools.values()],
         "tool_choice": "auto",
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "dashboard_assistant_response",
-                "schema": _assistant_response_schema(),
-            }
-        },
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
     }
 
 
@@ -305,17 +290,22 @@ def _tool_followup_request(
     *,
     tool_calls: list[dict[str, Any]],
     tool_outputs: list[Mapping[str, Any]],
-    previous_response_id: str,
     settings: DashboardAssistantAISettings | None,
 ) -> dict[str, Any]:
     request = _initial_request(query, tools, settings=settings)
-    if previous_response_id:
-        request["previous_response_id"] = previous_response_id
-    request["input"].extend(
+    request["messages"].append(
         {
-            "type": "function_call_output",
-            "call_id": call.get("call_id") or call.get("id") or call["name"],
-            "output": json.dumps(output),
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_chat_completion_tool_call(call) for call in tool_calls],
+        }
+    )
+    request["messages"].extend(
+        {
+            "role": "tool",
+            "tool_call_id": str(call.get("id") or call.get("call_id") or call["name"]),
+            "name": str(call.get("name") or ""),
+            "content": json.dumps(output),
         }
         for call, output in zip(tool_calls, tool_outputs, strict=False)
     )
@@ -331,31 +321,6 @@ def _developer_instructions() -> str:
         "return an action_request or draft_action_request with requires_confirmation true. "
         "Do not expose chain-of-thought; return a concise answer, citations/facts, action request, clarification, or unsupported response."
     )
-
-
-def _assistant_response_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": True,
-        "properties": {
-            "intent": {"type": "string", "enum": sorted(SUPPORTED_INTENTS)},
-            "version": {"type": "integer"},
-            "query": {"type": "string"},
-            "domain": {"type": "string"},
-            "question": {"type": "string"},
-            "answer": {"type": "object", "additionalProperties": True},
-            "message": {"type": "string"},
-            "action": {"type": "string"},
-            "requires_confirmation": {"type": "boolean"},
-            "side_effects": {"type": "array", "items": {"type": "string"}},
-            "citations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "generator": {"type": "object", "additionalProperties": True},
-            "target": {"type": "object", "additionalProperties": True},
-            "search": {"type": "object", "additionalProperties": True},
-            "questions": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["intent"],
-    }
 
 
 def _strict_schema(
@@ -375,22 +340,12 @@ def _extract_final_response(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
     direct = raw.get("assistant_response")
     if isinstance(direct, Mapping):
         return direct
-    output_text = raw.get("output_text")
-    if isinstance(output_text, str):
-        parsed = _loads_json_object(output_text)
+    message = _first_choice_message(raw)
+    if message is not None:
+        content = str(message.get("content") or "").strip()
+        parsed = _loads_json_object(content)
         if isinstance(parsed, Mapping):
             return parsed
-    output = raw.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if not isinstance(item, Mapping):
-                continue
-            if item.get("type") == "message":
-                content = item.get("content")
-                text = _message_content_text(content)
-                parsed = _loads_json_object(text)
-                if isinstance(parsed, Mapping):
-                    return parsed
     return None
 
 
@@ -399,11 +354,22 @@ def _extract_tool_calls(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     for item in raw.get("tool_calls", []) if isinstance(raw.get("tool_calls"), list) else []:
         if isinstance(item, Mapping):
             calls.append(dict(item))
-    output = raw.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if isinstance(item, Mapping) and item.get("type") == "function_call":
-                calls.append(dict(item))
+    message = _first_choice_message(raw)
+    tool_calls = message.get("tool_calls") if message is not None else None
+    if isinstance(tool_calls, list):
+        for item in tool_calls:
+            if not isinstance(item, Mapping):
+                continue
+            function = item.get("function")
+            if not isinstance(function, Mapping):
+                continue
+            calls.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(function.get("name") or ""),
+                    "arguments": str(function.get("arguments") or "{}"),
+                }
+            )
     return calls
 
 
@@ -424,20 +390,26 @@ def _execute_tool_call(
     return tool.handler(args)
 
 
-def _message_content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, Mapping):
-                text = item.get("text") or item.get("content")
-                if isinstance(text, str):
-                    parts.append(text)
-            elif isinstance(item, str):
-                parts.append(item)
-        return "\n".join(parts)
-    return ""
+def _chat_completion_tool_call(call: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(call.get("id") or call.get("call_id") or call["name"]),
+        "type": "function",
+        "function": {
+            "name": str(call.get("name") or ""),
+            "arguments": call.get("arguments") if isinstance(call.get("arguments"), str) else json.dumps(call.get("arguments") or {}),
+        },
+    }
+
+
+def _first_choice_message(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    choices = raw.get("choices")
+    if not isinstance(choices, Sequence) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, Mapping):
+        return None
+    message = first.get("message")
+    return message if isinstance(message, Mapping) else None
 
 
 def _loads_json_object(text: str) -> Mapping[str, Any] | None:
@@ -562,12 +534,3 @@ def _matter_phase(matter: Mapping[str, Any]) -> str:
 
 def _matter_title(matter: Mapping[str, Any]) -> str:
     return str(matter.get("subject") or matter.get("document_title") or matter.get("source_filename") or "Untitled NDA")
-
-
-def _truthy(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-
-def _sanitize_model_name(model: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._/-]", "", str(model or "").strip())
-    return cleaned or DEFAULT_DASHBOARD_ASSISTANT_MODEL
