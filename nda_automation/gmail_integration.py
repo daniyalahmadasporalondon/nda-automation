@@ -127,9 +127,6 @@ GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 ROLE_TOKEN_ENV = google_connection.ROLE_TOKEN_ENV
 ROLE_LOCAL_TOKEN_FILENAME = google_connection.ROLE_LOCAL_TOKEN_FILENAME
 GMAIL_OAUTH_REDIRECT_URI_ENV = "NDA_GMAIL_OAUTH_REDIRECT_URI"
-GMAIL_OAUTH_AUTH_URL = google_connection.GOOGLE_OAUTH_AUTH_URL
-GMAIL_OAUTH_TOKEN_URL = google_connection.GOOGLE_OAUTH_TOKEN_URL
-GMAIL_OAUTH_SCOPES_BY_ROLE = google_connection.GOOGLE_OAUTH_SCOPES_BY_ROLE
 _PROFILE_CACHE_LOCK = threading.RLock()
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -337,61 +334,6 @@ def _import_inbound_attachment(
     )
 
 
-def _prepare_inbound_attachment(
-    service: Any,
-    message_id: str,
-    attachment: dict[str, Any],
-    metadata: dict[str, str],
-    *,
-    owner_user_id: str = "",
-    require_deterministic_acceptance: bool = True,
-) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    return gmail_matter_inbox.prepare_inbound_attachment(
-        service,
-        message_id,
-        attachment,
-        metadata,
-        transport=_gmail_inbox_transport(),
-        owner_user_id=owner_user_id,
-        require_deterministic_acceptance=require_deterministic_acceptance,
-    )
-
-
-def _create_matter_from_prepared_attachment(
-    candidate: dict[str, Any],
-    metadata: dict[str, str],
-    *,
-    selector_metadata: dict[str, object] | None = None,
-    owner_user_id: str = "",
-) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    return gmail_matter_inbox.create_matter_from_prepared_attachment(
-        candidate,
-        metadata,
-        transport=_gmail_inbox_transport(),
-        selector_metadata=selector_metadata,
-        owner_user_id=owner_user_id,
-    )
-
-
-def _selected_candidate_attachment_ids(
-    metadata: dict[str, str],
-    prepared: list[dict[str, Any]],
-) -> tuple[set[str] | None, dict[str, object]]:
-    return gmail_matter_inbox.selected_candidate_attachment_ids(
-        metadata,
-        prepared,
-        transport=_gmail_inbox_transport(),
-    )
-
-
-def _message_selector_metadata(message: dict[str, Any], metadata: dict[str, str]) -> dict[str, str]:
-    return gmail_matter_inbox.message_selector_metadata(message, metadata, transport=_gmail_inbox_transport())
-
-
-def _attachment_text_preview(paragraphs: list[dict[str, Any]]) -> str:
-    return gmail_matter_inbox.attachment_text_preview(paragraphs)
-
-
 def _gmail_attachment_already_imported(
     message_id: str,
     attachment_id: str,
@@ -410,10 +352,6 @@ def _gmail_attachment_already_imported(
         part_id=part_id,
         owner_user_id=owner_user_id,
     )
-
-
-def _gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str, **details: object) -> dict[str, str]:
-    return gmail_matter_inbox.gmail_attachment_skip(message_id, attachment_filename, reason, **details)
 
 
 def _gmail_outbox_transport() -> Any:
@@ -477,20 +415,6 @@ def _outbound_send_context(
         recipient_override=recipient_override,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
-    )
-
-
-def _require_confirmed_recipient(
-    recipient: str,
-    confirmed_recipient: str | None,
-    *,
-    recipient_from_inbound_header: bool = True,
-) -> None:
-    gmail_matter_outbox.require_confirmed_recipient(
-        recipient,
-        confirmed_recipient,
-        transport=_gmail_outbox_transport(),
-        recipient_from_inbound_header=recipient_from_inbound_header,
     )
 
 
@@ -593,11 +517,6 @@ def _write_token_atomically(token_path: Path, token_json: str) -> None:
         google_connection.write_token_atomically(token_path, token_json)
 
 
-def _write_token_json_unlocked(token_path: Path, token_json: str) -> None:
-    with _gmail_fsync_parent_directory_patch():
-        google_connection.write_token_json_unlocked(token_path, token_json)
-
-
 def _gmail_fsync_parent_directory_patch():
     class _Patch:
         def __enter__(self):
@@ -611,59 +530,12 @@ def _gmail_fsync_parent_directory_patch():
     return _Patch()
 
 
-def _token_path_for_role(role: str, owner_user_id: str = "") -> Path:
-    return google_connection.token_path_for_role(role, owner_user_id=owner_user_id, integration_label="Gmail")
-
-
-def build_gmail_authorization_url(
-    *, redirect_uri: str, state: str, role: str = "all", login_hint: str = ""
-) -> str:
-    return google_connection.build_authorization_url(
-        redirect_uri=redirect_uri,
-        role=role,
-        state=state,
-        login_hint=login_hint,
-    )
-
-
-def exchange_gmail_oauth_code(code: str, *, redirect_uri: str) -> dict[str, Any]:
-    return google_connection.exchange_oauth_code(code, redirect_uri=redirect_uri)
-
-
-def save_user_gmail_oauth_token(owner_user_id: str, token_response: dict[str, Any], *, role: str = "all") -> list[str]:
-    saved = google_connection.save_user_oauth_token(owner_user_id, token_response, role=role)
-    _clear_profile_cache_for_owner(owner_user_id)
-    return saved
-
-
-def disconnect_user_gmail(owner_user_id: str, *, role: str = "all") -> int:
-    removed = google_connection.disconnect_user_oauth(owner_user_id, role=role)
-    _clear_profile_cache_for_owner(owner_user_id)
-    return removed
-
-
 def configured_gmail_redirect_uri() -> str:
     return os.environ.get(GMAIL_OAUTH_REDIRECT_URI_ENV, "").strip()
 
 
-def _gmail_oauth_scopes_for_role(role: str) -> tuple[str, ...]:
-    return google_connection.oauth_scopes_for_role(role)
-
-
-def _gmail_oauth_roles_for_role(role: str) -> tuple[str, ...]:
-    return google_connection.oauth_roles_for_role(role)
-
-
-def _user_token_path_for_role(role: str, owner_user_id: str) -> Path:
-    return google_connection.user_token_path_for_role(role, owner_user_id, integration_label="Gmail")
-
-
 def _clean_user_token_segment(value: object) -> str:
     return google_connection.clean_user_token_segment(value)
-
-
-def _read_token_json(token_path: Path) -> dict[str, Any]:
-    return google_connection.read_token_json(token_path)
 
 
 def _profile_cache_key(role: str, owner_user_id: str = "") -> str:
@@ -751,27 +623,6 @@ def _parse_retry_after_timestamp(value: str) -> float:
 def _clear_gmail_profile_cache_for_tests() -> None:
     with _PROFILE_CACHE_LOCK:
         _PROFILE_CACHE.clear()
-
-
-def _can_reply_in_thread(matter: dict[str, Any], outbound_account: str) -> bool:
-    return gmail_matter_outbox.can_reply_in_thread(matter, outbound_account)
-
-
-def _ensure_outbound_matches_inbound(matter: dict[str, Any], outbound_account: str) -> None:
-    gmail_matter_outbox.ensure_outbound_matches_inbound(
-        matter,
-        outbound_account,
-        transport=_gmail_outbox_transport(),
-    )
-
-
-def _ensure_recipient_is_not_own_account(matter: dict[str, Any], recipient: str, outbound_account: str) -> None:
-    gmail_matter_outbox.ensure_recipient_is_not_own_account(
-        matter,
-        recipient,
-        outbound_account,
-        transport=_gmail_outbox_transport(),
-    )
 
 
 def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) -> bool:
@@ -1317,11 +1168,3 @@ def _decode_gmail_base64(value: str) -> bytes:
         return base64.urlsafe_b64decode((value + padding).encode("ascii"))
     except Exception as exc:
         raise GmailIntegrationError("Gmail attachment could not be decoded.") from exc
-
-
-def _reply_subject(subject: str) -> str:
-    return gmail_matter_outbox.reply_subject(subject)
-
-
-def _default_outbound_body(matter: dict[str, Any]) -> str:
-    return gmail_matter_outbox.default_outbound_body(matter)

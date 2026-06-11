@@ -121,7 +121,6 @@ DEFAULT_PERSONALISATION_SETTINGS = {
 }
 SUPPORTED_ACTIVE_REVIEW_ENGINES = {"deterministic", "ai_first"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
-GMAIL_TRIAGE_API_KEY_FILENAME = "gmail_triage_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
 MAX_PERSONALISATION_SIGN_OFF_LENGTH = 120
 MAX_PERSONALISATION_SIGNATURE_LENGTH = 200
@@ -216,10 +215,6 @@ def stored_ai_api_key() -> str:
     return _repository().read_secret(AI_API_KEY_FILENAME, "AI API key")
 
 
-def stored_gmail_triage_api_key() -> str:
-    return _repository().read_secret(GMAIL_TRIAGE_API_KEY_FILENAME, "Gmail triage API key")
-
-
 def save_ai_api_key(api_key: str) -> None:
     cleaned_key = str(api_key or "").strip()
     if not cleaned_key:
@@ -230,22 +225,8 @@ def save_ai_api_key(api_key: str) -> None:
     _repository().save_secret(AI_API_KEY_FILENAME, cleaned_key, "AI API key")
 
 
-def save_gmail_triage_api_key(api_key: str) -> None:
-    cleaned_key = str(api_key or "").strip()
-    if not cleaned_key:
-        raise AppSettingsError("Gmail triage API key is required.")
-    if len(cleaned_key) > MAX_AI_API_KEY_LENGTH:
-        raise AppSettingsError("Gmail triage API key is too long.")
-
-    _repository().save_secret(GMAIL_TRIAGE_API_KEY_FILENAME, cleaned_key, "Gmail triage API key")
-
-
 def clear_ai_api_key() -> None:
     _repository().clear_secret(AI_API_KEY_FILENAME)
-
-
-def clear_gmail_triage_api_key() -> None:
-    _repository().clear_secret(GMAIL_TRIAGE_API_KEY_FILENAME)
 
 
 def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -275,10 +256,6 @@ def update_drive_settings(updates: dict[str, Any]) -> dict[str, Any]:
 def gmail_role_enabled(role: str) -> bool:
     key = f"{role}_enabled"
     return gmail_settings().get(key, True)
-
-
-def drive_enabled() -> bool:
-    return bool(drive_settings().get("enabled", DEFAULT_DRIVE_SETTINGS["enabled"]))
 
 
 def drive_auto_intake_enabled() -> bool:
@@ -712,46 +689,6 @@ def _safe_audit_value(value: object) -> str:
     if len(text) > 200:
         return f"{text[:197]}..."
     return text
-
-
-def _load_settings() -> dict[str, Any]:
-    return _repository().read_settings()
-
-
-def _locked_settings():
-    return _repository().locked_settings()
-
-
-def _settings_path():
-    return _repository().settings_path()
-
-
-def _ai_api_key_path():
-    return _repository().secret_path(AI_API_KEY_FILENAME)
-
-
-def _gmail_triage_api_key_path():
-    return _repository().secret_path(GMAIL_TRIAGE_API_KEY_FILENAME)
-
-
-def _load_settings_unlocked() -> dict[str, Any]:
-    return _repository().load_settings_unlocked()
-
-
-def _stored_ai_api_key_unlocked() -> str:
-    return _repository().read_secret_unlocked(AI_API_KEY_FILENAME, "AI API key")
-
-
-def _stored_secret_key_unlocked(api_key_path: Path, label: str) -> str:
-    return _repository().read_secret_unlocked(api_key_path.name, label)
-
-
-def _save_ai_api_key_unlocked(api_key: str) -> None:
-    _repository().save_secret_unlocked(AI_API_KEY_FILENAME, api_key, "AI API key")
-
-
-def _save_secret_key_unlocked(api_key_path: Path, api_key: str, label: str) -> None:
-    _repository().save_secret_unlocked(api_key_path.name, api_key, label)
 
 
 def _save_settings_unlocked(settings: dict[str, Any]) -> None:

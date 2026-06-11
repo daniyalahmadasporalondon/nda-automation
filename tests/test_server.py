@@ -32,6 +32,7 @@ from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
+from nda_automation import gmail_matter_outbox
 from nda_automation import google_connection
 from nda_automation import ingestion_service
 from nda_automation import matter_store
@@ -3789,11 +3790,12 @@ class ServerTests(unittest.TestCase):
                     "nda_automation.routes.gmail.google_connection.exchange_oauth_code",
                     return_value={"access_token": "access-token", "refresh_token": "refresh-token"},
                 ) as exchange_code:
-                    callback_status, callback_payload, callback_headers = self.request_with_headers(
-                        "GET",
-                        f"/auth/gmail/callback?code=gmail-code&state={state}",
-                        headers=session_headers,
-                    )
+                    with patch.object(gmail_integration, "_clear_profile_cache_for_owner") as clear_profile_cache:
+                        callback_status, callback_payload, callback_headers = self.request_with_headers(
+                            "GET",
+                            f"/auth/gmail/callback?code=gmail-code&state={state}",
+                            headers=session_headers,
+                        )
                 token_root = matter_store.DATA_DIR / "users" / "google" / user["id"]
                 inbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]
                 outbound_token = token_root / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]
@@ -3808,12 +3810,13 @@ class ServerTests(unittest.TestCase):
                         "/api/gmail/status",
                         headers=session_headers,
                     )
-                disconnect_status, disconnect_payload = self.request(
-                    "POST",
-                    "/api/gmail/disconnect",
-                    {"role": "inbound"},
-                    headers=session_headers,
-                )
+                with patch.object(gmail_integration, "_clear_profile_cache_for_owner") as disconnect_clear_profile_cache:
+                    disconnect_status, disconnect_payload = self.request(
+                        "POST",
+                        "/api/gmail/disconnect",
+                        {"role": "inbound"},
+                        headers=session_headers,
+                    )
                 inbound_token_exists_after_disconnect = inbound_token.exists()
                 outbound_token_exists_after_disconnect = outbound_token.exists()
 
@@ -3834,6 +3837,7 @@ class ServerTests(unittest.TestCase):
             "gmail-code",
             redirect_uri="https://nda.example.com/auth/gmail/callback",
         )
+        clear_profile_cache.assert_called_once_with(user["id"])
         self.assertTrue(inbound_token_exists_after_connect)
         self.assertTrue(outbound_token_exists_after_connect)
         self.assertFalse(legacy_gmail_dir_exists_after_connect)
@@ -3852,6 +3856,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(status_payload["gmail"]["inbound"]["ready"])
         self.assertEqual(disconnect_status, 200)
         self.assertEqual(disconnect_payload["disconnected"], 1)
+        disconnect_clear_profile_cache.assert_called_once_with(user["id"])
         self.assertFalse(inbound_token_exists_after_disconnect)
         self.assertTrue(outbound_token_exists_after_disconnect)
         self.assertEqual(disconnect_payload["gmail"]["inbound"]["token"]["source"], "missing")
@@ -6584,10 +6589,18 @@ class ServerTests(unittest.TestCase):
             with patch.object(matter_store, "DATA_DIR", server_module.Path(data_dir)):
                 for owner_user_id in ("", ".", "..", "./", "../"):
                     with self.subTest(owner_user_id=owner_user_id):
-                        with self.assertRaisesRegex(gmail_integration.GmailIntegrationError, "valid signed-in user"):
-                            gmail_integration._user_token_path_for_role("inbound", owner_user_id)
+                        with self.assertRaisesRegex(google_connection.GoogleConnectionError, "valid signed-in user"):
+                            google_connection.user_token_path_for_role(
+                                "inbound",
+                                owner_user_id,
+                                integration_label="Gmail",
+                            )
 
-                token_path = gmail_integration._user_token_path_for_role("inbound", "google:123")
+                token_path = google_connection.user_token_path_for_role(
+                    "inbound",
+                    "google:123",
+                    integration_label="Gmail",
+                )
 
         self.assertEqual(token_path.name, "inbound-token.json")
         self.assertIn("google:123", token_path.parts)
@@ -6761,7 +6774,7 @@ class ServerTests(unittest.TestCase):
                     "signature": "Daniyal Ahmad",
                     "signature_block": "Warm regards,\nDaniyal Ahmad\nAspora Legal",
                 })
-                body = server_module.gmail_integration._default_outbound_body({
+                body = gmail_matter_outbox.default_outbound_body({
                     "subject": "Partner NDA",
                 })
 

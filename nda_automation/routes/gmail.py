@@ -87,6 +87,7 @@ def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
             token_response,
             role=role,
         )
+        gmail_integration._clear_profile_cache_for_owner(owner_user_id)
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
@@ -123,6 +124,7 @@ def handle_gmail_disconnect(handler) -> None:
     role = str(payload.get("role") or "all").strip().lower()
     try:
         removed = google_connection.disconnect_user_oauth(owner_user_id, role=role)
+        gmail_integration._clear_profile_cache_for_owner(owner_user_id)
         status = gmail_integration.gmail_status(owner_user_id=owner_user_id)
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=400)
@@ -314,10 +316,6 @@ def handle_gmail_send_redline(handler) -> None:
         "matter": matter_view.public_matter(sent_redline.matter),
         "sent": sent_redline.sent,
     })
-
-
-def matter_blocks_redline_send(matter: dict) -> bool:
-    return matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed")
 
 
 def gmail_owner_user_id(handler) -> str:
