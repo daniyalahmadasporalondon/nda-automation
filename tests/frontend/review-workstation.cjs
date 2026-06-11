@@ -283,7 +283,8 @@ async function testAccessibleControlState(page) {
       }),
     });
   });
-  await page.route("**/api/gmail/status", async (route) => {
+  const gmailStatusRoute = "**/api/gmail/status*";
+  await page.route(gmailStatusRoute, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -425,7 +426,7 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "false");
   assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
   await page.unroute("**/api/ai/settings");
-  await page.unroute("**/api/gmail/status");
+  await page.unroute(gmailStatusRoute);
 }
 
 async function testFailureUxDetails(page) {
@@ -4688,6 +4689,8 @@ async function testUserGmailSessionControls(page) {
 }
 
 async function testSharedGmailProfileAccountMenu(page) {
+  const gmailStatusRoute = "**/api/gmail/status*";
+
   await page.route("**/api/auth/status", async (route) => {
     await route.fulfill({
       status: 200,
@@ -4708,7 +4711,7 @@ async function testSharedGmailProfileAccountMenu(page) {
       body: JSON.stringify({ deployment: { status: "ok", checks: [] } }),
     });
   });
-  await page.route("**/api/gmail/status", async (route) => {
+  await page.route(gmailStatusRoute, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -4746,9 +4749,10 @@ async function testSharedGmailProfileAccountMenu(page) {
     });
   });
 
-  const gmailStatusLoaded = page.waitForResponse((response) => (
-    response.url().endsWith("/api/gmail/status") && response.status() === 200
-  ));
+  const gmailStatusLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/gmail/status" && response.status() === 200;
+  });
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await gmailStatusLoaded;
   await waitForText(page, "[data-session-gmail]", "Shared Gmail configured");
@@ -4766,7 +4770,7 @@ async function testSharedGmailProfileAccountMenu(page) {
 
   await page.unroute("**/api/auth/status");
   await page.unroute("**/api/deployment/status");
-  await page.unroute("**/api/gmail/status");
+  await page.unroute(gmailStatusRoute);
   await page.unroute("**/api/matters");
 }
 
@@ -7316,6 +7320,7 @@ async function testDashboardSmartSearchV2(page) {
   await page.fill("#dashboardSearchInput", "How many are in review?");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="repository_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "REPOSITORY ANSWER");
   await assertTextContains(page.locator("#dashboardSearchResults"), "2 documents are in review.");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Acme Mutual NDA");
 
@@ -7323,6 +7328,7 @@ async function testDashboardSmartSearchV2(page) {
   await page.fill("#dashboardSearchInput", "How many playbook clauses do we have?");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="system_question"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "SYSTEM ANSWER");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Aspora NDA hard clauses has 6 clauses.");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Aspora NDA hard clauses");
 
@@ -7335,6 +7341,7 @@ async function testDashboardSmartSearchV2(page) {
   await page.fill("#dashboardSearchInput", "Sync Gmail inbox");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="action_request"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "CONFIRMATION REQUIRED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
   await assertTextContains(page.locator("#dashboardSearchResults"), "No workflow runs");
 
@@ -7342,6 +7349,7 @@ async function testDashboardSmartSearchV2(page) {
   await page.goto(`${BASE_URL}/?dashboardSearch=Generate+an+NDA`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-dashboard-search]");
   await page.waitForSelector('[data-dashboard-assistant-response="draft_action_request"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "CONFIRMATION REQUIRED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
   await assertTextContains(page.locator("#dashboardSearchResults"), "No document will be generated");
   await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
@@ -7357,11 +7365,13 @@ async function testDashboardSmartSearchV2(page) {
   await page.fill("#dashboardSearchInput", "unsupported command please");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "UNSUPPORTED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
 
   await page.fill("#dashboardSearchInput", "clarify this request");
   await page.locator("#dashboardSearchForm").press("Enter");
   await page.waitForSelector('[data-dashboard-assistant-response="clarification"]');
+  await assertTextContains(page.locator("#dashboardSearchResults"), "CLARIFICATION");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Which workflow should I inspect?");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Gmail inbox");
 

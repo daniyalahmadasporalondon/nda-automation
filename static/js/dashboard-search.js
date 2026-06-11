@@ -239,6 +239,7 @@ const DashboardSearchView = (() => {
     }
 
     function assistantCardMarkup({ type, title, message, facts = [], actions = [] }) {
+      const typeLabel = assistantResponseLabel(type);
       const factMarkup = facts.length
         ? `<ul class="dashboard-search-result-summary dashboard-assistant-facts">` +
           facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("") +
@@ -260,16 +261,35 @@ const DashboardSearchView = (() => {
       return (
         `<li class="dashboard-search-result dashboard-assistant-card" ` +
         `data-dashboard-assistant-response="${escapeHtml(type)}">` +
-        `<div class="dashboard-search-result-row">` +
-        `<div class="dashboard-search-result-button dashboard-assistant-card-body">` +
-        `<span class="dashboard-search-result-title">${escapeHtml(title)}</span>` +
-        (message ? `<span class="dashboard-search-result-status">${escapeHtml(message)}</span>` : "") +
+        `<article class="dashboard-assistant-surface">` +
+        `<div class="dashboard-assistant-card-head">` +
+        `<span class="dashboard-assistant-type">${escapeHtml(typeLabel)}</span>` +
+        `<strong>${escapeHtml(title)}</strong>` +
         `</div>` +
-        `</div>` +
+        (message ? `<p class="dashboard-assistant-message">${escapeHtml(message)}</p>` : "") +
         factMarkup +
         actionMarkup +
+        `</article>` +
         `</li>`
       );
+    }
+
+    function assistantResponseLabel(type) {
+      switch (type) {
+        case "repository_question":
+          return "Repository answer";
+        case "system_question":
+          return "System answer";
+        case "draft_action_request":
+        case "action_request":
+          return "Confirmation required";
+        case "unsupported":
+          return "Unsupported";
+        case "clarification":
+          return "Clarification";
+        default:
+          return "Assistant";
+      }
     }
 
     function renderAssistantCard({ type, title, message, facts, actions, statusText }) {
