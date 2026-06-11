@@ -7605,7 +7605,14 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="action_request"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "CONFIRMATION REQUIRED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
-  await assertTextContains(page.locator("#dashboardSearchResults"), "No workflow runs");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Will happen: open Admin so you can inspect Gmail connection and sync controls.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Will not happen: import, sync, send, archive, delete, or modify Gmail messages.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "No sync or import starts from this dashboard response.");
+  assertAttributeMatches(
+    page.locator('[data-dashboard-assistant-action="open_gmail_sync"]'),
+    "aria-label",
+    /Confirm and Review Gmail sync/,
+  );
 
   // --- Action request requires confirmation and only opens/prefills Generator ---
   await page.goto(`${BASE_URL}/?dashboardSearch=Generate+an+NDA`, { waitUntil: "domcontentloaded" });
@@ -7613,7 +7620,14 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="draft_action_request"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "CONFIRMATION REQUIRED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Action needs confirmation");
-  await assertTextContains(page.locator("#dashboardSearchResults"), "No document will be generated");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Will happen: open Generator and prefill the prompt as draft context.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Will not happen: generate, save, send, export, delete, or approve a document.");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Nothing is generated until you choose Generate there.");
+  assertAttributeMatches(
+    page.locator('[data-dashboard-assistant-action="open_generator"]'),
+    "aria-label",
+    /Confirm and Open Generator/,
+  );
   await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
   await page.waitForSelector("#generatorView:not([hidden])");
   assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
@@ -7629,7 +7643,9 @@ async function testDashboardSmartSearchV2(page) {
   await page.waitForSelector('[data-dashboard-assistant-response="unsupported"]');
   await assertTextContains(page.locator("#dashboardSearchResults"), "UNSUPPORTED");
   await assertTextContains(page.locator("#dashboardSearchResults"), "I cannot do that request yet");
-  await assertTextContains(page.locator("#dashboardSearchResults"), "Ask repository questions like: How many are in review?");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Repository: ask “How many are in review?”");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "System: ask about the Playbook");
+  await assertTextContains(page.locator("#dashboardSearchResults"), "Workflows: ask to generate an NDA");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Open Repository");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Open Generator");
   await assertTextContains(page.locator("#dashboardSearchResults"), "Open Admin");
@@ -7737,6 +7753,8 @@ async function testInboundNotificationToast(page) {
   // SILENTLY. The seed matter's card confirms the seeding observe has run.
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
+  await page.locator("#toastStack .toast [data-toast-close]").click({ trial: false }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll("#toastStack .toast").length === 0);
   assert.equal(await page.locator("#toastStack .toast").count(), 0);
 
   // A new inbound NDA arrives, then the matter list refreshes (tab re-activation

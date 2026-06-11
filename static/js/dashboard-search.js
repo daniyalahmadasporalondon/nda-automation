@@ -217,16 +217,12 @@ const DashboardSearchView = (() => {
       if (!["draft_action_request", "action_request"].includes(intent) || !action) return [];
       const generator = payload.generator && typeof payload.generator === "object" ? payload.generator : {};
       const target = payload.target && typeof payload.target === "object" ? payload.target : {};
-      const label = String(payload.label || (action === "open_generator" ? "Open Generator" : "Open")).trim();
+      const label = assistantActionLabel(action, payload.label);
       const sideEffects = Array.isArray(payload.side_effects) ? payload.side_effects : [];
       return [{
         id: action,
         label,
-        description: action === "open_generator"
-          ? "No NDA is generated, saved, sent, or exported until you confirm again in the Generator."
-          : sideEffects.length
-          ? "This request only opens the relevant controls. It does not run, send, export, import, approve, or delete anything from the dashboard prompt."
-          : "This opens the relevant workspace without changing documents or settings.",
+        description: assistantActionDescription(action, sideEffects),
         requiresConfirmation: payload.requires_confirmation !== false,
         payload: {
           action,
@@ -236,6 +232,30 @@ const DashboardSearchView = (() => {
           sideEffects,
         },
       }];
+    }
+
+    function assistantActionLabel(action, fallback = "") {
+      const label = String(fallback || "").trim();
+      if (label) return label;
+      if (action === "open_generator") return "Open Generator";
+      if (action === "open_gmail_sync") return "Open Gmail controls";
+      if (action === "open_repository") return "Open Repository";
+      if (action === "open_admin") return "Open Admin";
+      if (action === "open_playbook") return "Open Playbook";
+      return "Open workspace";
+    }
+
+    function assistantActionDescription(action, sideEffects = []) {
+      if (action === "open_generator") {
+        return "Opens Generator with this prompt as intake context. Nothing is generated until you choose Generate there.";
+      }
+      if (action === "open_gmail_sync") {
+        return "Opens Admin Gmail controls. No sync or import starts from this dashboard response.";
+      }
+      if (sideEffects.length) {
+        return "Opens the relevant workspace for review. No workflow runs from this dashboard response.";
+      }
+      return "Opens the relevant workspace without changing documents or settings.";
     }
 
     function assistantGuideActions(query = "") {
@@ -308,9 +328,9 @@ const DashboardSearchView = (() => {
 
     function unsupportedFacts() {
       return [
-        "Ask repository questions like: How many are in review?",
-        "Ask system questions about the Playbook or email templates.",
-        "Request safe workflows like: Generate an NDA, sync Gmail, or open Admin.",
+        "Repository: ask “How many are in review?” or search for a counterparty.",
+        "System: ask about the Playbook, email templates, or what the assistant can do.",
+        "Workflows: ask to generate an NDA, open Admin, open Repository, or review Gmail setup.",
       ];
     }
 
@@ -346,19 +366,20 @@ const DashboardSearchView = (() => {
     function assistantCardMarkup({ type, title, message, facts = [], actions = [] }) {
       const typeLabel = assistantResponseLabel(type);
       const factMarkup = facts.length
-        ? `<ul class="dashboard-search-result-summary dashboard-assistant-facts">` +
+        ? `<ul class="dashboard-assistant-facts">` +
           facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("") +
           `</ul>`
         : "";
       const actionMarkup = actions.length
-        ? `<div class="dashboard-search-result-relationships dashboard-assistant-actions">` +
+        ? `<div class="dashboard-assistant-actions" aria-label="Assistant actions">` +
           actions.map((action) => (
             `<button type="button" class="dashboard-search-result-summarize dashboard-assistant-action" ` +
+            `aria-label="${escapeHtml(action.requiresConfirmation ? `Confirm and ${action.label}` : action.label)}" ` +
             `data-dashboard-assistant-action="${escapeHtml(action.id)}">` +
             `${escapeHtml(action.requiresConfirmation ? `Confirm: ${action.label}` : action.label)}` +
             `</button>` +
             (action.description
-              ? `<p class="dashboard-search-summary-status">${escapeHtml(action.description)}</p>`
+              ? `<p class="dashboard-assistant-action-note">${escapeHtml(action.description)}</p>`
               : "")
           )).join("") +
           `</div>`
@@ -451,13 +472,7 @@ const DashboardSearchView = (() => {
           type,
           title: "Action needs confirmation",
           message: message || "Confirm before anything changes.",
-          facts: [
-            String(payload.action || "") === "open_generator"
-              ? "No document will be generated, saved, sent, exported, deleted, or approved from this dashboard prompt."
-              : hasSideEffects
-              ? "No workflow runs until you confirm again in the destination workspace."
-              : "No document or setting changes from this dashboard prompt.",
-          ],
+          facts: assistantActionFacts(payload, hasSideEffects),
           actions,
           statusText: "Action needs confirmation",
         });
@@ -486,6 +501,30 @@ const DashboardSearchView = (() => {
         });
       }
       return false;
+    }
+
+    function assistantActionFacts(payload, hasSideEffects) {
+      const action = String(payload.action || "");
+      if (action === "open_generator") {
+        return [
+          "Will happen: open Generator and prefill the prompt as draft context.",
+          "Will not happen: generate, save, send, export, delete, or approve a document.",
+          "Next confirmation: review the Generator fields before choosing Generate.",
+        ];
+      }
+      if (action === "open_gmail_sync") {
+        return [
+          "Will happen: open Admin so you can inspect Gmail connection and sync controls.",
+          "Will not happen: import, sync, send, archive, delete, or modify Gmail messages.",
+          "Next confirmation: use the Admin controls if you decide to sync.",
+        ];
+      }
+      return [
+        "Will happen: open the relevant workspace for review.",
+        hasSideEffects
+          ? "Will not happen: no import, send, export, approval, or deletion starts from this card."
+          : "Will not happen: no document or setting changes from this card.",
+      ];
     }
 
     // v3 "Find documents linked to a counterparty": render the real matters grouped

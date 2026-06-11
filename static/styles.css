@@ -2066,16 +2066,28 @@ h3 {
 }
 
 .dashboard-assistant-facts {
-  box-shadow: none;
-  margin-top: 0;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard-assistant-facts li {
+  background: rgba(91, 45, 145, 0.055);
+  border: 1px solid rgba(91, 45, 145, 0.1);
+  border-radius: 9px;
+  color: #2c2540;
+  font-size: 12.5px;
+  font-weight: 570;
+  line-height: 1.4;
+  padding: 8px 10px;
 }
 
 .dashboard-assistant-actions {
   align-items: flex-start;
-  box-shadow: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  gap: 6px;
   margin-top: 0;
 }
 
@@ -2094,6 +2106,14 @@ h3 {
 .dashboard-assistant-actions .dashboard-search-summary-status {
   flex: 1 0 100%;
   margin-top: -2px;
+}
+
+.dashboard-assistant-action-note {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 570;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .dashboard-search-result-button {
