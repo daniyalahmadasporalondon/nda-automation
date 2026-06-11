@@ -345,6 +345,26 @@ def handle_matter_source_pdf(handler, path: str, *, send_body: bool = True) -> N
     )
 
 
+def handle_matter_source_docx(handler, path: str, *, send_body: bool = True) -> None:
+    matter_id = parse_matter_id(path, suffix="/source-docx")
+    try:
+        result = pdf_export_service.build_matter_pdf_source_docx_export(
+            matter_id,
+            owner_user_id=request_owner_user_id(handler),
+            repository=_repository(handler),
+        )
+    except pdf_export_service.PdfExportError as error:
+        handler._send_json(error.payload, status=error.status, headers=error.headers, send_body=send_body)
+        return
+    handler._send_download(
+        result.data,
+        result.filename,
+        result.content_type,
+        headers=result.headers,
+        send_body=send_body,
+    )
+
+
 def handle_matter_render_page(handler, path: str, *, send_body: bool = True) -> None:
     parsed = matter_render_job.parse_matter_render_page_path(path)
     if parsed is None:

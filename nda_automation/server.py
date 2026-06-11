@@ -331,6 +331,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/source-pdf"):
             matter_routes.handle_matter_source_pdf(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/source-docx"):
+            matter_routes.handle_matter_source_docx(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/") and "/render-page/" in path:
             matter_routes.handle_matter_render_page(self, path, send_body=send_body)
             return

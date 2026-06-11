@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from nda_automation import document_rendering, pdf_export_service
+from tests.test_pdf_docx_reconstruction import make_valid_docx
+
+from nda_automation import document_rendering, pdf_docx_reconstruction, pdf_export_service
 
 
 class AvailableConverter:
@@ -23,6 +25,27 @@ class UnavailableConverter:
 
     def convert_docx_to_pdf(self, source_path: Path, output_dir: Path, *, timeout_seconds: int):
         raise AssertionError("unavailable converter should not be called")
+
+
+class AvailablePdfDocxConverter:
+    name = "fake-pdf2docx"
+
+    def is_available(self):
+        return True
+
+    def convert_pdf_to_docx(self, source_path: Path, output_path: Path):
+        assert source_path.read_bytes().startswith(b"%PDF-")
+        output_path.write_bytes(make_valid_docx())
+
+
+class UnavailablePdfDocxConverter:
+    name = "fake-unavailable-pdf2docx"
+
+    def is_available(self):
+        return False
+
+    def convert_pdf_to_docx(self, source_path: Path, output_path: Path):
+        raise AssertionError("unavailable PDF-to-DOCX converter should not be called")
 
 
 def test_converter_health_reports_available_converter():
@@ -135,6 +158,7 @@ def test_public_matter_document_downloads_preserves_original_pdf_and_blocks_fake
             "status": "approved",
         },
         converter=UnavailableConverter(),
+        pdf_docx_converter=UnavailablePdfDocxConverter(),
     )
 
     source = downloads["source"]["formats"]
@@ -142,15 +166,44 @@ def test_public_matter_document_downloads_preserves_original_pdf_and_blocks_fake
     assert source["pdf"]["download_url"] == "/api/matters/matter-3/source-pdf"
     assert source["pdf"]["filename"] == "Signed-NDA.pdf"
     assert source["docx"]["available"] is False
-    assert "source document is a PDF" in source["docx"]["unavailable_reason"]
+    assert "pdf2docx" in source["docx"]["unavailable_reason"]
 
     reviewed = downloads["reviewed"]["formats"]
     assert reviewed["docx"]["available"] is False
     assert reviewed["pdf"]["available"] is False
-    assert "source PDFs" in reviewed["docx"]["unavailable_reason"]
-    assert "source PDFs" in reviewed["pdf"]["unavailable_reason"]
+    assert "pdf2docx" in reviewed["docx"]["unavailable_reason"]
+    assert "pdf2docx" in reviewed["pdf"]["unavailable_reason"]
     assert "download_url" not in reviewed["docx"]
     assert "download_url" not in reviewed["pdf"]
+
+
+def test_public_matter_document_downloads_exposes_reconstructed_pdf_docx_when_available():
+    downloads = pdf_export_service.public_matter_document_downloads(
+        {
+            "id": "matter-5",
+            "source_filename": "Signed NDA.pdf",
+            "status": "approved",
+        },
+        converter=AvailableConverter(),
+        pdf_docx_converter=AvailablePdfDocxConverter(),
+    )
+
+    source = downloads["source"]["formats"]
+    assert source["pdf"]["available"] is True
+    assert source["pdf"]["download_url"] == "/api/matters/matter-5/source-pdf"
+    assert source["docx"]["available"] is True
+    assert source["docx"]["download_url"] == "/api/matters/matter-5/source-docx"
+    assert source["docx"]["filename"] == "Signed-NDA.docx"
+    assert source["docx"]["converter"]["converter"] == "fake-pdf2docx"
+
+    reviewed = downloads["reviewed"]["formats"]
+    assert reviewed["docx"]["available"] is True
+    assert reviewed["docx"]["download_url"] == "/api/matters/matter-5/reviewed-docx"
+    assert reviewed["docx"]["filename"] == "Signed-NDA-reviewed.docx"
+    assert reviewed["pdf"]["available"] is True
+    assert reviewed["pdf"]["download_url"] == "/api/matters/matter-5/reviewed-pdf"
+    assert reviewed["pdf"]["converter"]["pdf_to_docx"]["converter"] == "fake-pdf2docx"
+    assert reviewed["pdf"]["converter"]["docx_to_pdf"]["converter"] == "fake-available"
 
 
 def test_public_matter_document_downloads_does_not_expose_internal_stored_filename():
@@ -200,3 +253,27 @@ def test_build_docx_pdf_export_reports_unavailable_converter():
         assert error.payload["document_pdf_export"]["filename"] == "mutual-nda-redlined.pdf"
     else:
         raise AssertionError("expected converter-unavailable PDF export error")
+
+
+def test_build_matter_pdf_source_docx_export_reconstructs_pdf_source():
+    class Repository:
+        def get_matter(self, matter_id, *, owner_user_id=""):
+            return {
+                "id": matter_id,
+                "source_filename": "Signed NDA.pdf",
+            }
+
+        def get_source_document_bytes(self, matter):
+            return b"%PDF-1.7\nsource pdf\n%%EOF\n"
+
+    export = pdf_export_service.build_matter_pdf_source_docx_export(
+        "matter-6",
+        repository=Repository(),
+        converter=AvailablePdfDocxConverter(),
+    )
+
+    assert export.data.startswith(b"PK")
+    assert export.filename == "Signed-NDA.docx"
+    assert export.content_type == pdf_docx_reconstruction.DOCX_CONTENT_TYPE
+    assert export.headers["X-PDF-DOCX-Reconstruction"] == "pdf2docx"
+    assert export.headers["X-PDF-DOCX-Converter"] == "fake-pdf2docx"

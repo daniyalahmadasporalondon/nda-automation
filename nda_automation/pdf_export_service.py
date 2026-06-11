@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import document_rendering, matter_render_job
-from .matter_repository import MatterRepository
+from . import document_rendering, matter_render_job, pdf_docx_reconstruction
+from .matter_repository import DiskMatterRepository, MatterRepository
 
 PDF_EXPORT_MIME = document_rendering.PDF_CONTENT_TYPE
 PDF_EXPORT_VERIFICATION_HEADER = "document-to-pdf"
@@ -14,6 +14,10 @@ PDF_CONVERTER_UNAVAILABLE_MESSAGE = (
     "PDF export requires LibreOffice/soffice for Word documents, but no converter executable was found."
 )
 DOCX_DOWNLOAD_MIME = document_rendering.DOCX_CONTENT_TYPE
+PDF_DOCX_RECONSTRUCTION_MIME = pdf_docx_reconstruction.DOCX_CONTENT_TYPE
+PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE = (
+    pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE
+)
 
 
 class PdfExportError(RuntimeError):
@@ -38,6 +42,14 @@ class MatterPdfExport:
     headers: dict[str, str]
 
 
+@dataclass(frozen=True)
+class MatterDocxExport:
+    data: bytes
+    filename: str
+    content_type: str
+    headers: dict[str, str]
+
+
 def converter_health(converter: document_rendering.DocxConverter | None = None) -> dict[str, object]:
     active_converter = converter or document_rendering.LibreOfficeDocxConverter()
     available = active_converter.is_available()
@@ -52,6 +64,12 @@ def converter_health(converter: document_rendering.DocxConverter | None = None) 
     }
 
 
+def pdf_docx_converter_health(
+    converter: pdf_docx_reconstruction.PdfToDocxConverter | None = None,
+) -> dict[str, object]:
+    return pdf_docx_reconstruction.converter_health(converter)
+
+
 def matter_pdf_download_url(matter_id: str) -> str:
     matter_id = str(matter_id or "").strip()
     return f"/api/matters/{quote(matter_id, safe='')}/source-pdf" if matter_id else ""
@@ -60,6 +78,11 @@ def matter_pdf_download_url(matter_id: str) -> str:
 def matter_source_download_url(matter_id: str) -> str:
     matter_id = str(matter_id or "").strip()
     return f"/api/matters/{quote(matter_id, safe='')}/source" if matter_id else ""
+
+
+def matter_source_docx_download_url(matter_id: str) -> str:
+    matter_id = str(matter_id or "").strip()
+    return f"/api/matters/{quote(matter_id, safe='')}/source-docx" if matter_id else ""
 
 
 def matter_reviewed_docx_download_url(matter_id: str) -> str:
@@ -76,6 +99,7 @@ def public_matter_document_downloads(
     matter: dict[str, Any],
     *,
     converter: document_rendering.DocxConverter | None = None,
+    pdf_docx_converter: pdf_docx_reconstruction.PdfToDocxConverter | None = None,
 ) -> dict[str, Any]:
     """UI-facing contract for one Download menu with format choices.
 
@@ -91,6 +115,8 @@ def public_matter_document_downloads(
     reviewed_ready = str(matter.get("status") or "") == "approved"
     reviewed_source_supported = reviewed_ready and source_is_docx
     health = converter_health(converter)
+    pdf_docx_health = pdf_docx_converter_health(pdf_docx_converter)
+    reconstructed_pdf_docx_available = source_is_pdf and bool(pdf_docx_health["available"])
 
     source_label = "Generated document" if generated else "Original document"
     return {
@@ -99,17 +125,28 @@ def public_matter_document_downloads(
             "formats": {
                 "docx": _download_option(
                     "docx",
-                    available=source_is_docx,
-                    download_url=matter_source_download_url(matter_id) if source_is_docx else "",
-                    filename=source_filename if source_is_docx else _fallback_filename("document.docx"),
-                    content_type=DOCX_DOWNLOAD_MIME,
+                    available=source_is_docx or reconstructed_pdf_docx_available,
+                    download_url=(
+                        matter_source_download_url(matter_id)
+                        if source_is_docx
+                        else matter_source_docx_download_url(matter_id)
+                        if reconstructed_pdf_docx_available
+                        else ""
+                    ),
+                    filename=(
+                        source_filename
+                        if source_is_docx
+                        else pdf_docx_reconstruction.reconstructed_docx_filename(source_filename)
+                    ),
+                    content_type=PDF_DOCX_RECONSTRUCTION_MIME if source_is_pdf else DOCX_DOWNLOAD_MIME,
                     unavailable_reason=(
                         ""
-                        if source_is_docx
-                        else "The source document is a PDF; use the PDF option for a faithful download."
+                        if source_is_docx or reconstructed_pdf_docx_available
+                        else str(pdf_docx_health["message"])
                         if source_is_pdf
                         else "A Word download is not available for this source document."
                     ),
+                    converter=pdf_docx_health if source_is_pdf else None,
                 ),
                 "pdf": _download_option(
                     "pdf",
@@ -135,41 +172,78 @@ def public_matter_document_downloads(
             "formats": {
                 "docx": _download_option(
                     "docx",
-                    available=reviewed_source_supported,
-                    download_url=matter_reviewed_docx_download_url(matter_id) if reviewed_source_supported else "",
-                    filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.docx"),
+                    available=reviewed_source_supported or (reviewed_ready and reconstructed_pdf_docx_available),
+                    download_url=(
+                        matter_reviewed_docx_download_url(matter_id)
+                        if reviewed_source_supported or (reviewed_ready and reconstructed_pdf_docx_available)
+                        else ""
+                    ),
+                    filename=(
+                        pdf_download_filename(source_filename).replace(".pdf", "-redlined.docx")
+                        if source_is_docx
+                        else pdf_docx_reconstruction.reconstructed_docx_filename(source_filename).replace(".docx", "-reviewed.docx")
+                        if source_is_pdf
+                        else "document-redlined.docx"
+                    ),
                     content_type=DOCX_DOWNLOAD_MIME,
                     unavailable_reason=(
                         ""
-                        if reviewed_source_supported
+                        if reviewed_source_supported or (reviewed_ready and reconstructed_pdf_docx_available)
                         else "Reviewed downloads are available after the matter is approved."
                         if not reviewed_ready
-                        else "Reviewed DOCX export is not available for source PDFs; use the original/annotated PDF path."
+                        else str(pdf_docx_health["message"])
+                        if source_is_pdf
+                        else "Reviewed DOCX export is not available for this source document."
                     ),
+                    converter=pdf_docx_health if source_is_pdf else None,
                 ),
                 "pdf": _download_option(
                     "pdf",
-                    available=reviewed_source_supported and bool(health["available"]),
+                    available=(
+                        reviewed_source_supported
+                        and bool(health["available"])
+                        or reviewed_ready
+                        and reconstructed_pdf_docx_available
+                        and bool(health["available"])
+                    ),
                     download_url=matter_reviewed_pdf_download_url(matter_id)
-                    if reviewed_source_supported and bool(health["available"])
+                    if (
+                        reviewed_source_supported
+                        and bool(health["available"])
+                        or reviewed_ready
+                        and reconstructed_pdf_docx_available
+                        and bool(health["available"])
+                    )
                     else "",
                     filename=pdf_download_filename(source_filename).replace(".pdf", "-redlined.pdf"),
                     content_type=PDF_EXPORT_MIME,
                     unavailable_reason=(
                         ""
-                        if reviewed_source_supported and bool(health["available"])
+                        if (
+                            reviewed_source_supported
+                            and bool(health["available"])
+                            or reviewed_ready
+                            and reconstructed_pdf_docx_available
+                            and bool(health["available"])
+                        )
                         else "Reviewed downloads are available after the matter is approved."
                         if not reviewed_ready
-                        else "Reviewed PDF export is not available for source PDFs; use the original/annotated PDF path."
-                        if not source_is_docx
+                        else str(pdf_docx_health["message"])
+                        if source_is_pdf and not reconstructed_pdf_docx_available
                         else str(health["message"])
+                        if source_is_pdf or source_is_docx
+                        else "Reviewed PDF export is not available for this source document."
                     ),
-                    converter=health,
+                    converter={
+                        "docx_to_pdf": health,
+                        "pdf_to_docx": pdf_docx_health,
+                    }
+                    if source_is_pdf
+                    else health,
                 ),
             },
         },
     }
-
 
 def build_matter_source_pdf_export(
     matter_id: str | None,
@@ -212,6 +286,63 @@ def build_matter_source_pdf_export(
             "X-PDF-Export-Verified": PDF_EXPORT_VERIFICATION_HEADER,
             "X-PDF-Export-Source-Kind": rendered.source_kind,
         },
+    )
+
+
+def build_matter_pdf_source_docx_export(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    repository: MatterRepository | None = None,
+    converter: pdf_docx_reconstruction.PdfToDocxConverter | None = None,
+) -> MatterDocxExport:
+    matter_id = str(matter_id or "").strip()
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id) if matter_id else None
+    if matter is None:
+        raise PdfExportError({"error": "Matter not found."}, status=404)
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    if Path(source_filename).suffix.lower() != ".pdf":
+        raise PdfExportError({"error": "PDF-to-Word reconstruction is available only for source PDFs."}, status=409)
+    pdf_bytes = repository.get_source_document_bytes(matter)
+    if pdf_bytes is None:
+        raise PdfExportError({"error": "Matter source document is missing from storage."}, status=404)
+    try:
+        reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(
+            pdf_bytes,
+            source_filename,
+            converter=converter,
+        )
+    except pdf_docx_reconstruction.PdfDocxReconstructionUnavailableError as error:
+        raise PdfExportError(
+            {
+                "error": str(error),
+                "pdf_docx_reconstruction": {
+                    "status": "unavailable",
+                    "filename": pdf_docx_reconstruction.reconstructed_docx_filename(source_filename),
+                    "converter": pdf_docx_converter_health(converter),
+                },
+            },
+            status=503,
+        ) from error
+    except pdf_docx_reconstruction.PdfDocxReconstructionFailedError as error:
+        raise PdfExportError(
+            {
+                "error": str(error),
+                "pdf_docx_reconstruction": {
+                    "status": "failed",
+                    "filename": pdf_docx_reconstruction.reconstructed_docx_filename(source_filename),
+                    "converter": pdf_docx_converter_health(converter),
+                },
+            },
+            status=422,
+        ) from error
+
+    return MatterDocxExport(
+        data=reconstructed.data,
+        filename=reconstructed.filename,
+        content_type=reconstructed.content_type,
+        headers=reconstructed.headers or {},
     )
 
 

@@ -188,9 +188,15 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     telemetry.increment("reviewed_docx_exports")
     redline_export = reviewed_docx.export
     headers = {
-        "X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER,
+        "X-Export-Verified": (
+            redline_export.headers.get("X-PDF-DOCX-Reconstruction")
+            if redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction")
+            else redline_export_service.VERIFIED_EXPORT_HEADER
+        ),
         "X-Reviewed-Redline-Count": str(len(reviewed_docx.payload["export_redline_edits"])),
     }
+    if redline_export.headers:
+        headers.update(redline_export.headers)
     if reviewed_docx.artifact is not None:
         headers["X-Reviewed-Artifact-ID"] = reviewed_docx.artifact.id
     handler._send_download(

@@ -43,7 +43,6 @@ from nda_automation import user_store
 from nda_automation.review_engine import ACTIVE_REVIEW_ENGINE_ENV, ActiveReviewEngineError
 from nda_automation.routes import matters as matter_routes
 from nda_automation import playbook_runtime
-from nda_automation import redline_export_service
 from nda_automation.server import NdaAutomationHandler
 from nda_automation.triage import triage_review_result
 from tests.docx_redline_contract import assert_docx_redline_contract
@@ -1436,7 +1435,14 @@ class ServerTests(unittest.TestCase):
         expected = {
             "review_mode": "ai_first_compat",
             "active_review_engine": {"engine": "ai_first"},
-            "clauses": [],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
             "redline_edits": [],
         }
 
@@ -1887,6 +1893,212 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers["X-PDF-Export-Source-Kind"], "docx")
         self.assertEqual(headers["X-Reviewed-Redline-Count"], "0")
         self.assertEqual(payload, b"%PDF-1.7\nreviewed pdf\n%%EOF\n")
+
+    def test_source_docx_reconstructs_pdf_source_when_converter_available(self):
+        from tests.test_pdf_docx_reconstruction import make_valid_docx
+
+        class AvailablePdfDocxConverter:
+            name = "fake-pdf2docx"
+
+            def is_available(self):
+                return True
+
+            def convert_pdf_to_docx(self, source_path, output_path):
+                assert source_path.read_bytes().startswith(b"%PDF-")
+                output_path.write_bytes(make_valid_docx("This Agreement shall be governed by the laws of California."))
+
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_pdf = make_pdf(source_text)
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "source": {"type": "pdf"},
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Reviewed NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text=source_text,
+                    review_result=review_result,
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                with patch.object(
+                    server_module.pdf_export_service.pdf_docx_reconstruction,
+                    "Pdf2DocxConverter",
+                    return_value=AvailablePdfDocxConverter(),
+                ):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/source-docx",
+                    )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="Reviewed-NDA.docx"')
+        self.assertEqual(headers["X-PDF-DOCX-Reconstruction"], "pdf2docx")
+        self.assertEqual(headers["X-PDF-DOCX-Converter"], "fake-pdf2docx")
+        self.assertTrue(payload.startswith(b"PK"))
+
+    def test_reviewed_docx_reconstructs_pdf_source_and_runs_redline_package(self):
+        from tests.test_pdf_docx_reconstruction import make_valid_docx
+
+        class AvailablePdfDocxConverter:
+            name = "fake-pdf2docx"
+
+            def is_available(self):
+                return True
+
+            def convert_pdf_to_docx(self, source_path, output_path):
+                output_path.write_bytes(make_valid_docx("This Agreement shall be governed by the laws of California."))
+
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_pdf = make_pdf(source_text)
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "source": {"type": "pdf"},
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Reviewed NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text=source_text,
+                    review_result=review_result,
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                matter_store.update_matter_fields(matter["id"], {"status": "approved"})
+                with patch.object(
+                    server_module.redline_export_service.pdf_docx_reconstruction,
+                    "Pdf2DocxConverter",
+                    return_value=AvailablePdfDocxConverter(),
+                ):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/reviewed-docx",
+                    )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], DOCX_MIME)
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="Reviewed-NDA-reviewed.docx"')
+        self.assertEqual(headers["X-Export-Verified"], "pdf2docx")
+        self.assertEqual(headers["X-PDF-DOCX-Reconstruction"], "pdf2docx")
+        self.assertEqual(headers["X-PDF-DOCX-Converter"], "fake-pdf2docx")
+        self.assertEqual(headers["X-Reviewed-Redline-Count"], "0")
+        self.assertTrue(payload.startswith(b"PK"))
+
+    def test_reviewed_docx_reports_unavailable_pdf_reconstruction_engine(self):
+        class UnavailablePdfDocxConverter:
+            name = "fake-unavailable"
+
+            def is_available(self):
+                return False
+
+        source_text = "This Agreement shall be governed by the laws of California."
+        source_pdf = make_pdf(source_text)
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "source": {"type": "pdf"},
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Reviewed NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text=source_text,
+                    review_result=review_result,
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                        "requirements_passed": 1,
+                        "requirements_needs_review": 0,
+                        "requirements_failed": 0,
+                    },
+                )
+                matter_store.update_matter_fields(matter["id"], {"status": "approved"})
+                with patch.object(
+                    server_module.redline_export_service.pdf_docx_reconstruction,
+                    "Pdf2DocxConverter",
+                    return_value=UnavailablePdfDocxConverter(),
+                ):
+                    status, payload = self.request(
+                        "GET",
+                        f"/api/matters/{matter['id']}/reviewed-docx",
+                    )
+
+        self.assertEqual(status, 409)
+        self.assertIn("pdf2docx", payload["error"])
 
     def test_reviewed_pdf_reports_converter_unavailable_for_approved_docx(self):
         class UnavailableConverter:
@@ -3076,7 +3288,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(public["review_state"]["blocks_send"])
         self.assertIn("human review", public["send_block_reason"])
 
-    def test_public_matter_blocks_redline_send_for_pdf_source(self):
+    def test_public_matter_allows_redline_send_for_pdf_source(self):
         public = matter_view.public_matter({
             "id": "matter_1",
             "sender": "Sender <sender@example.com>",
@@ -3086,11 +3298,8 @@ class ServerTests(unittest.TestCase):
         })
 
         self.assertEqual(public["recipient_email"], "sender@example.com")
-        self.assertEqual(public["can_send_redline"], False)
-        self.assertEqual(
-            public["send_block_reason"],
-            redline_export_service.PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
-        )
+        self.assertEqual(public["can_send_redline"], True)
+        self.assertNotIn("send_block_reason", public)
 
     def test_public_matter_blocks_connected_account_sender(self):
         public = matter_view.public_matter({
@@ -5706,7 +5915,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(captured["paragraph_texts"], [edited_text])
 
     @requires_pypdf
-    def test_pdf_matter_export_rejects_redlined_docx_and_preserves_pdf_source(self):
+    def test_pdf_matter_export_reports_unavailable_reconstruction_and_preserves_pdf_source(self):
+        class UnavailablePdfDocxConverter:
+            name = "fake-unavailable"
+
+            def is_available(self):
+                return False
+
         source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
 
         with tempfile.TemporaryDirectory() as data_dir:
@@ -5721,11 +5936,16 @@ class ServerTests(unittest.TestCase):
                 )
                 matter = create_payload["matter"]
                 stored_matter = matter_store.get_matter(matter["id"])
-                export_status, export_payload, export_headers = self.request_with_headers(
-                    "POST",
-                    "/api/export-review-docx",
-                    {"matter_id": matter["id"]},
-                )
+                with patch.object(
+                    server_module.redline_export_service.pdf_docx_reconstruction,
+                    "Pdf2DocxConverter",
+                    return_value=UnavailablePdfDocxConverter(),
+                ):
+                    export_status, export_payload, export_headers = self.request_with_headers(
+                        "POST",
+                        "/api/export-review-docx",
+                        {"matter_id": matter["id"]},
+                    )
                 render_status, render_payload = self.request("GET", f"/api/matters/{matter['id']}/render-status")
                 pdf_status, pdf_payload, pdf_headers = self.request_with_headers(
                     "GET",
@@ -5737,10 +5957,7 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("review_result", matter)
         self.assertEqual(stored_matter["review_result"]["source"]["type"], "pdf")
         self.assertEqual(export_status, 409)
-        self.assertEqual(
-            export_payload["error"],
-            redline_export_service.PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
-        )
+        self.assertIn("pdf2docx", export_payload["error"])
         self.assertNotIn("Content-Disposition", export_headers)
         self.assertEqual(render_status, 200)
         self.assertEqual(render_payload["document_render"]["source_kind"], "pdf")

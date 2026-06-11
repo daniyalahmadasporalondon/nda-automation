@@ -126,12 +126,14 @@ The optional adversarial verifier uses the same OpenRouter key but is an indepen
 **Optional extras**
 
 ```bash
-python3 -m pip install -e ".[pdf]"        # PDF intake (pypdf / PyMuPDF)
+python3 -m pip install -e ".[pdf]"        # PDF intake + PDF-to-DOCX reconstruction (pypdf / PyMuPDF / pdf2docx)
 python3 -m pip install -e ".[gmail]"      # Gmail connector (Google API client)
 python3 -m pip install -e ".[pdf,gmail]"  # both (what the Render blueprint installs)
 ```
 
-Without the `pdf` extra, PDF uploads fail with a clear "PDF support is not installed" error.
+Without the `pdf` extra, PDF uploads fail with a clear "PDF support is not installed" error. PDF-to-DOCX
+Word reconstruction is also unavailable without `pdf2docx`; download contracts and export routes report that
+explicitly instead of serving extracted text as a fake Word conversion.
 
 ## Configuration
 

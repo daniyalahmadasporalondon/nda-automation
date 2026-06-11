@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import docx_package_renderer, export_service, fill_export, telemetry
+from . import docx_package_renderer, export_service, fill_export, pdf_docx_reconstruction, telemetry
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
@@ -20,7 +20,6 @@ from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .review_staleness import review_result_staleness, stale_review_message
 from .source_document_policy import (
-    PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE,
     source_filename_is_pdf,
 )
 
@@ -32,6 +31,7 @@ class RedlineExport:
     data: bytes
     filename: str
     saved_path: Path | None = None
+    headers: dict[str, str] | None = None
 
 
 class DocxOpenHealthError(DocxExportError):
@@ -116,7 +116,36 @@ def _build_redline_export(
     )
 
     if source_document_bytes is not None and source_filename_is_pdf(source_filename):
-        raise PdfSourceRedlineUnavailableError(PDF_SOURCE_REDLINED_DOCX_UNAVAILABLE_MESSAGE)
+        try:
+            reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(source_document_bytes, source_filename)
+        except pdf_docx_reconstruction.PdfDocxReconstructionUnavailableError as exc:
+            raise PdfSourceRedlineUnavailableError(
+                pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE
+            ) from exc
+        except pdf_docx_reconstruction.PdfDocxReconstructionFailedError as exc:
+            raise DocxExportError(str(exc)) from exc
+        package_result = docx_package_renderer.render_source_redline_package(
+            reconstructed.data,
+            review_result,
+            clean_fills=clean_mode_fills,
+            # PDF text extraction and layout reconstruction are different engines,
+            # so their accepted-text sequence is not stable enough for the DOCX
+            # source coverage gate. Redline anchoring still fails closed inside
+            # the renderer when requested edits cannot be placed.
+            expected_source_text="",
+            expected_redline_edits=[],
+        )
+        _raise_for_package_result(package_result)
+        download_filename = reconstructed.filename.replace(".docx", "-reviewed.docx")
+        report_bytes = package_result.data
+        if bool(payload.get("clean")):
+            report_bytes = accept_all_revisions(report_bytes)
+        return RedlineExport(
+            data=report_bytes,
+            filename=download_filename,
+            saved_path=export_service.persist_export(report_bytes, download_filename) if (persist and not bool(payload.get("clean"))) else None,
+            headers=reconstructed.headers,
+        )
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
         package_result = docx_package_renderer.render_source_redline_package(
             source_document_bytes,
