@@ -163,6 +163,31 @@ class BakeUserAnnotationsTests(unittest.TestCase):
         finally:
             document.close()
 
+    def test_bake_clips_rects_that_extend_past_page_edge(self):
+        fitz = _fitz()
+        source = _sample_pdf_bytes()
+        annotations = [
+            {
+                "id": "edge",
+                "page": 1,
+                "type": "highlight",
+                "rect": {"x": 0.92, "y": 0.94, "w": 0.25, "h": 0.2},
+            }
+        ]
+
+        normalized = pdf_markup.normalize_rect(annotations[0]["rect"])
+        self.assertIsNotNone(normalized)
+        self.assertLessEqual(normalized["x"] + normalized["w"], 1.0)
+        self.assertLessEqual(normalized["y"] + normalized["h"], 1.0)
+        baked = pdf_markup.bake_user_annotations(source, annotations)
+        document = fitz.open(stream=baked, filetype="pdf")
+        try:
+            page = document[0]
+            annotation = next(iter(page.annots() or []), None)
+            self.assertIsNotNone(annotation)
+        finally:
+            document.close()
+
     def test_bake_empty_list_returns_valid_pdf(self):
         fitz = _fitz()
         source = _sample_pdf_bytes()
@@ -214,6 +239,14 @@ class NormalizeAnnotationInputTests(unittest.TestCase):
         )
         self.assertEqual(out["rect"]["x"], 0.0)
         self.assertEqual(out["rect"]["y"], 1.0)
+        self.assertEqual(out["rect"]["h"], 0.0)
+
+    def test_clips_rect_width_and_height_to_remaining_page(self):
+        out = pdf_markup.normalize_annotation_input(
+            self._valid(rect={"x": 0.9, "y": 0.95, "w": 0.5, "h": 0.25})
+        )
+        self.assertAlmostEqual(out["rect"]["w"], 0.1)
+        self.assertAlmostEqual(out["rect"]["h"], 0.05)
 
     def test_text_is_bounded(self):
         out = pdf_markup.normalize_annotation_input(self._valid(text="x" * 5000))
@@ -236,6 +269,7 @@ class _FakeHandler:
         self.status = 200
         self.json = None
         self.download = None
+        self.download_headers = {}
 
     def _read_json_payload(self):
         return self._payload
@@ -247,6 +281,7 @@ class _FakeHandler:
     def _send_download(self, data, filename, content_type, headers=None, *, send_body=True):
         self.status = 200
         self.download = {"data": data, "filename": filename, "content_type": content_type}
+        self.download_headers = headers or {}
 
 
 def _seed_pdf_matter(repo, *, owner_user_id="owner-1"):
@@ -367,6 +402,7 @@ class PdfMarkupRouteTests(unittest.TestCase):
     def test_marked_up_pdf_returns_pdf_for_pdf_matter(self):
         fitz = _fitz()
         self._create(type="highlight", rect={"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.04})
+        self._create(type="comment", rect={"x": 0.2, "y": 0.3, "w": 0.0, "h": 0.0})
         handler = _FakeHandler(self.repo)
         pdf_markup_routes.handle_marked_up_pdf(
             handler, f"/api/matters/{self.matter_id}/marked-up-pdf"
@@ -375,9 +411,14 @@ class PdfMarkupRouteTests(unittest.TestCase):
         self.assertIsNotNone(handler.download)
         self.assertEqual(handler.download["content_type"], "application/pdf")
         self.assertTrue(handler.download["filename"].endswith("-marked-up.pdf"))
+        self.assertEqual(
+            handler.download_headers["X-Export-Verified"],
+            pdf_markup.MARKED_UP_PDF_VERIFICATION_HEADER,
+        )
+        self.assertEqual(handler.download_headers["X-PDF-Annotation-Count"], "2")
         document = fitz.open(stream=handler.download["data"], filetype="pdf")
         try:
-            self.assertGreaterEqual(len(list(document[0].annots() or [])), 1)
+            self.assertGreaterEqual(len(list(document[0].annots() or [])), 2)
         finally:
             document.close()
 

@@ -47,6 +47,7 @@ MAX_ANNOTATION_TEXT_CHARS = 2000
 MAX_ANNOTATIONS_PER_MATTER = 500
 
 MARKED_UP_PDF_MIME = "application/pdf"
+MARKED_UP_PDF_VERIFICATION_HEADER = "pdf-user-annotations; original-pdf-bytes"
 
 
 class PdfMarkupError(ValueError):
@@ -78,6 +79,8 @@ def normalize_rect(value: Any) -> dict[str, float] | None:
 
     ``None`` means the rect is malformed (missing keys or non-numeric values) and
     the annotation should be rejected (route) or skipped (bake).
+    Width and height are clipped to the remaining page area so ``x + w`` and
+    ``y + h`` never extend beyond the normalized page bounds.
     """
     if not isinstance(value, Mapping):
         return None
@@ -87,6 +90,8 @@ def normalize_rect(value: Any) -> dict[str, float] | None:
         if component is None:
             return None
         cleaned[key] = component
+    cleaned["w"] = min(cleaned["w"], max(0.0, 1.0 - cleaned["x"]))
+    cleaned["h"] = min(cleaned["h"], max(0.0, 1.0 - cleaned["y"]))
     return cleaned
 
 

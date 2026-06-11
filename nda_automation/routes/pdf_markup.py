@@ -206,10 +206,15 @@ def handle_marked_up_pdf(handler, path: str, *, send_body: bool = True) -> None:
         return
 
     filename = _marked_up_filename(source_filename)
+    annotation_count = len(_stored_annotations(matter))
     handler._send_download(
         baked,
         filename,
         pdf_markup.MARKED_UP_PDF_MIME,
+        headers={
+            "X-Export-Verified": pdf_markup.MARKED_UP_PDF_VERIFICATION_HEADER,
+            "X-PDF-Annotation-Count": str(annotation_count),
+        },
         send_body=send_body,
     )
 
