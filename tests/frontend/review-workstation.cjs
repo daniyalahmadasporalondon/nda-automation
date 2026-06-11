@@ -1560,6 +1560,8 @@ async function testOriginalViewToggle(page) {
           table_count: 1,
           styled_run_count: 1,
           color_run_count: 1,
+          styled_table_cell_count: 1,
+          table_cell_background_count: 1,
           pdf_page_reference_count: 0,
         },
         limitations: [],
@@ -1580,7 +1582,14 @@ async function testOriginalViewToggle(page) {
             type: "table",
             rows: [{
               cells: [
-                { paragraph_ids: ["p2"], blocks: [{ id: "p2", text: "Party", type: "paragraph" }] },
+                {
+                  paragraph_ids: ["p2"],
+                  style: {
+                    background_color: "#d9ead3",
+                    width: { value: 2400, type: "dxa" },
+                  },
+                  blocks: [{ id: "p2", text: "Party", type: "paragraph" }],
+                },
                 { paragraph_ids: ["p3"], blocks: [{ id: "p3", text: "Signature", type: "paragraph", style: { style_name: "Table Text" } }] },
               ],
             }],
@@ -1593,15 +1602,81 @@ async function testOriginalViewToggle(page) {
   await page.waitForSelector("[data-source-fidelity-surface]");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "DOCX source layout preview");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "1 table");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "1 styled cell");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "Intro red text.");
   await assertTextContains(page.locator("[data-source-fidelity-surface]"), "Signature");
   assert.equal(await page.locator(".source-fidelity-table td").count(), 2);
+  const styledCell = page.locator(".source-fidelity-table td").first();
+  assert.equal(await styledCell.getAttribute("data-source-fidelity-cell-background"), "#d9ead3");
+  assert.equal(await styledCell.getAttribute("data-source-fidelity-cell-width"), "160px");
+  const styledCellBackground = await styledCell.evaluate((cell) => getComputedStyle(cell).backgroundColor);
+  assert.ok(/rgb\(217,\s*234,\s*211\)/.test(styledCellBackground), `expected styled table cell background, got ${styledCellBackground}`);
   const redRunColor = await page.locator("[data-source-fidelity-surface]").evaluate((surface) => {
     const spans = Array.from(surface.querySelectorAll("span"));
     const redRun = spans.find((span) => span.textContent === "red");
     return redRun ? getComputedStyle(redRun).color : "";
   });
   assert.ok(/rgb\(255,\s*0,\s*0\)/.test(redRunColor), `expected red source run, got ${redRunColor}`);
+  await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
+  await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
+
+  // PDF source blocks are an analysis fallback, not a reconstructed document
+  // layout. The UI must point users back to the Original PDF/page preview for
+  // visual fidelity instead of implying a DOCX-like preview.
+  await page.evaluate((payload) => {
+    renderResult({
+      ...payload,
+      document_render: null,
+      source_fidelity: {
+        version: 1,
+        source_type: "pdf",
+        analysis_model: "paragraphs",
+        render_model: "source_blocks",
+        capabilities: {
+          structured_tables: false,
+          inline_runs: false,
+          run_colors: false,
+          pdf_page_references: true,
+          pdf_visual_profile: true,
+          pdf_visual_elements: true,
+        },
+        summary: {
+          paragraph_count: 1,
+          block_count: 1,
+          table_count: 0,
+          styled_run_count: 0,
+          color_run_count: 0,
+          pdf_page_reference_count: 1,
+        },
+        preferred_render_mode: "source_pdf_preview",
+        pdf_fidelity: {
+          analysis_mode: "extracted_text_only",
+          layout_mode: "original_pdf_page_preview",
+          word_conversion: "unsupported_for_fidelity",
+          redlined_docx: "unavailable",
+          requires_source_preview: true,
+          message: "PDF matters use extracted text for clause analysis and the preserved original PDF/page preview for visual fidelity. Extracted text must not be presented as a faithful Word conversion.",
+          visual_profile: {
+            status: "ready",
+            requires_source_preview: true,
+            non_black_text_span_count: 3,
+            drawing_count: 2,
+            image_count: 1,
+            visual_features: ["colored_text", "drawings_or_borders", "images"],
+          },
+        },
+        limitations: [],
+        blocks: [{ id: "pdf-p1", index: 1, text: "Extracted PDF text only.", type: "paragraph" }],
+      },
+    }, payload.paragraphs.map((paragraph) => paragraph.text).join("\n\n"));
+  }, reviewResult);
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector("[data-source-fidelity-surface]");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "PDF source analysis preview");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "preserved original PDF/page preview for visual fidelity");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "3 non-black text spans");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "2 drawing or border items");
+  await assertTextContains(page.locator("[data-source-fidelity-surface]"), "1 image item");
   await page.locator('.studio-view-switch [data-view-mode="redline"]').click();
   await page.waitForSelector('#studioDocumentRender [data-paragraph-id="p1"]');
 
@@ -7366,7 +7441,6 @@ async function testDashboardSmartSearchV2(page) {
 
   const searchSection = page.locator("[data-dashboard-search]");
   await searchSection.waitFor({ state: "visible" });
-  await page.waitForFunction(() => typeof state !== "undefined" && Array.isArray(state.matters) && state.matters.length === 3);
 
   // --- Natural-language query -> AI-translated filter applied to real matters ---
   await page.fill("#dashboardSearchInput", "anything stuck in review for more than a week");

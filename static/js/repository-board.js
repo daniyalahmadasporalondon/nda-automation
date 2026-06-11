@@ -1,4 +1,16 @@
 const RepositoryBoard = (() => {
+  function html(value) {
+    if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
+      return window.escapeHtml(value);
+    }
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function renderBoard({
     errorMessage = "",
     gmailDemoMatterList,
@@ -22,7 +34,7 @@ const RepositoryBoard = (() => {
     document.querySelectorAll("[data-repository-list]").forEach((list) => {
       const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
       list.innerHTML = errorMessage
-        ? `<div class="repository-dropzone">${escapeHtml(errorMessage)}</div>`
+        ? `<div class="repository-dropzone">${html(errorMessage)}</div>`
         : matters.length
         ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
         : `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
@@ -124,32 +136,32 @@ const RepositoryBoard = (() => {
     const date = RepositoryModel.formatMatterDate(matter.received_at || matter.created_at);
     const confirmingDelete = Boolean(options.confirmingDelete);
     return `
-      <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${escapeHtml(matter.id)}" aria-label="Open matter ${escapeHtml(RepositoryModel.matterSubject(matter))}">
+      <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${html(matter.id)}" aria-label="Open matter ${html(RepositoryModel.matterSubject(matter))}">
         <span class="repository-card-top">
           <span class="repository-card-badges">
-            <span class="repository-source-badge ${escapeHtml(RepositoryModel.sourceBadgeClass(matter.source_type))}">${escapeHtml(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
-            ${MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${escapeHtml(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
+            <span class="repository-source-badge ${html(RepositoryModel.sourceBadgeClass(matter.source_type))}">${html(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
+            ${MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${html(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
           </span>
           <span class="repository-card-top-actions">
-            <span>${escapeHtml(date)}</span>
-            <button class="repository-card-delete" type="button" data-delete-matter-id="${escapeHtml(matter.id)}" aria-label="Delete matter" title="Delete matter" aria-expanded="${confirmingDelete ? "true" : "false"}">x</button>
+            <span>${html(date)}</span>
+            <button class="repository-card-delete" type="button" data-delete-matter-id="${html(matter.id)}" aria-label="Delete matter" title="Delete matter" aria-expanded="${confirmingDelete ? "true" : "false"}">x</button>
           </span>
         </span>
-        <strong>${escapeHtml(RepositoryModel.matterSubject(matter))}</strong>
-        <span class="repository-card-source">${escapeHtml(RepositoryModel.matterSender(matter))}</span>
-        <span class="repository-card-snippet">${escapeHtml(matter.message_snippet || matter.attachment_filename || matter.source_filename || RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
+        <strong>${html(RepositoryModel.matterSubject(matter))}</strong>
+        <span class="repository-card-source">${html(RepositoryModel.matterSender(matter))}</span>
+        <span class="repository-card-snippet">${html(matter.message_snippet || matter.attachment_filename || matter.source_filename || RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
         ${confirmingDelete ? renderMatterDeleteConfirmation(matter) : ""}
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
           <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
-          <span>${escapeHtml(RepositoryModel.matterColumnLabel(matter))}</span>
+          <span>${html(RepositoryModel.matterColumnLabel(matter))}</span>
         </span>
       </article>
     `;
   }
 
   function renderMatterDeleteConfirmation(matter) {
-    const matterId = escapeHtml(matter.id);
+    const matterId = html(matter.id);
     return `
       <div class="repository-delete-confirmation" role="group" aria-label="Delete matter confirmation" data-delete-confirmation-id="${matterId}">
         <span>Delete matter and stored document?</span>

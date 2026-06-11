@@ -1,4 +1,16 @@
 const AdminIntegrationsView = (() => {
+  function html(value) {
+    if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
+      return window.escapeHtml(value);
+    }
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   const DEFAULT_QUERY_FALLBACK = [
     "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me",
     '(NDA OR MNDA OR "mutual NDA" OR "non-disclosure" OR "non disclosure"',
@@ -283,21 +295,21 @@ const AdminIntegrationsView = (() => {
       return `
         <div class="integration-connection-row ${tone}">
           <div class="integration-connection-top">
-            <strong>${escapeHtml(role.title)}</strong>
-            <span>${escapeHtml(statusLabel)}</span>
+            <strong>${html(role.title)}</strong>
+            <span>${html(statusLabel)}</span>
           </div>
           <dl>
             <div>
               <dt>Account</dt>
-              <dd>${escapeHtml(account.email || "Not resolved")}</dd>
+              <dd>${html(account.email || "Not resolved")}</dd>
             </div>
             <div>
               <dt>Token</dt>
-              <dd>${escapeHtml(tokenSourceLabel(account))}</dd>
+              <dd>${html(tokenSourceLabel(account))}</dd>
             </div>
             <div>
               <dt>Next step</dt>
-              <dd>${escapeHtml(connectionNextStep(role.id, account, token))}</dd>
+              <dd>${html(connectionNextStep(role.id, account, token))}</dd>
             </div>
           </dl>
         </div>
@@ -318,13 +330,13 @@ const AdminIntegrationsView = (() => {
         const deduplicated = Number(run.deduplicated_count || 0);
         const reviewFailed = Number(run.review_failed_count || 0);
         const status = run.status === "error" ? "Error" : "Complete";
-        const query = run.query ? `<p class="integration-sync-history-query">${escapeHtml(run.query)}</p>` : "";
-        const error = run.error ? `<p class="integration-sync-history-error">${escapeHtml(run.error)}</p>` : "";
+        const query = run.query ? `<p class="integration-sync-history-query">${html(run.query)}</p>` : "";
+        const error = run.error ? `<p class="integration-sync-history-error">${html(run.error)}</p>` : "";
         return `
           <article class="integration-sync-history-item ${run.status === "error" ? "error" : ""}">
             <div class="integration-sync-history-top">
-              <strong>${escapeHtml(formatDateTime(run.finished_at || run.started_at) || run.finished_at || run.started_at || "-")}</strong>
-              <span>${escapeHtml(status)}</span>
+              <strong>${html(formatDateTime(run.finished_at || run.started_at) || run.finished_at || run.started_at || "-")}</strong>
+              <span>${html(status)}</span>
             </div>
             <p class="integration-sync-history-counts">${imported} imported / ${skipped} skipped / ${duplicate} duplicates / ${deduplicated} stale duplicates removed / ${reviewFailed} review failures</p>
             ${query}
@@ -356,19 +368,19 @@ const AdminIntegrationsView = (() => {
       gmailRecentSend.innerHTML = `
         <div>
           <dt>From</dt>
-          <dd>${escapeHtml(recent.last_outbound_account || "-")}</dd>
+          <dd>${html(recent.last_outbound_account || "-")}</dd>
         </div>
         <div>
           <dt>To</dt>
-          <dd>${escapeHtml(recent.last_outbound_to || "-")}</dd>
+          <dd>${html(recent.last_outbound_to || "-")}</dd>
         </div>
         <div>
           <dt>Subject</dt>
-          <dd>${escapeHtml(recent.last_outbound_subject || recent.subject || "-")}</dd>
+          <dd>${html(recent.last_outbound_subject || recent.subject || "-")}</dd>
         </div>
         <div>
           <dt>Sent</dt>
-          <dd>${escapeHtml(formatDateTime(recent.last_outbound_at) || "-")}</dd>
+          <dd>${html(formatDateTime(recent.last_outbound_at) || "-")}</dd>
         </div>
       `;
     }

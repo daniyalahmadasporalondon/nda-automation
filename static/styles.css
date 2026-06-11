@@ -3688,6 +3688,7 @@ h3 {
 
 .source-fidelity-table td {
   border: 1px solid rgba(100, 116, 139, 0.38);
+  background-clip: padding-box;
   min-width: 0;
   padding: 9px 10px;
   vertical-align: top;

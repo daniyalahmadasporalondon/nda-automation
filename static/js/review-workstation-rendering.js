@@ -2962,16 +2962,19 @@ function renderSourceFidelitySurface(sourceFidelity, renderState, status) {
   const sourceType = String(sourceFidelity.source_type || "").trim().toUpperCase();
   const tableCount = Number(summary.table_count) || 0;
   const colorRunCount = Number(summary.color_run_count) || 0;
+  const styledTableCellCount = Number(summary.styled_table_cell_count) || 0;
+  const previewLabel = sourceFidelityPreviewLabel(sourceFidelity);
   const capabilityLabels = [
     tableCount ? `${tableCount} ${tableCount === 1 ? "table" : "tables"}` : "",
     colorRunCount ? `${colorRunCount} coloured ${colorRunCount === 1 ? "run" : "runs"}` : "",
+    styledTableCellCount ? `${styledTableCellCount} styled ${styledTableCellCount === 1 ? "cell" : "cells"}` : "",
     capabilities.inline_runs ? "inline runs" : "",
   ].filter(Boolean);
   const statusNote = sourceFidelityStatusNote(renderState, status, sourceFidelity);
   return `
-    <section class="review-original-surface source-fidelity-surface ready" data-review-pdf-surface data-original-surface data-source-fidelity-surface data-render-status="source-fidelity" aria-label="Original source layout preview">
+    <section class="review-original-surface source-fidelity-surface ready" data-review-pdf-surface data-original-surface data-source-fidelity-surface data-render-status="source-fidelity" aria-label="${escapeHtml(previewLabel)}">
       <div class="review-pdf-status source-fidelity-status">
-        <strong>${escapeHtml(sourceType ? `${sourceType} source layout preview` : "Source layout preview")}</strong>
+        <strong>${escapeHtml(previewLabel)}</strong>
         <span>${escapeHtml(capabilityLabels.length ? capabilityLabels.join(" · ") : "Source blocks from the original document")}</span>
       </div>
       ${statusNote ? `<p class="source-fidelity-note">${escapeHtml(statusNote)}</p>` : ""}
@@ -2982,7 +2985,21 @@ function renderSourceFidelitySurface(sourceFidelity, renderState, status) {
   `;
 }
 
+function sourceFidelityPreviewLabel(sourceFidelity) {
+  const sourceType = String(sourceFidelity?.source_type || "").trim().toLowerCase();
+  if (sourceType === "pdf") return "PDF source analysis preview";
+  return sourceType ? `${sourceType.toUpperCase()} source layout preview` : "Source layout preview";
+}
+
 function sourceFidelityStatusNote(renderState, status, sourceFidelity) {
+  const sourceType = String(sourceFidelity?.source_type || "").trim().toLowerCase();
+  if (sourceType === "pdf") {
+    const policyMessage = stringValue(sourceFidelity?.pdf_fidelity?.message);
+    const profileSummary = sourceFidelityPdfVisualProfileSummary(sourceFidelity?.pdf_fidelity?.visual_profile);
+    const message = policyMessage
+      || "PDF visual fidelity comes from the Original PDF/page preview. These extracted source blocks are analysis text and may not preserve page layout.";
+    return profileSummary ? `${message} ${profileSummary}` : message;
+  }
   if (status === "loading") {
     return "Exact page images are still rendering. This source layout preview preserves available tables, runs, and colour data meanwhile.";
   }
@@ -2996,6 +3013,24 @@ function sourceFidelityStatusNote(renderState, status, sourceFidelity) {
   const limitation = limitations.find((item) => item && typeof item === "object" && item.message);
   if (limitation) return String(limitation.message || "").trim();
   return "This preview uses the source blocks extracted for review. Redline and Clean remain editable text views.";
+}
+
+function sourceFidelityPdfVisualProfileSummary(profile) {
+  if (!profile || typeof profile !== "object") return "";
+  const details = [];
+  const colouredText = Number(profile.non_black_text_span_count);
+  const drawings = Number(profile.drawing_count);
+  const images = Number(profile.image_count);
+  if (Number.isFinite(colouredText) && colouredText > 0) {
+    details.push(`${colouredText} non-black text ${colouredText === 1 ? "span" : "spans"}`);
+  }
+  if (Number.isFinite(drawings) && drawings > 0) {
+    details.push(`${drawings} drawing or border ${drawings === 1 ? "item" : "items"}`);
+  }
+  if (Number.isFinite(images) && images > 0) {
+    details.push(`${images} image ${images === 1 ? "item" : "items"}`);
+  }
+  return details.length ? `Detected visual signals: ${details.join(", ")}.` : "";
 }
 
 function renderSourceFidelityBlock(block) {
@@ -3027,11 +3062,58 @@ function renderSourceFidelityTableRow(row) {
 function renderSourceFidelityTableCell(cell) {
   const blocks = Array.isArray(cell?.blocks) ? cell.blocks : [];
   const paragraphIds = Array.isArray(cell?.paragraph_ids) ? cell.paragraph_ids : [];
+  const cellStyle = sourceFidelityCellCss(cell);
+  const cellStyleAttribute = cellStyle.style ? ` style="${escapeHtml(cellStyle.style)}"` : "";
+  const cellStyleData = [
+    cellStyle.background ? `data-source-fidelity-cell-background="${escapeHtml(cellStyle.background)}"` : "",
+    cellStyle.width ? `data-source-fidelity-cell-width="${escapeHtml(cellStyle.width)}"` : "",
+  ].filter(Boolean).join(" ");
   return `
-    <td data-source-fidelity-paragraph-ids="${escapeHtml(paragraphIds.join(" "))}">
+    <td data-source-fidelity-paragraph-ids="${escapeHtml(paragraphIds.join(" "))}"${cellStyleAttribute}${cellStyleData ? ` ${cellStyleData}` : ""}>
       ${blocks.length ? blocks.map(renderSourceFidelityParagraphBlock).join("") : "&nbsp;"}
     </td>
   `;
+}
+
+function sourceFidelityCellCss(cell) {
+  const style = cell?.style && typeof cell.style === "object" ? cell.style : {};
+  const declarations = [];
+  const background = sourceFidelityCssColor(style.background_color);
+  if (background) declarations.push(`background-color:${background}`);
+  const width = sourceFidelityCssWidth(style.width);
+  if (width) declarations.push(`width:${width}`);
+  return {
+    background,
+    style: declarations.join(";"),
+    width,
+  };
+}
+
+function sourceFidelityCssColor(value) {
+  const color = String(value || "").trim();
+  if (/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(color)) return color;
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(color)) return color;
+  return "";
+}
+
+function sourceFidelityCssWidth(value) {
+  if (value && typeof value === "object") {
+    const numeric = Number(value.value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "";
+    const type = String(value.type || "").trim().toLowerCase();
+    if (type === "dxa") return `${sourceFidelityRoundCssNumber(numeric / 15)}px`;
+    if (type === "pct") return `${sourceFidelityRoundCssNumber(Math.min(Math.max(numeric / 50, 1), 100))}%`;
+    if (type === "px") return `${sourceFidelityRoundCssNumber(numeric)}px`;
+    if (type === "pt") return `${sourceFidelityRoundCssNumber(numeric)}pt`;
+    return "";
+  }
+  const width = String(value || "").trim();
+  if (/^\d+(?:\.\d+)?(?:px|pt|em|rem|%)$/i.test(width)) return width;
+  return "";
+}
+
+function sourceFidelityRoundCssNumber(value) {
+  return Number(value.toFixed(2)).toString();
 }
 
 function renderSourceFidelityParagraphBlock(block) {
