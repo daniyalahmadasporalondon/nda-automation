@@ -52,6 +52,8 @@ def source_fidelity_payload(review_result: dict[str, Any], *, source: dict[str, 
         "blocks": blocks,
         "capabilities": {
             "structured_tables": summary["table_count"] > 0,
+            "table_cell_styles": summary["styled_table_cell_count"] > 0,
+            "table_cell_backgrounds": summary["table_cell_background_count"] > 0,
             "inline_runs": summary["styled_run_count"] > 0,
             "run_colors": summary["color_run_count"] > 0,
             "pdf_page_references": summary["pdf_page_reference_count"] > 0,
@@ -68,6 +70,7 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
     table_order: list[int] = []
     table_positions: dict[int, int] = {}
+    table_cell_styles: dict[tuple[int, int, int], dict[str, Any]] = {}
 
     for paragraph in paragraphs:
         table = paragraph.get("table")
@@ -80,6 +83,9 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     table_order.append(table_index)
                     table_positions[table_index] = len(blocks)
                     blocks.append({"type": "table", "id": f"table-{table_index}", "table_index": table_index})
+                cell_style = _table_cell_style_record(table)
+                if cell_style:
+                    table_cell_styles.setdefault((table_index, row_index, cell_index), cell_style)
                 table_groups[table_index][row_index][cell_index].append(_paragraph_block(paragraph, in_table=True))
                 continue
         blocks.append(_paragraph_block(paragraph, in_table=False))
@@ -90,11 +96,15 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             cells = []
             for cell_index in sorted(table_groups[table_index][row_index]):
                 cell_blocks = table_groups[table_index][row_index][cell_index]
-                cells.append({
+                cell = {
                     "cell_index": cell_index,
                     "paragraph_ids": [str(block["paragraph_id"]) for block in cell_blocks],
                     "blocks": cell_blocks,
-                })
+                }
+                cell_style = table_cell_styles.get((table_index, row_index, cell_index))
+                if cell_style:
+                    cell["style"] = cell_style
+                cells.append(cell)
             rows.append({"row_index": row_index, "cells": cells})
         blocks[table_positions[table_index]] = {
             "type": "table",
@@ -154,10 +164,37 @@ def _run_records(value: Any) -> list[dict[str, Any]]:
     return runs
 
 
+def _table_cell_style_record(table: dict[str, Any]) -> dict[str, Any]:
+    value = table.get("cell_style")
+    if not isinstance(value, dict):
+        return {}
+    style: dict[str, Any] = {}
+    background_color = _hex_color(value.get("background_color"))
+    if background_color:
+        style["background_color"] = background_color
+    width = value.get("width")
+    if isinstance(width, dict):
+        width_record: dict[str, Any] = {}
+        try:
+            width_value = int(width.get("value"))
+        except (TypeError, ValueError):
+            width_value = 0
+        if width_value > 0:
+            width_record["value"] = width_value
+        width_type = str(width.get("type") or "").strip().lower()
+        if width_type:
+            width_record["type"] = width_type
+        if width_record:
+            style["width"] = width_record
+    return style
+
+
 def _summary(paragraphs: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> dict[str, int]:
     styled_run_count = 0
     color_run_count = 0
     pdf_page_reference_count = 0
+    styled_table_cell_count = 0
+    table_cell_background_count = 0
     for paragraph in paragraphs:
         if paragraph.get("page_number") is not None:
             pdf_page_reference_count += 1
@@ -166,10 +203,27 @@ def _summary(paragraphs: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> 
                 styled_run_count += 1
             if run.get("color"):
                 color_run_count += 1
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "table":
+            continue
+        for row in block.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            for cell in row.get("cells") or []:
+                if not isinstance(cell, dict):
+                    continue
+                style = cell.get("style")
+                if not isinstance(style, dict) or not style:
+                    continue
+                styled_table_cell_count += 1
+                if style.get("background_color"):
+                    table_cell_background_count += 1
     return {
         "paragraph_count": len(paragraphs),
         "block_count": len(blocks),
         "table_count": sum(1 for block in blocks if block.get("type") == "table"),
+        "styled_table_cell_count": styled_table_cell_count,
+        "table_cell_background_count": table_cell_background_count,
         "styled_run_count": styled_run_count,
         "color_run_count": color_run_count,
         "pdf_page_reference_count": pdf_page_reference_count,
@@ -194,6 +248,15 @@ def _run_has_visible_style(run: dict[str, Any]) -> bool:
         if value not in (None, "", False):
             return True
     return False
+
+
+def _hex_color(value: Any) -> str:
+    color = str(value or "").strip().lower()
+    if color.startswith("#"):
+        color = color[1:]
+    if len(color) == 6 and all(character in "0123456789abcdef" for character in color):
+        return f"#{color}"
+    return ""
 
 
 def _limitations(source_type: str) -> list[dict[str, str]]:

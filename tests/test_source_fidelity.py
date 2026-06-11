@@ -31,7 +31,15 @@ def test_source_fidelity_groups_table_cells_and_preserves_color_runs():
                 "index": 3,
                 "text": "Signature",
                 "source_kind": "table_cell",
-                "table": {"table_index": 1, "row_index": 1, "cell_index": 2},
+                "table": {
+                    "table_index": 1,
+                    "row_index": 1,
+                    "cell_index": 2,
+                    "cell_style": {
+                        "background_color": "#d9ead3",
+                        "width": {"value": 2400, "type": "dxa"},
+                    },
+                },
                 "style_name": "Table Text",
             },
             {
@@ -50,11 +58,15 @@ def test_source_fidelity_groups_table_cells_and_preserves_color_runs():
     assert payload["analysis_model"] == "paragraphs"
     assert payload["render_model"] == "source_blocks"
     assert payload["capabilities"]["structured_tables"] is True
+    assert payload["capabilities"]["table_cell_styles"] is True
+    assert payload["capabilities"]["table_cell_backgrounds"] is True
     assert payload["capabilities"]["run_colors"] is True
     assert payload["summary"] == {
         "paragraph_count": 4,
         "block_count": 2,
         "table_count": 1,
+        "styled_table_cell_count": 1,
+        "table_cell_background_count": 1,
         "styled_run_count": 1,
         "color_run_count": 1,
         "pdf_page_reference_count": 0,
@@ -68,6 +80,10 @@ def test_source_fidelity_groups_table_cells_and_preserves_color_runs():
     assert table["table_index"] == 1
     assert table["rows"][0]["cells"][0]["paragraph_ids"] == ["p2"]
     assert table["rows"][0]["cells"][1]["paragraph_ids"] == ["p3"]
+    assert table["rows"][0]["cells"][1]["style"] == {
+        "background_color": "#d9ead3",
+        "width": {"value": 2400, "type": "dxa"},
+    }
     assert table["rows"][0]["cells"][1]["blocks"][0]["style"]["style_name"] == "Table Text"
     assert table["rows"][1]["cells"][0]["paragraph_ids"] == ["p4"]
 

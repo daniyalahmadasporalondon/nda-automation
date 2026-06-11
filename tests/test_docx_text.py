@@ -67,6 +67,56 @@ class DocxTextTests(unittest.TestCase):
             ],
         )
 
+    def test_extracts_table_cell_visual_style(self):
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc>
+                  <w:tcPr>
+                    <w:tcW w:w="2400" w:type="dxa"/>
+                    <w:shd w:fill="D9EAD3"/>
+                  </w:tcPr>
+                  <w:p><w:r><w:t>Shaded cell.</w:t></w:r></w:p>
+                </w:tc>
+                <w:tc>
+                  <w:tcPr>
+                    <w:tcW w:w="1200" w:type="pct"/>
+                    <w:shd w:fill="auto"/>
+                  </w:tcPr>
+                  <w:p><w:r><w:t>Plain cell.</w:t></w:r></w:p>
+                </w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["text"], "Shaded cell.")
+        self.assertEqual(
+            paragraphs[0]["table"],
+            {
+                "table_index": 1,
+                "row_index": 1,
+                "cell_index": 1,
+                "cell_style": {
+                    "background_color": "#d9ead3",
+                    "width": {"value": 2400, "type": "dxa"},
+                },
+            },
+        )
+        self.assertEqual(
+            paragraphs[1]["table"],
+            {
+                "table_index": 1,
+                "row_index": 1,
+                "cell_index": 2,
+                "cell_style": {"width": {"value": 1200, "type": "pct"}},
+            },
+        )
+
     def test_comments_xml_is_excluded_from_reviewable_text(self):
         # word/comments.xml carries counterparty/reviewer annotations, not body
         # text. It must never reach the verdict engine: a comment that mentions a

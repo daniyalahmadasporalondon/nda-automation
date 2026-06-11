@@ -267,7 +267,7 @@ def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     return paragraphs
 
 
-def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Dict[str, int] | None]]:
+def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Dict[str, object] | None]]:
     body = root.find(f"{WORD_NS}body")
     container = body if body is not None else root
     table_counter = 0
@@ -289,10 +289,16 @@ def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Di
                     cell_index = 0
                     for cell in _children(row, "tc"):
                         cell_index += 1
-                        yield from walk(cell, {
+                        cell_context: Dict[str, object] = {
                             "table_index": table_index,
                             "row_index": row_index,
                             "cell_index": cell_index,
+                        }
+                        cell_style = _table_cell_style(cell)
+                        if cell_style:
+                            cell_context["cell_style"] = cell_style
+                        yield from walk(cell, {
+                            **cell_context,
                         }, nested_table_depth)
             else:
                 yield from walk(child, table_context, table_depth)
@@ -309,7 +315,7 @@ def _paragraph_record(
     numbering_state: Dict[str, Dict[int, int]],
     source_index: int | None = None,
     source_part: str | None = None,
-    table_context: Dict[str, int] | None = None,
+    table_context: Dict[str, object] | None = None,
 ) -> DocxParagraph:
     record: DocxParagraph = {"text": text}
     if source_index is not None:
@@ -369,6 +375,46 @@ def _paragraph_record(
     if font_size is not None:
         record["fontSize"] = font_size
 
+    return record
+
+
+def _table_cell_style(cell: ET.Element) -> Dict[str, object]:
+    tcpr = cell.find(f"{WORD_NS}tcPr")
+    if tcpr is None:
+        return {}
+    style: Dict[str, object] = {}
+    background_color = _table_cell_background_color(tcpr)
+    if background_color:
+        style["background_color"] = background_color
+    width = _table_cell_width(tcpr)
+    if width:
+        style["width"] = width
+    return style
+
+
+def _table_cell_background_color(tcpr: ET.Element) -> str:
+    shading = tcpr.find(f"{WORD_NS}shd")
+    if shading is None:
+        return ""
+    fill = _attr(shading, "fill").strip()
+    if not fill or fill.lower() in {"auto", "none"}:
+        return ""
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", fill):
+        return f"#{fill.lower()}"
+    return ""
+
+
+def _table_cell_width(tcpr: ET.Element) -> Dict[str, object]:
+    width = tcpr.find(f"{WORD_NS}tcW")
+    if width is None:
+        return {}
+    value = _int_or_none(_attr(width, "w"))
+    width_type = _attr(width, "type").strip().lower()
+    record: Dict[str, object] = {}
+    if value is not None and value > 0:
+        record["value"] = value
+    if width_type:
+        record["type"] = width_type
     return record
 
 
