@@ -372,12 +372,12 @@
     }
   },
   {
-    "name": "verifier_refutes_false_flagged_carveout_fail_to_pass",
+    "name": "verifier_refutes_false_flagged_carveout_fail_to_review",
     "clause_id": "non_circumvention",
     "kind": "verifier",
     "high_risk": true,
     "label_source": "engineering",
-    "label_note": "The engine false-flags a genuine freedom-to-deal carve-out as a restriction (fail); the adversarial verifier refutes the polarity inversion and clears it to pass (exercises the fail -> pass overlay end to end).",
+    "label_note": "The engine false-flags a genuine freedom-to-deal carve-out as a restriction. Under the fail-open verifier policy, a refutation no longer auto-clears to pass from this state; it must route to human review rather than false-clearing.",
     "text": "Neither party shall be prevented from dealing directly with introduced parties.",
     "verifier": {
       "verdict": "refute",
@@ -385,7 +385,7 @@
       "rationale": "Freedom-to-deal carve-out, not a restriction; the engine inverted the polarity."
     },
     "expected": {
-      "decision": "pass"
+      "decision": "review"
     }
   },
   {
@@ -404,6 +404,93 @@
     "expected": {
       "decision": "fail",
       "reason_code": "ai_first_fail"
+    }
+  },
+  {
+    "name": "non_circumvention_freedom_preserving_carveout_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Freedom-preserving carve-out: literal no-restriction wording should pass rather than keyword-match as a prohibited restraint.",
+    "text": "Nothing in this Agreement restricts either party from dealing with third parties or contacts introduced by the other party.",
+    "verifier": {
+      "verdict": "affirm",
+      "confidence": 0.91,
+      "rationale": "The text preserves freedom to deal and does not impose a non-circumvention restriction."
+    },
+    "expected": {
+      "decision": "pass",
+      "reason_code": "ai_first_pass"
+    }
+  },
+  {
+    "name": "non_circumvention_negated_disclaimer_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Negated reference/disclaimer: mentioning non-circumvention only to say no such obligation is created must not fail.",
+    "text": "For the avoidance of doubt, this Agreement does not create any non-circumvention, exclusive dealing, or non-solicitation obligation.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.98,
+      "rationale": "This is a negated disclaimer, not an operative business restraint."
+    },
+    "expected": {
+      "decision": "review"
+    }
+  },
+  {
+    "name": "non_circumvention_unlisted_hiring_verb_not_pass",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Unlisted verbs can still be a prohibited introduced-party restraint; hire/recruit language must never be silently passed.",
+    "text": "Recipient shall not hire, recruit, or retain any introduced party, employee, consultant, or adviser introduced by Discloser in connection with the Transaction.",
+    "verifier": {
+      "verdict": "affirm",
+      "confidence": 0.9,
+      "rationale": "The clause imposes an introduced-party hiring and recruiting restriction beyond confidentiality."
+    },
+    "expected": {
+      "decision": "fail",
+      "reason_code": "ai_first_fail"
+    }
+  },
+  {
+    "name": "non_circumvention_ambiguous_present_language_reviews",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Present non-circumvention language with uncertain operative effect should route to review rather than pass or fail.",
+    "text": "The parties acknowledge non-circumvention and exclusive dealing principles for any introduced opportunity, subject to terms to be agreed in a future definitive agreement.",
+    "verifier": {
+      "verdict": "uncertain",
+      "confidence": 0.86,
+      "rationale": "The language signals non-circumvention but does not clearly state the operative restriction or scope."
+    },
+    "expected": {
+      "decision": "review"
+    }
+  },
+  {
+    "name": "non_circumvention_lawful_circumvention_only_not_fail",
+    "clause_id": "non_circumvention",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Circumvention of laws/regulatory obligations is not the prohibited commercial non-circumvention concept; even if keyword matching is uncertain, it must not remain a non-circumvention fail.",
+    "text": "No party may circumvent applicable laws, sanctions, or regulatory obligations when handling Confidential Information.",
+    "verifier": {
+      "verdict": "refute",
+      "confidence": 0.98,
+      "rationale": "This is only about legal compliance and does not restrict dealings with introduced parties or commercial opportunities."
+    },
+    "expected": {
+      "decision": "review"
     }
   }
 ]

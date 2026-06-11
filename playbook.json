@@ -507,30 +507,38 @@
         "solicitation of introduced",
         "substitute purpose",
         "exclusivity",
-        "exclusive dealing"
+        "exclusive dealing",
+        "hire introduced",
+        "recruit introduced",
+        "poach introduced",
+        "competing products",
+        "competing services",
+        "interfere with introduced contacts"
       ],
       "taxonomy_groups": [
         "prohibited_restriction",
         "business_restraint"
       ],
       "semantic_signals": [
-        "deal directly with introduced",
-        "avoid the company",
-        "bypass the disclosing party",
-        "not solicit introduced contacts"
+        "operative restriction on direct or indirect dealings with introduced contacts, counterparties, customers, investors, suppliers, employees, or business opportunities",
+        "bypassing, avoiding, circumventing, cutting out, interfering with, inducing, recruiting, hiring, poaching, or otherwise diverting introduced parties away from the disclosing party",
+        "exclusive dealing, substitute-purpose, competing-product, competing-service, or similar restraint that uses confidential information or introductions to block ordinary commercial freedom",
+        "unlisted verbs can still be prohibited when the sentence creates an operative business restraint beyond confidentiality",
+        "negated references, disclaimers, and freedom-preserving carve-outs are not prohibited restrictions",
+        "references to lawful circumvention of laws, sanctions, or regulatory obligations are not non-circumvention restrictions"
       ],
       "rationale": "Non-circumvention and substitute-purpose restrictions turn the NDA into a broader commercial restraint.",
-      "evidence_guidance": "Flag paragraphs restricting introduced parties, direct dealings, bypassing, substitute transactions, or exclusivity.",
+      "evidence_guidance": "For failures, cite the exact operative restriction that limits dealings, introduced contacts, substitute transactions, hiring/recruiting/poaching, competition, interference, or exclusivity. For review, cite the ambiguous span. Do not cite a negated reference, freedom-preserving carve-out, or lawful/regulatory circumvention reference as a prohibited restriction.",
       "rules": {
         "version": 1,
         "clause_type": "prohibited",
-        "acceptable_position": "The NDA does not restrict direct dealings, introduced contacts, substitute transactions, exclusivity, or similar commercial conduct beyond confidentiality.",
+        "acceptable_position": "The NDA does not impose non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, hiring/recruiting/poaching, interference, or similar commercial restraints beyond confidentiality. It may expressly preserve lawful dealings or say no non-circumvention obligation is created.",
         "pass_conditions": [
           {
             "id": "prohibited_restriction_absent",
             "decision": "pass",
             "issue_type": "none",
-            "description": "No non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction appears.",
+            "description": "No operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction appears. Negated references, lawful-circumvention references, and freedom-preserving carve-outs pass when they do not impose the restriction.",
             "redline_action": "no_change"
           }
         ],
@@ -539,7 +547,7 @@
             "id": "prohibited_business_restraint_present",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The document includes a non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, or exclusivity restriction.",
+            "description": "The document includes an operative non-circumvention, introduced-party non-solicit, substitute-purpose, direct-dealing, bypassing, hiring/recruiting/poaching, interference, competition, or exclusivity restriction. The exact verb is not controlling; fail any clear business restraint beyond confidentiality.",
             "redline_action": "delete_paragraph"
           }
         ],
@@ -548,7 +556,7 @@
             "id": "ambiguous_business_restraint",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The language may restrict business conduct beyond confidentiality, but the scope or polarity is ambiguous.",
+            "description": "The language mentions non-circumvention concepts or introduced-party conduct, but the scope, polarity, actor, condition, or operative effect is ambiguous enough that a human should decide.",
             "redline_action": "no_change"
           }
         ],
@@ -556,14 +564,14 @@
           "quote_required": true,
           "minimum_evidence_for_pass": 0,
           "minimum_evidence_for_fail": 1,
-          "guidance": "For failures, cite the exact restriction. For passes, absence of matching prohibited language may be enough."
+          "guidance": "For failures, cite the exact operative restriction. For review, cite the ambiguous wording. For passes, absence of prohibited language, a negated reference, a lawful-circumvention reference, or a freedom-preserving carve-out may be enough."
         },
         "redline_guidance": {
           "default_action": "delete_paragraph",
           "drafting_note": "Remove the prohibited restraint rather than replacing it with another commercial restriction."
         }
       },
-      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, or similar restriction should appear in the NDA.",
+      "acceptable_language": "No non-circumvention, introduced-party non-solicit, substitute-purpose exclusivity, hiring/recruiting/poaching, interference, or similar business restraint should appear in the NDA. Acceptable language may include freedom-preserving carve-outs saying that nothing restricts a party from dealing with third parties, that no non-circumvention obligation is created, or that parties must not circumvent applicable laws or regulatory obligations.",
       "engine": "dynamic",
       "fallback": {
         "redline_action": "delete_paragraph"

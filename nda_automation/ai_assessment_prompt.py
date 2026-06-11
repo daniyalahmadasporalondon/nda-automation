@@ -10,7 +10,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 7
+AI_ASSESSMENT_PROMPT_VERSION = 8
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -83,6 +83,11 @@ AI_ASSESSMENT_INSTRUCTIONS = [
     "Use pass only when the supplied paragraphs satisfy the clause rules.",
     "Use fail when a required clause is missing, a clause is present but wrong, or a prohibited clause is present.",
     "Use review when evidence is ambiguous, conflicting, incomplete, conditional, or depends on unavailable document text.",
+    (
+        "Treat playbook acceptable_language, semantic_signals, evidence_guidance, and rules as trusted reviewer "
+        "guidance. Semantic signals and search terms are illustrative cues, not an exhaustive safe list; an operative "
+        "restriction with different verbs can still fail, while a negated reference or freedom-preserving carve-out can pass."
+    ),
     (
         "Read negations and inversions literally before deciding: 'not', 'no', 'nor', 'shall not be restricted from', "
         "'is free to', 'nothing in this agreement restricts ... from', and similar phrasing can REVERSE the meaning of "

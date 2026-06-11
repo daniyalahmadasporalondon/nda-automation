@@ -262,6 +262,13 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
         "requirement": str(normalized.get("requirement") or ""),
         "preferred_position": str(normalized.get("preferred_position") or ""),
         "check_trigger": str(normalized.get("check_trigger") or ""),
+        "acceptable_language": str(normalized.get("acceptable_language") or ""),
+        "evidence_guidance": str(normalized.get("evidence_guidance") or ""),
+        "semantic_signals": [
+            str(signal)
+            for signal in normalized.get("semantic_signals", [])
+            if str(signal).strip()
+        ],
         "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
     }
     # Dynamic clauses carry their fallback/redline wording and clause-specific

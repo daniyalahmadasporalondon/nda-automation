@@ -61,6 +61,22 @@ class AIAssessmentPromptTests(unittest.TestCase):
             [active_governing_law["preferred_law"]],
         )
 
+    def test_packet_includes_trusted_playbook_guidance_fields(self):
+        playbook = load_playbook()
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=playbook)
+        non_circumvention = next(
+            clause for clause in packet["playbook"]["clauses"] if clause["clause_id"] == "non_circumvention"
+        )
+
+        self.assertIn("acceptable_language", non_circumvention)
+        self.assertIn("freedom-preserving", non_circumvention["acceptable_language"])
+        self.assertIn("evidence_guidance", non_circumvention)
+        self.assertIn("operative restriction", non_circumvention["evidence_guidance"])
+        self.assertIn("semantic_signals", non_circumvention)
+        self.assertTrue(any("unlisted verbs" in signal for signal in non_circumvention["semantic_signals"]))
+        self.assertIn("rules", non_circumvention)
+        self.assertIn("review_triggers", non_circumvention["rules"])
+
     def test_packet_instructions_cover_missing_absent_and_verdict_choices(self):
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
         instructions = " ".join(packet["instructions"])
@@ -73,6 +89,8 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("ungrounded verdict on a present clause is escalated to human review", instructions)
         self.assertIn("2 to 4 concise sentences", instructions)
         self.assertIn("specific to the cited document text", instructions)
+        self.assertIn("acceptable_language", instructions)
+        self.assertIn("Semantic signals and search terms are illustrative cues", instructions)
         self.assertIn("pass", packet["decision_policy"])
         self.assertIn("fail", packet["decision_policy"])
         self.assertIn("review", packet["decision_policy"])

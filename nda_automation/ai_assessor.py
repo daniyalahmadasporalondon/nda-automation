@@ -119,7 +119,28 @@ AI_ASSESSMENT_STUB_ENV = "NDA_AI_ASSESSMENT_STUB"
 # Paragraph language that marks a prohibited non-circumvention / introduced-party
 # / exclusive-dealing restriction — the same kinds the dynamic non_circumvention
 # clause exists to remove. Mirrors the prohibited intent, not the engine's matcher.
-_STUB_PROHIBITED_PATTERN = re.compile(r"circumvent|introduced part|deal directly|non-?solicit|exclusiv", re.IGNORECASE)
+_STUB_PROHIBITED_PATTERN = re.compile(
+    r"circumvent|introduced part|deal directly|non-?solicit|exclusiv|"
+    r"(?:hire|recruit|poach|retain).{0,80}introduced|introduced.{0,80}(?:hire|recruit|poach|retain)",
+    re.IGNORECASE,
+)
+_STUB_FREEDOM_PRESERVING_PATTERN = re.compile(
+    r"nothing\b.{0,120}\brestricts?\b.{0,120}\bdeal|"
+    r"\bshall\s+not\s+be\s+(?:restricted|prevented)\s+from\b|"
+    r"\bdoes\s+not\s+create\b.{0,120}\bnon[-\s]?circumvention\b|"
+    r"\bno\s+non[-\s]?circumvention\b.{0,80}\b(?:obligation|restriction|is|are|exists?|created)\b",
+    re.IGNORECASE,
+)
+_STUB_LAWFUL_CIRCUMVENTION_PATTERN = re.compile(
+    r"\bcircumvent(?:ing)?\s+(?:applicable\s+)?(?:laws?|sanctions|regulatory\s+obligations?)\b|"
+    r"\bcircumvention\s+of\s+(?:applicable\s+)?(?:laws?|sanctions|regulatory\s+obligations?)\b",
+    re.IGNORECASE,
+)
+_STUB_AMBIGUOUS_NON_CIRCUMVENTION_PATTERN = re.compile(
+    r"\backnowledge[s]?\s+non[-\s]?circumvention\b|"
+    r"\bnon[-\s]?circumvention\b.{0,120}\b(?:principles|future|to\s+be\s+agreed|subject\s+to)\b",
+    re.IGNORECASE,
+)
 
 
 def stub_ai_assessment_response(packet: Mapping[str, Any]) -> dict[str, Any]:
@@ -133,7 +154,19 @@ def stub_ai_assessment_response(packet: Mapping[str, Any]) -> dict[str, Any]:
     """
     clauses = packet.get("playbook", {}).get("clauses", []) if isinstance(packet, Mapping) else []
     paragraphs = packet.get("paragraphs", []) if isinstance(packet, Mapping) else []
-    prohibited = [p for p in paragraphs if _STUB_PROHIBITED_PATTERN.search(str(p.get("text") or ""))]
+    prohibited: list[Mapping[str, Any]] = []
+    review: list[Mapping[str, Any]] = []
+    for paragraph in paragraphs:
+        paragraph_text = str(paragraph.get("text") or "")
+        if _STUB_LAWFUL_CIRCUMVENTION_PATTERN.search(paragraph_text):
+            continue
+        if _STUB_FREEDOM_PRESERVING_PATTERN.search(paragraph_text):
+            continue
+        if _STUB_AMBIGUOUS_NON_CIRCUMVENTION_PATTERN.search(paragraph_text):
+            review.append(paragraph)
+            continue
+        if _STUB_PROHIBITED_PATTERN.search(paragraph_text):
+            prohibited.append(paragraph)
     assessments: list[dict[str, Any]] = []
     for clause in clauses:
         clause_id = str(clause.get("clause_id") or "")
@@ -156,6 +189,24 @@ def stub_ai_assessment_response(packet: Mapping[str, Any]) -> dict[str, Any]:
                 "proposed_redline": {"action": "delete_paragraph", "paragraph_id": str(prohibited[0].get("id") or "")},
                 "confidence": 0.95,
                 "blocks_send": False,
+            })
+        elif is_prohibited_delete and review:
+            assessments.append({
+                "clause_id": clause_id,
+                "decision": "review",
+                "issue_type": "unclear",
+                "rationale": "Possible non-circumvention concept present, but operative scope is unclear.",
+                "evidence": [
+                    {
+                        "paragraph_id": str(p.get("id") or ""),
+                        "quote": str(p.get("text") or ""),
+                        "relevance": "Mentions non-circumvention in ambiguous terms.",
+                    }
+                    for p in review
+                ],
+                "proposed_redline": {"action": "no_change"},
+                "confidence": 0.8,
+                "blocks_send": True,
             })
         else:
             assessments.append({

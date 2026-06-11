@@ -107,6 +107,13 @@ class PlaybookRulesTests(unittest.TestCase):
             governing_law["rules"]["approved_options"],
             active_governing_law["rules"]["approved_options"],
         )
+        non_circumvention = next(clause for clause in packet["clauses"] if clause["clause_id"] == "non_circumvention")
+        active_non_circumvention = next(
+            clause for clause in load_playbook()["clauses"] if clause["id"] == "non_circumvention"
+        )
+        self.assertEqual(non_circumvention["acceptable_language"], active_non_circumvention["acceptable_language"])
+        self.assertEqual(non_circumvention["evidence_guidance"], active_non_circumvention["evidence_guidance"])
+        self.assertEqual(non_circumvention["semantic_signals"], active_non_circumvention["semantic_signals"])
 
     def test_normalized_governing_law_policy_uses_editable_fields_as_source_of_truth(self):
         playbook = deepcopy(load_playbook())
