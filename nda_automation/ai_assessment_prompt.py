@@ -10,7 +10,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 9
+AI_ASSESSMENT_PROMPT_VERSION = 10
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -78,7 +78,13 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "apply the playbook position, state why the outcome follows, and mention any meaningful caveat or "
         "counterpoint when it would help a legal reviewer."
     ),
-    "Use 2 to 4 concise sentences for rationale. Avoid one-sentence conclusions unless the clause has no evidence to discuss.",
+    (
+        "Write a thorough, reviewer-facing rationale (typically 5 to 9 sentences): explain the "
+        "cited clause text, how it maps to the playbook rule, the specific evidence relied on, and "
+        "any nuance, ambiguity, conflicting language, or counterpoint a legal reviewer would want. "
+        "Be thorough but specific -- do not pad, do not restate the playbook rule verbatim, and do "
+        "not invent detail the document does not support."
+    ),
     (
         "For review decisions, include resolution_question as the precise question the reviewer must answer, "
         "suggested_redline as confirm-required wording when a safe suggestion can be made, and recommended_option "
