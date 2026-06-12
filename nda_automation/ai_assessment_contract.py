@@ -43,6 +43,17 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
         "decision": {"type": "string", "enum": list(AI_ASSESSMENT_DECISIONS)},
         "issue_type": {"type": "string", "enum": list(AI_ASSESSMENT_ISSUE_TYPES)},
         "rationale": {"type": "string"},
+        "resolution_question": {"type": "string"},
+        "suggested_redline": {"type": "string"},
+        "recommended_option": {
+            "type": "object",
+            "properties": {
+                "option": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["option", "reason"],
+            "additionalProperties": False,
+        },
         "evidence": {
             "type": "array",
             "items": {
@@ -171,6 +182,9 @@ def validate_ai_clause_assessment(
     decision = _required_enum(assessment, "decision", AI_ASSESSMENT_DECISIONS, location, errors)
     issue_type = _required_enum(assessment, "issue_type", AI_ASSESSMENT_ISSUE_TYPES, location, errors)
     rationale = _required_text(assessment, "rationale", location, errors)
+    resolution_question = _optional_text(assessment, "resolution_question")
+    suggested_redline = _optional_text(assessment, "suggested_redline")
+    recommended_option = _optional_recommended_option(assessment, location, errors)
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
     evidence = _validated_evidence(assessment, paragraph_by_id, ordered_paragraphs, location, errors)
@@ -209,7 +223,7 @@ def validate_ai_clause_assessment(
     if blocks_send is not None and blocks_send != (decision == CLAUSE_DECISION_REVIEW):
         errors.append(f"{location}: blocks_send must be true only for review decisions")
 
-    return {
+    cleaned: dict[str, Any] = {
         "schema_version": AI_ASSESSMENT_CONTRACT_VERSION,
         "clause_id": clause_id,
         "decision": decision,
@@ -220,7 +234,14 @@ def validate_ai_clause_assessment(
         "confidence": confidence,
         "blocks_send": bool(blocks_send),
         "validation_status": "contract_valid",
-    }, errors
+    }
+    if resolution_question:
+        cleaned["resolution_question"] = resolution_question
+    if suggested_redline:
+        cleaned["suggested_redline"] = suggested_redline
+    if recommended_option:
+        cleaned["recommended_option"] = recommended_option
+    return cleaned, errors
 
 
 _DEGRADE_NOTE = (
@@ -274,6 +295,38 @@ def _required_enum(
     if value not in allowed:
         errors.append(f"{location}: {key} must be one of {', '.join(allowed)}")
     return value
+
+
+def _optional_text(assessment: Mapping[str, Any], key: str) -> str:
+    if key not in assessment:
+        return ""
+    return str(assessment.get(key) or "").strip()
+
+
+def _optional_recommended_option(
+    assessment: Mapping[str, Any],
+    location: str,
+    errors: list[str],
+) -> dict[str, str]:
+    if "recommended_option" not in assessment:
+        return {}
+    option = assessment.get("recommended_option")
+    if option in (None, ""):
+        return {}
+    option_location = f"{location}.recommended_option"
+    if not isinstance(option, Mapping):
+        errors.append(f"{option_location}: recommended_option must be an object")
+        return {}
+    for key in option:
+        if str(key) not in {"option", "reason"}:
+            errors.append(f"{option_location}: unsupported field {key}")
+    recommended = str(option.get("option") or "").strip()
+    reason = str(option.get("reason") or "").strip()
+    if not recommended:
+        errors.append(f"{option_location}: option must be non-empty text")
+    if not reason:
+        errors.append(f"{option_location}: reason must be non-empty text")
+    return {"option": recommended, "reason": reason} if recommended and reason else {}
 
 
 def _required_confidence(assessment: Mapping[str, Any], location: str, errors: list[str]) -> float:

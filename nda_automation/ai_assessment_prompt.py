@@ -10,7 +10,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 8
+AI_ASSESSMENT_PROMPT_VERSION = 9
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -79,6 +79,11 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "counterpoint when it would help a legal reviewer."
     ),
     "Use 2 to 4 concise sentences for rationale. Avoid one-sentence conclusions unless the clause has no evidence to discuss.",
+    (
+        "For review decisions, include resolution_question as the precise question the reviewer must answer, "
+        "suggested_redline as confirm-required wording when a safe suggestion can be made, and recommended_option "
+        "as {option, reason} when the playbook gives approved alternatives. Never imply any suggested wording is auto-applied."
+    ),
     "Keep rationale specific to the cited document text and playbook rule; do not copy the playbook rule back verbatim.",
     "Use pass only when the supplied paragraphs satisfy the clause rules.",
     "Use fail when a required clause is missing, a clause is present but wrong, or a prohibited clause is present.",
@@ -138,7 +143,6 @@ AI_ASSESSMENT_DECISION_POLICY: dict[str, object] = {
         "conflicting, incomplete, or outside the supplied packet."
     ),
 }
-
 
 def build_ai_assessment_packet(
     source_text: str,

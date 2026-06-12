@@ -62,6 +62,11 @@ class AIAssessmentContractTests(unittest.TestCase):
     def test_schema_freezes_required_ai_clause_assessment_fields(self):
         self.assertEqual(AI_CLAUSE_ASSESSMENT_SCHEMA["properties"]["schema_version"]["const"], AI_ASSESSMENT_CONTRACT_VERSION)
         self.assertIn("rationale", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
+        self.assertNotIn("severity", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertNotIn("impact", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertIn("resolution_question", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertIn("suggested_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertIn("recommended_option", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertNotIn("why_it_might_be_a_problem", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertNotIn("why_it_may_be_fine", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertIn("proposed_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
@@ -85,6 +90,44 @@ class AIAssessmentContractTests(unittest.TestCase):
             "relevance": "Shows the governing-law jurisdiction.",
         }])
         self.assertEqual(governing_law["proposed_redline"]["action"], REDLINE_REPLACE_PARAGRAPH)
+
+    def test_optional_ai_analysis_fields_are_normalized(self):
+        assessments = validate_ai_clause_assessments(
+            [_valid_assessment(
+                resolution_question="Should this use England and Wales instead?",
+                suggested_redline="This Agreement shall be governed by the laws of England and Wales.",
+                recommended_option={
+                    "option": "England and Wales",
+                    "reason": "It is the default approved playbook option.",
+                },
+            )],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+        )
+
+        governing_law = assessments["governing_law"]
+        self.assertEqual(governing_law["resolution_question"], "Should this use England and Wales instead?")
+        self.assertEqual(
+            governing_law["suggested_redline"],
+            "This Agreement shall be governed by the laws of England and Wales.",
+        )
+        self.assertEqual(governing_law["recommended_option"], {
+            "option": "England and Wales",
+            "reason": "It is the default approved playbook option.",
+        })
+
+    def test_invalid_optional_ai_analysis_fields_report_contract_errors(self):
+        with self.assertRaises(AIAssessmentContractError) as error:
+            validate_ai_clause_assessments(
+                [_valid_assessment(
+                    recommended_option={"option": "England and Wales"},
+                )],
+                valid_clause_ids=_valid_clause_ids(),
+                paragraphs=_paragraphs(),
+            )
+
+        message = str(error.exception)
+        self.assertIn("recommended_option: reason must be non-empty text", message)
 
     def test_quote_only_evidence_must_resolve_to_one_paragraph(self):
         source_text = "\n\n".join([

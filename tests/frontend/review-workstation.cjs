@@ -56,7 +56,7 @@ const tests = [
   ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
   ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
-  ["surfaces structured evidence and rationale", testStructuredEvidenceAndRationale],
+  ["renders the seven-section clause card schema", testStructuredEvidenceAndRationale],
   ["renders structured proposed changes in the review inspector", testStructuredProposedChangePanel],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
@@ -96,7 +96,7 @@ const tests = [
   ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
   ["shows reconstructed PDF export metadata in the review download menu", testReviewDownloadMenuPdfReconstructionMetadata],
-  ["renders the playbook preferred position and confidence on a clause", testPlaybookPositionAndConfidence],
+  ["renders the playbook preferred position and span highlight on a clause", testPlaybookPositionAndSpanHighlight],
   ["renders backend redline rationale beside the suggested edit", testRedlineRationaleBlock],
   ["collapses the reasoning trail and remembers its open state", testReasoningTrailCollapse],
   ["gates Approve Review on staleness only", testApproveReviewGate],
@@ -1063,7 +1063,8 @@ async function testContractStructureReviewPanel(page) {
   assert.deepEqual(referenceResolver.references[1].resolved_section_ids, ["section-10"]);
 
   await page.locator('[data-review-inspector="clause"]').click();
-  await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
+  await assertTextContains(page.locator("#studioDetailPanel"), "PLAYBOOK POSITION");
+  await assertTextContains(page.locator("#studioDetailPanel"), "RULE PURPOSE");
 
   await page.getByRole("tab", { name: "Guide" }).click();
   assert.equal(await page.locator("#clausesView").getAttribute("data-admin-surface"), "guide");
@@ -2143,19 +2144,17 @@ async function testStructuredEvidenceAndRationale(page) {
   await runReview(page, "This Agreement shall be governed by the laws of California.");
   await page.getByRole("button", { name: /Governing Law/ }).click();
 
-  // The Decision is folded into a first-class Assessment headline (issue type +
-  // PASS/REVIEW/FAIL pill), not a separate "Issue type" tile or audit step.
-  await assertTextContains(page.locator("#studioDetailPanel .assessment-headline"), "ASSESSMENT");
-  await assertTextContains(page.locator("#studioDetailPanel .assessment-decision-pill"), "REVIEW");
-  await assertTextContains(page.locator("#studioDetailPanel .assessment-issue-type"), "Needs review");
+  const detailPanel = page.locator("#studioDetailPanel");
+  assert.deepEqual(
+    await detailPanel.locator("[data-card-section]").evaluateAll((nodes) => nodes.map((node) => node.dataset.cardSection)),
+    ["assessment", "document", "playbook", "recommended-change", "actions", "reasoning"],
+  );
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "NEEDS REVIEW");
   assert.equal((await page.locator("#studioDetailPanel").innerText()).includes("ISSUE TYPE"), false);
-  await assertTextContains(page.locator("#studioDetailPanel"), "RATIONALE");
-  // Evidence is now folded inline into the Assessment. The AI-first stub does
-  // not cite governing-law evidence, so the UI should surface the no-quote
-  // human-review fallback rather than inventing evidence.
-  await assertTextContains(page.locator("#studioDetailPanel"), "No supporting quote was cited");
-  await assertTextContains(page.locator("#studioDetailPanel"), "Stub reviewer: no issue.");
-  await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
+  assert.equal((await detailPanel.innerText()).includes("RATIONALE"), false);
+  await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "No grounded quote was recorded");
+  await assertTextContains(detailPanel.locator('[data-card-section="assessment"]'), "Stub reviewer: no issue.");
+  await assertTextContains(detailPanel.locator('[data-card-section="actions"]'), "ATTACH COMMENT");
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
@@ -2183,7 +2182,7 @@ async function testStructuredEvidenceAndRationale(page) {
     };
     renderStudioResult({ clauses: state.reviewClauses });
   });
-  await assertTextContains(page.locator("#studioDetailPanel"), "AI assessment confirmed this finding.");
+  await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "This Agreement shall be governed by the laws of California.");
   assert.doesNotMatch(await page.locator("#studioDetailPanel").innerText(), /AI agrees|No contrary reason/);
 }
 
@@ -2255,12 +2254,16 @@ async function testPerClauseReviewedToggle(page) {
   const activeReviewToggle = page.locator('#studioDetailPanel [data-review-action="mark-reviewed"]');
   await confidentialCard.click();
   await assertTextContains(activeReviewToggle, "NEEDS REVIEW");
+  assert.equal(await activeReviewToggle.getAttribute("aria-pressed"), "false");
+  assert.match(await activeReviewToggle.getAttribute("title"), /Mark reviewed/);
   await assertAttributeMatches(confidentialCard, "aria-label", /Needs review/);
   await assertAttributeMatches(termCard, "aria-label", /Needs review/);
 
   await activeReviewToggle.click();
   await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === true);
   await assertTextContains(activeReviewToggle, "REVIEWED");
+  assert.equal(await activeReviewToggle.getAttribute("aria-pressed"), "true");
+  assert.match(await activeReviewToggle.getAttribute("title"), /Mark as needs review/);
   await assertAttributeMatches(confidentialCard, "aria-label", /Reviewed/);
   await assertAttributeMatches(termCard, "aria-label", /Needs review/);
   assert.deepEqual(
@@ -2271,9 +2274,11 @@ async function testPerClauseReviewedToggle(page) {
     { confidential: true, term: undefined },
   );
 
-  await activeReviewToggle.click();
+  await activeReviewToggle.focus();
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => state.reviewedClauseIds.confidential_information === false);
   await assertTextContains(activeReviewToggle, "NEEDS REVIEW");
+  assert.equal(await activeReviewToggle.getAttribute("aria-pressed"), "false");
   await assertAttributeMatches(confidentialCard, "aria-label", /Needs review/);
   await assertAttributeMatches(termCard, "aria-label", /Needs review/);
 }
@@ -6171,7 +6176,7 @@ async function loadReviewWithMatter(page, { matter = {}, clauses, paragraphs, re
   });
 }
 
-async function testPlaybookPositionAndConfidence(page) {
+async function testPlaybookPositionAndSpanHighlight(page) {
   await loadReviewWithMatter(page, {
     clauses: [
       {
@@ -6187,29 +6192,27 @@ async function testPlaybookPositionAndConfidence(page) {
         reason: "Governing law is outside the approved set.",
         review_state: { state: "review" },
         status: "review",
+        structured_evidence: [{
+          paragraph_id: "p2",
+          matched_text: "laws of California",
+          match_spans: [{ start: 40, end: 58, text: "laws of California", term: "laws of California" }],
+        }],
       },
     ],
-    paragraphs: [{ id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." }],
+    paragraphs: [{ id: "p2", index: 2, source_index: 2, start: 0, end: 59, text: "This Agreement shall be governed by the laws of California." }],
   });
 
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
 
-  // 2.1 — playbook preferred position.
   await assertTextContains(detailPanel.locator(".playbook-position-block"), "Delaware governing law");
-  // The label is uppercased by CSS text-transform, so innerText reads "PREFERRED POSITION".
-  await assertTextContains(detailPanel.locator(".playbook-position-preferred"), "PREFERRED POSITION");
+  await assertTextContains(detailPanel.locator(".playbook-position-block"), "REQUIRED POSITION");
 
-  // 2.2 — the matched quote now lives inline in the evidence (Assessment, or the
-  // Evidence fallback when there are no inline signals — as here), and the grounded
-  // "Based on" carries only the confidence meter (no repeated quote).
-  await assertTextContains(detailPanel, "governed by the laws of California");
-  await assertTextContains(detailPanel.locator(".clause-confidence"), "92%");
-  assert.equal(await detailPanel.locator(".clause-confidence.high").count(), 1);
-  assert.equal(
-    await detailPanel.locator(".clause-confidence-fill").evaluate((node) => node.style.width),
-    "92%",
-  );
+  await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "laws of California");
+  assert.equal(await detailPanel.locator(".clause-confidence-text").count(), 0);
+  assert.equal((await detailPanel.textContent()).includes("Confidence"), false);
+  const highlight = page.locator('.clause-evidence-highlight.review[data-clause-evidence-id="governing_law"]');
+  await assertTextContains(highlight, "laws of California");
 }
 
 async function testStructuredProposedChangePanel(page) {
@@ -6232,17 +6235,25 @@ async function testStructuredProposedChangePanel(page) {
         issue_label: "Needs review",
         name: "Non-Circumvention",
         needs_review: true,
+        approved_positions: ["Delete the restriction", "Narrow to active introductions only"],
         proposed_change: {
           action: "needs_human_choice",
+          approved_alternatives: ["Delete the restriction", "Narrow to active introductions only"],
           confidence: 0.38,
           evidence: { paragraph_id: "p3", quote: "shall not interfere with Company customers" },
           issue_summary: "The restriction may overreach and needs reviewer wording.",
           playbook_rationale: "Preserve legitimate competitive freedom while protecting active introductions.",
+          recommended_option: {
+            option: "Narrow to active introductions only",
+            reason: "It preserves legitimate competitive freedom.",
+          },
+          resolution_question: "Should this restriction be deleted or narrowed to active introductions only?",
           safety: {
             reason: "No safe replacement was selected because the source wording needs business judgment.",
             requires_human_approval: true,
             status: "needs_human_choice",
           },
+          suggested_redline: "The Recipient must not knowingly circumvent active introductions made under this Agreement.",
         },
         reason: "Circumvention language needs human review.",
         review_state: { state: "review" },
@@ -6303,42 +6314,30 @@ async function testStructuredProposedChangePanel(page) {
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
   const redlineBackedChange = detailPanel.locator(".proposed-change-card");
-  await assertTextContains(redlineBackedChange, "FAIL OUTCOME");
-  await assertTextContains(redlineBackedChange, "Redline replacement available");
-  await assertTextContains(redlineBackedChange, "A concrete change is available");
-  await assertTextContains(redlineBackedChange, "Requires human approval");
+  await assertTextContains(redlineBackedChange, "RECOMMENDED CHANGE");
   await assertTextContains(redlineBackedChange, "Unapproved California governing law");
   await assertTextContains(redlineBackedChange, "Replace text");
-  await assertTextContains(redlineBackedChange, "91%");
-  await assertTextContains(redlineBackedChange, "Proposed redline available");
   await assertTextContains(redlineBackedChange, "laws of California");
   await assertTextContains(redlineBackedChange, "laws of Delaware");
-  await assertTextContains(redlineBackedChange, "Compare source and proposed wording");
+  await assertTextContains(redlineBackedChange, "WHY THIS EDIT");
   await assertTextContains(redlineBackedChange, "Use an approved governing law before export.");
   await assertTextContains(redlineBackedChange, "Reviewer must approve before export.");
 
   await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   const humanChoiceChange = detailPanel.locator(".proposed-change-card");
-  await assertTextContains(humanChoiceChange, "REVIEW OUTCOME");
-  await assertTextContains(humanChoiceChange, "Human judgment needed");
-  await assertTextContains(humanChoiceChange, "Human judgment is required");
-  await assertTextContains(humanChoiceChange, "Needs human choice");
-  await assertTextContains(humanChoiceChange, "38%");
-  await assertTextContains(humanChoiceChange, "could not choose safe replacement wording");
-  await assertTextContains(humanChoiceChange, "No automatic edit will be applied");
-  await assertTextContains(humanChoiceChange, "Choose final wording manually");
-  await assertTextContains(humanChoiceChange, "shall not interfere with Company customers");
-  await assertTextContains(humanChoiceChange, "Preserve legitimate competitive freedom");
-  await assertTextContains(humanChoiceChange, "needs business judgment");
+  await assertTextContains(humanChoiceChange, "Should this restriction be deleted or narrowed to active introductions only?");
+  await assertTextContains(humanChoiceChange, "SUGGESTED EDIT (CONFIRM REQUIRED)");
+  await assertTextContains(humanChoiceChange, "must not knowingly circumvent active introductions");
+  await assertTextContains(humanChoiceChange, "RECOMMENDED OPTION");
+  await assertTextContains(humanChoiceChange, "Narrow to active introductions only");
+  await assertTextContains(humanChoiceChange, "APPROVED ALTERNATIVES");
+  await assertTextContains(humanChoiceChange, "Delete the restriction");
 
   await page.locator('[data-studio-lane-id="assignment"]').click();
   const commentOnlyChange = detailPanel.locator(".proposed-change-card");
-  await assertTextContains(commentOnlyChange, "REVIEW OUTCOME");
-  await assertTextContains(commentOnlyChange, "Reviewer comment only");
-  await assertTextContains(commentOnlyChange, "Comment only");
-  await assertTextContains(commentOnlyChange, "No safe redline text was generated");
-  await assertTextContains(commentOnlyChange, "No redline will be applied automatically");
-  await assertTextContains(commentOnlyChange, "Assignment requires prior written consent.");
+  await assertTextContains(commentOnlyChange, "What wording or approved playbook position should resolve this clause?");
+  await assertTextContains(commentOnlyChange, "No safe wording was selected automatically");
+  await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "Assignment requires prior written consent.");
 }
 
 async function testRedlineRationaleBlock(page) {
@@ -6377,11 +6376,9 @@ async function testRedlineRationaleBlock(page) {
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
 
-  // 2.4 — backend explanation + basis quote ("why this redline").
-  await assertTextContains(detailPanel.locator(".redline-rationale"), "California is outside the playbook");
-  await assertTextContains(detailPanel.locator(".redline-rationale-basis"), "governed by the laws of California");
-  // figcaption is uppercased by CSS text-transform.
-  await assertTextContains(detailPanel.locator(".redline-rationale-basis figcaption"), "WHY");
+  await assertTextContains(detailPanel.locator('[data-card-section="recommended-change"]'), "WHY THIS EDIT");
+  await assertTextContains(detailPanel.locator('[data-card-section="recommended-change"]'), "California is outside the playbook");
+  await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "governed by the laws of California");
 }
 
 async function testReasoningTrailCollapse(page) {
@@ -6417,27 +6414,20 @@ async function testReasoningTrailCollapse(page) {
   const detailPanel = page.locator("#studioDetailPanel");
   await page.locator('[data-studio-lane-id="governing_law"]').click();
 
-  // The Decision is the first-class Assessment headline, not an audit step.
-  await assertTextContains(detailPanel.locator(".assessment-decision-pill"), "REVIEW");
-  await assertTextContains(detailPanel.locator(".assessment-issue-type"), "Needs review");
-
-  // 2.3 (#22) — the trail exists, is collapsed by default, and holds the DEEPER
-  // audit steps only.
   const trail = detailPanel.locator(".reasoning-trail-block");
   assert.equal(await trail.count(), 1);
   assert.equal(await trail.evaluate((node) => node.open), false);
-  // Summary label is uppercased by CSS text-transform.
   await assertTextContains(detailPanel.locator(".reasoning-trail-summary"), "REASONING TRAIL");
   assert.equal(await trail.locator(".audit-trace-block").count(), 1);
 
-  // Reason codes are never rendered; the normalization + Decision audit steps are
-  // filtered out; the deeper steps remain. Read textContent (not innerText) since
-  // the trail body is hidden while the <details> is collapsed.
+  // Full audit history is retained. Read textContent (not innerText) since the
+  // trail body is hidden while the <details> is collapsed.
   assert.equal(await detailPanel.locator(".reason-code-block").count(), 0);
   const trailText = await trail.evaluate((node) => node.textContent);
   assert.equal(trailText.includes("ai_first_fail"), false);
   assert.equal(trailText.includes("unapproved_governing_law"), false);
-  assert.equal(/normaliz/i.test(trailText), false);
+  assert.match(trailText, /AI assessment normalization/);
+  assert.match(trailText, /Decision/);
   assert.match(trailText, /Locate clause/);
   assert.match(trailText, /Compare to approved set/);
 

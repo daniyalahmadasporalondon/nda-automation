@@ -296,7 +296,7 @@ function humanReviewAcknowledged() {
 
 function renderActiveClauseStatusToggle(clause, status) {
   const reviewed = status.needsReview && clauseReviewAcknowledged(clause.id);
-  const label = reviewed ? "Reviewed" : status.issueLabel;
+  const label = verdictPillLabel(status, reviewed);
   if (!status.needsReview) {
     return `<span class="active-clause-status ${escapeHtml(status.tone)}">${escapeHtml(label)}</span>`;
   }
@@ -310,6 +310,14 @@ function renderActiveClauseStatusToggle(clause, status) {
       title="${escapeHtml(reviewed ? "Mark as needs review" : "Mark reviewed")}"
     >${escapeHtml(label)}</button>
   `;
+}
+
+function verdictPillLabel(status, reviewed = false) {
+  if (reviewed) return "Reviewed";
+  if (status.fails) return "Fail";
+  if (status.needsReview) return "Needs Review";
+  if (status.passes) return "Match";
+  return status.issueLabel || "Review";
 }
 
 function renderClauseCommentBlock(clause) {
@@ -845,31 +853,6 @@ function refreshGoverningLawConcurrence() {
   });
 }
 
-// Apply a governing-law fix from the concurrence picker: replace the matched
-// governing-law paragraph with a clean approved sentence (shown as a tracked redline
-// in the document) and re-render so the concurrence re-evaluates live.
-function applyGoverningLawRedline(lawPhrase, lawLabel) {
-  const gl = state.reviewClauses.find((clause) => clause.id === "governing_law");
-  const paraId = gl && Array.isArray(gl.matched_paragraph_ids) ? gl.matched_paragraph_ids[0] : "";
-  const para = paraId ? state.reviewParagraphs.find((item) => item.id === paraId) : null;
-  if (!para) return;
-  const phrase = String(lawPhrase || lawLabel || "").trim();
-  if (!phrase) return;
-  const newText = `This Agreement shall be governed by the laws of ${phrase}.`;
-  if (newText === para.text) return;
-  if (typeof pushReviewEditHistoryEntry === "function") {
-    pushReviewEditHistoryEntry({ paragraphId: para.id, previousText: para.text, type: "paragraph_text" });
-  }
-  para.text = newText;
-  para.clauseRedlineWholeParagraph = true;  // keep this clause redline whole-paragraph
-  if (typeof syncReviewSourceFromParagraphs === "function") syncReviewSourceFromParagraphs();
-  if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
-  if (typeof markSourceEdited === "function") markSourceEdited("Governing law redline", { preserveSourceDocument: true });
-  if (typeof renderStudioDocumentHighlights === "function") renderStudioDocumentHighlights();
-  renderStudioClauseLane();
-  renderStudioDetail();
-}
-
 function renderStudioClauseLane() {
   if (!studioClauseLane) return;
 
@@ -980,49 +963,38 @@ function bindClauseNavigatorScrollControls() {
   requestAnimationFrame(updateButtons);
 }
 
-function renderClauseEvidenceList(paragraphs) {
-  const list = Array.isArray(paragraphs) ? paragraphs.filter((paragraph) => paragraph && paragraph.text) : [];
-  if (!list.length) return "";
+function renderClauseVerdictHeader(clause, status) {
   return `
-    <div class="evidence-list">
-      ${list.map((paragraph, index) => {
-        const paragraphNumber = paragraph.index || paragraph.source_index || index + 1;
-        return `
-          <figure class="evidence-item">
-            <figcaption>Paragraph ${escapeHtml(paragraphNumber)}</figcaption>
-            <p>${escapeHtml(paragraph.text)}</p>
-          </figure>
-        `;
-      }).join("")}
+    <div class="studio-detail-heading active-clause-heading clause-verdict-header">
+      <div>
+        <small>Clause</small>
+        <h3>${escapeHtml(clauseDisplayName(clause))}${clauseEngineBadge(clause)}</h3>
+      </div>
+      <div class="clause-verdict-meta">
+        ${renderActiveClauseStatusToggle(clause, status)}
+      </div>
     </div>
   `;
 }
 
-function renderClauseAiEvidenceList(spans) {
-  const list = Array.isArray(spans) ? spans.filter(Boolean) : [];
-  if (!list.length) return "";
-  return `<div class="evidence-list">${list.map(renderAiCitation).join("")}</div>`;
-}
-
-function renderClauseAssessmentBlocks({ assessment, evidence = "", note = "", signals = "" }) {
+function renderClauseAssessmentSection(clause) {
+  const assessment = clauseAssessmentText(clause);
   return `
-    <div class="studio-detail-block assessment-block">
+    <div class="studio-detail-block assessment-block" data-card-section="assessment">
       <small>Assessment</small>
       <p>${linkifyParagraphRefs(assessment)}</p>
     </div>
-    ${evidence ? `
-      <div class="studio-detail-block studio-detail-evidence">
-        <small>Evidence</small>
-        ${evidence}
-      </div>
-    ` : ""}
-    ${note ? `
-      <div class="studio-detail-block review-note-block">
-        <small>Review note</small>
-        <p>${escapeHtml(note)}</p>
-      </div>
-    ` : ""}
   `;
+}
+
+function clauseAssessmentText(clause) {
+  return String(
+    clause?.reason
+      || clause?.finding
+      || clause?.decision_reason
+      || clause?.issue_label
+      || "Clause review available.",
+  ).trim();
 }
 
 // --- AI-referenced paragraphs ------------------------------------------------
@@ -1074,12 +1046,26 @@ function linkifyParagraphRefs(text) {
   const escaped = escapeHtml(text);
   const valid = validParagraphIdSet();
   if (!valid.size) return escaped;
-  return escaped.replace(/\bp(\d+)\b/gi, (match, n) => {
+  const withRanges = escaped.replace(/\bp(\d+)\s*[-–—]\s*p?(\d+)\b/gi, (match, a, b) => {
+    const ids = paragraphRangeIds(a, b).filter((id) => valid.has(id));
+    if (!ids.length) return match;
+    return `<button type="button" class="para-ref" data-para-ref="${ids[0]}" data-para-ref-range="${ids.join(" ")}">${match}</button>`;
+  });
+  return withRanges.replace(/\bp(\d+)\b(?![^<]*<\/button>)/gi, (match, n) => {
     const id = `p${n}`;
     return valid.has(id)
       ? `<button type="button" class="para-ref" data-para-ref="${id}">${match}</button>`
       : match;
   });
+}
+
+function paragraphRangeIds(a, b) {
+  const start = parseInt(a, 10);
+  const end = parseInt(b, 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || end - start > 200) return [];
+  const ids = [];
+  for (let index = start; index <= end; index += 1) ids.push(`p${index}`);
+  return ids;
 }
 
 // Paint the selected clause's AI-referenced paragraphs so a reviewer can go back to
@@ -1088,103 +1074,18 @@ function highlightSelectedClauseRefs() {
   if (!studioDocumentRender) return;
   const clause = state.reviewClauses.find((item) => item.id === state.selectedReviewClauseId);
   if (!clause) return;
-  // Reuse the document's existing paragraph-status highlight (match=pass/green,
-  // review=amber, verify=fail/red) so a referenced paragraph reads in the clause's
-  // own colour, matching its grounded evidence paragraphs. The document re-renders
-  // fresh before this runs, so these classes never accumulate.
   const status = clauseStatus(clause);
   const toneClass = status.fails ? "verify" : status.needsReview ? "review" : "match";
+  let appliedSpan = false;
+  clauseEvidenceItems(clause).forEach((item) => {
+    appliedSpan = applyClauseEvidenceHighlight(clause.id, item, toneClass) || appliedSpan;
+  });
+  if (appliedSpan) return;
   const text = `${clause.finding || ""} ${clause.reason || ""} ${clause.rationale || ""}`;
   referencedParagraphIds(text).forEach((id) => {
-    const el = studioDocumentRender.querySelector(`[data-paragraph-id="${id}"]`)
-      || studioDocumentRender.querySelector(`[data-editable-paragraph-id="${id}"]`);
-    const frame = el ? el.closest(".studio-doc-paragraph") || el : null;
-    if (frame) frame.classList.add(toneClass);
+    const item = { paragraph_id: id, quote: "" };
+    appliedSpan = applyClauseEvidenceHighlight(clause.id, item, toneClass) || appliedSpan;
   });
-}
-
-// Builds the heart of the panel around the active AI-first assessment. The
-// deterministic result is no longer presented as a competing counterchecker.
-function renderClauseExplanation(clause) {
-  const analysis = clause && typeof clause.ai_review_analysis === "object" ? clause.ai_review_analysis : null;
-  const findingText = clause.reason || clause.finding || "Clause review available.";
-  const aiReason = analysis ? String(analysis.ai_reason || analysis.reason || "").trim() : "";
-  const detDecision = String(analysis?.deterministic_decision || clause.decision || "").trim().toLowerCase();
-  const aiDecision = String(analysis?.ai_decision || "").trim().toLowerCase();
-  const isDisagreement = Boolean(analysis) && Boolean(aiReason)
-    && (analysis.disagreement === true || (aiDecision && detDecision && aiDecision !== detDecision));
-
-  const allDetParas = Array.isArray(clause.evidence_paragraphs)
-    ? clause.evidence_paragraphs.filter((paragraph) => paragraph && paragraph.text)
-    : [];
-  const aiSpans = Array.isArray(analysis?.cited_spans) ? analysis.cited_spans.filter(Boolean) : [];
-  const evidence = aiSpans.length ? renderClauseAiEvidenceList(aiSpans) : renderClauseEvidenceList(allDetParas);
-  const signals = renderEvidenceSignalsBlock(clause);
-
-  if (isDisagreement) {
-    return renderClauseAssessmentBlocks({
-      assessment: aiReason || findingText,
-      evidence,
-      signals,
-      note: "AI assessment and deterministic validation recorded different outcomes. Treat the assessment as the review verdict; the validation result is audit context.",
-    });
-  }
-
-  // A clause can land on REVIEW because the AI assessment could not be trusted
-  // enough to close it automatically.
-  const verdict = clauseStatus(clause);
-  const aiStatus = analysis ? String(analysis.status || "").trim().toLowerCase() : "";
-  const deterministicDecision = String(analysis?.deterministic_decision || "").trim().toLowerCase();
-  const technicalEscalation = verdict.tone === "review"
-    && deterministicDecision && deterministicDecision !== "review"
-    && ["invalid", "low_confidence", "error"].includes(aiStatus);
-  if (technicalEscalation) {
-    const detail = aiStatus === "low_confidence"
-      ? "the AI assessment was not confident enough to confirm it"
-      : aiStatus === "invalid"
-        ? "the AI assessment cited evidence that could not be verified in the document"
-        : "the AI assessment was unavailable";
-    return renderClauseAssessmentBlocks({
-      assessment: `This clause was escalated for human review because ${detail}.`,
-      evidence,
-      signals,
-      note: findingText,
-    });
-  }
-
-  const aiAgrees = analysis && String(analysis.status || "").toLowerCase() === "confirmed"
-    ? " AI assessment confirmed this finding."
-    : "";
-  if (verdict.passes) {
-    return renderClauseAssessmentBlocks({
-      assessment: `${findingText}${aiAgrees}`,
-      evidence,
-      signals,
-    });
-  }
-
-  return renderClauseAssessmentBlocks({
-    assessment: `${findingText}${aiAgrees}`,
-    evidence,
-    signals,
-  });
-}
-
-// First-class Assessment headline (the folded Decision). The clause's decision
-// state (PASS/REVIEW/FAIL) and the issue type ARE the finding, so they lead the
-// panel as a tone-coded headline rather than sitting in a numbered audit step.
-// The reasoning prose follows from renderClauseExplanation directly beneath.
-function renderClauseFindingHeadline(clause, status) {
-  const decisionLabel = (status.pillLabel || status.issueLabel || "").toUpperCase();
-  return `
-    <div class="studio-detail-block assessment-headline ${escapeHtml(status.tone)}">
-      <div class="assessment-headline-row">
-        <small>Assessment</small>
-        <span class="assessment-decision-pill ${escapeHtml(status.tone)}">${escapeHtml(decisionLabel)}</span>
-      </div>
-      <p class="assessment-issue-type">${escapeHtml(status.issueLabel)}</p>
-    </div>
-  `;
 }
 
 function renderStudioDetail() {
@@ -1203,74 +1104,29 @@ function renderStudioDetail() {
     return;
   }
   const status = clauseDisplayStatus(clause);
-  const findingHeadline = renderClauseFindingHeadline(clause, status);
-  const explanation = renderClauseExplanation(clause);
-  const glConflict = clause.id === "governing_law" ? governingLawConflict() : null;
-  const concurrenceBanner = glConflict
-    ? `<div class="studio-detail-block gl-concurrence-fail">
-        <small>Governing law conflict</small>
-        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not concur with the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>.</p>
-      </div>`
-    : "";
-  const glRedlinePicker = glConflict
-    ? `<div class="studio-detail-block">
-        <div class="redline-options">
-          <span class="redline-options-title">Redline governing law to</span>
-          ${(Array.isArray(clause.approved_laws) ? clause.approved_laws : []).map((label) => {
-            const phrase = (clause.law_phrases && clause.law_phrases[label]) || label;
-            const recommended = String(label).trim().toLowerCase() === glConflict.entityLaw.toLowerCase();
-            const optionText = `This Agreement shall be governed by the laws of ${phrase}.`;
-            return `<button class="redline-option ${recommended ? "selected" : ""}" type="button" data-gl-redline-law="${escapeHtml(label)}" data-gl-redline-phrase="${escapeHtml(phrase)}" aria-pressed="${recommended ? "true" : "false"}">
-              <span class="redline-option-dot" aria-hidden="true"></span>
-              <span class="redline-option-copy">
-                <strong>${escapeHtml(label)}${recommended ? " — recommended" : ""}</strong>
-                <span>${escapeHtml(optionText)}</span>
-              </span>
-            </button>`;
-          }).join("")}
-        </div>
-      </div>`
-    : "";
-  const rationale = clause.rationale || clause.requirement || "";
-  // The "Based on" grounding surface (citation / absence / ungrounded) sits
-  // right under the explanation; it self-gates to "" until citation/grounding
-  // data is present.
-  const citation = renderClauseCitationBlock(clause);
+  const verdictHeader = renderClauseVerdictHeader(clause, status);
+  const assessment = renderClauseAssessmentSection(clause);
+  const documentEvidence = renderClauseDocumentEvidenceBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedChange = renderProposedChangeBlock(clause, status);
-  const proposedRedlines = renderProposedRedlinesBlock(clause);
-  // Audit/context detail beneath the primary finding, gathered into a single
-  // collapsible Reasoning trail (#22). Self-gates to "" when the clause carries
-  // no reason codes / evidence signals / audit trace.
+  const actions = renderClauseActionsBlock(clause, status);
   const reasoningTrail = renderReasoningTrailBlock(clause);
-  const activeStatus = renderActiveClauseStatusToggle(clause, status);
-  const commentBlock = renderClauseCommentBlock(clause);
   studioDetailPanel.innerHTML = `
-    <div class="studio-detail-heading active-clause-heading">
-      <div>
-        <small>Active clause</small>
-        <h3>${escapeHtml(clauseDisplayName(clause))}${clauseEngineBadge(clause)}</h3>
-      </div>
-      ${activeStatus}
-    </div>
+    ${verdictHeader}
     <div class="studio-detail-stack">
-      ${concurrenceBanner}
-      ${glRedlinePicker}
-      ${findingHeadline}
-      ${explanation}
-      <div class="studio-detail-block rationale-block"><small>Rationale</small><p>${escapeHtml(rationale || "No playbook rationale recorded.")}</p></div>
-      ${citation}
+      ${assessment}
+      ${documentEvidence}
       ${playbookPosition}
       ${proposedChange}
-      ${proposedRedlines}
+      ${actions}
       ${reasoningTrail}
-      ${commentBlock}
     </div>
   `;
   bindExportDecisionControls(studioDetailPanel);
   bindTemplateOptionControls(studioDetailPanel);
   bindReviewAcknowledgementControls(studioDetailPanel);
   bindReviewCommentControls(studioDetailPanel);
+  bindParagraphReferenceControls(studioDetailPanel);
   bindReasoningTrailControls(studioDetailPanel);
 }
 
@@ -1294,88 +1150,122 @@ function renderAiCitation(span) {
   `;
 }
 
-// Single "Based on" grounding surface for a clause, driven by the AI-first
-// review path's clause.citation (the first grounded structured-evidence quote)
-// and clause.grounding.status. The older crosscheck path's cited_spans are
-// already shown in the explanation's Evidence block (renderClauseExplanation),
-// so this block deliberately does NOT fall back to them — that would double the
-// same quotes. Returns "" when no citation/grounding data is present (a no-op
-// until those fields land), so existing reviews are unaffected and there is
-// never a second citation surface.
-function renderClauseCitationBlock(clause) {
-  if (!clause || typeof clause !== "object") return "";
-  const grounding = typeof clause.grounding === "object" && clause.grounding ? clause.grounding : null;
-  const status = grounding ? String(grounding.status || "").trim().toLowerCase() : "";
-  const confidence = renderClauseConfidence(clause, grounding);
-
-  const citation = typeof clause.citation === "object" && clause.citation ? clause.citation : null;
-  const citationQuote = citation ? String(citation.quote || "").trim() : "";
-
-  // The matched quote now lives inline in the Assessment evidence, so "Based on"
-  // no longer repeats it for a grounded clause — it surfaces only the grounding
-  // confidence (when present), plus the absence/ungrounded states below.
-  if (citationQuote) {
-    if (!confidence) return "";
+function renderClauseDocumentEvidenceBlock(clause) {
+  const items = clauseEvidenceItems(clause);
+  const grounding = typeof clause?.grounding === "object" && clause.grounding ? clause.grounding : null;
+  const groundingStatus = String(grounding?.status || "").trim().toLowerCase();
+  const absent = isClauseAbsentFromDocument(clause, items, groundingStatus);
+  if (absent) {
     return `
-      <div class="studio-detail-block clause-citation-block grounded">
-        <small>Based on</small>
-        ${confidence}
+      <div class="studio-detail-block studio-detail-evidence in-document-block" data-card-section="document">
+        <small>In the document</small>
+        <p>Not present in the document.</p>
       </div>
     `;
   }
-
-  // Non-quote grounding states only the AI-first path reports.
-  if (status === "absence") {
+  if (!items.length) {
+    const ungrounded = groundingStatus === "ungrounded";
     return `
-      <div class="studio-detail-block clause-citation-block absence">
-        <small>Based on</small>
-        <p>Grounded in the absence of this clause from the document.</p>
-        ${confidence}
+      <div class="studio-detail-block studio-detail-evidence in-document-block ${ungrounded ? "ungrounded" : "muted"}" data-card-section="document">
+        <small>In the document</small>
+        <p>${escapeHtml(ungrounded
+          ? "No grounded quote was recorded for this finding. Confirm against the document before sending."
+          : "No matching paragraph identified.")}</p>
       </div>
     `;
   }
-  if (status === "ungrounded") {
-    return `
-      <div class="studio-detail-block clause-citation-block ungrounded">
-        <small>Based on</small>
-        <p>No supporting quote was cited for this finding, so it could not be auto-verified. Confirm against the clause text in the document before sending.</p>
-        ${confidence}
-      </div>
-    `;
-  }
-
-  return "";
-}
-
-// 2.2: a grounding/confidence read-out for the "Based on" surface. Prefers an
-// explicit grounding.confidence (0–1 or 0–100), then the AI assessment's
-// ai_confidence, and degrades to "" when neither is present so existing reviews
-// are unaffected. The level bucket drives the styling so reviewers can scan
-// high/medium/low at a glance.
-function renderClauseConfidence(clause, grounding = null) {
-  const ground = grounding || (clause && typeof clause.grounding === "object" ? clause.grounding : null);
-  const analysis = clause && typeof clause.ai_review_analysis === "object" ? clause.ai_review_analysis : null;
-  const raw = ground && ground.confidence != null
-    ? ground.confidence
-    : analysis && analysis.ai_confidence != null
-      ? analysis.ai_confidence
-      : null;
-  if (raw == null) return "";
-  const numeric = Number(raw);
-  if (!Number.isFinite(numeric)) return "";
-  const ratio = numeric > 1 ? numeric / 100 : numeric;
-  const clamped = Math.max(0, Math.min(1, ratio));
-  const percent = Math.round(clamped * 100);
-  const level = clamped >= 0.75 ? "high" : clamped >= 0.5 ? "medium" : "low";
   return `
-    <div class="clause-confidence ${level}" data-confidence-level="${level}">
-      <small>Confidence</small>
-      <div class="clause-confidence-meter" role="img" aria-label="Confidence ${percent} percent (${level})">
-        <span class="clause-confidence-fill" style="width:${percent}%"></span>
+    <div class="studio-detail-block studio-detail-evidence in-document-block" data-card-section="document">
+      <small>In the document</small>
+      <div class="document-evidence-list">
+        ${items.map((item) => renderDocumentEvidenceItem(item)).join("")}
       </div>
-      <span class="clause-confidence-value">${percent}%</span>
     </div>
   `;
+}
+
+function renderDocumentEvidenceItem(item) {
+  const paragraphId = String(item.paragraph_id || "").trim();
+  const label = paragraphId ? paragraphDisplayLabel(paragraphId) : "Cited evidence";
+  const quote = String(item.quote || item.text || "").trim();
+  return `
+    <figure class="document-evidence-item">
+      <figcaption>
+        <span>${escapeHtml(label)}</span>
+        ${paragraphId ? `<button type="button" class="para-ref evidence-jump" data-para-ref="${escapeHtml(paragraphId)}">Jump</button>` : ""}
+      </figcaption>
+      <blockquote>${escapeHtml(quote || "Citation recorded without quote text.")}</blockquote>
+    </figure>
+  `;
+}
+
+function isClauseAbsentFromDocument(clause, items, groundingStatus) {
+  if (groundingStatus === "absence") return true;
+  if (items.length) return false;
+  const issueType = String(clause?.issue_type || "").trim().toLowerCase();
+  const type = String(clause?.type || "").trim().toLowerCase();
+  const status = clauseStatus(clause);
+  return issueType === "missing" || (type === "prohibited" && status.passes);
+}
+
+function clauseEvidenceItems(clause) {
+  const items = [];
+  const seen = new Set();
+  const add = (item) => {
+    const paragraphId = String(item?.paragraph_id || "").trim();
+    const quote = String(item?.quote || item?.matched_text || item?.text || "").trim();
+    const key = `${paragraphId}:${quote}`;
+    if ((!paragraphId && !quote) || seen.has(key)) return;
+    seen.add(key);
+    items.push({
+      paragraph_id: paragraphId,
+      quote,
+      spans: Array.isArray(item?.spans || item?.match_spans) ? (item.spans || item.match_spans) : [],
+    });
+  };
+  const structured = Array.isArray(clause?.structured_evidence) ? clause.structured_evidence : [];
+  structured.forEach((record) => add({
+    paragraph_id: record?.paragraph_id,
+    quote: record?.matched_text || record?.text,
+    spans: record?.match_spans,
+  }));
+  const citation = typeof clause?.citation === "object" && clause.citation ? clause.citation : null;
+  if (!items.length && citation) add({
+    paragraph_id: citation.paragraph_id,
+    quote: citation.quote,
+    spans: citation.start != null && citation.end != null
+      ? [{ start: citation.start, end: citation.end, text: citation.quote, term: citation.quote }]
+      : [],
+  });
+  const analysis = clause && typeof clause.ai_review_analysis === "object" ? clause.ai_review_analysis : null;
+  if (!items.length) {
+    (Array.isArray(analysis?.cited_spans) ? analysis.cited_spans : []).forEach((span) => {
+      if (typeof span === "string") {
+        add({ quote: span });
+      } else {
+        add({ paragraph_id: span?.paragraph_id, quote: span?.quote || span?.text });
+      }
+    });
+  }
+  if (!items.length) {
+    (Array.isArray(clause?.evidence_paragraphs) ? clause.evidence_paragraphs : [])
+      .filter((paragraph) => paragraph && paragraph.text)
+      .forEach((paragraph) => add({
+        paragraph_id: paragraph.id,
+        quote: paragraph.text,
+      }));
+  }
+  return items.slice(0, 5);
+}
+
+function bindParagraphReferenceControls(container) {
+  container.querySelectorAll("[data-para-ref]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const range = String(button.dataset.paraRefRange || "").split(/\s+/).filter(Boolean);
+      jumpToParagraph(range[0] || button.dataset.paraRef);
+    });
+  });
 }
 
 function paragraphDisplayLabel(paragraphId) {
@@ -1404,9 +1294,16 @@ function clauseFallback(clause) {
     || (playbook && typeof playbook.fallback === "object" ? playbook.fallback : null);
   const wording = String((raw && raw.wording) || clause.fallback_wording || "").trim();
   const approvedSource = (raw && Array.isArray(raw.approved_positions) ? raw.approved_positions : null)
-    || (Array.isArray(clause.approved_positions) ? clause.approved_positions : []);
+    || (Array.isArray(clause.approved_positions) ? clause.approved_positions : null)
+    || (Array.isArray(clause.approved_options) ? clause.approved_options : null)
+    || (Array.isArray(clause.approved_laws) ? clause.approved_laws : []);
   const approvedPositions = approvedSource
-    .map((position) => String(position || "").trim())
+    .map((position) => {
+      if (position && typeof position === "object") {
+        return String(position.label || position.name || position.id || position.value || "").trim();
+      }
+      return String(position || "").trim();
+    })
     .filter(Boolean);
   // 2.1: the Playbook's preferred position. Native clauses express this through
   // preferred_position / requirement / expected_value rather than a dynamic
@@ -1417,6 +1314,7 @@ function clauseFallback(clause) {
     (playbook && (playbook.preferred_position || playbook.position))
       || clause.preferred_position
       || clause.expected_position
+      || clause.requirement
       || "",
   ).trim();
   if (!wording && !approvedPositions.length && !preferred) return null;
@@ -1424,6 +1322,51 @@ function clauseFallback(clause) {
 }
 
 function renderClausePlaybookPositionBlock(clause) {
+  const fallback = clauseFallback(clause);
+  const requiredPosition = String(fallback?.preferred || fallback?.wording || clause?.requirement || "").trim();
+  const approvedPositions = Array.isArray(fallback?.approvedPositions) ? fallback.approvedPositions : [];
+  const rulePurpose = String(clause?.rationale || clause?.evidence_guidance || clause?.instructions || "").trim();
+  const hasContent = requiredPosition || approvedPositions.length || rulePurpose;
+  const approved = approvedPositions.length
+    ? `
+      <div class="playbook-position-field">
+        <span class="detail-field-label">Approved alternatives</span>
+        <ul>${approvedPositions.map((position) => `<li>${escapeHtml(position)}</li>`).join("")}</ul>
+      </div>
+    `
+    : "";
+  return `
+    <div class="studio-detail-block playbook-position-block" data-card-section="playbook">
+      <small>Playbook position</small>
+      ${hasContent ? `
+        ${requiredPosition ? `
+          <div class="playbook-position-field">
+            <span class="detail-field-label">Required position</span>
+            <p>${escapeHtml(requiredPosition)}</p>
+          </div>
+        ` : ""}
+        ${approved}
+        ${rulePurpose ? `
+          <div class="playbook-position-field">
+            <span class="detail-field-label">Rule purpose</span>
+            <p>${escapeHtml(rulePurpose)}</p>
+          </div>
+        ` : ""}
+      ` : "<p>No playbook position recorded.</p>"}
+    </div>
+  `;
+}
+
+function clauseApprovedAlternatives(clause, change = null) {
+  const fromChange = Array.isArray(change?.approved_alternatives) ? change.approved_alternatives : [];
+  const fallback = clauseFallback(clause);
+  return uniqueStrings([
+    ...fromChange,
+    ...(Array.isArray(fallback?.approvedPositions) ? fallback.approvedPositions : []),
+  ]);
+}
+
+function renderClausePlaybookPositionBlockLegacy(clause) {
   const fallback = clauseFallback(clause);
   if (!fallback) return "";
   const preferred = fallback.preferred
@@ -1489,21 +1432,15 @@ function renderEvidenceSignalsBlock(clause) {
 function auditTraceTrailSteps(clause) {
   const trace = clause?.audit_trace && typeof clause.audit_trace === "object" ? clause.audit_trace : null;
   const steps = Array.isArray(trace?.steps) ? trace.steps.filter((step) => step && step.name) : [];
-  return steps.filter((step) => {
-    const name = String(step.name || "").trim().toLowerCase();
-    const outcome = String(step.outcome || "").trim().toLowerCase();
-    if (name === "decision") return false;
-    if (name === "ai assessment normalization" || outcome === "normalized") return false;
-    return true;
-  });
+  return steps;
 }
 
 function renderAuditTraceBlock(clause) {
   const steps = auditTraceTrailSteps(clause);
   if (!steps.length) return "";
   return `
-    <div class="studio-detail-block audit-trace-block">
-      <small>Audit trace</small>
+    <div class="audit-trace-block">
+      <span class="detail-field-label">Ordered reasoning</span>
       <ol class="audit-trace-list">
         ${steps.map((step) => `
           <li>
@@ -1526,18 +1463,31 @@ function renderAuditTraceBlock(clause) {
 // choice is remembered per clause across re-renders via state.reasoningTrailOpen.
 function renderReasoningTrailBlock(clause) {
   const auditTrace = renderAuditTraceBlock(clause);
-  if (!auditTrace) return "";
+  const grounding = renderGroundingAuditBlock(clause);
   const open = reasoningTrailOpenForClause(clause?.id) ? " open" : "";
   return `
-    <details class="studio-detail-block reasoning-trail-block" data-reasoning-trail-clause-id="${escapeHtml(clause?.id || "")}"${open}>
+    <details class="studio-detail-block reasoning-trail-block" data-card-section="reasoning" data-reasoning-trail-clause-id="${escapeHtml(clause?.id || "")}"${open}>
       <summary class="reasoning-trail-summary">
         <span>Reasoning trail</span>
-        <span class="reasoning-trail-hint">Audit detail</span>
       </summary>
       <div class="reasoning-trail-body">
-        ${auditTrace}
+        ${grounding}
+        ${auditTrace || '<p class="action-muted">No ordered audit steps were recorded.</p>'}
       </div>
     </details>
+  `;
+}
+
+function renderGroundingAuditBlock(clause) {
+  const grounding = clause?.grounding && typeof clause.grounding === "object" ? clause.grounding : {};
+  const evidenceCount = Array.isArray(clause?.structured_evidence) ? clause.structured_evidence.length : 0;
+  const status = String(grounding.status || "").trim() || (evidenceCount ? "grounded" : "not recorded");
+  const paragraphIds = Array.isArray(clause?.matched_paragraph_ids) ? clause.matched_paragraph_ids : [];
+  return `
+    <div class="grounding-audit-block">
+      <span class="detail-field-label">Grounding</span>
+      <p>Status: ${escapeHtml(status.replace(/_/g, " "))}. Evidence records: ${escapeHtml(evidenceCount)}.${paragraphIds.length ? ` Paragraphs: ${paragraphIds.map((id) => escapeHtml(id)).join(", ")}.` : ""}</p>
+    </div>
   `;
 }
 
@@ -1590,54 +1540,110 @@ function renderEvidenceBlock(clause) {
 
 function renderProposedChangeBlock(clause, status = clauseDisplayStatus(clause)) {
   const change = proposedChangeForClause(clause);
-  if (!change) return "";
+  if (status.passes) {
+    return `
+      <div class="studio-detail-block recommended-change-block match" data-card-section="recommended-change">
+        <small>Recommended change</small>
+        <p>No change needed.</p>
+      </div>
+    `;
+  }
+  if (status.needsReview) {
+    return renderNeedsReviewRecommendedChange(clause, change);
+  }
+  if (!change) {
+    return `
+      <div class="studio-detail-block recommended-change-block fail" data-card-section="recommended-change">
+        <small>Recommended change</small>
+        <p>Review this finding and prepare an explicit redline before export or send.</p>
+      </div>
+    `;
+  }
   const action = String(change.action || "").trim();
   const safety = change.safety && typeof change.safety === "object" ? change.safety : {};
-  const evidence = change.evidence && typeof change.evidence === "object" ? change.evidence : {};
   const sourceText = String(change.source_text || "").trim();
   const proposedText = String(change.proposed_text || "").trim();
   const issueSummary = String(change.issue_summary || "").trim();
-  const rationale = String(change.playbook_rationale || "").trim();
+  const why = whyThisEdit(change, clause);
   const safetyReason = String(safety.reason || "").trim();
-  const requiresApproval = safety.requires_human_approval !== false;
   const actionClass = action.replace(/[^a-z0-9_-]/gi, "-") || "unknown";
-  const outcome = proposedChangeOutcome(change, clause, status, action, requiresApproval);
   return `
-    <div class="studio-detail-block proposed-change-card ${actionClass} ${escapeHtml(outcome.tone)}">
-      <div class="proposed-change-head">
-        <small>${escapeHtml(outcome.label)}</small>
-        <span class="proposed-change-approval">${escapeHtml(requiresApproval ? "Requires human approval" : "Ready for review")}</span>
-      </div>
-      <div class="proposed-change-outcome">
-        <strong>${escapeHtml(outcome.title)}</strong>
-        <span>${escapeHtml(outcome.description)}</span>
-      </div>
-      <p class="proposed-change-summary">${escapeHtml(issueSummary || "Review the suggested clause change before export or send.")}</p>
-      <dl class="proposed-change-facts">
-        <div>
-          <dt>Action</dt>
-          <dd>${escapeHtml(proposedChangeActionLabel(action))}</dd>
-        </div>
-        ${change.confidence !== undefined ? `
-          <div>
-            <dt>Confidence</dt>
-            <dd>${escapeHtml(proposedChangeConfidence(change.confidence))}</dd>
-          </div>
-        ` : ""}
-        ${safety.status ? `
-          <div>
-            <dt>Safety</dt>
-            <dd>${escapeHtml(proposedChangeSafetyLabel(safety.status))}</dd>
-          </div>
-        ` : ""}
-      </dl>
+    <div class="studio-detail-block recommended-change-block proposed-change-card ${actionClass} fail" data-card-section="recommended-change">
+      <small>Recommended change</small>
+      <p class="proposed-change-summary">${escapeHtml(issueSummary || proposedChangeActionHeadline(action))}</p>
+      <p class="proposed-change-meta"><span>Action</span>${escapeHtml(proposedChangeActionLabel(action))}</p>
       ${renderProposedChangeText(sourceText, proposedText, action)}
-      ${renderProposedChangeEvidence(evidence)}
-      <p class="proposed-change-guidance"><strong>Reviewer action</strong>${escapeHtml(proposedChangeGuidance(action, requiresApproval))}</p>
-      ${rationale ? `<p class="proposed-change-rationale"><strong>Rationale</strong>${escapeHtml(rationale)}</p>` : ""}
+      ${why ? `<p class="proposed-change-guidance"><strong>Why this edit</strong>${escapeHtml(why)}</p>` : ""}
       ${safetyReason ? `<p class="proposed-change-safety-note">${escapeHtml(safetyReason)}</p>` : ""}
     </div>
   `;
+}
+
+function renderNeedsReviewRecommendedChange(clause, change = null) {
+  const question = reviewResolutionQuestion(clause, change);
+  const suggested = reviewSuggestedRedline(clause, change);
+  const recommended = recommendedOptionForReview(clause, change);
+  const alternatives = clauseApprovedAlternatives(clause, change);
+  return `
+    <div class="studio-detail-block recommended-change-block proposed-change-card review" data-card-section="recommended-change">
+      <small>Recommended change</small>
+      <p class="proposed-change-summary">${escapeHtml(question)}</p>
+      ${suggested ? `
+        <div class="review-suggested-edit">
+          <span class="detail-field-label">Suggested edit (confirm required)</span>
+          <blockquote>${escapeHtml(suggested)}</blockquote>
+        </div>
+      ` : `
+        <p class="proposed-change-empty">No safe wording was selected automatically. Choose the final wording before export or send.</p>
+      `}
+      ${recommended ? `
+        <p class="recommended-option"><span>Recommended option</span>${escapeHtml(recommended.option)}${recommended.reason ? `: ${escapeHtml(recommended.reason)}` : ""}</p>
+      ` : ""}
+      ${alternatives.length ? `
+        <div class="approved-alternatives">
+          <span class="detail-field-label">Approved alternatives</span>
+          <ul>${alternatives.map((alternative) => `<li>${escapeHtml(alternative)}</li>`).join("")}</ul>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function reviewResolutionQuestion(clause, change = null) {
+  return String(change?.resolution_question || clause?.resolution_question || "").trim()
+    || "What wording or approved playbook position should resolve this clause?";
+}
+
+function reviewSuggestedRedline(clause, change = null) {
+  const value = String(
+    change?.suggested_redline
+      || clause?.suggested_redline
+      || change?.proposed_text
+      || "",
+  ).trim();
+  if (value) return value;
+  const fix = String(clause?.what_to_fix || "").trim();
+  return fix && !/^confirm the clause position/i.test(fix) ? fix : "";
+}
+
+function recommendedOptionForReview(clause, change = null) {
+  const option = change?.recommended_option && typeof change.recommended_option === "object"
+    ? change.recommended_option
+    : clause?.recommended_option && typeof clause.recommended_option === "object"
+      ? clause.recommended_option
+      : null;
+  if (!option) return null;
+  const label = String(option.option || "").trim();
+  const reason = String(option.reason || "").trim();
+  return label ? { option: label, reason } : null;
+}
+
+function whyThisEdit(change, clause) {
+  const rationale = String(change?.playbook_rationale || "").trim();
+  if (rationale) return rationale;
+  const safetyReason = String(change?.safety?.reason || "").trim();
+  if (safetyReason) return safetyReason;
+  return String(clause?.redline_rationale?.explanation || "").trim();
 }
 
 function proposedChangeOutcome(change, clause, status, action, requiresApproval) {
@@ -1688,7 +1694,43 @@ function proposedChangeForClause(clause) {
   const changes = Array.isArray(state.latestReviewResult?.proposed_changes)
     ? state.latestReviewResult.proposed_changes
     : [];
-  return changes.find((change) => String(change?.clause_id || "") === clauseId) || null;
+  const serverChange = changes.find((change) => String(change?.clause_id || "") === clauseId);
+  if (serverChange) return serverChange;
+  const redline = state.reviewRedlines.find((edit) => String(edit?.clause_id || "") === clauseId);
+  return redline ? proposedChangeFromRedline(clause, redline) : null;
+}
+
+function proposedChangeFromRedline(clause, redline) {
+  const selectedEdit = applyTemplateSelectionToRedline(redline);
+  const action = selectedEdit.action === REDLINE_INSERT_AFTER_PARAGRAPH
+    ? "insert"
+    : selectedEdit.action === REDLINE_DELETE_PARAGRAPH
+      ? "delete"
+      : "replace";
+  const rationale = selectedEdit.redline_rationale && typeof selectedEdit.redline_rationale === "object"
+    ? String(selectedEdit.redline_rationale.explanation || "").trim()
+    : String(clause?.redline_rationale?.explanation || "").trim();
+  return {
+    action,
+    clause_id: String(clause?.id || ""),
+    clause_name: String(clause?.name || clause?.id || ""),
+    decision: String(clause?.decision || ""),
+    evidence: selectedEdit.redline_rationale?.basis || {},
+    issue_summary: String(clause?.reason || clause?.finding || clause?.issue_label || "").trim(),
+    paragraph_id: selectedEdit.paragraph_id,
+    playbook_rationale: rationale,
+    proposed_text: selectedEdit.action === REDLINE_DELETE_PARAGRAPH
+      ? ""
+      : String(selectedEdit.insert_text || selectedEdit.replacement_text || ""),
+    redline_edit_id: String(selectedEdit.id || ""),
+    redline_action: String(selectedEdit.action || ""),
+    safety: {
+      reason: "Reviewer must approve before export.",
+      requires_human_approval: true,
+      status: "proposed_redline_available",
+    },
+    source_text: String(selectedEdit.original_text || selectedEdit.anchor_text || ""),
+  };
 }
 
 function renderProposedChangeText(sourceText, proposedText, action) {
@@ -1785,6 +1827,51 @@ function proposedChangeConfidence(value) {
   if (!Number.isFinite(number)) return String(value);
   if (number <= 1) return `${Math.round(number * 100)}%`;
   return `${Math.round(number)}%`;
+}
+
+function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) {
+  const redlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
+  const comment = clauseReviewComment(clause.id);
+  return `
+    <div class="studio-detail-block clause-actions-block" data-card-section="actions">
+      <small>Actions</small>
+      ${redlines.length ? `
+        <div class="clause-action-group">
+          <span class="detail-field-label">${redlines.length === 1 ? "Redline" : "Redlines"}</span>
+          <div class="clause-action-redlines">
+            ${redlines.map((edit) => renderRedlineActionControls(edit)).join("")}
+          </div>
+        </div>
+      ` : `
+        <p class="action-muted">${escapeHtml(status.passes ? "No redline action required." : "No redline action is available for this clause.")}</p>
+      `}
+      ${status.needsReview ? `
+        <p class="action-muted">Use the verdict pill above to mark this clause reviewed after resolving the question.</p>
+      ` : ""}
+      <div class="clause-comment-action">
+        <label class="detail-field-label" for="review-comment-${escapeHtml(clause.id)}">Attach comment</label>
+        <textarea id="review-comment-${escapeHtml(clause.id)}" class="review-comment-input" data-review-comment-clause-id="${escapeHtml(clause.id)}" rows="4" placeholder="Leave a comment for Word export">${escapeHtml(comment?.text || "")}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+function renderRedlineActionControls(edit) {
+  const included = redlineExportIncluded(edit);
+  const selectedEdit = applyTemplateSelectionToRedline(edit);
+  return `
+    <div class="redline-action-row">
+      <div>
+        <strong>${escapeHtml(redlineActionLabel(selectedEdit))}</strong>
+        ${selectedEdit.paragraph_id ? `<span>${escapeHtml(paragraphDisplayLabel(selectedEdit.paragraph_id))}</span>` : ""}
+      </div>
+      <span class="detail-export-controls" role="group" aria-label="Redline decision">
+        <button class="export-choice ${included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Accept</button>
+        <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
+      </span>
+      ${renderRedlineTemplateOptions(selectedEdit)}
+    </div>
+  `;
 }
 
 function renderProposedRedlinesBlock(clause) {
@@ -2233,6 +2320,75 @@ function highlightCommentRange(editable, comment) {
       /* a range that can't be wrapped is skipped rather than throwing */
     }
   });
+}
+
+function applyClauseEvidenceHighlight(clauseId, item, toneClass) {
+  const paragraphId = String(item?.paragraph_id || "").trim();
+  if (!paragraphId || !studioDocumentRender) return false;
+  const frame = studioDocumentRender.querySelector(`[data-paragraph-id="${cssEscape(paragraphId)}"]`);
+  if (!frame) return false;
+  const editable = frame.querySelector("[data-editable-paragraph-id]") || frame;
+  const paragraph = state.reviewParagraphs.find((entry) => String(entry.id || "") === paragraphId);
+  const paragraphStart = Number(paragraph?.start);
+  const spans = Array.isArray(item?.spans) ? item.spans : [];
+  let applied = false;
+  spans.forEach((span) => {
+    const start = Number(span?.start);
+    const end = Number(span?.end);
+    if (Number.isFinite(start) && Number.isFinite(end) && Number.isFinite(paragraphStart)) {
+      applied = highlightClauseTextRange(editable, start - paragraphStart, end - paragraphStart, clauseId, toneClass) || applied;
+    }
+  });
+  if (applied) return true;
+  const quote = String(item?.quote || "").trim();
+  if (quote) {
+    const fullText = editable.textContent || "";
+    const index = fullText.toLowerCase().indexOf(quote.toLowerCase());
+    if (index >= 0) {
+      return highlightClauseTextRange(editable, index, index + quote.length, clauseId, toneClass);
+    }
+  }
+  frame.classList.add(toneClass);
+  return true;
+}
+
+function highlightClauseTextRange(editable, start, end, clauseId, toneClass) {
+  const from = Math.max(0, Number(start));
+  const to = Math.max(from, Number(end));
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return false;
+  const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let fullText = "";
+  let node;
+  while ((node = walker.nextNode())) {
+    nodes.push({ node, start: fullText.length });
+    fullText += node.textContent;
+  }
+  if (to > fullText.length) return false;
+  let applied = false;
+  nodes.forEach(({ node: textNode, start: nodeStart }) => {
+    const nodeEnd = nodeStart + textNode.textContent.length;
+    const rangeStart = Math.max(from, nodeStart);
+    const rangeEnd = Math.min(to, nodeEnd);
+    if (rangeEnd <= rangeStart) return;
+    try {
+      const range = document.createRange();
+      range.setStart(textNode, rangeStart - nodeStart);
+      range.setEnd(textNode, rangeEnd - nodeStart);
+      const mark = document.createElement("mark");
+      mark.className = `clause-evidence-highlight ${toneClass}`;
+      mark.dataset.clauseEvidenceId = clauseId;
+      mark.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectReviewClause(clauseId, { jump: false });
+      });
+      range.surroundContents(mark);
+      applied = true;
+    } catch (error) {
+      /* a range that can't be wrapped is skipped rather than throwing */
+    }
+  });
+  return applied;
 }
 
 function openCommentCard(paragraphId, opts = {}) {

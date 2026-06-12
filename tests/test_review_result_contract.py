@@ -144,12 +144,26 @@ def test_proposed_change_marks_ambiguous_clause_as_human_choice():
         "decision": "review",
         "issue_type": "unclear",
         "issue_label": "Needs review",
+        "approved_positions": ["No non-circumvention restriction", "Narrow customer non-solicit only"],
+        "recommended_option": {
+            "option": "No non-circumvention restriction",
+            "reason": "It matches the prohibited-clause playbook position.",
+        },
+        "resolution_question": "Is this restriction a prohibited non-circumvention clause?",
+        "suggested_redline": "Delete the non-circumvention restriction.",
         "what_to_fix": "Confirm whether this language restricts ordinary course dealings.",
     }
 
     proposed = build_proposed_change(clause)
 
     assert proposed["action"] == "needs_human_choice"
+    assert proposed["resolution_question"] == "Is this restriction a prohibited non-circumvention clause?"
+    assert proposed["suggested_redline"] == "Delete the non-circumvention restriction."
+    assert proposed["recommended_option"]["option"] == "No non-circumvention restriction"
+    assert proposed["approved_alternatives"] == [
+        "No non-circumvention restriction",
+        "Narrow customer non-solicit only",
+    ]
     assert proposed["safety"]["status"] == "needs_human_choice"
     assert proposed["safety"]["requires_human_approval"] is True
     assert "Confirm whether" in proposed["safety"]["reason"]

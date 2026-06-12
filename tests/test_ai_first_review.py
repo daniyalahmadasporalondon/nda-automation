@@ -130,6 +130,42 @@ class AIFirstReviewTests(unittest.TestCase):
             ["England and Wales"],
         )
 
+    def test_review_resolution_fields_are_carried_to_clause_and_proposed_change(self):
+        result = build_ai_first_review_result(
+            SOURCE_TEXT,
+            [
+                _assessment("mutuality", "pass"),
+                _assessment("confidential_information", "pass", paragraph_id="p2"),
+                _assessment("governing_law", "pass", paragraph_id="p3"),
+                _assessment(
+                    "term_and_survival",
+                    "review",
+                    paragraph_id="p4",
+                    issue_type="unclear",
+                    rationale="The survival period is longer than the usual playbook cap but may be acceptable with confirmation.",
+                    resolution_question="Should the survival period be reduced to the approved cap?",
+                    suggested_redline="The confidentiality obligations survive for three years.",
+                    recommended_option={
+                        "option": "Three-year survival",
+                        "reason": "It matches the normalized playbook cap.",
+                    },
+                    proposed_redline={"action": AI_REDLINE_NO_CHANGE},
+                ),
+                _assessment("non_circumvention", "pass", paragraph_id="p5"),
+                _assessment("signatures", "pass", paragraph_id="p6"),
+            ],
+            verify=False,
+        )
+
+        term = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term["decision"], "review")
+        self.assertEqual(term["resolution_question"], "Should the survival period be reduced to the approved cap?")
+        self.assertEqual(term["suggested_redline"], "The confidentiality obligations survive for three years.")
+        self.assertEqual(term["recommended_option"]["option"], "Three-year survival")
+        self.assertEqual(term["proposed_change"]["resolution_question"], term["resolution_question"])
+        self.assertEqual(term["proposed_change"]["suggested_redline"], term["suggested_redline"])
+        self.assertEqual(term["proposed_change"]["recommended_option"], term["recommended_option"])
+
     def test_missing_ai_assessment_fails_safe_to_human_review(self):
         result = build_ai_first_review_result(
             SOURCE_TEXT,
@@ -264,6 +300,23 @@ class QuoteOffsetRobustnessTests(unittest.TestCase):
 
         paragraphs = [{"id": "p1", "text": 'It is a “mutual”  agreement between the parties.'}]
         self.assertEqual(_paragraph_id_for_quote(paragraphs, 'a "mutual" agreement'), "p1")
+
+    def test_ambiguous_quote_prefers_existing_matched_paragraph_id(self):
+        from nda_automation.ai_first_review import _paragraph_id_for_quote
+
+        paragraphs = [
+            {"id": "p1", "text": "The parties agree to keep boilerplate notices confidential."},
+            {"id": "p2", "text": "The parties agree to keep boilerplate notices confidential."},
+        ]
+
+        self.assertEqual(
+            _paragraph_id_for_quote(
+                paragraphs,
+                "boilerplate notices confidential",
+                preferred_ids=["p2"],
+            ),
+            "p2",
+        )
 
     def test_is_document_title_paragraph_detects_title_style_only(self):
         from nda_automation.ai_first_review import _is_document_title_paragraph

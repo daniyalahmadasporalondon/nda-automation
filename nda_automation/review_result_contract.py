@@ -154,6 +154,18 @@ def build_proposed_change(
         "confidence": _clean_confidence(clause.get("confidence")),
         "safety": safety,
     }
+    resolution_question = _clean_text(clause.get("resolution_question"))
+    if resolution_question:
+        proposed["resolution_question"] = resolution_question
+    suggested_redline = _clean_text(clause.get("suggested_redline"))
+    if suggested_redline:
+        proposed["suggested_redline"] = suggested_redline
+    recommended_option = _recommended_option(clause)
+    if recommended_option:
+        proposed["recommended_option"] = recommended_option
+    approved_alternatives = _approved_alternatives(clause)
+    if approved_alternatives:
+        proposed["approved_alternatives"] = approved_alternatives
     if redline_edit is not None:
         proposed["redline_edit_id"] = str(redline_edit.get("id") or "")
         proposed["redline_action"] = str(redline_edit.get("action") or "")
@@ -270,6 +282,39 @@ def _playbook_rationale(clause: dict[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _recommended_option(clause: dict[str, Any]) -> dict[str, str]:
+    option = clause.get("recommended_option")
+    if not isinstance(option, dict):
+        return {}
+    label = _clean_text(option.get("option"))
+    reason = _clean_text(option.get("reason"))
+    return {"option": label, "reason": reason} if label and reason else {}
+
+
+def _approved_alternatives(clause: dict[str, Any]) -> list[str]:
+    values: list[object] = []
+    for key in ("approved_positions", "approved_options", "approved_laws", "allowed_exclusions"):
+        raw = clause.get(key)
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            values.extend(raw)
+    fallback = clause.get("fallback")
+    if isinstance(fallback, dict):
+        raw_positions = fallback.get("approved_positions")
+        if isinstance(raw_positions, Sequence) and not isinstance(raw_positions, (str, bytes)):
+            values.extend(raw_positions)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            label = _clean_text(value.get("label") or value.get("name") or value.get("id") or value.get("value"))
+        else:
+            label = _clean_text(value)
+        if label and label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels
 
 
 def _redline_source_text(redline_edit: dict[str, Any]) -> str:

@@ -326,6 +326,9 @@ def _clause_result_from_assessment(
         "finding": reason,
         "decision_reason": reason,
         "confidence": assessment.get("confidence"),
+        "resolution_question": _assessment_resolution_question(assessment, decision, playbook_clause),
+        "suggested_redline": _assessment_suggested_redline(assessment, proposed_redline, decision, what_to_fix),
+        "recommended_option": _assessment_recommended_option(assessment, playbook_clause, decision),
         "blocks_send": blocks_send,
         "proposed_redline": deepcopy(proposed_redline),
         "reason_code": reason_codes[0],
@@ -356,6 +359,9 @@ def _clause_result_from_assessment(
         "status": str(assessment.get("validation_status") or "normalized"),
         "schema_version": int(assessment.get("schema_version") or AI_ASSESSMENT_CONTRACT_VERSION),
         "confidence": assessment.get("confidence"),
+        "resolution_question": result.get("resolution_question"),
+        "suggested_redline": result.get("suggested_redline"),
+        "recommended_option": result.get("recommended_option"),
         "blocks_send": blocks_send,
         "proposed_redline_action": str(proposed_redline.get("action") or ""),
         "evidence_count": len(result["matched_paragraph_ids"]),
@@ -493,6 +499,89 @@ def _default_fix(decision: str) -> str:
     return "Confirm the clause position before sending."
 
 
+def _assessment_resolution_question(
+    assessment: Mapping[str, Any],
+    decision: str,
+    playbook_clause: Mapping[str, Any],
+) -> str:
+    question = str(assessment.get("resolution_question") or "").strip()
+    if question:
+        return question
+    if decision != CLAUSE_DECISION_REVIEW:
+        return ""
+    clause_name = str(playbook_clause.get("name") or playbook_clause.get("id") or "this clause").strip()
+    approved = _approved_option_labels(playbook_clause)
+    if approved:
+        return f"Which approved {clause_name} position should be used here?"
+    return f"Should {clause_name} be accepted as drafted, or revised to match the playbook position?"
+
+
+def _assessment_suggested_redline(
+    assessment: Mapping[str, Any],
+    proposed_redline: Mapping[str, Any],
+    decision: str,
+    what_to_fix: str,
+) -> str:
+    suggested = str(assessment.get("suggested_redline") or "").strip()
+    if suggested:
+        return suggested
+    if decision != CLAUSE_DECISION_REVIEW:
+        return ""
+    proposed_text = str(proposed_redline.get("text") or "").strip()
+    if proposed_text:
+        return proposed_text
+    fix = str(what_to_fix or "").strip()
+    if fix and fix != _default_fix(decision):
+        return fix
+    return ""
+
+
+def _assessment_recommended_option(
+    assessment: Mapping[str, Any],
+    playbook_clause: Mapping[str, Any],
+    decision: str,
+) -> dict[str, str]:
+    raw = assessment.get("recommended_option")
+    if isinstance(raw, Mapping):
+        option = str(raw.get("option") or "").strip()
+        reason = str(raw.get("reason") or "").strip()
+        if option and reason:
+            return {"option": option, "reason": reason}
+    if decision != CLAUSE_DECISION_REVIEW:
+        return {}
+    approved = _approved_option_labels(playbook_clause)
+    if not approved:
+        return {}
+    return {
+        "option": approved[0],
+        "reason": "This is the first approved playbook alternative available for reviewer confirmation.",
+    }
+
+
+def _approved_option_labels(playbook_clause: Mapping[str, Any]) -> list[str]:
+    values: list[object] = []
+    for key in ("approved_positions", "approved_options", "approved_laws", "allowed_exclusions"):
+        raw = playbook_clause.get(key)
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            values.extend(raw)
+    fallback = playbook_clause.get("fallback")
+    if isinstance(fallback, Mapping):
+        raw_positions = fallback.get("approved_positions")
+        if isinstance(raw_positions, Sequence) and not isinstance(raw_positions, (str, bytes)):
+            values.extend(raw_positions)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, Mapping):
+            label = str(value.get("label") or value.get("name") or value.get("id") or value.get("value") or "").strip()
+        else:
+            label = str(value or "").strip()
+        if label and label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels
+
+
 def _reason_codes(assessment: Mapping[str, Any], decision: str) -> list[str]:
     raw_codes = assessment.get("reason_codes")
     if isinstance(raw_codes, list):
@@ -549,17 +638,23 @@ def _evidence_paragraph_ids(assessment: Mapping[str, Any], paragraphs: list[Para
                 continue
             quote = str(item.get("quote") or item.get("text") or "").strip()
             if quote:
-                matched_id = _paragraph_id_for_quote(paragraphs, quote)
+                matched_id = _paragraph_id_for_quote(paragraphs, quote, preferred_ids=ids)
                 if matched_id:
                     ids.append(matched_id)
     return _dedupe_ids(ids)
 
 
-def _paragraph_id_for_quote(paragraphs: list[Paragraph], quote: str) -> str:
+def _paragraph_id_for_quote(
+    paragraphs: list[Paragraph],
+    quote: str,
+    *,
+    preferred_ids: Sequence[str] = (),
+) -> str:
     # Match with the SAME normalization the contract grounds with (glyph-fold +
     # whitespace-collapse + lowercase), so a quote the contract accepted -- curly
     # quotes, double spaces -- still resolves to its paragraph here instead of being
-    # silently dropped.
+    # silently dropped. If the same boilerplate quote appears more than once, prefer
+    # the paragraph id the model/result already cited instead of losing the anchor.
     normalized_quote = _normalize_quote_text(quote)
     if not normalized_quote:
         return ""
@@ -570,6 +665,10 @@ def _paragraph_id_for_quote(paragraphs: list[Paragraph], quote: str) -> str:
             paragraph_id = str(paragraph.get("id") or "")
             if paragraph_id:
                 matching_ids.append(paragraph_id)
+    preferred = [str(paragraph_id).strip() for paragraph_id in preferred_ids if str(paragraph_id).strip()]
+    for paragraph_id in preferred:
+        if paragraph_id in matching_ids:
+            return paragraph_id
     return matching_ids[0] if len(matching_ids) == 1 else ""
 
 
@@ -646,7 +745,7 @@ def _quotes_by_paragraph_id(
             continue
         paragraph_id = str(item.get("paragraph_id") or "").strip()
         if not paragraph_id:
-            paragraph_id = _paragraph_id_for_quote(matched_paragraphs, quote)
+            paragraph_id = _paragraph_id_for_quote(matched_paragraphs, quote, preferred_ids=paragraph_ids)
         if paragraph_id in paragraph_ids:
             quotes[paragraph_id] = quote
     return quotes

@@ -5213,17 +5213,6 @@ textarea::placeholder {
   text-decoration: none;
 }
 
-/* Governing-law <-> picked-entity conflict, surfaced as a fail on the clause. */
-.gl-concurrence-fail {
-  background: var(--red-bg);
-}
-
-.gl-concurrence-fail small {
-  color: #b42318;
-  font-weight: 800;
-}
-
-
 .fill-blank-controls {
   align-items: center;
   display: flex;
@@ -5601,85 +5590,11 @@ button.active-clause-status:hover {
   border-color: var(--border-strong);
 }
 
-/* Folded Decision: the first-class Assessment headline (issue type + the
-   PASS/REVIEW/FAIL decision pill). Tone-coded so the verdict reads at a glance. */
-.studio-detail-block.assessment-headline {
-  background: var(--bg-panel);
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  margin: 0;
-  padding: 13px 14px;
-}
-
-.assessment-headline-row {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.assessment-headline-row small {
-  margin-bottom: 0;
-}
-
-.assessment-issue-type {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-  margin: 6px 0 0;
-}
-
-.assessment-decision-pill {
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  font-size: 9.5px;
-  font-weight: 850;
-  letter-spacing: 0.06em;
-  padding: 3px 8px;
-  text-transform: uppercase;
-}
-
-.assessment-decision-pill.pass {
-  background: var(--green-bg);
-  border-color: var(--green-border);
-  color: var(--green-ink);
-}
-
-.assessment-decision-pill.review {
-  background: var(--amber-bg);
-  border-color: var(--amber-border);
-  color: var(--amber-ink);
-}
-
-.assessment-decision-pill.check {
-  background: var(--red-bg);
-  border-color: var(--red-border);
-  color: var(--red-ink);
-}
-
-.assessment-decision-pill.pending {
-  background: var(--bg-soft);
-  color: var(--ink-muted);
-}
-
-.assessment-headline.check {
-  box-shadow: inset 3px 0 0 var(--red);
-}
-
-.assessment-headline.review {
-  box-shadow: inset 3px 0 0 var(--amber);
-}
-
-.assessment-headline.pass {
-  box-shadow: inset 3px 0 0 var(--green);
-}
-
 .studio-detail-block.fix-block {
   background: var(--bg-panel);
   border-color: var(--border);
 }
 
-.studio-detail-block.rationale-block,
 .studio-detail-block.assessment-block,
 .studio-detail-block.review-note-block,
 .studio-detail-block.evidence-guidance-block,
@@ -5871,18 +5786,6 @@ button.active-clause-status:hover {
   border-radius: 7px;
   color: var(--ink-muted);
   padding: 8px;
-}
-
-.clause-citation-block.ungrounded {
-  border-left: 2px solid var(--warning, #c47f17);
-}
-
-.clause-citation-block.absence p,
-.clause-citation-block.ungrounded p {
-  color: var(--ink-muted);
-  font-size: 10.5px;
-  line-height: 1.35;
-  margin: 0;
 }
 
 .studio-detail-block.redline-block {
@@ -6172,50 +6075,6 @@ button.active-clause-status:hover {
   margin: 0;
 }
 
-/* 2.2 — grounding/confidence read-out on the "Based on" surface. */
-.clause-confidence {
-  align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: auto 1fr auto;
-  margin-top: 10px;
-}
-
-.clause-confidence small {
-  margin: 0;
-}
-
-.clause-confidence-meter {
-  background: var(--bg-soft);
-  border-radius: var(--r-pill);
-  height: 6px;
-  overflow: hidden;
-}
-
-.clause-confidence-fill {
-  display: block;
-  height: 100%;
-}
-
-.clause-confidence.high .clause-confidence-fill {
-  background: var(--green);
-}
-
-.clause-confidence.medium .clause-confidence-fill {
-  background: var(--amber);
-}
-
-.clause-confidence.low .clause-confidence-fill {
-  background: var(--red);
-}
-
-.clause-confidence-value {
-  color: var(--ink-soft);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-}
-
 /* 2.3 (#22) — collapsible Reasoning trail wrapping the audit scaffolding. */
 .reasoning-trail-block {
   background: #ffffff;
@@ -6394,6 +6253,273 @@ button.active-clause-status:hover {
   font-size: 11.5px;
   font-weight: 600;
   margin: 8px 0 0;
+}
+
+/* Clause detail card: one flat white editorial surface with hairline sections. */
+.active-clause-heading.clause-verdict-header {
+  align-items: flex-start;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  gap: 14px;
+  padding: 16px 16px 14px;
+}
+
+.clause-verdict-meta {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  justify-content: flex-end;
+  max-width: 220px;
+}
+
+.studio-detail-stack {
+  background: var(--bg-panel);
+}
+
+.studio-detail-block {
+  background: var(--bg-panel);
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--border);
+  box-shadow: none;
+  padding: 16px;
+}
+
+.studio-detail-stack > .studio-detail-block:first-child {
+  border-top: 0;
+}
+
+.studio-detail-block small,
+.detail-field-label {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  margin: 0 0 7px;
+  text-transform: uppercase;
+}
+
+.studio-detail-block p,
+.studio-detail-block li {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.proposed-change-meta,
+.recommended-option,
+.action-muted {
+  color: var(--ink-soft);
+  margin: 9px 0 0;
+}
+
+.proposed-change-meta span,
+.recommended-option span {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.document-evidence-list,
+.clause-action-redlines,
+.playbook-position-block,
+.recommended-change-block,
+.reasoning-trail-body {
+  display: grid;
+  gap: 14px;
+}
+
+.document-evidence-item,
+.proposed-change-text-grid figure,
+.proposed-change-evidence,
+.review-suggested-edit,
+.approved-alternatives,
+.playbook-position-field,
+.redline-action-row,
+.grounding-audit-block,
+.audit-trace-block {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  padding: 0;
+}
+
+.document-evidence-item figcaption {
+  align-items: baseline;
+  color: var(--ink-muted);
+  display: flex;
+  font-size: 9px;
+  font-weight: 850;
+  gap: 10px;
+  justify-content: space-between;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.document-evidence-item blockquote,
+.proposed-change-text-grid blockquote,
+.review-suggested-edit blockquote {
+  color: var(--ink);
+  font-family: var(--doc-font);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+  white-space: pre-wrap;
+}
+
+.proposed-change-text-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+  margin-top: 12px;
+}
+
+.proposed-change-text-grid figcaption {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.proposed-change-guidance,
+.proposed-change-safety-note,
+.proposed-change-empty {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink-soft);
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.proposed-change-guidance strong {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.playbook-position-block ul,
+.approved-alternatives ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.redline-action-row {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.redline-action-row strong {
+  color: var(--ink);
+  display: block;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.redline-action-row span:not(.detail-export-controls) {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+
+.redline-action-row .redline-options {
+  grid-column: 1 / -1;
+}
+
+.clause-comment-action {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.review-comment-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.reasoning-trail-block {
+  background: var(--bg-panel);
+  border-color: var(--border);
+}
+
+.reasoning-trail-summary {
+  align-items: baseline;
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  font-weight: 850;
+  gap: 8px;
+  letter-spacing: 0.06em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.audit-trace-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.audit-trace-list strong {
+  color: var(--ink);
+  display: block;
+  font-size: 12px;
+}
+
+.audit-trace-list span,
+.audit-trace-list p,
+.grounding-audit-block p {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+
+.clause-evidence-highlight {
+  border-radius: 2px;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 1px;
+}
+
+.clause-evidence-highlight.match {
+  background: var(--green-bg);
+}
+
+.clause-evidence-highlight.review {
+  background: var(--amber-bg);
+}
+
+.clause-evidence-highlight.verify {
+  background: var(--red-bg);
 }
 
 /* Approve Review button + its block-reason list, in the matter actions row. */
