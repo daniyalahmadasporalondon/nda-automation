@@ -2,7 +2,13 @@ services:
   - type: web
     name: nda-automation
     runtime: docker
-    plan: free
+    # NOTE: persistent disk requires Starter plan or above (not free).
+    # Change "free" to "starter" (or higher) before applying the disk block below.
+    plan: starter
+    disk:
+      name: nda-data
+      mountPath: /var/data
+      sizeGB: 1
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
@@ -33,13 +39,11 @@ services:
       - key: NDA_GMAIL_OAUTH_REDIRECT_URI
         sync: false
       - key: NDA_DATA_DIR
-        value: /tmp/nda-automation/data
+        value: /var/data/nda-automation/data
       - key: NDA_USERS_PATH
-        value: /tmp/nda-automation/data/users.json
+        value: /var/data/nda-automation/data/users.json
       - key: NDA_EXPORTS_DIR
-        value: /tmp/nda-automation/exports
-      - key: NDA_ALLOW_EPHEMERAL_DATA
-        value: "true"
+        value: /var/data/nda-automation/exports
       # Render terminates TLS at one proxy in front of the app, so trust a
       # single X-Forwarded-For hop to rate-limit by real client IP instead of
       # the shared proxy peer. Enforce same-site Origin/Referer on state-changing
