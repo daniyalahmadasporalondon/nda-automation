@@ -196,9 +196,64 @@ class DashboardAssistantRouteTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["intent"], "action_request")
-        self.assertEqual(payload["action"], "open_gmail_sync")
+        self.assertEqual(payload["action"], "gmail_import")
         self.assertIs(payload["requires_confirmation"], True)
-        self.assertEqual(payload["side_effects"], ["gmail_import_or_sync"])
+        self.assertEqual(payload["side_effects"], ["gmail_import"])
+        self.assertEqual(payload["route"], {"method": "POST", "url": "/api/gmail/import"})
+
+    def test_system_search_is_owner_scoped(self):
+        _create_matter(
+            self.repository,
+            owner_user_id="nda-admin",
+            source_filename="Mine NDA.docx",
+            extracted_text="The escrow clause is important.",
+        )
+        _create_matter(
+            self.repository,
+            owner_user_id="other-user",
+            source_filename="Other NDA.docx",
+            extracted_text="escrow cross tenant secret",
+        )
+
+        with self._env(self.auth_env()):
+            status, payload, _ = self.assistant(
+                "Search the whole system for escrow",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["intent"], "system_search")
+        titles = [hit["title"] for hit in payload["answer"]["hits"]]
+        self.assertIn("Mine NDA", titles)
+        self.assertNotIn("Other NDA", titles)
+
+    def test_send_redline_request_is_confirmation_gated_and_uses_resolved_recipient(self):
+        matter = _create_matter(
+            self.repository,
+            owner_user_id="nda-admin",
+            source_filename="Sendable NDA.docx",
+            intake_metadata={
+                "sender": "counterparty@example.com",
+                "reply_to": "counterparty@example.com",
+                "subject": "Sendable NDA",
+            },
+            review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        )
+
+        with self._env(self.auth_env()):
+            status, payload, _ = self.assistant(
+                "Send redline for Sendable",
+                headers=self.basic_auth_headers(),
+            )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["intent"], "action_request")
+        self.assertEqual(payload["action"], "send_redline")
+        self.assertIs(payload["requires_confirmation"], True)
+        self.assertEqual(payload["params"], {"matter_id": matter["id"], "recipient_source": "resolved_matter_reply_recipient"})
+        self.assertEqual(payload["matter"]["resolved_recipient"], "counterparty@example.com")
+        self.assertEqual(payload["route"], {"method": "POST", "url": "/api/gmail/send-redline"})
+        self.assertEqual(self.repository.get_matter(matter["id"], owner_user_id="nda-admin")["board_column"], "in_review")
 
     def test_search_filter_intent_reuses_existing_search_response_shape(self):
         with self._env(self.auth_env() | {"OPENROUTER_API_KEY": ""}):

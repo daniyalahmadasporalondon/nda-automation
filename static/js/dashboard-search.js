@@ -224,9 +224,16 @@ const DashboardSearchView = (() => {
         label,
         description: assistantActionDescription(action, sideEffects),
         requiresConfirmation: payload.requires_confirmation !== false,
+        humanSummary: String(payload.human_summary || "").trim(),
+        riskTier: String(payload.risk_tier || "").trim(),
         payload: {
           action,
           generator,
+          humanSummary: String(payload.human_summary || "").trim(),
+          matter: payload.matter && typeof payload.matter === "object" ? payload.matter : {},
+          params: payload.params && typeof payload.params === "object" ? payload.params : {},
+          riskTier: String(payload.risk_tier || "").trim(),
+          route: payload.route && typeof payload.route === "object" ? payload.route : {},
           target,
           prompt: generator?.prefill?.prompt || "",
           sideEffects,
@@ -239,6 +246,10 @@ const DashboardSearchView = (() => {
       if (label) return label;
       if (action === "open_generator") return "Open Generator";
       if (action === "open_gmail_sync") return "Open Gmail controls";
+      if (action === "gmail_import" || action === "sync_gmail") return "Sync Gmail now";
+      if (action === "refresh_review" || action === "run_review") return "Refresh Review";
+      if (action === "send_redline") return "Send Redline";
+      if (action === "approve_matter") return "Approve Matter";
       if (action === "open_repository") return "Open Repository";
       if (action === "open_admin") return "Open Admin";
       if (action === "open_playbook") return "Open Playbook";
@@ -252,8 +263,20 @@ const DashboardSearchView = (() => {
       if (action === "open_gmail_sync") {
         return "Opens Admin Gmail controls. No sync or import starts from this dashboard response.";
       }
+      if (action === "gmail_import" || action === "sync_gmail") {
+        return "Runs the existing Gmail import route after confirmation.";
+      }
+      if (action === "refresh_review" || action === "run_review") {
+        return "Runs the existing matter review-refresh route after confirmation.";
+      }
+      if (action === "send_redline") {
+        return "Sends through the existing Gmail redline route after recipient confirmation.";
+      }
+      if (action === "approve_matter") {
+        return "Calls the existing approval route after confirmation; server blockers still apply.";
+      }
       if (sideEffects.length) {
-        return "Opens the relevant workspace for review. No workflow runs from this dashboard response.";
+        return "Runs only after confirmation through the existing guarded route.";
       }
       return "Opens the relevant workspace without changing documents or settings.";
     }
@@ -406,6 +429,14 @@ const DashboardSearchView = (() => {
           return "Repository answer";
         case "system_question":
           return "System answer";
+        case "review_finding_explanation":
+          return "Review explanation";
+        case "matter_summary":
+          return "Matter summary";
+        case "system_search":
+          return "System search";
+        case "how_it_works":
+          return "How it works";
         case "draft_action_request":
         case "action_request":
           return "Confirmation required";
@@ -454,14 +485,18 @@ const DashboardSearchView = (() => {
         renderResults(results, { emptyMessage: "No documents match this assistant response." });
         return true;
       }
-      if (type === "repository_question" || type === "system_question") {
+      if (["repository_question", "system_question", "review_finding_explanation", "matter_summary", "system_search", "how_it_works"].includes(type)) {
         const text = answerText(payload.answer) || message;
         if (!text) return false;
         return renderAssistantCard({
           type,
           title: "Assistant answer",
           message: text,
-          facts: [...assistantCapabilityFacts(payload), ...citationFacts(payload.citations)],
+          facts: [
+            ...assistantCapabilityFacts(payload),
+            ...assistantAnswerFacts(payload),
+            ...citationFacts(payload.citations),
+          ],
           statusText: "Assistant answer",
         });
       }
@@ -505,6 +540,22 @@ const DashboardSearchView = (() => {
 
     function assistantActionFacts(payload, hasSideEffects) {
       const action = String(payload.action || "");
+      const humanSummary = String(payload.human_summary || "").trim();
+      const route = payload.route && typeof payload.route === "object" ? payload.route : {};
+      const matter = payload.matter && typeof payload.matter === "object" ? payload.matter : {};
+      const routeText = route.method && route.url
+        ? `Route: ${String(route.method).toUpperCase()} ${route.url}`
+        : "";
+      const exactFacts = [
+        humanSummary ? `Will happen: ${humanSummary}` : "",
+        matter.title ? `Matter: ${matter.title}` : "",
+        matter.resolved_recipient ? `Recipient: ${matter.resolved_recipient}` : "",
+        routeText,
+      ].filter(Boolean);
+      if (exactFacts.length) {
+        exactFacts.push("Will not happen: the assistant response itself performs no side effect.");
+        return exactFacts;
+      }
       if (action === "open_generator") {
         return [
           "Will happen: open Generator and prefill the prompt as draft context.",
@@ -525,6 +576,34 @@ const DashboardSearchView = (() => {
           ? "Will not happen: no import, send, export, approval, or deletion starts from this card."
           : "Will not happen: no document or setting changes from this card.",
       ];
+    }
+
+    function assistantAnswerFacts(payload) {
+      const facts = [];
+      const answer = payload?.answer && typeof payload.answer === "object" ? payload.answer : {};
+      if (Array.isArray(answer.hits)) {
+        answer.hits.slice(0, 5).forEach((hit) => {
+          if (!hit || typeof hit !== "object") return;
+          const label = String(hit.type || hit.source || "hit").replace(/_/g, " ");
+          const title = String(hit.title || hit.clause_name || "Result").trim();
+          const snippet = String(hit.snippet || "").trim();
+          facts.push(snippet ? `${label}: ${title} - ${snippet}` : `${label}: ${title}`);
+        });
+      }
+      if (Array.isArray(answer.steps)) {
+        answer.steps.slice(0, 5).forEach((step) => {
+          const text = String(step || "").trim();
+          if (text) facts.push(text);
+        });
+      }
+      if (Array.isArray(answer.risks)) {
+        answer.risks.slice(0, 5).forEach((risk) => {
+          const text = String(risk || "").trim();
+          if (text) facts.push(`Risk: ${text}`);
+        });
+      }
+      if (answer.security) facts.push(`Security: ${String(answer.security)}`);
+      return facts;
     }
 
     // v3 "Find documents linked to a counterparty": render the real matters grouped
@@ -995,16 +1074,44 @@ const DashboardSearchView = (() => {
     async function runAssistantAction(actionId, button) {
       const action = assistantActions.get(String(actionId || ""));
       if (!action || typeof confirmAssistantAction !== "function") return;
+      if (action.requiresConfirmation && !confirmAssistantActionDialog(action)) {
+        return;
+      }
       if (button) button.disabled = true;
       try {
-        await confirmAssistantAction(action.payload || action);
+        const result = await confirmAssistantAction(action.payload || action);
         if (resultsStatus) {
           resultsStatus.hidden = false;
-          resultsStatus.textContent = action.payload?.statusText || "Assistant action opened. Review before making changes.";
+          resultsStatus.textContent = result?.statusText
+            || action.payload?.statusText
+            || "Assistant action completed. Review the result before continuing.";
+        }
+      } catch (error) {
+        if (resultsStatus) {
+          resultsStatus.hidden = false;
+          resultsStatus.textContent = error?.message || "Assistant action could not run.";
         }
       } finally {
         if (button?.isConnected) button.disabled = false;
       }
+    }
+
+    function confirmAssistantActionDialog(action) {
+      if (typeof window.confirm !== "function") return true;
+      const payload = action.payload || {};
+      const matter = payload.matter && typeof payload.matter === "object" ? payload.matter : {};
+      const route = payload.route && typeof payload.route === "object" ? payload.route : {};
+      const lines = [
+        action.humanSummary || payload.humanSummary || action.description || "Confirm this assistant action.",
+      ];
+      if (matter.title) lines.push(`Matter: ${matter.title}`);
+      if (matter.resolved_recipient) lines.push(`Recipient: ${matter.resolved_recipient}`);
+      if (route.method && route.url) lines.push(`Route: ${String(route.method).toUpperCase()} ${route.url}`);
+      if (Array.isArray(payload.sideEffects) && payload.sideEffects.length) {
+        lines.push(`Effect: ${payload.sideEffects.join(", ")}`);
+      }
+      lines.push("Continue?");
+      return window.confirm(lines.join("\n"));
     }
 
     renderChips();

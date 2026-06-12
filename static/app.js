@@ -1032,6 +1032,8 @@ async function dashboardAssistantForQuery(query) {
 
 async function confirmDashboardAssistantAction(action = {}) {
   const actionName = String(action.action || "").trim();
+  const params = action.params && typeof action.params === "object" ? action.params : {};
+  const matter = action.matter && typeof action.matter === "object" ? action.matter : {};
   if (actionName === "open_generator") {
     const prompt = String(
       action.prompt
@@ -1062,13 +1064,137 @@ async function confirmDashboardAssistantAction(action = {}) {
     await draftIntakeController.activate();
     applyDashboardAssistantPrefill();
     document.querySelector("#draftIntakeCounterpartyName")?.focus();
-    return;
+    return { statusText: "Generator opened. Review all intake fields before generating." };
+  }
+  if (actionName === "gmail_import" || actionName === "sync_gmail") {
+    const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(100, Number(params.limit))) : 25;
+    const payload = await postAssistantActionJson(
+      "/api/gmail/import",
+      { limit },
+      "Gmail sync could not run",
+    );
+    await Promise.resolve(repositoryController.loadMatters()).then(() => {
+      renderDashboardInboxTable();
+      notificationsController.observe(state.matters);
+    });
+    adminIntegrationsController.load();
+    authSessionController.load();
+    const imported = Number(payload?.result?.imported_count ?? payload?.result?.created_count ?? 0);
+    return { statusText: `Gmail sync complete. Imported ${imported} ${imported === 1 ? "matter" : "matters"}.` };
+  }
+  if (actionName === "refresh_review" || actionName === "run_review") {
+    const matterId = assistantActionMatterId(params, matter);
+    if (!matterId) throw new Error("Matter not found.");
+    const payload = await postAssistantActionJson(
+      `/api/matters/${encodeURIComponent(matterId)}/review-refresh`,
+      null,
+      "Review could not refresh",
+    );
+    const refreshedMatter = matterReviewPayloadToMatter(payload);
+    loadMatterIntoReview(refreshedMatter);
+    await repositoryController.loadMatters();
+    renderDashboardInboxTable();
+    activateTab("review");
+    const refresh = payload?.review_refresh || {};
+    const title = refreshedMatter?.matter?.document_title || refreshedMatter?.document_title || matter.title || "matter";
+    if (refresh.stale) return { statusText: "Review refreshed, but it is still marked stale." };
+    return { statusText: `Review refreshed for ${title}.` };
+  }
+  if (actionName === "approve_matter") {
+    const matterId = assistantActionMatterId(params, matter);
+    if (!matterId) throw new Error("Matter not found.");
+    const payload = await postAssistantActionJson(
+      `/api/matters/${encodeURIComponent(matterId)}/approve`,
+      null,
+      "Review could not be approved",
+    );
+    if (payload.matter && typeof payload.matter === "object") {
+      state.selectedMatter = state.selectedMatter?.id === matterId
+        ? { ...state.selectedMatter, ...payload.matter }
+        : state.selectedMatter;
+    }
+    await repositoryController.loadMatters();
+    renderDashboardInboxTable();
+    activateTab("repository");
+    return { statusText: `Approved ${matter.title || "matter"}.` };
+  }
+  if (actionName === "send_redline") {
+    const matterId = assistantActionMatterId(params, matter);
+    if (!matterId) throw new Error("Matter not found.");
+    const selectedMatter = await assistantMatterFromState(matterId);
+    const recipient = MatterUtils.recipientEmail(selectedMatter);
+    const sendBlockReason = MatterUtils.gmailSendBlock(selectedMatter, state.gmailStatus);
+    if (sendBlockReason) throw new Error(sendBlockReason);
+    if (!recipient) throw new Error("Matter does not have a valid reply recipient email address.");
+    const sendPayload = {
+      matter_id: matterId,
+      confirm_send: true,
+      confirm_recipient: recipient,
+      to: recipient,
+      subject: RepositorySend.defaultOutboundSubject(selectedMatter),
+      body: RepositorySend.defaultOutboundBody(selectedMatter, state.personalisationSettings),
+    };
+    const payload = await postAssistantActionJson(
+      "/api/gmail/send-redline",
+      sendPayload,
+      "Redline email could not send",
+    );
+    if (payload.matter?.id) {
+      state.matters = state.matters.map((existing) => (
+        existing.id === payload.matter.id ? payload.matter : existing
+      ));
+      if (state.selectedMatter?.id === payload.matter.id) {
+        state.selectedMatter = { ...state.selectedMatter, ...payload.matter };
+      }
+    }
+    await repositoryController.loadMatters();
+    renderDashboardInboxTable();
+    activateTab("repository");
+    return { statusText: `Sent redline to ${recipient}.` };
   }
   const targetTab = String(action.target?.tab || "").trim();
   const allowedTabs = new Set(["repository", "playbook", "admin"]);
   if (allowedTabs.has(targetTab)) {
     activateTab(targetTab);
+    return { statusText: `${targetTab[0].toUpperCase()}${targetTab.slice(1)} opened.` };
   }
+  return { statusText: "No supported assistant action was available." };
+}
+
+async function postAssistantActionJson(url, body, fallbackMessage) {
+  const options = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  };
+  if (body && typeof body === "object") {
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(url, options);
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (parseError) {
+    payload = {};
+  }
+  if (!response.ok) throw reviewErrorFromPayload(payload, fallbackMessage);
+  return payload;
+}
+
+function assistantActionMatterId(params = {}, matter = {}) {
+  return String(params.matter_id || matter.id || "").trim();
+}
+
+async function assistantMatterFromState(matterId) {
+  let matter = Array.isArray(state.matters)
+    ? state.matters.find((candidate) => String(candidate?.id) === String(matterId))
+    : null;
+  if (matter) return matter;
+  await repositoryController.loadMatters();
+  matter = Array.isArray(state.matters)
+    ? state.matters.find((candidate) => String(candidate?.id) === String(matterId))
+    : null;
+  if (!matter) throw new Error("Matter not found.");
+  return matter;
 }
 
 function setDraftInputValue(input, value, { onlyIfEmpty = false } = {}) {

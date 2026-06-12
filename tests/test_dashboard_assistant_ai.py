@@ -18,10 +18,14 @@ def test_ai_tool_registry_exposes_strict_major_app_capability_tools():
         "get_repository_facts",
         "get_playbook_facts",
         "get_outbound_email_templates",
+        "explain_how_it_works",
+        "explain_review_finding",
         "prepare_safe_action_request",
         "resolve_matter_search_filter",
+        "search_system",
+        "summarize_matter",
     } <= set(tools)
-    assert {tool.domain for tool in tools.values()} >= {"repository", "playbook", "gmail", "actions"}
+    assert {tool.domain for tool in tools.values()} >= {"repository", "playbook", "gmail", "actions", "review"}
     for tool in tools.values():
         provider_tool = tool.provider_tool()
         schema = provider_tool["function"]["parameters"]
@@ -193,6 +197,118 @@ def test_ai_action_response_is_confirmation_gated_when_side_effectful():
     assert response["intent"] == "action_request"
     assert response["requires_confirmation"] is True
     assert response["side_effects"] == ["gmail_import_or_sync"]
+
+
+def test_ai_side_effectful_matter_action_is_rebuilt_from_owner_scoped_state():
+    repo = InMemoryMatterRepository()
+    matter = repo.create_matter(
+        source_filename="Acme NDA.docx",
+        document_bytes=b"PK\x03\x04 fake docx bytes",
+        extracted_text="This Agreement is mutual.",
+        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        triage={"triage_status": "review"},
+        source_type="manual_upload",
+        board_column="in_review",
+        intake_metadata={
+            "sender": "counterparty@example.com",
+            "reply_to": "counterparty@example.com",
+            "subject": "Acme NDA",
+        },
+        owner_user_id="tenant-a",
+    )
+
+    class FakeProviderModel:
+        def __call__(self, _request_body):
+            return {
+                "assistant_response": {
+                    "intent": "action_request",
+                    "domain": "gmail",
+                    "action": "send_redline",
+                    "requires_confirmation": False,
+                    "side_effects": ["send_redline_email"],
+                    "params": {
+                        "matter_id": matter["id"],
+                        "recipient": "attacker@example.com",
+                    },
+                    "matter": {
+                        "title": "Acme NDA",
+                        "resolved_recipient": "attacker@example.com",
+                    },
+                    "message": "Send it.",
+                }
+            }
+
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "Send redline for Acme",
+        repository=repo,
+        owner_user_id="tenant-a",
+        ai_model=FakeProviderModel(),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["action"] == "send_redline"
+    assert response["requires_confirmation"] is True
+    assert response["params"]["matter_id"] == matter["id"]
+    assert response["matter"]["resolved_recipient"] == "counterparty@example.com"
+    assert "attacker@example.com" not in str(response)
+
+
+def test_ai_action_tool_output_returns_directly_without_model_rewriting():
+    repo = InMemoryMatterRepository()
+    matter = repo.create_matter(
+        source_filename="Acme NDA.docx",
+        document_bytes=b"PK\x03\x04 fake docx bytes",
+        extracted_text="This Agreement is mutual.",
+        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        triage={"triage_status": "review"},
+        source_type="manual_upload",
+        board_column="in_review",
+    )
+
+    class FakeProviderModel:
+        def __init__(self):
+            self.requests = []
+
+        def __call__(self, request_body):
+            self.requests.append(request_body)
+            if len(self.requests) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_action",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "prepare_safe_action_request",
+                                            "arguments": json.dumps(
+                                                {
+                                                    "action": "refresh_review",
+                                                    "prompt": "Refresh Acme",
+                                                    "matter_id": matter["id"],
+                                                    "matter_query": "",
+                                                }
+                                            ),
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                }
+            raise AssertionError("action tool outputs should not require a follow-up model call")
+
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "Refresh Acme",
+        repository=repo,
+        ai_model=FakeProviderModel(),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["action"] == "refresh_review"
+    assert response["requires_confirmation"] is True
+    assert response["route"]["url"].endswith("/review-refresh")
 
 
 def test_ai_clarification_response_is_preserved_for_ambiguous_system_request():
