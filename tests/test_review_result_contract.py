@@ -67,7 +67,7 @@ def test_build_review_result_owns_counts_metadata_and_evidence_stamp():
         ai_verifier={"status": "disabled"},
         clauses=clauses,
         redline_edits=[],
-        result_fields={"unmatched_sections": []},
+        result_fields={},
     )
 
     assert result["review_engine_version"] == 8
@@ -77,7 +77,6 @@ def test_build_review_result_owns_counts_metadata_and_evidence_stamp():
     assert result["requirements_needs_review"] == 1
     assert result["requirements_failed"] == 1
     assert result["ai_first_review"] == {"status": "normalized"}
-    assert result["unmatched_sections"] == []
     assert [change["clause_id"] for change in result["proposed_changes"]] == ["review", "fail"]
     assert result["evidence_trust"] == {"status": "verified", "errors": []}
 

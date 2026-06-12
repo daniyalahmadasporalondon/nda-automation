@@ -126,8 +126,6 @@ def orchestrate_review(command: ReviewCommand) -> dict[str, Any]:
         ai_verifier=ai_verifier_review,
         clauses=clause_results,
         redline_edits=redline_edits,
-        result_fields={
-            "unmatched_sections": checker.compute_unmatched_sections(contract_structure, clause_results),
-        },
+        result_fields={},
         evidence_error_prefix="Clause evidence provenance drift detected",
     )
