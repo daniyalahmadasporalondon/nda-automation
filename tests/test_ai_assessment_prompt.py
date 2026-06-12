@@ -87,7 +87,7 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("reviewer-facing assessment commentary", instructions)
         self.assertIn("Ground every present-clause verdict in a quote", instructions)
         self.assertIn("ungrounded verdict on a present clause is escalated to human review", instructions)
-        self.assertIn("2 to 4 concise sentences", instructions)
+        self.assertIn("thorough, reviewer-facing rationale (typically 5 to 9 sentences)", instructions)
         self.assertIn("specific to the cited document text", instructions)
         self.assertIn("acceptable_language", instructions)
         self.assertIn("Semantic signals and search terms are illustrative cues", instructions)
