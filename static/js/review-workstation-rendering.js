@@ -904,42 +904,10 @@ function renderStudioClauseLane() {
     })
     .join("");
 
-  studioClauseLane.innerHTML = clauseMarkup + renderStudioUnmatchedCoverage();
+  studioClauseLane.innerHTML = clauseMarkup;
 
   bindClauseSelection(studioClauseLane, "[data-studio-lane-id]", "studioLaneId");
   bindClauseNavigatorScrollControls();
-}
-
-// Neutral coverage entries for document sections that no Playbook clause matched.
-// These sit after the clause cards purely so the reviewer can see the document's
-// full section coverage -- they are NOT clauses: they carry no pass/review/fail
-// status, are not selectable, and do not participate in counts or the approve gate.
-function renderStudioUnmatchedCoverage() {
-  if (!hasReviewResults()) return "";
-  const sections = state.latestReviewResult && Array.isArray(state.latestReviewResult.unmatched_sections)
-    ? state.latestReviewResult.unmatched_sections
-    : [];
-  if (!sections.length) return "";
-
-  return sections
-    .map((section) => {
-      const label = String((section && (section.label || section.heading)) || "Section").trim() || "Section";
-      const heading = String((section && section.heading) || "").trim();
-      const title = heading && heading !== label ? `${label}: ${heading}` : label;
-      const count = Number(section && section.paragraph_count) || 0;
-      const meta = count ? `${count} ${count === 1 ? "paragraph" : "paragraphs"}` : "";
-      return `
-        <article class="studio-clause-item unmatched-coverage" title="${escapeHtml(`${title} - not in Playbook (unreviewed)`)}">
-          <div class="studio-clause-select" aria-disabled="true">
-            <span class="studio-clause-dot"></span>
-            <span class="studio-clause-title" style="color: var(--ink-muted)">${escapeHtml(label)}</span>
-            <span class="studio-comment-state" style="color: var(--ink-muted)">Not in Playbook</span>
-            ${meta ? `<span class="studio-clause-title" style="color: var(--ink-faint, var(--ink-muted)); font-weight: 500">${escapeHtml(meta)}</span>` : ""}
-          </div>
-        </article>
-      `;
-    })
-    .join("");
 }
 
 function bindClauseNavigatorScrollControls() {
@@ -1563,15 +1531,12 @@ function renderProposedChangeBlock(clause, status = clauseDisplayStatus(clause))
   const safety = change.safety && typeof change.safety === "object" ? change.safety : {};
   const sourceText = String(change.source_text || "").trim();
   const proposedText = String(change.proposed_text || "").trim();
-  const issueSummary = String(change.issue_summary || "").trim();
   const why = whyThisEdit(change, clause);
   const safetyReason = String(safety.reason || "").trim();
   const actionClass = action.replace(/[^a-z0-9_-]/gi, "-") || "unknown";
   return `
     <div class="studio-detail-block recommended-change-block proposed-change-card ${actionClass} fail" data-card-section="recommended-change">
       <small>Recommended change</small>
-      <p class="proposed-change-summary">${escapeHtml(issueSummary || proposedChangeActionHeadline(action))}</p>
-      <p class="proposed-change-meta"><span>Action</span>${escapeHtml(proposedChangeActionLabel(action))}</p>
       ${renderProposedChangeText(sourceText, proposedText, action)}
       ${why ? `<p class="proposed-change-guidance"><strong>Why this edit</strong>${escapeHtml(why)}</p>` : ""}
       ${safetyReason ? `<p class="proposed-change-safety-note">${escapeHtml(safetyReason)}</p>` : ""}
@@ -1734,9 +1699,38 @@ function proposedChangeFromRedline(clause, redline) {
 }
 
 function renderProposedChangeText(sourceText, proposedText, action) {
+  // INSERT / missing clause: only the proposed insertion -- nothing is being replaced, so do
+  // not show a (mismatched) source block.
+  if (action === "insert") {
+    if (!proposedText) return "";
+    return `
+      <figure class="proposed-change-insertion">
+        <figcaption>Proposed insertion</figcaption>
+        <blockquote><span class="redline-insertion">${escapeHtml(proposedText)}</span></blockquote>
+      </figure>
+    `;
+  }
+  // DELETE: the source text struck through.
+  if (action === "delete") {
+    if (!sourceText) return "";
+    return `
+      <figure class="proposed-change-deletion">
+        <figcaption>Proposed deletion</figcaption>
+        <blockquote><span class="inline-del">${escapeHtml(sourceText)}</span></blockquote>
+      </figure>
+    `;
+  }
+  // REPLACE: a real inline redline (struck source + inserted proposed) when both exist.
+  if (sourceText && proposedText) {
+    const redline = renderCardReplacementRedline(sourceText, proposedText);
+    if (redline) {
+      return `<figure class="proposed-change-redline"><figcaption>Redline</figcaption><blockquote>${redline}</blockquote></figure>`;
+    }
+  }
+  // Fallbacks: nothing usable, or the inline-diff renderer is unavailable.
   if (!sourceText && !proposedText) {
     if (action === "needs_human_choice") {
-      return '<p class="proposed-change-empty">The backend could not choose safe replacement wording. Pick the final wording manually before export. No automatic edit will be applied.</p>';
+      return '<p class="proposed-change-empty">No safe replacement wording was chosen. Pick the final wording manually. No automatic edit will be applied.</p>';
     }
     if (action === "comment_only") {
       return '<p class="proposed-change-empty">No safe redline text was generated. Treat this as a reviewer comment. No automatic edit will be applied.</p>';
@@ -1759,6 +1753,25 @@ function renderProposedChangeText(sourceText, proposedText, action) {
       ` : ""}
     </div>
   `;
+}
+
+// Render a struck-old / inserted-new inline redline from plain source+proposed strings, reusing
+// the existing inline-diff machinery (redline-rendering.js). Word-level so only the changed words
+// redline (e.g. governing law: strike "California", insert "England and Wales"). Returns "" if the
+// renderer is not reachable, so the caller falls back to the two-block source/proposed display.
+function renderCardReplacementRedline(sourceText, proposedText) {
+  if (typeof renderDiffOperations !== "function") return "";
+  try {
+    if (typeof wordDiffOperations === "function") {
+      return renderDiffOperations(wordDiffOperations(sourceText, proposedText));
+    }
+    if (typeof fullReplacementOperations === "function") {
+      return renderDiffOperations(fullReplacementOperations(sourceText, proposedText));
+    }
+  } catch (_e) {
+    return "";
+  }
+  return "";
 }
 
 function renderProposedChangeEvidence(evidence) {
