@@ -175,9 +175,34 @@ function updateExportButtonState() {
       && MatterUtils.needsHumanReview(matter) && !matter.human_reviewed,
     );
     studioReviewedButton.hidden = !reviewBlocked;
+    if (reviewBlocked) updateReviewedButtonScope();
   }
   updateApproveReviewControl();
   updateRedlineDraftControls();
+}
+
+// Surface the header "Reviewed" button's scope: it flips EVERY needs-review
+// clause at once, so the label/title state how many clauses a click affects.
+// When all needs-review clauses are already acknowledged a click would un-review
+// them, so the label disambiguates that toggle-OFF direction.
+function updateReviewedButtonScope() {
+  if (!studioReviewedButton) return;
+  const ids = reviewClauseIds();
+  const count = ids.length;
+  if (!count) {
+    studioReviewedButton.textContent = "Reviewed";
+    studioReviewedButton.title = "Confirm you've checked the flagged clauses — this enables Send Redline";
+    return;
+  }
+  const allAcknowledged = ids.every((clauseId) => clauseReviewAcknowledged(clauseId));
+  const noun = `${count} ${count === 1 ? "clause" : "clauses"}`;
+  if (allAcknowledged) {
+    studioReviewedButton.textContent = `Unmark ${noun} reviewed`;
+    studioReviewedButton.title = `Mark ${noun} as needing review again`;
+  } else {
+    studioReviewedButton.textContent = `Mark ${noun} reviewed`;
+    studioReviewedButton.title = `Mark all ${noun} that need human review as reviewed — this enables Send Redline`;
+  }
 }
 
 function setStudioSendButtonLabel(label = "Send Redline", title = label) {
@@ -202,18 +227,35 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
-  const counts = state.latestReviewResult?.review_state?.counts;
+  // The overall verdict is NOT re-derived from JS clause counts here. The backend
+  // ran the canonical aggregate (aggregate_review_state -> review_state, including
+  // the document-level send gates) and attaches it as latestReviewResult.review_state.
+  // CONSUME that authoritative state/.label/.blocks_send for the overall PASS/FAIL/
+  // REVIEW mark and title. The pass/total numerator below is a display tally only;
+  // it never decides the overall verdict.
+  const reviewState = state.latestReviewResult?.review_state;
+  const counts = reviewState?.counts;
   const passedCount = reviewStateCount(counts, "pass", clauses.filter((clause) => clauseStatus(clause).passes).length);
+  // FE-only overlay: once every needs-review clause is acknowledged, the authoritative
+  // "review" verdict reads as REVIEWED. The backend has no notion of this local ack,
+  // so it is layered on top of (never replaces) the authoritative state.
+  const authoritativeState = String(reviewState?.state || "").toLowerCase();
+  const isFail = authoritativeState
+    ? authoritativeState === "check"
+    : clauses.some((clause) => clauseStatus(clause).fails);
+  const isReview = !isFail && (authoritativeState
+    ? authoritativeState === "review" || Boolean(reviewState?.blocks_send)
+    : clauses.some((clause) => clauseStatus(clause).needsReview));
+  const humanReviewComplete = isReview && humanReviewAcknowledged();
   const reviewCount = reviewStateCount(counts, "review", clauses.filter((clause) => clauseStatus(clause).needsReview).length);
   const failedCount = reviewStateCount(counts, "check", clauses.filter((clause) => clauseStatus(clause).fails).length);
-  const humanReviewComplete = reviewCount > 0 && humanReviewAcknowledged();
   const unresolvedReviewCount = humanReviewComplete ? 0 : reviewCount;
   studioMatchSummary.textContent = `${passedCount}/${getClauseTotal(clauses)}`;
-  studioResultMark.textContent = failedCount ? "FAIL" : humanReviewComplete ? "REVIEWED" : reviewCount ? "REVIEW" : "PASS";
-  studioResultMark.className = failedCount ? "check" : humanReviewComplete ? "pass" : reviewCount ? "review" : "pass";
-  studioOverallTitle.textContent = failedCount
+  studioResultMark.textContent = isFail ? "FAIL" : humanReviewComplete ? "REVIEWED" : isReview ? "REVIEW" : "PASS";
+  studioResultMark.className = isFail ? "check" : humanReviewComplete ? "pass" : isReview ? "review" : "pass";
+  studioOverallTitle.textContent = isFail
     ? "Does not meet requirements"
-    : unresolvedReviewCount
+    : isReview && !humanReviewComplete
       ? "Needs review"
       : humanReviewComplete
         ? "Reviewed"
@@ -316,8 +358,8 @@ function verdictPillLabel(status, reviewed = false) {
   if (reviewed) return "Reviewed";
   if (status.fails) return "Fail";
   if (status.needsReview) return "Needs Review";
-  if (status.passes) return "Match";
-  return status.issueLabel || "Review";
+  if (status.passes) return "Pass";
+  return status.issueLabel || "Needs review";
 }
 
 function renderClauseCommentBlock(clause) {
@@ -761,15 +803,58 @@ function setRedlineTemplateSelection(editId, optionId) {
   state.redlineTemplateSelections[editId] = optionId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
-  // Live re-assessment: when the reviewer picks a different jurisdiction option,
-  // re-run the single-clause check against the new wording so the verdict updates
-  // without a full-document refresh.
+  // Live re-assessment: when the reviewer picks a different template option,
+  // re-run the single-clause check against the PROPOSED text so the verdict
+  // reflects the selected wording, not the stale source text.
   const edit = state.reviewRedlines.find((item) => item.id === editId);
   if (edit?.clause_id && state.selectedMatter?.id) {
     if (typeof scheduleClauseReassess === "function") {
-      scheduleClauseReassess(edit.clause_id);
+      scheduleClauseReassess(edit.clause_id, _buildEditedParagraphsForTemplateOption(edit, optionId));
     }
   }
+}
+
+// Build an editedParagraphs overlay for a template-option selection so that
+// scheduleClauseReassess evaluates the PROPOSED text rather than the stale
+// source text.  Returns undefined when the overlay cannot be computed (e.g.
+// insert-after action or missing paragraph), letting the caller fall back to
+// the full edited_text path.
+function _buildEditedParagraphsForTemplateOption(edit, optionId) {
+  if (!edit || !Array.isArray(state.reviewParagraphs) || !state.reviewParagraphs.length) return undefined;
+
+  const selectedOption = (edit.template_options || []).find((opt) => opt.id === optionId);
+  if (!selectedOption) return undefined;
+
+  // INSERT_AFTER adds a new paragraph rather than replacing an existing one.
+  // Building a fully-correct overlay for that case is complex (paragraph
+  // ordering, index assignment); skip it here so we fall back to the stale
+  // edited_text path rather than sending wrong data.  This is a known
+  // limitation — tracked as a follow-up (insert-after reassess).
+  if (edit.action === REDLINE_INSERT_AFTER_PARAGRAPH) return undefined;
+
+  // Resolve the target paragraph: use the edit's own paragraph_id first, then
+  // fall back to the clause's first matched paragraph (mirrors the viewer path).
+  const targetParagraphId = edit.paragraph_id
+    || (() => {
+      const clause = state.reviewClauses.find((c) => c.id === edit.clause_id);
+      return Array.isArray(clause?.matched_paragraph_ids) ? clause.matched_paragraph_ids[0] : undefined;
+    })();
+  if (!targetParagraphId) return undefined;
+
+  // Compute the replacement text exactly as applyTemplateSelectionToRedline does.
+  const proposedText = selectedOption.replacement_text || selectedOption.text || "";
+  if (!proposedText.trim()) return undefined;
+
+  // Build a shallow copy of all paragraphs, overlaying only the target paragraph's
+  // text with the proposed wording.  Never mutates the live state.reviewParagraphs
+  // entries — spreads produce new objects.
+  return state.reviewParagraphs.map((p) => {
+    const base = { id: p.id, index: p.index, source_index: p.source_index, text: p.text };
+    if (String(p.id) === String(targetParagraphId)) {
+      base.text = proposedText;
+    }
+    return base;
+  });
 }
 
 function selectedRedlineTemplateOptionId(edit) {
@@ -792,6 +877,31 @@ function clauseEngineBadge() {
 // clause reads as a FAIL in real time (recomputed on every render, on entity
 // change, and on a document edit). This is a live UI signal layered on top of the
 // backend verdict — it does not re-run the backend review.
+
+// Apply a governing-law fix from the concurrence picker: replace the matched
+// governing-law paragraph with a clean approved sentence (shown as a tracked redline
+// in the document) and re-render so the concurrence re-evaluates live.
+function applyGoverningLawRedline(lawPhrase, lawLabel) {
+  const gl = state.reviewClauses.find((clause) => clause.id === "governing_law");
+  const paraId = gl && Array.isArray(gl.matched_paragraph_ids) ? gl.matched_paragraph_ids[0] : "";
+  const para = paraId ? state.reviewParagraphs.find((item) => item.id === paraId) : null;
+  if (!para) return;
+  const phrase = String(lawPhrase || lawLabel || "").trim();
+  if (!phrase) return;
+  const newText = `This Agreement shall be governed by the laws of ${phrase}.`;
+  if (newText === para.text) return;
+  if (typeof pushReviewEditHistoryEntry === "function") {
+    pushReviewEditHistoryEntry({ paragraphId: para.id, previousText: para.text, type: "paragraph_text" });
+  }
+  para.text = newText;
+  para.clauseRedlineWholeParagraph = true;  // render this clause redline as a clean whole-paragraph replacement
+  if (typeof syncReviewSourceFromParagraphs === "function") syncReviewSourceFromParagraphs();
+  if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
+  if (typeof markSourceEdited === "function") markSourceEdited("Governing law redline", { preserveSourceDocument: true });
+  if (typeof renderStudioDocumentHighlights === "function") renderStudioDocumentHighlights();
+  renderStudioClauseLane();
+  renderStudioDetail();
+}
 const DOCUMENT_GOVERNING_LAWS = [
   ["India", /\b(?:india|indian)\b/i],
   ["Delaware", /\bdelaware\b/i],
@@ -815,6 +925,9 @@ function detectDocumentGoverningLaw() {
 }
 
 function governingLawConflict() {
+  // Driven by the Fill-tool pick: review-fill.js sets state.reviewPickedAspora =
+  // { name, lawLabel } from the chosen Aspora entity's registry governing law.
+  // No fetch / auto-detect at render time — that mechanism is the proven one.
   const picked = state.reviewPickedAspora;
   const entityLaw = picked && picked.lawLabel ? String(picked.lawLabel).trim() : "";
   if (!entityLaw) return null;
@@ -1086,15 +1199,63 @@ function renderStudioDetail() {
   const documentEvidence = renderClauseDocumentEvidenceBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
   const proposedChange = renderProposedChangeBlock(clause, status);
+  const proposedRedlines = renderProposedRedlinesBlock(clause);
   const actions = renderClauseActionsBlock(clause, status);
   const reasoningTrail = renderReasoningTrailBlock(clause);
+  // Governing-law concurrence banner + unified entity-aware picker (Issue 1).
+  const glConflict = clause.id === "governing_law" ? governingLawConflict() : null;
+  const concurrenceBanner = glConflict
+    ? `<div class="studio-detail-block gl-concurrence-fail">
+        <small>Governing law conflict</small>
+        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not concur with the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>.</p>
+      </div>`
+    : "";
+  // On a govlaw conflict, surface the one-click remediation picker: one button
+  // per approved law, with the selected entity's law marked "— recommended".
+  // Clicking applies a clean whole-paragraph redline via applyGoverningLawRedline
+  // (delegated handler in app.js).
+  //
+  // GOVLAW OPTIONS DEDUP: when the backend emitted a governing-law redline_edit
+  // carrying template_options, the connected proposed-edit card already renders
+  // those jurisdiction options (renderRedlineTemplateOptions), so this detached
+  // picker would show the SAME options a second time. Suppress only the duplicate
+  // option display in that case — the concurrence detection, banner, and FAIL-pill
+  // (clauseDisplayStatus override) are untouched. When there is NO backend govlaw
+  // redline_edit to host the options, keep this picker so the redline-to-
+  // recommended-law capability is preserved.
+  const glCardHostsOptions = Boolean(glConflict) && state.reviewRedlines.some(
+    (edit) => String(edit?.clause_id || "") === "governing_law"
+      && (edit.template_options || []).length > 1,
+  );
+  const glRedlinePicker = glConflict && !glCardHostsOptions
+    ? `<div class="studio-detail-block">
+        <div class="redline-options">
+          <span class="redline-options-title">Redline governing law to</span>
+          ${(Array.isArray(clause.approved_laws) ? clause.approved_laws : []).map((label) => {
+            const phrase = (clause.law_phrases && clause.law_phrases[label]) || label;
+            const recommended = String(label).trim().toLowerCase() === glConflict.entityLaw.toLowerCase();
+            const optionText = `This Agreement shall be governed by the laws of ${phrase}.`;
+            return `<button class="redline-option ${recommended ? "selected" : ""}" type="button" data-gl-redline-law="${escapeHtml(label)}" data-gl-redline-phrase="${escapeHtml(phrase)}" aria-pressed="${recommended ? "true" : "false"}">
+              <span class="redline-option-dot" aria-hidden="true"></span>
+              <span class="redline-option-copy">
+                <strong>${escapeHtml(label)}${recommended ? " — recommended" : ""}</strong>
+                <span>${escapeHtml(optionText)}</span>
+              </span>
+            </button>`;
+          }).join("")}
+        </div>
+      </div>`
+    : "";
   studioDetailPanel.innerHTML = `
     ${verdictHeader}
     <div class="studio-detail-stack">
+      ${concurrenceBanner}
+      ${glRedlinePicker}
       ${assessment}
       ${documentEvidence}
       ${playbookPosition}
       ${proposedChange}
+      ${proposedRedlines}
       ${actions}
       ${reasoningTrail}
     </div>
@@ -1105,6 +1266,9 @@ function renderStudioDetail() {
   bindReviewCommentControls(studioDetailPanel);
   bindParagraphReferenceControls(studioDetailPanel);
   bindReasoningTrailControls(studioDetailPanel);
+  // gl-redline picker clicks are handled by the delegated [data-gl-redline-law]
+  // listener in app.js (the proven wiring) — no per-render binding here, which
+  // would double-apply applyGoverningLawRedline on a single click.
 }
 
 function renderAiCitation(span) {
@@ -1337,9 +1501,11 @@ function renderClausePlaybookPositionBlock(clause) {
 function clauseApprovedAlternatives(clause, change = null) {
   const fromChange = Array.isArray(change?.approved_alternatives) ? change.approved_alternatives : [];
   const fallback = clauseFallback(clause);
+  const acceptableLanguage = String(clause?.acceptable_language || "").trim();
   return uniqueStrings([
     ...fromChange,
     ...(Array.isArray(fallback?.approvedPositions) ? fallback.approvedPositions : []),
+    ...(acceptableLanguage ? [acceptableLanguage] : []),
   ]);
 }
 
@@ -1543,10 +1709,16 @@ function renderProposedChangeBlock(clause, status = clauseDisplayStatus(clause))
   const why = whyThisEdit(change, clause);
   const safetyReason = String(safety.reason || "").trim();
   const actionClass = action.replace(/[^a-z0-9_-]/gi, "-") || "unknown";
+  // The connected proposed-edit card (renderProposedRedlinesBlock) now owns the
+  // redline preview. When this clause has a real redline edit hosting that card,
+  // do NOT re-render the inline diff here — that would show the same redline text
+  // twice. Keep only the "why this edit" framing; the card carries the redline.
+  const hasHostingRedline = state.reviewRedlines.some((edit) => edit.clause_id === clause.id);
+  const changeText = hasHostingRedline ? "" : renderProposedChangeText(sourceText, proposedText, action, change);
   return `
     <div class="studio-detail-block recommended-change-block proposed-change-card ${actionClass} fail" data-card-section="recommended-change">
       <small>Recommended change</small>
-      ${renderProposedChangeText(sourceText, proposedText, action)}
+      ${changeText}
       ${why ? `<p class="proposed-change-guidance"><strong>Why this edit</strong>${escapeHtml(why)}</p>` : ""}
       ${safetyReason ? `<p class="proposed-change-safety-note">${escapeHtml(safetyReason)}</p>` : ""}
     </div>
@@ -1559,14 +1731,16 @@ function renderNeedsReviewRecommendedChange(clause, change = null) {
   const recommended = recommendedOptionForReview(clause, change);
   const alternatives = clauseApprovedAlternatives(clause, change);
 
-  // Use the interactive template-option picker when the clause has a redline edit
-  // carrying multiple template_options (the same picker the redline document view
-  // renders). Fall back to the static alternatives list when no such edit exists.
+  // The interactive jurisdiction/template picker now lives INSIDE the connected
+  // proposed-edit card (renderProposedRedlinesBlock -> renderRedlineTemplateOptions).
+  // So when this clause has a redline edit carrying multiple template_options, the
+  // card hosts the options and this card must NOT render them a second time. The
+  // static approved-alternatives list is still shown when there is no such edit to
+  // host the options.
   const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
   const editWithOptions = clauseRedlines.find((edit) => (edit.template_options || []).length > 1);
-  const selectedEdit = editWithOptions ? applyTemplateSelectionToRedline(editWithOptions) : null;
-  const alternativesBlock = selectedEdit
-    ? renderRedlineTemplateOptions(selectedEdit)
+  const alternativesBlock = editWithOptions
+    ? ""
     : (alternatives.length ? `
         <div class="approved-alternatives">
           <span class="detail-field-label">Approved alternatives</span>
@@ -1608,7 +1782,10 @@ function reviewSuggestedRedline(clause, change = null) {
   ).trim();
   if (value) return value;
   const fix = String(clause?.what_to_fix || "").trim();
-  return fix && !/^confirm the clause position/i.test(fix) ? fix : "";
+  if (fix && !/^confirm the clause position/i.test(fix)) return fix;
+  // Terminal fallback: the playbook's acceptable language is a safe suggestion to
+  // confirm when the AI/builder produced no specific redline.
+  return String(clause?.acceptable_language || "").trim();
 }
 
 function recommendedOptionForReview(clause, change = null) {
@@ -1674,8 +1851,16 @@ function proposedChangeActionHeadline(action) {
 
 function proposedChangeForClause(clause) {
   if (!clause) return null;
-  if (clause.proposed_change && typeof clause.proposed_change === "object") return clause.proposed_change;
   const clauseId = String(clause.id || "");
+  // When the clause's redline carries multiple template_options, the live
+  // selection (state.redlineTemplateSelections) is authoritative — derive the
+  // change from it so picking an option changes the card. Otherwise the stale
+  // baked-in clause.proposed_change / server proposed_changes would win.
+  const optionRedline = state.reviewRedlines.find(
+    (edit) => String(edit?.clause_id || "") === clauseId && (edit.template_options || []).length > 1,
+  );
+  if (optionRedline) return proposedChangeFromRedline(clause, optionRedline);
+  if (clause.proposed_change && typeof clause.proposed_change === "object") return clause.proposed_change;
   const changes = Array.isArray(state.latestReviewResult?.proposed_changes)
     ? state.latestReviewResult.proposed_changes
     : [];
@@ -1701,6 +1886,11 @@ function proposedChangeFromRedline(clause, redline) {
     clause_name: String(clause?.name || clause?.id || ""),
     decision: String(clause?.decision || ""),
     evidence: selectedEdit.redline_rationale?.basis || {},
+    // Carry the backend's punctuation-aware inline diff for the selected option
+    // so the card renders the same clean redline the document view does.
+    inline_diff_operations: Array.isArray(selectedEdit.inline_diff_operations)
+      ? selectedEdit.inline_diff_operations
+      : null,
     issue_summary: String(clause?.reason || clause?.finding || clause?.issue_label || "").trim(),
     paragraph_id: selectedEdit.paragraph_id,
     playbook_rationale: rationale,
@@ -1718,7 +1908,7 @@ function proposedChangeFromRedline(clause, redline) {
   };
 }
 
-function renderProposedChangeText(sourceText, proposedText, action) {
+function renderProposedChangeText(sourceText, proposedText, action, change = null) {
   // INSERT / missing clause: only the proposed insertion -- nothing is being replaced, so do
   // not show a (mismatched) source block.
   if (action === "insert") {
@@ -1742,7 +1932,7 @@ function renderProposedChangeText(sourceText, proposedText, action) {
   }
   // REPLACE: a real inline redline (struck source + inserted proposed) when both exist.
   if (sourceText && proposedText) {
-    const redline = renderCardReplacementRedline(sourceText, proposedText);
+    const redline = renderCardReplacementRedline(sourceText, proposedText, change);
     if (redline) {
       return `<figure class="proposed-change-redline"><figcaption>Redline</figcaption><blockquote>${redline}</blockquote></figure>`;
     }
@@ -1775,13 +1965,21 @@ function renderProposedChangeText(sourceText, proposedText, action) {
   `;
 }
 
-// Render a struck-old / inserted-new inline redline from plain source+proposed strings, reusing
-// the existing inline-diff machinery (redline-rendering.js). Word-level so only the changed words
-// redline (e.g. governing law: strike "California", insert "England and Wales"). Returns "" if the
-// renderer is not reachable, so the caller falls back to the two-block source/proposed display.
-function renderCardReplacementRedline(sourceText, proposedText) {
+// Render a struck-old / inserted-new inline redline, reusing the existing inline-diff
+// machinery (redline-rendering.js). Prefers the backend's pre-computed, punctuation-aware
+// edit.inline_diff_operations (the same ops the document view renders) so e.g. "the laws of"
+// is not over-struck by the whitespace-only tokenizer; falls back to wordDiffOperations only
+// when no backend diff is present. Returns "" if the renderer is not reachable, so the caller
+// falls back to the two-block source/proposed display.
+function renderCardReplacementRedline(sourceText, proposedText, change = null) {
   if (typeof renderDiffOperations !== "function") return "";
   try {
+    const backendOps = change && Array.isArray(change.inline_diff_operations)
+      ? change.inline_diff_operations
+      : null;
+    if (backendOps && backendOps.length) {
+      return renderDiffOperations(backendOps);
+    }
     if (typeof wordDiffOperations === "function") {
       return renderDiffOperations(wordDiffOperations(sourceText, proposedText));
     }
@@ -1862,6 +2060,11 @@ function proposedChangeConfidence(value) {
   return `${Math.round(number)}%`;
 }
 
+// The Actions block no longer renders the redline itself — the connected
+// proposed-edit card (renderDetailRedlineEdit, hosted by renderProposedRedlinesBlock)
+// is the SINGLE proposed-edit display, including its Include/Ignore controls. This
+// block keeps only the human-workflow affordances: the needs-review hint and the
+// reviewer comment textarea, so the redline text is never shown twice.
 function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) {
   const redlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
   const comment = clauseReviewComment(clause.id);
@@ -1869,12 +2072,7 @@ function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) 
     <div class="studio-detail-block clause-actions-block" data-card-section="actions">
       <small>Actions</small>
       ${redlines.length ? `
-        <div class="clause-action-group">
-          <span class="detail-field-label">${redlines.length === 1 ? "Redline" : "Redlines"}</span>
-          <div class="clause-action-redlines">
-            ${redlines.map((edit) => renderRedlineActionControls(edit)).join("")}
-          </div>
-        </div>
+        <p class="action-muted">Use the Include/Ignore controls on the proposed edit above to choose what is exported.</p>
       ` : `
         <p class="action-muted">${escapeHtml(status.passes ? "No redline action required." : "No redline action is available for this clause.")}</p>
       `}
@@ -1883,42 +2081,32 @@ function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) 
       ` : ""}
       <div class="clause-comment-action">
         <label class="detail-field-label" for="review-comment-${escapeHtml(clause.id)}">Attach comment</label>
+        ${renderClauseCommentTargetLabel(clause)}
         <textarea id="review-comment-${escapeHtml(clause.id)}" class="review-comment-input" data-review-comment-clause-id="${escapeHtml(clause.id)}" rows="4" placeholder="Leave a comment for Word export">${escapeHtml(comment?.text || "")}</textarea>
       </div>
     </div>
   `;
 }
 
-function renderRedlineActionControls(edit) {
-  const included = redlineExportIncluded(edit);
-  const selectedEdit = applyTemplateSelectionToRedline(edit);
-  return `
-    <div class="redline-action-row">
-      <div>
-        <strong>${escapeHtml(redlineActionLabel(selectedEdit))}</strong>
-        ${selectedEdit.paragraph_id ? `<span>${escapeHtml(paragraphDisplayLabel(selectedEdit.paragraph_id))}</span>` : ""}
-      </div>
-      <span class="detail-export-controls" role="group" aria-label="Redline decision">
-        <button class="export-choice ${included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="include" aria-pressed="${included ? "true" : "false"}">Accept</button>
-        <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
-      </span>
-      ${renderRedlineTemplateOptions(selectedEdit)}
-    </div>
-  `;
+// Name the Word paragraph the clause comment will attach to. setClauseReviewComment
+// resolves the same target via firstClauseParagraphId, so the label mirrors where
+// the comment actually lands: a numbered paragraph when one matched, or the clause
+// heading fallback when firstClauseParagraphId returns "".
+function renderClauseCommentTargetLabel(clause) {
+  const targetParagraphId = firstClauseParagraphId(clause.id, clause);
+  const message = targetParagraphId
+    ? `Comment will attach to ${paragraphDisplayLabel(targetParagraphId)}`
+    : "No matching paragraph; comment will attach to the clause heading";
+  return `<p class="comment-target-label">${escapeHtml(message)}</p>`;
 }
 
+// The single proposed-edit display in the detail panel: the connected card per
+// redline edit. Renders nothing when the clause has no redline — the Recommended
+// change block already carries the no-redline messaging (resolution question or
+// "prepare an explicit redline"), so there is no empty placeholder here.
 function renderProposedRedlinesBlock(clause) {
   const redlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
-  if (!redlines.length) {
-    return clauseStatus(clause).requiresAttention
-      ? `
-        <div class="studio-detail-block proposed-redline-block muted">
-          <small>Proposed redline</small>
-          <p>No proposed redline was recorded for this clause.</p>
-        </div>
-      `
-      : "";
-  }
+  if (!redlines.length) return "";
   // 2.4: the rationale can land on the edit (edit.redline_rationale) or, per the
   // "per clause" contract, on the clause itself. Resolve the clause-level one
   // once here and pass it as the per-edit fallback.
@@ -1935,13 +2123,16 @@ function renderProposedRedlinesBlock(clause) {
   `;
 }
 
+// The single connected proposed-edit card. One unit hosts everything for an edit:
+// the action label + Include/Ignore decision, the red/green inline redline preview,
+// the clean "fixed clause" final text, the jurisdiction/template options (when the
+// backend supplied template_options), and the rationale. The whole card re-renders
+// when a different option is selected (setRedlineTemplateSelection -> renderStudioDetail),
+// so the preview + fixed clause always reflect the live selection. This card is the
+// SINGLE proposed-edit display in the detail panel — there is no second caption.
 function renderDetailRedlineEdit(edit, clauseRationale = null) {
   const included = redlineExportIncluded(edit);
   const selectedEdit = applyTemplateSelectionToRedline(edit);
-  const replacement = renderRedlineReplacement(selectedEdit, "p");
-  const original = selectedEdit.action === "insert_after_paragraph"
-    ? renderRedlineAnchor(selectedEdit)
-    : `<p class="redline-original">${escapeHtml(selectedEdit.original_text || "")}</p>`;
   return `
     <div class="detail-redline-edit ${included ? "included" : "ignored"}">
       <div class="detail-redline-head">
@@ -1951,10 +2142,68 @@ function renderDetailRedlineEdit(edit, clauseRationale = null) {
           <button class="export-choice ${!included ? "active" : ""}" type="button" data-export-redline-id="${escapeHtml(edit.id)}" data-export-decision="ignore" aria-pressed="${!included ? "true" : "false"}">Ignore</button>
         </span>
       </div>
-      ${original}
-      ${replacement}
+      ${renderRedlineEditPreview(selectedEdit)}
+      ${renderFixedClausePreview(selectedEdit)}
       ${renderRedlineTemplateOptions(selectedEdit)}
       ${renderRedlineRationaleBlock(selectedEdit, clauseRationale)}
+    </div>
+  `;
+}
+
+// The redline preview inside the card. REUSE the shared inline-diff helpers
+// (renderCardReplacementRedline -> renderDiffOperations) so the red/green diff is
+// identical to the document view; never duplicate divergent diff logic here.
+// Keeps the .redline-original / .redline-replacement / .inline-del / .inline-ins
+// classes the rest of the UI (and the tests) depend on.
+function renderRedlineEditPreview(selectedEdit) {
+  if (selectedEdit.action === REDLINE_INSERT_AFTER_PARAGRAPH) {
+    return `
+      ${renderRedlineAnchor(selectedEdit)}
+      ${renderRedlineReplacement(selectedEdit, "p")}
+    `;
+  }
+  if (selectedEdit.action === REDLINE_DELETE_PARAGRAPH) {
+    return `
+      <p class="redline-original">${escapeHtml(selectedEdit.original_text || "")}</p>
+      ${renderRedlineReplacement(selectedEdit, "p")}
+    `;
+  }
+  const original = String(selectedEdit.original_text || "").trim();
+  const replacement = String(redlineEditContract()?.redlineReplacementText(selectedEdit)
+    || selectedEdit.replacement_text || "").trim();
+  // Prefer the shared word-level inline redline (struck source + inserted new) so
+  // the preview reads as one connected diff; fall back to the plain struck-original
+  // + clean-replacement lines when the diff renderer is unavailable.
+  if (original && replacement) {
+    const inline = renderCardReplacementRedline(original, replacement, selectedEdit);
+    if (inline) {
+      return `<p class="redline-original redline-inline-diff" data-redline-replacement>${inline}</p>`;
+    }
+  }
+  return `
+    <p class="redline-original">${escapeHtml(selectedEdit.original_text || "")}</p>
+    ${renderRedlineReplacement(selectedEdit, "p")}
+  `;
+}
+
+// The clean, final wording the selected edit produces (no diff markup) — what the
+// clause reads as once the redline is accepted. Updates immediately when a
+// different template option is picked, because selectedEdit is the live
+// applyTemplateSelectionToRedline result.
+function renderFixedClausePreview(selectedEdit) {
+  if (selectedEdit.action === REDLINE_DELETE_PARAGRAPH) return "";
+  const fixedText = String(
+    redlineEditContract()?.redlineInsertedText(selectedEdit)
+      || selectedEdit.replacement_text
+      || selectedEdit.insert_text
+      || selectedEdit.text
+      || "",
+  ).trim();
+  if (!fixedText) return "";
+  return `
+    <div class="fixed-clause-preview">
+      <span class="redline-label">Fixed clause</span>
+      <p class="fixed-clause-text">${escapeHtml(fixedText)}</p>
     </div>
   `;
 }
@@ -2022,18 +2271,32 @@ function renderRedlineTemplateOptions(edit) {
   const options = edit.template_options || [];
   if (options.length <= 1) return "";
 
+  // Entity-aware: for the governing-law clause, the option matching the resolved
+  // entity's law is the recommended one (this read is display-only — it never
+  // alters the concurrence verdict). Used as a fallback recommendation signal when
+  // the backend has not explicitly pre-selected an option.
+  const glConflict = String(edit.clause_id || "") === "governing_law" ? governingLawConflict() : null;
+  const recommendedLaw = glConflict ? glConflict.entityLaw.toLowerCase() : "";
+
   return `
-    <div class="redline-options">
+    <div class="redline-options" role="radiogroup" aria-label="Jurisdiction options">
       <span class="redline-options-title">Jurisdiction options</span>
-      ${options.map((option) => `
-        <button class="redline-option ${option.selected ? "selected" : ""}" type="button" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-pressed="${option.selected ? "true" : "false"}">
+      ${options.map((option) => {
+        const label = displayRedlineOptionLabel(option);
+        // The selected option is the recommended one; the entity-law match is the
+        // fallback recommendation when nothing is explicitly selected.
+        const recommended = Boolean(option.selected)
+          || (Boolean(recommendedLaw) && String(label).trim().toLowerCase() === recommendedLaw);
+        return `
+        <button class="redline-option ${option.selected ? "selected" : ""}" type="button" role="radio" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-checked="${option.selected ? "true" : "false"}" aria-pressed="${option.selected ? "true" : "false"}">
           <span class="redline-option-dot" aria-hidden="true"></span>
           <span class="redline-option-copy">
-            <strong>${escapeHtml(displayRedlineOptionLabel(option))}</strong>
+            <strong>${escapeHtml(label)}${recommended ? " — recommended" : ""}</strong>
             <span>${escapeHtml(option.text || option.replacement_text || option.insert_text || "")}</span>
           </span>
         </button>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 }

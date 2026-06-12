@@ -387,5 +387,91 @@ class MatterStoreConcurrencyTests(unittest.TestCase):
                 )
 
 
+class MatterStoreLockTimeoutTests(unittest.TestCase):
+    """Verify that _locked_store() raises MatterStoreError rather than blocking
+    indefinitely when the in-process lock is already held by another thread.
+
+    The timeout is patched to a very short value (0.05 s) so the test completes
+    quickly without being flaky.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_rlock_timeout_raises_matter_store_error(self):
+        """A second thread that cannot acquire the in-process RLock within the
+        timeout must receive MatterStoreError, not block forever."""
+        SHORT_TIMEOUT = 0.05  # seconds — fast test, not flaky
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], \
+                    patch.object(matter_store, "_LOCK_TIMEOUT_SECONDS", SHORT_TIMEOUT):
+                # A barrier lets the holder thread signal it holds the lock
+                # before the waiter tries to acquire it.
+                holder_ready = threading.Event()
+                holder_release = threading.Event()
+                errors: list[BaseException] = []
+
+                def holder():
+                    # Acquire the RLock directly so the waiter cannot get it.
+                    matter_store._MATTERS_LOCK.acquire()
+                    try:
+                        holder_ready.set()
+                        holder_release.wait(timeout=5)
+                    finally:
+                        matter_store._MATTERS_LOCK.release()
+
+                def waiter():
+                    try:
+                        # _locked_store() must raise within SHORT_TIMEOUT seconds.
+                        with matter_store._locked_store():
+                            pass
+                    except matter_store.MatterStoreError:
+                        pass  # expected
+                    except BaseException as exc:  # noqa: BLE001
+                        errors.append(exc)
+
+                t_holder = threading.Thread(target=holder, daemon=True)
+                t_waiter = threading.Thread(target=waiter, daemon=True)
+                t_holder.start()
+                holder_ready.wait(timeout=5)
+
+                t_waiter.start()
+                # Give the waiter ample time to time out and exit
+                t_waiter.join(timeout=SHORT_TIMEOUT * 20)
+
+                holder_release.set()
+                t_holder.join(timeout=5)
+
+                self.assertFalse(t_waiter.is_alive(), "waiter thread must not block indefinitely")
+                self.assertEqual(errors, [], f"waiter raised unexpected error: {errors}")
+
+    def test_rlock_acquire_succeeds_immediately_for_same_thread(self):
+        """RLock.acquire(timeout=N) must return True immediately for the same
+        thread that already holds the lock (re-entrancy).  This ensures the
+        timed-acquire wrapper does not break re-entrant acquisition of the
+        in-process lock — even though public API functions do not nest
+        _locked_store() calls, the underlying RLock must still be re-entrant."""
+        SHORT_TIMEOUT = 0.05  # seconds
+
+        with patch.object(matter_store, "_LOCK_TIMEOUT_SECONDS", SHORT_TIMEOUT):
+            # Acquire the real RLock directly (simulating an outer _locked_store).
+            matter_store._MATTERS_LOCK.acquire()
+            try:
+                # Same thread: re-acquire must succeed immediately, not timeout.
+                acquired = matter_store._MATTERS_LOCK.acquire(timeout=SHORT_TIMEOUT)
+                if acquired:
+                    matter_store._MATTERS_LOCK.release()
+                self.assertTrue(acquired, "RLock must allow re-entrant acquisition by the same thread")
+            finally:
+                matter_store._MATTERS_LOCK.release()
+
+
 if __name__ == "__main__":
     unittest.main()

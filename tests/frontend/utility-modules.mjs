@@ -76,6 +76,8 @@ import {
   validateSendDocument,
 } from "../../static/js/modules/send-document.mjs";
 import {
+  DEFAULT_MAX_TERM_YEARS,
+  FORUM_BY_OPTION_ID,
   SIGNING_ENTITIES,
   applyEntitySelection,
   buildDraftPayload,
@@ -83,7 +85,9 @@ import {
   createDraftIntake,
   createInitialIntake,
   defaultAddressFor,
+  effectiveForum,
   effectiveGoverningLaw,
+  forumForOptionId,
   formatAddressLines,
   governingLawOptions,
   hasMultipleAddresses,
@@ -114,7 +118,7 @@ const reviewStatus = clauseStatus({
   review_state: { state: "review", blocks_send: true, requires_human_review: true },
 });
 assert.equal(reviewStatus.needsReview, true);
-assert.equal(reviewStatus.pillLabel, "REVIEW");
+assert.equal(reviewStatus.pillLabel, "NEEDS REVIEW");
 assert.equal(reviewStatus.blocksSend, true);
 
 const failStatus = clauseStatus({ decision: "fail", status: "check" });
@@ -998,11 +1002,21 @@ function jsonResponse(payload, { ok = true } = {}) {
 // {id,label,lines,country,default} address shape. These tests pin that contract
 // so the embedded copy can never drift from entity-model's source of truth.
 
-// Exactly our four signing entities, each a coupled bundle.
-assert.equal(SIGNING_ENTITIES.length, 4);
+// Our signing entities, each a coupled bundle. Mirrors the seven bundles in
+// nda_automation/entity_registry.py (the embedded copy was expanded to match the
+// registry's full roster).
+assert.equal(SIGNING_ENTITIES.length, 7);
 assert.deepEqual(
   SIGNING_ENTITIES.map((entity) => entity.id),
-  ["aspora_technology", "vance_money", "real_transfer", "vance_techlabs"],
+  [
+    "aspora_technology",
+    "vance_money",
+    "real_transfer",
+    "vance_techlabs",
+    "nesse_technologies",
+    "vance_technologies",
+    "aspora_financial_services",
+  ],
 );
 for (const entity of SIGNING_ENTITIES) {
   assert.ok(entity.id && entity.legal_name, "entity has id + legal name");
@@ -1029,7 +1043,7 @@ assert.equal(defaultAddressFor(multiAddressEntities[0]).id, "corporate");
 // dropdown can never offer a law that no entity defines.
 const lawOptions = governingLawOptions();
 const lawIds = lawOptions.map((law) => law.id);
-assert.deepEqual(new Set(lawIds), new Set(["india", "delaware", "england_and_wales", "difc"]));
+assert.deepEqual(new Set(lawIds), new Set(["india", "delaware", "england_and_wales", "difc", "ontario_canada"]));
 assert.deepEqual(new Set(lawIds).size, lawIds.length, "law options are de-duplicated");
 for (const entity of SIGNING_ENTITIES) {
   assert.ok(lawIds.includes(entity.governing_law.playbook_option_id), "every entity law is offered");
@@ -1116,7 +1130,6 @@ const payload = buildDraftPayload({
   counterpartyEmail: "deals@acme.com",
   projectPurpose: "Series B diligence",
   term: "2 years",
-  notes: "rush",
 });
 assert.equal(payload.counterparty.name, "Acme Co");
 assert.equal(payload.counterparty.email, "deals@acme.com");
@@ -1127,14 +1140,81 @@ assert.equal(payload.signing_entity.governing_law.playbook_option_id, "india");
 assert.equal(payload.signing_entity.governing_law.label, "India");
 assert.equal(payload.signing_entity.address.id, "registered");
 assert.equal(payload.signing_entity.governing_law_overridden, false);
+// The signing_entity.address bundle carries its id (the picked address handle).
+assert.equal(payload.signing_entity.address.id, "registered");
+// First-party recital + identity fields default to "" when not supplied (the
+// preview shows placeholders; the payload sends empty strings, not undefined).
+assert.equal(payload.business_description, "");
+assert.equal(payload.counterparty_jurisdiction, "");
+assert.equal(payload.counterparty_registered_office, "");
+// The Special Notes field was removed (it had no defined purpose and only leaked
+// into the recital): the payload no longer carries a `notes` key, and the recital
+// now comes from the real business_description field.
+assert.equal("notes" in payload, false, "notes is no longer part of the payload");
+assert.equal("notes" in createInitialIntake(), false, "notes is no longer part of the intake state");
 // A blank email serializes to null, not "".
 assert.equal(buildDraftPayload(validIntake).counterparty.email, null);
+
+// The first-party recital/identity fields the preview renders now ride the
+// payload under their backend-contract key names (business_description,
+// counterparty_jurisdiction, counterparty_registered_office). These were
+// previously dropped, so a generated NDA silently lost the recital business line
+// and the counterparty's incorporation/registered office.
+const fullPayload = buildDraftPayload({
+  ...validIntake,
+  businessDescription: "  cross-border payments  ",
+  counterpartyIncorporation: "Delaware, USA",
+  counterpartyAddress: "1 Market St, San Francisco, CA",
+});
+assert.equal(fullPayload.business_description, "cross-border payments", "trimmed business_description");
+assert.equal(fullPayload.counterparty_jurisdiction, "Delaware, USA");
+assert.equal(fullPayload.counterparty_registered_office, "1 Market St, San Francisco, CA");
 
 // An overridden law is flagged in the payload so generation/review can see the
 // coupling was deliberately broken.
 const overriddenPayload = buildDraftPayload(setGoverningLawOverride(validIntake, "delaware"));
 assert.equal(overriddenPayload.signing_entity.governing_law.playbook_option_id, "delaware");
 assert.equal(overriddenPayload.signing_entity.governing_law_overridden, true);
+
+// --- Forum/courts follow the governing law (preview clause 13). A govlaw
+// override switches the forum too in generation; effectiveForum mirrors that so
+// the preview can move BOTH the law and the forum. ---
+// Embedded mirror omits the per-entity `jurisdiction`, so the static
+// FORUM_BY_OPTION_ID map is the fallback and must match the registry strings.
+assert.equal(forumForOptionId("india"), "Courts of India");
+assert.equal(forumForOptionId("delaware"), "Courts of the State of Delaware");
+assert.equal(forumForOptionId("england_and_wales"), "Courts of England and Wales");
+assert.equal(forumForOptionId("difc"), "DIFC Courts, Dubai");
+assert.equal(forumForOptionId("ontario_canada"), "Courts of Ontario, Canada");
+assert.equal(forumForOptionId("unknown_option"), "", "unknown option yields no forum");
+assert.equal(forumForOptionId(null), "");
+// FORUM_BY_OPTION_ID is the source of truth the fallback reads.
+assert.equal(FORUM_BY_OPTION_ID.delaware, "Courts of the State of Delaware");
+// effectiveForum tracks the intake's effective law: default entity (India) →
+// India's courts; an override to Delaware → Delaware's courts.
+assert.equal(effectiveForum(validIntake), "Courts of India");
+assert.equal(effectiveForum(setGoverningLawOverride(validIntake, "delaware")), "Courts of the State of Delaware");
+assert.equal(effectiveForum(createInitialIntake()), "", "no entity → no forum");
+// When the live feed supplies a per-entity `jurisdiction`, it is preferred over
+// the static map (mirrors the backend resolving the forum from the registry).
+const forumRegistry = [
+  {
+    id: "live_entity",
+    short_name: "Live",
+    legal_name: "Live Co Ltd",
+    governing_law: { playbook_option_id: "delaware", label: "Delaware" },
+    jurisdiction: "The Court of Chancery of Delaware",
+    addresses: [{ id: "hq", label: "HQ", lines: ["Dover"], country: "USA", default: true }],
+  },
+];
+assert.equal(
+  forumForOptionId("delaware", forumRegistry),
+  "The Court of Chancery of Delaware",
+  "live jurisdiction wins over the static fallback map",
+);
+
+// The playbook term cap the preview clamps to has a sane fallback default.
+assert.equal(DEFAULT_MAX_TERM_YEARS, 5);
 
 // --- Factory binds a custom registry (the seam for an entity-model
 // /api/signing-entities feed): every helper reads through the injected entities,

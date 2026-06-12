@@ -990,6 +990,10 @@ function renderFormattedRun(run, changed = false) {
   if (run?.bold) html = `<strong>${html}</strong>`;
   if (run?.italic) html = `<em>${html}</em>`;
   if (run?.underline) html = `<u>${html}</u>`;
+  // Viewer-only signing-entity highlight in the NDA Generator draft preview. Only
+  // generator draft runs ever carry `fill`; review redlines never set it, so this
+  // branch is inert there. It is a visual aid and is dropped on export.
+  if (run?.fill) html = `<span class="nda-fill-entity">${html}</span>`;
   // Document strikethrough is run formatting from the SOURCE, not a tracked
   // deletion. It MUST use a dedicated class (never .inline-del / any redline
   // class) so it is visually distinct from — and never confused with — a

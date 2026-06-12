@@ -1,5 +1,11 @@
 let reviewSendModalPreviousFocus = null;
 
+// Upper bound on how long the reviewed-DOCX export request may run before we
+// abort it. A hung/very slow export must not permanently disable the Download
+// button — on timeout the request aborts, the button re-enables, and the
+// reviewer can retry. Generous enough for a legitimately large document.
+const EXPORT_REQUEST_TIMEOUT_MS = 120000;
+
 function clearReview() {
   closeReviewSendComposer({ restoreFocus: false });
   pendingReviewSendMatterId = null;
@@ -109,6 +115,11 @@ function openReviewDownloadMenu() {
       });
   DocumentDownloadMenu.open(studioExportButton, {
     label: "Download reviewed document",
+    // Preview what the export will include (clause redlines + names, manual
+    // edits, added/replaced text, comments) BEFORE the reviewer picks a format.
+    // Reuses the exact same summary the email Send composer shows, derived from
+    // effectiveReviewRedlines() + currentReviewComments() + manualExportRedlines().
+    preview: reviewDownloadContentsPreview(),
     sections: [{
       label: "Reviewed redline",
       choices: [
@@ -122,6 +133,16 @@ function openReviewDownloadMenu() {
       ],
     }],
   });
+}
+
+// Build the download-menu contents preview from the same change summary the
+// email Send composer uses. Returns null when there is no review state to
+// preview (no clauses yet) so the menu stays unchanged in that case.
+function reviewDownloadContentsPreview() {
+  if (!state.reviewClauses.length) return null;
+  const lines = reviewSendSummaryLines(reviewSendChangeSummary());
+  if (!lines.length) return null;
+  return { title: "This download will include:", lines };
 }
 
 async function downloadReviewPdf(choice) {
@@ -154,16 +175,9 @@ async function exportReviewDocx() {
   const exportDraftDirty = Boolean(exportMatter?.id && state.redlineDraftDirty);
 
   studioExportButton.disabled = true;
-  studioExportButton.title = "Choosing file…";
+  studioExportButton.title = "Exporting…";
 
   try {
-    const saveHandle = await chooseExportSaveHandle(suggestedExportFilenameForContext(exportMatter, exportDocument));
-    if (saveHandle === null) {
-      studioFileMeta.textContent = "Export cancelled";
-      return;
-    }
-
-    studioExportButton.title = "Exporting…";
     if (exportDraftDirty && state.selectedMatter?.id === exportMatter.id) {
       await saveReviewRedlineDraft({ quiet: true });
     }
@@ -188,30 +202,59 @@ async function exportReviewDocx() {
       payload.content_base64 = await fileToBase64(exportDocument);
     }
 
-    const response = await fetch("/api/export-review-docx", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    // Guard the export against a slow or hung server. Without a timeout, a request
+    // that never resolves would leave the Download button stuck disabled (title
+    // "Exporting…") permanently, since the `finally` below never runs. On timeout
+    // we abort so the catch/finally re-enable the button and the reviewer can retry.
+    const exportAbort = new AbortController();
+    const exportTimeoutId = window.setTimeout(() => exportAbort.abort(), EXPORT_REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch("/api/export-review-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: exportAbort.signal,
+      });
+    } catch (fetchError) {
+      if (fetchError?.name === "AbortError") {
+        throw new Error("Export timed out — the server did not respond. Please try again.");
+      }
+      throw fetchError;
+    } finally {
+      window.clearTimeout(exportTimeoutId);
+    }
     if (!response.ok) {
       const payload = await response.json();
       throw reviewErrorFromPayload(payload, "Export could not run");
     }
+    // Retrieve the full blob BEFORE creating/writing any local file so that a
+    // slow or failed server response never leaves an empty file on disk.
     const filename = downloadFilename(response) || "nda-review-report.docx";
     const savedPath = response.headers.get("X-Export-Path");
     const savedUrl = response.headers.get("X-Export-URL");
     const exportVerified = response.headers.get("X-Export-Verified");
-    if (saveHandle) {
-      const blob = await response.blob();
-      await writeBlobToSaveHandle(saveHandle, blob);
-      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "saved");
-    } else if (savedUrl) {
-      renderExportSuccess(filename, savedPath, savedUrl, exportVerified);
+    // PDF-source matters return an export reconstructed from the PDF (not faithful
+    // original Word). The backend marks this with X-PDF-DOCX-Reconstruction (and
+    // sets X-Export-Verified to that same marker value); surface a distinct caveat
+    // instead of the generic "Word package verified" message.
+    const exportReconstructedFromPdf = Boolean(
+      response.headers.get("X-PDF-DOCX-Reconstruction") || exportVerified === "pdf2docx",
+    );
+    if (savedUrl) {
+      // Server already saved the file at a known URL — download from there directly;
+      // no blob to read, no local empty-file risk.
+      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "exported", exportReconstructedFromPdf);
       downloadUrl(savedUrl, filename);
     } else {
+      // Read the full blob first; only trigger the browser download once real bytes
+      // are in hand. showSaveFilePicker is intentionally not used here: calling it
+      // after an await would throw a user-gesture error, and calling it before the
+      // fetch (the old "save-first" design) creates an empty destination file that
+      // is left at 0 bytes on any error path.
       const blob = await response.blob();
       downloadBlob(blob, filename);
-      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading");
+      renderExportSuccess(filename, savedPath, savedUrl, exportVerified, "downloading", exportReconstructedFromPdf);
     }
     await repositoryController.markMatterRedlineReady(exportMatter);
   } catch (error) {
@@ -231,6 +274,16 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
   const targetClauseId = clauseId || sourceButton?.dataset?.reviewClauseId || "";
   const targetClauseIds = targetClauseId ? [targetClauseId] : reviewClauseIds();
   if (!targetClauseIds.length) return;
+  // The header "Reviewed" button (no clauseId) flips EVERY needs-review clause
+  // at once. When it would change more than one clause, confirm with the list of
+  // clause names first so the bulk scope is explicit, and disambiguate the
+  // un-review (toggle-OFF) direction. Single-clause "mark reviewed" (a clauseId
+  // was passed, e.g. from the lane) is unchanged and never prompts.
+  const isHeaderBulk = !targetClauseId;
+  if (isHeaderBulk && targetClauseIds.length > 1) {
+    const willReview = targetClauseIds.some((id) => !clauseReviewAcknowledged(id));
+    if (!confirmMarkClausesReviewed(targetClauseIds, willReview)) return;
+  }
   const previousReviewedClauseIds = { ...reviewedClauseMap() };
   const previousMatter = state.selectedMatter ? { ...state.selectedMatter } : null;
   const previousMatterReviewed = Boolean(previousMatter?.human_reviewed);
@@ -423,7 +476,12 @@ async function sendReviewRedlineEmail({ fromComposer = false } = {}) {
     }
     pendingReviewSendMatterId = null;
     closeReviewSendComposer({ restoreFocus: false });
-    setFileMeta(`Sent redline to ${recipient}`);
+    // PDF-source matters send a Word file reconstructed from the PDF; append the
+    // honest formatting caveat so the operator does not assume faithful original output.
+    const sendCaveat = result.source_reconstructed_from_pdf
+      ? " Note: this Word file was reconstructed from a PDF and may not preserve original formatting."
+      : "";
+    setFileMeta(`Sent redline to ${recipient}${sendCaveat}`);
     studioSendButton?.focus?.();
   } catch (error) {
     pendingReviewSendMatterId = null;
@@ -670,6 +728,103 @@ function hasUnsavedReviewEdits() {
   return Boolean(state.redlineDraftDirty);
 }
 
+// Count, per loss-bucket, what a Reset Draft would actually wipe. Each entry is
+// only included when its count is non-zero so the confirm lists only what is at
+// risk; a genuinely untouched draft yields no buckets and skips the dialog.
+// Crucially, the Accept/Ignore and template buckets count only decisions the
+// reviewer changed AWAY from the auto-derived defaults — a freshly loaded review
+// already has default export/template maps that the reviewer never chose, and
+// resetting back to those defaults loses nothing.
+//   - comments: every reviewComment
+//   - manualEdits: paragraphs whose text differs from the manual-redline
+//     baseline (i.e. the reviewer typed over them)
+//   - templateSelections: template choices differing from the default selection
+//   - decisions: clause/redline Accept-Ignore decisions differing from default
+//   - reviewedMarks: reviewedClauseIds the reviewer toggled
+function reviewResetLossBuckets() {
+  const buckets = [];
+
+  const commentCount = Array.isArray(state.reviewComments) ? state.reviewComments.length : 0;
+  if (commentCount) {
+    buckets.push({ key: "comments", count: commentCount, label: `${commentCount} ${plural("comment", commentCount)}` });
+  }
+
+  const baseline = manualRedlineBaselineParagraphs();
+  const baselineById = new Map((baseline || []).map((paragraph) => [String(paragraph.id || ""), paragraph]));
+  const manualEditCount = (state.reviewParagraphs || []).reduce((total, paragraph) => {
+    const original = baselineById.get(String(paragraph.id || ""));
+    if (original && String(original.text || "") !== String(paragraph.text || "")) return total + 1;
+    return total;
+  }, 0);
+  if (manualEditCount) {
+    buckets.push({ key: "manualEdits", count: manualEditCount, label: `${manualEditCount} manual ${plural("edit", manualEditCount)}` });
+  }
+
+  const defaultTemplates = defaultRedlineTemplateSelections(state.reviewRedlines);
+  const templateCount = Object.keys(state.redlineTemplateSelections || {}).reduce((total, editId) => {
+    const current = state.redlineTemplateSelections[editId];
+    return current && current !== defaultTemplates[editId] ? total + 1 : total;
+  }, 0);
+  if (templateCount) {
+    buckets.push({ key: "templateSelections", count: templateCount, label: `${templateCount} template ${plural("selection", templateCount)}` });
+  }
+
+  const defaultClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
+  let decisionCount = Object.keys(state.exportClauseDecisions || {}).reduce((total, clauseId) => {
+    const current = Boolean(state.exportClauseDecisions[clauseId]);
+    const fallback = Boolean(defaultClauseDecisions[clauseId]);
+    return current !== fallback ? total + 1 : total;
+  }, 0);
+  // Per-redline decisions have no auto-default map (absence == "follow clause"),
+  // so every explicit redline decision is a reviewer choice.
+  decisionCount += Object.keys(state.exportRedlineDecisions || {}).length;
+  if (decisionCount) {
+    buckets.push({ key: "decisions", count: decisionCount, label: "all Accept/Ignore decisions" });
+  }
+
+  const reviewedCount = Object.keys(reviewedClauseMap() || {}).length;
+  if (reviewedCount) {
+    buckets.push({ key: "reviewedMarks", count: reviewedCount, label: "all reviewed marks" });
+  }
+
+  return buckets;
+}
+
+// Gate Reset Draft behind a confirm that ENUMERATES the non-empty loss buckets
+// with counts. Returns true when it is safe to proceed (nothing to lose, or the
+// reviewer confirmed). Skips the dialog entirely when there is nothing to lose.
+function confirmResetReviewRedlineDraft() {
+  const buckets = reviewResetLossBuckets();
+  if (!buckets.length) return true;
+  const message = `This will discard: ${formatLossBucketList(buckets)}. Continue?`;
+  if (typeof window !== "undefined" && typeof window.confirm === "function") {
+    return window.confirm(message);
+  }
+  return true;
+}
+
+// Confirm the bulk header mark/un-mark, listing the affected clause names so the
+// reviewer sees exactly which clauses a single click will flip. `willReview` is
+// true when the click marks them reviewed, false when it un-reviews them all.
+function confirmMarkClausesReviewed(clauseIds, willReview) {
+  const names = uniqueStrings(clauseIds.map((id) => clauseNameForId(id)));
+  const count = clauseIds.length;
+  const verb = willReview ? "Mark" : "Unmark";
+  const tail = willReview ? "as reviewed" : "as needing review";
+  const message = `${verb} ${count} ${count === 1 ? "clause" : "clauses"} ${tail}?\n\n${names.map((name) => `• ${name}`).join("\n")}`;
+  if (typeof window !== "undefined" && typeof window.confirm === "function") {
+    return window.confirm(message);
+  }
+  return true;
+}
+
+function formatLossBucketList(buckets) {
+  const labels = buckets.map((bucket) => bucket.label);
+  if (labels.length <= 1) return labels.join("");
+  const head = labels.slice(0, -1).join(", ");
+  return `${head}, and ${labels[labels.length - 1]}`;
+}
+
 async function refreshSelectedMatterReview() {
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
@@ -863,6 +1018,11 @@ async function saveReviewRedlineDraft({ quiet = false } = {}) {
 
 async function resetReviewRedlineDraft() {
   if (!state.selectedMatter?.id) return null;
+  // Reset Draft is destructive: it wipes comments, manual edits, template
+  // selections, Accept/Ignore decisions, and reviewed marks. Enumerate the
+  // non-empty buckets in a confirm and abort (no POST, no state change) if the
+  // reviewer cancels. The dialog is skipped when there is nothing to lose.
+  if (!confirmResetReviewRedlineDraft()) return null;
   if (studioDiscardDraftButton) {
     studioDiscardDraftButton.disabled = true;
     studioDiscardDraftButton.textContent = "Resetting";
@@ -922,11 +1082,19 @@ async function writeBlobToSaveHandle(fileHandle, blob) {
   }
 }
 
-function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported") {
+function renderExportSuccess(filename, savedPath, savedUrl, verification, fallbackVerb = "exported", reconstructedFromPdf = false) {
   studioFileMeta.textContent = "";
   const summary = document.createElement("span");
   summary.className = "export-success";
-  const verificationText = verification ? " · Word package verified · Track Changes enabled" : "";
+  // A PDF-source export is reconstructed from the PDF and is not a faithful
+  // original Word package, so it gets a distinct caveat rather than the
+  // "Word package verified" assurance used for true DOCX-source exports.
+  let verificationText = "";
+  if (reconstructedFromPdf) {
+    verificationText = " · Best-effort Word reconstructed from PDF — formatting may differ; the original PDF is the faithful source";
+  } else if (verification) {
+    verificationText = " · Word package verified · Track Changes enabled";
+  }
   summary.textContent = `${savedUrl ? `Saved export: ${savedUrl}` : `${filename} ${fallbackVerb}`}${verificationText}`;
   studioFileMeta.append(summary);
   if (savedUrl) {

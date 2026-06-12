@@ -43,6 +43,7 @@ from typing import Any, Callable, Mapping, Protocol
 from docx import Document
 from docx.document import Document as DocxDocument
 
+from .checks.common import _year_count_label
 from .playbook_runtime import ActivePlaybookBundle
 
 # The tracked template asset (the company's Generic NDA). Resolved relative to
@@ -161,6 +162,10 @@ class EntityParty:
     signatory_name: str = ""
     signatory_title: str = ""
     entity_id: str = ""
+    # The registry address id actually written into ``registered_office`` (the
+    # user's pick, or the default). Recorded on the manifest for provenance parity
+    # with the governing-law override.
+    registered_office_address_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,6 +199,11 @@ class GenerationManifest:
     agreement_date: str
     governing_law_value: str
     forum: str
+    # The registry address id whose lines were written as the entity's registered
+    # office. Records the user's address pick (or the default) for provenance parity
+    # with the governing-law override, so gen-verify / audit can confirm WHICH office
+    # was used rather than re-parsing the prose.
+    entity_address_id: str = ""
     slot_fills: dict[str, str] = field(default_factory=dict)
     clause_alignments: list[str] = field(default_factory=list)
     # Free-text intake fields whose untrusted content was neutralised before it
@@ -222,6 +232,7 @@ class GenerationManifest:
             "agreement_date": self.agreement_date,
             "governing_law_value": self.governing_law_value,
             "forum": self.forum,
+            "entity_address_id": self.entity_address_id,
             "slot_fills": dict(self.slot_fills),
             "clause_alignments": list(self.clause_alignments),
             "sanitized_fields": list(self.sanitized_fields),
@@ -257,6 +268,7 @@ def entity_party_from_bundle(
     playbook: Mapping[str, Any],
     *,
     governing_law_option_id: str = "",
+    address_id: str = "",
 ) -> EntityParty:
     """Build an :class:`EntityParty` from an ``entity_registry`` bundle.
 
@@ -272,6 +284,12 @@ def entity_party_from_bundle(
     overridden, the forum tracks the overridden law (rather than the entity's
     default courts) so the draft never pairs one jurisdiction's law with another's
     forum.
+
+    ``address_id`` selects which registry address fills the entity's registered
+    office (the product lets the user pick a non-default office). A blank id falls
+    back to the default-flagged address; an unknown id is rejected (same guard shape
+    as the governing-law override). The chosen id is carried on the returned
+    :class:`EntityParty` so the manifest can record it for provenance.
     """
 
     legal_name = str(bundle.get("legal_name") or "").strip()
@@ -296,7 +314,7 @@ def entity_party_from_bundle(
     option_id = override_id or default_option_id
     governing_law_value = approved[option_id]
 
-    address = _bundle_default_address(bundle)
+    address, chosen_address_id = select_bundle_address(bundle, address_id)
     signatory = bundle.get("signatory") or {}
     # The entity's registered forum is correct for its default law. When the law is
     # overridden to a different option, derive the forum that goes WITH the chosen
@@ -321,6 +339,7 @@ def entity_party_from_bundle(
         signatory_name=_real_or_blank(signatory.get("name")),
         signatory_title=_real_or_blank(signatory.get("title")),
         entity_id=str(bundle.get("id") or "").strip(),
+        registered_office_address_id=chosen_address_id,
     )
 
 
@@ -412,6 +431,7 @@ def generate_nda(
         agreement_date=agreement_date.isoformat(),
         governing_law_value=entity.governing_law_value,
         forum=entity.forum,
+        entity_address_id=entity.registered_office_address_id,
     )
 
     # Neutralise untrusted free text BEFORE it reaches either the document fills
@@ -422,7 +442,7 @@ def generate_nda(
     _fill_variable_slots(document, entity, intake, agreement_date, manifest)
     _align_mutuality(document, playbook, clause_adapter, intake, manifest)
     _align_confidential_information(document, playbook, clause_adapter, intake, manifest)
-    _align_term_and_survival(document, term_years, clause_adapter, intake, manifest)
+    _align_term_and_survival(document, playbook, term_years, clause_adapter, intake, manifest)
 
     # Unassigned signatories render as blank fill-lines (not bracketed text), so
     # no bracketed values are ever legitimately retained — the guard is strict.
@@ -481,6 +501,7 @@ def generate_nda_for_entity(
     use_ai: bool = True,
     use_frozen: bool = False,
     governing_law_override: str = "",
+    address_id: str = "",
 ) -> GenerationResult:
     """Resolve the entity from the registry and generate the NDA (no save).
 
@@ -501,6 +522,11 @@ def generate_nda_for_entity(
     law and the manifest records the override provenance (``governing_law_overridden``
     + ``entity_default_governing_law_value``) so gen-verify validates the chosen
     law rather than flagging an entity mismatch.
+
+    ``address_id`` is the registry address id the user picked for the entity's
+    registered office; blank uses the entity default, an unknown id is rejected (see
+    :func:`entity_party_from_bundle`). The chosen id lands on the manifest
+    (``entity_address_id``).
     """
 
     from . import entity_registry  # noqa: PLC0415
@@ -532,7 +558,9 @@ def generate_nda_for_entity(
     overridden = bool(override_id) and override_id != default_option_id
     effective_option_id = override_id or default_option_id
 
-    entity = entity_party_from_bundle(bundle, playbook, governing_law_option_id=override_id)
+    entity = entity_party_from_bundle(
+        bundle, playbook, governing_law_option_id=override_id, address_id=address_id
+    )
     result = generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
     # Record governing-law provenance on the manifest (the effective law value +
     # forum are already on the manifest; these let gen-verify validate against the
@@ -556,6 +584,7 @@ def generate_and_save_nda(
     clause_adapter: ClauseAdapter | None = None,
     use_ai: bool = True,
     governing_law_override: str = "",
+    address_id: str = "",
 ) -> tuple[GenerationResult, Any]:
     """End-to-end: resolve the entity, generate the NDA, save it as an artifact.
 
@@ -580,6 +609,7 @@ def generate_and_save_nda(
         clause_adapter=clause_adapter,
         use_ai=use_ai,
         governing_law_override=governing_law_override,
+        address_id=address_id,
     )
     # Hard pre-save gate: never persist an off-position draft. The clause adapter
     # is guarded and the intake is sanitised, but this is the last, independent
@@ -875,7 +905,6 @@ def _fill_variable_slots(
         "[•] day of [•], [YEAR]": f"{day} day of {month}, {year}",
         "[BUSINESS DESCRIPTION]": intake.business_description,
         "[GOVERNING LAW]": entity.governing_law_value,
-        "[FORUM / JURISDICTION]": entity.forum,
     }
     for paragraph in document.paragraphs:
         text = paragraph.text
@@ -905,7 +934,6 @@ def _fill_variable_slots(
             "[REGISTERED OFFICE ADDRESS] (second party)": entity.registered_office,
             "[BUSINESS DESCRIPTION]": intake.business_description,
             "[GOVERNING LAW]": entity.governing_law_value,
-            "[FORUM / JURISDICTION]": entity.forum,
             # Empty -> the signature block renders a blank fill-line for signing.
             "[AUTHORISED SIGNATORY]": entity.signatory_name or "(blank fill-line)",
             "[DESIGNATION]": entity.signatory_title or "(blank fill-line)",
@@ -1034,7 +1062,7 @@ def _align_confidential_information(
     list style, so the definition stays template-shaped but Playbook-complete.
     """
 
-    independent = _independent_development_sentence(clause_adapter, intake)
+    independent = _independent_development_sentence(playbook, clause_adapter, intake)
 
     # Find the last sub-item of the exceptions list (the prior-possession item).
     anchor_index = None
@@ -1063,6 +1091,7 @@ def _align_confidential_information(
 
 def _align_term_and_survival(
     document: DocxDocument,
+    playbook: Mapping[str, Any],
     term_years: int,
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
@@ -1076,12 +1105,12 @@ def _align_term_and_survival(
     legal / data-protection survival carve-out so it passes ``term_and_survival``.
     """
 
-    survival = _survival_sentence(clause_adapter, intake)
+    survival = _survival_sentence(playbook, clause_adapter, intake)
 
     body = (
         "This Agreement shall become effective on the date of signing of this Agreement and shall "
         f"remain in force, and the confidentiality obligations shall survive, for a fixed period of "
-        f"{_years_label(term_years)} from the date of this Agreement or until the completion of the "
+        f"{_year_count_label(term_years, parenthetical=True)} from the date of this Agreement or until the completion of the "
         f"Purpose, whichever is later. {survival}"
     )
 
@@ -1096,11 +1125,37 @@ def _align_term_and_survival(
     raise NdaGenerationError("Template is missing the TERM OF THE AGREEMENT clause.")
 
 
+# Blank-template fallbacks: used ONLY when the Playbook clause carries no template
+# text. Normal operation sources the prose LIVE from the Playbook (so editing the
+# Playbook changes the generated wording), exactly as ``_align_mutuality`` reads
+# the mutuality ``redline_template`` and ``_resolve_term_years`` reads the term cap.
+_INDEPENDENT_DEVELOPMENT_FALLBACK = (
+    "is independently developed by the receiving Party without use of or reference "
+    "to the Confidential Information."
+)
+_SURVIVAL_FALLBACK = (
+    "Notwithstanding the foregoing, trade secrets, information whose confidentiality is "
+    "required by law or regulation, and personal data protected by data-protection law shall "
+    "remain confidential for as long as the protected status or applicable law requires."
+)
+
+
 def _independent_development_sentence(
+    playbook: Mapping[str, Any],
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
 ) -> str:
-    base = "is independently developed by the receiving Party without use of or reference to the Confidential Information."
+    """The CI independent-development exclusion list item, sourced from the Playbook.
+
+    Reads ``confidential_information.standard_exclusions_template`` and lifts its
+    independent-development carve-out into the template's list-item grammar
+    ("is ..."), so a Playbook edit to the standard exclusions flows through to the
+    generated clause. Falls back to the literal only when the template is blank.
+    """
+
+    clause = _playbook_clause(playbook, CLAUSE_CONFIDENTIAL)
+    template = str(clause.get("standard_exclusions_template") or "").strip()
+    base = _independent_development_item_from_template(template) or _INDEPENDENT_DEVELOPMENT_FALLBACK
     if clause_adapter is None:
         return base
     adapted = clause_adapter.adapt(CLAUSE_CONFIDENTIAL, base, _adapter_context(intake))
@@ -1108,20 +1163,73 @@ def _independent_development_sentence(
 
 
 def _survival_sentence(
+    playbook: Mapping[str, Any],
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
 ) -> str:
-    # The survival carve-out is appended after the fixed-term sentence, so it
-    # reads as its own statement rather than a sub-clause of the term sentence.
-    base = (
-        "Notwithstanding the foregoing, trade secrets, information whose confidentiality is "
-        "required by law or regulation, and personal data protected by data-protection law shall "
-        "remain confidential for as long as the protected status or applicable law requires."
-    )
+    """The survival carve-out statement, sourced from the Playbook term template.
+
+    Reads ``term_and_survival.redline_template`` and lifts its survival carve-out
+    (the "except that ..." tail) into a standalone "Notwithstanding the foregoing,
+    ..." statement appended after the fixed-term sentence, so it reads as its own
+    statement rather than a sub-clause of the term sentence. A Playbook edit to the
+    survival carve-out flows through; falls back to the literal only when blank.
+    """
+
+    clause = _playbook_clause(playbook, CLAUSE_TERM)
+    template = str(clause.get("redline_template") or "").strip()
+    base = _survival_statement_from_template(template) or _SURVIVAL_FALLBACK
     if clause_adapter is None:
         return base
     adapted = clause_adapter.adapt(CLAUSE_TERM, base, _adapter_context(intake))
     return adapted.strip() or base
+
+
+def _independent_development_item_from_template(template: str) -> str:
+    """Lift the independent-development carve-out from the CI exclusions template.
+
+    The ``standard_exclusions_template`` lists carve-outs inline
+    ("...or independently developed without use of or reference to Confidential
+    Information."). We take the final "or"-joined item and recast it into the
+    template's list-item grammar ("is ..."). Returns "" when the template carries
+    no independent-development carve-out, so the caller uses the literal fallback.
+    """
+
+    if not template:
+        return ""
+    body = template.rstrip().rstrip(".")
+    # The carve-outs are joined by commas with a final "or"; take the last item.
+    _, _, last = body.rpartition(", or ")
+    fragment = (last or body).strip()
+    if "independently develop" not in fragment.lower():
+        return ""
+    # Recast "independently developed ..." -> "is independently developed ..." so it
+    # completes the list stem ("Confidential Information does not include ... that ...").
+    if not fragment.lower().startswith("is "):
+        fragment = "is " + fragment
+    return fragment.rstrip(".") + "."
+
+
+def _survival_statement_from_template(template: str) -> str:
+    """Lift the survival carve-out from the term template into a standalone sentence.
+
+    The ``redline_template`` reads "...survive for a fixed period of up to
+    {label}, except that <carve-out>." We take the "except that ..." tail and
+    front it with "Notwithstanding the foregoing, " so it stands alone after the
+    generator's own fixed-term sentence. Returns "" when there is no carve-out tail.
+    """
+
+    if not template:
+        return ""
+    marker = "except that "
+    lowered = template.lower()
+    position = lowered.find(marker)
+    if position < 0:
+        return ""
+    carve_out = template[position + len(marker):].strip().rstrip(".").strip()
+    if not carve_out:
+        return ""
+    return "Notwithstanding the foregoing, " + carve_out + "."
 
 
 def _adapter_context(intake: CounterpartyIntake) -> dict[str, Any]:
@@ -1277,7 +1385,6 @@ _TEMPLATE_SLOTS = frozenset(
         "[REGISTERED OFFICE ADDRESS]",
         "[BUSINESS DESCRIPTION]",
         "[GOVERNING LAW]",
-        "[FORUM / JURISDICTION]",
         "[AUTHORISED SIGNATORY]",
         "[DESIGNATION]",
         "[YEAR]",
@@ -1319,20 +1426,6 @@ def _assert_no_unfilled_placeholders(document: DocxDocument, allowed: set[str]) 
 # Small text utilities
 # --------------------------------------------------------------------------- #
 
-_NUMBER_WORDS = {
-    1: "one (1)",
-    2: "two (2)",
-    3: "three (3)",
-    4: "four (4)",
-    5: "five (5)",
-}
-
-
-def _years_label(years: int) -> str:
-    words = _NUMBER_WORDS.get(years, f"{years}")
-    return f"{words} years" if years != 1 else "one (1) year"
-
-
 def _split_date(date: _dt.date) -> tuple[str, str, str]:
     day = _ordinal(date.day)
     month = date.strftime("%B")
@@ -1348,16 +1441,55 @@ def _ordinal(day: int) -> str:
 
 
 def _bundle_default_address(bundle: Mapping[str, Any]) -> str:
-    addresses = bundle.get("addresses") or []
-    chosen = None
-    for address in addresses:
-        if address.get("default"):
-            chosen = address
-            break
-    if chosen is None and addresses:
-        chosen = addresses[0]
+    chosen = _default_address_entry(bundle)
     if chosen is None:
         raise NdaGenerationError("Entity bundle has no addresses.")
-    lines = chosen.get("lines") or []
+    return _format_address(chosen)
+
+
+def _default_address_entry(bundle: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The default-flagged address entry (first address if none is flagged)."""
+
+    addresses = bundle.get("addresses") or []
+    for address in addresses:
+        if address.get("default"):
+            return address
+    if addresses:
+        return addresses[0]
+    return None
+
+
+def _format_address(entry: Mapping[str, Any]) -> str:
+    lines = entry.get("lines") or []
     joined = ", ".join(line for line in lines if line)
-    return joined or str(chosen.get("label") or "").strip()
+    return joined or str(entry.get("label") or "").strip()
+
+
+def select_bundle_address(bundle: Mapping[str, Any], address_id: str = "") -> tuple[str, str]:
+    """Pick the entity address to write, honouring the user's chosen ``address_id``.
+
+    Returns ``(formatted_address, chosen_address_id)``. When ``address_id`` names a
+    real address on the bundle, THAT address is used (the product lets the user pick
+    a non-default office, e.g. Real Transfer's Belfast registered office instead of
+    the default London corporate office). An UNKNOWN/invalid id is rejected — mirrors
+    the governing-law override guard, so a stale or tampered client value fails loudly
+    rather than silently substituting the default. A blank id falls back to the
+    default-flagged address. The returned id is recorded on the manifest for the same
+    provenance parity the governing-law override has.
+    """
+
+    addresses = bundle.get("addresses") or []
+    wanted = str(address_id or "").strip()
+    if wanted:
+        for address in addresses:
+            if str(address.get("id") or "").strip() == wanted:
+                return _format_address(address), wanted
+        known = sorted(str(a.get("id") or "").strip() for a in addresses if a.get("id"))
+        raise NdaGenerationError(
+            f"Address id {wanted!r} is not an address on entity bundle "
+            f"{str(bundle.get('id') or '')!r} (known: {known})."
+        )
+    chosen = _default_address_entry(bundle)
+    if chosen is None:
+        raise NdaGenerationError("Entity bundle has no addresses.")
+    return _format_address(chosen), str(chosen.get("id") or "").strip()

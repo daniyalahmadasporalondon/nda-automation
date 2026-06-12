@@ -267,7 +267,9 @@ class GenerateNdaRouteTests(unittest.TestCase):
             "signing_entity": {
                 "id": "aspora_technology",
                 "legal_name": "Aspora Technology Services Private Limited",
-                "address": {"id": "bengaluru", "label": "Bengaluru", "lines": ["MG Road"]},
+                # The entity's real registry address id (the FE echoes the picked
+                # address as {id,label,lines}; generation selects it from the registry).
+                "address": {"id": "registered", "label": "Registered office", "lines": ["..."]},
                 # aspora default is India; the FE picked England (overridden).
                 "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
                 "governing_law_overridden": True,
@@ -281,6 +283,8 @@ class GenerateNdaRouteTests(unittest.TestCase):
         m = payload["manifest"]
         self.assertEqual(m["counterparty_name"], "Globex International Ltd")
         self.assertEqual(m["term_years"], 3)  # parsed from "3 years"
+        # The FE-chosen address id is honoured + recorded for provenance.
+        self.assertEqual(m["entity_address_id"], "registered")
         # The FE-chosen governing law was applied + flagged with full provenance.
         self.assertEqual(m["governing_law_value"], "England and Wales")
         self.assertEqual(m["governing_law_option_id"], "england_and_wales")

@@ -2,15 +2,19 @@ from nda_automation import nda_generation, nda_generation_workflow
 
 
 def test_intake_from_payload_accepts_committed_frontend_shape():
-    entity_id, intake, governing_law_override = nda_generation_workflow.intake_from_payload(
+    entity_id, intake, governing_law_override, address_id = nda_generation_workflow.intake_from_payload(
         {
             "counterparty": {"name": "Globex International Ltd"},
             "project_purpose": "evaluating a data-sharing integration",
+            "business_description": "cross-border payments infrastructure",
+            "counterparty_jurisdiction": "Singapore",
+            "counterparty_registered_office": "1 Raffles Place, Singapore 048616",
             "term": "3 years",
             "nda_type": "mutual",
             "notes": "introduced via the partnerships team",
             "signing_entity": {
                 "id": "aspora_technology",
+                "address": {"id": "registered"},
                 "governing_law": {"playbook_option_id": "england_and_wales"},
             },
         }
@@ -20,8 +24,44 @@ def test_intake_from_payload_accepts_committed_frontend_shape():
     assert intake.company_name == "Globex International Ltd"
     assert intake.purpose == "evaluating a data-sharing integration"
     assert intake.term_years == 3
-    assert intake.business_description == "introduced via the partnerships team"
+    # business_description comes from the LABELLED business field, not `notes`.
+    assert intake.business_description == "cross-border payments infrastructure"
+    # The first-party incorporation/office slots populate from the explicit keys.
+    assert intake.jurisdiction_of_incorporation == "Singapore"
+    assert intake.registered_office == "1 Raffles Place, Singapore 048616"
     assert governing_law_override == "england_and_wales"
+    assert address_id == "registered"
+
+
+def test_notes_does_not_leak_into_business_description():
+    """BUG A: `notes` is the private "anything counsel should know" field. It must
+    NEVER fill business_description (which fills the OUTBOUND recital the
+    counterparty reads). When business_description is absent the slot is empty —
+    there is no `notes` fallback, so counsel notes cannot leak to the counterparty.
+    """
+
+    _entity_id, intake, _override, _address_id = nda_generation_workflow.intake_from_payload(
+        {
+            "counterparty": {"name": "Globex International Ltd"},
+            "notes": "counsel-only: they breached a prior NDA, push hard on remedies",
+            "signing_entity": {"id": "aspora_technology"},
+        }
+    )
+
+    assert intake.business_description == "", (
+        "notes must not leak into the outbound business_description slot"
+    )
+    assert "counsel-only" not in intake.business_description
+
+
+def test_address_id_from_payload_reads_nested_signing_entity_block():
+    payload = {
+        "counterparty": {"name": "Acme"},
+        "signing_entity": {"id": "real_transfer", "address": {"id": "registered", "label": "x"}},
+    }
+    assert nda_generation_workflow.address_id_from_payload(payload) == "registered"
+    # Absent address block -> blank (use the entity default downstream).
+    assert nda_generation_workflow.address_id_from_payload({"signing_entity": {"id": "x"}}) == ""
 
 
 def test_intake_from_payload_rejects_missing_required_fields():

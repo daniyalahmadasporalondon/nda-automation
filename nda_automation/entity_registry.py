@@ -316,6 +316,29 @@ def _playbook_governing_law_option_ids(playbook: Mapping[str, Any]) -> set[str]:
     return set()
 
 
+def _playbook_max_term_years(playbook: Mapping[str, Any]) -> int | None:
+    """Read the term cap from the playbook's ``term_and_survival`` clause.
+
+    The cap lives as a top-level ``max_term_years`` integer on the
+    ``term_and_survival`` clause (the same field the generation clamp reads).
+    Returns the live value, or ``None`` when the clause/field is missing or
+    malformed so the caller can omit it and let the frontend fall back.
+    """
+
+    for clause in playbook.get("clauses", []):
+        if clause.get("id") != "term_and_survival":
+            continue
+        value = clause.get("max_term_years")
+        # bool is an int subclass; reject it explicitly so True/False can never
+        # masquerade as a 1-year cap.
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        if value < 1:
+            return None
+        return value
+    return None
+
+
 def validate_registry() -> None:
     """Validate internal consistency of the bundles (no playbook needed).
 
@@ -424,6 +447,12 @@ def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[
     ``matches_playbook`` drift flags when ``playbook`` is supplied), and the live
     set of playbook governing-law option ids so the UI's override dropdown can be
     playbook-driven rather than hardcoded.
+
+    When the playbook is supplied and carries a usable term cap, the payload also
+    exposes ``playbook_meta.max_term_years`` sourced live from the playbook's
+    ``term_and_survival`` clause, so the Generator's term cap is playbook-driven
+    rather than a hardcoded duplicate. The field is omitted (not invented) when
+    the cap is missing or malformed; the frontend keeps its own fallback.
     """
 
     option_ids = (
@@ -431,11 +460,17 @@ def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[
         if playbook is not None
         else []
     )
-    return {
+    payload: dict[str, Any] = {
         "entities": list_entities(),
         "law_mapping": entity_law_mapping(playbook),
         "playbook_option_ids": option_ids,
     }
+    max_term_years = (
+        _playbook_max_term_years(playbook) if playbook is not None else None
+    )
+    if max_term_years is not None:
+        payload["playbook_meta"] = {"max_term_years": max_term_years}
+    return payload
 
 
 __all__ = [
@@ -449,4 +484,5 @@ __all__ = [
     "validate_registry_against_playbook",
     "entity_law_mapping",
     "signing_entities_payload",
+    "_playbook_max_term_years",
 ]

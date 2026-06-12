@@ -27,14 +27,41 @@
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// The playbook makes mutuality a REQUIRED clause and explicitly fails one-way
+// confidentiality (mutuality.rules.fail_conditions.one_way_party_roles), so a
+// one-way NDA would fail our own review. The Generator therefore offers mutual
+// only; the backend likewise rejects any non-mutual nda_type as a backstop.
 export const NDA_TYPES = [
   { id: "mutual", label: "Mutual (two-way)" },
-  { id: "one_way", label: "One-way (we disclose)" },
 ];
 
 export const DEFAULT_NDA_TYPE = "mutual";
 
-// Our four signing entities, mirroring nda_automation/entity_registry.py. Each
+// The playbook caps the NDA term at max_term_years; generation clamps a longer
+// requested term down to this (nda_generation._resolve_term_years). The live
+// value rides the /api/signing-entities feed as `playbook_meta.max_term_years`
+// (a backend teammate adds it in parallel); this constant is the fallback the
+// embedded mirror uses so the preview's "capped to N years" note stays correct
+// even before the live value is wired. Keep in sync with the playbook's
+// term_and_survival.max_term_years.
+export const DEFAULT_MAX_TERM_YEARS = 5;
+
+// The forum/courts that go WITH each approved governing-law option, mirroring the
+// `jurisdiction` field each entity registers in the Python registry
+// (entity_registry.py) and resolved by nda_generation._forum_for_option_id when a
+// governing-law override switches the forum too. The live feed's entity bundles
+// carry `jurisdiction` directly (forumForLaw prefers it); this map is the fallback
+// for the embedded mirror, which omits it. Keep these strings byte-identical to
+// the registry so the preview's forum phrase matches what generation writes.
+export const FORUM_BY_OPTION_ID = {
+  india: "Courts of India",
+  delaware: "Courts of the State of Delaware",
+  england_and_wales: "Courts of England and Wales",
+  difc: "DIFC Courts, Dubai",
+  ontario_canada: "Courts of Ontario, Canada",
+};
+
+// Our seven signing entities, mirroring nda_automation/entity_registry.py. Each
 // bundle travels together: legal_name + governing_law + addresses are a unit
 // keyed by `id`. `addresses` is always non-empty with exactly one `default:true`
 // address; Real Transfer carries two (London corporate office is the NDA default
@@ -111,6 +138,51 @@ export const SIGNING_ENTITIES = [
       },
     ],
   },
+  {
+    id: "nesse_technologies",
+    short_name: "Nesse Technologies",
+    legal_name: "Nesse Technologies Inc",
+    governing_law: { playbook_option_id: "ontario_canada", label: "Ontario, Canada" },
+    addresses: [
+      {
+        id: "registered",
+        label: "Registered office",
+        lines: ["151 Yonge Street, 11th Floor", "Toronto, Ontario M5C 2W7", "Canada"],
+        country: "Canada",
+        default: true,
+      },
+    ],
+  },
+  {
+    id: "vance_technologies",
+    short_name: "Vance Technologies",
+    legal_name: "Vance Technologies Limited",
+    governing_law: { playbook_option_id: "england_and_wales", label: "England and Wales" },
+    addresses: [
+      {
+        id: "registered",
+        label: "Registered office",
+        lines: ["Profile West, 950 Great West Road", "Suite 2, First Floor", "Brentford, TW8 9ES", "United Kingdom"],
+        country: "United Kingdom",
+        default: true,
+      },
+    ],
+  },
+  {
+    id: "aspora_financial_services",
+    short_name: "Aspora Financial Services",
+    legal_name: "Aspora Financial Services (IFSC) Private Limited",
+    governing_law: { playbook_option_id: "india", label: "India" },
+    addresses: [
+      {
+        id: "registered",
+        label: "Registered office",
+        lines: ["Cabin No. 03-05, 3rd floor", "Flexone, Building 15C2", "Gift City, Gandhi Nagar", "Gandhi Nagar- 382050, Gujarat"],
+        country: "India",
+        default: true,
+      },
+    ],
+  },
 ];
 
 // The governing-law option id for a law bundle. Prefers entity-model's
@@ -173,7 +245,6 @@ export function createInitialIntake() {
     projectPurpose: "",
     term: "",
     ndaType: DEFAULT_NDA_TYPE,
-    notes: "",
     entityId: null,
     addressId: null,
     governingLawId: null,
@@ -246,6 +317,31 @@ export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES) {
   return { id: lawId, label: lawId };
 }
 
+// The forum/courts phrase for a governing-law option id, mirroring the backend's
+// nda_generation._forum_for_option_id: prefer the `jurisdiction` of whichever
+// registry entity defaults to that option (the live /api/signing-entities feed
+// carries it), and fall back to the static FORUM_BY_OPTION_ID map for the
+// embedded mirror (which omits jurisdiction). So an override that switches the
+// law to e.g. delaware also moves the previewed forum to "Courts of the State of
+// Delaware", exactly as generation does. Returns "" when no forum is known.
+export function forumForOptionId(optionId, entities = SIGNING_ENTITIES) {
+  if (!optionId) return "";
+  for (const entity of entities || []) {
+    if (lawOptionId(entity?.governing_law) === optionId) {
+      const forum = String(entity?.jurisdiction || "").trim();
+      if (forum) return forum;
+    }
+  }
+  return FORUM_BY_OPTION_ID[optionId] || "";
+}
+
+// The forum for an intake's effective governing law — the value the preview's
+// jurisdiction clause shows and that an override moves alongside the law.
+export function effectiveForum(intake, entities = SIGNING_ENTITIES) {
+  const law = effectiveGoverningLaw(intake, entities);
+  return forumForOptionId(law?.id, entities);
+}
+
 export function selectedEntity(intake, entities = SIGNING_ENTITIES) {
   return findEntity(intake.entityId, entities);
 }
@@ -297,7 +393,17 @@ export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES) {
     project_purpose: String(intake.projectPurpose || "").trim(),
     term: String(intake.term || "").trim(),
     nda_type: intake.ndaType || DEFAULT_NDA_TYPE,
-    notes: String(intake.notes || "").trim(),
+    // First-party recital + identity fields the preview already shows and the
+    // generator reads (mapped to the template's [BUSINESS DESCRIPTION] /
+    // first-party jurisdiction + registered-office slots). These were previously
+    // dropped from the payload even though the preview rendered them, so a
+    // generated NDA silently lost the recital business line and the counterparty's
+    // incorporation/office. Key names are fixed by the backend contract — do not
+    // rename: business_description, counterparty_jurisdiction,
+    // counterparty_registered_office.
+    business_description: String(intake.businessDescription || "").trim(),
+    counterparty_jurisdiction: String(intake.counterpartyIncorporation || "").trim(),
+    counterparty_registered_office: String(intake.counterpartyAddress || "").trim(),
     signing_entity: entity
       ? {
           id: entity.id,
@@ -342,6 +448,8 @@ export function createDraftIntake({ entities = SIGNING_ENTITIES } = {}) {
     clearGoverningLawOverride: (intake) => clearGoverningLawOverride(intake, entities),
     selectAddress: (intake, id) => selectAddress(intake, id, entities),
     effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities),
+    forumForOptionId: (optionId) => forumForOptionId(optionId, entities),
+    effectiveForum: (intake) => effectiveForum(intake, entities),
     validateDraftIntake: (intake) => validateDraftIntake(intake, entities),
     buildDraftPayload: (intake) => buildDraftPayload(intake, entities),
   };

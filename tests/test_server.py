@@ -2066,6 +2066,192 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers["X-Reviewed-Redline-Count"], "0")
         self.assertTrue(payload.startswith(b"PK"))
 
+    def _ready_redline_matter_fixture(self, *, source_filename, document_bytes, source_type):
+        """Create an approved, ready-to-sign matter that passes the send gate.
+
+        Used by the PDF-reconstruction caveat tests for both PDF and DOCX sources so
+        each path reaches the export/send response without tripping human-review.
+        """
+        source_text = "This Agreement shall be governed by the laws of California."
+        review_result = {
+            "review_engine_version": REVIEW_ENGINE_VERSION,
+            "review_state": {
+                "state": "pass",
+                "overall_status": "ready_to_sign",
+                "counts": {"pass": 1, "review": 0, "check": 0},
+            },
+            "source": {"type": source_type},
+            "paragraphs": [{"id": "p1", "index": 1, "text": source_text}],
+            "clauses": [
+                {
+                    "id": "governing_law",
+                    "decision": "pass",
+                    "structure_context": {},
+                    "review_state": {},
+                }
+            ],
+            "redline_edits": [],
+            "extracted_text": source_text,
+            "playbook_runtime": self.active_playbook_review_runtime(),
+        }
+        matter = matter_store.create_matter(
+            source_filename=source_filename,
+            document_bytes=document_bytes,
+            extracted_text=source_text,
+            review_result=review_result,
+            triage={
+                "triage_status": "ready_to_sign",
+                "next_action": "Ready to sign",
+                "issue_count": 0,
+                "requirements_passed": 1,
+                "requirements_needs_review": 0,
+                "requirements_failed": 0,
+            },
+        )
+        matter_store.update_matter_fields(matter["id"], {"status": "approved", "human_reviewed": True})
+        return matter
+
+    def _pdf_redline_matter_fixture(self):
+        return self._ready_redline_matter_fixture(
+            source_filename="Reviewed NDA.pdf",
+            document_bytes=make_pdf("This Agreement shall be governed by the laws of California."),
+            source_type="pdf",
+        )
+
+    def _docx_redline_matter_fixture(self):
+        return self._ready_redline_matter_fixture(
+            source_filename="Reviewed NDA.docx",
+            document_bytes=make_docx(["This Agreement shall be governed by the laws of California."]),
+            source_type="docx",
+        )
+
+    def test_legacy_review_docx_export_surfaces_pdf_reconstruction_caveat(self):
+        """Fix 1: the legacy /api/export-review-docx route must merge the PDF
+        reconstruction headers (instead of hardcoding the generic verified header)
+        so the operator sees the best-effort-from-PDF caveat; DOCX exports keep
+        the verified header unchanged."""
+
+        class AvailablePdfDocxConverter:
+            name = "fake-pdf2docx"
+
+            def is_available(self):
+                return True
+
+            def convert_pdf_to_docx(self, source_path, output_path):
+                from tests.test_pdf_docx_reconstruction import make_valid_docx
+
+                output_path.write_bytes(
+                    make_valid_docx("This Agreement shall be governed by the laws of California.")
+                )
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # PDF-source matter: the caveat headers must come through.
+                pdf_matter = self._pdf_redline_matter_fixture()
+                with patch.object(
+                    server_module.redline_export_service.pdf_docx_reconstruction,
+                    "Pdf2DocxConverter",
+                    return_value=AvailablePdfDocxConverter(),
+                ):
+                    pdf_status, pdf_payload, pdf_headers = self.request_with_headers(
+                        "POST",
+                        "/api/export-review-docx",
+                        {"matter_id": pdf_matter["id"]},
+                    )
+
+                # DOCX-source matter on the same route: verified header is unchanged.
+                docx_matter = self._docx_redline_matter_fixture()
+                docx_status, _docx_payload, docx_headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"matter_id": docx_matter["id"]},
+                )
+
+        # PDF path: reconstruction caveat surfaced (mirrors the reviewed-docx route).
+        self.assertEqual(pdf_status, 200)
+        self.assertEqual(pdf_headers["X-Export-Verified"], "pdf2docx")
+        self.assertEqual(pdf_headers["X-PDF-DOCX-Reconstruction"], "pdf2docx")
+        self.assertEqual(pdf_headers["X-PDF-DOCX-Converter"], "fake-pdf2docx")
+        self.assertTrue(pdf_payload.startswith(b"PK"))
+
+        # DOCX path: unchanged verified messaging, no reconstruction marker.
+        self.assertEqual(docx_status, 200)
+        self.assertEqual(docx_headers["X-Export-Verified"], "word-package; track-revisions")
+        self.assertNotIn("X-PDF-DOCX-Reconstruction", docx_headers)
+
+    def test_gmail_send_redline_flags_pdf_reconstruction_for_operator(self):
+        """Fix 2: /api/gmail/send-redline must report source_reconstructed_from_pdf
+        plus the formatting caveat for PDF-source matters, and must NOT set the
+        flag for DOCX-source matters."""
+
+        class AvailablePdfDocxConverter:
+            name = "fake-pdf2docx"
+
+            def is_available(self):
+                return True
+
+            def convert_pdf_to_docx(self, source_path, output_path):
+                from tests.test_pdf_docx_reconstruction import make_valid_docx
+
+                output_path.write_bytes(
+                    make_valid_docx("This Agreement shall be governed by the laws of California.")
+                )
+
+        sent_stub = {
+            "message_id": "msg_outbound",
+            "outbound_account": "legal@aspora.com",
+            "sent_at": "2026-05-31T12:00:00+00:00",
+            "subject": "Re: Reviewed NDA",
+            "thread_id": "thread_outbound",
+            "to": "legal@example.com",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
+                    with patch.object(server_module.gmail_integration, "send_redline_email", return_value=sent_stub):
+                        pdf_matter = self._pdf_redline_matter_fixture()
+                        with patch.object(
+                            server_module.redline_export_service.pdf_docx_reconstruction,
+                            "Pdf2DocxConverter",
+                            return_value=AvailablePdfDocxConverter(),
+                        ):
+                            pdf_send_status, pdf_send_payload = self.request(
+                                "POST",
+                                "/api/gmail/send-redline",
+                                {
+                                    "matter_id": pdf_matter["id"],
+                                    "confirm_send": True,
+                                    "to": "legal@example.com",
+                                    "confirm_recipient": "legal@example.com",
+                                },
+                            )
+
+                        # DOCX-source matter: no reconstruction caveat.
+                        docx_matter = self._docx_redline_matter_fixture()
+                        docx_send_status, docx_send_payload = self.request(
+                            "POST",
+                            "/api/gmail/send-redline",
+                            {
+                                "matter_id": docx_matter["id"],
+                                "confirm_send": True,
+                                "to": "legal@example.com",
+                                "confirm_recipient": "legal@example.com",
+                            },
+                        )
+
+        # PDF path: flag set + honest caveat string present.
+        self.assertEqual(pdf_send_status, 200)
+        self.assertTrue(pdf_send_payload["source_reconstructed_from_pdf"])
+        self.assertIn("reconstructed from a PDF", pdf_send_payload["source_reconstruction_caveat"])
+
+        # DOCX path: flag false, no caveat string.
+        self.assertEqual(docx_send_status, 200)
+        self.assertFalse(docx_send_payload["source_reconstructed_from_pdf"])
+        self.assertNotIn("source_reconstruction_caveat", docx_send_payload)
+
     def test_reviewed_docx_reports_unavailable_pdf_reconstruction_engine(self):
         class UnavailablePdfDocxConverter:
             name = "fake-unavailable"

@@ -311,11 +311,19 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    handler._send_json({
+    response_payload = {
         "filename": sent_redline.filename,
         "matter": matter_view.public_matter(sent_redline.matter),
         "sent": sent_redline.sent,
-    })
+        "source_reconstructed_from_pdf": sent_redline.reconstructed_from_pdf,
+    }
+    # For PDF-source matters the sent Word file is reconstructed from the PDF, so
+    # surface the honest formatting-fidelity caveat alongside the success payload.
+    if sent_redline.reconstructed_from_pdf:
+        response_payload["source_reconstruction_caveat"] = (
+            "Note: this Word file was reconstructed from a PDF and may not preserve original formatting."
+        )
+    handler._send_json(response_payload)
 
 
 def gmail_owner_user_id(handler) -> str:

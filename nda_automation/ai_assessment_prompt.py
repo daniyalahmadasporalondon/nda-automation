@@ -10,7 +10,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 10
+AI_ASSESSMENT_PROMPT_VERSION = 11
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -86,9 +86,12 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "not invent detail the document does not support."
     ),
     (
-        "For review decisions, include resolution_question as the precise question the reviewer must answer, "
-        "suggested_redline as confirm-required wording when a safe suggestion can be made, and recommended_option "
-        "as {option, reason} when the playbook gives approved alternatives. Never imply any suggested wording is auto-applied."
+        "For review decisions, ALWAYS include suggested_redline with a concrete, confirm-required candidate "
+        "wording drawn from the clause's acceptable_language or preferred playbook wording — even when the exact "
+        "fix is uncertain, a playbook-standard draft is more useful to a reviewer than no wording. Mark it clearly "
+        "as subject to confirmation. Also include resolution_question as the precise question the reviewer must "
+        "answer, and recommended_option as {option, reason} when the playbook gives approved alternatives. "
+        "Never imply any suggested wording is auto-applied."
     ),
     "Keep rationale specific to the cited document text and playbook rule; do not copy the playbook rule back verbatim.",
     "Use pass only when the supplied paragraphs satisfy the clause rules.",

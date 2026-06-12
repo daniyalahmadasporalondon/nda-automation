@@ -34,6 +34,19 @@ SEMANTIC_REVIEW_THRESHOLD = 0.75
 # AI verdict statuses that escalate a deterministic PASS to review.
 AI_ESCALATION_STATUSES = frozenset({"disagreement", "low_confidence", "invalid"})
 
+# Marker (set by semantic_crosscheck) flagging that a deterministic REVIEW came
+# solely from the paraphrase-fragile, polarity-blind regex cross-check. Such a
+# review is NON-TERMINAL: the AI is the judge of these playbook signals, so a
+# confident AI PASS clears the suspect pattern back to PASS. Genuine checker
+# reviews/fails (without this marker) stay terminal as before.
+SEMANTIC_CROSSCHECK_ESCALATION_KEY = "semantic_crosscheck_escalation"
+
+# AI statuses that are NOT a trustworthy clearance: the AI could not be relied on
+# to overturn the cross-check, so the suspect pattern stays at human REVIEW.
+AI_UNTRUSTWORTHY_STATUSES = frozenset(
+    {"error", "invalid", "low_confidence", "disabled", "configuration_error"}
+)
+
 _DECISIONS = {CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW, CLAUSE_DECISION_FAIL}
 
 
@@ -95,10 +108,28 @@ def arbitrate(clause: Dict[str, object]) -> Dict[str, object]:
     analysis = clause.get("ai_review_analysis")
     analysis = analysis if isinstance(analysis, dict) else {}
     ai_status = str(analysis.get("status") or "").strip().lower()
+    ai_decision = str(analysis.get("ai_decision") or "").strip().lower()
 
     if det == CLAUSE_DECISION_FAIL:
         return {"decision": CLAUSE_DECISION_FAIL, "source": "deterministic"}
     if det == CLAUSE_DECISION_REVIEW:
+        # A cross-check-sourced review is non-terminal: it is a paraphrase-fragile
+        # regex escalation, so a confident AI PASS clears the suspect pattern. The
+        # AI never softens a *genuine* checker review (no marker) -- only this one.
+        if bool(clause.get(SEMANTIC_CROSSCHECK_ESCALATION_KEY)):
+            if (
+                ai_decision == CLAUSE_DECISION_PASS
+                and ai_status not in AI_UNTRUSTWORTHY_STATUSES
+            ):
+                return {
+                    "decision": CLAUSE_DECISION_PASS,
+                    "source": "ai",
+                    "reason_code": str(analysis.get("reason_code") or "ai_cleared_semantic_crosscheck"),
+                    "reason": str(analysis.get("ai_reason") or analysis.get("reason") or ""),
+                }
+            # No trustworthy AI clearance -> hold at human review (never auto-fail,
+            # never auto-redline; those powers were removed from the cross-check).
+            return {"decision": CLAUSE_DECISION_REVIEW, "source": "semantic_crosscheck"}
         return {"decision": CLAUSE_DECISION_REVIEW, "source": "deterministic"}
     if det == CLAUSE_DECISION_PASS:
         if ai_status in AI_ESCALATION_STATUSES:

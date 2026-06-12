@@ -99,10 +99,19 @@ class TestTemplateIngestion:
             "[COMPANY NAME]",
             "[ASPORA ENTITY LEGAL NAME]",
             "[GOVERNING LAW]",
-            "[FORUM / JURISDICTION]",
             "[BUSINESS DESCRIPTION]",
         ):
             assert slot in text, f"Template lost the {slot} slot."
+
+    def test_template_governing_law_has_no_courts_or_forum_sentence(self):
+        # The forum/courts sentence was dropped from the template (a governing law
+        # may be heard in multiple courts; the review side redlines law-only). The
+        # [GOVERNING LAW] sentence must survive, but the [FORUM / JURISDICTION] slot
+        # and any "resolved by courts in ..." sentence must be gone.
+        text = "\n".join(p.text for p in Document(str(gen.TEMPLATE_PATH)).paragraphs)
+        assert "[GOVERNING LAW]" in text
+        assert "[FORUM / JURISDICTION]" not in text
+        assert "courts in" not in text.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -248,6 +257,61 @@ class TestClauseAlignment:
         text = extract_docx_text(_generate(playbook).docx_bytes).lower()
         assert "each party acts as both a disclosing party and a receiving party" in text
 
+    def test_ci_exclusion_wording_is_sourced_live_from_playbook(self, playbook):
+        # The independent-development carve-out is read LIVE from the Playbook
+        # ``standard_exclusions_template``; editing the Playbook must change the
+        # generated clause (not a hardcoded literal).
+        edited = deepcopy(playbook)
+        ci = next(c for c in edited["clauses"] if c["id"] == "confidential_information")
+        ci["standard_exclusions_template"] = (
+            "Confidential Information does not include information that is public, or "
+            "independently developed by the SENTINELRECEIVER without use of or reference "
+            "to Confidential Information."
+        )
+        text = extract_docx_text(_generate(edited).docx_bytes)
+        assert "SENTINELRECEIVER" in text
+        # And the unedited Playbook does NOT carry the sentinel — proves it came
+        # from the template, not a coincidence.
+        assert "SENTINELRECEIVER" not in extract_docx_text(_generate(playbook).docx_bytes)
+
+    def test_survival_wording_is_sourced_live_from_playbook(self, playbook):
+        # The survival carve-out is read LIVE from the Playbook
+        # ``term_and_survival.redline_template`` ("except that ..." tail).
+        edited = deepcopy(playbook)
+        term = next(c for c in edited["clauses"] if c["id"] == "term_and_survival")
+        term["redline_template"] = (
+            "The confidentiality obligations survive for a fixed period of up to "
+            "{max_term_years_label}, except that SENTINELTRADESECRETS and trade secrets "
+            "survive for as long as the protected status or data-protection law requires."
+        )
+        text = extract_docx_text(_generate(edited).docx_bytes)
+        assert "SENTINELTRADESECRETS" in text
+        assert "SENTINELTRADESECRETS" not in extract_docx_text(_generate(playbook).docx_bytes)
+
+    def test_ci_and_survival_fall_back_to_literal_when_template_blank(self, playbook):
+        # When the Playbook clause carries no template, the generator keeps the
+        # built-in literal so the clause never renders empty.
+        edited = deepcopy(playbook)
+        ci = next(c for c in edited["clauses"] if c["id"] == "confidential_information")
+        ci["standard_exclusions_template"] = ""
+        term = next(c for c in edited["clauses"] if c["id"] == "term_and_survival")
+        term["redline_template"] = ""
+        text = extract_docx_text(_generate(edited).docx_bytes).lower()
+        assert "independently developed" in text
+        assert "trade secret" in text
+        assert "data-protection" in text
+
+    def test_term_body_spells_out_number_past_five(self, playbook):
+        # The term body routes through the canonical 1-30 speller, not the old
+        # 1-5-only local table. Raise the Playbook cap so a 7-year term survives
+        # the clamp and confirm it spells out (not "7 (7) years").
+        edited = deepcopy(playbook)
+        term = next(c for c in edited["clauses"] if c["id"] == "term_and_survival")
+        term["max_term_years"] = 7
+        text = extract_docx_text(_generate(edited, intake=_intake(term_years=7)).docx_bytes)
+        assert "seven (7) years" in text
+        assert "7 (7) years" not in text
+
     def test_no_non_circumvention_introduced(self, playbook):
         # non_circumvention is a *prohibited* Playbook position; generation must
         # never add one.
@@ -301,12 +365,16 @@ class TestGoverningLawOverride:
         assert m.governing_law_option_id == "england_and_wales"
         assert m.governing_law_overridden is True
         assert m.entity_default_governing_law_value == "India"
-        # Forum tracks the chosen option's proper courts (registry-derived).
+        # Forum tracks the chosen option's proper courts (registry-derived). It is
+        # provenance-only -- the document no longer carries a forum/courts sentence,
+        # so this lives on the manifest, not in the rendered prose.
         assert m.forum == "Courts of England and Wales"
-        # The effective law + forum are in the clause; the entity default is not.
+        # The effective law is in the clause; the entity default is not. The forum is
+        # NOT in the prose (the courts sentence was dropped from the template).
         text = extract_docx_text(result.docx_bytes)
         assert "the laws of England and Wales" in text
-        assert "Courts of England and Wales" in text
+        assert "Courts of England and Wales" not in text
+        assert "courts in" not in text.lower()
         # And the override draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
         # Full provenance round-trips through to_dict for gen-verify to read.
@@ -365,6 +433,100 @@ class TestGoverningLawOverride:
         )
         assert result.manifest.governing_law_overridden is False
         assert result.manifest.governing_law_value == "India"
+
+
+# --------------------------------------------------------------------------- #
+# Entity address selection (user picks a non-default registered office)
+# --------------------------------------------------------------------------- #
+
+
+def _two_address_bundle(option_id: str = "england_and_wales"):
+    """A bundle with a default + a non-default address (mirrors Real Transfer)."""
+
+    bundle = _bundle(option_id=option_id)
+    bundle["addresses"] = [
+        {
+            "id": "corporate",
+            "label": "Corporate office",
+            "lines": ["3rd Floor", "141-145 Curtain Road", "London, EC2A 3BX"],
+            "country": "United Kingdom",
+            "default": True,
+        },
+        {
+            "id": "registered",
+            "label": "Registered office",
+            "lines": ["Office 8, Merrion Business Centre", "58 Howard Street", "Belfast, BT1 6PJ"],
+            "country": "United Kingdom",
+            "default": False,
+        },
+    ]
+    return bundle
+
+
+class TestEntityAddressSelection:
+    """BUG B: the user's picked Aspora address must be honoured. Generation used to
+    always pick the registry default and silently drop the chosen address."""
+
+    def test_default_address_used_when_none_picked(self, playbook):
+        # No address_id -> the default-flagged (London corporate) office, and the
+        # manifest records WHICH address id was used.
+        entity = gen.entity_party_from_bundle(_two_address_bundle(), playbook)
+        assert "141-145 Curtain Road" in entity.registered_office
+        assert "Belfast" not in entity.registered_office
+        assert entity.registered_office_address_id == "corporate"
+
+    def test_picked_non_default_address_is_honored(self, playbook):
+        # The user picks the NON-default Belfast registered office; it must be the
+        # one written, not the default London corporate office.
+        entity = gen.entity_party_from_bundle(
+            _two_address_bundle(), playbook, address_id="registered"
+        )
+        assert "58 Howard Street" in entity.registered_office
+        assert "Belfast, BT1 6PJ" in entity.registered_office
+        assert "141-145 Curtain Road" not in entity.registered_office
+        assert entity.registered_office_address_id == "registered"
+
+    def test_picked_non_default_address_reaches_the_generated_doc(self, playbook):
+        # End-to-end: the picked address lands in the document AND the manifest, and
+        # the default address does NOT bleed in.
+        bundle = _two_address_bundle()
+        entity = gen.entity_party_from_bundle(bundle, playbook, address_id="registered")
+        result = gen.generate_nda(entity, _intake(), playbook=playbook)
+        text = extract_docx_text(result.docx_bytes)
+        assert "58 Howard Street" in text
+        assert "141-145 Curtain Road" not in text
+        assert result.manifest.entity_address_id == "registered"
+        assert result.manifest.to_dict()["entity_address_id"] == "registered"
+
+    def test_unknown_address_id_is_rejected(self, playbook):
+        # Mirrors the governing-law override guard: a stale/tampered id fails loudly
+        # rather than silently substituting the default.
+        with pytest.raises(gen.NdaGenerationError) as exc:
+            gen.entity_party_from_bundle(_two_address_bundle(), playbook, address_id="mars_office")
+        assert "mars_office" in str(exc.value)
+
+    def test_generate_for_entity_threads_address_id_to_manifest(self, playbook):
+        # The real registry entity Real Transfer has a non-default Belfast office;
+        # picking it must thread through generate_nda_for_entity to the document.
+        result = gen.generate_nda_for_entity(
+            "real_transfer",
+            _intake(),
+            playbook=playbook,
+            address_id="registered",
+            use_ai=False,
+        )
+        text = extract_docx_text(result.docx_bytes)
+        assert "Belfast" in text
+        assert result.manifest.entity_address_id == "registered"
+        # Belfast registered office is the registry default-FORBIDDEN address, so the
+        # default London corporate office must NOT appear when Belfast was picked.
+        assert "Curtain Road" not in text
+
+    def test_generate_for_entity_rejects_unknown_address_id(self, playbook):
+        with pytest.raises(gen.NdaGenerationError):
+            gen.generate_nda_for_entity(
+                "aspora_technology", _intake(), playbook=playbook, address_id="nonexistent"
+            )
 
 
 # --------------------------------------------------------------------------- #

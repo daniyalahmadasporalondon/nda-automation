@@ -235,10 +235,12 @@ class OverrideHttpSmoke(unittest.TestCase):
     def test_override_forum_follows_the_chosen_option(self):
         """FORUM-COUPLING coherence for sampled override options.
 
-        An override to e.g. DIFC must yield DIFC law AND DIFC courts. Through the
-        full HTTP round-trip, the manifest forum must be the OVERRIDE option's
-        forum and appear in the rendered prose, and the entity's default forum
-        must not leak in.
+        An override to e.g. DIFC must yield DIFC law AND the DIFC forum on the
+        manifest. The forum is provenance-only -- the document no longer carries a
+        forum/courts sentence (a governing law may be heard in multiple courts) --
+        so through the full HTTP round-trip the manifest forum must be the OVERRIDE
+        option's forum (and never the entity default), while the override LAW must
+        appear in the rendered prose and the default law must not leak in.
         """
         for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
             with self.subTest(entity_id=entity_id, override=override_opt):
@@ -251,16 +253,45 @@ class OverrideHttpSmoke(unittest.TestCase):
                     text = extract_docx_text(docx)
                     expected_forum = _OPTION_FORUM[override_opt]
                     default_forum = _OPTION_FORUM[default_opt]
+                    override_value = _law_value(override_opt)
+                    default_value = _law_value(default_opt)
+                    # Forum provenance follows the override on the manifest.
                     self.assertEqual(
                         payload["manifest"]["forum"], expected_forum,
                         f"{entity_id}: forum did not follow the override (got "
                         f"{payload['manifest']['forum']!r}, expected {expected_forum!r})",
                     )
-                    self.assertIn(expected_forum, text, f"{entity_id}: override forum not in prose")
-                    if expected_forum != default_forum:
+                    self.assertNotEqual(
+                        payload["manifest"]["forum"], default_forum if expected_forum != default_forum else "",
+                    )
+                    # Forum is NOT in the prose any more (courts sentence dropped).
+                    self.assertNotIn(expected_forum, text, f"{entity_id}: forum should not be in prose")
+                    self.assertNotIn("courts in", text.lower())
+                    # The override LAW still tracks into the prose; default does not leak.
+                    self.assertIn(override_value, text, f"{entity_id}: override law not in prose")
+                    if override_value != default_value:
+                        # Scope the leak check to the GOVERNING LAW clause sentence.
+                        # The whole document legitimately contains "the laws of
+                        # <country>" in each party's INCORPORATION recital (e.g. an
+                        # India-incorporated entity reads "incorporated under the laws
+                        # of India"), which is not the governing law and must not be
+                        # mistaken for a default-law leak.
+                        gov_clause = next(
+                            (
+                                line
+                                for line in text.splitlines()
+                                if line.startswith("GOVERNING LAW AND JURISDICTION:")
+                            ),
+                            "",
+                        )
+                        self.assertIn(
+                            f"the laws of {override_value}", gov_clause,
+                            f"{entity_id}: override law not in the governing-law clause",
+                        )
                         self.assertNotIn(
-                            default_forum, text,
-                            f"{entity_id}: default forum {default_forum!r} leaked into an overridden draft",
+                            f"the laws of {default_value}", gov_clause,
+                            f"{entity_id}: default law {default_value!r} leaked into the "
+                            "overridden draft's governing-law clause",
                         )
 
 

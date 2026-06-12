@@ -422,6 +422,18 @@ def _term_and_survival_redline(
             insert_text=_term_and_survival_replacement_text(clause),
         )
 
+    if clause.get("status") == "check" and clause.get("issue_type") == ISSUE_TYPE_UNCLEAR:
+        paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
+        if not paragraphs:
+            return None
+        return _redline_edit(
+            edit_number,
+            clause,
+            paragraphs[0],
+            REDLINE_REPLACE_PARAGRAPH,
+            replacement_text=_term_and_survival_replacement_text(clause),
+        )
+
     if not _is_present_but_wrong_check(clause):
         return None
 

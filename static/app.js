@@ -205,7 +205,6 @@ const draftIntakeController = createDraftIntakeController({
   ndaTypeSelect: document.querySelector("#draftIntakeNdaType"),
   termInput: document.querySelector("#draftIntakeTerm"),
   projectPurposeInput: document.querySelector("#draftIntakeProjectPurpose"),
-  notesInput: document.querySelector("#draftIntakeNotes"),
   governingLawSelect: document.querySelector("#draftIntakeGoverningLaw"),
   lawStatusNode: document.querySelector("#draftIntakeLawStatus"),
   lawResetButton: document.querySelector("#draftIntakeLawResetButton"),
@@ -1044,20 +1043,11 @@ async function confirmDashboardAssistantAction(action = {}) {
     const applyDashboardAssistantPrefill = ({ dispatch = true } = {}) => {
       if (!prompt) return;
       const purposeInput = document.querySelector("#draftIntakeProjectPurpose");
-      const notesInput = document.querySelector("#draftIntakeNotes");
       if (dispatch) {
         setDraftInputValue(purposeInput, prompt);
-        setDraftInputValue(
-          notesInput,
-          "Started from Dashboard Assistant. Review all details before generating.",
-          { onlyIfEmpty: true },
-        );
         return;
       }
       if (purposeInput) purposeInput.value = prompt;
-      if (notesInput && !String(notesInput.value || "").trim()) {
-        notesInput.value = "Started from Dashboard Assistant. Review all details before generating.";
-      }
     };
     activateTab("generator");
     applyDashboardAssistantPrefill({ dispatch: false });

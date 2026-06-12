@@ -191,6 +191,34 @@ class TestProhibitedPatternCoverage:
         assert adapter.adapt("mutuality", playbook_text, {}) == playbook_text
 
 
+class TestRequiredTermsReconciliation:
+    """The CLAUSE_REQUIRED_TERMS table duplicates substance the generator now
+    reads live from the Playbook clause templates. ``reconcile_required_terms``
+    asserts the two copies cannot silently diverge."""
+
+    def test_canonical_playbook_reconciles(self, playbook):
+        # The shipped table must already agree with the shipped Playbook.
+        gen_ai.reconcile_required_terms(playbook)
+
+    def test_every_required_term_is_in_its_source_template(self, playbook):
+        clauses = {c["id"]: c for c in playbook["clauses"]}
+        for clause_id, terms in gen_ai.CLAUSE_REQUIRED_TERMS.items():
+            field = gen_ai._REQUIRED_TERM_SOURCE_FIELD[clause_id]
+            template = str(clauses[clause_id].get(field) or "").lower()
+            for term in terms:
+                assert term.lower() in template, (clause_id, term)
+
+    def test_divergence_raises(self, playbook):
+        from copy import deepcopy
+
+        edited = deepcopy(playbook)
+        ci = next(c for c in edited["clauses"] if c["id"] == "confidential_information")
+        # Reword the template away from the required "independently developed" term.
+        ci["standard_exclusions_template"] = "Confidential Information does not include public information."
+        with pytest.raises(AssertionError):
+            gen_ai.reconcile_required_terms(edited)
+
+
 class TestFrozenClauseAdapter:
     """The frozen adapter replays recorded on-position clause text so gen-verify
     can gate the AI-shaped output deterministically (no network, no drift)."""

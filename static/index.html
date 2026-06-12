@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260612a">
+    <link rel="stylesheet" href="/static/styles.css?v=20260612c">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260607c">
   </head>
   <body>
@@ -260,21 +260,13 @@
                     <span>Counterparty business (recital)</span>
                     <input id="draftIntakeBusinessDescription" type="text" autocomplete="off" placeholder="e.g. cross-border payments">
                   </label>
-                  <label class="upload-field" for="draftIntakeNdaType">
-                    <span>NDA type</span>
-                    <select id="draftIntakeNdaType"></select>
-                  </label>
-                  <label class="upload-field" for="draftIntakeTerm">
+                  <label class="upload-field upload-field-wide" for="draftIntakeTerm">
                     <span>Term</span>
                     <input id="draftIntakeTerm" type="text" autocomplete="off" placeholder="e.g. 2 years">
                   </label>
                   <label class="upload-field upload-field-wide" for="draftIntakeProjectPurpose">
                     <span>Project / purpose</span>
                     <input id="draftIntakeProjectPurpose" type="text" autocomplete="off" placeholder="e.g. Series B diligence">
-                  </label>
-                  <label class="upload-field upload-field-wide" for="draftIntakeNotes">
-                    <span>Special notes (optional)</span>
-                    <textarea id="draftIntakeNotes" rows="3" placeholder="Anything counsel should know"></textarea>
                   </label>
                 </div>
               </fieldset>
@@ -310,6 +302,24 @@
                 </div>
               </footer>
             </form>
+
+            <aside class="generator-side-panel generator-summary-panel" aria-label="Draft summary">
+              <h2 class="generator-summary-title">Your selections</h2>
+              <dl class="draft-bundle-grid">
+                <div>
+                  <dt>Signing entity</dt>
+                  <dd id="draftIntakeSideEntity">—</dd>
+                </div>
+                <div>
+                  <dt>Governing law</dt>
+                  <dd id="draftIntakeSideLaw">—</dd>
+                </div>
+                <div>
+                  <dt>NDA type</dt>
+                  <dd id="draftIntakeSideType">—</dd>
+                </div>
+              </dl>
+            </aside>
 
             <aside class="generator-side-panel generator-preview-panel" aria-label="Live NDA preview">
               <div class="nda-paper" id="draftIntakePreview" aria-live="polite" hidden></div>
@@ -431,10 +441,10 @@
                 </div>
                 <div class="studio-toolbar-center">
                   <div class="studio-view-switch" role="group" aria-label="Document view">
-                    <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true">Redline</button>
-                    <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false">Clean</button>
-                    <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false">Side by Side</button>
-                    <button type="button" class="vs-btn" data-view-mode="original" aria-pressed="false">Original</button>
+                    <button type="button" class="vs-btn active" data-view-mode="redline" aria-pressed="true" title="Original text with the proposed edits shown as tracked changes.">Redline</button>
+                    <button type="button" class="vs-btn" data-view-mode="clean" aria-pressed="false" title="Final text with all accepted edits applied — tracked-change markup is hidden.">Clean</button>
+                    <button type="button" class="vs-btn" data-view-mode="sidebyside" aria-pressed="false" title="Original and redlined versions shown next to each other.">Side by Side</button>
+                    <button type="button" class="vs-btn" data-view-mode="original" aria-pressed="false" title="The untouched source document — your edits and comments are hidden in this view.">Original</button>
                   </div>
                   <div class="studio-viewer-controls" role="group" aria-label="Document controls">
                     <div class="vc-group">
@@ -1868,19 +1878,19 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260608b"></script>
-    <script src="/static/js/redline-rendering.js?v=20260610m"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260612c"></script>
+    <script src="/static/js/redline-rendering.js?v=20260612c"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260607a"></script>
     <script src="/static/js/repository-board.js?v=20260605b"></script>
-    <script src="/static/js/repository-send.js"></script>
-    <script src="/static/js/document-download-menu.js?v=20260611a"></script>
+    <script src="/static/js/repository-send.js?v=20260612c"></script>
+    <script src="/static/js/document-download-menu.js?v=20260612c"></script>
     <script src="/static/js/repository-detail.js?v=20260607b"></script>
-    <script src="/static/js/repository-actions.js?v=20260607c"></script>
+    <script src="/static/js/repository-actions.js?v=20260612c"></script>
     <script src="/static/js/repository.js?v=20260610d"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260610f"></script>
+    <script src="/static/js/draft-intake.js?v=20260612c"></script>
     <script src="/static/js/auth-session.js?v=20260605a"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
@@ -1891,9 +1901,9 @@
     <script src="/static/js/review-fill.js?v=20260610c"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260605c"></script>
     <script src="/static/js/playbook-view.js?v=20260605c"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260612a"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260612c"></script>
     <script src="/static/js/review-workstation-source.js?v=20260609z10"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260612a"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260612c"></script>
     <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260612a"></script>
     <script src="/static/js/viewer-controls.js"></script>
@@ -1901,7 +1911,7 @@
     <script src="/static/js/app-state.js?v=20260609a"></script>
     <script src="/static/js/dashboard-search.js?v=20260611a"></script>
     <script src="/static/js/notifications.js?v=20260608a"></script>
-    <script src="/static/js/generator-editor.js?v=20260610k"></script>
-    <script src="/static/app.js?v=20260611a"></script>
+    <script src="/static/js/generator-editor.js?v=20260612c"></script>
+    <script src="/static/app.js?v=20260612c"></script>
   </body>
 </html>

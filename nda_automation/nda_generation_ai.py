@@ -44,11 +44,71 @@ DEFAULT_ADAPT_TIMEOUT_SECONDS = 30
 # insensitive substring) or it is treated as drift and the deterministic Playbook
 # wording is used instead. These are the substance the Playbook position turns on
 # — not stylistic, so requiring them does not constrain phrasing, only position.
+#
+# These terms are a THIRD copy of wording that also lives in the Playbook clause
+# templates (which the generator now reads live). To stop the copies silently
+# diverging — e.g. someone rewords the Playbook ``standard_exclusions_template``
+# away from "independently developed" so the guard rejects every adaptation —
+# :func:`reconcile_required_terms` asserts at import that each required term is a
+# substring of its source clause template.
 CLAUSE_REQUIRED_TERMS: dict[str, tuple[str, ...]] = {
     "mutuality": ("each party", "disclosing party", "receiving party"),
     "confidential_information": ("independently developed",),
     "term_and_survival": ("trade secret", "data-protection"),
 }
+
+# Which Playbook clause-template field each clause's required terms are drawn
+# from — mirrors the field the generator reads live for that clause
+# (``_align_mutuality`` / ``_independent_development_sentence`` /
+# ``_survival_sentence`` in nda_generation.py).
+_REQUIRED_TERM_SOURCE_FIELD: dict[str, str] = {
+    "mutuality": "redline_template",
+    "confidential_information": "standard_exclusions_template",
+    "term_and_survival": "redline_template",
+}
+
+
+def reconcile_required_terms(playbook: Mapping[str, Any]) -> None:
+    """Assert each ``CLAUSE_REQUIRED_TERMS`` entry is in its source clause template.
+
+    The required-terms table duplicates substance carried by the Playbook clause
+    templates the generator reads live. If a Playbook edit moves the wording out
+    from under a required term, the on-position guard would silently reject every
+    legitimate adaptation for that clause. This makes that divergence loud instead:
+    it raises ``AssertionError`` naming the clause, term, and source field.
+    """
+
+    clauses = {str(c.get("id")): c for c in playbook.get("clauses", [])}
+    for clause_id, terms in CLAUSE_REQUIRED_TERMS.items():
+        field_name = _REQUIRED_TERM_SOURCE_FIELD[clause_id]
+        template = str((clauses.get(clause_id) or {}).get(field_name) or "").lower()
+        for term in terms:
+            assert term.lower() in template, (
+                f"CLAUSE_REQUIRED_TERMS[{clause_id!r}] term {term!r} is not a substring of "
+                f"the Playbook {clause_id}.{field_name}; the required-terms table has diverged "
+                f"from the clause template and would reject legitimate adaptations."
+            )
+
+
+def _reconcile_required_terms_at_import() -> None:
+    """Best-effort import-time reconciliation against the canonical Playbook.
+
+    Runs the assertion against the on-disk Playbook so a divergence surfaces the
+    moment this module is imported (the test suite imports it). Import is never
+    blocked by an *unreadable* Playbook — only by an actual divergence — so a
+    minimal environment without the Playbook file still imports cleanly.
+    """
+
+    try:
+        from .checker import load_playbook  # noqa: PLC0415
+
+        playbook = load_playbook()
+    except Exception:  # noqa: BLE001 - missing/unreadable Playbook must not block import
+        return
+    reconcile_required_terms(playbook)
+
+
+_reconcile_required_terms_at_import()
 
 # Prohibited language the AI must never smuggle into ANY adapted clause — the
 # restrictions the Playbook bans. If adapted text matches, the guard rejects it

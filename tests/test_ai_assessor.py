@@ -157,11 +157,14 @@ class AIAssessorTests(unittest.TestCase):
         # The overall document blocks send (failed or needs review).
         self.assertTrue(result["review_state"]["blocks_send"])
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
-        # SOURCE_TEXT has "laws of California" — the deterministic backstop fires even
-        # with no AI assessment and overrides the missing-assessment default to fail.
-        self.assertEqual(governing_law["decision"], "fail")
-        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
-        self.assertTrue(governing_law["blocks_send"])
+        # The deterministic governing-law backstop was removed once the primary AI
+        # proved it reliably fails an unapproved jurisdiction on its own. With no AI
+        # assessment for governing_law, the clause fails safe to review (the
+        # missing-assessment default) and blocks the send — it is no longer
+        # force-failed by a backstop.
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["review_state"]["state"], "review")
+        self.assertTrue(governing_law["review_state"]["blocks_send"])
 
     def test_truncated_document_forces_manual_review_no_silent_clear(self):
         # A long document whose paragraphs exceed the packet budget is only

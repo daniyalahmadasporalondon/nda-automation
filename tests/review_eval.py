@@ -56,6 +56,15 @@ KIND_AI_AGREEMENT = "ai_agreement"  # scripted AI agrees -> must not escalate
 KIND_AI_DISAGREEMENT = "ai_disagreement"  # scripted AI dissents -> must escalate
 KIND_AI_INVALID = "ai_invalid"  # scripted AI cites badly / low conf -> must escalate
 KIND_VERIFIER = "verifier"  # scripted adversarial verifier -> justify-or-refute a finding
+KIND_AI_FIRST_REAL = "ai_first_real"  # REAL provider on the live AI-first path (key-gated)
+
+# Real-AI cases hit a live provider, so they only run when an OpenRouter key is
+# present; key-free CI skips them cleanly (they are filtered out before scoring).
+AI_FIRST_REAL_ENV_KEY = "OPENROUTER_API_KEY"
+
+
+def ai_first_real_enabled() -> bool:
+    return bool(str(os.environ.get(AI_FIRST_REAL_ENV_KEY, "")).strip())
 
 
 def _ai_disabled() -> ExitStack:
@@ -187,6 +196,35 @@ def _ai_first_verifier_result(text: str, verifier) -> dict:
     )
 
 
+def _ai_first_real_result(text: str) -> dict:
+    """Run a case through the LIVE AI-first path with the REAL configured provider.
+
+    This is the SHIPPING path: a real model produces the clause assessments and
+    ``build_ai_first_review_result`` finalizes them (no deterministic governing-law
+    backstop -- that was removed once the primary AI proved it reliably fails an
+    unapproved jurisdiction on its own). Used only for key-gated real-AI cases, so
+    it exercises the actual model judgment the product relies on, not a stub.
+
+    The reviewer is resolved explicitly from the OpenRouter key so the live path is
+    reachable regardless of the ambient AI-review enabled flag (the eval suppresses
+    the configured provider for un-scripted runs; this is the one place that opts in).
+    """
+    from nda_automation.ai_assessor import (
+        AI_ASSESSMENT_STUB_ENV,
+        assess_nda_with_ai,
+        configured_ai_assessment_reviewer,
+    )
+    from nda_automation.ai_review import DEFAULT_OPENROUTER_MODEL
+
+    # The CI conftest exports the key-free stub env globally; a real-AI case must
+    # reach the actual provider, so suppress the stub for just this resolution.
+    with patch.dict(os.environ, {AI_ASSESSMENT_STUB_ENV: ""}, clear=False):
+        reviewer = configured_ai_assessment_reviewer(
+            {"provider": "openrouter", "model": DEFAULT_OPENROUTER_MODEL, "timeout_seconds": 60}
+        )
+    return assess_nda_with_ai(text, reviewer=reviewer)
+
+
 def run_case(case: dict) -> dict:
     text = str(case["text"])
     clause_id = str(case["clause_id"])
@@ -206,6 +244,8 @@ def run_case(case: dict) -> dict:
     elif kind == KIND_VERIFIER:
         verifier = _scripted_verifier(clause_id, dict(case.get("verifier") or {}))
         result = _ai_first_verifier_result(text, verifier)
+    elif kind == KIND_AI_FIRST_REAL:
+        result = _ai_first_real_result(text)
     else:
         focus = dict(case.get("ai") or {})
         reviewer = _scripted_reviewer(clause_id, focus, deterministic_by_clause)
@@ -247,8 +287,19 @@ def classify(outcome: dict) -> str:
 
 def run_eval(cases: list | None = None) -> dict:
     cases = cases if cases is not None else load_cases()
+    # Real-AI cases hit a live provider. Skip them entirely when no key is present
+    # so key-free CI stays green; when keyed, run them OUTSIDE _ai_disabled() (which
+    # clears OPENROUTER_API_KEY) so the real reviewer is actually reachable.
+    real_ai_enabled = ai_first_real_enabled()
+    scripted_cases = [c for c in cases if str(c.get("kind") or "") != KIND_AI_FIRST_REAL]
+    real_ai_cases = [
+        c for c in cases
+        if str(c.get("kind") or "") == KIND_AI_FIRST_REAL and real_ai_enabled
+    ]
+    raw_outcomes: list = []
     with _ai_disabled():
-        raw_outcomes = [run_case(case) for case in cases]
+        raw_outcomes.extend(run_case(case) for case in scripted_cases)
+    raw_outcomes.extend(run_case(case) for case in real_ai_cases)
     outcomes = [dict(outcome, classification=classify(outcome)) for outcome in raw_outcomes]
     return summarize(outcomes)
 

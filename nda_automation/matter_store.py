@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,11 @@ DATA_DIR = Path(os.environ["NDA_DATA_DIR"]).expanduser() if os.environ.get("NDA_
 MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 _MATTERS_LOCK = threading.RLock()
+# Maximum seconds to wait when acquiring _MATTERS_LOCK or the on-disk flock
+# before giving up and raising MatterStoreError.  30 s is well above any
+# expected critical-section duration while keeping the export endpoint
+# from hanging indefinitely under a stuck background thread.
+_LOCK_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_STORED_MATTERS = 250
 MATTER_RECORDS_DIRNAME = "matters"
 PRUNED_ARCHIVE_DIRNAME = "pruned-matters"
@@ -745,16 +751,44 @@ def create_matter(
 
 @contextmanager
 def _locked_store():
-    with _MATTERS_LOCK:
+    # --- in-process lock (threading.RLock) with timeout ---
+    # RLock.acquire(timeout=N) still succeeds immediately when the *same* thread
+    # already holds the lock (re-entrancy is preserved), so nested _locked_store()
+    # calls from the same thread are unaffected.
+    if not _MATTERS_LOCK.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+        raise MatterStoreError(
+            "Matter store could not be locked within the timeout "
+            f"({_LOCK_TIMEOUT_SECONDS}s). A long-running operation may be "
+            "holding the lock. Please retry."
+        )
+    try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         with (DATA_DIR / "matters.lock").open("a+", encoding="utf-8") as lock_file:
+            # --- cross-process flock with bounded retry ---
+            # Use LOCK_EX|LOCK_NB so we never sleep inside a kernel call; instead
+            # we poll in a tight loop (10 ms intervals) and give up after
+            # _LOCK_TIMEOUT_SECONDS, matching the in-process timeout above.
             if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                _deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError as exc:
+                        if time.monotonic() >= _deadline:
+                            raise MatterStoreError(
+                                "Matter store file lock could not be acquired within the "
+                                f"timeout ({_LOCK_TIMEOUT_SECONDS}s). Another process may "
+                                "be holding the lock. Please retry."
+                            ) from exc
+                        time.sleep(0.01)
             try:
                 yield
             finally:
                 if fcntl is not None:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        _MATTERS_LOCK.release()
 
 
 def _load_matters() -> list[dict[str, Any]]:

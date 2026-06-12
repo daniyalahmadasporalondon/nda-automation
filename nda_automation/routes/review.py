@@ -241,7 +241,20 @@ def handle_review_docx_export(handler) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
 
-    headers = {"X-Export-Verified": redline_export_service.VERIFIED_EXPORT_HEADER}
+    # For PDF-source matters the export is reconstructed from the PDF, so surface
+    # that caveat instead of the generic "verified" signal. Mirror the reviewed-docx
+    # path (routes/approval.py): set X-Export-Verified to the reconstruction marker
+    # when present, and merge the reconstruction headers (X-PDF-DOCX-Reconstruction)
+    # through so the client can show the honest "best-effort from PDF" message.
+    headers = {
+        "X-Export-Verified": (
+            redline_export.headers.get("X-PDF-DOCX-Reconstruction")
+            if redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction")
+            else redline_export_service.VERIFIED_EXPORT_HEADER
+        ),
+    }
+    if redline_export.headers:
+        headers.update(redline_export.headers)
     if redline_export.saved_path is not None:
         headers.update({
             "X-Export-URL": f"/exports/{quote(redline_export.saved_path.name)}",

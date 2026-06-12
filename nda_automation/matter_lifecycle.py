@@ -81,6 +81,9 @@ class MatterRedlineSendResult:
     matter: dict[str, Any]
     filename: str
     sent: dict[str, Any]
+    # True when the sent Word file was reconstructed from a PDF source (best-effort,
+    # not faithful original formatting). The route surfaces this caveat to the operator.
+    reconstructed_from_pdf: bool = False
 
 
 @dataclass(frozen=True)
@@ -281,7 +284,7 @@ class RepositoryMatterLifecycle:
         subject: str | None = None,
         body: str | None = None,
     ) -> MatterRedlineSendResult:
-        from . import app_settings, gmail_integration, matter_view, redline_export_service
+        from . import app_settings, gmail_integration, matter_view, redline_export_service, source_document_policy
 
         matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if matter is None:
@@ -335,7 +338,20 @@ class RepositoryMatterLifecycle:
             filename=redline_export.filename,
             owner_user_id=owner_user_id,
         )
-        return MatterRedlineSendResult(matter=updated_matter, filename=redline_export.filename, sent=sent)
+        # For PDF-source matters the redline is reconstructed from the PDF (the
+        # export stamps the X-PDF-DOCX-Reconstruction header), so the sent Word file
+        # is best-effort, not faithful original formatting. Carry that caveat to the
+        # route. Prefer the per-export marker; fall back to the matter-source predicate.
+        reconstructed_from_pdf = bool(
+            (redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction"))
+            or source_document_policy.matter_source_is_pdf(send_matter)
+        )
+        return MatterRedlineSendResult(
+            matter=updated_matter,
+            filename=redline_export.filename,
+            sent=sent,
+            reconstructed_from_pdf=reconstructed_from_pdf,
+        )
 
     def send_document(
         self,

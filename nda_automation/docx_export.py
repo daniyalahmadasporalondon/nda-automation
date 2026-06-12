@@ -79,8 +79,45 @@ class SourceParagraph(NamedTuple):
     normalized_text: str
 
 
+class SourceRedlinePackage(NamedTuple):
+    """The rendered source-redline DOCX bytes plus the PDF-source redlines that
+    could not be confidently anchored. ``anchor_uncertain_redlines`` is always empty
+    in strict (fail-closed) mode -- strict raises instead of returning them. It is
+    only populated in lenient mode (preview/draft/diagnostic), where the file is
+    still produced but must be labelled an incomplete redline."""
+
+    data: bytes
+    anchor_uncertain_redlines: List[RedlineEdit]
+
+
 class DocxExportError(ValueError):
     """Raised when a DOCX cannot be patched into a redlined export."""
+
+
+class PdfRedlineAnchorError(DocxExportError):
+    """Raised (in strict/fail-closed mode) when one or more PDF-source redlines
+    cannot be confidently anchored into the reconstructed Word body.
+
+    PDF review paragraphs carry only the engine-independent text and a loose,
+    unreliable paragraph index, so a redline is placed only when exactly one
+    reconstructed body paragraph matches its text within a high confidence. When
+    any required redline cannot be placed, producing the file would silently drop
+    accepted changes (the original P0 defect); strict mode raises instead. The
+    caller (``redline_export_service``) translates this into the user-facing
+    ``PdfSourceRedlineUnavailableError`` and offers the source-PDF marked-up
+    annotation export (``annotated_pdf_export``) as the recovery path.
+
+    ``count`` is the number of unplaceable redlines (for the exact user message);
+    ``redlines`` are those edits (for diagnostics/headers).
+    """
+
+    def __init__(self, redlines: List[RedlineEdit]):
+        self.redlines = list(redlines)
+        self.count = len(self.redlines)
+        super().__init__(
+            f"{self.count} proposed change(s) could not be confidently placed in the "
+            "reconstructed Word document."
+        )
 
 
 def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Review") -> bytes:
@@ -143,10 +180,13 @@ def build_source_redline_docx(
     review_result: ReviewResult,
     *,
     clean_fills: object = None,
+    strict: bool = True,
 ) -> bytes:
     from .source_redline_docx import build_source_redline_docx as build_source_redline_docx_facade  # noqa: PLC0415
 
-    return build_source_redline_docx_facade(source_docx, review_result, clean_fills=clean_fills)
+    return build_source_redline_docx_facade(
+        source_docx, review_result, clean_fills=clean_fills, strict=strict
+    )
 
 
 def _build_source_redline_docx_package(
@@ -154,7 +194,8 @@ def _build_source_redline_docx_package(
     review_result: ReviewResult,
     *,
     clean_fills: object = None,
-) -> bytes:
+    strict: bool = True,
+) -> SourceRedlinePackage:
     """Build the redlined source DOCX.
 
     ``clean_fills`` (optional) are inbound-NDA clean fills: blank-replacements
@@ -186,10 +227,11 @@ def _build_source_redline_docx_package(
                 review_result,
                 source_paragraph_by_original_index,
             )
-            source_paragraph_by_final_index = _apply_redline_edits_to_source_document(
+            source_paragraph_by_final_index, anchor_uncertain_redlines = _apply_redline_edits_to_source_document(
                 document_root,
                 review_result.get("redline_edits", []),
                 review_result.get("paragraphs", []),
+                strict=strict,
             )
             assigned_comments, comments_xml = _comments_xml_with_appended_comments(
                 source_archive.read("word/comments.xml") if "word/comments.xml" in source_names else None,
@@ -251,7 +293,10 @@ def _build_source_redline_docx_package(
                     for name, data in overrides.items():
                         if name not in written:
                             redlined_archive.writestr(name, data)
-                return output.getvalue()
+                return SourceRedlinePackage(
+                    data=output.getvalue(),
+                    anchor_uncertain_redlines=anchor_uncertain_redlines,
+                )
     except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
         raise DocxExportError("The uploaded Word document could not be redlined.") from exc
 
@@ -459,11 +504,12 @@ def _redlines_by_source_paragraph(
     redlines: object,
     source_paragraphs: List[SourceParagraph],
     review_paragraphs: object = None,
-) -> Tuple[Dict[int, List[RedlineEdit]], List[RedlineEdit]]:
+) -> Tuple[Dict[int, List[RedlineEdit]], List[RedlineEdit], List[RedlineEdit]]:
     grouped: Dict[int, List[RedlineEdit]] = {}
     unresolved: List[RedlineEdit] = []
+    pdf_uncertain: List[RedlineEdit] = []
     if not isinstance(redlines, list):
-        return grouped, unresolved
+        return grouped, unresolved, pdf_uncertain
 
     review_paragraphs_by_id = _review_paragraphs_by_id(review_paragraphs)
     # Resolve one source paragraph per *distinct review paragraph*, claiming each
@@ -496,7 +542,18 @@ def _redlines_by_source_paragraph(
                     redline, source_paragraphs, review_paragraphs_by_id, claimed_indexes
                 )
             if source_paragraph is None:
-                if not _redline_source_part(redline, review_paragraphs_by_id):
+                # A PDF-source redline that could not be confidently text-anchored
+                # must NEVER be silently dropped (the original P0 defect): collect it
+                # so the caller can fail closed (strict) or flag the export as an
+                # incomplete redline (lenient). Genuine supplemental parts
+                # (header/footer) target regions outside the body paragraph sequence
+                # and remain a logged skip -- they are not PDF body content.
+                if redline_edit_contract.is_pdf_source_redline(redline, review_paragraphs_by_id):
+                    pdf_uncertain.append(redline)
+                    continue
+                if not redline_edit_contract.is_supplemental_part_redline(
+                    redline, review_paragraphs_by_id
+                ):
                     unresolved.append(redline)
                     continue
                 LOGGER.warning(
@@ -510,7 +567,7 @@ def _redlines_by_source_paragraph(
             if review_key is not None:
                 resolved_by_review_key[review_key] = source_paragraph
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
-    return grouped, unresolved
+    return grouped, unresolved, pdf_uncertain
 
 
 def _resolve_shared_split_block_paragraph(
@@ -592,9 +649,23 @@ def _resolve_source_paragraph(
     *,
     claimed_indexes: set[int] | None = None,
 ) -> SourceParagraph | None:
-    if _redline_source_part(redline, review_paragraphs_by_id):
-        return None
     claimed_indexes = claimed_indexes if claimed_indexes is not None else set()
+    if redline_edit_contract.is_pdf_source_redline(redline, review_paragraphs_by_id):
+        # PDF redlines anchor by CONFIDENT TEXT MATCH only. The reconstructed body
+        # text is engine-independent and reliable; the loose PDF paragraph index is
+        # not, so we never fall back to a positional source_index here. Place only
+        # when exactly one still-unclaimed body paragraph matches the redline's text
+        # within the high threshold -- ambiguous or no match declines (the caller
+        # then routes it to the fail-closed / incomplete-label path, never a silent
+        # drop).
+        return _resolve_pdf_source_paragraph(
+            redline, source_paragraphs, review_paragraphs_by_id, claimed_indexes
+        )
+    if _redline_source_part(redline, review_paragraphs_by_id):
+        # A genuine supplemental part (header/footer): not in the body paragraph
+        # sequence, so it cannot anchor here. Declined (and skipped with a warning by
+        # the caller) -- unchanged behavior.
+        return None
     source_index = _redline_source_index(redline)
     anchor_texts = _redline_anchor_texts(redline, review_paragraphs_by_id)
     for anchor_text in anchor_texts:
@@ -639,6 +710,40 @@ def _resolve_source_paragraph(
     )
 
 
+def _resolve_pdf_source_paragraph(
+    redline: RedlineEdit,
+    source_paragraphs: List[SourceParagraph],
+    review_paragraphs_by_id: Dict[str, Paragraph],
+    claimed_indexes: set[int],
+) -> SourceParagraph | None:
+    """Anchor a PDF-source redline into the reconstructed body by CONFIDENT TEXT
+    MATCH, declining anything ambiguous.
+
+    The redline's ``original_text`` (then the review paragraph's text) is compared
+    against each still-unclaimed body paragraph via the contract's confident match
+    (normalized equality or token-set ratio >= the PDF threshold). Returns the
+    paragraph only when exactly ONE body paragraph matches a given anchor text;
+    zero or multiple matches decline so the caller fails closed / labels the export
+    incomplete instead of guessing. The positional PDF index is deliberately never
+    consulted -- it is engine-dependent and unreliable.
+    """
+    for anchor_text in _redline_anchor_texts(redline, review_paragraphs_by_id):
+        matches = [
+            paragraph
+            for paragraph in source_paragraphs
+            if paragraph.source_index not in claimed_indexes
+            and redline_edit_contract.confident_text_match(paragraph.text, anchor_text)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Several body paragraphs match this anchor confidently: ambiguous, so
+            # the redline cannot be placed with confidence. Decline rather than pick
+            # arbitrarily (which could land an accepted change on the wrong clause).
+            return None
+    return None
+
+
 def _redline_source_index(redline: RedlineEdit) -> int | None:
     return redline_edit_contract.redline_source_index(redline)
 
@@ -655,21 +760,36 @@ def _apply_redline_edits_to_source_document(
     document_root: ET.Element,
     redlines: object,
     review_paragraphs: object = None,
-) -> Dict[int, ET.Element]:
+    *,
+    strict: bool = True,
+) -> Tuple[Dict[int, ET.Element], List[RedlineEdit]]:
+    """Apply redlines to the body and report PDF redlines that could not anchor.
+
+    ``strict`` (fail-closed, the default) raises ``PdfRedlineAnchorError`` when ANY
+    PDF-source redline could not be confidently placed, so send/approve/export never
+    emit a Word file missing accepted changes. ``strict=False`` (preview / draft /
+    diagnostic) instead returns those unplaceable redlines so the caller can produce
+    the file but mark it an incomplete redline. Either way a PDF redline is never
+    silently dropped. Returns ``(source_paragraph_by_index, pdf_uncertain_redlines)``.
+    """
     source_paragraphs = _indexed_source_paragraphs(document_root)
     source_paragraph_by_index = {
         paragraph.source_index: paragraph.paragraph
         for paragraph in source_paragraphs
     }
-    redlines_by_source_index, unresolved_redlines = _redlines_by_source_paragraph(
+    redlines_by_source_index, unresolved_redlines, pdf_uncertain_redlines = _redlines_by_source_paragraph(
         redlines,
         source_paragraphs,
         review_paragraphs,
     )
     if unresolved_redlines:
         raise DocxExportError(_unanchored_redline_error(unresolved_redlines))
+    if pdf_uncertain_redlines and strict:
+        # Fail closed: rather than ship a reconstructed Word doc that silently omits
+        # these accepted changes, abort so the caller surfaces the recovery path.
+        raise PdfRedlineAnchorError(pdf_uncertain_redlines)
     if not redlines_by_source_index:
-        return source_paragraph_by_index
+        return source_paragraph_by_index, pdf_uncertain_redlines
 
     revision_id = _next_revision_id(document_root)
     for source_paragraph in reversed(source_paragraphs):
@@ -728,7 +848,7 @@ def _apply_redline_edits_to_source_document(
                 source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
                 revision_id += 1
-    return source_paragraph_by_index
+    return source_paragraph_by_index, pdf_uncertain_redlines
 
 
 def _unanchored_redline_error(redlines: List[RedlineEdit]) -> str:

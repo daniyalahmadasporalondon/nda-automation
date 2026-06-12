@@ -74,7 +74,7 @@ window.generatorEditor = (function () {
       const text = runs.map((run) => run.text).join("");
       if (!text.trim()) return;
       index += 1;
-      const para = { id: `draft-${index}`, index, text, runs: runs.length > 1 || runs[0].bold ? runs : undefined };
+      const para = { id: `draft-${index}`, index, text, runs: runs.length > 1 || runs[0].bold || runs.some((r) => r.fill || r.blank) ? runs : undefined };
       // For list items, derive the ordinal marker + nesting level from the source
       // <ol>/<ul> so the draft shows clause numbers / sub-clause letters (1., (a))
       // just like the generated document does (the shared structure renderer reads
@@ -128,23 +128,38 @@ window.generatorEditor = (function () {
     return out || "i";
   }
 
-  // Flatten an element to {text, bold?} runs, treating <b>/<strong> as bold, then
-  // trim the edges so the run list tiles a clean paragraph string.
+  // Flatten an element to {text, bold?, fill?, blank?} runs, treating <b>/<strong>
+  // as bold, `.nda-fill` / `.nda-fill-entity` spans as a viewer-only violet
+  // "filled-in value" highlight, and `.nda-blank` spans as the amber "unfilled
+  // placeholder" highlight — so the always-visible editor mirrors the same
+  // playbook colours as the live preview instead of flattening them to plain text.
+  // Both `fill` and `blank` are render-only markers: they survive in the editor
+  // model but are NOT export formats (the export normalizers only copy
+  // bold/italic/underline/etc.), so they never reach the generated/sent document.
   function runsFromElement(block) {
     const runs = [];
-    (function walk(node, bold) {
+    (function walk(node, bold, fill, blank) {
       node.childNodes.forEach((child) => {
         if (child.nodeType === 3) {
           const text = child.nodeValue.replace(/\s+/g, " ");
-          if (text) runs.push(bold ? { text, bold: true } : { text });
+          if (text) {
+            const run = { text };
+            if (bold) run.bold = true;
+            if (fill) run.fill = true;
+            if (blank) run.blank = true;
+            runs.push(run);
+          }
         } else if (child.nodeType === 1) {
           // Nested lists become their own paragraphs -- don't fold their text into
           // the parent list item's runs (the parent <li> keeps only its own intro).
           if (child.tagName === "OL" || child.tagName === "UL") return;
-          walk(child, bold || /^(B|STRONG)$/.test(child.tagName));
+          const cls = child.classList;
+          const childFill = fill || (cls && (cls.contains("nda-fill") || cls.contains("nda-fill-entity")));
+          const childBlank = blank || (cls && cls.contains("nda-blank"));
+          walk(child, bold || /^(B|STRONG)$/.test(child.tagName), childFill, childBlank);
         }
       });
-    })(block, false);
+    })(block, false, false, false);
     if (runs.length) {
       runs[0].text = runs[0].text.replace(/^\s+/, "");
       runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, "");
@@ -269,11 +284,25 @@ window.generatorEditor = (function () {
     return `<div class="generator-doc-table" style="--gen-table-cols:${Math.max(columnCount, 1)}">${inner}</div>`;
   }
 
+  // Render a single editor run to HTML, preserving the Generator's playbook
+  // colours. The shared global renderFormattedRun already wraps a `fill` run in
+  // the violet `.nda-fill-entity` highlight; here we additionally wrap a `blank`
+  // run in the amber `.nda-blank` placeholder highlight so unfilled placeholders
+  // keep the same look in the always-visible editor as they have in the live
+  // preview. Like `fill`, `blank` is a render-only marker: it is never emitted as
+  // run formatting on export, so neither highlight reaches the generated document.
+  function renderGeneratorRun(run) {
+    if (run && run.blank) {
+      return `<span class="nda-blank">${renderFormattedRun(run, false)}</span>`;
+    }
+    return renderFormattedRun(run, false);
+  }
+
   function renderParagraph(paragraph) {
     const text = String(paragraph.text || "");
     const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
     const tiles = runs && runs.map((r) => String(r && r.text || "")).join("") === text;
-    const body = tiles ? runs.map((run) => renderFormattedRun(run, false)).join("") : escapeHtml(text);
+    const body = tiles ? runs.map((run) => renderGeneratorRun(run)).join("") : escapeHtml(text);
     const id = escapeHtml(String(paragraph.id));
     const style = paragraphFormatStyleAttribute(paragraph);
     // Reuse the Review editor's structure derivation so headings, numbered/lettered

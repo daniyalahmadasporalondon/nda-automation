@@ -41,12 +41,13 @@ class GeneratedNdaWorkflowResult:
 
 
 def generate_nda_from_payload(payload: dict[str, Any], *, owner_user_id: str) -> GeneratedNdaWorkflowResult:
-    entity_id, intake, governing_law_override = intake_from_payload(payload)
+    entity_id, intake, governing_law_override, address_id = intake_from_payload(payload)
     return generate_nda_for_matter(
         entity_id,
         intake,
         owner_user_id=owner_user_id,
         governing_law_override=governing_law_override,
+        address_id=address_id,
     )
 
 
@@ -56,6 +57,7 @@ def generate_nda_for_matter(
     *,
     owner_user_id: str,
     governing_law_override: str = "",
+    address_id: str = "",
 ) -> GeneratedNdaWorkflowResult:
     from .artifact_registry import ROLE_ORIGINAL, latest_artifact_for_role  # noqa: PLC0415
     from .ingestion_service import create_matter_from_document  # noqa: PLC0415
@@ -68,6 +70,7 @@ def generate_nda_for_matter(
         intake,
         playbook_bundle=active_playbook,
         governing_law_override=governing_law_override,
+        address_id=address_id,
     )
 
     # Hard safety gate on the actual matter-creation path. Nothing is persisted
@@ -111,11 +114,12 @@ def generated_filename(intake: CounterpartyIntake) -> str:
     return f"NDA - {safe}.docx"
 
 
-def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntake, str]:
+def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntake, str, str]:
     if not isinstance(payload, dict):
         raise GenerationPayloadError("Request body must be a JSON object.")
 
     governing_law_override = governing_law_override_from_payload(payload)
+    address_id = address_id_from_payload(payload)
     entity_id = entity_id_from_payload(payload)
     if not entity_id:
         raise GenerationPayloadError("A signing entity must be selected.")
@@ -141,14 +145,21 @@ def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntak
         jurisdiction_of_incorporation=field(
             "counterparty_jurisdiction", "jurisdiction_of_incorporation"
         ),
-        business_description=field("business_description", "notes"),
+        # business_description is the labelled, OUTBOUND business field (it fills the
+        # recital [BUSINESS DESCRIPTION] slot the counterparty reads). Generation
+        # reads ONLY this field — never the (now-removed) Special Notes `notes` field.
+        # The old `field("business_description", "notes")` fallback leaked the private
+        # counsel notes into the outbound recital; the `notes` read is gone entirely,
+        # so generation no longer touches it on any path. When business_description is
+        # absent the slot generates empty.
+        business_description=field("business_description"),
         purpose=field("project", "project_purpose", "purpose")
         or "the proposed business relationship between the parties",
         term_years=term_years(_first(intake_block, payload, "term_years", "term")),
         nda_type=field("nda_type") or nda_generation.NDA_TYPE_MUTUAL,
         agreement_date=agreement_date(_first(intake_block, payload, "effective_date", "agreement_date")),
     )
-    return entity_id, intake, governing_law_override
+    return entity_id, intake, governing_law_override, address_id
 
 
 def entity_id_from_payload(payload: dict[str, Any]) -> str:
@@ -160,6 +171,27 @@ def entity_id_from_payload(payload: dict[str, Any]) -> str:
         nested = signing_entity.get("id")
         if isinstance(nested, str) and nested.strip():
             return nested.strip()
+    return ""
+
+
+def address_id_from_payload(payload: dict[str, Any]) -> str:
+    """The Aspora address id the user picked, from ``signing_entity.address.id``.
+
+    The frontend emits the chosen address as a coupled block
+    (``signing_entity.address = {id, label, lines}``); generation only needs the
+    ``id`` to select that address from the registry bundle (the registry is the
+    address source of truth, so we never trust the lines the client echoes back).
+    Absent/blank means "use the entity's default address" — the selection is
+    optional, exactly like the governing-law override.
+    """
+
+    signing_entity = payload.get("signing_entity")
+    if isinstance(signing_entity, dict):
+        address = signing_entity.get("address")
+        if isinstance(address, dict):
+            address_id = address.get("id")
+            if isinstance(address_id, str) and address_id.strip():
+                return address_id.strip()
     return ""
 
 

@@ -486,7 +486,7 @@
             "decision": "review",
             "issue_type": "unclear",
             "description": "The term language is ambiguous, cross-referenced, unresolved, or unclear about whether the long survival applies only to accepted carve-outs rather than ordinary confidentiality.",
-            "redline_action": "no_change"
+            "redline_action": "replace_paragraph"
           }
         ],
         "evidence_requirements": {

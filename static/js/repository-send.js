@@ -14,7 +14,12 @@ const RepositorySend = (() => {
               <dt>To</dt>
               <dd>${escapeHtml(recipient)}</dd>
             </div>
+            <div>
+              <dt>Attachment</dt>
+              <dd>${escapeHtml(outboundAttachmentLabel(matter))}</dd>
+            </div>
           </dl>
+          ${renderChangeSummary(matter)}
           <label class="repository-send-field" for="repositorySendSubject">
             <span>Subject</span>
             <input id="repositorySendSubject" type="text" value="${escapeHtml(subject)}" autocomplete="off">
@@ -24,6 +29,39 @@ const RepositorySend = (() => {
             <textarea id="repositorySendBody" rows="7">${escapeHtml(body)}</textarea>
           </label>
         </section>
+      `;
+  }
+
+  // The outbound redline filename + format the counterparty will receive. Derived
+  // from the same redlineDownloadFilename rule the download path uses (a "-redlined.docx"
+  // stem from the matter source), so the composer shows exactly what is attached.
+  function outboundAttachmentLabel(matter) {
+    const source = matter.source_filename || matter.document_title || "nda.docx";
+    const filename = typeof redlineDownloadFilename === "function"
+      ? redlineDownloadFilename(source)
+      : "nda-redlined.docx";
+    return `${filename} (Word)`;
+  }
+
+  // A short "Summary of changes" block, rendered ONLY from data already loaded into
+  // the repository panel. The panel carries review findings (issue_count / the
+  // review_result clauses) but NOT the effective redline edits or review comments
+  // (those live on the separately fetched review payload's redline_draft), so we
+  // surface the flagged-issue count and omit the redline/comment counts rather than
+  // fabricate them (see report: backend plumbing follow-up).
+  function renderChangeSummary(matter) {
+    const reviewResult = matter.review_result || {};
+    const attentionCount = Array.isArray(reviewResult.clauses)
+      ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention).length
+      : 0;
+    const issueCount = Number(matter.issue_count || 0) || attentionCount;
+    if (issueCount <= 0) return "";
+    const noun = issueCount === 1 ? "clause" : "clauses";
+    return `
+          <section class="repository-send-summary" aria-label="Summary of changes">
+            <p class="repository-send-summary-title">Summary of changes</p>
+            <p class="repository-send-summary-line">Redline addresses ${issueCount} flagged ${noun}.</p>
+          </section>
       `;
   }
 

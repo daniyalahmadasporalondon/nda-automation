@@ -61,11 +61,16 @@ const tests = [
   ["renders interactive jurisdiction picker in needs-review card", testNeedsReviewJurisdictionPicker],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
+  ["renders the connected proposed-edit card and names the comment target", testActionControlTextAndCommentTarget],
+  ["labels clause verdicts PASS / FAIL / NEEDS REVIEW, never MATCH", testVerdictLabelsNotMatch],
+  ["hosts govlaw options, preview, fixed clause, and Include/Ignore in one card", testConnectedGovlawRedlineCard],
+  ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
+  ["clamps an over-cap term and shows the forum in the Generator preview", testDraftIntakePreviewClampAndForum],
   ["surfaces generation self-check warnings while staging the artifact", testDraftIntakeGenerateSelfCheckWarning],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -95,6 +100,8 @@ const tests = [
   ["keeps browser preview aligned with exported DOCX redlines", testPreviewMatchesExportedDocx],
   ["guards source-redline export regression", testSourceRedlineExportRegression],
   ["marks the exported matter ready after a mid-export switch", testExportMarksCapturedMatterReady],
+  ["surfaces the PDF-reconstruction caveat on export and send", testPdfReconstructionExportAndSendCaveat],
+  ["discloses the move-to-Reviewed side effect and PDF caveat in the repository download menu", testRepositoryDownloadDisclosureAndCaveat],
   ["exports reviewed DOCX and blocks stale edited exports", testExportFlow],
   ["shows reconstructed PDF export metadata in the review download menu", testReviewDownloadMenuPdfReconstructionMetadata],
   ["renders the playbook preferred position and span highlight on a clause", testPlaybookPositionAndSpanHighlight],
@@ -103,6 +110,9 @@ const tests = [
   ["gates Approve Review on staleness only", testApproveReviewGate],
   ["labels the document verdict with text and icon, not colour alone", testDocumentVerdictLabel],
   ["guards unsaved redline edits before refreshing the review", testRefreshUnsavedEditsGuard],
+  ["warns and lists the non-empty loss buckets before resetting the draft", testResetDraftConfirmEnumeratesLoss],
+  ["shows the header Reviewed button scope and lists clauses before bulk-marking", testHeaderReviewedScopeAndConfirm],
+  ["previews the export contents in the download menu before format selection", testDownloadMenuContentsPreview],
   ["honours the reduced-motion preference", testReducedMotionPreference],
   ["renders the AI review health panel with status banner and metrics", testAdminHealthPanel],
   ["filters dashboard matters with the smart-search chips and opens a result", testDashboardSmartSearch],
@@ -476,6 +486,28 @@ async function testAccessibleControlState(page) {
   assert.equal(await page.locator("#adminDocumentPanel").isHidden(), false);
 
   await page.getByRole("tab", { name: "Review" }).click();
+  // Each document view mode hides or transforms content, so every button must
+  // carry a plain-words title explaining what it shows and what it hides.
+  await assertAttributeMatches(
+    page.locator('[data-view-mode="redline"]'),
+    "title",
+    /proposed edits shown as tracked changes/i,
+  );
+  await assertAttributeMatches(
+    page.locator('[data-view-mode="clean"]'),
+    "title",
+    /tracked-change markup is hidden/i,
+  );
+  await assertAttributeMatches(
+    page.locator('[data-view-mode="sidebyside"]'),
+    "title",
+    /next to each other/i,
+  );
+  await assertAttributeMatches(
+    page.locator('[data-view-mode="original"]'),
+    "title",
+    /untouched source document.*hidden/i,
+  );
   await page.getByRole("button", { name: "Clean" }).click();
   assert.equal(await page.locator('[data-view-mode="redline"]').getAttribute("aria-pressed"), "false");
   assert.equal(await page.locator('[data-view-mode="clean"]').getAttribute("aria-pressed"), "true");
@@ -496,11 +528,36 @@ async function testFailureUxDetails(page) {
       }),
     });
   });
+
+  // Intercept downloadBlob/downloadUrl so we can assert they are NOT called on failure.
+  await page.evaluate(() => {
+    window.__failedExportDownloadCount = 0;
+    const originalDownloadBlob = window.downloadBlob;
+    const originalDownloadUrl = window.downloadUrl;
+    window.downloadBlob = (...args) => {
+      window.__failedExportDownloadCount += 1;
+      return originalDownloadBlob?.(...args);
+    };
+    window.downloadUrl = (...args) => {
+      window.__failedExportDownloadCount += 1;
+      return originalDownloadUrl?.(...args);
+    };
+  });
+
   await chooseDownloadFormat(page.locator("#studioExportButton"), "docx");
   await waitForText(page, "#studioOverallTitle", "The exported Word document failed its open-health check.");
   await assertTextContains(page.locator("#studioOverallTitle"), "The exported Word document failed its open-health check.");
   await assertTextContains(page.locator("#studioResultMeta"), "Export could not run.");
   await assertTextContains(page.locator("#studioResultMeta"), "Missing DOCX parts: _rels/.rels.");
+
+  // Critical: a failed export must NOT trigger any file download so no empty file
+  // is ever created in the user's filesystem.
+  const failedDownloadCount = await page.evaluate(() => window.__failedExportDownloadCount);
+  assert.equal(failedDownloadCount, 0, "failed export must not trigger any download");
+
+  // The export button must be re-enabled after the failure so the user can retry.
+  assert.equal(await page.locator("#studioExportButton").isEnabled(), true, "export button must be re-enabled after failure");
+
   await page.unroute("**/api/export-review-docx");
 }
 
@@ -2400,8 +2457,13 @@ async function testReviewedMatterStatusSummary(page) {
   await assertTextContains(page.locator("#studioSendButton"), "Needs Review");
   const reviewedButton = page.locator("#studioReviewedButton");
   await page.waitForFunction(() => !document.querySelector("#studioReviewedButton")?.hidden);
+  // The header button marks every needs-review clause at once (here 2), so it now
+  // confirms the bulk scope first; accept the confirm to proceed with the mark.
+  const acceptBulkConfirm = (dialog) => dialog.accept();
+  page.on("dialog", acceptBulkConfirm);
   await reviewedButton.click();
   await page.waitForFunction(() => state.selectedMatter?.human_reviewed === true);
+  page.off("dialog", acceptBulkConfirm);
   assert.deepEqual(reviewedPayload, { reviewed: true });
   await assertTextContains(page.locator("#studioOverallTitle"), "Reviewed");
   await assertTextContains(page.locator("#studioResultMeta"), "All human-review clauses have been reviewed.");
@@ -2882,6 +2944,95 @@ async function testDraftIntakeGenerateNda(page) {
 
   await page.unroute("**/api/generate-nda");
   await page.unroute("**/api/matters/mat_generated_1/source");
+}
+
+// The live preview must be FAITHFUL to what generation produces: an over-cap term
+// is clamped to the playbook max (with a "capped" note), the governing-law clause
+// names the forum/courts that go WITH the law (and an override moves BOTH), and
+// the recital business description rides the `.nda-fill-entity` survival path so
+// its highlight reaches the always-visible editor. This test pins all three.
+async function testDraftIntakePreviewClampAndForum(page) {
+  let capturedGeneratePayload = null;
+  await page.route("**/api/generate-nda", async (route) => {
+    capturedGeneratePayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter_id: "mat_clamp_1",
+        artifact_id: "art_clamp_1",
+        status: "generated",
+        download_url: "/api/matters/mat_clamp_1/source",
+        self_check: { passed: true, overall_status: "pass", native_failures: [], dynamic_failures: [] },
+        manifest: { entity_id: "aspora_technology", term_years: 5 },
+      }),
+    });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.locator("#generatorTab").click();
+  await page.waitForSelector("#generatorView:not([hidden])");
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
+  );
+  // aspora_technology defaults to India law -> forum "Courts of India".
+  await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
+  await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
+  await page.locator("#draftIntakeBusinessDescription").fill("cross-border payments");
+  // Ask for 10 years — over the playbook cap of 5; generation would clamp to 5.
+  await page.locator("#draftIntakeTerm").fill("10 years");
+
+  // The hidden preview source carries the clamped term + the cap note + the forum.
+  const previewText = () =>
+    page.evaluate(() => document.querySelector("#draftIntakePreview")?.textContent || "");
+  await page.waitForFunction(
+    () => (document.querySelector("#draftIntakePreview")?.textContent || "").includes("capped to 5 years per playbook"),
+  );
+  const sourceText = await previewText();
+  assert.ok(sourceText.includes("5 years"), "preview clamps the displayed term to the playbook max");
+  assert.ok(!/\b10 years\b/.test(sourceText), "the over-cap term is not shown verbatim");
+  assert.ok(sourceText.includes("Courts of India"), "preview names the forum that goes with the law");
+
+  // The clamped term, the cap note, and the forum all survive into the visible
+  // editor (the raw #draftIntakePreview is hidden; #generatorEditor is what shows).
+  const editorText = await page.locator("#generatorEditor").innerText();
+  assert.ok(editorText.includes("5 years"), "editor shows the clamped term");
+  assert.ok(editorText.includes("capped to 5 years per playbook"), "editor shows the cap note");
+  assert.ok(editorText.includes("Courts of India"), "editor shows the forum");
+
+  // Item 2: the recital business description rides `.nda-fill-entity`, so its
+  // highlight survives flattening into the editor as a `fill` run (a plain
+  // `.nda-fill` would be dropped). Assert the source marks it as an entity fill.
+  const recitalIsEntityFill = await page.evaluate(() => {
+    const span = document.querySelector('#draftIntakePreview [data-generator-field="business_description"]');
+    return Boolean(span && span.classList.contains("nda-fill-entity"));
+  });
+  assert.ok(recitalIsEntityFill, "recital business description uses the surviving entity-fill highlight");
+
+  // An override switches the forum too: pick Delaware -> "Courts of the State of
+  // Delaware" replaces "Courts of India" in the preview, mirroring generation.
+  await page.locator("#draftIntakeGoverningLaw").selectOption("delaware");
+  await page.waitForFunction(
+    () => (document.querySelector("#draftIntakePreview")?.textContent || "").includes("Courts of the State of Delaware"),
+  );
+  const overriddenText = await previewText();
+  assert.ok(!overriddenText.includes("Courts of India"), "the override moves the forum off India");
+
+  // Item 1 end-to-end: the new top-level keys reach the POST under their exact
+  // backend-contract names (business_description + the counterparty identity).
+  await page.locator("#draftIntakeCounterpartyIncorporation").fill("Delaware, USA");
+  await page.locator("#draftIntakeCounterpartyAddress").fill("1 Market St, San Francisco");
+  await page.waitForSelector("#draftIntakeGenerateButton:not([disabled])");
+  await page.locator("#draftIntakeGenerateButton").click();
+  await waitForText(page, "#draftIntakeStatus", "NDA generated and saved");
+  assert.ok(capturedGeneratePayload, "expected a /api/generate-nda POST");
+  assert.equal(capturedGeneratePayload.business_description, "cross-border payments");
+  assert.equal(capturedGeneratePayload.counterparty_jurisdiction, "Delaware, USA");
+  assert.equal(capturedGeneratePayload.counterparty_registered_office, "1 Market St, San Francisco");
+  // The term goes to the backend verbatim ("10 years"); the backend owns the clamp.
+  assert.equal(capturedGeneratePayload.term, "10 years");
+
+  await page.unroute("**/api/generate-nda");
 }
 
 async function testDraftIntakeGenerateSelfCheckWarning(page) {
@@ -3821,6 +3972,19 @@ async function testRepositoryOutboundSendComposer(page) {
   await page.waitForSelector("#repositorySendSubject");
   await assertTextContains(panel, "daniyal.ahmad@aspora.com");
   await assertTextContains(panel, "legal@example.com");
+  // FIX (Item B): the outbound composer must surface the redline attachment row
+  // (the "-redlined.docx" filename + Word format) and, when the panel carries
+  // review findings, a short summary-of-changes block keyed off the flagged-issue
+  // count — so the operator knows what is being sent before confirming.
+  const sendRoute = panel.locator(".repository-send-composer .repository-send-route");
+  // The composer field labels are uppercased by CSS (text-transform), so innerText
+  // returns the rendered uppercase form — match that, not the source casing.
+  await assertTextContains(sendRoute, "ATTACHMENT");
+  await assertTextContains(sendRoute, "Counterparty-NDA-redlined.docx");
+  await assertTextContains(sendRoute, "(Word)");
+  const sendSummary = panel.locator(".repository-send-summary");
+  await assertTextContains(sendSummary, "Summary of changes");
+  await assertTextContains(sendSummary, "Redline addresses 1 flagged clause.");
   assert.equal(await page.locator("#repositorySendSubject").inputValue(), "Re: Please review NDA");
   assert.equal(
     await page.locator("#repositorySendBody").inputValue(),
@@ -5117,8 +5281,13 @@ async function testMatterRedlineDraftPersistence(page) {
   }));
   assert.deepEqual(ignoredState, { active: true, pressed: "true" });
 
+  // Reset Draft now confirms before discarding when there is something to lose
+  // (here an Accept/Ignore decision was made); accept the confirm to proceed.
+  const acceptResetConfirm = (dialog) => dialog.accept();
+  page.on("dialog", acceptResetConfirm);
   await page.locator("#studioDiscardDraftButton").click();
   await page.waitForFunction(() => document.querySelector("#studioDraftMeta")?.textContent.trim() === "");
+  page.off("dialog", acceptResetConfirm);
   await page.getByRole("tab", { name: "Repository" }).click();
   await assertTextContains(page.locator("#repositoryMatterPanel"), "No custom draft");
 
@@ -5912,8 +6081,10 @@ async function testExportMarksCapturedMatterReady(page) {
     const sourceText = "This Agreement shall be governed by the laws of California.";
     window.__markedRedlineReadyMatterIds = [];
     window.__exportRaceDownloads = [];
-    window.downloadBlob = (_blob, filename) => {
+    window.__exportRaceDownloadSizes = [];
+    window.downloadBlob = (blob, filename) => {
       window.__exportRaceDownloads.push(filename);
+      window.__exportRaceDownloadSizes.push(blob?.size ?? -1);
     };
     repositoryController.markMatterRedlineReady = async (matter) => {
       window.__markedRedlineReadyMatterIds.push(matter?.id || null);
@@ -5959,15 +6130,342 @@ async function testExportMarksCapturedMatterReady(page) {
 
   const exportRaceState = await page.evaluate(() => ({
     downloads: window.__exportRaceDownloads,
+    downloadSizes: window.__exportRaceDownloadSizes,
     markedReadyMatterIds: window.__markedRedlineReadyMatterIds,
     selectedMatterId: state.selectedMatter?.id || null,
   }));
   assert.equal(capturedExportPayload.matter_id, "matter_a");
   assert.deepEqual(exportRaceState.markedReadyMatterIds, ["matter_a"]);
   assert.deepEqual(exportRaceState.downloads, ["matter-a-redlined.docx"]);
+  // The blob handed to downloadBlob must be non-empty — the fix ensures the blob
+  // is fully retrieved before any download is triggered, so this can never be 0.
+  assert.ok(
+    exportRaceState.downloadSizes.every((size) => size > 0),
+    `downloaded blob must be non-empty; got sizes: ${JSON.stringify(exportRaceState.downloadSizes)}`,
+  );
   assert.equal(exportRaceState.selectedMatterId, "matter_b");
 
   await page.unroute("**/api/export-review-docx");
+}
+
+// FIX 1 + FIX 2 (PDF-source formatting-fidelity caveat): a PDF-source matter
+// exports/sends a Word file RECONSTRUCTED from the PDF, so the operator must see
+// the honest best-effort caveat — not the generic "Word package verified" /
+// "Sent redline" messaging reserved for faithful DOCX-source output.
+async function testPdfReconstructionExportAndSendCaveat(page) {
+  await page.goto(`${BASE_URL}/?v=pdf-reconstruction-caveat-test`, { waitUntil: "domcontentloaded" });
+
+  // Drive an export whose response headers carry the reconstruction marker.
+  async function runExportWith(responseHeaders) {
+    await page.route("**/api/export-review-docx", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "Content-Disposition": 'attachment; filename="matter-a-redlined.docx"',
+          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          ...responseHeaders,
+        },
+        body: "fake-docx",
+      });
+    });
+    await page.evaluate(() => {
+      const sourceText = "This Agreement shall be governed by the laws of California.";
+      window.downloadBlob = () => {};
+      repositoryController.markMatterRedlineReady = async (matter) => matter || null;
+      state.selectedMatter = {
+        board_column: "in_review",
+        id: "matter_pdf_caveat",
+        source_filename: "Matter A.pdf",
+        title: "Matter A",
+      };
+      state.selectedDocument = null;
+      state.reviewSourceText = sourceText;
+      state.reviewClauses = [{ id: "governing_law", name: "Governing Law", passes: false, status: "check" }];
+      state.reviewRedlines = [];
+      state.reviewParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+      state.reviewOriginalParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+      state.reviewExportOriginalParagraphs = [{ id: "p1", index: 1, source_index: 1, text: sourceText }];
+      state.exportClauseDecisions = {};
+      state.redlineTemplateSelections = {};
+      state.redlineDraftDirty = false;
+      studioNdaText.value = sourceText;
+      studioDocTitle.textContent = "Matter A";
+    });
+    await page.evaluate(() => exportReviewDocx());
+    const meta = await page.locator("#studioFileMeta").innerText();
+    await page.unroute("**/api/export-review-docx");
+    return meta;
+  }
+
+  // PDF-source export: the reconstruction header drives the best-effort caveat,
+  // and the generic "verified" assurance must be suppressed.
+  const pdfExportMeta = await runExportWith({
+    "X-Export-Verified": "pdf2docx",
+    "X-PDF-DOCX-Reconstruction": "pdf2docx",
+  });
+  assert.match(pdfExportMeta, /Best-effort Word reconstructed from PDF/);
+  assert.ok(!pdfExportMeta.includes("Word package verified"), "PDF export must not claim a verified Word package");
+
+  // DOCX-source export: unchanged verified messaging, no caveat.
+  const docxExportMeta = await runExportWith({ "X-Export-Verified": "word-package; track-revisions" });
+  assert.match(docxExportMeta, /Word package verified/);
+  assert.ok(!docxExportMeta.includes("reconstructed from PDF"), "DOCX export must not show the PDF caveat");
+
+  // Send confirmation: the same caveat is appended when the send response flags a
+  // PDF reconstruction, and omitted otherwise.
+  async function runSendWith(reconstructed) {
+    await page.unroute("**/api/gmail/status").catch(() => {});
+    await page.unroute("**/api/matters").catch(() => {});
+    await page.unroute("**/api/gmail/send-redline").catch(() => {});
+    const matter = {
+      id: "matter_pdf_send_caveat",
+      board_column: "in_review",
+      can_send_redline: false,
+      document_title: "Reviewed NDA",
+      extracted_text: "The confidentiality obligations survive for five years.",
+      human_reviewed: true,
+      recipient_email: "",
+      requirements_failed: 0,
+      requirements_needs_review: 0,
+      requirements_passed: 4,
+      send_block_reason: "Matter does not have a valid reply recipient email address.",
+      review_result: {
+        checked_at: "2026-06-04T09:00:00+00:00",
+        clauses: [{
+          decision: "pass",
+          evidence_paragraphs: [{ id: "p1", index: 1, source_index: 1, text: "The confidentiality obligations survive for five years." }],
+          id: "term_and_survival",
+          matched_paragraph_ids: ["p1"],
+          name: "Term and Survival",
+          needs_review: false,
+          passes: true,
+          review_state: { state: "pass" },
+          status: "pass",
+        }],
+        overall_status: "ready_to_sign",
+        paragraphs: [{ id: "p1", index: 1, source_index: 1, text: "The confidentiality obligations survive for five years." }],
+        redline_edits: [],
+        requirements_failed: 0,
+        requirements_needs_review: 0,
+        requirements_passed: 4,
+      },
+      sender: "Reviewed NDA",
+      source_filename: reconstructed ? "Reviewed NDA.pdf" : "Reviewed NDA.docx",
+      source_type: reconstructed ? "pdf" : "upload",
+      subject: "Reviewed NDA",
+      triage_status: "ready_to_sign",
+    };
+    await page.route("**/api/gmail/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          gmail: {
+            inbound: { configured: true, email: "inbound@aspora.com", ready: true },
+            outbound: { configured: true, email: "outbound@aspora.com", ready: true },
+          },
+        }),
+      });
+    });
+    await page.route("**/api/matters", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+    });
+    await page.route("**/api/gmail/send-redline", async (route) => {
+      const sendPayload = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          filename: "Reviewed-NDA-redlined.docx",
+          matter: { ...matter, board_column: "sent", last_outbound_to: sendPayload.to },
+          sent: {
+            message_id: "caveat-message",
+            outbound_account: "outbound@aspora.com",
+            sent_at: "2026-06-04T09:15:00+00:00",
+            subject: sendPayload.subject,
+            thread_id: "caveat-thread",
+            to: sendPayload.to,
+          },
+          source_reconstructed_from_pdf: reconstructed,
+        }),
+      });
+    });
+
+    await page.goto(`${BASE_URL}/?v=pdf-reconstruction-send-${reconstructed ? "pdf" : "docx"}`, { waitUntil: "domcontentloaded" });
+    await page.evaluate((loadedMatter) => {
+      state.selectedMatter = loadedMatter;
+      state.selectedDocument = null;
+      setSourceText(loadedMatter.extracted_text);
+      setSourcePlaceholder(SOURCE_PLACEHOLDER);
+      setDocumentTitle(loadedMatter.document_title);
+      setCounterpartyMeta("");
+      renderResult(loadedMatter.review_result, loadedMatter.extracted_text);
+      activateTab("review");
+      updateExportButtonState();
+    }, matter);
+    await page.waitForSelector("#reviewView:not([hidden])");
+    await page.locator("#studioSendButton").click();
+    await page.waitForSelector("#studioSendModal:not([hidden])");
+    await page.locator("#studioSendTo").fill("counterparty@example.com");
+    await page.locator("#studioSendConfirmButton").click();
+    await page.waitForSelector("#studioSendModal[hidden]", { state: "attached" });
+    const meta = await page.locator("#studioFileMeta").innerText();
+    await page.unroute("**/api/gmail/status");
+    await page.unroute("**/api/matters");
+    await page.unroute("**/api/gmail/send-redline");
+    return meta;
+  }
+
+  const pdfSendMeta = await runSendWith(true);
+  assert.match(pdfSendMeta, /Sent redline to counterparty@example.com/);
+  assert.match(pdfSendMeta, /reconstructed from a PDF and may not preserve original formatting/);
+
+  const docxSendMeta = await runSendWith(false);
+  assert.match(docxSendMeta, /Sent redline to counterparty@example.com/);
+  assert.ok(!docxSendMeta.includes("reconstructed from a PDF"), "DOCX send must not show the PDF caveat");
+}
+
+// FIX (Item A + Item C, repository panel Download menu):
+//   A — the DOCX menu choice must DISCLOSE the workflow side effect (download moves
+//       the matter to Reviewed) plus a contents preview BEFORE the click, instead of
+//       only telling the operator after the toast.
+//   C — a PDF-source download must append the best-effort reconstruction caveat to
+//       the repository toast (read from the same export headers the Review tab reads),
+//       while a DOCX-source download keeps its plain toast.
+async function testRepositoryDownloadDisclosureAndCaveat(page) {
+  function buildMatter({ reconstructed }) {
+    return {
+      id: "matter_repo_download",
+      attachment_filename: reconstructed ? "Reviewed NDA.pdf" : "Reviewed NDA.docx",
+      board_column: "in_review",
+      can_send_redline: false,
+      document_title: "Reviewed NDA",
+      human_reviewed: true,
+      issue_count: 2,
+      message_snippet: "Reviewed and ready to download.",
+      next_action: "Download redline",
+      received_at: "2026-06-04T09:00:00+00:00",
+      recipient_email: "",
+      requirements_failed: 2,
+      requirements_needs_review: 0,
+      requirements_passed: 4,
+      review_result: {
+        checked_at: "2026-06-04T09:00:00+00:00",
+        clauses: [
+          { id: "governing_law", issue_label: "Present but wrong", name: "Governing Law", passes: false, status: "check" },
+          { id: "term", issue_label: "Too long", name: "Term", passes: false, status: "check" },
+        ],
+        overall_status: "needs_redline",
+        requirements_failed: 2,
+        requirements_needs_review: 0,
+        requirements_passed: 4,
+      },
+      review_state: { state: "check" },
+      sender: "Reviewed NDA",
+      source_filename: reconstructed ? "Reviewed NDA.pdf" : "Reviewed NDA.docx",
+      source_type: reconstructed ? "pdf" : "upload",
+      subject: "Reviewed NDA",
+      triage_status: "needs_redline",
+    };
+  }
+
+  async function runDownloadWith({ reconstructed, exportHeaders }) {
+    await page.unroute("**/api/gmail/status").catch(() => {});
+    await page.unroute("**/api/matters").catch(() => {});
+    await page.unroute("**/api/matters/matter_repo_download").catch(() => {});
+    await page.unroute("**/api/matters/matter_repo_download/stage").catch(() => {});
+    await page.unroute("**/api/export-review-docx").catch(() => {});
+    const matter = buildMatter({ reconstructed });
+    await page.route("**/api/gmail/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          gmail: {
+            inbound: { configured: true, email: "inbound@aspora.com", ready: true },
+            outbound: { configured: true, email: "outbound@aspora.com", ready: true },
+          },
+        }),
+      });
+    });
+    await page.route("**/api/matters", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+    });
+    await page.route("**/api/matters/matter_repo_download", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+    });
+    await page.route("**/api/matters/matter_repo_download/stage", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matter: { ...matter, board_column: "reviewed" } }),
+      });
+    });
+    await page.route("**/api/export-review-docx", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "Content-Disposition": 'attachment; filename="Reviewed-NDA-redlined.docx"',
+          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          ...exportHeaders,
+        },
+        body: "fake-docx",
+      });
+    });
+
+    await page.goto(`${BASE_URL}/?v=repo-download-disclosure-${reconstructed ? "pdf" : "docx"}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("tab", { name: "Repository" }).click();
+    await page.waitForSelector(".repository-card");
+    await page.locator(".repository-card").click();
+    const panel = page.locator("#repositoryMatterPanel");
+    await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+
+    // Item A: open the menu and assert the disclosure is visible BEFORE downloading.
+    const menu = await openDownloadMenu(panel.getByRole("button", { name: "Download" }));
+    const docxOption = menu.locator('[data-download-format="docx"]').first();
+    await assertTextContains(docxOption, "Downloads and moves this matter to Reviewed.");
+    await assertTextContains(docxOption, "Includes 2 flagged issues.");
+
+    // Item C: choosing DOCX downloads and the toast carries the right caveat (or not).
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      docxOption.click(),
+    ]);
+    await download.path().catch(() => {});
+    await waitForText(page, "#repositoryMatterPanel .repository-detail-message", "Moved to Reviewed.");
+    const toast = await panel.locator(".repository-detail-message").innerText();
+
+    await page.unroute("**/api/gmail/status");
+    await page.unroute("**/api/matters");
+    await page.unroute("**/api/matters/matter_repo_download");
+    await page.unroute("**/api/matters/matter_repo_download/stage");
+    await page.unroute("**/api/export-review-docx");
+    return toast;
+  }
+
+  // PDF-source download: the reconstruction header drives the best-effort caveat.
+  const pdfToast = await runDownloadWith({
+    reconstructed: true,
+    exportHeaders: { "X-Export-Verified": "pdf2docx", "X-PDF-DOCX-Reconstruction": "pdf2docx" },
+  });
+  assert.match(pdfToast, /Moved to Reviewed\./);
+  assert.match(pdfToast, /Best-effort Word reconstructed from PDF — formatting may differ\./);
+
+  // DOCX-source download: same move-to-Reviewed disclosure, no reconstruction caveat.
+  const docxToast = await runDownloadWith({
+    reconstructed: false,
+    exportHeaders: { "X-Export-Verified": "word-package; track-revisions" },
+  });
+  assert.match(docxToast, /Moved to Reviewed\./);
+  assert.ok(!docxToast.includes("reconstructed from PDF"), "DOCX download must not show the PDF caveat");
 }
 
 async function testExportFlow(page) {
@@ -6161,6 +6659,328 @@ async function colorPixelCounts(locator) {
 // Load a review with a persisted selected matter so the approve endpoint has a
 // matter id to POST to. The clauses default to one "review" clause that requires
 // attention plus one passing clause.
+async function testActionControlTextAndCommentTarget(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p7", index: 7, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        matched_paragraph_ids: ["p7"],
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law is outside the approved set.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+      {
+        // No matched_paragraph_ids and no redline carrying a paragraph_id, so
+        // firstClauseParagraphId returns "" and the heading fallback shows.
+        decision: "review",
+        evidence_paragraphs: [],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Confidential information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p7", index: 7, source_index: 7, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw_action",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p7",
+          replacement_text: "This Agreement shall be governed by the laws of Delaware.",
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // The proposed edit renders as ONE connected card hosting the Include/Ignore
+  // controls for this edit (the redline lives in the card, not in a duplicate
+  // caption next to the toggle).
+  const card = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw_action"])`);
+  assert.equal(await card.count(), 1, "one connected proposed-edit card should render for the clause");
+  assert.equal(
+    await card.locator('[data-export-redline-id="rl_govlaw_action"]').count(),
+    2,
+    "the card should host the Include and Ignore toggles for this edit",
+  );
+
+  // The redline preview inside the card shows the struck source word + inserted
+  // replacement word via the shared inline diff (.inline-del / .inline-ins).
+  const preview = card.locator(".redline-inline-diff");
+  assert.ok(await card.locator(".inline-del").count() >= 1, "the redline preview should mark a deletion");
+  assert.ok(await card.locator(".inline-ins").count() >= 1, "the redline preview should mark an insertion");
+  await assertTextContains(preview, "California");
+  await assertTextContains(preview, "Delaware");
+
+  // The fixed-clause preview shows the clean final wording.
+  await assertTextContains(card.locator(".fixed-clause-preview .fixed-clause-text"), "governed by the laws of Delaware");
+
+  // The redline text shows ONCE: there is no longer a separate caption next to the
+  // Include/Ignore toggle (the retired renderRedlineActionText).
+  assert.equal(await detailPanel.locator(".redline-action-text").count(), 0,
+    "the old duplicate caption must be gone");
+
+  // Toggling Ignore does not change the redline preview (it stays anchored to the
+  // edit, not to the export decision).
+  await card.locator('[data-export-redline-id="rl_govlaw_action"][data-export-decision="ignore"]').click();
+  await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id="rl_govlaw_action"][data-export-decision="ignore"]')?.getAttribute("aria-pressed") === "true");
+  await assertTextContains(detailPanel.locator(".detail-redline-edit .redline-inline-diff"), "California");
+  await assertTextContains(detailPanel.locator(".detail-redline-edit .redline-inline-diff"), "Delaware");
+
+  // The comment textarea names the Word paragraph the comment will attach to,
+  // resolved the same way setClauseReviewComment resolves it.
+  await assertTextContains(detailPanel.locator(".comment-target-label"), "Comment will attach to Paragraph 7");
+
+  // A clause with no resolvable paragraph shows the heading fallback.
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  await assertTextContains(detailPanel.locator(".comment-target-label"), "No matching paragraph; comment will attach to the clause heading");
+}
+
+// Verdict labels read PASS / FAIL / NEEDS REVIEW — never the old "Match".
+async function testVerdictLabelsNotMatch(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Mutual obligations present." }],
+        id: "mutuality",
+        issue_label: "Pass",
+        name: "Mutuality",
+        passes: true,
+        reason: "Mutual obligations present.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+      {
+        decision: "fail",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Fail",
+        name: "Governing Law",
+        reason: "Governing law is outside the approved set.",
+        review_state: { state: "check" },
+        status: "check",
+      },
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Broad confidential information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Mutual obligations present." },
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+      { id: "p3", index: 3, source_index: 3, text: "Confidential Information means all business information." },
+    ],
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+
+  // PASS clause: assessment toggle reads PASS, never MATCH.
+  await page.locator('[data-studio-lane-id="mutuality"]').click();
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "PASS");
+  assert.equal(
+    (await detailPanel.locator(".active-clause-status").innerText()).toUpperCase().includes("MATCH"),
+    false,
+    "the pass verdict must read PASS, never MATCH",
+  );
+
+  // FAIL clause: assessment toggle reads FAIL.
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "FAIL");
+
+  // NEEDS REVIEW clause: assessment toggle reads NEEDS REVIEW.
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "NEEDS REVIEW");
+
+  // The whole review surface never renders the retired MATCH label.
+  const matchCount = await page.locator("#reviewView .studio-page").evaluate((node) => {
+    const text = (node.innerText || "").toUpperCase();
+    return (text.match(/\bMATCH\b/g) || []).length;
+  });
+  assert.equal(matchCount, 0, "the review surface must not render the MATCH label anywhere");
+}
+
+// The governing-law proposed-edit card: multiple jurisdiction options, the
+// selected option, the redline preview, the fixed-clause preview, and the
+// Include/Ignore controls all live inside ONE .detail-redline-edit. Selecting a
+// different option updates the preview, the fixed clause, and the exported payload.
+async function testConnectedGovlawRedlineCard(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          template_options: [
+            {
+              id: "opt_england",
+              label: "England and Wales",
+              replacement_text: "This Agreement shall be governed by the laws of England and Wales.",
+              selected: true,
+            },
+            {
+              id: "opt_delaware",
+              label: "Delaware",
+              replacement_text: "This Agreement shall be governed by the laws of Delaware.",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // Everything lives inside ONE connected card.
+  const card = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+  assert.equal(await card.count(), 1, "one connected proposed-edit card should render");
+
+  // Multiple jurisdiction options, with England & Wales pre-selected and marked
+  // recommended.
+  const options = card.locator(".redline-options .redline-option");
+  assert.equal(await options.count(), 2, "both jurisdiction options should render inside the card");
+  await assertTextContains(card.locator(".redline-options"), "JURISDICTION OPTIONS");
+  const selected = card.locator('.redline-option.selected[data-redline-option-id="opt_england"]');
+  assert.equal(await selected.count(), 1, "England and Wales should be the pre-selected option");
+  await assertTextContains(selected, "England and Wales — recommended");
+
+  // The redline preview (red/green inline diff) and the fixed-clause preview both
+  // live in the card and reflect the selected option.
+  assert.ok(await card.locator(".inline-del").count() >= 1, "the card preview should mark a deletion");
+  assert.ok(await card.locator(".inline-ins").count() >= 1, "the card preview should mark an insertion");
+  await assertTextContains(card.locator(".redline-inline-diff"), "California");
+  await assertTextContains(card.locator(".redline-inline-diff"), "England and Wales");
+  await assertTextContains(card.locator(".fixed-clause-preview .fixed-clause-text"), "governed by the laws of England and Wales");
+
+  // Include/Ignore controls live inside the card.
+  assert.equal(
+    await card.locator('[data-export-redline-id="rl_govlaw"]').count(),
+    2,
+    "Include and Ignore toggles should live inside the card",
+  );
+
+  // The redline text shows once: no retired duplicate caption.
+  assert.equal(await detailPanel.locator(".redline-action-text").count(), 0,
+    "the old duplicate caption must be gone");
+
+  // Selecting Delaware updates the selection, the redline preview, the fixed
+  // clause, AND the exported payload via effectiveReviewRedlines().
+  await card.locator('[data-redline-option-id="opt_delaware"]').click();
+  await page.waitForFunction(() => state.redlineTemplateSelections.rl_govlaw === "opt_delaware");
+
+  const updatedCard = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+  await assertTextContains(updatedCard.locator(".redline-inline-diff"), "Delaware");
+  await assertTextContains(updatedCard.locator(".fixed-clause-preview .fixed-clause-text"), "governed by the laws of Delaware");
+  assert.equal(
+    await updatedCard.locator('.redline-option.selected[data-redline-option-id="opt_delaware"]').count(),
+    1,
+    "Delaware should become the selected option",
+  );
+
+  const exportedReplacement = await page.evaluate(() => {
+    const edit = effectiveReviewRedlines().find((item) => item.id === "rl_govlaw");
+    return edit ? (edit.replacement_text || "") : "";
+  });
+  assert.match(exportedReplacement, /laws of Delaware/,
+    "the exported payload should carry the newly selected Delaware wording");
+}
+
+// The overall verdict mark/title is the backend's authoritative review_state, not a
+// JS re-derivation from clause counts. Here every clause reads PASS per-clause, but a
+// document-level gate set the authoritative review_state.state to "check" — the overall
+// mark must honour that FAIL, not the all-pass count tally (the re-derivation ghost).
+async function testOverallVerdictReadsReviewState(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Pass",
+        name: "Confidential Information",
+        passes: true,
+        reason: "Confidential information definition is in line with the playbook.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+      {
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of Delaware." }],
+        id: "governing_law",
+        issue_label: "Pass",
+        name: "Governing Law",
+        passes: true,
+        reason: "Governing law is within the approved set.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of Delaware." },
+    ],
+    result: {
+      // The authoritative document-level verdict disagrees with the all-pass clause
+      // tally (e.g. a truncation / document-health gate forced the overall to FAIL).
+      review_state: {
+        state: "check",
+        label: "CHECK",
+        blocks_send: true,
+        counts: { pass: 2, review: 0, check: 1, total: 3 },
+      },
+    },
+  });
+
+  // The overall mark reads the authoritative state (FAIL), never the re-derived
+  // all-pass tally from the JS clause counts.
+  await assertTextContains(page.locator("#studioResultMark"), "FAIL");
+  assert.equal(await page.locator("#studioResultMark").innerText(), "FAIL",
+    "the overall mark must consume review_state.state (FAIL), not re-derive PASS from clause counts");
+  await assertTextContains(page.locator("#studioOverallTitle"), "Does not meet requirements");
+}
+
 async function loadReviewWithMatter(page, { matter = {}, clauses, paragraphs, result = {} } = {}) {
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Review" }).click();
@@ -6433,18 +7253,24 @@ async function testNeedsReviewJurisdictionPicker(page) {
   });
 
   await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const detailPanel = page.locator("#studioDetailPanel");
   const changeCard = page.locator('[data-card-section="recommended-change"]');
 
-  // The interactive picker must be present (not the static list).
-  const picker = changeCard.locator(".redline-options");
-  assert.equal(await picker.count(), 1, "interactive jurisdiction picker should be rendered");
+  // The interactive picker now lives inside the connected proposed-edit card,
+  // which is the single host of the redline + options.
+  const picker = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options`);
+  assert.equal(await picker.count(), 1, "interactive jurisdiction picker should render inside the card");
   await assertTextContains(picker, "JURISDICTION OPTIONS");
   await assertTextContains(picker, "Delaware");
   await assertTextContains(picker, "England and Wales");
 
-  // The static approved-alternatives list must NOT be shown (picker replaces it).
+  // The options are NOT duplicated in the needs-review Recommended-change card,
+  // and the static approved-alternatives list is suppressed when the card hosts
+  // the options.
+  assert.equal(await changeCard.locator(".redline-options").count(), 0,
+    "jurisdiction options must not be duplicated in the recommended-change card");
   assert.equal(await changeCard.locator(".approved-alternatives").count(), 0,
-    "static approved-alternatives list should be absent when interactive picker is rendered");
+    "static approved-alternatives list should be absent when the card hosts the options");
 
   // Selecting the second option (England and Wales) updates the template selection.
   const englandButton = picker.locator('[data-redline-option-id="opt_england"]');
@@ -7971,8 +8797,8 @@ async function testClauseReassessOnPickerCommit(page) {
 
   // Open the governing law clause detail panel.
   await page.locator('[data-studio-lane-id="governing_law"]').click();
-  const changeCard = page.locator('[data-card-section="recommended-change"]');
-  const picker = changeCard.locator(".redline-options");
+  // The jurisdiction picker now lives inside the connected proposed-edit card.
+  const picker = page.locator('#studioDetailPanel .detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options');
   await picker.waitFor({ state: "visible" });
 
   // Select the England option — this commits the picker choice and should
@@ -7989,6 +8815,21 @@ async function testClauseReassessOnPickerCommit(page) {
   assert.ok(reassessRequest, "reassess-clause request should have been sent");
   assert.equal(reassessRequest.matter_id, "matter_review_panel", "request should include matter_id");
   assert.equal(reassessRequest.clause_id, "governing_law", "request should include clause_id");
+
+  // The reassess must evaluate the PROPOSED text (England and Wales), not the
+  // stale source text (California).  edited_paragraphs must be present and the
+  // target paragraph must carry the selected option's replacement_text.
+  assert.ok(
+    Array.isArray(reassessRequest.edited_paragraphs) && reassessRequest.edited_paragraphs.length > 0,
+    "reassess request should include edited_paragraphs (not fall back to stale edited_text)",
+  );
+  const targetPara = reassessRequest.edited_paragraphs.find((p) => p.id === "p2");
+  assert.ok(targetPara, "edited_paragraphs should contain the target paragraph p2");
+  assert.equal(
+    targetPara.text,
+    "This Agreement shall be governed by the laws of England and Wales.",
+    "target paragraph text should be the selected option's replacement_text, not the stale source",
+  );
 
   // The lane card should reflect the updated verdict (fail dot).
   const laneCard = page.locator('.studio-clause-item[class*="check"]');
@@ -8270,4 +9111,257 @@ print(json.dumps({
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ITEM 3 — Reset Draft must warn and enumerate the non-empty loss buckets, and a
+// cancel must abort with no POST and no state change.
+async function testResetDraftConfirmEnumeratesLoss(page) {
+  let resetPostCount = 0;
+  await page.route("**/api/matters/matter_review_panel/redline-draft", async (route) => {
+    resetPostCount += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter: { id: "matter_review_panel" } }),
+    });
+  });
+
+  await loadReviewWithMatter(page);
+
+  // Clean state: no loss buckets, so Reset must run with NO confirm dialog.
+  let dialogs = 0;
+  const countingHandler = (dialog) => { dialogs += 1; dialog.accept(); };
+  page.on("dialog", countingHandler);
+  await page.evaluate(() => resetReviewRedlineDraft());
+  assert.equal(dialogs, 0, "a clean draft should not prompt a confirm dialog on reset");
+  assert.equal(resetPostCount, 1, "a clean draft should reset immediately");
+  page.off("dialog", countingHandler);
+
+  // Seed every loss bucket: comments, a manual paragraph edit, a template
+  // selection, Accept/Ignore decisions, and a reviewed mark.
+  await page.evaluate(() => {
+    state.reviewComments = [
+      { id: "c1", clause_id: "confidential_information", text: "First comment" },
+      { id: "c2", clause_id: "confidential_information", text: "Second comment" },
+      { id: "c3", clause_id: "mutuality", text: "Third comment" },
+    ];
+    state.reviewParagraphs = state.reviewParagraphs.map((paragraph, index) =>
+      index < 2 ? { ...paragraph, text: `${paragraph.text} (edited)` } : paragraph,
+    );
+    state.redlineTemplateSelections = { r1: "opt-a" };
+    // The default clause decision for confidential_information (no redlines) is
+    // false; flipping it to true is a reviewer change that should be counted.
+    state.exportClauseDecisions = { confidential_information: true };
+    state.exportRedlineDecisions = { r1: false, r2: false };
+    state.reviewedClauseIds = { confidential_information: true };
+  });
+
+  const buckets = await page.evaluate(() => reviewResetLossBuckets().map((bucket) => ({ key: bucket.key, count: bucket.count })));
+  assert.deepEqual(
+    buckets,
+    [
+      { key: "comments", count: 3 },
+      { key: "manualEdits", count: 2 },
+      { key: "templateSelections", count: 1 },
+      { key: "decisions", count: 3 },
+      { key: "reviewedMarks", count: 1 },
+    ],
+    "every non-empty bucket should be counted",
+  );
+
+  // Cancel the confirm: reset must abort entirely (no new POST, no state change).
+  let cancelMessage = "";
+  const cancelHandler = (dialog) => { cancelMessage = dialog.message(); dialog.dismiss(); };
+  page.on("dialog", cancelHandler);
+  await page.evaluate(() => resetReviewRedlineDraft());
+  page.off("dialog", cancelHandler);
+  assert.match(cancelMessage, /This will discard:/);
+  assert.match(cancelMessage, /3 comments/);
+  assert.match(cancelMessage, /2 manual edits/);
+  assert.match(cancelMessage, /1 template selection/);
+  assert.match(cancelMessage, /Accept\/Ignore decisions/);
+  assert.match(cancelMessage, /reviewed marks/);
+  assert.equal(resetPostCount, 1, "cancelling the reset confirm must not POST");
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      comments: state.reviewComments.length,
+      templates: Object.keys(state.redlineTemplateSelections).length,
+      reviewed: Object.keys(state.reviewedClauseIds).length,
+    })),
+    { comments: 3, templates: 1, reviewed: 1 },
+    "cancelling the reset must leave review state untouched",
+  );
+
+  // Accept the confirm: reset proceeds (POST fires, defaults restored).
+  const acceptHandler = (dialog) => dialog.accept();
+  page.on("dialog", acceptHandler);
+  await page.evaluate(() => resetReviewRedlineDraft());
+  page.off("dialog", acceptHandler);
+  assert.equal(resetPostCount, 2, "accepting the reset confirm should POST the reset");
+  await page.waitForFunction(() => state.reviewComments.length === 0 && Object.keys(state.reviewedClauseIds).length === 0);
+
+  await page.unroute("**/api/matters/matter_review_panel/redline-draft");
+}
+
+// ITEM 4 — The header "Reviewed" button surfaces its scope ("Mark N clauses
+// reviewed") and, on a bulk click, confirms with the list of clause names. The
+// single-clause lane path (a clauseId is passed) is unchanged and never prompts.
+async function testHeaderReviewedScopeAndConfirm(page) {
+  await page.route("**/api/matters/matter_review_panel/reviewed", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter: { id: "matter_review_panel", human_reviewed: true, can_send_redline: true } }),
+    });
+  });
+
+  await loadReviewWithMatter(page, {
+    matter: {
+      can_send_redline: true,
+      human_reviewed: false,
+      recipient_email: "counterparty@example.com",
+      review_result: {
+        overall_status: "needs_review",
+        requirements_failed: 0,
+        requirements_needs_review: 2,
+        requirements_passed: 0,
+      },
+    },
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Broad confidential information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "Survival applies as set out in the referenced schedule." }],
+        id: "term_and_survival",
+        issue_label: "Needs review",
+        name: "Term and Survival",
+        needs_review: true,
+        reason: "Survival reference needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "Survival applies as set out in the referenced schedule." },
+    ],
+    result: { requirements_failed: 0, requirements_needs_review: 2, requirements_passed: 0 },
+  });
+
+  const reviewedButton = page.locator("#studioReviewedButton");
+  await page.waitForFunction(() => !document.querySelector("#studioReviewedButton")?.hidden);
+  await assertTextContains(reviewedButton, "Mark 2 clauses reviewed");
+  assert.match(await reviewedButton.getAttribute("title"), /2 clauses/);
+
+  // Single-clause marking from the lane passes a clauseId and must NOT prompt.
+  let singleClauseDialogs = 0;
+  const singleHandler = (dialog) => { singleClauseDialogs += 1; dialog.accept(); };
+  page.on("dialog", singleHandler);
+  await page.evaluate(() => markMatterReviewed({ clauseId: "confidential_information" }));
+  page.off("dialog", singleHandler);
+  assert.equal(singleClauseDialogs, 0, "single-clause mark-reviewed must not prompt a confirm");
+  assert.equal(
+    await page.evaluate(() => state.reviewedClauseIds.confidential_information),
+    true,
+    "single-clause mark-reviewed should flip just that clause",
+  );
+  await page.evaluate(() => { state.reviewedClauseIds = {}; renderStudioResult({ clauses: state.reviewClauses }); });
+
+  // (b) bulk click confirms with the clause names; cancel aborts.
+  let cancelMessage = "";
+  const cancelHandler = (dialog) => { cancelMessage = dialog.message(); dialog.dismiss(); };
+  page.on("dialog", cancelHandler);
+  await reviewedButton.click();
+  page.off("dialog", cancelHandler);
+  assert.match(cancelMessage, /Mark 2 clauses as reviewed/);
+  assert.match(cancelMessage, /Confidential Information/);
+  assert.match(cancelMessage, /Term and Survival/);
+  assert.deepEqual(
+    await page.evaluate(() => ({ ...state.reviewedClauseIds })),
+    {},
+    "cancelling the bulk confirm must not flip any clause",
+  );
+
+  // Accept the confirm: all needs-review clauses flip to reviewed.
+  const acceptHandler = (dialog) => dialog.accept();
+  page.on("dialog", acceptHandler);
+  await reviewedButton.click();
+  await page.waitForFunction(() => state.selectedMatter?.human_reviewed === true);
+  page.off("dialog", acceptHandler);
+
+  await page.unroute("**/api/matters/matter_review_panel/reviewed");
+}
+
+// ITEM 6 — The download menu previews the export contents (clause redlines,
+// comments) BEFORE the format choices, reusing the Send composer's summary.
+async function testDownloadMenuContentsPreview(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        matched_paragraph_ids: ["p1"],
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Broad confidential information definition needs human review.",
+        review_state: { state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "confidential_information",
+          id: "r1",
+          paragraph_id: "p1",
+          replacement_text: "Confidential Information is narrowed to marked materials.",
+        },
+      ],
+    },
+  });
+
+  // Add a comment so the preview also reflects the comment bucket.
+  await page.evaluate(() => {
+    state.reviewComments = [{ id: "c1", clause_id: "confidential_information", clause_name: "Confidential Information", text: "Please confirm scope." }];
+  });
+
+  const exportButton = page.locator("#studioExportButton");
+  await page.waitForFunction(() => !document.querySelector("#studioExportButton")?.disabled);
+  const menu = await openDownloadMenu(exportButton);
+
+  const preview = menu.locator("[data-document-download-preview]");
+  await preview.waitFor({ state: "visible" });
+  await assertTextContains(preview, "This download will include:");
+  await assertTextContains(preview, "Confidential Information");
+  await assertTextContains(preview, "Word comment");
+
+  // Preview must come BEFORE the first format choice in DOM order.
+  const previewBeforeChoice = await menu.evaluate((node) => {
+    const previewNode = node.querySelector("[data-document-download-preview]");
+    const firstChoice = node.querySelector(".document-download-option");
+    if (!previewNode || !firstChoice) return false;
+    return Boolean(previewNode.compareDocumentPosition(firstChoice) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.equal(previewBeforeChoice, true, "contents preview should render before the format choices");
+
+  assert.equal(await menu.locator('[data-download-format="docx"]').count(), 1);
+
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "detached" });
 }

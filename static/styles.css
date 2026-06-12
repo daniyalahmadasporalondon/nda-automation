@@ -1192,6 +1192,18 @@ h3 {
   padding: 0 4px;
 }
 
+/* Signing-entity insertions in the Generator draft preview/editor. A viewer-only
+   visual aid (carried through the editor run model, dropped on export) so the
+   reviewer can see exactly what was filled in from the chosen Aspora entity. */
+.nda-fill-entity {
+  background: var(--violet-bg);
+  border-radius: 3px;
+  box-shadow: inset 0 -1px 0 var(--violet-ink);
+  color: var(--violet-ink);
+  font-weight: 600;
+  padding: 0 4px;
+}
+
 .nda-doc-signoff {
   display: grid;
   gap: 18px;
@@ -6329,7 +6341,6 @@ button.active-clause-status:hover {
 }
 
 .document-evidence-list,
-.clause-action-redlines,
 .playbook-position-block,
 .recommended-change-block,
 .reasoning-trail-body {
@@ -6343,7 +6354,6 @@ button.active-clause-status:hover {
 .review-suggested-edit,
 .approved-alternatives,
 .playbook-position-field,
-.redline-action-row,
 .grounding-audit-block,
 .audit-trace-block {
   background: transparent;
@@ -6396,6 +6406,49 @@ button.active-clause-status:hover {
   text-transform: uppercase;
 }
 
+/* "Recommended change" inline redline / insertion / deletion figures. These were
+   added after the figure was first designed and never received their own rules,
+   so the <figure>/<blockquote> fell back to browser defaults (blockquote margin
+   1em 40px, tight default line-height) — producing the cramped word-by-word blob
+   the reviewer flagged. Reset that and give the redline paragraph the same kind
+   of breathing room the clean detail-panel redline (.redline-replacement) has:
+   full document font, comfortable line-height so struck deletions and green
+   insertions don't collide line-to-line, and no inherited indent. */
+.proposed-change-redline,
+.proposed-change-insertion,
+.proposed-change-deletion {
+  margin: 12px 0 0;
+}
+
+.proposed-change-redline figcaption,
+.proposed-change-insertion figcaption,
+.proposed-change-deletion figcaption {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.proposed-change-redline blockquote,
+.proposed-change-insertion blockquote,
+.proposed-change-deletion blockquote {
+  color: var(--ink);
+  font-family: var(--doc-font);
+  font-size: 13px;
+  font-weight: 400;
+  /* Generous line-height so the struck words and green insertions read like a
+     paragraph rather than a dense fragment; word-spacing keeps adjacent
+     inline-del / inline-ins tokens from jamming together. */
+  line-height: 1.75;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+  white-space: pre-wrap;
+  word-spacing: 0.04em;
+}
+
 .proposed-change-guidance,
 .proposed-change-safety-note,
 .proposed-change-empty {
@@ -6425,35 +6478,16 @@ button.active-clause-status:hover {
   padding-left: 18px;
 }
 
-.redline-action-row {
-  align-items: start;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.redline-action-row strong {
-  color: var(--ink);
-  display: block;
-  font-size: 13px;
-  line-height: 1.25;
-}
-
-.redline-action-row span:not(.detail-export-controls) {
-  color: var(--ink-muted);
-  display: block;
-  font-size: 11.5px;
-  margin-top: 3px;
-}
-
-.redline-action-row .redline-options {
-  grid-column: 1 / -1;
-}
-
 .clause-comment-action {
   display: grid;
   gap: 7px;
   margin-top: 14px;
+}
+
+.comment-target-label {
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  margin: 0;
 }
 
 .review-comment-input {
@@ -6815,6 +6849,35 @@ button.active-clause-status:hover {
   padding: 0;
 }
 
+/* The connected card's word-level inline redline (struck source + inserted new),
+   rendered with the shared .inline-del / .inline-ins runs. Drops the plain
+   .redline-original strikethrough so the per-word diff colours read cleanly. */
+.redline-original.redline-inline-diff {
+  text-decoration: none;
+}
+
+/* The clean, final wording the selected edit produces — the "fixed clause" the
+   document reads as once the redline is accepted. Updates live on option change. */
+.fixed-clause-preview {
+  border-top: 1px solid rgba(224, 214, 238, 0.8);
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+}
+
+.fixed-clause-text {
+  background: var(--green-bg);
+  border-left: 3px solid var(--green);
+  border-radius: 7px;
+  color: var(--ink);
+  font-family: var(--doc-font);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
 .redline-removal {
   background: var(--amber-bg);
   border-left: 3px solid var(--amber);
@@ -6877,9 +6940,9 @@ button.active-clause-status:hover {
 
 .redline-option {
   align-items: flex-start;
-  background: #ffffff;
-  border: 1px solid #e2daee;
-  border-radius: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   color: #463c5c;
   display: grid;
   gap: 14px;
@@ -6887,19 +6950,25 @@ button.active-clause-status:hover {
   min-height: 92px;
   padding: 16px 18px;
   text-align: left;
-  transition: background 0.18s ease, border-color 0.18s ease;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   width: 100%;
 }
 
+.redline-option:hover {
+  border-color: var(--violet-border);
+}
+
+/* Selected option: filled radio, subtle violet border + faint violet tint, reusing
+   the app's accent palette (never a hardcoded one-off colour). */
 .redline-option.selected {
-  background: #fbfaff;
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.18);
+  background: var(--violet-bg);
+  border-color: var(--violet);
+  box-shadow: 0 0 0 1px var(--violet-border);
 }
 
 .redline-option-dot {
   background: #ffffff;
-  border: 2px solid #d8d0e7;
+  border: 2px solid var(--violet-border);
   border-radius: 999px;
   display: block;
   height: 16px;
@@ -6908,8 +6977,8 @@ button.active-clause-status:hover {
 }
 
 .redline-option.selected .redline-option-dot {
-  background: #5b21b6;
-  border-color: #5b21b6;
+  background: var(--violet-ink);
+  border-color: var(--violet-ink);
   box-shadow: inset 0 0 0 4px #ffffff;
 }
 
@@ -6930,6 +6999,22 @@ button.active-clause-status:hover {
   font-size: 12.5px;
   line-height: 1.45;
   white-space: normal;
+}
+
+/* Governing-law <-> picked-entity concurrence, surfaced as a fail callout on the clause. */
+.studio-detail-block.gl-concurrence-fail {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  border-left: 3px solid var(--red);
+}
+
+.studio-detail-block.gl-concurrence-fail small {
+  color: var(--red-ink);
+  font-weight: 800;
+}
+
+.studio-detail-block.gl-concurrence-fail p {
+  color: var(--red-ink);
 }
 
 /* ---------- Toolbar export status and actions ---------- */

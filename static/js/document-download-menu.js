@@ -19,7 +19,7 @@ const DocumentDownloadMenu = (() => {
     activeAnchor = null;
   }
 
-  function open(anchor, { label = "Download format", sections = [] } = {}) {
+  function open(anchor, { label = "Download format", sections = [], preview = null } = {}) {
     close();
     const normalizedSections = sections
       .map((section) => ({
@@ -34,6 +34,12 @@ const DocumentDownloadMenu = (() => {
     menu.dataset.documentDownloadMenu = "true";
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", label);
+
+    // Optional contents preview, rendered BEFORE the format choices so the
+    // reviewer sees what the export will include before picking a format.
+    // Backward-compatible: callers that omit `preview` get the original menu.
+    const previewNode = renderPreview(preview);
+    if (previewNode) menu.appendChild(previewNode);
 
     normalizedSections.forEach((section) => {
       const group = document.createElement("section");
@@ -72,6 +78,35 @@ const DocumentDownloadMenu = (() => {
 
     const firstEnabled = menu.querySelector(".document-download-option:not(:disabled)");
     firstEnabled?.focus();
+  }
+
+  // Render an optional contents-preview block: a small heading plus a bulleted
+  // list of plain-text lines describing what the download will include. Returns
+  // null when there is nothing to preview so the menu is unchanged for callers
+  // that pass no preview. Lines are set via textContent (never innerHTML) so
+  // caller-supplied summary text cannot inject markup.
+  function renderPreview(preview) {
+    const lines = (preview?.lines || []).map((line) => String(line || "").trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const block = document.createElement("section");
+    block.className = "document-download-preview";
+    block.dataset.documentDownloadPreview = "true";
+    const title = String(preview?.title || "").trim();
+    if (title) {
+      const heading = document.createElement("p");
+      heading.className = "document-download-preview-title";
+      heading.textContent = title;
+      block.appendChild(heading);
+    }
+    const list = document.createElement("ul");
+    list.className = "document-download-preview-list";
+    lines.forEach((line) => {
+      const item = document.createElement("li");
+      item.textContent = line;
+      list.appendChild(item);
+    });
+    block.appendChild(list);
+    return block;
   }
 
   function renderChoice(choice) {

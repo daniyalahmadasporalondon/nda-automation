@@ -207,12 +207,19 @@ const RepositoryActions = (() => {
       const reviewedDocx = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "docx");
       const reviewedPdf = DocumentDownloadMenu.option(reviewedDownloads, "reviewed", "pdf");
       const hasManagedDocxOption = Boolean(reviewedDocx?.source_transform || reviewedDocx?.label || reviewedDocx?.fidelity);
+      // Disclose the workflow side effect of the DOCX download UP FRONT (it silently
+      // moves the matter to Reviewed) plus any contents preview we already have, so
+      // the operator is not surprised after the fact.
+      const docxDescription = downloadDocxDescription(matter, reviewedDocx?.filename);
       const docxChoice = hasManagedDocxOption
-        ? DocumentDownloadMenu.contractChoice(reviewedDocx, {
-            label: "DOCX",
-            onSelect: () => exportMatter(matter),
-            unavailableReason: "DOCX is not available for this reviewed document yet.",
-          })
+        ? {
+            ...DocumentDownloadMenu.contractChoice(reviewedDocx, {
+              label: "DOCX",
+              onSelect: () => exportMatter(matter),
+              unavailableReason: "DOCX is not available for this reviewed document yet.",
+            }),
+            description: docxDescription,
+          }
         : null;
       DocumentDownloadMenu.open(anchor, {
         label: "Download reviewed document",
@@ -221,6 +228,7 @@ const RepositoryActions = (() => {
           choices: [
             docxChoice || {
               available: true,
+              description: docxDescription,
               filename: reviewedDocx?.filename || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx"),
               format: "docx",
               label: "DOCX",
@@ -236,6 +244,45 @@ const RepositoryActions = (() => {
       });
     }
 
+    // Build the per-choice description for the DOCX download. It must state the
+    // workflow side effect honestly: downloading advances a human-reviewed (or
+    // auto-clear) matter to the Reviewed column, while a matter that still needs
+    // human review is left in place. A short contents preview is appended only
+    // from data the repository panel already carries (issue count / attention
+    // clauses); the effective redline/comment change-summary is NOT loaded into
+    // the panel, so it is intentionally omitted (see report: backend plumbing).
+    function downloadDocxDescription(matter, baseFilename) {
+      const parts = [];
+      const filename = baseFilename
+        || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx");
+      if (filename) parts.push(filename);
+      parts.push(
+        MatterUtils.needsHumanReview(matter)
+          ? "Downloads the reviewed Word file. This matter still needs human review, so it stays where it is."
+          : "Downloads and moves this matter to Reviewed.",
+      );
+      const preview = downloadContentsPreview(matter);
+      if (preview) parts.push(preview);
+      return parts.join(" · ");
+    }
+
+    // A best-available contents preview from data already loaded into the panel.
+    // The repository matter payload carries review findings (issue_count and the
+    // review_result clauses) but NOT the effective redline edits / review comments
+    // (those live only on the separately fetched review payload's redline_draft),
+    // so we surface the flagged-issue count rather than fabricate a change count.
+    function downloadContentsPreview(matter) {
+      const reviewResult = matter.review_result || {};
+      const attentionCount = Array.isArray(reviewResult.clauses)
+        ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention).length
+        : 0;
+      const issueCount = Number(matter.issue_count || 0) || attentionCount;
+      if (issueCount > 0) {
+        return `Includes ${issueCount} flagged ${issueCount === 1 ? "issue" : "issues"}.`;
+      }
+      return "";
+    }
+
     async function exportMatter(matter) {
       setPendingSendMatterId(null);
       setPendingDeleteMatterId(null);
@@ -248,13 +295,26 @@ const RepositoryActions = (() => {
       try {
         const response = await api.exportReviewDocx(matter.id);
         const filename = downloadFilename(response) || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.docx");
+        // PDF-source matters return a Word file RECONSTRUCTED from the PDF, not a
+        // faithful original. The export endpoint marks this with the same headers
+        // the Review tab reads (X-PDF-DOCX-Reconstruction, or X-Export-Verified set
+        // to the pdf2docx marker); append the honest fidelity caveat so the repo
+        // download toast does not imply faithful original Word output.
+        const exportReconstructedFromPdf = Boolean(
+          response.headers.get("X-PDF-DOCX-Reconstruction")
+          || response.headers.get("X-Export-Verified") === "pdf2docx",
+        );
+        const reconstructionCaveat = exportReconstructedFromPdf
+          ? " Best-effort Word reconstructed from PDF — formatting may differ."
+          : "";
         const blob = await response.blob();
         downloadBlob(blob, filename);
         if (MatterUtils.needsHumanReview(matter)) {
-          setPanelMessage(`Downloading ${filename}. Matter still needs human review before send.`);
+          setPanelMessage(`Downloading ${filename}. Matter still needs human review before send.${reconstructionCaveat}`);
         } else {
           const movedMatter = await moveMatterToColumn(matter.id, "reviewed", { quiet: true });
-          setPanelMessage(movedMatter ? `Downloading ${filename}. Moved to Reviewed.` : `Downloading ${filename}. Stage could not update.`);
+          const stageMessage = movedMatter ? "Moved to Reviewed." : "Stage could not update.";
+          setPanelMessage(`Downloading ${filename}. ${stageMessage}${reconstructionCaveat}`);
         }
       } catch (error) {
         setPanelMessage(repositoryStaleReviewMessage(error, "Export could not run"));
@@ -316,7 +376,12 @@ const RepositoryActions = (() => {
           renderBoard();
           renderDetailPanel(payload.matter);
         }
-        setPanelMessage(`Sent redline to ${recipient}.`);
+        // PDF-source matters send a Word file reconstructed from the PDF; append the
+        // honest formatting caveat so the operator does not assume faithful original output.
+        const sendCaveat = payload.source_reconstructed_from_pdf
+          ? " Note: this Word file was reconstructed from a PDF and may not preserve original formatting."
+          : "";
+        setPanelMessage(`Sent redline to ${recipient}.${sendCaveat}`);
       } catch (error) {
         setPendingSendMatterId(null);
         renderDetailPanel(matter);

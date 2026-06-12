@@ -5,16 +5,25 @@ from copy import deepcopy
 from typing import Dict, Iterable, List, Tuple
 
 from .checks.common import (
-    ISSUE_TYPE_PRESENT_BUT_WRONG,
     ClauseResult,
     Paragraph,
-    _check,
     _match,
     is_circumvention_freedom_preserving,
 )
 
 SEMANTIC_CROSSCHECK_VERSION = 1
 MAX_CROSSCHECK_RECORDS = 30
+
+# The deterministic cross-check is a regex/lexicon pass that runs AFTER the
+# clause checkers and BEFORE the AI/verifier overlay. It is paraphrase-fragile
+# and polarity-blind (e.g. "Nothing herein shall restrict either Party from
+# dealing with third parties" is freedom-preserving but pattern-matches a
+# non-circ restriction). It must therefore NEVER mint a hard FAIL and NEVER
+# auto-generate a redline edit that strips clause language -- the AI is the
+# judge for these playbook signals. The strongest verdict it may emit is an
+# escalation to human REVIEW, marked non-terminal so the AI/verifier verdict
+# stands. See decision_arbiter (the SEMANTIC_CROSSCHECK_ESCALATION_KEY handoff).
+SEMANTIC_CROSSCHECK_ESCALATION_KEY = "semantic_crosscheck_escalation"
 
 RESTRICTION_PREFIX_PATTERN = (
     r"\b(?:shall|must|will|may|can)\s+not\b"
@@ -155,23 +164,25 @@ def _apply_confidential_information_crosscheck(
             continue
         if re.search(CONFIDENTIAL_INFORMATION_EXCLUSION_CONTEXT_PATTERN, text, flags=re.IGNORECASE):
             explicit_exclusion_paragraphs.append(paragraph)
-            signal_records.append(_crosscheck_record("confidential_information", paragraph, "unqualified_independent_development_exclusion", "fail"))
+            # Review, not fail: the regex flags a *suspect* unqualified exclusion;
+            # the AI decides whether it actually weakens the definition.
+            signal_records.append(_crosscheck_record("confidential_information", paragraph, "unqualified_independent_development_exclusion", "review"))
         elif re.search(CONFIDENTIAL_INFORMATION_USAGE_RIGHT_PATTERN, text, flags=re.IGNORECASE):
             usage_right_review_paragraphs.append(paragraph)
             signal_records.append(_crosscheck_record("confidential_information", paragraph, "unqualified_independent_development_usage_right", "review"))
 
     if explicit_exclusion_paragraphs:
-        replacement = _check(
+        replacement = _review_escalation(
             clause,
-            (
-                "Semantic cross-check found an unqualified independent-development exclusion "
-                "that the primary checker did not flag."
-            ),
             explicit_exclusion_paragraphs,
-            issue_type=ISSUE_TYPE_PRESENT_BUT_WRONG,
+            reason=(
+                "Semantic cross-check flagged a possible unqualified independent-development "
+                "exclusion for human review."
+            ),
             what_to_fix=(
-                "Remove the unqualified independent-development exclusion or limit it to material "
-                "developed without use of or reference to Confidential Information."
+                "Confirm whether this is an unqualified independent-development exclusion that should "
+                "be removed or limited to material developed without use of or reference to "
+                "Confidential Information."
             ),
         )
         _carry_forward_context(replacement, current)
@@ -181,21 +192,17 @@ def _apply_confidential_information_crosscheck(
         return
 
     if usage_right_review_paragraphs:
-        replacement = _match(
+        replacement = _review_escalation(
             clause,
-            (
+            usage_right_review_paragraphs,
+            reason=(
                 "Semantic cross-check found independent-development usage-right language that may "
                 "weaken confidentiality protections."
             ),
-            usage_right_review_paragraphs,
-        )
-        replacement["decision"] = "review"
-        replacement["needs_review"] = True
-        replacement["review_reason"] = str(replacement["reason"])
-        replacement["decision_reason"] = str(replacement["reason"])
-        replacement["what_to_fix"] = (
-            "Confirm whether the usage-right language creates an unqualified independent-development "
-            "carve-out or permission to use non-confidential material beyond the standard exclusions."
+            what_to_fix=(
+                "Confirm whether the usage-right language creates an unqualified independent-development "
+                "carve-out or permission to use non-confidential material beyond the standard exclusions."
+            ),
         )
         _carry_forward_context(replacement, current)
         _attach_confidential_information_crosscheck_analysis(replacement, current, [], usage_right_review_paragraphs, signal_records)
@@ -215,36 +222,67 @@ def _apply_non_circumvention_crosscheck(
     if current is None or clause is None or not _clause_currently_clean(current):
         return
 
-    prohibited_paragraphs: List[Paragraph] = []
+    suspect_paragraphs: List[Paragraph] = []
     signal_records: List[Dict[str, object]] = []
     for paragraph in paragraphs:
         text = str(paragraph.get("text") or "")
         classification = _non_circumvention_semantic_classification(text)
         if not classification:
             continue
-        prohibited_paragraphs.append(paragraph)
-        signal_records.append(_crosscheck_record("non_circumvention", paragraph, classification, "fail"))
+        suspect_paragraphs.append(paragraph)
+        # Emitted as a review signal, never a fail: the regex flags a *suspect*
+        # pattern; the AI/verifier decides whether it is a real restriction.
+        signal_records.append(_crosscheck_record("non_circumvention", paragraph, classification, "review"))
 
-    if not prohibited_paragraphs:
+    if not suspect_paragraphs:
         return
 
-    replacement = _check(
+    replacement = _review_escalation(
         clause,
-        (
-            "Semantic cross-check found prohibited non-circumvention, introduced-contact, "
-            "or exclusivity language that the primary checker did not flag."
+        suspect_paragraphs,
+        reason=(
+            "Semantic cross-check flagged possible non-circumvention, introduced-contact, "
+            "or exclusivity language for human review; the AI is the judge of whether it "
+            "is an actual prohibited restriction."
         ),
-        prohibited_paragraphs,
-        issue_type=ISSUE_TYPE_PRESENT_BUT_WRONG,
         what_to_fix=(
-            "Remove non-circumvention, introduced-contact non-solicit, direct-dealing, bypass, "
-            "or exclusivity restrictions."
+            "Confirm whether this language imposes a non-circumvention, introduced-contact "
+            "non-solicit, direct-dealing, bypass, or exclusivity restriction that must be removed, "
+            "or is merely a freedom-preserving carve-out that needs no change."
         ),
     )
     _carry_forward_context(replacement, current)
-    _attach_non_circumvention_crosscheck_analysis(replacement, current, prohibited_paragraphs, signal_records)
+    _attach_non_circumvention_crosscheck_analysis(replacement, current, suspect_paragraphs, signal_records)
     _replace_result(results, positions, "non_circumvention", replacement)
     records.extend(signal_records)
+
+
+def _review_escalation(
+    clause: Dict[str, object],
+    paragraphs: List[Paragraph],
+    *,
+    reason: str,
+    what_to_fix: str,
+) -> ClauseResult:
+    """Build a non-terminal REVIEW escalation result for the cross-check.
+
+    Built from ``_match`` (status="match", issue_type="none") so it can never be
+    mistaken for a ``present_but_wrong`` check -- which is what
+    ``clause_outcomes._is_present_but_wrong_check`` keys on to auto-generate a
+    redline edit. The explicit ``decision="review"`` makes the deterministic
+    snapshot a REVIEW (not a FAIL), and ``SEMANTIC_CROSSCHECK_ESCALATION_KEY``
+    marks it as cross-check-sourced so ``decision_arbiter`` keeps it non-terminal:
+    the AI/verifier may clear it back to PASS, but absent an AI clearance it
+    stays at human REVIEW.
+    """
+    replacement = _match(clause, reason, paragraphs)
+    replacement["decision"] = "review"
+    replacement["needs_review"] = True
+    replacement["review_reason"] = reason
+    replacement["decision_reason"] = reason
+    replacement["what_to_fix"] = what_to_fix
+    replacement[SEMANTIC_CROSSCHECK_ESCALATION_KEY] = True
+    return replacement
 
 
 def _non_circumvention_semantic_classification(text: str) -> str:
@@ -309,13 +347,13 @@ def _attach_confidential_information_crosscheck_analysis(
     signal_records: List[Dict[str, object]],
 ) -> None:
     analysis = dict(current.get("confidential_information_analysis") or {})
-    analysis["explicit_problematic_exclusion_paragraph_ids"] = _merged_ids(
-        analysis.get("explicit_problematic_exclusion_paragraph_ids", []),
-        explicit_exclusion_paragraphs,
-    )
+    # Both the unqualified-exclusion and usage-right signals are now review-only
+    # escalations (the regex flags suspects; the AI judges). They land in the
+    # review bucket (rendered as review_evidence), not the check/fail bucket.
+    analysis.setdefault("explicit_problematic_exclusion_paragraph_ids", [])
     analysis["usage_right_review_paragraph_ids"] = _merged_ids(
         analysis.get("usage_right_review_paragraph_ids", []),
-        usage_right_review_paragraphs,
+        [*explicit_exclusion_paragraphs, *usage_right_review_paragraphs],
     )
     replacement["confidential_information_analysis"] = analysis
     replacement["semantic_crosscheck_analysis"] = {
@@ -327,15 +365,17 @@ def _attach_confidential_information_crosscheck_analysis(
 def _attach_non_circumvention_crosscheck_analysis(
     replacement: ClauseResult,
     current: ClauseResult,
-    prohibited_paragraphs: Iterable[Paragraph],
+    suspect_paragraphs: Iterable[Paragraph],
     signal_records: List[Dict[str, object]],
 ) -> None:
     analysis = dict(current.get("non_circumvention_analysis") or {})
-    analysis["prohibited_paragraph_ids"] = _merged_ids(
-        analysis.get("prohibited_paragraph_ids", []),
-        prohibited_paragraphs,
+    # Cross-check escalations are review-only signals, never prohibited fails, so
+    # they land in review_paragraph_ids (rendered as review_evidence downstream).
+    analysis["review_paragraph_ids"] = _merged_ids(
+        analysis.get("review_paragraph_ids", []),
+        suspect_paragraphs,
     )
-    analysis.setdefault("review_paragraph_ids", [])
+    analysis.setdefault("prohibited_paragraph_ids", [])
     analysis.setdefault("lawful_circumvention_paragraph_ids", [])
     analysis.setdefault("negated_reference_paragraph_ids", [])
     existing_signal_records = analysis.get("signal_records", [])
@@ -347,7 +387,7 @@ def _attach_non_circumvention_crosscheck_analysis(
             {
                 "paragraph_id": record["paragraph_id"],
                 "matched_pattern_count": 1,
-                "classification": "prohibited",
+                "classification": "review",
                 "semantic_crosscheck_classification": record["classification"],
             }
             for record in signal_records

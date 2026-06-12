@@ -691,29 +691,47 @@
     }
   },
   {
-    "name": "governing_law_ai_first_california_backstop_fail",
+    "name": "governing_law_ai_first_real_california_fail",
     "clause_id": "governing_law",
-    "kind": "verifier",
+    "kind": "ai_first_real",
     "high_risk": true,
     "label_source": "engineering",
-    "label_note": "Deterministic backstop: a clearly-named unapproved jurisdiction (California) must be FAIL on the AI-first path even when the AI stub and verifier would not escalate. The backstop runs before the verifier so the corrected verdict reaches downstream.",
+    "label_note": "Real-AI gate (skipped when OPENROUTER_API_KEY is absent): the primary AI on the live AI-first path must FAIL a clearly-named unapproved jurisdiction (California) on its own. The deterministic governing-law backstop was removed once the model proved reliable here, so this case is the honest proof that the AI -- not a backstop -- catches an unapproved operative law.",
     "text": "This Agreement shall be governed by the laws of California.",
-    "verifier": {
-      "verdict": "affirm",
-      "confidence": 0.95,
-      "rationale": "Scripted affirm — the backstop should have already forced FAIL before the verifier runs."
-    },
     "expected": {
-      "decision": "fail",
-      "reason_code": "unapproved_governing_law"
+      "decision": "fail"
     }
   },
   {
-    "name": "governing_law_ai_first_approved_not_failed_by_backstop",
+    "name": "governing_law_ai_first_real_england_pass",
+    "clause_id": "governing_law",
+    "kind": "ai_first_real",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Real-AI gate (skipped when OPENROUTER_API_KEY is absent): an approved jurisdiction (England and Wales) must PASS on the live AI-first path -- the removed backstop must not have left the engine over-failing approved law.",
+    "text": "This Agreement shall be governed by the laws of England and Wales.",
+    "expected": {
+      "decision": "pass"
+    }
+  },
+  {
+    "name": "governing_law_ai_first_real_incorporation_recital_not_failed",
+    "clause_id": "governing_law",
+    "kind": "ai_first_real",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Real-AI gate (skipped when OPENROUTER_API_KEY is absent): an incorporation recital naming California ('incorporated under the laws of California') must NOT make governing_law FAIL when the operative clause names England and Wales. Confirms the recital-precision the removed backstop guarded is now upheld by the AI itself.",
+    "text": "Acme Inc, a company incorporated under the laws of California, having its registered office at 1 Market Street, San Francisco (hereinafter \"Company\") of the FIRST PARTY.\n\nGOVERNING LAW: This Agreement shall be governed by and construed in accordance with the laws of England and Wales.",
+    "expected": {
+      "decision": "pass"
+    }
+  },
+  {
+    "name": "governing_law_approved_india_pass",
     "clause_id": "governing_law",
     "kind": "deterministic",
     "label_source": "engineering",
-    "label_note": "Backstop guard: an approved jurisdiction (India) must not be forced to FAIL by the backstop. Runs on the deterministic path to confirm a clean approved-law pass.",
+    "label_note": "An approved jurisdiction (India) passes on the deterministic path -- baseline approved-law coverage.",
     "text": "This Agreement shall be governed by and construed in accordance with the laws of India.",
     "expected": {
       "decision": "pass",
@@ -721,12 +739,12 @@
     }
   },
   {
-    "name": "governing_law_ai_first_conditional_not_failed_by_backstop",
+    "name": "governing_law_ai_first_conditional_review",
     "clause_id": "governing_law",
     "kind": "verifier",
     "high_risk": true,
     "label_source": "engineering",
-    "label_note": "Backstop guard: a conditional escape clause ('unless otherwise agreed') on an approved jurisdiction is unclear, not a clear unapproved fail — the backstop must NOT fire and the case must remain review.",
+    "label_note": "A conditional escape clause ('unless otherwise agreed') on an approved jurisdiction is unclear, not a clear unapproved fail -- the case must remain review on the AI-first verifier path.",
     "text": "This Agreement shall be governed by the laws of England and Wales, unless otherwise agreed in writing by the parties.",
     "verifier": {
       "verdict": "affirm",

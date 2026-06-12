@@ -102,9 +102,13 @@ class PlaybookTemplateError(ValueError):
     pass
 
 
-def _year_count_label(years: int) -> str:
+def _year_count_label(years: int, *, parenthetical: bool = False) -> str:
     number_label = next((word for word, value in YEAR_WORDS.items() if value == years), str(years))
     unit = "year" if years == 1 else "years"
+    if parenthetical:
+        # "five (5) years" — the spelled word followed by the numeral in parentheses,
+        # the contract-drafting convention the generator's term body uses.
+        return f"{number_label} ({years}) {unit}"
     return f"{number_label} {unit}"
 
 def _year_word_value(value: str) -> int:

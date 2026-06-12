@@ -8,25 +8,56 @@ from .docx_health import validate_docx_open_health
 ReviewResult = Dict[str, object]
 
 
+def build_source_redline_package(
+    source_docx: bytes,
+    review_result: ReviewResult,
+    *,
+    clean_fills: object = None,
+    strict: bool = True,
+):
+    """Render source-DOCX tracked changes and report unplaceable PDF redlines.
+
+    ``strict`` (fail-closed, the default) makes the underlying export RAISE when a
+    PDF-source redline cannot be confidently anchored into the reconstructed body,
+    so send/approve/export never ship an incomplete redline. ``strict=False``
+    (preview/draft/diagnostic) renders the file anyway and reports the unplaceable
+    PDF redlines instead. Returns the ``SourceRedlinePackage`` carrying the bytes and
+    any redlines that could not be anchored (always empty under ``strict=True``).
+    """
+    from .docx_export import (  # noqa: PLC0415
+        DocxExportError,
+        _build_source_redline_docx_package,
+    )
+
+    normalized_review_result = _normalize_review_result_redlines(review_result)
+    package = _build_source_redline_docx_package(
+        source_docx,
+        normalized_review_result,
+        clean_fills=clean_fills,
+        strict=strict,
+    )
+    health_errors = validate_docx_open_health(package.data)
+    if health_errors:
+        raise DocxExportError("The uploaded Word document redline failed validation: " + "; ".join(health_errors))
+    return package
+
+
 def build_source_redline_docx(
     source_docx: bytes,
     review_result: ReviewResult,
     *,
     clean_fills: object = None,
+    strict: bool = True,
 ) -> bytes:
-    """Render source-DOCX tracked changes from the normalized redline contract."""
-    from .docx_export import DocxExportError, _build_source_redline_docx_package  # noqa: PLC0415
+    """Render source-DOCX tracked changes from the normalized redline contract.
 
-    normalized_review_result = _normalize_review_result_redlines(review_result)
-    rendered = _build_source_redline_docx_package(
-        source_docx,
-        normalized_review_result,
-        clean_fills=clean_fills,
-    )
-    health_errors = validate_docx_open_health(rendered)
-    if health_errors:
-        raise DocxExportError("The uploaded Word document redline failed validation: " + "; ".join(health_errors))
-    return rendered
+    Bytes-only convenience wrapper over :func:`build_source_redline_package` for
+    callers that don't need the unplaceable-redline report. ``strict`` defaults to
+    fail-closed; see :func:`build_source_redline_package`.
+    """
+    return build_source_redline_package(
+        source_docx, review_result, clean_fills=clean_fills, strict=strict
+    ).data
 
 
 def _normalize_review_result_redlines(review_result: ReviewResult) -> ReviewResult:

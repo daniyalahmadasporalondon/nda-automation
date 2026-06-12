@@ -12,6 +12,7 @@ from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
     DocxExportError,
+    PdfRedlineAnchorError,
     accept_all_revisions,
     build_review_report_docx,
 )
@@ -44,21 +45,69 @@ class MatterSourceTextChangedError(DocxExportError):
     """Raised when a matter source edit would not be represented in the source DOCX export."""
 
 
-class PdfSourceRedlineUnavailableError(DocxExportError):
-    """Raised when a PDF-source matter is asked for a tracked-change Word export."""
+# The EXACT user-facing message for the fail-closed PDF-anchor case (parameterized
+# by the count N of redlines that could not be confidently placed). Kept verbatim so
+# the UI/tests can rely on it.
+PDF_REDLINE_ANCHOR_BLOCKED_MESSAGE = (
+    "Couldn't confidently place {n} proposed changes in the reconstructed Word document. "
+    "Export blocked to avoid sending an incomplete redline."
+)
 
-    def __init__(self, message: str, *, source_filename: str = ""):
+
+def pdf_redline_anchor_blocked_message(count: int) -> str:
+    return PDF_REDLINE_ANCHOR_BLOCKED_MESSAGE.format(n=count)
+
+
+class PdfSourceRedlineUnavailableError(DocxExportError):
+    """Raised when a PDF-source matter cannot produce a complete tracked-change Word
+    export -- either because the PDF-to-Word reconstruction engine is unavailable, or
+    (the fail-closed anchor case) because one or more accepted redlines could not be
+    confidently placed in the reconstructed body. In both cases the recovery path is
+    the source-PDF marked-up annotation export (``annotated_pdf_export`` /
+    ``routes/pdf_markup``), surfaced in the payload so the UI can offer it."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source_filename: str = "",
+        reason: str = "reconstruction_unavailable",
+        unplaceable_redline_count: int = 0,
+    ):
         super().__init__(message)
         self.status = 503
+        self.reason = reason
+        self.unplaceable_redline_count = unplaceable_redline_count
         self.payload = {
             "error": message,
+            "reason": reason,
             "pdf_docx_reconstruction": {
                 "status": "unavailable",
                 "filename": pdf_docx_reconstruction.reconstructed_docx_filename(source_filename),
                 "converter": pdf_docx_reconstruction.converter_health(),
                 "fidelity": pdf_docx_reconstruction.reconstruction_fidelity_payload(output_format="reviewed_docx"),
             },
+            # Recovery path for both reasons: mark up the preserved source PDF directly
+            # rather than the reconstructed Word doc, so no accepted change is lost.
+            "recovery": {
+                "path": "annotated_pdf",
+                "endpoint": "/api/matters/{matter_id}/annotated-pdf",
+                "message": "Download the source PDF with the proposed changes marked up as annotations.",
+            },
         }
+        if unplaceable_redline_count:
+            self.payload["unplaceable_redline_count"] = unplaceable_redline_count
+
+    @classmethod
+    def for_unplaceable_anchors(
+        cls, count: int, *, source_filename: str = ""
+    ) -> "PdfSourceRedlineUnavailableError":
+        return cls(
+            pdf_redline_anchor_blocked_message(count),
+            source_filename=source_filename,
+            reason="redline_anchor_uncertain",
+            unplaceable_redline_count=count,
+        )
 
 
 class MatterNotFoundError(DocxExportError):
@@ -138,17 +187,30 @@ def _build_redline_export(
             ) from exc
         except pdf_docx_reconstruction.PdfDocxReconstructionFailedError as exc:
             raise DocxExportError(str(exc)) from exc
-        package_result = docx_package_renderer.render_source_redline_package(
-            reconstructed.data,
-            review_result,
-            clean_fills=clean_mode_fills,
-            # PDF text extraction and layout reconstruction are different engines,
-            # so their accepted-text sequence is not stable enough for the DOCX
-            # source coverage gate. Redline anchoring still fails closed inside
-            # the renderer when requested edits cannot be placed.
-            expected_source_text="",
-            expected_redline_edits=[],
-        )
+        try:
+            package_result = docx_package_renderer.render_source_redline_package(
+                reconstructed.data,
+                review_result,
+                clean_fills=clean_mode_fills,
+                # PDF text extraction and layout reconstruction are different engines,
+                # so their accepted-text sequence is not stable enough for the DOCX
+                # source coverage gate. Redline anchoring fails closed below (strict
+                # mode, the default): every accepted change is text-anchored into the
+                # reconstructed body, and if any cannot be confidently placed the
+                # renderer RAISES rather than silently dropping it (the prior P0 bug).
+                expected_source_text="",
+                expected_redline_edits=[],
+            )
+        except PdfRedlineAnchorError as exc:
+            # Fail closed: one or more accepted redlines could not be confidently
+            # placed in the reconstructed Word body. Block the export (do not produce
+            # an incomplete redline) and point the UI at the marked-up source-PDF
+            # annotation recovery path.
+            telemetry.increment("pdf_redline_anchor_blocked")
+            raise PdfSourceRedlineUnavailableError.for_unplaceable_anchors(
+                exc.count,
+                source_filename=source_filename,
+            ) from exc
         _raise_for_package_result(package_result)
         download_filename = reconstructed.filename.replace(".docx", "-reviewed.docx")
         report_bytes = package_result.data

@@ -27,7 +27,6 @@ function createDraftIntakeController({
   ndaTypeSelect,
   termInput,
   projectPurposeInput,
-  notesInput,
   governingLawSelect,
   lawStatusNode,
   lawResetButton,
@@ -71,6 +70,15 @@ function createDraftIntakeController({
   let initialized = false;
   let registryLoaded = false;
 
+  // The playbook's term cap. Generation clamps a longer requested term down to
+  // this (nda_generation._resolve_term_years), so the preview must clamp too or
+  // it would show a term the generated NDA won't honour. Defaults to the playbook
+  // value (5) and is refreshed from the live /api/signing-entities feed when it
+  // carries `playbook_meta.max_term_years` (a backend teammate adds it in
+  // parallel). Mirrors DEFAULT_MAX_TERM_YEARS in modules/draft-intake.mjs.
+  const DEFAULT_MAX_TERM_YEARS = 5;
+  let maxTermYears = DEFAULT_MAX_TERM_YEARS;
+
   function api() {
     if (!intakeApi) {
       rebindRegistry(registryEntities);
@@ -101,6 +109,12 @@ function createDraftIntakeController({
         if (Array.isArray(payload?.entities) && payload.entities.length) {
           rebindRegistry(payload.entities);
         }
+        // Source the playbook term cap from the feed when present so the preview's
+        // clamp tracks the live playbook rather than the hardcoded fallback.
+        const liveMax = Number(payload?.playbook_meta?.max_term_years);
+        if (Number.isFinite(liveMax) && liveMax >= 1) {
+          maxTermYears = Math.floor(liveMax);
+        }
       }
     } catch (error) {
       // Stay on the embedded mirror; the picker remains usable offline.
@@ -122,11 +136,14 @@ function createDraftIntakeController({
     renderGoverningLaw();
     setStatus("");
     updateGenerateState();
+    flashField("signing_entity");
+    flashField("governing_law");
   });
 
   addressSelect?.addEventListener("change", () => {
     intake = api().selectAddress(intake, addressSelect.value);
     renderEntityBundle();
+    flashField("signing_entity");
   });
 
   governingLawSelect?.addEventListener("change", () => {
@@ -142,6 +159,7 @@ function createDraftIntakeController({
     }
     renderLawStatus();
     renderSidePanel();
+    flashField("governing_law");
   });
 
   lawResetButton?.addEventListener("click", () => {
@@ -159,6 +177,7 @@ function createDraftIntakeController({
     setStatus("");
     updateGenerateState();
     renderSidePanel();
+    flashField("counterparty_name");
   });
 
   counterpartyEmailInput?.addEventListener("input", () => {
@@ -170,30 +189,31 @@ function createDraftIntakeController({
   termInput?.addEventListener("input", () => {
     intake = { ...intake, term: termInput.value };
     renderSidePanel();
+    flashField("term");
   });
 
   projectPurposeInput?.addEventListener("input", () => {
     intake = { ...intake, projectPurpose: projectPurposeInput.value };
     renderSidePanel();
-  });
-
-  notesInput?.addEventListener("input", () => {
-    intake = { ...intake, notes: notesInput.value };
+    flashField("project_purpose");
   });
 
   counterpartyIncorporationInput?.addEventListener("input", () => {
     intake = { ...intake, counterpartyIncorporation: counterpartyIncorporationInput.value };
     renderSidePanel();
+    flashField("counterparty_incorporation");
   });
 
   counterpartyAddressInput?.addEventListener("input", () => {
     intake = { ...intake, counterpartyAddress: counterpartyAddressInput.value };
     renderSidePanel();
+    flashField("counterparty_address");
   });
 
   businessDescriptionInput?.addEventListener("input", () => {
     intake = { ...intake, businessDescription: businessDescriptionInput.value };
     renderSidePanel();
+    flashField("business_description");
   });
 
   // The last successful generation, used by the Download/Send actions.
@@ -365,6 +385,31 @@ function createDraftIntakeController({
     }
   }
 
+  // Briefly pulses the preview span(s) for `fieldKey` so the user sees the exact
+  // text that their control just changed. Works without new CSS rules: sets an
+  // inline background/box-shadow on matching [data-generator-field] elements,
+  // then clears it after ~900 ms. If previewNode is absent the call is a no-op.
+  function flashField(fieldKey) {
+    if (!previewNode || !fieldKey) return;
+    const spans = previewNode.querySelectorAll(`[data-generator-field="${fieldKey}"]`);
+    spans.forEach((span) => {
+      // Brighter violet burst on top of the existing fill colour; outline makes it
+      // visible on blank placeholders too (which use amber bg, not violet).
+      span.style.outline = "2px solid #8b5cf6";
+      span.style.outlineOffset = "2px";
+      span.style.background = "#ddd6fe"; // one step deeper than --violet-bg
+      span.style.transition = "background 900ms ease, outline-color 900ms ease";
+    });
+    setTimeout(() => {
+      spans.forEach((span) => {
+        span.style.outline = "";
+        span.style.outlineOffset = "";
+        span.style.background = "";
+        span.style.transition = "";
+      });
+    }, 900);
+  }
+
   function renderSidePanel() {
     const entity = intakeApi.selectedEntity(intake);
     const law = intakeApi.effectiveGoverningLaw(intake);
@@ -386,12 +431,22 @@ function createDraftIntakeController({
     const address = intakeApi.selectedAddress(intake);
     const law = intakeApi.effectiveGoverningLaw(intake);
 
-    // Filled value -> emphasised span; empty -> bracketed amber placeholder,
-    // mirroring the [SLOT] markers in the Generic NDA template.
-    const field = (value, placeholder) =>
-      value && String(value).trim()
-        ? `<span class="nda-fill">${escapeHtml(String(value).trim())}</span>`
-        : `<span class="nda-blank">[${escapeHtml(placeholder)}]</span>`;
+    // Inserted/filled values — the signing-entity side (legal name, incorporation,
+    // address, coupled governing law, signatory) AND the counterparty name /
+    // incorporation / registered office, the recital business description, the
+    // project/purpose and the term — all get an `nda-fill-entity` marker so they
+    // read as highlighted in the viewer AND survive into the always-visible editor
+    // (generator-editor.js carries only `.nda-fill-entity` through its run model;
+    // a plain `.nda-fill` highlight is flattened away on showDraft). A visual aid
+    // only: the marker is carried through the editor's run model and dropped on
+    // export, so it never reaches the generated/sent document.
+    // fieldKey links the span to its controlling form field for flashField().
+    const entityField = (value, placeholder, fieldKey) => {
+      const attr = fieldKey ? ` data-generator-field="${escapeHtml(fieldKey)}"` : "";
+      return value && String(value).trim()
+        ? `<span class="nda-fill nda-fill-entity"${attr}>${escapeHtml(String(value).trim())}</span>`
+        : `<span class="nda-blank"${attr}>[${escapeHtml(placeholder)}]</span>`;
+    };
 
     const asporaName = entity ? entity.legal_name : null;
     const asporaShort = entity ? entity.short_name || "Aspora" : "Aspora";
@@ -399,6 +454,43 @@ function createDraftIntakeController({
     const asporaAddr = entity ? intakeApi.formatAddressLines(address) : null;
     const sig = (entity && entity.signatory) || {};
     const governingLaw = law ? law.label : null;
+    // The forum/courts move WITH the governing law: a govlaw override switches the
+    // forum too in generation (nda_generation: forum derived from the chosen
+    // option), so the preview resolves the forum from the effective law and tags
+    // it with the same `governing_law` field key — flashing the law control then
+    // pulses BOTH the law and the forum, mirroring what generation does.
+    const forum = intakeApi.effectiveForum(intake);
+
+    // Term clamp preview. Generation parses the typed term to a year count exactly
+    // like nda_generation_workflow.term_years (first whitespace token -> int, else
+    // a default) and then clamps to [1, max_term_years] (_resolve_term_years). The
+    // raw preview echoed intake.term verbatim, so "10 years" previewed as 10 but
+    // generates as the cap. We mirror that parse+clamp here and, when the typed
+    // term was actually reduced, show an inline note so the cap is visible.
+    const rawTerm = String(intake.term || "").trim();
+    const parseTermYears = (value) => {
+      // Mirror nda_generation_workflow.term_years: first whitespace-delimited
+      // token, parsed as an integer; non-numeric/blank falls back to null here so
+      // the preview leaves the user's wording untouched (we only clamp a term we
+      // can actually read as a number, e.g. "10" or "10 years").
+      const token = value.split(/\s+/)[0];
+      if (!/^\d+$/.test(token)) return null;
+      const parsed = Number.parseInt(token, 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const typedYears = parseTermYears(rawTerm);
+    let termDisplay = rawTerm; // verbatim when not a plain number of years
+    let termClampNote = "";
+    if (typedYears !== null) {
+      const clamped = Math.min(Math.max(typedYears, 1), maxTermYears);
+      const unit = clamped === 1 ? "year" : "years";
+      termDisplay = `${clamped} ${unit}`;
+      if (clamped !== typedYears) {
+        termClampNote = ` <span class="nda-doc-note" style="color:var(--ink-muted);font-size:0.85em;font-style:italic;">(capped to ${maxTermYears} ${
+          maxTermYears === 1 ? "year" : "years"
+        } per playbook)</span>`;
+      }
+    }
 
     const ordinal = (n) => {
       const s = ["th", "st", "nd", "rd"];
@@ -410,12 +502,15 @@ function createDraftIntakeController({
       month: "long",
     })}, ${now.getFullYear()}`;
 
-    const counterpartyLabel =
-      intake.counterpartyName && intake.counterpartyName.trim()
-        ? escapeHtml(intake.counterpartyName.trim())
-        : "[Company name]";
-    const sigName = sig.name ? escapeHtml(sig.name) : "[Authorised Signatory]";
-    const sigTitle = sig.title ? escapeHtml(sig.title) : "[Title]";
+    // Signature-block fields go through entityField() too so they read like the
+    // rest of the document: a filled value gets the violet `.nda-fill` highlight,
+    // an empty one the amber `.nda-blank` placeholder — consistent everywhere.
+    // The counterparty name reuses its form field key (so it pulses with the same
+    // control as the recital); the signatory name/title have no dedicated control,
+    // so they pass a null fieldKey and carry no data-generator-field.
+    const counterpartyLabel = entityField(intake.counterpartyName, "Company name", "counterparty_name");
+    const sigName = entityField(sig.name, "Authorised Signatory", null);
+    const sigTitle = entityField(sig.title, "Title", null);
 
     previewNode.innerHTML = `
       <article class="nda-doc">
@@ -424,17 +519,17 @@ function createDraftIntakeController({
 
         <p>This Non-Disclosure Agreement (&ldquo;<b>Agreement</b>&rdquo;) is made on this ${escapeHtml(dateStr)} by and between:</p>
 
-        <p>${field(intake.counterpartyName, "Company name")}, a company incorporated under the laws of ${field(intake.counterpartyIncorporation, "jurisdiction of incorporation")}, having its registered office at ${field(intake.counterpartyAddress, "registered office address")} (hereinafter the &ldquo;<b>Company</b>&rdquo;, which includes its successors and permitted assigns) of the FIRST PARTY.</p>
+        <p>${entityField(intake.counterpartyName, "Company name", "counterparty_name")}, a company incorporated under the laws of ${entityField(intake.counterpartyIncorporation, "jurisdiction of incorporation", "counterparty_incorporation")}, having its registered office at ${entityField(intake.counterpartyAddress, "registered office address", "counterparty_address")} (hereinafter the &ldquo;<b>Company</b>&rdquo;, which includes its successors and permitted assigns) of the FIRST PARTY.</p>
 
         <p class="nda-doc-and">AND</p>
 
-        <p>${field(asporaName, "Aspora signing entity")}, a company incorporated under the laws of ${field(asporaIncorp, "jurisdiction of incorporation")}, having its registered office at ${field(asporaAddr, "registered office address")} (hereinafter &ldquo;<b>Aspora</b>&rdquo;, which includes its successors and permitted assigns) of the SECOND PARTY.</p>
+        <p>${entityField(asporaName, "Aspora signing entity", "signing_entity")}, a company incorporated under the laws of ${entityField(asporaIncorp, "jurisdiction of incorporation", "signing_entity")}, having its registered office at ${entityField(asporaAddr, "registered office address", "signing_entity")} (hereinafter &ldquo;<b>Aspora</b>&rdquo;, which includes its successors and permitted assigns) of the SECOND PARTY.</p>
 
         <p>The Company and Aspora are collectively the &ldquo;<b>Parties</b>&rdquo; and individually a &ldquo;<b>Party</b>&rdquo;. The Party disclosing Information is the &ldquo;<b>Disclosing Party</b>&rdquo; and the Party receiving it is the &ldquo;<b>Receiving Party</b>&rdquo;.</p>
 
         <p class="nda-doc-recital-h">WHEREAS:</p>
-        <p class="nda-doc-recital">(A)&nbsp;&nbsp;The Company is involved in the business of ${field(intake.businessDescription, "business description")}.</p>
-        <p class="nda-doc-recital">(B)&nbsp;&nbsp;The Parties intend to enter discussions regarding ${field(intake.projectPurpose, "certain commercial propositions")} (the &ldquo;<b>Purpose</b>&rdquo;); and</p>
+        <p class="nda-doc-recital">(A)&nbsp;&nbsp;The Company is involved in the business of ${entityField(intake.businessDescription, "business description", "business_description")}.</p>
+        <p class="nda-doc-recital">(B)&nbsp;&nbsp;The Parties intend to enter discussions regarding ${entityField(intake.projectPurpose, "certain commercial propositions", "project_purpose")} (the &ldquo;<b>Purpose</b>&rdquo;); and</p>
         <p class="nda-doc-recital">(C)&nbsp;&nbsp;To proceed with the Purpose, the Disclosing Party has agreed to exchange certain Confidential Information on a strictly confidential basis on the terms of this Agreement.</p>
 
         <p>IN CONSIDERATION of the Purpose and for other good and valuable consideration (the receipt and sufficiency of which is acknowledged), each Party agrees as follows:</p>
@@ -476,11 +571,15 @@ function createDraftIntakeController({
 
           <li><b>Entire agreement; waiver and modification.</b> This Agreement supersedes all prior discussions and writings and is the entire agreement on its subject matter. No waiver or modification binds either Party unless made in writing and signed by a duly authorised representative of each Party; no failure or delay in exercising any right operates as a waiver.</li>
 
-          <li><b>Governing law and jurisdiction.</b> This Agreement is governed by and construed in accordance with the laws of ${field(governingLaw, "governing law")}.</li>
+          <li><b>Governing law and jurisdiction.</b> This Agreement is governed by and construed in accordance with the laws of ${entityField(governingLaw, "governing law", "governing_law")}${
+            forum
+              ? `, and the ${entityField(forum, "courts", "governing_law")} have exclusive jurisdiction over any dispute arising out of or in connection with it`
+              : `, and the courts of that jurisdiction have exclusive jurisdiction<span class="nda-doc-note" data-generator-field="governing_law" style="color:var(--ink-muted);font-size:0.85em;font-style:italic;"> (an override moves the forum with the law)</span>`
+          }.</li>
 
           <li><b>Severability.</b> If any provision is held unenforceable by a court or tribunal of competent jurisdiction, the remaining provisions remain in full force and effect.</li>
 
-          <li><b>Term.</b> This Agreement is effective on the date of signing and remains in force until the earlier of (i) completion of the Purpose, or (ii) ${field(intake.term, "two (2) years")} from the date of this Agreement.</li>
+          <li><b>Term.</b> This Agreement is effective on the date of signing and remains in force until the earlier of (i) completion of the Purpose, or (ii) ${entityField(termDisplay, "two (2) years", "term")}${termClampNote} from the date of this Agreement.</li>
         </ol>
 
         <p class="nda-doc-witness">IN WITNESS WHEREOF the Parties, through their Authorised Signatories, have set and subscribed their respective hands and seals the day and year first written above.</p>
@@ -494,7 +593,7 @@ function createDraftIntakeController({
           </div>
           <div>
             <span class="nda-doc-sig-label">For Aspora</span>
-            <span class="nda-doc-sig-party">${field(asporaName, "Aspora signing entity")}</span>
+            <span class="nda-doc-sig-party">${entityField(asporaName, "Aspora signing entity", "signing_entity")}</span>
             <span class="nda-doc-sig-line"></span>
             <span class="nda-doc-sig-meta">${sigName} &middot; ${sigTitle} &middot; Date</span>
           </div>

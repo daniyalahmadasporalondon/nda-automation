@@ -173,8 +173,8 @@ class AIFirstReviewTests(unittest.TestCase):
             checked_at="2026-06-04T00:00:00+00:00",
         )
 
-        # The overall review state blocks send: either a failed clause (governing_law
-        # backstop fires on California) or a review clause blocks the document.
+        # A missing AI assessment fails safe to human review: every un-assessed
+        # clause defaults to review, which blocks the document send.
         self.assertTrue(result["review_state"]["blocks_send"])
         self.assertEqual(result["ai_review"]["missing_clause_ids"], [
             "confidential_information",
@@ -184,15 +184,13 @@ class AIFirstReviewTests(unittest.TestCase):
             "signatures",
         ])
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
-        # SOURCE_TEXT contains "laws of California" — the deterministic backstop
-        # fires even when no AI assessment is provided, because the jurisdiction is
-        # clearly unapproved.  The backstop overrides the missing-assessment default.
-        self.assertEqual(governing_law["decision"], "fail")
-        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
-        self.assertTrue(governing_law["blocks_send"])
-        # review_state.blocks_send is True only for review-state clauses; a failed
-        # clause blocks via blocks_send on the clause itself (checked above).
-        self.assertEqual(governing_law["review_state"]["state"], "check")
+        # The deterministic governing-law backstop was removed once the primary AI
+        # proved it reliably fails an unapproved jurisdiction on its own. With no AI
+        # assessment supplied here, governing_law fails safe to review (the
+        # missing-assessment default) rather than being force-failed by a backstop.
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertEqual(governing_law["review_state"]["state"], "review")
+        self.assertTrue(governing_law["review_state"]["blocks_send"])
 
     def test_ai_first_review_result_uses_normalized_playbook_policy_text(self):
         playbook = deepcopy(load_playbook())

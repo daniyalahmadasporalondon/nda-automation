@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from difflib import SequenceMatcher
 from typing import Any
 
 from .docx_xml import _normalize_paragraph_text
@@ -13,6 +14,21 @@ from .redline_actions import (
 )
 
 MANUAL_VIEWER_EDIT_CLAUSE_ID = "manual_viewer_edit"
+
+# The ``source_part`` marker a PDF-source review paragraph carries (see
+# ``pdf_text.py``). Unlike supplemental document parts (``header1``/``footer1``),
+# a PDF matter's review paragraphs are reconstructed from the SAME body the
+# redline export rebuilds, so their redlines must be text-anchored into that body
+# rather than skipped. The paragraph TEXT is engine-independent and reliable; the
+# loose PDF paragraph index is NOT, so resolution must match on text, never on the
+# positional index.
+PDF_SOURCE_PART = "pdf"
+
+# A PDF redline only places when exactly one reconstructed body paragraph matches
+# its original text within this confidence: normalized equality, OR a token-set
+# similarity ratio at/above this threshold (tolerating PDF-extraction whitespace,
+# hyphenation, and run-splitting noise without admitting a different paragraph).
+PDF_TEXT_ANCHOR_RATIO = 0.9
 
 REDLINE_ACTIONS = frozenset({
     REDLINE_REPLACE_PARAGRAPH,
@@ -244,6 +260,56 @@ def redline_source_part(
     if isinstance(review_paragraph, dict):
         return str(review_paragraph.get("source_part") or "").strip()
     return ""
+
+
+def is_pdf_source_redline(
+    redline: dict[str, Any],
+    review_paragraphs_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    """True when this redline targets a PDF-source paragraph.
+
+    A PDF matter's review paragraphs are reconstructed from the same body the
+    redline export rebuilds, so (unlike supplemental ``header1``/``footer1`` parts)
+    their redlines must be text-anchored into that body, not skipped. This predicate
+    isolates the PDF case so the supplemental-part skip stays intact.
+    """
+    return redline_source_part(redline, review_paragraphs_by_id) == PDF_SOURCE_PART
+
+
+def is_supplemental_part_redline(
+    redline: dict[str, Any],
+    review_paragraphs_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    """True when this redline targets a non-body supplemental part (a header or
+    footer), which legitimately cannot be anchored in the main body's paragraph
+    sequence and is skipped with a warning. The PDF marker is explicitly excluded:
+    PDF redlines are body content and must be text-anchored, not skipped."""
+    source_part = redline_source_part(redline, review_paragraphs_by_id)
+    return bool(source_part) and source_part != PDF_SOURCE_PART
+
+
+def confident_text_match(left: object, right: object, *, ratio: float = PDF_TEXT_ANCHOR_RATIO) -> bool:
+    """True when two paragraph texts match confidently enough to anchor a PDF redline.
+
+    Normalized equality is the strong case; otherwise a token-set similarity ratio
+    (order-independent, so PDF run/line re-splitting does not defeat it) must reach
+    ``ratio``. Empty text never matches -- an anchorless redline stays unplaced.
+    """
+    normalized_left = _normalize_paragraph_text(left)
+    normalized_right = _normalize_paragraph_text(right)
+    if not normalized_left or not normalized_right:
+        return False
+    if normalized_left == normalized_right:
+        return True
+    return _token_set_ratio(normalized_left, normalized_right) >= ratio
+
+
+def _token_set_ratio(left: str, right: str) -> float:
+    left_tokens = sorted(left.split())
+    right_tokens = sorted(right.split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return SequenceMatcher(None, left_tokens, right_tokens).ratio()
 
 
 def redline_anchor_texts(

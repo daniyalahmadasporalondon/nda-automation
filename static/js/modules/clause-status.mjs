@@ -41,11 +41,11 @@ export function clauseStatus(clause) {
   const dotTone = idle ? "pending" : review ? "review" : fail ? "verify" : "match";
   const resultLabels = {
     not_present: "Not present",
-    match: "Match",
+    match: "Pass",
     check: "Fail",
-    pass: "Match",
+    pass: "Pass",
     fail: "Fail",
-    review: "Review",
+    review: "Needs review",
   };
 
   return {
@@ -55,7 +55,7 @@ export function clauseStatus(clause) {
     blocksSend: Boolean(reviewState.blocks_send),
     needsReview: review && !idle,
     passes,
-    pillLabel: idle ? "Pending" : review ? "REVIEW" : fail ? "FAIL" : reviewState.label || "PASS",
+    pillLabel: idle ? "Pending" : review ? "NEEDS REVIEW" : fail ? "FAIL" : "PASS",
     reviewState: rawReviewState || tone,
     requiresAttention: (review || fail) && !idle,
     requiresHumanReview: Boolean(reviewState.requires_human_review) || (review && !idle),

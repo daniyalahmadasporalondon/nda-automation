@@ -95,15 +95,14 @@ class ReassessSingleClauseTests(unittest.TestCase):
         # England and Wales is an approved law — should not be forced to fail.
         self.assertNotEqual(result.get("reason_code"), "unapproved_governing_law")
 
-    def test_governing_law_backstop_fires_for_unapproved_law(self):
-        unapproved_text = SOURCE_TEXT.replace(
-            "laws of England and Wales", "laws of the State of California"
-        )
-        result = reassess_single_clause("governing_law", unapproved_text)
-        self.assertEqual(result["id"], "governing_law")
-        self.assertEqual(result["decision"], "fail")
-        self.assertEqual(result["reason_code"], "unapproved_governing_law")
-        self.assertEqual(result["decision_source"], "deterministic_backstop")
+    # NOTE: the deterministic governing-law backstop was removed once the primary AI
+    # proved it reliably FAILs an unapproved jurisdiction on its own (see the
+    # key-gated real-AI cases in tests/fixtures/review_eval_cases.json). The stub
+    # reviewer used here makes no governing-law set-membership judgment, so there is
+    # no longer a deterministic path that force-fails an unapproved law on reassess;
+    # that judgment belongs to the AI and is covered by the real-AI eval gate. The
+    # approved-law guard cases below still hold: reassess must never force-fail an
+    # approved jurisdiction.
 
     def test_edited_paragraphs_overlay_applied(self):
         # Extract a paragraph id from a real parse.

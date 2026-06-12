@@ -45,18 +45,9 @@ from .review_state import (
     CLAUSE_DECISION_REVIEW,
     aggregate_review_state,
     clause_review_state,
-    reason_codes_for_clause,
 )
 from .ai_verifier import apply_ai_verifier, refinalize_clause_grounding
 from .review_result_contract import build_review_result, review_result_clause_counts
-from .checks.governing_law import (
-    _governing_law_candidates,
-    _governing_law_analysis_text,
-    _has_governing_law_signal,
-    _has_conditional_governing_override,
-    _is_unclear_governing_law_candidate,
-    _starts_with_approved_law,
-)
 
 AI_FIRST_REVIEW_MODE = "ai_first_compat"
 
@@ -222,9 +213,6 @@ def reassess_single_clause(
         document_paragraphs,
         review_context,
     )
-    # Apply the governing-law backstop when the re-assessed clause is governing_law.
-    if clause_id == "governing_law" and clause_result.get("decision") != CLAUSE_DECISION_FAIL:
-        _apply_governing_law_backstop([clause_result], document_paragraphs, playbook_clauses_by_id)
     # Run the verifier over this single result if enabled.
     clause_results_list: list[ClauseResult] = [clause_result]
     clause_results_list, ai_verifier_review = apply_ai_verifier(
@@ -311,11 +299,6 @@ def build_ai_first_review_result(
         )
         for playbook_clause in playbook_clauses
     ]
-    # Deterministic governing-law backstop: if the document contains a clearly-named
-    # operative jurisdiction outside the approved set, the clause MUST be FAIL
-    # regardless of what the AI assessed. This is pure set-membership logic, not AI
-    # judgment. It runs BEFORE the verifier so downstream sees the corrected verdict.
-    _apply_governing_law_backstop(clause_results, document_paragraphs, playbook_clauses_by_id)
     # Adversarial verifier pass over the AI-first findings (the SHIPPING path).
     # Additive overlay: justify-or-refute each escalated finding, then re-finalize
     # the derived structures (reason codes, structured evidence, audit trace) for any
@@ -574,10 +557,19 @@ def _refinalize_ai_first_verifier_changes(
             continue
         decision = str(clause.get("decision") or "")
         # The verifier drops the stale reason code when it clears a disproven finding;
-        # re-derive the natural one only when absent so a verifier-owned escalation
-        # code (e.g. ai_verifier_refute on a fail->review) is preserved.
+        # re-derive the AI-first-owned one only when absent so a verifier-owned
+        # escalation code (e.g. ai_verifier_refute on a fail->review) is preserved.
+        #
+        # Crucially, do NOT call the DETERMINISTIC checker's reason_codes_for_clause
+        # here. This is an AI-first verifier pass, and some checkers keyword-scan the
+        # clause's free-text reason to derive a code (e.g. term_and_survival flags
+        # 'over'/'exceeds'/'indefinite'). The verifier's PASS rationale is reviewer
+        # prose, not deterministic-checker output, so that scan can stamp a
+        # fail-flavored code (term_survival_over_cap / indefinite_survival) onto a
+        # clause the verifier just PASSED -- a ghost. The verifier's decision is
+        # authoritative, so the cleared clause carries this module's own code.
         if not clause.get("reason_code") and not clause.get("reason_codes"):
-            reason_codes = reason_codes_for_clause(clause, decision)
+            reason_codes = _ai_first_verifier_reason_codes(decision)
             clause["reason_code"] = reason_codes[0]
             clause["reason_codes"] = reason_codes
         matched_paragraphs = [
@@ -591,6 +583,21 @@ def _refinalize_ai_first_verifier_changes(
         refinalize_clause_grounding(clause)
         clause["review_state"] = clause_review_state(clause, decision)
         clause["audit_trace"] = _audit_trace(clause)
+
+
+def _ai_first_verifier_reason_codes(decision: str) -> list[str]:
+    """Reason code owned by the AI-first module for a verifier-changed clause.
+
+    Used when the verifier cleared a clause (refute -> pass) and dropped the stale
+    reason code: the cleared finding carries an AI-first, verifier-owned code rather
+    than one re-derived from a deterministic checker's keyword scan of the verifier's
+    free-text rationale (which can ghost a fail-flavored code onto a passed clause).
+    A verifier refute-to-pass means the engine's finding was disproven, so the code
+    records exactly that; any other verifier-changed decision is an escalation.
+    """
+    if str(decision or "").strip().lower() == CLAUSE_DECISION_PASS:
+        return ["ai_verifier_refute_cleared"]
+    return ["ai_verifier_escalated"]
 
 
 def _normalized_decision(value: object) -> str:
@@ -1041,114 +1048,3 @@ def _structure_context_for_clause(clause_id: str, review_context: Mapping[str, A
         "sections": list(sections) if isinstance(sections, list) else [],
         "reference_count": 0,
     }
-
-
-def _apply_governing_law_backstop(
-    clause_results: list[ClauseResult],
-    document_paragraphs: list[Paragraph],
-    playbook_clauses_by_id: Mapping[str, Any],
-) -> None:
-    """Deterministic backstop for the governing_law clause in the AI-first path.
-
-    If the document contains a clearly-named operative jurisdiction outside the
-    approved set, force the clause decision to FAIL (present_but_wrong /
-    unapproved_governing_law). This is pure set-membership logic, not AI judgment:
-    the AI may have mis-tiered a clearly unapproved law to review; this corrects it.
-
-    Reserve REVIEW for genuinely unclear/conditional/conflicting law — do NOT force
-    FAIL when the jurisdiction is missing, unclear (placeholder, TBD, party-chosen),
-    or followed by a conditional override escape clause. Those cases involve judgment
-    and remain with the AI tier or the human reviewer.
-
-    The backstop runs BEFORE apply_ai_verifier so downstream (verifier, grounding
-    re-finalize, reason codes, audit trace) all see the corrected verdict.
-    """
-    playbook_clause = playbook_clauses_by_id.get("governing_law")
-    if not playbook_clause:
-        return
-    # Only fire when the AI did NOT already produce a fail (respect a correct AI fail).
-    gl_result = next(
-        (clause for clause in clause_results if str(clause.get("id") or "") == "governing_law"),
-        None,
-    )
-    if gl_result is None or gl_result.get("decision") == CLAUSE_DECISION_FAIL:
-        return
-
-    # Scan every paragraph for an operative, clearly-named unapproved jurisdiction.
-    # We use the same text-preprocessing and candidate-extraction the deterministic
-    # checker uses so the backstop and checker agree on what "clearly unapproved" means.
-    found_unapproved = False
-    for paragraph in document_paragraphs:
-        raw = str(paragraph.get("text") or "")
-        text = _governing_law_analysis_text(raw)
-        # Skip if the incorporation-recital strip removed all governing-law signal.
-        if text != raw and not _has_governing_law_signal(text):
-            continue
-        candidates = _governing_law_candidates(text)
-        if not candidates:
-            continue
-        for candidate in candidates:
-            approved = _starts_with_approved_law(candidate, playbook_clause)
-            unclear = _is_unclear_governing_law_candidate(candidate)
-            conditional = _has_conditional_governing_override(text)
-            if approved or unclear or conditional:
-                # At least one candidate is approved, unclear, or conditional:
-                # the whole paragraph is not a clear unapproved fail — leave it
-                # to the AI/reviewer.
-                found_unapproved = False
-                break
-            # Candidate is present, not approved, not unclear, not conditional.
-            found_unapproved = True
-        else:
-            # All candidates in this paragraph were unapproved — continue scanning.
-            if found_unapproved:
-                # Already confirmed unapproved in a prior paragraph; stop early.
-                break
-            continue
-        # Loop broke early (approved/unclear/conditional found or unapproved confirmed).
-        break
-
-    if not found_unapproved:
-        return
-
-    # Override: this is a deterministic FAIL on set-membership grounds.
-    reason = (
-        "The operative governing-law clause names a jurisdiction outside the approved "
-        "playbook list. The governing law must be one of: India, Delaware, England and "
-        "Wales, DIFC, or Ontario, Canada."
-    )
-    gl_result["decision"] = CLAUSE_DECISION_FAIL
-    gl_result["passes"] = False
-    gl_result["needs_review"] = False
-    gl_result["issue_type"] = ISSUE_TYPE_PRESENT_BUT_WRONG
-    gl_result["status"] = "check"
-    gl_result["reason"] = reason
-    gl_result["finding"] = reason
-    gl_result["decision_reason"] = reason
-    gl_result["blocks_send"] = True
-    gl_result["reason_code"] = "unapproved_governing_law"
-    gl_result["reason_codes"] = ["unapproved_governing_law"]
-    gl_result["decision_source"] = "deterministic_backstop"
-    gl_result["issue_label"] = ISSUE_TYPE_LABELS.get(ISSUE_TYPE_PRESENT_BUT_WRONG, "Present but wrong")
-    # Update the mutable fields within each structured_evidence record so the
-    # reason_code/reason_codes/decision/issue_type/signal_type all reflect the
-    # backstop-corrected verdict.  We update in-place rather than rebuilding from
-    # scratch so AI-provided quotes (matched_text, match_spans) are preserved.
-    for record in gl_result.get("structured_evidence") or []:
-        if not isinstance(record, dict):
-            continue
-        record["decision"] = CLAUSE_DECISION_FAIL
-        record["result_status"] = "check"
-        record["issue_type"] = ISSUE_TYPE_PRESENT_BUT_WRONG
-        record["issue_label"] = ISSUE_TYPE_LABELS.get(ISSUE_TYPE_PRESENT_BUT_WRONG, "Present but wrong")
-        record["decision_reason"] = reason
-        record["reason"] = reason
-        record["reason_code"] = "unapproved_governing_law"
-        record["reason_codes"] = ["unapproved_governing_law"]
-        record["signal_type"] = "check_evidence"
-        record["rule_bucket"] = ISSUE_TYPE_PRESENT_BUT_WRONG
-    # Rebuild grounding and citation from the corrected structured_evidence.
-    refinalize_clause_grounding(gl_result)
-    # Re-derive review_state and audit_trace last so they reflect the final state.
-    gl_result["review_state"] = clause_review_state(gl_result, CLAUSE_DECISION_FAIL)
-    gl_result["audit_trace"] = _audit_trace(gl_result)

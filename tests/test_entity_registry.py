@@ -221,6 +221,32 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
         self.assertEqual(payload["playbook_option_ids"], [])
         # No playbook means no drift verdict per row.
         self.assertNotIn("matches_playbook", payload["law_mapping"][0])
+        # No playbook means no live term cap either.
+        self.assertNotIn("playbook_meta", payload)
+
+    def test_payload_exposes_live_term_cap_from_playbook(self):
+        # The Generator reads playbook_meta.max_term_years (falling back to a
+        # hardcoded 5 only when absent). It must be sourced LIVE from the
+        # playbook's term_and_survival clause, not duplicated as a literal.
+        playbook = load_playbook()
+        expected = next(
+            clause["max_term_years"]
+            for clause in playbook["clauses"]
+            if clause["id"] == "term_and_survival"
+        )
+        payload = er.signing_entities_payload(playbook)
+        self.assertIn("playbook_meta", payload)
+        self.assertEqual(payload["playbook_meta"]["max_term_years"], expected)
+
+    def test_payload_omits_term_cap_when_malformed(self):
+        # A missing/malformed cap is omitted (not invented) so the frontend's own
+        # fallback handles it.
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "term_and_survival":
+                clause["max_term_years"] = "five"  # malformed
+        payload = er.signing_entities_payload(playbook)
+        self.assertNotIn("playbook_meta", payload)
 
 
 class _FakeHandler:
@@ -244,6 +270,16 @@ class SigningEntitiesRouteTests(unittest.TestCase):
         self.assertEqual(len(handler.response["entities"]), 7)
         self.assertTrue(
             all(row["matches_playbook"] for row in handler.response["law_mapping"])
+        )
+        # The live route must surface the playbook term cap for the Generator.
+        playbook = load_playbook()
+        expected = next(
+            clause["max_term_years"]
+            for clause in playbook["clauses"]
+            if clause["id"] == "term_and_survival"
+        )
+        self.assertEqual(
+            handler.response["playbook_meta"]["max_term_years"], expected
         )
 
     def test_route_degrades_gracefully_when_playbook_unreadable(self):

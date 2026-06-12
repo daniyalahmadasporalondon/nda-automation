@@ -164,11 +164,14 @@ def _crosscheck_manifest(manifest: Any, expect: EntityExpectation, text: str, re
             )
 
     # manifest-vs-prose: each claimed IDENTITY fill must appear verbatim. We only
-    # check values the generator reproduces literally (names, addresses, law,
-    # forum). Values it legitimately TRANSFORMS -- the ISO agreement_date becomes
-    # "6th day of June, 2026", and the purpose/business prose may be re-cased -- are
-    # excluded, since absence of the canonical source string is expected, not a bug.
-    for field_name in ("entity_legal_name", "governing_law_value", "counterparty_name", "forum"):
+    # check values the generator reproduces literally (names, addresses, law).
+    # ``forum`` is provenance-only -- the document no longer states a forum/courts
+    # sentence (a governing law may be heard in multiple courts), so the manifest
+    # forum is NOT expected in the prose and is excluded here. Values the generator
+    # legitimately TRANSFORMS -- the ISO agreement_date becomes "6th day of June,
+    # 2026", and the purpose/business prose may be re-cased -- are excluded too,
+    # since absence of the canonical source string is expected, not a bug.
+    for field_name in ("entity_legal_name", "governing_law_value", "counterparty_name"):
         claimed = getattr(manifest, field_name, None)
         if isinstance(claimed, str) and claimed and claimed not in text:
             report.defect("manifest.prose_mismatch", f"manifest {field_name}={claimed!r} but not found in rendered draft")
