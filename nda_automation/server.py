@@ -151,6 +151,10 @@ def _handle_ai_draft_validation_post(handler) -> None:
     )
 
 
+def _handle_reassess_clause_post(handler) -> None:
+    review_routes.handle_reassess_clause(handler)
+
+
 def _handle_matter_upload_post(handler) -> None:
     matter_routes.handle_matter_upload(
         handler,
@@ -241,6 +245,7 @@ _POST_EXACT_ROUTES = {
     "/api/review": _handle_text_review_post,
     "/api/review/ai-draft-validation": _handle_ai_draft_validation_post,
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
+    "/api/review/reassess-clause": _handle_reassess_clause_post,
     "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/generate-nda": generation_routes.handle_generate_nda,

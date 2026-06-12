@@ -89,6 +89,168 @@ _PLAYBOOK_RESULT_FIELDS = (
 )
 
 
+class ReassessClauseError(RuntimeError):
+    """Raised when a single-clause re-assessment cannot proceed."""
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def reassess_single_clause(
+    clause_id: str,
+    source_text: str,
+    *,
+    paragraphs: Sequence[Paragraph] | None = None,
+    edited_paragraphs: Sequence[Mapping[str, Any]] | None = None,
+    reviewer: Any | None = None,
+    playbook: Mapping[str, Any] | None = None,
+    ai_verifier: Any | None = None,
+    verify: bool = True,
+) -> dict[str, Any]:
+    """Re-run the AI-first assessment for a single playbook clause.
+
+    ``source_text`` is the full document text (from the stored matter).
+    If ``edited_paragraphs`` is supplied those paragraphs are overlaid onto the
+    document before assessment so the reviewer sees the proposed edit (the caller
+    provides the updated paragraph(s) keyed by their ``id``).
+
+    Returns the updated clause result dict in the standard ClauseResult shape
+    (same fields as a clause in ``build_ai_first_review_result``), plus a
+    ``reassess_metadata`` key describing the run.
+
+    Raises :class:`ReassessClauseError` on invalid input.
+    """
+    from .ai_assessor import AIAssessorError, configured_ai_assessment_reviewer
+    from .ai_assessment_prompt import build_ai_assessment_packet
+    from .ai_assessment_contract import AIAssessmentContractError, validate_ai_clause_assessments
+
+    clause_id = str(clause_id or "").strip()
+    if not clause_id:
+        raise ReassessClauseError("clause_id is required.")
+
+    text = source_text or ""
+    review_playbook = deepcopy(playbook) if isinstance(playbook, Mapping) else load_playbook()
+    validate_playbook(review_playbook)
+    review_playbook = normalize_playbook_policy(review_playbook)
+    playbook_clauses = [
+        clause
+        for clause in review_playbook.get("clauses", [])
+        if isinstance(clause, dict) and str(clause.get("id") or "").strip()
+    ]
+    playbook_clauses_by_id = {str(clause.get("id") or ""): clause for clause in playbook_clauses}
+    target_clause = playbook_clauses_by_id.get(clause_id)
+    if target_clause is None:
+        raise ReassessClauseError(f"clause_id {clause_id!r} is not a known playbook clause.", status=404)
+
+    # Build document paragraphs, then overlay any edited paragraphs.
+    document_paragraphs = _review_paragraphs(text, paragraphs)
+    if edited_paragraphs:
+        edit_map: dict[str, Mapping[str, Any]] = {}
+        for paragraph in edited_paragraphs:
+            if isinstance(paragraph, Mapping):
+                pid = str(paragraph.get("id") or "").strip()
+                if pid:
+                    edit_map[pid] = paragraph
+        if edit_map:
+            document_paragraphs = [
+                dict(edit_map[str(p.get("id") or "")]) if str(p.get("id") or "") in edit_map else p
+                for p in document_paragraphs
+            ]
+
+    # Build a packet scoped to this one clause so the AI reviewer only assesses it.
+    from .ai_review import _ai_review_settings
+    settings = _ai_review_settings()
+    configured_reviewer = reviewer
+    if configured_reviewer is None:
+        if not settings.get("enabled"):
+            raise ReassessClauseError("AI-first assessment is disabled.", status=502)
+        try:
+            configured_reviewer = configured_ai_assessment_reviewer(settings)
+        except AIAssessorError as error:
+            raise ReassessClauseError(str(error), status=502) from error
+
+    # Build a packet containing only the one target clause so the model is not
+    # asked about unrelated clauses (faster, cheaper, tighter grounding).
+    single_clause_playbook = deepcopy(review_playbook)
+    single_clause_playbook["clauses"] = [deepcopy(target_clause)]
+    # When edited_paragraphs were overlaid the document_paragraphs now contain
+    # the edited text, which may not appear verbatim in `text`.  Pass an empty
+    # source_text so build_ai_assessment_packet deep-copies the edited paragraphs
+    # directly (no re-alignment against the original source text) and the AI
+    # reviewer sees the proposed edits.
+    packet_source_text = "" if edited_paragraphs else text
+    packet = build_ai_assessment_packet(
+        packet_source_text,
+        playbook=single_clause_playbook,
+        paragraphs=document_paragraphs,
+        provider=str(settings.get("provider") or ""),
+        model=str(settings.get("model") or ""),
+    )
+    try:
+        raw_response = configured_reviewer(packet)
+    except Exception as error:
+        raise ReassessClauseError(f"AI single-clause assessment failed: {error}", status=502) from error
+
+    if not isinstance(raw_response, Mapping) or not isinstance(raw_response.get("assessments"), list):
+        raise ReassessClauseError("AI single-clause assessment returned an invalid response.", status=502)
+
+    raw_assessments_list = raw_response["assessments"]
+    try:
+        assessment_by_clause_id = validate_ai_clause_assessments(
+            raw_assessments_list,
+            valid_clause_ids=[clause_id],
+            paragraphs=document_paragraphs,
+            playbook_clauses_by_id={clause_id: target_clause},
+        )
+    except AIAssessmentContractError as error:
+        raise ReassessClauseError(f"AI assessment response failed validation: {error}", status=502) from error
+
+    assessment = assessment_by_clause_id.get(clause_id)
+    # Build context structures for this document.
+    contract_structure = build_contract_structure(document_paragraphs)
+    reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
+    concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
+    review_context = {
+        "contract_structure": contract_structure,
+        "reference_resolver": reference_resolver,
+        "concept_classifier": concept_classifier,
+    }
+    clause_result = _clause_result_from_assessment(
+        target_clause,
+        assessment,
+        document_paragraphs,
+        review_context,
+    )
+    # Apply the governing-law backstop when the re-assessed clause is governing_law.
+    if clause_id == "governing_law" and clause_result.get("decision") != CLAUSE_DECISION_FAIL:
+        _apply_governing_law_backstop([clause_result], document_paragraphs, playbook_clauses_by_id)
+    # Run the verifier over this single result if enabled.
+    clause_results_list: list[ClauseResult] = [clause_result]
+    clause_results_list, ai_verifier_review = apply_ai_verifier(
+        clause_results_list,
+        source_text=text,
+        verifier=ai_verifier,
+        enabled=verify,
+    )
+    _refinalize_ai_first_verifier_changes(clause_results_list, ai_verifier_review, document_paragraphs)
+    # Build redline for just this clause.
+    redline_edits = _build_redline_edits(clause_results_list, document_paragraphs)
+    attach_redline_rationales(
+        clause_results_list,
+        redline_edits,
+        playbook_clauses_by_id={clause_id: target_clause},
+    )
+    updated_clause = clause_results_list[0]
+    updated_clause["reassess_metadata"] = {
+        "clause_id": clause_id,
+        "feature": "review",
+        "has_edited_paragraphs": bool(edited_paragraphs),
+        "ai_verifier_ran": bool(verify),
+    }
+    return updated_clause
+
+
 def build_ai_first_review_result(
     source_text: str,
     assessments: Sequence[Mapping[str, Any]],

@@ -5,6 +5,7 @@ import binascii
 from urllib.parse import quote
 
 from .. import annotated_pdf_export, redline_export_service, telemetry
+from ..ai_first_review import ReassessClauseError, reassess_single_clause
 from ..checker import (
     AIDraftValidationError,
     AISecondOpinionError,
@@ -23,6 +24,7 @@ from ..document_limits import (
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
 from ..ingestion_service import extract_document, is_supported_document_filename
+from ..matter_repository import DiskMatterRepository, MatterRepository
 from ..pdf_text import PdfExtractionError
 from ..review_engine import ActiveReviewEngineError
 from ..review_result_contract import attach_document_source, extracted_text_from_paragraphs
@@ -298,3 +300,83 @@ def handle_annotated_pdf_export(handler) -> None:
             "X-PDF-Unmatched-Evidence-Count": str(annotated_export.unmatched_evidence_count),
         },
     )
+
+
+def _review_repository(handler) -> MatterRepository:
+    repository = getattr(handler, "matter_repository", None)
+    if repository is not None:
+        return repository
+    return DiskMatterRepository()
+
+
+def handle_reassess_clause(handler, *, reassess_func=reassess_single_clause) -> None:
+    """POST /api/review/reassess-clause — re-run the AI-first assessment for one clause.
+
+    Request body (JSON):
+        matter_id        str   required  — owner-scoped matter to reassess
+        clause_id        str   required  — playbook clause id to re-assess
+        edited_text      str   optional  — replacement full-document text (mutually exclusive with edited_paragraphs)
+        edited_paragraphs list optional  — paragraph objects with updated "text" fields to overlay
+
+    Response (200 JSON):
+        clause           dict  — updated ClauseResult for the clause
+        matter_id        str
+        clause_id        str
+        reassess_metadata dict — {clause_id, feature, has_edited_paragraphs, ai_verifier_ran}
+    """
+    telemetry.increment("reassess_clause_requests")
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    matter_id = str(payload.get("matter_id") or "").strip()
+    if not matter_id:
+        handler._send_json({"error": "Provide a matter_id to reassess."}, status=400)
+        return
+
+    clause_id = str(payload.get("clause_id") or "").strip()
+    if not clause_id:
+        handler._send_json({"error": "Provide a clause_id to reassess."}, status=400)
+        return
+
+    owner_user_id = request_owner_user_id(handler)
+    repository = _review_repository(handler)
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    source_text = str(matter.get("extracted_text") or "").strip()
+    if not source_text:
+        handler._send_json({"error": "Matter has no extracted text to reassess."}, status=409)
+        return
+
+    # edited_text overrides the full source text (the frontend may pass the edited document).
+    edited_text = payload.get("edited_text")
+    if isinstance(edited_text, str) and edited_text.strip():
+        source_text = edited_text.strip()
+
+    edited_paragraphs = payload.get("edited_paragraphs")
+    if not isinstance(edited_paragraphs, list):
+        edited_paragraphs = None
+
+    try:
+        clause_result = reassess_func(
+            clause_id,
+            source_text,
+            edited_paragraphs=edited_paragraphs,
+        )
+    except ReassessClauseError as error:
+        handler._send_json({"error": str(error)}, status=error.status)
+        return
+    except ActiveReviewEngineError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+
+    telemetry.increment("reassess_clause_completed")
+    handler._send_json({
+        "clause": clause_result,
+        "matter_id": matter_id,
+        "clause_id": clause_id,
+        "reassess_metadata": clause_result.get("reassess_metadata") or {},
+    })
