@@ -286,7 +286,7 @@
       "requirement": "Governing law must be India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
       "type": "required",
       "preferred_position": "The governing law is one of the approved jurisdictions, preferably England and Wales unless the matter context supports another approved option.",
-      "check_trigger": "The governing law is missing, unclear, or names a jurisdiction outside India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
+      "check_trigger": "FAIL when the operative governing-law clause names a clearly-identified jurisdiction outside the approved set (India, Delaware, England and Wales, DIFC, Ontario Canada). FAIL when no operative governing-law clause is found. REVIEW (not FAIL) only when the governing-law language is genuinely unclear, conditional, conflicting, incorporates a reference to another document, uses a placeholder or TBD marker, allows the parties to choose or vary the law later, or contains a secondary carve-out that creates ambiguity about which law controls. Do not return REVIEW when the jurisdiction is unambiguously named and simply unapproved.",
       "approved_laws": [
         "India",
         "Delaware",
@@ -322,12 +322,13 @@
         "agreement shall be construed in accordance with",
         "laws applicable to this agreement",
         "party incorporation or organization recitals are not governing-law clauses",
+        "a clearly-named unapproved operative jurisdiction such as California, New York, Singapore, France, or Germany must be FAIL not REVIEW",
         "conditional override wording such as unless otherwise agreed weakens an otherwise approved law and needs review",
         "secondary or carve-out governing-law language for disputes, remedies, IP, enforcement, or other sections needs review when it conflicts with or qualifies the main law",
         "approved-law aliases such as English law, Indian law, DIFC law, Delaware law, Ontario law, Canadian law, or Province of Ontario may count only when they describe the agreement governing law"
       ],
-      "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be changed or reviewed.",
-      "evidence_guidance": "Use the operative governing-law sentence as evidence, not the whole dispute-resolution section. Do not treat a party recital saying it is incorporated, organized, formed, registered, domiciled, or existing under the laws of a jurisdiction as the agreement governing law. When an approved governing law is followed by unless otherwise agreed, subject to another agreement, chosen by a party, or a secondary carve-out for disputes, remedies, IP, enforcement, or another topic, cite that qualifying span and return review rather than pass. Approved-law aliases count only when they modify the agreement governing-law clause; do not use an approved jurisdiction appearing only in addresses, party descriptions, court venue, tax, employment, or regulatory references. For failures, cite the operative unapproved governing-law sentence; for missing, explain that no operative governing-law sentence was found.",
+      "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be failed or reviewed depending on how clearly the governing law is named.",
+      "evidence_guidance": "Use the operative governing-law sentence as evidence, not the whole dispute-resolution section. Do not treat a party recital saying it is incorporated, organized, formed, registered, domiciled, or existing under the laws of a jurisdiction as the agreement governing law. When an approved governing law is followed by unless otherwise agreed, subject to another agreement, chosen by a party, or a secondary carve-out for disputes, remedies, IP, enforcement, or another topic, cite that qualifying span and return REVIEW rather than pass. FAIL (not REVIEW) when the operative governing-law sentence names a clearly-identified unapproved jurisdiction such as California, New York, Singapore, France, Germany, or any other jurisdiction not in the approved list — reserve REVIEW for genuinely uncertain or conditional cases, not clearly-named wrong jurisdictions. Approved-law aliases count only when they modify the agreement governing-law clause; do not use an approved jurisdiction appearing only in addresses, party descriptions, court venue, tax, employment, or regulatory references. For failures, cite the operative unapproved governing-law sentence; for missing, explain that no operative governing-law sentence was found.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -353,7 +354,7 @@
             "id": "unapproved_governing_law",
             "decision": "fail",
             "issue_type": "present_but_wrong",
-            "description": "The operative governing-law clause names a jurisdiction outside the approved playbook list. Do not fail merely because a party is incorporated or organized under an unapproved jurisdiction if the agreement itself is governed by an approved law.",
+            "description": "The operative governing-law clause names a clearly-identified jurisdiction outside the approved playbook list (e.g. California, New York, Singapore, France, Germany, or any other non-approved jurisdiction). This is a FAIL, not a REVIEW — do not soften a clearly-named unapproved jurisdiction to review. Do not fail merely because a party is incorporated or organized under an unapproved jurisdiction if the agreement itself is governed by an approved law. Only use REVIEW when the governing-law language is genuinely unclear, conditional, or conflicting.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -362,7 +363,7 @@
             "id": "unclear_or_conditional_governing_law",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The governing-law language is unclear, conditional, conflicting, heading-only, incorporated by reference, subject to later agreement, chosen by a party, or mixed with secondary governing-law carve-outs for disputes, remedies, IP, enforcement, or other sections.",
+            "description": "The governing-law language is unclear, conditional, conflicting, heading-only, incorporated by reference, subject to later agreement, chosen by a party, or mixed with secondary governing-law carve-outs for disputes, remedies, IP, enforcement, or other sections. REVIEW is reserved for genuine uncertainty — do NOT use REVIEW for a clearly-named jurisdiction that is simply unapproved; that must be FAIL.",
             "redline_action": "no_change"
           }
         ],

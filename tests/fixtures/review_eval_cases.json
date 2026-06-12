@@ -689,5 +689,52 @@
     "expected": {
       "decision": "review"
     }
+  },
+  {
+    "name": "governing_law_ai_first_california_backstop_fail",
+    "clause_id": "governing_law",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Deterministic backstop: a clearly-named unapproved jurisdiction (California) must be FAIL on the AI-first path even when the AI stub and verifier would not escalate. The backstop runs before the verifier so the corrected verdict reaches downstream.",
+    "text": "This Agreement shall be governed by the laws of California.",
+    "verifier": {
+      "verdict": "affirm",
+      "confidence": 0.95,
+      "rationale": "Scripted affirm — the backstop should have already forced FAIL before the verifier runs."
+    },
+    "expected": {
+      "decision": "fail",
+      "reason_code": "unapproved_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_ai_first_approved_not_failed_by_backstop",
+    "clause_id": "governing_law",
+    "kind": "deterministic",
+    "label_source": "engineering",
+    "label_note": "Backstop guard: an approved jurisdiction (India) must not be forced to FAIL by the backstop. Runs on the deterministic path to confirm a clean approved-law pass.",
+    "text": "This Agreement shall be governed by and construed in accordance with the laws of India.",
+    "expected": {
+      "decision": "pass",
+      "reason_code": "approved_governing_law"
+    }
+  },
+  {
+    "name": "governing_law_ai_first_conditional_not_failed_by_backstop",
+    "clause_id": "governing_law",
+    "kind": "verifier",
+    "high_risk": true,
+    "label_source": "engineering",
+    "label_note": "Backstop guard: a conditional escape clause ('unless otherwise agreed') on an approved jurisdiction is unclear, not a clear unapproved fail — the backstop must NOT fire and the case must remain review.",
+    "text": "This Agreement shall be governed by the laws of England and Wales, unless otherwise agreed in writing by the parties.",
+    "verifier": {
+      "verdict": "affirm",
+      "confidence": 0.95,
+      "rationale": "Approved governing law with conditional escape; surfaces as review."
+    },
+    "expected": {
+      "decision": "review"
+    }
   }
 ]

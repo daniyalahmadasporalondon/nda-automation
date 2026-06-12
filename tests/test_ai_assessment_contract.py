@@ -429,8 +429,11 @@ class AIAssessmentContractTests(unittest.TestCase):
         # evidence is fabricated grounds nowhere and stays a blocking review.
         from nda_automation.ai_first_review import build_ai_first_review_result
 
+        # Use England and Wales so the deterministic governing-law backstop does NOT
+        # fire (backstop only triggers on clearly unapproved jurisdictions such as
+        # California). The test targets the ungrounded-finding path, not backstop logic.
         source_text = "\n\n".join([
-            "This Agreement shall be governed by the laws of California.",
+            "This Agreement shall be governed by the laws of England and Wales.",
             "Each party may disclose Confidential Information.",
         ])
         fabricated_review = {

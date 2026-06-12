@@ -72,15 +72,31 @@ def _complete_response():
     }
 
 
+# Source text with an approved governing law (England and Wales) used by the
+# truncation-guard tests.  California (SOURCE_TEXT p3) triggers the deterministic
+# governing-law backstop, so a genuinely all-pass scenario requires an approved
+# jurisdiction in the text.
+ALL_PASS_SOURCE_TEXT = "\n\n".join([
+    "Each party may disclose Confidential Information to the other party under this Agreement.",
+    '"Confidential Information" means non-public business, financial, technical, customer, supplier, pricing, market, product, proprietary and trade secret information disclosed by either party.',
+    "This Agreement shall be governed by the laws of England and Wales.",
+    "The confidentiality obligations survive for a fixed period of five years.",
+    "Each party remains free to deal with third parties outside the Purpose.",
+    "For Aspora Limited\nBy:\nName:\nTitle:\nDate:\nFor Counterparty Ltd\nBy:\nName:\nTitle:\nDate:",
+])
+
+
 def _all_pass_response():
     # Every clause passes, each present-clause verdict grounded in a quote that
-    # appears in SOURCE_TEXT so nothing is downgraded to review. Used to prove a
-    # would-be clean clear is still escalated when the document is truncated.
+    # appears in ALL_PASS_SOURCE_TEXT so nothing is downgraded to review. Used to
+    # prove a would-be clean clear is still escalated when the document is truncated.
+    # NOTE: governing_law uses an approved jurisdiction (England and Wales) so the
+    # deterministic backstop does not fire and the clause can legitimately pass.
     return {
         "assessments": [
             _assessment("mutuality", "pass", paragraph_id="p1", quote="Each party may disclose Confidential Information"),
             _assessment("confidential_information", "pass", paragraph_id="p2", quote='"Confidential Information" means non-public business'),
-            _assessment("governing_law", "pass", paragraph_id="p3", quote="laws of California"),
+            _assessment("governing_law", "pass", paragraph_id="p3", quote="laws of England and Wales"),
             _assessment("term_and_survival", "pass", paragraph_id="p4", quote="fixed period of five years"),
             _assessment("non_circumvention", "pass"),
             _assessment("signatures", "pass", paragraph_id="p6", quote="For Aspora Limited"),
@@ -138,18 +154,23 @@ class AIAssessorTests(unittest.TestCase):
 
         self.assertEqual(result["ai_first_review"]["status"], "partial")
         self.assertIn("governing_law", result["ai_first_review"]["missing_clause_ids"])
-        self.assertEqual(result["review_state"]["state"], "review")
+        # The overall document blocks send (failed or needs review).
         self.assertTrue(result["review_state"]["blocks_send"])
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
-        self.assertEqual(governing_law["decision"], "review")
-        self.assertEqual(governing_law["reason_code"], "ai_first_missing_assessment")
+        # SOURCE_TEXT has "laws of California" — the deterministic backstop fires even
+        # with no AI assessment and overrides the missing-assessment default to fail.
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
+        self.assertTrue(governing_law["blocks_send"])
 
     def test_truncated_document_forces_manual_review_no_silent_clear(self):
         # A long document whose paragraphs exceed the packet budget is only
         # partially seen by the AI. Even when every assessed clause passes, the
         # unseen tail must force the whole document to manual review rather than
         # silently clear (the long-doc false-clear).
-        long_source = _padded_source(SOURCE_TEXT, filler_paragraphs=200)
+        # Uses ALL_PASS_SOURCE_TEXT (approved governing law) so the deterministic
+        # backstop does not fire and the only escalation comes from truncation.
+        long_source = _padded_source(ALL_PASS_SOURCE_TEXT, filler_paragraphs=200)
         reviewer = InMemoryAssessmentReviewer(response=_all_pass_response())
 
         result = assess_nda_with_ai(long_source, reviewer=reviewer)
@@ -176,9 +197,11 @@ class AIAssessorTests(unittest.TestCase):
     def test_untruncated_document_is_not_escalated_by_truncation_guard(self):
         # The same all-pass response on a document that fits the budget keeps its
         # natural verdict -- the guard only fires on truncation.
+        # Uses ALL_PASS_SOURCE_TEXT (approved governing law) so the deterministic
+        # backstop does not fire and the untruncated result stays meets_requirements.
         reviewer = InMemoryAssessmentReviewer(response=_all_pass_response())
 
-        result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+        result = assess_nda_with_ai(ALL_PASS_SOURCE_TEXT, reviewer=reviewer)
 
         self.assertFalse(reviewer.packets[0]["document"]["truncated"])
         self.assertFalse(result["truncation"]["truncated"])

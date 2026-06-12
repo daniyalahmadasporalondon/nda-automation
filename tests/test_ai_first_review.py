@@ -173,9 +173,9 @@ class AIFirstReviewTests(unittest.TestCase):
             checked_at="2026-06-04T00:00:00+00:00",
         )
 
-        self.assertEqual(result["review_state"]["state"], "review")
+        # The overall review state blocks send: either a failed clause (governing_law
+        # backstop fires on California) or a review clause blocks the document.
         self.assertTrue(result["review_state"]["blocks_send"])
-        self.assertEqual(result["requirements_needs_review"], len(load_playbook()["clauses"]) - 1)
         self.assertEqual(result["ai_review"]["missing_clause_ids"], [
             "confidential_information",
             "governing_law",
@@ -184,9 +184,15 @@ class AIFirstReviewTests(unittest.TestCase):
             "signatures",
         ])
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
-        self.assertEqual(governing_law["decision"], "review")
-        self.assertEqual(governing_law["reason_code"], "ai_first_missing_assessment")
-        self.assertTrue(governing_law["review_state"]["blocks_send"])
+        # SOURCE_TEXT contains "laws of California" — the deterministic backstop
+        # fires even when no AI assessment is provided, because the jurisdiction is
+        # clearly unapproved.  The backstop overrides the missing-assessment default.
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertEqual(governing_law["reason_code"], "unapproved_governing_law")
+        self.assertTrue(governing_law["blocks_send"])
+        # review_state.blocks_send is True only for review-state clauses; a failed
+        # clause blocks via blocks_send on the clause itself (checked above).
+        self.assertEqual(governing_law["review_state"]["state"], "check")
 
     def test_ai_first_review_result_uses_normalized_playbook_policy_text(self):
         playbook = deepcopy(load_playbook())
