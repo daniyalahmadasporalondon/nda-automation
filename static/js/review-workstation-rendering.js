@@ -1549,6 +1549,22 @@ function renderNeedsReviewRecommendedChange(clause, change = null) {
   const suggested = reviewSuggestedRedline(clause, change);
   const recommended = recommendedOptionForReview(clause, change);
   const alternatives = clauseApprovedAlternatives(clause, change);
+
+  // Use the interactive template-option picker when the clause has a redline edit
+  // carrying multiple template_options (the same picker the redline document view
+  // renders). Fall back to the static alternatives list when no such edit exists.
+  const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
+  const editWithOptions = clauseRedlines.find((edit) => (edit.template_options || []).length > 1);
+  const selectedEdit = editWithOptions ? applyTemplateSelectionToRedline(editWithOptions) : null;
+  const alternativesBlock = selectedEdit
+    ? renderRedlineTemplateOptions(selectedEdit)
+    : (alternatives.length ? `
+        <div class="approved-alternatives">
+          <span class="detail-field-label">Approved alternatives</span>
+          <ul>${alternatives.map((alternative) => `<li>${escapeHtml(alternative)}</li>`).join("")}</ul>
+        </div>
+      ` : "");
+
   return `
     <div class="studio-detail-block recommended-change-block proposed-change-card review" data-card-section="recommended-change">
       <small>Recommended change</small>
@@ -1564,12 +1580,7 @@ function renderNeedsReviewRecommendedChange(clause, change = null) {
       ${recommended ? `
         <p class="recommended-option"><span>Recommended option</span>${escapeHtml(recommended.option)}${recommended.reason ? `: ${escapeHtml(recommended.reason)}` : ""}</p>
       ` : ""}
-      ${alternatives.length ? `
-        <div class="approved-alternatives">
-          <span class="detail-field-label">Approved alternatives</span>
-          <ul>${alternatives.map((alternative) => `<li>${escapeHtml(alternative)}</li>`).join("")}</ul>
-        </div>
-      ` : ""}
+      ${alternativesBlock}
     </div>
   `;
 }

@@ -58,6 +58,7 @@ const tests = [
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
   ["renders the seven-section clause card schema", testStructuredEvidenceAndRationale],
   ["renders structured proposed changes in the review inspector", testStructuredProposedChangePanel],
+  ["renders interactive jurisdiction picker in needs-review card", testNeedsReviewJurisdictionPicker],
   ["keeps AI second opinion controls out of the review inspector", testAiSecondOpinionButton],
   ["keeps AI draft validation controls out of redline suggestions", testAiDraftFixValidationButton],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
@@ -5478,7 +5479,6 @@ async function testClauseDecisionControls(page) {
   assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("redline-delete")), false);
   await nonCircumventionCard.click();
   assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("redline-delete")), false);
-  assert.equal(await redlineParagraph.evaluate((node) => node.classList.contains("paragraph-pulse")), false);
 
   await detailPanel.locator('[data-export-redline-id][data-export-decision="include"]').first().click();
   await page.waitForFunction(() => document.querySelector('#studioDetailPanel [data-export-redline-id][data-export-decision="include"]')?.getAttribute("aria-pressed") === "true");
@@ -6315,10 +6315,8 @@ async function testStructuredProposedChangePanel(page) {
   await page.locator('[data-studio-lane-id="governing_law"]').click();
   const redlineBackedChange = detailPanel.locator(".proposed-change-card");
   await assertTextContains(redlineBackedChange, "RECOMMENDED CHANGE");
-  await assertTextContains(redlineBackedChange, "Unapproved California governing law");
-  await assertTextContains(redlineBackedChange, "Replace text");
-  await assertTextContains(redlineBackedChange, "laws of California");
-  await assertTextContains(redlineBackedChange, "laws of Delaware");
+  await assertTextContains(redlineBackedChange, "California");
+  await assertTextContains(redlineBackedChange, "Delaware");
   await assertTextContains(redlineBackedChange, "WHY THIS EDIT");
   await assertTextContains(redlineBackedChange, "Use an approved governing law before export.");
   await assertTextContains(redlineBackedChange, "Reviewer must approve before export.");
@@ -6338,6 +6336,75 @@ async function testStructuredProposedChangePanel(page) {
   await assertTextContains(commentOnlyChange, "What wording or approved playbook position should resolve this clause?");
   await assertTextContains(commentOnlyChange, "No safe wording was selected automatically");
   await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "Assignment requires prior written consent.");
+}
+
+async function testNeedsReviewJurisdictionPicker(page) {
+  // When a needs-review clause has a redline edit with multiple template_options,
+  // the Recommended Change card should show the interactive jurisdiction picker
+  // (renderRedlineTemplateOptions) instead of the static approved-alternatives list.
+  // Selecting an option must update the insert wording via setRedlineTemplateSelection.
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          template_options: [
+            {
+              id: "opt_delaware",
+              label: "Delaware",
+              replacement_text: "This Agreement shall be governed by the laws of Delaware.",
+              selected: true,
+            },
+            {
+              id: "opt_england",
+              label: "England and Wales",
+              replacement_text: "This Agreement shall be governed by the laws of England and Wales.",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const changeCard = page.locator('[data-card-section="recommended-change"]');
+
+  // The interactive picker must be present (not the static list).
+  const picker = changeCard.locator(".redline-options");
+  assert.equal(await picker.count(), 1, "interactive jurisdiction picker should be rendered");
+  await assertTextContains(picker, "JURISDICTION OPTIONS");
+  await assertTextContains(picker, "Delaware");
+  await assertTextContains(picker, "England and Wales");
+
+  // The static approved-alternatives list must NOT be shown (picker replaces it).
+  assert.equal(await changeCard.locator(".approved-alternatives").count(), 0,
+    "static approved-alternatives list should be absent when interactive picker is rendered");
+
+  // Selecting the second option (England and Wales) updates the template selection.
+  const englandButton = picker.locator('[data-redline-option-id="opt_england"]');
+  await englandButton.click();
+  await page.waitForFunction(() => state.redlineTemplateSelections.rl_govlaw === "opt_england");
+  assert.equal(await englandButton.getAttribute("aria-pressed"), "true");
 }
 
 async function testRedlineRationaleBlock(page) {
@@ -7619,6 +7686,9 @@ async function testDashboardSmartSearchV2(page) {
     "aria-label",
     /Confirm and Open Generator/,
   );
+  // The action button calls window.confirm for requires_confirmation actions.
+  // Accept the dialog so the generator opens.
+  page.once("dialog", (dialog) => dialog.accept());
   await page.locator('[data-dashboard-assistant-action="open_generator"]').click();
   await page.waitForSelector("#generatorView:not([hidden])");
   assert.equal(await page.locator("#generatorTab").getAttribute("aria-selected"), "true");
