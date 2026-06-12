@@ -1098,3 +1098,149 @@ async function approveSelectedReview() {
     updateApproveReviewControl();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-clause live re-assessment (POST /api/review/reassess-clause)
+//
+// When the reviewer commits a clause edit — either by selecting a different
+// jurisdiction option or by editing a paragraph that belongs to the clause —
+// we debounce a call to the single-clause reassess endpoint and patch ONLY
+// that clause's card with the returned verdict, leaving the rest of the review
+// untouched.  The prior verdict is preserved during the in-flight request so
+// the card never goes blank; a non-destructive inline error is shown on 4xx/5xx.
+// ---------------------------------------------------------------------------
+
+const CLAUSE_REASSESS_DELAY_MS = 600;
+
+// Timers and sequence counters keyed by clause_id so parallel clauses don't
+// cancel each other's debounce.
+const clauseReassessTimers = {};
+const clauseReassessSequences = {};
+
+// Track which clause_ids have an active in-flight request so the card can show
+// a pending indicator.  Updated synchronously before and after each fetch.
+// Maps clause_id -> { pending: bool, error: string|null }
+const clauseReassessState = {};
+
+function scheduleClauseReassess(clauseId, editedParagraphs) {
+  if (!clauseId) return;
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+
+  if (clauseReassessTimers[clauseId] !== undefined) {
+    window.clearTimeout(clauseReassessTimers[clauseId]);
+  }
+  const sequence = (clauseReassessSequences[clauseId] || 0) + 1;
+  clauseReassessSequences[clauseId] = sequence;
+
+  clauseReassessTimers[clauseId] = window.setTimeout(() => {
+    delete clauseReassessTimers[clauseId];
+    runClauseReassess(clauseId, matterId, sequence, editedParagraphs);
+  }, CLAUSE_REASSESS_DELAY_MS);
+}
+
+async function runClauseReassess(clauseId, matterId, sequence, editedParagraphs) {
+  if (clauseReassessSequences[clauseId] !== sequence) return;
+  // Mark pending — re-render only that clause card to show the spinner.
+  clauseReassessState[clauseId] = { pending: true, error: null };
+  renderClauseCardById(clauseId);
+
+  const body = { matter_id: matterId, clause_id: clauseId };
+  if (Array.isArray(editedParagraphs) && editedParagraphs.length) {
+    body.edited_paragraphs = editedParagraphs;
+  } else {
+    const sourceText = (studioNdaText && studioNdaText.value.trim()) || state.reviewSourceText.trim();
+    if (sourceText) body.edited_text = sourceText;
+  }
+
+  try {
+    const response = await fetch("/api/review/reassess-clause", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    // Stale — another reassess has already been scheduled; discard this result.
+    if (clauseReassessSequences[clauseId] !== sequence) return;
+    const payload = await response.json();
+    if (clauseReassessSequences[clauseId] !== sequence) return;
+    if (!response.ok) {
+      const message = payload.error || `Reassess failed (${response.status})`;
+      clauseReassessState[clauseId] = { pending: false, error: message };
+      renderClauseCardById(clauseId);
+      return;
+    }
+    // Patch the clause in the review state with the fresh result.
+    const updatedClause = payload.clause;
+    if (updatedClause && updatedClause.id) {
+      state.reviewClauses = state.reviewClauses.map((clause) =>
+        clause.id === updatedClause.id ? { ...clause, ...updatedClause } : clause,
+      );
+    }
+    clauseReassessState[clauseId] = { pending: false, error: null };
+    // Re-render the full studio result so the summary bar + all dependents stay in sync.
+    renderStudioResult({ clauses: state.reviewClauses });
+    updateExportButtonState();
+  } catch (error) {
+    if (clauseReassessSequences[clauseId] !== sequence) return;
+    clauseReassessState[clauseId] = { pending: false, error: error.message || "Reassess failed." };
+    renderClauseCardById(clauseId);
+  }
+}
+
+// Re-render only the single clause card in the navigator lane (the cheaper path
+// for pending/error state, before we have a full updated clause to render).
+function renderClauseCardById(clauseId) {
+  if (!studioClauseLane) return;
+  const clause = state.reviewClauses.find((item) => item.id === clauseId);
+  if (!clause) return;
+  // Re-render just this one item by replacing its article element in the lane.
+  const existing = studioClauseLane.querySelector(`[data-studio-lane-id="${CSS.escape(clauseId)}"]`);
+  const article = existing?.closest("article");
+  if (!article) {
+    // Fall back to a full lane render if we can't find the specific article.
+    renderStudioClauseLane();
+    return;
+  }
+  const reassess = clauseReassessState[clauseId] || { pending: false, error: null };
+  const status = clauseDisplayStatus(clause);
+  const selected = clause.id === state.selectedReviewClauseId ? "selected" : "";
+  const reviewed = hasReviewResults() && clauseReviewAcknowledged(clause.id);
+  const clauseRedlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
+  const redlineCount = hasReviewResults() ? clauseRedlines.length : 0;
+  const allRedlinesIgnored = redlineCount > 0 && clauseRedlines.every((edit) => !redlineExportIncluded(edit));
+  const comment = hasReviewResults() && Boolean(clauseReviewComment(clause.id));
+  const displayName = clauseDisplayName(clause);
+  const stateLabel = reviewed
+    ? "Reviewed"
+    : allRedlinesIgnored
+      ? "Ignored"
+      : redlineCount
+        ? `${redlineCount} proposed ${redlineCount === 1 ? "redline" : "redlines"}`
+        : status.issueLabel;
+  const pendingSpinner = reassess.pending
+    ? '<span class="clause-reassess-pending" aria-label="Rechecking…">…</span>'
+    : "";
+  const errorBadge = reassess.error
+    ? `<span class="clause-reassess-error" title="${escapeHtml(reassess.error)}">!</span>`
+    : "";
+  const newArticle = document.createElement("article");
+  newArticle.className = `studio-clause-item ${selected} ${status.tone} ${reviewed ? "reviewed" : ""} ${allRedlinesIgnored ? "ignored" : ""}`;
+  newArticle.innerHTML = `
+    <button class="studio-clause-select" type="button" data-studio-lane-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}" aria-label="${escapeHtml(`${displayName}: ${stateLabel}`)}" title="${escapeHtml(`${displayName}: ${stateLabel}`)}">
+      <span class="studio-clause-dot ${status.dotTone}"></span>
+      <span class="studio-clause-title">${escapeHtml(displayName)}</span>
+      ${clauseEngineBadge(clause)}
+      ${comment ? '<span class="studio-comment-state">Comment</span>' : ""}
+      ${pendingSpinner}
+      ${errorBadge}
+    </button>
+  `;
+  newArticle.querySelector("[data-studio-lane-id]")?.addEventListener("click", () => {
+    selectReviewClause(clause.id, { jump: true });
+  });
+  article.replaceWith(newArticle);
+  // If the detail panel is showing this clause, refresh it too.
+  if (state.selectedReviewClauseId === clauseId && state.reviewInspectorView === "clause") {
+    renderStudioDetail();
+  }
+}

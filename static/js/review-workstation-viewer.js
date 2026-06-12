@@ -325,10 +325,39 @@ function syncViewerParagraphEdit(editable) {
   markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
   scheduleViewerReviewRefresh("Document edited");
+  scheduleClauseReassessForParagraph(paragraphId);
   updateExportButtonState();
   if (droppedInlineFormat) {
     setFileMeta("Inline formatting on this paragraph was cleared by the text edit");
   }
+}
+
+// Schedule a per-clause re-assessment for every clause that cites the edited
+// paragraph.  Only fires when there is a saved matter to reassess against.
+function scheduleClauseReassessForParagraph(paragraphId) {
+  if (!paragraphId || !state.selectedMatter?.id || typeof scheduleClauseReassess !== "function") return;
+  const editedParagraphs = state.reviewParagraphs.map((p) => ({
+    id: p.id,
+    index: p.index,
+    source_index: p.source_index,
+    text: p.text,
+  }));
+  const affectedClauseIds = new Set();
+  state.reviewClauses.forEach((clause) => {
+    const ids = Array.isArray(clause.matched_paragraph_ids) ? clause.matched_paragraph_ids : [];
+    if (ids.some((id) => String(id) === String(paragraphId))) {
+      affectedClauseIds.add(clause.id);
+    }
+  });
+  // Also check redline edits which carry a paragraph_id.
+  state.reviewRedlines.forEach((edit) => {
+    if (String(edit.paragraph_id || "") === String(paragraphId) && edit.clause_id) {
+      affectedClauseIds.add(edit.clause_id);
+    }
+  });
+  affectedClauseIds.forEach((clauseId) => {
+    scheduleClauseReassess(clauseId, editedParagraphs);
+  });
 }
 
 function scheduleViewerReviewRefresh(message) {

@@ -761,6 +761,15 @@ function setRedlineTemplateSelection(editId, optionId) {
   state.redlineTemplateSelections[editId] = optionId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
+  // Live re-assessment: when the reviewer picks a different jurisdiction option,
+  // re-run the single-clause check against the new wording so the verdict updates
+  // without a full-document refresh.
+  const edit = state.reviewRedlines.find((item) => item.id === editId);
+  if (edit?.clause_id && state.selectedMatter?.id) {
+    if (typeof scheduleClauseReassess === "function") {
+      scheduleClauseReassess(edit.clause_id);
+    }
+  }
 }
 
 function selectedRedlineTemplateOptionId(edit) {
