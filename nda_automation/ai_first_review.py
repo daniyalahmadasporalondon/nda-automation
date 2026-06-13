@@ -36,6 +36,7 @@ from .review_document import (
     align_document_paragraphs,
     split_document_paragraphs,
 )
+from .structure_validation import should_validate_structure, validate_structure
 from .playbook_rules import normalize_playbook_policy
 from .redline_rationale import attach_redline_rationales
 from .playbook_runtime import playbook_snapshot_hash
@@ -247,6 +248,7 @@ def build_ai_first_review_result(
     checked_at: str | None = None,
     playbook: Mapping[str, Any] | None = None,
     ai_verifier: Any | None = None,
+    structure_validator: Any | None = None,
     verify: bool = True,
 ) -> dict[str, Any]:
     """Build the existing review_result contract from AI-first clause assessments.
@@ -283,6 +285,16 @@ def build_ai_first_review_result(
         playbook_clauses_by_id=playbook_clauses_by_id,
     )
     contract_structure = build_contract_structure(document_paragraphs)
+    # Optional, additive AI structure-validation post-pass (shipping path). Gated
+    # to DOCX-sourced parses with sections; demotes style-misuse false positives
+    # from the reference index before the resolver consumes it. Never deletes
+    # paragraphs or touches genuine sections, and never blocks on failure.
+    if verify and should_validate_structure(contract_structure, document_paragraphs):
+        contract_structure = validate_structure(
+            contract_structure,
+            document_paragraphs,
+            validator=structure_validator,
+        )
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
     concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
     review_context = {
