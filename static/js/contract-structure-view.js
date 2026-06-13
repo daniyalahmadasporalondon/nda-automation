@@ -51,6 +51,23 @@ function createContractStructureController({ state, root }) {
 
       ${renderReferences(references)}
     `;
+    bindStructureRowKeyboard();
+  }
+
+  // The global delegated [data-para-ref] handler (app.js) covers row CLICKS for free,
+  // but it is click-only. Keep the keyboard-accessible rows usable by translating
+  // Enter/Space on a focused row into the same jumpToParagraph the click path uses.
+  // Rebound per render because render() replaces root.innerHTML wholesale.
+  function bindStructureRowKeyboard() {
+    if (!root) return;
+    root.querySelectorAll(".structure-row-nav[data-para-ref]").forEach((row) => {
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+        event.preventDefault();
+        const paragraphId = row.getAttribute("data-para-ref");
+        if (paragraphId && typeof jumpToParagraph === "function") jumpToParagraph(paragraphId);
+      });
+    });
   }
 
   function effectiveStructure() {
@@ -93,12 +110,31 @@ function createContractStructureController({ state, root }) {
     const paragraphs = paragraphRangeLabel(section);
     const parent = section.parent_id ? `<span>Parent ${escapeHtml(section.parent_id)}</span>` : "";
     const source = sourceSummary(section.source);
+    // Clicking a row jumps the document viewer to the section's first paragraph.
+    // data-para-ref is caught by the global delegated [data-para-ref] click handler
+    // (app.js, capture phase), which dynamically-rendered rows fire through too;
+    // role/tabindex + a local keydown handler keep the row keyboard-accessible.
+    //
+    // Source-backed gate (accuracy-or-nothing): the parser invents phantom sections on
+    // flat/PDF docs (an address line or a table-cell digit scraped as "Clause 145"),
+    // which carry no `source`. Making such a row a live jump target would send the
+    // reader to e.g. "1 Sheldon Square", so a row is only navigable when its section is
+    // source-backed; an inferred section renders as a plain (non-clickable) row.
+    const sourceBacked = section.source && typeof section.source === "object"
+      && Object.keys(section.source).length > 0;
+    const startParagraphId = sourceBacked && section.start_paragraph_id ? String(section.start_paragraph_id) : "";
+    const sectionLabel = section.label || section.heading || "Section";
+    const navAttrs = startParagraphId
+      ? ` data-para-ref="${escapeHtml(startParagraphId)}" role="button" tabindex="0"`
+      + ` aria-label="${escapeHtml(`Jump to ${sectionLabel}`)}"`
+      : "";
+    const navClass = startParagraphId ? " structure-row-nav" : "";
     return `
-      <article class="structure-row" style="--structure-indent: ${indent}px">
+      <article class="structure-row${navClass}" style="--structure-indent: ${indent}px"${navAttrs}>
         <span class="structure-level-marker" aria-hidden="true"></span>
         <div class="structure-row-main">
           <div class="structure-row-title">
-            <strong>${escapeHtml(section.label || section.heading || "Section")}</strong>
+            <strong>${escapeHtml(sectionLabel)}</strong>
             <span>${escapeHtml(kindLabel(section.kind))}</span>
           </div>
           <p>${escapeHtml(section.heading || section.heading_text || section.label || "Untitled section")}</p>

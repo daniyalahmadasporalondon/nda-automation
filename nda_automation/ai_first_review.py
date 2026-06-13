@@ -30,7 +30,7 @@ from .evidence_grounding import (
     build_grounding,
     downgrade_ungrounded_finding,
 )
-from .reference_resolver import resolve_document_references
+from .reference_resolver import _resolve_reference_item, resolve_document_references
 from .review_document import (
     Paragraph,
     align_document_paragraphs,
@@ -426,7 +426,9 @@ def _clause_result_from_assessment(
     )
     what_to_fix = _assessment_fix_text(assessment, decision)
     reason_codes = _reason_codes(assessment, decision)
-    matched_paragraphs = _matched_paragraphs(paragraphs, assessment)
+    matched_paragraphs = _matched_paragraphs(
+        paragraphs, assessment, _reference_index(review_context)
+    )
     proposed_redline = assessment.get("proposed_redline")
     if not isinstance(proposed_redline, Mapping):
         proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
@@ -776,11 +778,28 @@ def _reason_codes(assessment: Mapping[str, Any], decision: str) -> list[str]:
     return [f"ai_first_{decision}"]
 
 
-def _matched_paragraphs(paragraphs: list[Paragraph], assessment: Mapping[str, Any]) -> list[Paragraph]:
+def _matched_paragraphs(
+    paragraphs: list[Paragraph],
+    assessment: Mapping[str, Any],
+    reference_index: Mapping[str, Any] | None = None,
+) -> list[Paragraph]:
     paragraph_lookup = {str(paragraph.get("id") or ""): paragraph for paragraph in paragraphs}
     matched: list[Paragraph] = []
     seen: set[str] = set()
-    for paragraph_id in _evidence_paragraph_ids(assessment, paragraphs):
+    evidence_ids = _evidence_paragraph_ids(assessment, paragraphs)
+    if not evidence_ids:
+        # The structured evidence/matched arrays are empty for this clause, but the
+        # AI often names a section only in its prose narrative ("Paragraph 11 defines
+        # Confidential Information ...", "see Schedule 3"). Without an anchor the
+        # finding is ungrounded and shows no "In the document" / Jump affordance.
+        # Resolve each prose reference against the document's REAL printed structure
+        # (contract_structure's reference_index) so "Paragraph 11" lands on whatever
+        # block the document actually prints as clause 11 -- never the bare 11th
+        # physical block, which is only the same by coincidence. This never runs when
+        # structured evidence exists, so it cannot override a real match, and a
+        # reference that does not resolve to a real section seeds nothing.
+        evidence_ids = _prose_anchor_paragraph_ids(assessment, paragraph_lookup, reference_index)
+    for paragraph_id in evidence_ids:
         paragraph = paragraph_lookup.get(paragraph_id)
         if not paragraph or paragraph_id in seen:
             continue
@@ -797,6 +816,185 @@ def _matched_paragraphs(paragraphs: list[Paragraph], assessment: Mapping[str, An
         matched.append(paragraph)
         seen.add(paragraph_id)
     return matched
+
+
+# Prose references to a place in the document, resolved against the document's REAL
+# printed structure (contract_structure.reference_index), not the physical block order:
+#
+#   "Paragraph 11", "para 11", "para. 11", "¶11", "Paragraphs 11"   -> printed clause 11
+#   "Clause 5", "Section 2", "Article 3", "Schedule 3"              -> the printed section
+#   "Annex A", "Annexure 2", "Appendix 4", "Schedule 3(a)"          -> the printed attachment
+#
+# Resolution is delegated to reference_resolver._resolve_reference_item -- the SAME
+# routine the document-side reference resolver uses -- so the alias scheme, the kind-
+# agnostic ``number:N`` body fallback, the Schedule<->Section namespace guard and the
+# duplicate-number ambiguity handling all stay in one place and cannot diverge here.
+# Each resolved reference seeds the printed section's FIRST paragraph id, so "Paragraph
+# 11" lands on whatever block the document prints as clause 11 -- almost never the 11th
+# physical block. A reference that does not resolve to a real section seeds NOTHING
+# (accuracy-or-nothing; no block-index guess).
+#
+# A bare ``pN`` token is a DIRECT document paragraph id (review_document ids are
+# ``p{index}``) and is validated against the real ids rather than routed through the
+# printed-number index.
+#
+# Number forms accepted: digits ("11"), a single letter ("a"/"A"), roman ("iv"),
+# optionally followed by a parenthetical sub-part ("3(a)").
+#
+# Keyword -> the kind passed to the shared resolver. "Paragraph"/"para"/"¶" is a numbered
+# cross-reference with no kind of its own, so it is resolved as a body reference
+# (``section``) and finds its target purely through the ``number:N`` fallback.
+_PROSE_REFERENCE_KINDS = {
+    "paragraph": "section",
+    "paragraphs": "section",
+    "para": "section",
+    "para.": "section",
+    "¶": "section",
+    "clause": "clause",
+    "clauses": "clause",
+    "section": "section",
+    "sections": "section",
+    "article": "article",
+    "articles": "article",
+    "schedule": "schedule",
+    "schedules": "schedule",
+    "annex": "annex",
+    "annexes": "annex",
+    "annexure": "annexure",
+    "annexures": "annexure",
+    "appendix": "appendix",
+    "appendices": "appendix",
+}
+_PROSE_REFERENCE_NUMBER_PART = r"(?:\d+|[ivxlcdm]+|[a-z])(?:\([a-z0-9]+\))?"
+_PROSE_REFERENCE_RE = re.compile(
+    r"(?P<keyword>paragraphs?|para\.?|¶|clauses?|sections?|articles?|schedules?|"
+    r"annexures?|annexes?|annex|appendices|appendix)\s*"
+    rf"(?P<number>{_PROSE_REFERENCE_NUMBER_PART})\b",
+    re.IGNORECASE,
+)
+_PROSE_TOKEN_RE = re.compile(r"\bp(\d+)\b", re.IGNORECASE)
+
+
+def _prose_anchor_paragraph_ids(
+    assessment: Mapping[str, Any],
+    paragraph_lookup: Mapping[str, Paragraph],
+    reference_index: Mapping[str, Any] | None = None,
+) -> list[str]:
+    prose_parts = [
+        str(assessment.get(key) or "")
+        for key in ("rationale", "reason", "finding", "decision_reason")
+    ]
+    prose = " ".join(part for part in prose_parts if part)
+    if not prose:
+        return []
+
+    ids: list[str] = []
+
+    # 1. Structural/paragraph references resolved through the printed-structure index,
+    #    via the shared document-reference resolver (single source of truth for alias
+    #    resolution + namespace/ambiguity guards).
+    alias_lookup, sections_by_id, ambiguous_alias_keys = _reference_index_maps(reference_index)
+    for match in _PROSE_REFERENCE_RE.finditer(prose):
+        kind = _PROSE_REFERENCE_KINDS.get(match.group("keyword").strip().lower())
+        if kind is None:
+            continue
+        item = _resolve_reference_item(
+            kind,
+            match.group("number").strip().lower(),
+            alias_lookup,
+            ambiguous_alias_keys,
+            sections_by_id,
+        )
+        section_id = item.get("section_id")
+        if not isinstance(section_id, str) or not section_id:
+            continue
+        section_record = sections_by_id.get(section_id)
+        # SOURCE-BACKED GUARD. The structure parser invents FALSE sections on flat /
+        # PDF documents -- a street address ("145 Curtain Road") or a cover-table cell
+        # ("2 year") gets scraped as a clause number, producing a ``number:145`` /
+        # ``number:2`` section with NO source metadata (source=null/absent). Grounding a
+        # finding to one of those would anchor the evidence to an ADDRESS. A section is
+        # only trustworthy as a STRUCTURAL prose-reference target if it came from real
+        # Word numbering/heading metadata, which contract_structure records by attaching
+        # a non-empty ``source`` mapping (see _resolver_section_record / _source_metadata
+        # -- a scraped-from-text section carries no ``source`` key at all). If the
+        # resolved section is not source-backed, seed NOTHING for this reference
+        # (accuracy-or-nothing). This guards ONLY the structural Paragraph/Clause/Section
+        # /Article/Schedule/Exhibit/Annex/Appendix N path; the bare ``pN`` direct-id path
+        # below never goes through section resolution and is unaffected.
+        if not _section_is_source_backed(section_record):
+            continue
+        start_paragraph_id = _section_start_paragraph_id(section_record)
+        if start_paragraph_id and start_paragraph_id in paragraph_lookup:
+            ids.append(start_paragraph_id)
+
+    # 2. Bare ``pN`` tokens are DIRECT document paragraph ids, validated against the
+    #    real ids (not routed through the printed-number index).
+    for number in _PROSE_TOKEN_RE.findall(prose):
+        candidate = f"p{int(number)}"
+        if candidate in paragraph_lookup:
+            ids.append(candidate)
+
+    return _dedupe_ids(ids)
+
+
+def _reference_index(review_context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(review_context, Mapping):
+        return None
+    contract_structure = review_context.get("contract_structure")
+    if not isinstance(contract_structure, Mapping):
+        return None
+    reference_index = contract_structure.get("reference_index")
+    return reference_index if isinstance(reference_index, Mapping) else None
+
+
+def _reference_index_maps(
+    reference_index: Mapping[str, Any] | None,
+) -> tuple[dict[str, str], dict[str, dict[str, Any]], set[str]]:
+    if not isinstance(reference_index, Mapping):
+        return {}, {}, set()
+    alias_lookup = {
+        str(key): str(value)
+        for key, value in (reference_index.get("alias_to_section_id") or {}).items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+    sections_by_id = {
+        str(key): dict(value)
+        for key, value in (reference_index.get("sections_by_id") or {}).items()
+        if isinstance(key, str) and isinstance(value, Mapping)
+    }
+    ambiguous = reference_index.get("ambiguous_alias_keys")
+    ambiguous_keys = (
+        {str(key) for key in ambiguous} if isinstance(ambiguous, (list, tuple, set)) else set()
+    )
+    return alias_lookup, sections_by_id, ambiguous_keys
+
+
+def _section_is_source_backed(section_record: Any) -> bool:
+    # A section is source-backed when contract_structure attached a non-empty ``source``
+    # mapping to it (real Word numbering/heading/style metadata). _resolver_section_record
+    # only copies ``source`` onto the reduced record when the original section carries a
+    # ``source`` dict, so a section scraped from plain text (e.g. an address digit read as
+    # a clause number) exposes no ``source`` key here. Anything else -- a missing key, a
+    # null, or an empty mapping -- is treated as NOT source-backed.
+    if not isinstance(section_record, Mapping):
+        return False
+    source = section_record.get("source")
+    return isinstance(source, Mapping) and bool(source)
+
+
+def _section_start_paragraph_id(section_record: Any) -> str | None:
+    # The resolver section record (reference_index.sections_by_id) carries the ordered
+    # paragraph_ids but not a separate start_paragraph_id, so the start is the first
+    # paragraph id.
+    if not isinstance(section_record, Mapping):
+        return None
+    paragraph_ids = section_record.get("paragraph_ids")
+    if isinstance(paragraph_ids, Sequence) and not isinstance(paragraph_ids, (str, bytes)):
+        for paragraph_id in paragraph_ids:
+            if isinstance(paragraph_id, str) and paragraph_id:
+                return paragraph_id
+    return None
 
 
 def _is_document_title_paragraph(paragraph: Mapping[str, Any]) -> bool:

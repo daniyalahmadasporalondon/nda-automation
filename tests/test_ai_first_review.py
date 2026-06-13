@@ -48,6 +48,80 @@ def _assessment(clause_id, decision, *, paragraph_id="p1", issue_type=None, **ov
     return payload
 
 
+# A source with REAL printed numbering where the printed clause number diverges from the
+# physical block index: e.g. the section printed as clause 4 ("Governing Law") starts at
+# the 5th physical block (p5), and clause 7 ("Signatures") starts at p11. Used to prove
+# the prose-anchor fallback grounds a "Clause N" reference to the PRINTED section, not the
+# bare Nth block.
+NUMBERED_SOURCE_TEXT = "\n\n".join([
+    "This Mutual Non-Disclosure Agreement is entered into by the parties.",
+    "Each party may disclose Confidential Information to the other party under this Agreement.",
+    "3. Confidential Information",
+    '"Confidential Information" means non-public business information disclosed by either party.',
+    "4. Governing Law",
+    "This Agreement shall be governed by the laws of California.",
+    "5. Term",
+    "The confidentiality obligations survive for a fixed period of five years.",
+    "6. Non-Circumvention",
+    "Each party remains free to deal with third parties outside the Purpose.",
+    "7. Signatures",
+    "For Aspora Limited",
+])
+
+NUMBERED_QUOTES_BY_PARAGRAPH_ID = {
+    "p2": "Each party may disclose Confidential Information",
+    "p4": '"Confidential Information" means non-public business',
+    "p6": "laws of California",
+    "p8": "fixed period of five years",
+    "p10": "free to deal with third parties",
+    "p12": "For Aspora Limited",
+}
+
+
+def _numbered_source_backed_paragraphs():
+    """NUMBERED_SOURCE_TEXT as explicit paragraphs whose numbered headings carry real Word
+    numbering metadata, so contract_structure builds SOURCE-BACKED sections from them.
+
+    The structural prose-reference fallback only seeds a paragraph from a source-backed
+    section, so this is the fixture used to prove the "grounds" behaviour end-to-end.
+    """
+    lines = NUMBERED_SOURCE_TEXT.split("\n\n")
+    heading_numbers = {2: "3", 4: "4", 6: "5", 8: "6", 10: "7"}  # zero-based line index -> printed number
+    paragraphs = []
+    for line_index, text in enumerate(lines):
+        paragraph = {"id": f"p{line_index + 1}", "index": line_index, "text": text}
+        number = heading_numbers.get(line_index)
+        if number is not None:
+            paragraph["structure_number"] = number
+            paragraph["numbering"] = {"label": number, "format": "decimal", "level": 0}
+            paragraph["style_name"] = "Heading 1"
+        paragraphs.append(paragraph)
+    return paragraphs
+
+
+def _numbered_assessment(clause_id, decision, *, paragraph_id, issue_type=None, **overrides):
+    if issue_type is None:
+        issue_type = "none" if decision == "pass" else "present_but_wrong"
+    payload = {
+        "clause_id": clause_id,
+        "decision": decision,
+        "issue_type": issue_type,
+        "rationale": f"{clause_id} assessed by AI against the playbook and cited paragraph text.",
+        "evidence": [
+            {
+                "paragraph_id": paragraph_id,
+                "quote": NUMBERED_QUOTES_BY_PARAGRAPH_ID[paragraph_id],
+                "relevance": "Supports the AI verdict.",
+            }
+        ],
+        "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+        "confidence": 0.91,
+        "blocks_send": decision == "review",
+    }
+    payload.update(overrides)
+    return payload
+
+
 class AIFirstReviewTests(unittest.TestCase):
     def test_ai_first_review_result_matches_current_contract_shape(self):
         result = build_ai_first_review_result(
@@ -355,6 +429,331 @@ class QuoteOffsetRobustnessTests(unittest.TestCase):
         ]
         matched = _matched_paragraphs(paragraphs, {"matched_paragraph_ids": ["p1", "p2"]})
         self.assertEqual([paragraph["id"] for paragraph in matched], ["p1", "p2"])
+
+
+class ProseAnchorFallbackTests(unittest.TestCase):
+    """When a finding has no structured evidence but its prose narrative names a place
+    in the document ("Paragraph 11 defines Confidential Information...", "see Schedule
+    3"), resolve that reference against the document's REAL printed structure (the
+    contract_structure reference_index) and seed the referenced section's first
+    paragraph. This is accuracy-or-nothing: "Paragraph 11" lands on whatever block the
+    document PRINTS as clause 11 -- never the bare 11th physical block -- and a
+    reference that does not resolve to a real section seeds nothing. The fallback only
+    fires when the structured match set is empty, never overrides a real structured
+    match, and never changes the clause's verdict.
+    """
+
+    @staticmethod
+    def _structure_with_divergent_numbering(*, source_backed=True):
+        """A document where the PRINTED clause number 11 is NOT the 11th physical block.
+
+        The numbered headings 1/11/12 and a "Schedule 3" attachment occupy physical
+        blocks p1.. p8, so the section the document prints as "11" starts at p3 -- never
+        p11 (which does not even exist). This is the exact case the naive ``p{N}``
+        fallback got wrong.
+
+        By default the detected sections are marked SOURCE-BACKED -- i.e. each carries a
+        ``source`` mapping, as it would when contract_structure builds the section from
+        real Word numbering/heading metadata. The structural prose-reference fallback only
+        seeds a paragraph from a SOURCE-BACKED section (a section scraped out of a flat /
+        PDF document -- e.g. a street-address digit mistaken for a clause number -- carries
+        no ``source`` and must seed nothing). Pass ``source_backed=False`` to model that
+        scraped-from-text case.
+        """
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = "\n\n".join([
+            "1. Confidentiality",
+            "Each party may disclose Confidential Information to the other party.",
+            "11. Governing Law",
+            "This Agreement shall be governed by the laws of California.",
+            "12. Term",
+            "The confidentiality obligations survive for a fixed period of five years.",
+            "Schedule 3: Permitted Recipients",
+            "The named recipients are listed in this schedule.",
+        ])
+        paragraphs = split_document_paragraphs(source)
+        reference_index = build_contract_structure(paragraphs)["reference_index"]
+        if source_backed:
+            # Stamp the Word-metadata ``source`` these headings would carry when the doc is
+            # a real .docx (vs scraped from flat text). The aliases / paragraph ranges are
+            # the resolver's own output and are left untouched.
+            for record in reference_index["sections_by_id"].values():
+                record["source"] = {"source_kind": "docx_numbering", "style_name": "Heading 1"}
+        return paragraphs, reference_index
+
+    def test_paragraph_reference_grounds_to_printed_section_not_block_index(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # Sanity: the section the document prints as "11" starts at p3, and there is no
+        # p11 paragraph -- so a correct resolver MUST return p3, and the old p{N} mapping
+        # would have returned nothing (no p11) / a wrong block.
+        self.assertEqual(reference_index["alias_to_section_id"]["number:11"], "section-2")
+        self.assertNotIn("p11", {p["id"] for p in paragraphs})
+
+        assessment = {
+            # No structured evidence -- the AI named the printed clause only in prose.
+            "reason": "Paragraph 11 sets the governing law and needs review.",
+        }
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p3"])
+
+    def test_schedule_reference_grounds_to_schedule_section_start(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        self.assertEqual(reference_index["alias_to_section_id"]["schedule:3"], "section-4")
+
+        assessment = {"finding": "The permitted recipients are listed in Schedule 3."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        # Schedule 3's section starts at p7 (its heading block), not the bogus "p3".
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p7"])
+
+    def test_unresolved_reference_stays_ungrounded(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # Neither a Paragraph 99 nor a Schedule 99 exists in the printed structure, so
+        # both must seed NOTHING -- no block-index guess.
+        assessment = {
+            "reason": "Paragraph 99 should define this, and Schedule 99 would list it.",
+        }
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual(matched, [])
+
+    def test_structural_keyword_uses_printed_number_fallback(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # "Clause 12" -> the bare numbered heading printed as 12 (via the number:N body
+        # fallback the shared resolver applies), which starts at p5.
+        assessment = {"reason": "Clause 12 governs the term of confidentiality."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p5"])
+
+    def test_structural_reference_to_non_source_backed_section_seeds_nothing(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        # The SAME printed structure, but the sections were SCRAPED out of flat text (no
+        # Word numbering/heading metadata) -- exactly how the parser invents a FALSE
+        # section from a street-address digit ("145 Curtain Road" -> number:145) or a
+        # cover-table cell ("2 year" -> number:2). Those sections carry no ``source``.
+        # Grounding to one would anchor a finding to an ADDRESS, so the structural
+        # prose-reference fallback must seed NOTHING (accuracy-or-nothing).
+        paragraphs, reference_index = self._structure_with_divergent_numbering(source_backed=False)
+        # The reference still RESOLVES (the alias exists) -- the guard rejects it purely
+        # because the resolved section is not source-backed.
+        self.assertEqual(reference_index["alias_to_section_id"]["number:11"], "section-2")
+        self.assertNotIn("source", reference_index["sections_by_id"]["section-2"])
+
+        for assessment in (
+            {"reason": "Paragraph 11 sets the governing law and needs review."},
+            {"finding": "The permitted recipients are listed in Schedule 3."},
+            {"reason": "Clause 12 governs the term of confidentiality."},
+        ):
+            matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+            self.assertEqual(matched, [], assessment)
+
+    def test_structural_reference_to_address_derived_section_does_not_anchor(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        # A hand-built reference_index reproducing the real calibration finding: a
+        # ``number:145`` section the parser scraped from the street address
+        # "145 Curtain Road" -- emitted with source=null (and even confidence=high). A
+        # finding that says "see paragraph 145" must NOT anchor onto the address block.
+        paragraphs = [
+            {"id": "p0", "index": 0, "text": "Confidentiality obligations apply to both parties."},
+            {"id": "p1", "index": 1, "text": "Registered office at 145 Curtain Road, London EC2A 3QQ."},
+        ]
+        reference_index = {
+            "alias_to_section_id": {"number:145": "section-addr"},
+            "ambiguous_alias_keys": [],
+            "sections_by_id": {
+                "section-addr": {
+                    "id": "section-addr",
+                    "kind": "numbered",
+                    "number": "145",
+                    "label": "145",
+                    "heading": "",
+                    "level": 0,
+                    "paragraph_ids": ["p1"],
+                    "start_index": 1,
+                    "end_index": 1,
+                    "parent_id": None,
+                    "source": None,  # scraped from text -- NOT source-backed
+                    "confidence": "high",
+                },
+            },
+        }
+        assessment = {"reason": "The notice address in paragraph 145 should be confirmed."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual(matched, [])
+
+    def test_section_reference_does_not_borrow_schedule_namespace(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # "Section 3" must NOT resolve onto "Schedule 3" -- attachments and in-body
+        # sections are different namespaces. There is no in-body section 3, so nothing
+        # is seeded.
+        assessment = {"reason": "Section 3 would need to address this point."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual(matched, [])
+
+    def test_bare_paragraph_token_is_a_direct_id(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # A bare "pN" token is a DIRECT document paragraph id, validated against the
+        # real ids -- not routed through the printed-number index.
+        assessment = {"finding": "cf. p3 for the carve-out wording."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p3"])
+
+    def test_bare_paragraph_token_grounds_regardless_of_source_backing(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        # The source-backed GUARD applies ONLY to the structural Paragraph/Clause/... N
+        # path (which goes through section resolution). A bare "pN" token is a DIRECT,
+        # already-validated document paragraph id and NEVER touches section resolution, so
+        # it still grounds even when every detected section is NOT source-backed.
+        paragraphs, reference_index = self._structure_with_divergent_numbering(source_backed=False)
+        self.assertNotIn("source", reference_index["sections_by_id"]["section-2"])
+        assessment = {"finding": "cf. p3 for the carve-out wording."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p3"])
+
+    def test_bare_token_to_nonexistent_paragraph_is_not_seeded(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # The document has no p99, so the direct token seeds nothing.
+        assessment = {"finding": "cf. p99 for the carve-out wording."}
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual(matched, [])
+
+    def test_prose_fallback_never_overrides_structured_match(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # Structured evidence cites p5; prose mentions Paragraph 11. The structured
+        # match wins and the prose fallback is never consulted.
+        assessment = {
+            "matched_paragraph_ids": ["p5"],
+            "reason": "Paragraph 11 also touches the governing law.",
+        }
+        matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+        self.assertEqual([paragraph["id"] for paragraph in matched], ["p5"])
+
+    def test_review_clause_with_prose_only_anchor_becomes_grounded_evidence(self):
+        # End-to-end: a "review" clause whose AI assessment names "Clause 4" in PROSE
+        # ONLY (no structured evidence array) now carries the PRINTED-4 section's start
+        # paragraph in its structured evidence so the Review tab can cite + jump to it,
+        # while the verdict stays a review. In NUMBERED_SOURCE_TEXT the section printed
+        # as clause 4 starts at the 5th physical block (p5), so a correct resolver
+        # grounds to p5 -- never the bare block "p4".
+        review_assessment = {
+            "clause_id": "governing_law",
+            "decision": "review",
+            "issue_type": "unclear",
+            "rationale": "Clause 4 names the governing law, but the choice needs confirmation.",
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.6,
+            "blocks_send": True,
+        }
+        result = build_ai_first_review_result(
+            NUMBERED_SOURCE_TEXT,
+            [
+                _numbered_assessment("mutuality", "pass", paragraph_id="p2"),
+                _numbered_assessment("confidential_information", "pass", paragraph_id="p4"),
+                review_assessment,
+                _numbered_assessment("term_and_survival", "pass", paragraph_id="p8"),
+                _numbered_assessment("non_circumvention", "pass", paragraph_id="p10"),
+                _numbered_assessment("signatures", "pass", paragraph_id="p12"),
+            ],
+            # Numbered headings carry real Word numbering metadata, so clause-4's section is
+            # SOURCE-BACKED and the structural prose-reference fallback may seed from it.
+            paragraphs=_numbered_source_backed_paragraphs(),
+        )
+
+        clause = next(c for c in result["clauses"] if c["id"] == "governing_law")
+        # The prose anchor resolved printed-clause-4 to its start paragraph p5 (NOT p4).
+        self.assertEqual(clause["matched_paragraph_ids"], ["p5"])
+        self.assertTrue(clause["structured_evidence"])
+        self.assertEqual(clause["structured_evidence"][0]["paragraph_id"], "p5")
+        # Purely an evidence fallback: the verdict stays a review.
+        self.assertEqual(clause["decision"], "review")
+
+    def test_review_clause_with_bogus_prose_anchor_stays_ungrounded(self):
+        # A "review" clause whose prose names a NON-existent printed section must not get
+        # a bogus seed: no structured evidence, and the finding remains ungrounded.
+        review_assessment = {
+            "clause_id": "confidential_information",
+            "decision": "review",
+            "issue_type": "unclear",
+            "rationale": "Paragraph 99 would need to define Confidential Information, but it is unclear.",
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.6,
+            "blocks_send": True,
+        }
+        result = build_ai_first_review_result(
+            NUMBERED_SOURCE_TEXT,
+            [
+                _numbered_assessment("mutuality", "pass", paragraph_id="p2"),
+                review_assessment,
+                _numbered_assessment("governing_law", "pass", paragraph_id="p6"),
+                _numbered_assessment("term_and_survival", "pass", paragraph_id="p8"),
+                _numbered_assessment("non_circumvention", "pass", paragraph_id="p10"),
+                _numbered_assessment("signatures", "pass", paragraph_id="p12"),
+            ],
+        )
+
+        clause = next(c for c in result["clauses"] if c["id"] == "confidential_information")
+        self.assertEqual(clause["matched_paragraph_ids"], [])
+        self.assertEqual(clause["structured_evidence"], [])
+        self.assertEqual(clause["grounding"]["status"], "ungrounded")
+
+    def test_review_clause_prose_anchor_to_non_source_backed_section_stays_ungrounded(self):
+        # End-to-end source-backed GUARD: a "review" clause names "Clause 4" in PROSE, the
+        # reference RESOLVES to the printed-4 section, but the document is flat text (no
+        # Word numbering metadata) so that section is NOT source-backed -- the same shape
+        # as a parser-invented address/table-cell section. The fallback must seed NOTHING
+        # rather than anchor onto a possibly-bogus block, and the verdict must be unchanged.
+        review_assessment = {
+            "clause_id": "governing_law",
+            "decision": "review",
+            "issue_type": "unclear",
+            "rationale": "Clause 4 names the governing law, but the choice needs confirmation.",
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.6,
+            "blocks_send": True,
+        }
+        result = build_ai_first_review_result(
+            # No explicit metadata-bearing paragraphs: contract_structure scrapes the
+            # headings from flat text, so the printed-4 section carries no ``source``.
+            NUMBERED_SOURCE_TEXT,
+            [
+                _numbered_assessment("mutuality", "pass", paragraph_id="p2"),
+                _numbered_assessment("confidential_information", "pass", paragraph_id="p4"),
+                review_assessment,
+                _numbered_assessment("term_and_survival", "pass", paragraph_id="p8"),
+                _numbered_assessment("non_circumvention", "pass", paragraph_id="p10"),
+                _numbered_assessment("signatures", "pass", paragraph_id="p12"),
+            ],
+        )
+
+        clause = next(c for c in result["clauses"] if c["id"] == "governing_law")
+        # The non-source-backed section seeds nothing -- accuracy-or-nothing.
+        self.assertEqual(clause["matched_paragraph_ids"], [])
+        self.assertEqual(clause["structured_evidence"], [])
+        self.assertEqual(clause["grounding"]["status"], "ungrounded")
+        # The guard is purely an evidence gate: the verdict is unchanged.
+        self.assertEqual(clause["decision"], "review")
 
 
 if __name__ == "__main__":

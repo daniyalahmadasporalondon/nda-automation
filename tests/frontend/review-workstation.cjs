@@ -64,6 +64,13 @@ const tests = [
   ["renders the connected proposed-edit card and names the comment target", testActionControlTextAndCommentTarget],
   ["labels clause verdicts PASS / FAIL / NEEDS REVIEW, never MATCH", testVerdictLabelsNotMatch],
   ["hosts govlaw options, preview, fixed clause, and Include/Ignore in one card", testConnectedGovlawRedlineCard],
+  ["tracks the picked Aspora entity for the jurisdiction recommendation and selection", testGovlawOptionsTrackPickedEntity],
+  ["suppresses the fabricated recommended-change scaffold when there is no real redline", testNeedsReviewWithoutRedlineSuppressesScaffold],
+  ["keeps the recommended-change scaffold when the needs-review clause has a real redline", testNeedsReviewWithRedlineKeepsScaffold],
+  ["resolves prose Paragraph/Schedule references through the structure index, not the block position", testProseParagraphReferenceLinkified],
+  ["leaves unresolved structural references plain and keeps direct token/range ids", testProseParagraphReferenceValidationAndTokenCoexistence],
+  ["jumps the document to a section start paragraph from a Structure-tab row click", testStructureRowClickJumpsToSection],
+  ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
@@ -6927,6 +6934,159 @@ async function testConnectedGovlawRedlineCard(page) {
     "the exported payload should carry the newly selected Delaware wording");
 }
 
+// The jurisdiction-options "— recommended" LABEL tracks the PICKED Aspora entity's law
+// (advisory). The CHECKED radio, however, always tracks the STAGED EXPORT selection
+// (the backend default until an explicit pick), never the recommendation — Option B.
+// Changing the entity moves only the label; an explicit option click moves the checked
+// state and the staged export together.
+async function testGovlawOptionsTrackPickedEntity(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          // England & Wales is the playbook STATIC default (selected:true). The
+          // recommendation + visual selection must NOT stay pinned to it once an
+          // Aspora entity with a different law is picked.
+          template_options: [
+            {
+              id: "opt_england",
+              label: "England and Wales",
+              replacement_text: "This Agreement shall be governed by the laws of England and Wales.",
+              selected: true,
+            },
+            {
+              id: "opt_delaware",
+              label: "Delaware",
+              replacement_text: "This Agreement shall be governed by the laws of Delaware.",
+            },
+            {
+              id: "opt_india",
+              label: "India",
+              replacement_text: "This Agreement shall be governed by the laws of India.",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const card = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+
+  // Helper: set the picked Aspora entity's law and re-render via the production
+  // refresh path the Fill controller uses (refreshGoverningLawConcurrence).
+  async function pickAsporaLaw(lawLabel) {
+    await page.evaluate((label) => {
+      state.reviewPickedAspora = { name: "Aspora Test Entity", lawLabel: label };
+      refreshGoverningLawConcurrence();
+    }, lawLabel);
+    // refreshGoverningLawConcurrence coalesces into a requestAnimationFrame.
+    await page.waitForFunction(
+      (label) => {
+        const rec = document.querySelector('.detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options .redline-option strong');
+        // Wait until SOME option carries the recommended marker for the new law.
+        const strongs = Array.from(document.querySelectorAll('.detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options .redline-option strong'));
+        return strongs.some((node) => (node.textContent || "").includes(`${label} — recommended`));
+      },
+      lawLabel,
+    );
+  }
+
+  // Option B: the "— recommended" LABEL tracks the picked entity, but the CHECKED radio
+  // ALWAYS tracks the staged export selection (seeded to the backend default opt_england).
+  //
+  // (1) Pick India: India carries the "— recommended" LABEL, but the CHECKED radio
+  // STAYS on England (the staged export default) — the recommendation is advisory only.
+  await pickAsporaLaw("India");
+  let recommended = card.locator(".redline-option:has(strong:has-text('— recommended'))");
+  assert.equal(await recommended.count(), 1, "exactly one option may be recommended");
+  await assertTextContains(card.locator('.redline-option[data-redline-option-id="opt_india"] strong'), "India — recommended");
+  // CHECKED == staged export (England), NOT the India recommendation.
+  assert.equal(
+    await card.locator('.redline-option.selected[data-redline-option-id="opt_england"]').count(),
+    1,
+    "the checked radio must stay on the staged export option (England) — the India recommendation is advisory only",
+  );
+  assert.equal(
+    await card.locator('.redline-option[data-redline-option-id="opt_england"]').getAttribute("aria-checked"),
+    "true",
+    "the staged export option (England) must be aria-checked",
+  );
+  assert.equal(
+    await card.locator('.redline-option.selected[data-redline-option-id="opt_india"]').count(),
+    0,
+    "the India recommendation must NOT be checked — checked tracks the staged export, not the recommendation",
+  );
+  // Highlight == export: both England.
+  assert.equal(await page.evaluate(() => state.redlineTemplateSelections.rl_govlaw), "opt_england",
+    "the checked England radio must equal the staged export option");
+
+  // (2) Change the entity to England and Wales: the recommendation LABEL moves to
+  // England, which now coincides with the staged export default — so England is both
+  // recommended and checked. India loses the recommendation label.
+  await pickAsporaLaw("England and Wales");
+  await assertTextContains(card.locator('.redline-option[data-redline-option-id="opt_england"] strong'), "England and Wales — recommended");
+  assert.equal(
+    await card.locator('.redline-option.selected[data-redline-option-id="opt_england"]').count(),
+    1,
+    "England stays checked (it is the staged export) and now also carries the recommendation label",
+  );
+  assert.equal(
+    (await card.locator('.redline-option[data-redline-option-id="opt_india"] strong').innerText()).includes("recommended"),
+    false,
+    "India must lose the recommendation label when the entity changes to England and Wales",
+  );
+
+  // (3) An explicit Delaware pick moves BOTH the checked radio AND the staged export to
+  // Delaware — they move together. The recommendation LABEL stays on England (advisory).
+  await card.locator('[data-redline-option-id="opt_delaware"]').click();
+  await page.waitForFunction(() => state.redlineTemplateSelections.rl_govlaw === "opt_delaware");
+  const overriddenCard = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+  assert.equal(
+    await overriddenCard.locator('.redline-option.selected[data-redline-option-id="opt_delaware"]').count(),
+    1,
+    "an explicit Delaware pick must take the checked state",
+  );
+  assert.equal(
+    await overriddenCard.locator('.redline-option[data-redline-option-id="opt_delaware"]').getAttribute("aria-checked"),
+    "true",
+    "an explicit Delaware pick must be aria-checked",
+  );
+  // The entity recommendation marker still points at England & Wales (display-only);
+  // the explicit pick moves the CHECKED state, which equals the staged export.
+  await assertTextContains(overriddenCard.locator('.redline-option[data-redline-option-id="opt_england"] strong'), "England and Wales — recommended");
+  assert.equal(
+    await overriddenCard.locator('.redline-option.selected[data-redline-option-id="opt_england"]').count(),
+    0,
+    "the entity-recommended England option must NOT be checked once Delaware is explicitly picked",
+  );
+  // Highlight == export: both Delaware — the checked radio and the export can never disagree.
+  assert.equal(await page.evaluate(() => state.redlineTemplateSelections.rl_govlaw), "opt_delaware",
+    "the checked Delaware radio must equal the staged export option");
+}
+
 // The overall verdict mark/title is the backend's authoritative review_state, not a
 // JS re-derivation from clause counts. Here every clause reads PASS per-clause, but a
 // document-level gate set the authoritative review_state.state to "check" — the overall
@@ -7187,20 +7347,30 @@ async function testStructuredProposedChangePanel(page) {
   await assertTextContains(redlineBackedChange, "Use an approved governing law before export.");
   await assertTextContains(redlineBackedChange, "Reviewer must approve before export.");
 
+  // Both of these needs-review clauses have NO redline edit in state.reviewRedlines
+  // (the fixture supplies no redline_edits), so the fabricated suggested-edit /
+  // recommended-option / approved-alternatives scaffold must be suppressed — it would
+  // otherwise contradict the Actions block's "No redline action is available". The
+  // clause still renders cleanly with the assessment, verdict pill, and a plain
+  // recommended-change block that points the reviewer at the verdict pill.
   await page.locator('[data-studio-lane-id="non_circumvention"]').click();
-  const humanChoiceChange = detailPanel.locator(".proposed-change-card");
-  await assertTextContains(humanChoiceChange, "Should this restriction be deleted or narrowed to active introductions only?");
-  await assertTextContains(humanChoiceChange, "SUGGESTED EDIT (CONFIRM REQUIRED)");
-  await assertTextContains(humanChoiceChange, "must not knowingly circumvent active introductions");
-  await assertTextContains(humanChoiceChange, "RECOMMENDED OPTION");
-  await assertTextContains(humanChoiceChange, "Narrow to active introductions only");
-  await assertTextContains(humanChoiceChange, "APPROVED ALTERNATIVES");
-  await assertTextContains(humanChoiceChange, "Delete the restriction");
+  const humanChoiceChange = detailPanel.locator('[data-card-section="recommended-change"]');
+  await assertTextContains(humanChoiceChange, "No automatic redline is available for this clause");
+  await assertTextNotContains(humanChoiceChange, "SUGGESTED EDIT (CONFIRM REQUIRED)");
+  await assertTextNotContains(humanChoiceChange, "RECOMMENDED OPTION");
+  await assertTextNotContains(humanChoiceChange, "APPROVED ALTERNATIVES");
+  await assertTextNotContains(humanChoiceChange, "Narrow to active introductions only");
+  // The mark-reviewed affordance lives in the clause heading and is unaffected.
+  assert.equal(await detailPanel.locator('[data-review-action="mark-reviewed"]').count(), 1,
+    "mark-reviewed affordance should still be available on a clean needs-review clause");
+  // The Actions block agrees there is no redline action.
+  await assertTextContains(detailPanel.locator('[data-card-section="actions"]'), "No redline action is available for this clause.");
 
   await page.locator('[data-studio-lane-id="assignment"]').click();
-  const commentOnlyChange = detailPanel.locator(".proposed-change-card");
-  await assertTextContains(commentOnlyChange, "What wording or approved playbook position should resolve this clause?");
-  await assertTextContains(commentOnlyChange, "No safe wording was selected automatically");
+  const commentOnlyChange = detailPanel.locator('[data-card-section="recommended-change"]');
+  await assertTextContains(commentOnlyChange, "No automatic redline is available for this clause");
+  await assertTextNotContains(commentOnlyChange, "SUGGESTED EDIT (CONFIRM REQUIRED)");
+  await assertTextNotContains(commentOnlyChange, "RECOMMENDED OPTION");
   await assertTextContains(detailPanel.locator('[data-card-section="document"]'), "Assignment requires prior written consent.");
 }
 
@@ -7277,6 +7447,480 @@ async function testNeedsReviewJurisdictionPicker(page) {
   await englandButton.click();
   await page.waitForFunction(() => state.redlineTemplateSelections.rl_govlaw === "opt_england");
   assert.equal(await englandButton.getAttribute("aria-pressed"), "true");
+}
+
+// Issue 1: a needs-review clause with NO real redline edit must NOT show the
+// fabricated suggested-edit / recommended-option / approved-alternatives scaffold.
+// The scaffold contradicts the Actions block ("No redline action is available"),
+// so it is suppressed and the clause renders cleanly with assessment + verdict pill.
+async function testNeedsReviewWithoutRedlineSuppressesScaffold(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information includes all disclosures." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        // Fields the fabricated scaffold would otherwise draw from.
+        acceptable_language: "Confidential Information excludes public-domain material.",
+        approved_positions: ["public_domain", "prior_possession", "independently_developed"],
+        recommended_option: { option: "public_domain", reason: "Standard carve-out." },
+        resolution_question: "Which carve-outs should apply to the definition?",
+        reason: "Confidential Information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p3", index: 3, source_index: 3, text: "Confidential Information includes all disclosures." },
+    ],
+    result: { redline_edits: [] },
+  });
+
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const detailPanel = page.locator("#studioDetailPanel");
+  const changeCard = detailPanel.locator('[data-card-section="recommended-change"]');
+
+  // The clean no-redline message is shown; the fabricated sub-blocks are gone.
+  await assertTextContains(changeCard, "No automatic redline is available for this clause");
+  await assertTextNotContains(changeCard, "SUGGESTED EDIT (CONFIRM REQUIRED)");
+  await assertTextNotContains(changeCard, "RECOMMENDED OPTION");
+  await assertTextNotContains(changeCard, "APPROVED ALTERNATIVES");
+  await assertTextNotContains(changeCard, "public_domain");
+  await assertTextNotContains(changeCard, "prior_possession");
+  assert.equal(await changeCard.locator(".review-suggested-edit").count(), 0,
+    "suggested-edit sub-block must be suppressed when there is no real redline");
+  assert.equal(await changeCard.locator(".recommended-option").count(), 0,
+    "recommended-option sub-block must be suppressed when there is no real redline");
+  assert.equal(await changeCard.locator(".approved-alternatives").count(), 0,
+    "approved-alternatives sub-block must be suppressed when there is no real redline");
+
+  // The clause still renders cleanly: assessment present, mark-reviewed available,
+  // and the Actions block agrees no redline action exists.
+  await assertTextContains(detailPanel.locator('[data-card-section="assessment"]'),
+    "Confidential Information definition needs human review.");
+  assert.equal(await detailPanel.locator('[data-review-action="mark-reviewed"]').count(), 1,
+    "mark-reviewed affordance should still be available");
+  await assertTextContains(detailPanel.locator('[data-card-section="actions"]'),
+    "No redline action is available for this clause.");
+}
+
+// Issue 1 (counterpart): a needs-review clause that DOES carry a real redline edit
+// keeps the full scaffold — the connected proposed-edit card hosts the redline and
+// jurisdiction options, exactly as before.
+async function testNeedsReviewWithRedlineKeepsScaffold(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          template_options: [
+            { id: "opt_delaware", label: "Delaware", replacement_text: "This Agreement shall be governed by the laws of Delaware.", selected: true },
+            { id: "opt_england", label: "England and Wales", replacement_text: "This Agreement shall be governed by the laws of England and Wales." },
+          ],
+        },
+      ],
+    },
+  });
+
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const detailPanel = page.locator("#studioDetailPanel");
+  const changeCard = detailPanel.locator('[data-card-section="recommended-change"]');
+
+  // The full needs-review scaffold renders (it is NOT the clean suppressed branch):
+  // a resolution question instead of the no-redline message.
+  await assertTextNotContains(changeCard, "No automatic redline is available for this clause");
+  // The connected proposed-edit card hosts the real redline + jurisdiction options.
+  const picker = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options`);
+  assert.equal(await picker.count(), 1, "the real redline edit must host its jurisdiction picker");
+  await assertTextContains(picker, "JURISDICTION OPTIONS");
+  await assertTextContains(picker, "Delaware");
+  await assertTextContains(picker, "England and Wales");
+}
+
+// A reusable contract-structure index for the prose-linkify tests. Its sections carry
+// the document's PRINTED Word numbering, and crucially the printed numbers do NOT
+// equal the paragraph-block ids: printed "Clause 11" starts at block p3, printed
+// "Schedule 3" starts at block p5. So a prose link that resolved by assuming
+// number == block index would land on the wrong paragraph — these tests prove the
+// linkifier resolves through the shared index to the real section start paragraph.
+//
+// The reduced reference_index.sections_by_id records mirror the PRODUCTION shape
+// (backend _resolver_section_record / FE resolverSectionRecord): they carry
+// `paragraph_ids` and `source`, and crucially do NOT carry `start_paragraph_id`. The
+// resolver must therefore derive the section start from paragraph_ids[0] (like the
+// backend) — injecting start_paragraph_id here would mask that, so it is omitted.
+//
+// "section-4" is a PHANTOM section the parser would invent on a flat/PDF doc: a
+// table-cell / address digit ("Clause 145") with NO `source`. It exercises the
+// source-backed safety gate — a non-source-backed section must NOT linkify (prose) and
+// must NOT be a clickable Structure-tab row.
+function proseLinkifyStructure() {
+  // Full section records (the Structure tab reads structure.sections): these DO carry
+  // start_paragraph_id, matching the full backend section shape (_build_section).
+  const sections = [
+    {
+      id: "section-1", kind: "preamble", number: null, label: "Preamble", heading: "Preamble",
+      level: 0, paragraph_ids: ["p1", "p2"], start_index: 1, end_index: 2, parent_id: null,
+      start_paragraph_id: "p1", source: { source_kind: "docx_heading", style_name: "Heading 1" },
+    },
+    {
+      id: "section-2", kind: "clause", number: "11", label: "Clause 11", heading: "Confidential Information",
+      level: 1, paragraph_ids: ["p3", "p4"], start_index: 3, end_index: 4, parent_id: null,
+      start_paragraph_id: "p3", source: { source_kind: "docx_numbered", numbering: { label: "11" } },
+    },
+    {
+      id: "section-3", kind: "schedule", number: "3", label: "Schedule 3", heading: "Permitted Recipients",
+      level: 1, paragraph_ids: ["p5", "p6"], start_index: 5, end_index: 6, parent_id: null,
+      start_paragraph_id: "p5", source: { source_kind: "docx_heading", style_name: "Heading 2" },
+    },
+    {
+      // Phantom: a scraped "Clause 145" with NO source — must never become a link.
+      id: "section-4", kind: "clause", number: "145", label: "Clause 145", heading: "1 Sheldon Square",
+      level: 1, paragraph_ids: ["p2"], start_index: 2, end_index: 2, parent_id: null,
+      start_paragraph_id: "p2",
+    },
+  ];
+  // Reduced resolver records (reference_index.sections_by_id): the PRODUCTION shape —
+  // paragraph_ids + optional source, NO start_paragraph_id.
+  const sectionsById = {};
+  sections.forEach((section) => {
+    const record = {
+      id: section.id, kind: section.kind, number: section.number, label: section.label,
+      heading: section.heading, level: section.level, paragraph_ids: section.paragraph_ids,
+      start_index: section.start_index, end_index: section.end_index, parent_id: section.parent_id,
+    };
+    if (section.source) record.source = section.source;
+    sectionsById[section.id] = record;
+  });
+  return {
+    version: 2,
+    sections,
+    reference_index: {
+      version: 2,
+      section_ids: sections.map((section) => section.id),
+      sections_by_id: sectionsById,
+      alias_to_section_id: {
+        "number:11": "section-2",
+        "clause:11": "section-2",
+        "number:3": "section-3",
+        "schedule:3": "section-3",
+        "number:145": "section-4",
+        "clause:145": "section-4",
+      },
+      ambiguous_alias_keys: [],
+      paragraph_to_section_id: {
+        p1: "section-1", p2: "section-1", p3: "section-2", p4: "section-2", p5: "section-3", p6: "section-3",
+      },
+    },
+    stats: { section_count: 4 },
+  };
+}
+
+const PROSE_LINKIFY_PARAGRAPHS = [
+  { id: "p1", index: 1, source_index: 1, text: "Recitals." },
+  { id: "p2", index: 2, source_index: 2, text: "The parties agree as follows." },
+  { id: "p3", index: 3, source_index: 3, text: "Confidential Information means all disclosed material." },
+  { id: "p4", index: 4, source_index: 4, text: "Carve-outs apply to public information." },
+  { id: "p5", index: 5, source_index: 5, text: "Schedule 3: Permitted Recipients." },
+  { id: "p6", index: 6, source_index: 6, text: "Named recipients are listed here." },
+];
+
+// Issue 2: prose "Paragraph 11" / "Schedule 3" in the AI assessment narrative become
+// clickable .para-ref jump buttons that resolve through the shared structure index to
+// the matching section's START paragraph — NOT a block whose index equals the number.
+async function testProseParagraphReferenceLinkified(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information means all disclosed material." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        // Printed "Paragraph 11" lives at block p3; printed "Schedule 3" at block p5.
+        reason: "Paragraph 11 defines Confidential Information; Schedule 3 lists recipients. Needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: PROSE_LINKIFY_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: proseLinkifyStructure() },
+  });
+
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const assessment = page.locator('[data-card-section="assessment"]');
+
+  // "Paragraph 11" resolves via the index to section-2 (start paragraph p3), NOT p11.
+  const proseRef = assessment.locator('.para-ref[data-para-ref="p3"]');
+  assert.equal(await proseRef.count(), 1, 'prose "Paragraph 11" should link to the section start paragraph (p3)');
+  assert.equal((await proseRef.innerText()).trim(), "Paragraph 11");
+  assert.equal(await assessment.locator('.para-ref[data-para-ref="p11"]').count(), 0,
+    "the linkifier must not assume printed number == block index (no p11 link)");
+
+  // "Schedule 3" resolves via the schedule alias to section-3 (start paragraph p5).
+  const scheduleRef = assessment.locator('.para-ref[data-para-ref="p5"]');
+  assert.equal(await scheduleRef.count(), 1, '"Schedule 3" should render one clickable para-ref to p5');
+  assert.equal((await scheduleRef.innerText()).trim(), "Schedule 3");
+
+  // No nested para-ref buttons were produced.
+  assert.equal(await assessment.locator('.para-ref .para-ref').count(), 0,
+    "para-ref buttons must not be nested");
+  // Reuses the existing jump plumbing with no new wiring.
+  await proseRef.click();
+}
+
+// Issue 2 (negative): a structural reference that does not resolve in the index stays
+// plain text (accuracy-or-nothing); bare token + range references still linkify as
+// DIRECT paragraph ids (NOT through the printed-number index) and are not double-wrapped.
+async function testProseParagraphReferenceValidationAndTokenCoexistence(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information means all disclosed material." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        // Clause 99 does not exist in the index; the bare token p4 and range p5-p6 are
+        // direct paragraph ids that still resolve against the real id set. Clause 145
+        // resolves in the alias map but to a PHANTOM (source-less) section — it must
+        // stay plain text under the source-backed gate (Task D).
+        reason: "Clause 99 is missing; Clause 145 is a scraped address; see p4 and the range p5-p6 for context.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: PROSE_LINKIFY_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: proseLinkifyStructure() },
+  });
+
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  const assessment = page.locator('[data-card-section="assessment"]');
+
+  // Unresolved "Clause 99" stays plain text — never linked to a guessed paragraph.
+  assert.equal(await assessment.locator('.para-ref:has-text("Clause 99")').count(), 0,
+    "an unresolved Clause 99 reference must stay plain text");
+  await assertTextContains(assessment, "Clause 99 is missing");
+
+  // "Clause 145" resolves in the alias map (clause:145 -> section-4) but section-4 is
+  // a parser-invented, source-less phantom — the source-backed gate keeps it plain
+  // text rather than jumping the reader to the scraped "1 Sheldon Square" paragraph.
+  assert.equal(await assessment.locator('.para-ref:has-text("Clause 145")').count(), 0,
+    "a structural reference to a non-source-backed (phantom) section must stay plain text");
+  await assertTextContains(assessment, "Clause 145 is a scraped address");
+
+  // Bare token (direct id) + range references still linkify, exactly once each.
+  assert.equal(await assessment.locator('.para-ref[data-para-ref="p4"]:not([data-para-ref-range])').count(), 1,
+    "token p4 should linkify once as a direct id and not be double-wrapped");
+  const rangeRef = assessment.locator('.para-ref[data-para-ref-range]');
+  assert.equal(await rangeRef.count(), 1, "the p5-p6 range should produce one range button");
+  assert.equal(await rangeRef.getAttribute("data-para-ref-range"), "p5 p6");
+  // No nested para-ref buttons were produced.
+  assert.equal(await assessment.locator('.para-ref .para-ref').count(), 0,
+    "para-ref buttons must not be nested");
+}
+
+// Issue 2 (Structure tab): a Structure-tab section row is clickable and jumps the
+// document viewer to that section's start_paragraph_id. The row carries data-para-ref
+// (caught by the global delegated handler) and stays keyboard-accessible.
+async function testStructureRowClickJumpsToSection(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information means all disclosed material." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Confidential Information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: PROSE_LINKIFY_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: proseLinkifyStructure() },
+  });
+
+  await page.locator('[data-review-inspector="structure"]').click();
+  await page.waitForSelector("#studioDetailPanel .structure-row");
+
+  // The Schedule 3 row (section-3, start paragraph p5) is navigable: data-para-ref,
+  // button role, and focusable.
+  const scheduleRow = page.locator('#studioDetailPanel .structure-row[data-para-ref="p5"]');
+  assert.equal(await scheduleRow.count(), 1, "the Schedule 3 row should carry data-para-ref=p5");
+  assert.equal(await scheduleRow.getAttribute("role"), "button", "structure rows must have button role");
+  assert.equal(await scheduleRow.getAttribute("tabindex"), "0", "structure rows must be focusable");
+
+  // Clicking the row jumps the document viewer to p5 (the section start) — observed
+  // via the paragraph-pulse the shared jumpToParagraph applies.
+  await scheduleRow.click();
+  await page.waitForFunction(
+    () => document.querySelector('#studioDocumentRender [data-paragraph-id="p5"]')?.classList.contains("paragraph-pulse"),
+  );
+
+  // The Clause 11 row (section-2, start paragraph p3) jumps there too.
+  const clauseRow = page.locator('#studioDetailPanel .structure-row[data-para-ref="p3"]');
+  assert.equal(await clauseRow.count(), 1, "the Clause 11 row should carry data-para-ref=p3");
+  await clauseRow.click();
+  await page.waitForFunction(
+    () => document.querySelector('#studioDocumentRender [data-paragraph-id="p3"]')?.classList.contains("paragraph-pulse"),
+  );
+
+  // Source-backed gate (Task D): section-4 ("Clause 145") is a parser-invented,
+  // source-less phantom. Its row still RENDERS, but must NOT be a live jump target —
+  // no data-para-ref, no button role/tabindex, no structure-row-nav affordance.
+  const phantomRow = page.locator('#studioDetailPanel .structure-row:has(strong:text-is("Clause 145"))');
+  assert.equal(await phantomRow.count(), 1, "the phantom Clause 145 row should still render");
+  assert.equal(await phantomRow.getAttribute("data-para-ref"), null,
+    "a non-source-backed row must not carry data-para-ref");
+  assert.equal(await phantomRow.getAttribute("role"), null,
+    "a non-source-backed row must not have button role");
+  assert.equal(await phantomRow.getAttribute("tabindex"), null,
+    "a non-source-backed row must not be focusable");
+  assert.equal(await page.locator('#studioDetailPanel .structure-row-nav[data-para-ref="p2"]').count(), 0,
+    "the phantom row's scraped paragraph (p2) must not be a navigable structure row");
+}
+
+// Option B (advisory recommendation): the CHECKED radio (.selected / aria-checked)
+// ALWAYS tracks the STAGED EXPORT selection (state.redlineTemplateSelections — what
+// applyTemplateSelectionToRedline and the exported DOCX use), NEVER the entity
+// recommendation. The picked entity's law surfaces ONLY as the "— recommended" TEXT
+// label. So the checked radio and the exported law can never silently disagree:
+// asserted TOGETHER here. Entity = India, backend default = Delaware.
+async function testRadioCheckedTracksStagedExportNotRecommendation(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of California." }],
+        id: "governing_law",
+        issue_label: "Needs review",
+        name: "Governing Law",
+        needs_review: true,
+        reason: "Governing law needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of California." },
+    ],
+    result: {
+      redline_edits: [
+        {
+          action: "replace_paragraph",
+          clause_id: "governing_law",
+          id: "rl_govlaw",
+          original_text: "This Agreement shall be governed by the laws of California.",
+          paragraph_id: "p2",
+          // Delaware is the BACKEND default (selected:true), so it is the staged export
+          // option. India becomes the entity recommendation once the picked Aspora
+          // entity's law is India.
+          template_options: [
+            { id: "opt_delaware", label: "Delaware", replacement_text: "This Agreement shall be governed by the laws of Delaware.", selected: true },
+            { id: "opt_india", label: "India", replacement_text: "This Agreement shall be governed by the laws of India." },
+          ],
+        },
+      ],
+    },
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  const card = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+
+  // Pick India as the entity. The recommendation label moves to India, but the CHECKED
+  // radio must STAY on Delaware (the staged export = backend default).
+  await page.evaluate(() => {
+    state.reviewPickedAspora = { name: "Aspora Test Entity", lawLabel: "India" };
+    refreshGoverningLawConcurrence();
+  });
+  await page.waitForFunction(() => {
+    const strongs = Array.from(document.querySelectorAll('.detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-option strong'));
+    return strongs.some((node) => (node.textContent || "").includes("India — recommended"));
+  });
+
+  // CHECKED == staged export (Delaware), even though India is the recommendation.
+  assert.equal(
+    await card.locator('.redline-option.selected[data-redline-option-id="opt_delaware"]').count(),
+    1,
+    "with no explicit pick, the CHECKED radio must be the staged export option (Delaware), not the recommendation",
+  );
+  assert.equal(
+    await card.locator('.redline-option[data-redline-option-id="opt_delaware"]').getAttribute("aria-checked"),
+    "true",
+    "the staged export option (Delaware) must be aria-checked",
+  );
+  assert.equal(
+    await card.locator('.redline-option.selected[data-redline-option-id="opt_india"]').count(),
+    0,
+    "the India recommendation must NOT be the checked radio — it is advisory only",
+  );
+  assert.equal(
+    await card.locator('.redline-option[data-redline-option-id="opt_india"]').getAttribute("aria-checked"),
+    "false",
+    "the India recommendation must not be aria-checked",
+  );
+  // India carries the advisory "— recommended" LABEL; Delaware does not.
+  const indiaStrong = await card.locator('.redline-option[data-redline-option-id="opt_india"] strong').innerText();
+  assert.ok(indiaStrong.includes("India — recommended"),
+    "India must show the advisory '— recommended' label");
+  const delawareStrong = await card.locator('.redline-option[data-redline-option-id="opt_delaware"] strong').innerText();
+  assert.ok(!delawareStrong.includes("recommended"),
+    "the staged Delaware option must not carry the recommendation label");
+  // Highlight == export at this point: both are Delaware.
+  assert.equal(await page.evaluate(() => state.redlineTemplateSelections.rl_govlaw), "opt_delaware",
+    "the staged export option must equal the checked Delaware radio");
+
+  // The reviewer now EXPLICITLY clicks India. The checked radio AND the staged export
+  // must move to India together.
+  await card.locator('[data-redline-option-id="opt_india"]').click();
+  await page.waitForFunction(() => state.redlineTemplateSelections.rl_govlaw === "opt_india");
+  const refreshed = detailPanel.locator(`.detail-redline-edit:has([data-export-redline-id="rl_govlaw"])`);
+  assert.equal(
+    await refreshed.locator('.redline-option.selected[data-redline-option-id="opt_india"]').count(),
+    1,
+    "an explicit India click must make India the checked radio",
+  );
+  assert.equal(
+    await refreshed.locator('.redline-option[data-redline-option-id="opt_india"]').getAttribute("aria-checked"),
+    "true",
+    "the explicitly-clicked India option must be aria-checked",
+  );
+  assert.equal(
+    await refreshed.locator('.redline-option.selected[data-redline-option-id="opt_delaware"]').count(),
+    0,
+    "Delaware must lose the checked state to the explicit India pick",
+  );
+  // Highlight == export: both are now India — the two signals can never diverge.
+  assert.equal(await page.evaluate(() => state.redlineTemplateSelections.rl_govlaw), "opt_india",
+    "the staged export option must equal the explicitly-checked India radio");
 }
 
 async function testRedlineRationaleBlock(page) {
@@ -8946,6 +9590,13 @@ async function testClauseReassessOnParagraphEdit(page) {
 async function assertTextContains(locator, expected) {
   const text = await locator.innerText();
   assert.ok(text.includes(expected), `expected "${text}" to include "${expected}"`);
+}
+
+async function assertTextNotContains(locator, unexpected) {
+  const count = await locator.count();
+  if (!count) return;
+  const text = await locator.innerText();
+  assert.ok(!text.includes(unexpected), `expected "${text}" NOT to include "${unexpected}"`);
 }
 
 async function assertAttributeMatches(locator, attribute, expected) {

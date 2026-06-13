@@ -793,6 +793,9 @@ function setClauseExportDecision(clauseId, included) {
 function setRedlineTemplateSelection(editId, optionId) {
   const hadPrevious = Object.prototype.hasOwnProperty.call(state.redlineTemplateSelections, editId);
   const previousOptionId = state.redlineTemplateSelections[editId];
+  // The checked radio tracks state.redlineTemplateSelections directly (Option B), so a
+  // click that does not change the staged option is a true no-op — the highlight
+  // already shows it and nothing about the export would change.
   if (previousOptionId === optionId) return;
   pushReviewEditHistoryEntry({
     editId,
@@ -857,6 +860,12 @@ function _buildEditedParagraphsForTemplateOption(edit, optionId) {
   });
 }
 
+// The STAGED EXPORT option id for an edit: the value state.redlineTemplateSelections
+// resolves to (seeded with the backend default, overwritten on an explicit pick),
+// falling back to the edit's own selected option. This is the SAME option
+// applyTemplateSelectionToRedline stages for the Fixed-clause preview and the exported
+// DOCX — so binding the checked radio to it (Option B) guarantees the checked state
+// and the exported law can never disagree.
 function selectedRedlineTemplateOptionId(edit) {
   return state.redlineTemplateSelections?.[edit.id]
     || (edit.template_options || []).find((option) => option.selected)?.id
@@ -924,6 +933,17 @@ function detectDocumentGoverningLaw() {
   return "";
 }
 
+// The picked Aspora entity's governing-law label, independent of whether the
+// document law conflicts with it. governingLawConflict() only exposes the entity
+// law when there is a MISMATCH (it returns null on concurrence), so the
+// jurisdiction-options recommendation cannot read it from there — it must read
+// the entity law directly so the "— recommended" marker + visual selection track
+// the picked entity even when the document already matches.
+function pickedEntityLawLabel() {
+  const p = state.reviewPickedAspora;
+  return p && p.lawLabel ? String(p.lawLabel).trim() : "";
+}
+
 function governingLawConflict() {
   // Driven by the Fill-tool pick: review-fill.js sets state.reviewPickedAspora =
   // { name, lawLabel } from the chosen Aspora entity's registry governing law.
@@ -967,8 +987,14 @@ function refreshGoverningLawConcurrence() {
   concurrenceRefreshFrame = requestAnimationFrame(() => {
     concurrenceRefreshFrame = null;
     if (typeof renderStudioClauseLane === "function") renderStudioClauseLane();
-    if (state.reviewInspectorView === "clause"
-      && state.selectedReviewClauseId === "governing_law"
+    // The jurisdiction-options recommendation + visual selection live in the
+    // governing-law clause detail, but the entity is changed from the "fill"
+    // sub-view. Re-render the detail on any entity change so the recommendation
+    // tracks the picked entity live — gated only on the governing-law clause
+    // being the selected one, NOT on the active sub-view. renderStudioDetail()
+    // self-dispatches by reviewInspectorView, so this paints the clause detail
+    // when the clause view is active and is otherwise harmless.
+    if (state.selectedReviewClauseId === "governing_law"
       && typeof renderStudioDetail === "function") {
       renderStudioDetail();
     }
@@ -1103,6 +1129,124 @@ function validParagraphIdSet() {
   return ids;
 }
 
+// --- Structure-index reference resolution ------------------------------------
+// Prose references ("Paragraph 11", "Clause 5", "Schedule 3", "Annex A") are
+// resolved through the shared contract structure index, NOT by assuming the
+// printed number equals the paragraph-block position. The index's
+// alias_to_section_id maps a printed-numbering alias key (e.g. "number:11",
+// "clause:5", "schedule:3", "annex:a") to a section id whose first paragraph
+// (paragraph_ids[0] on the reduced record) is the document paragraph that section
+// begins at. The number printed in the document (section.number / .label) is the
+// document's REAL Word numbering, so a "Paragraph 11" whose block index is something
+// else still lands on the right paragraph. Ambiguous keys (a number that recurs across
+// restarted numbering) are intentionally absent from the binding map, so they resolve
+// to nothing — which is the accuracy-or-nothing behaviour the linkifier wants (leave
+// them as plain text). The backend defines NO "exhibit" alias kind (it is not in
+// EXPLICIT_KIND_LABELS), so an "Exhibit N" reference resolves only via "number:N" —
+// the FE must not invent an "exhibit:N" key the backend would never produce.
+//
+// The bare "pN" token is a DIRECT paragraph id, never a printed number: it is still
+// validated against the real paragraph ids (validParagraphIdSet), not the index.
+
+// The structure-reference word -> the canonical alias kind the backend index uses.
+// "paragraph"/"para"/"¶" carry no structural kind, so they resolve only via the
+// printed-number key. The kind strings MUST match EXPLICIT_KIND_LABELS in
+// contract_structure.py exactly — the backend only emits a "<kind>:<number>" alias key
+// for kinds in that map. "exhibit" is deliberately NOT a kind there, so an "Exhibit N"
+// reference maps to "" (kind-less): it resolves only via the bare "number:N" key, the
+// SAME fallback the backend takes. Inventing an "exhibit:N" key here would diverge from
+// the backend (a key it never produces), so it is omitted.
+function structureReferenceKind(word) {
+  const key = String(word || "").trim().toLowerCase().replace(/\.$/, "");
+  const kinds = {
+    annex: "annex",
+    annexes: "annex",
+    annexure: "annexure",
+    annexures: "annexure",
+    appendices: "appendix",
+    appendix: "appendix",
+    article: "article",
+    articles: "article",
+    clause: "clause",
+    clauses: "clause",
+    exhibit: "",
+    exhibits: "",
+    paragraph: "",
+    paragraphs: "",
+    para: "",
+    paras: "",
+    "¶": "",
+    schedule: "schedule",
+    schedules: "schedule",
+    section: "section",
+    sections: "section",
+  };
+  return Object.prototype.hasOwnProperty.call(kinds, key) ? kinds[key] : null;
+}
+
+// The shared structure index (reference_index) for the current review, preferring
+// the backend-supplied one and falling back to the FE builder when absent — exactly
+// the source the Structure tab uses, so prose links and the Structure tab agree.
+function structureReferenceIndex() {
+  const direct = state.latestReviewResult?.contract_structure?.reference_index;
+  if (direct && typeof direct === "object") return direct;
+  const paragraphs = Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length
+    ? state.reviewParagraphs
+    : (Array.isArray(state.latestReviewResult?.paragraphs) ? state.latestReviewResult.paragraphs : []);
+  if (!paragraphs.length || typeof buildStructureFromParagraphs !== "function") return null;
+  const built = buildStructureFromParagraphs(paragraphs);
+  return built && typeof built === "object" ? built.reference_index : null;
+}
+
+// Resolve a structure reference (kind + printed number) to the START paragraph id of
+// the matching section, via the shared index. Returns "" (accuracy-or-nothing) when
+// the reference does not resolve to a real section start paragraph. The bare-token
+// "pN" form does NOT go through here — it is a direct paragraph id.
+//
+// The reduced reference_index record (backend _resolver_section_record / FE
+// resolverSectionRecord) carries `paragraph_ids` and an optional `source`, but NOT
+// `start_paragraph_id`. So the section start is paragraph_ids[0] — exactly what the
+// backend resolver uses. Reading a non-existent start_paragraph_id off the reduced
+// record resolves to "" in production and silently linkifies nothing.
+//
+// Source-backed gate (accuracy-or-nothing): a section the parser only inferred from a
+// flat/PDF doc (an address line or table-cell digit scraped as a clause number) has no
+// `source`. Linking "Clause 1" to such a phantom would jump to e.g. "1 Sheldon Square",
+// so a reference is only resolved when its section is source-backed. On messy docs this
+// yields NO link rather than a WRONG link. Bare pN tokens / ranges bypass this entirely.
+function resolveStructureReferenceParagraphId(kind, number, index = structureReferenceIndex()) {
+  if (!index || typeof index !== "object") return "";
+  const aliasLookup = index.alias_to_section_id || {};
+  const sectionsById = index.sections_by_id || {};
+  const normalizedNumber = String(number || "").trim().toLowerCase();
+  if (!normalizedNumber) return "";
+  // A structural word tries its kind key first, then the bare printed-number key; a
+  // plain paragraph/¶ reference (kind === "") only carries the printed-number key.
+  // Resolution is STRICTLY through alias_to_section_id, which the backend has already
+  // pruned of ambiguous keys and namespace collisions (schedule vs section) — so the
+  // FE resolves every reference the same way the backend does, for free.
+  const aliasKeys = [];
+  if (kind) aliasKeys.push(`${kind}:${normalizedNumber}`);
+  aliasKeys.push(`number:${normalizedNumber}`);
+  const matchedKey = aliasKeys.find((aliasKey) => aliasLookup[aliasKey]);
+  if (!matchedKey) return "";
+  const sectionId = aliasLookup[matchedKey];
+  const record = sectionId ? sectionsById[sectionId] : null;
+  if (!record) return "";
+  // Source-backed only: a parser-invented (source-less) section is never a link target.
+  if (!record.source || typeof record.source !== "object" || !Object.keys(record.source).length) {
+    return "";
+  }
+  const paragraphIds = Array.isArray(record.paragraph_ids) ? record.paragraph_ids : [];
+  return paragraphIds.length ? String(paragraphIds[0] || "") : "";
+}
+
+// One regex for every structure/prose reference word + its identifier (a number,
+// letter, roman numeral, or dotted/parenthetical suffix such as "3(a)"). The bare
+// "pN" token is handled separately because it is a direct paragraph id.
+const STRUCTURE_REFERENCE_RE =
+  /\b(paragraphs?|paras?\.?|clauses?|articles?|sections?|schedules?|exhibits?|annexures?|annexes|annex|appendices|appendix)\s+([A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*(?:\([A-Za-z0-9]+\))?)\b|(¶)\s*(\d+)/gi;
+
 function referencedParagraphIds(text) {
   const valid = validParagraphIdSet();
   if (!valid.size || !text) return [];
@@ -1124,11 +1268,28 @@ function referencedParagraphIds(text) {
     }
     return match;
   });
-  // Then standalone references.
+  // Then standalone token references ("p11") — direct paragraph ids, validated
+  // against the real id set (NOT the printed-number structure index).
   source.replace(/\bp(\d+)\b/gi, (match, n) => {
     add(`p${n}`);
     return match;
   });
+  // Then prose + structural references ("Paragraph 11", "Clause 5", "Schedule 3",
+  // "Annex A", "¶11"). These carry the document's PRINTED numbering, so they resolve
+  // through the shared structure index to the matching section's start paragraph id
+  // (which add() then validates). A reference that does not resolve is dropped.
+  const index = structureReferenceIndex();
+  STRUCTURE_REFERENCE_RE.lastIndex = 0;
+  let match = STRUCTURE_REFERENCE_RE.exec(source);
+  while (match) {
+    const word = match[1] || match[3];
+    const number = match[2] || match[4];
+    const kind = structureReferenceKind(word);
+    if (kind !== null) {
+      add(resolveStructureReferenceParagraphId(kind, number, index));
+    }
+    match = STRUCTURE_REFERENCE_RE.exec(source);
+  }
   return found;
 }
 
@@ -1141,7 +1302,26 @@ function linkifyParagraphRefs(text) {
     if (!ids.length) return match;
     return `<button type="button" class="para-ref" data-para-ref="${ids[0]}" data-para-ref-range="${ids.join(" ")}">${match}</button>`;
   });
-  return withRanges.replace(/\bp(\d+)\b(?![^<]*<\/button>)/gi, (match, n) => {
+  // Prose + structural references ("Paragraph 11", "Clause 5", "Schedule 3",
+  // "Annex A", "¶11"). These carry the document's PRINTED numbering, so each is
+  // resolved through the shared structure index to its section's start paragraph id
+  // (accuracy-or-nothing: a reference that does not resolve is left as plain text,
+  // never linked to a guessed paragraph). The "...<\/button>" guard skips text
+  // already inside a range button; running this BEFORE the bare-token pass consumes
+  // the matched phrase as a unit so the token pass cannot re-fire inside it.
+  const index = structureReferenceIndex();
+  const withProse = withRanges.replace(
+    new RegExp(`${STRUCTURE_REFERENCE_RE.source}(?![^<]*<\\/button>)`, "gi"),
+    (match, word, number, pilcrow, pilcrowNumber) => {
+      const kind = structureReferenceKind(word || pilcrow);
+      if (kind === null) return match;
+      const id = resolveStructureReferenceParagraphId(kind, number || pilcrowNumber, index);
+      return id && valid.has(id)
+        ? `<button type="button" class="para-ref" data-para-ref="${id}">${match}</button>`
+        : match;
+    },
+  );
+  return withProse.replace(/\bp(\d+)\b(?![^<]*<\/button>)/gi, (match, n) => {
     const id = `p${n}`;
     return valid.has(id)
       ? `<button type="button" class="para-ref" data-para-ref="${id}">${match}</button>`
@@ -1233,7 +1413,11 @@ function renderStudioDetail() {
           <span class="redline-options-title">Redline governing law to</span>
           ${(Array.isArray(clause.approved_laws) ? clause.approved_laws : []).map((label) => {
             const phrase = (clause.law_phrases && clause.law_phrases[label]) || label;
-            const recommended = String(label).trim().toLowerCase() === glConflict.entityLaw.toLowerCase();
+            // Same picked-entity source as the connected jurisdiction-options card
+            // so both pickers mark the same recommended law (falls back to the
+            // conflict's entity law, which is identical here, if state is absent).
+            const recommendedLaw = (pickedEntityLawLabel() || glConflict.entityLaw).toLowerCase();
+            const recommended = String(label).trim().toLowerCase() === recommendedLaw;
             const optionText = `This Agreement shall be governed by the laws of ${phrase}.`;
             return `<button class="redline-option ${recommended ? "selected" : ""}" type="button" data-gl-redline-law="${escapeHtml(label)}" data-gl-redline-phrase="${escapeHtml(phrase)}" aria-pressed="${recommended ? "true" : "false"}">
               <span class="redline-option-dot" aria-hidden="true"></span>
@@ -1726,6 +1910,27 @@ function renderProposedChangeBlock(clause, status = clauseDisplayStatus(clause))
 }
 
 function renderNeedsReviewRecommendedChange(clause, change = null) {
+  // Gate the fabricated suggested-edit / recommended-option / approved-alternatives
+  // scaffold on the SAME truth source the Actions block trusts: a clause only has a
+  // genuine redline edit (insert for not_present+missing, replace for
+  // check+present_but_wrong) when state.reviewRedlines carries an edit for it. A
+  // plain decision==="review" clause has NO such edit — so the suggested-edit,
+  // recommended-option, and approved-alternatives sub-blocks (derived from the
+  // playbook's carve-out tokens, not real replacement wording) are fabricated and
+  // contradict the "No redline action is available for this clause." Actions block.
+  // Suppress the whole fabricated recommended-change block in that case and render
+  // the clause cleanly — the assessment, verdict pill, and mark-reviewed affordance
+  // live in their own blocks, so the reviewer can still resolve and mark it reviewed.
+  const hasRealRedline = state.reviewRedlines.some((edit) => edit.clause_id === clause.id);
+  if (!hasRealRedline) {
+    return `
+      <div class="studio-detail-block recommended-change-block review" data-card-section="recommended-change">
+        <small>Recommended change</small>
+        <p class="proposed-change-empty">No automatic redline is available for this clause. Resolve it using the verdict pill above, then mark it reviewed.</p>
+      </div>
+    `;
+  }
+
   const question = reviewResolutionQuestion(clause, change);
   const suggested = reviewSuggestedRedline(clause, change);
   const recommended = recommendedOptionForReview(clause, change);
@@ -2077,7 +2282,7 @@ function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) 
         <p class="action-muted">${escapeHtml(status.passes ? "No redline action required." : "No redline action is available for this clause.")}</p>
       `}
       ${status.needsReview ? `
-        <p class="action-muted">Use the verdict pill above to mark this clause reviewed after resolving the question.</p>
+        <p class="action-muted">Review the assessment above, then use the verdict pill to mark this clause reviewed.</p>
       ` : ""}
       <div class="clause-comment-action">
         <label class="detail-field-label" for="review-comment-${escapeHtml(clause.id)}">Attach comment</label>
@@ -2271,24 +2476,38 @@ function renderRedlineTemplateOptions(edit) {
   const options = edit.template_options || [];
   if (options.length <= 1) return "";
 
-  // Entity-aware: for the governing-law clause, the option matching the resolved
-  // entity's law is the recommended one (this read is display-only — it never
-  // alters the concurrence verdict). Used as a fallback recommendation signal when
-  // the backend has not explicitly pre-selected an option.
-  const glConflict = String(edit.clause_id || "") === "governing_law" ? governingLawConflict() : null;
-  const recommendedLaw = glConflict ? glConflict.entityLaw.toLowerCase() : "";
+  // Entity-aware: for the governing-law clause the recommended option is the one
+  // matching the PICKED Aspora entity's law — read directly via
+  // pickedEntityLawLabel() so it tracks the entity even when the document already
+  // concurs (governingLawConflict() returns null on concurrence, so it cannot be
+  // the source). Display-only: never alters the concurrence verdict.
+  const isGovLaw = String(edit.clause_id || "") === "governing_law";
+  const recommendedLaw = isGovLaw ? pickedEntityLawLabel().toLowerCase() : "";
+
+  // OPTION B — the recommendation is ADVISORY ONLY. The CHECKED radio (.selected /
+  // aria-checked) ALWAYS tracks the STAGED EXPORT selection: the exact option that
+  // selectedRedlineTemplateOptionId() resolves from state.redlineTemplateSelections,
+  // which is what applyTemplateSelectionToRedline (Fixed-clause preview + exported
+  // DOCX) uses. So the checked radio and the exported law can never disagree.
+  //
+  // The entity recommendation is surfaced ONLY as the "— recommended" TEXT label
+  // beside its option (below); it does NOT move the checked state. The two signals
+  // are decoupled: CHECKED = what will export; "— recommended" = the entity's law.
+  const visualSelectedId = selectedRedlineTemplateOptionId(edit);
 
   return `
     <div class="redline-options" role="radiogroup" aria-label="Jurisdiction options">
       <span class="redline-options-title">Jurisdiction options</span>
       ${options.map((option) => {
         const label = displayRedlineOptionLabel(option);
-        // The selected option is the recommended one; the entity-law match is the
-        // fallback recommendation when nothing is explicitly selected.
-        const recommended = Boolean(option.selected)
-          || (Boolean(recommendedLaw) && String(label).trim().toLowerCase() === recommendedLaw);
+        // Exactly one recommended option: the entity match when an entity is
+        // picked (it takes precedence), else the backend default.
+        const recommended = recommendedLaw
+          ? (String(label).trim().toLowerCase() === recommendedLaw)
+          : Boolean(option.selected);
+        const isVisualSelected = String(option.id || "") === String(visualSelectedId);
         return `
-        <button class="redline-option ${option.selected ? "selected" : ""}" type="button" role="radio" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-checked="${option.selected ? "true" : "false"}" aria-pressed="${option.selected ? "true" : "false"}">
+        <button class="redline-option ${isVisualSelected ? "selected" : ""}" type="button" role="radio" data-redline-edit-id="${escapeHtml(edit.id)}" data-redline-option-id="${escapeHtml(option.id || "")}" aria-checked="${isVisualSelected ? "true" : "false"}" aria-pressed="${isVisualSelected ? "true" : "false"}">
           <span class="redline-option-dot" aria-hidden="true"></span>
           <span class="redline-option-copy">
             <strong>${escapeHtml(label)}${recommended ? " — recommended" : ""}</strong>
