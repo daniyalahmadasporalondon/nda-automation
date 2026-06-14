@@ -271,10 +271,6 @@ def _apply_tracked_run_format(
     return rebuilt, rev_id
 
 
-def _run_concatenated_text(run: ET.Element) -> str:
-    return "".join(node.text or "" for node in run.findall(_w_tag("t")))
-
-
 def _run_offset_text(run: ET.Element) -> str:
     """The run's text in the frontend's offset space: a mirror of
     ``docx_text._run_text`` -- ``<w:t>`` text plus "\\t" for ``<w:tab>`` and "\\n" for

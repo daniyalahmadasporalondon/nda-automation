@@ -182,29 +182,6 @@ def _with_restored_paragraph_structure(matter: dict, *, repository: MatterReposi
     return {**matter, "review_result": {**review_result, "paragraphs": merged}}
 
 
-def _original_docx_paragraphs(matter: dict, *, repository: MatterRepository) -> list[dict] | None:
-    """Rich paragraphs re-extracted from the matter's original .docx, or None.
-
-    Used to restore contract structure on a review refresh. Returns None unless the
-    matter's original document is a .docx that extracts to at least one paragraph;
-    the caller aligns these against the stored extracted text.
-    """
-    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
-    if Path(source_filename).suffix.casefold() != ".docx":
-        return None
-    try:
-        source_bytes = repository.get_source_document_bytes(matter)
-    except MatterRepositoryError:
-        return None
-    if not source_bytes:
-        return None
-    try:
-        rich = extract_docx_paragraphs(source_bytes)
-    except (DocxExtractionError, ValueError, OSError):
-        return None
-    return rich or None
-
-
 def _matter_review_payload(
     matter: dict,
     matter_id: str | None,

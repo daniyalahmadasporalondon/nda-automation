@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
 from .heading_detection import (
+    IDENTIFIER_PART_PATTERN,
+    NUMBERED_NUMBER_PATTERN,
+    ROMAN_NUMBER_PATTERN,
     block_clause_number,
     continuation_is_heading,
     parse_leading_number,
@@ -17,15 +20,11 @@ from .review_document import (
 
 STRUCTURE_VERSION = 2
 REFERENCE_INDEX_VERSION = 2
-ROMAN_NUMBER_PATTERN = r"[IVXLCDM]+"
-BASE_IDENTIFIER_PART_PATTERN = rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z]|\d+[A-Za-z]*)"
-PARENTHETICAL_IDENTIFIER_PART_PATTERN = r"\([A-Za-z0-9]+\)"
-IDENTIFIER_PART_PATTERN = (
-    rf"(?:{BASE_IDENTIFIER_PART_PATTERN}(?:{PARENTHETICAL_IDENTIFIER_PART_PATTERN})*|"
-    rf"{PARENTHETICAL_IDENTIFIER_PART_PATTERN})"
-)
+# Clause-number grammar primitives (ROMAN_NUMBER_PATTERN, IDENTIFIER_PART_PATTERN,
+# NUMBERED_NUMBER_PATTERN) are the single source in heading_detection and imported
+# above; IDENTIFIER_PART_PATTERN is re-exported from this module so existing importers
+# (reference_resolver) keep resolving.
 EXPLICIT_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
-NUMBERED_NUMBER_PATTERN = rf"{IDENTIFIER_PART_PATTERN}(?:\.{IDENTIFIER_PART_PATTERN})*"
 NUMBER_PART_RE = re.compile(r"^(?P<digits>\d+)(?P<suffix>[A-Za-z]+)$")
 PARENTHETICAL_SUFFIX_RE = re.compile(r"^(?P<prefix>.*)\([A-Za-z0-9]+\)$")
 PARENTHETICAL_PART_RE = re.compile(r"\(([A-Za-z0-9]+)\)")

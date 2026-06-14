@@ -137,17 +137,6 @@ def matter_artifacts(matter: dict[str, Any]) -> list[Artifact]:
     return [Artifact.from_dict(item) for item in raw if isinstance(item, dict)]
 
 
-def current_artifact(matter: dict[str, Any]) -> Artifact | None:
-    """The artifact the ``current_artifact_id`` pointer resolves to, if any."""
-    current_id = str(matter.get(CURRENT_ARTIFACT_FIELD) or "")
-    if not current_id:
-        return None
-    for artifact in matter_artifacts(matter):
-        if artifact.id == current_id:
-            return artifact
-    return None
-
-
 def find_artifact(matter: dict[str, Any], artifact_id: str) -> Artifact | None:
     target = str(artifact_id or "")
     if not target:

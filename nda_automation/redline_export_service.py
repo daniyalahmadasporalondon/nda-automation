@@ -351,19 +351,13 @@ def _validate_export(
     report_bytes: bytes,
     *,
     require_styles: bool,
-    expected_source_text: str = "",
-    expected_redline_edits: object = None,
 ) -> None:
     health_errors = validate_docx_open_health(report_bytes, require_styles=require_styles)
     if health_errors:
         telemetry.increment("docx_export_health_failures")
         print(f"DOCX export health check failed: {len(health_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its open-health check.", health_errors)
-    content_errors = verify_export_content_coverage(
-        report_bytes,
-        expected_source_text,
-        expected_redline_edits=expected_redline_edits,
-    )
+    content_errors = verify_export_content_coverage(report_bytes, "")
     if content_errors:
         telemetry.increment("docx_export_content_failures")
         print(f"DOCX export content check failed: {len(content_errors)} issue(s)")

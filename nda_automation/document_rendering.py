@@ -628,46 +628,6 @@ def peek_source_document_render_result(
     return DocumentRenderResult(rendered=rendered, page_manifest=page_manifest)
 
 
-def poll_source_path_render_result(
-    render_id: str,
-    source_path: Path,
-    *,
-    content_type: str = "",
-    cache_dir: Path | None = None,
-    converter: DocxConverter | None = None,
-    page_renderer: PdfPageRenderer | None = None,
-    timeout_seconds: int = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
-    owner_user_id: str = "",
-    wait_timeout_seconds: float = 0.0,
-    include_page_images: bool = True,
-    dpi: int = DEFAULT_PAGE_IMAGE_DPI,
-) -> DocumentRenderResult | None:
-    cached = peek_source_path_render_result(
-        source_path,
-        content_type=content_type,
-        cache_dir=cache_dir,
-        owner_user_id=owner_user_id,
-        include_page_images=include_page_images,
-        dpi=dpi,
-    )
-    if cached is not None:
-        return cached
-    job = ensure_source_path_render_in_flight(
-        render_id,
-        source_path,
-        content_type=content_type,
-        cache_dir=cache_dir,
-        converter=converter,
-        page_renderer=page_renderer,
-        timeout_seconds=timeout_seconds,
-        owner_user_id=owner_user_id,
-        include_page_images=include_page_images,
-        dpi=dpi,
-    )
-    job.done.wait(timeout=wait_timeout_seconds)
-    return job.result if job.is_finished() and isinstance(job.result, DocumentRenderResult) else None
-
-
 def poll_source_document_render_result(
     render_id: str,
     source_bytes: bytes,

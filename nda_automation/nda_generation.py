@@ -1487,13 +1487,6 @@ def _ordinal(day: int) -> str:
     return f"{day}{suffix}"
 
 
-def _bundle_default_address(bundle: Mapping[str, Any]) -> str:
-    chosen = _default_address_entry(bundle)
-    if chosen is None:
-        raise NdaGenerationError("Entity bundle has no addresses.")
-    return _format_address(chosen)
-
-
 def _default_address_entry(bundle: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The default-flagged address entry (first address if none is flagged)."""
 

@@ -480,13 +480,6 @@ def _governing_law_reference_candidate_record(reference: Dict[str, object]) -> D
     }
 
 
-def _uses_approved_governing_law(text: str, clause: Dict[str, object]) -> bool:
-    candidates = _governing_law_candidates(text)
-    if candidates:
-        return any(_starts_with_approved_law(candidate, clause) for candidate in candidates)
-    return _contains_approved_governing_phrase(text, clause)
-
-
 def _governing_law_candidates(text: str) -> List[str]:
     candidates: List[str] = []
     seen = set()

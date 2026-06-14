@@ -80,12 +80,9 @@ __all__ = [
     "SEMANTIC_LINT_MODEL",
     "SEMANTIC_LINT_ENABLED_ENV",
     "SEMANTIC_LINT_MODEL_ENV",
-    "SEMANTIC_LINT_VERSION",
 ]
 
 LOGGER = logging.getLogger(__name__)
-
-SEMANTIC_LINT_VERSION = 1
 
 #: Kill-switch env flag. The AI semantic lint is OFF by default so the feature can
 #: merge to main DORMANT: with the flag unset (or set to a falsy value) the pass
@@ -356,8 +353,10 @@ def _violations_from_raw(
     """Coerce a linter response into :class:`SemanticLintViolation` records.
 
     Unparseable / empty / non-list output yields no violations (the conservative
-    default). Each element must carry a message; a missing/low confidence is kept
-    but a sub-threshold one is dropped so the advisory channel stays low-noise.
+    default). Each element must carry a message. A missing confidence coerces to
+    0.0, so it -- like any sub-threshold confidence -- falls below
+    ``MIN_REPORTED_CONFIDENCE`` and is silently dropped, keeping the advisory
+    channel low-noise.
     """
     entries = _coerce_violation_list(raw)
     if not entries:

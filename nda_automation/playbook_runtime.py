@@ -124,10 +124,6 @@ def write_json_atomically(value: object, path, *, replace_file=os.replace) -> No
         raise
 
 
-def write_playbook_atomically(playbook: dict, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
-    write_json_atomically(playbook, playbook_path, replace_file=replace_file)
-
-
 def read_playbook_history(*, playbook_path=PLAYBOOK_PATH) -> list[dict[str, Any]]:
     history_path = history_path_for(playbook_path)
     try:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 import binascii
 from pathlib import Path
-from typing import Any
 
 from .. import gmail_integration, google_connection, matter_view, telemetry
 from ..app_settings import gmail_role_enabled
@@ -20,8 +19,6 @@ from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ens
 from ..matter_lifecycle import (
     MatterNotFoundError,
     RepositoryMatterLifecycle,
-    send_document_metadata,
-    send_document_triage,
 )
 from ..matter_repository import DiskMatterRepository
 from .common import request_owner_user_id
@@ -118,11 +115,3 @@ def is_supported_send_filename(filename: object) -> bool:
 
 def _default_subject(filename: str) -> str:
     return Path(str(filename or "")).stem or "Document"
-
-
-def _send_document_metadata(filename: str, recipient: str, subject: str) -> dict[str, str]:
-    return send_document_metadata(filename, recipient, subject)
-
-
-def _send_document_triage() -> dict[str, Any]:
-    return send_document_triage()

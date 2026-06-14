@@ -23,29 +23,6 @@ MAX_CITATIONS = 5
 MAX_SEARCH_HITS = 8
 MAX_SNIPPET_CHARS = 220
 
-READ_ONLY_INTENTS = frozenset(
-    {
-        "repository_question",
-        "system_question",
-        "review_finding_explanation",
-        "matter_summary",
-        "system_search",
-        "how_it_works",
-        "search_filter",
-    }
-)
-
-SIDE_EFFECTFUL_ACTIONS = frozenset(
-    {
-        "refresh_review",
-        "run_review",
-        "gmail_import",
-        "sync_gmail",
-        "send_redline",
-        "approve_matter",
-    }
-)
-
 AssistantSearchResolver = Callable[[str], dict[str, Any]]
 PlaybookProvider = Callable[[], Mapping[str, Any]]
 CapabilityMatcher = Callable[["AssistantContext"], bool]

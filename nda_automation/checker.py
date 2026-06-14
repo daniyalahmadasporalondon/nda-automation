@@ -1019,14 +1019,6 @@ def _build_redline_edits(clause_results: List[ClauseResult], paragraphs: List[Pa
     return clause_outcomes.build_redline_edits(clause_results, paragraphs)
 
 
-def _redline_edits_for_clause(
-    clause: ClauseResult,
-    paragraphs_by_id: Dict[str, Paragraph],
-    start_number: int,
-) -> List[RedlineEdit]:
-    return clause_outcomes.redline_edits_for_clause(clause, paragraphs_by_id, start_number)
-
-
 REDLINE_BUILDERS = clause_outcomes.REDLINE_BUILDERS
 
 

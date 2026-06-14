@@ -144,23 +144,6 @@ def validate_docx_open_health(docx_bytes: bytes, require_styles: bool = False) -
     return errors
 
 
-def exported_document_text(docx_bytes: bytes) -> str:
-    """Visible + tracked-deleted text of the export (w:t and w:delText nodes)."""
-    try:
-        validate_docx_bytes_before_open(docx_bytes)
-        with ZipFile(BytesIO(docx_bytes)) as archive:
-            validate_docx_archive(archive)
-            document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
-    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
-        return ""
-    parts = [
-        node.text or ""
-        for node in document_root.iter()
-        if node.tag in (_w_tag("t"), _w_tag("delText"))
-    ]
-    return " ".join(parts)
-
-
 def verify_export_content_coverage(
     docx_bytes: bytes,
     source_text: str,

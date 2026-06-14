@@ -43,14 +43,6 @@ MANUAL_REDLINE_ACTIONS = frozenset({
 })
 
 
-def is_known_redline_action(action: object) -> bool:
-    return str(action or "") in REDLINE_ACTIONS
-
-
-def is_manual_redline_action(action: object) -> bool:
-    return str(action or "") in MANUAL_REDLINE_ACTIONS
-
-
 def is_manual_redline_edit(edit: object) -> bool:
     if not isinstance(edit, dict):
         return False
@@ -99,26 +91,6 @@ def has_inline_diff_operations(edit: object) -> bool:
         and isinstance(edit.get("inline_diff_operations"), list)
         and len(edit["inline_diff_operations"]) > 0
     )
-
-
-def redline_inline_preview_mode(edit: object) -> str:
-    if has_inline_diff_operations(edit):
-        return "operations"
-    if isinstance(edit, dict) and edit.get("whole_paragraph"):
-        return "whole_paragraph"
-    if is_freeform_manual_replace_edit(edit):
-        return "character_diff"
-    return "whole_paragraph"
-
-
-def redline_operation_preview_mode(edit: object) -> str:
-    if has_inline_diff_operations(edit):
-        return "operations"
-    if isinstance(edit, dict) and edit.get("whole_paragraph"):
-        return "whole_paragraph"
-    if is_freeform_manual_replace_edit(edit):
-        return "word_diff"
-    return "whole_paragraph"
 
 
 def normalize_redline_edit(

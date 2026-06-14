@@ -508,7 +508,11 @@ def prune_saved_exports(protected_path: Path) -> None:
     saved_exports = [
         path
         for path in EXPORTS_DIR.glob("*.docx")
-        if path.is_file()
+        # In-flight atomic writes land as ``.tmp-export-*.docx`` temp files (pathlib's
+        # glob matches leading-dot names, unlike the shell). Excluding them keeps a
+        # concurrent export's half-written temp from counting toward the cap or being
+        # unlinked mid-write.
+        if path.is_file() and not path.name.startswith(".tmp-export-")
     ]
     if len(saved_exports) <= MAX_SAVED_EXPORTS:
         return

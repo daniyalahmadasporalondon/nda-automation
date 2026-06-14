@@ -179,7 +179,6 @@ def update_matter_stage(matter_id: str, board_column: str, owner_user_id: str = 
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def update_matter_fields(matter_id: str, fields: dict[str, Any], owner_user_id: str = "") -> dict[str, Any] | None:
@@ -202,7 +201,6 @@ def update_matter_fields(matter_id: str, fields: dict[str, Any], owner_user_id: 
             updated_matter["status"] = "closed" if cleaned_fields["board_column"] == "signed_closed" else "active"
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def update_redline_draft(
@@ -226,7 +224,6 @@ def update_redline_draft(
             updated_matter["redline_draft"] = redline_draft
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def update_matter_review(
@@ -252,7 +249,6 @@ def update_matter_review(
         updated_matter.pop("redline_draft", None)
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def set_clause_reviewer_decision(
@@ -284,7 +280,6 @@ def set_clause_reviewer_decision(
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def record_matter_approval(
@@ -313,7 +308,6 @@ def record_matter_approval(
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def append_timeline_event(
@@ -346,7 +340,6 @@ def append_timeline_event(
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def set_matter_workflow_error(
@@ -379,7 +372,6 @@ def set_matter_workflow_error(
             updated_matter["workflow_error"] = workflow_error
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def migrate_ownerless_matter_ownership(
@@ -468,7 +460,6 @@ def update_matter_ai_first_review(
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def update_matter_artifacts(
@@ -496,7 +487,6 @@ def update_matter_artifacts(
         }
         _save_matter_record(updated_matter)
         return updated_matter
-    return None
 
 
 def put_artifact_document(stored_filename: str, document_bytes: bytes) -> str:

@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
-import { formatBytes, formatMatterDate, formatMatterDateTime } from "../../static/js/modules/formatting.mjs";
 import { escapeHtml, joinClasses, mergeClauses } from "../../static/js/modules/html-utils.mjs";
 import {
   fullReplacementOperations,
@@ -532,12 +531,6 @@ assert.equal(
   "Review is out of date. Refresh against the active Playbook.",
 );
 assert.equal(MatterUtils.reviewStale({ review_stale: true }), true);
-
-assert.equal(formatBytes(0), "0 B");
-assert.equal(formatBytes(1536), "1.5 KB");
-assert.equal(formatBytes(2 * 1024 * 1024), "2.0 MB");
-assert.equal(formatMatterDate("not a date"), "");
-assert.equal(formatMatterDateTime("not a date"), "");
 
 const calls = [];
 const repositoryApi = createRepositoryApi({

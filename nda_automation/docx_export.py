@@ -624,14 +624,6 @@ def _physical_paragraph_blocks(text: str) -> List[str]:
     return [block for block in blocks if block]
 
 
-def _redline_review_paragraph_key(redline: RedlineEdit) -> Tuple | None:
-    return redline_edit_contract.redline_review_paragraph_key(redline)
-
-
-def _redline_resolution_order(redline: RedlineEdit) -> Tuple[int, int]:
-    return redline_edit_contract.redline_resolution_order(redline)
-
-
 def _review_paragraphs_by_id(review_paragraphs: object) -> Dict[str, Paragraph]:
     if not isinstance(review_paragraphs, list):
         return {}

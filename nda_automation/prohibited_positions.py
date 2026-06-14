@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Mapping, Pattern
+from typing import Pattern
 
 # Literal fallback — kept verbatim equal to the Playbook's
 # non_circumvention.prohibited_position_patterns so the guard degrades gracefully
@@ -123,8 +123,3 @@ def first_prohibited_position(text: str) -> str:
         if pattern.search(text):
             return label
     return ""
-
-
-def patterns_as_mapping() -> Mapping[str, "Pattern[str]"]:
-    """The compiled patterns as a plain label->Pattern dict (convenience)."""
-    return {label: pattern for label, pattern in PROHIBITED_POSITION_PATTERNS}

@@ -451,6 +451,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "Not found"}, status=404)
         except matter_store.MatterStoreError as error:
             self._send_json({"error": str(error)}, status=500)
+        except app_settings.AppSettingsError as error:
+            self._send_json({"error": str(error)}, status=500)
 
     def _read_json_payload(self) -> dict | None:
         content_length = self._read_content_length()

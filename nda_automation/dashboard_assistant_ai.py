@@ -557,20 +557,21 @@ def _loads_json_object(text: str) -> Mapping[str, Any] | None:
 
 
 def _repository_facts(context: Any) -> Mapping[str, Any]:
+    from . import dashboard_assistant as core
     from . import workflow
 
     matters = context.public_matters
     phase_counts: dict[str, int] = {}
     last_sent: dict[str, Any] | None = None
     for matter in matters:
-        phase = _matter_phase(matter)
+        phase = core._matter_phase(matter)  # noqa: SLF001 - canonical single-source reuse.
         if phase:
             phase_counts[phase] = phase_counts.get(phase, 0) + 1
         sent_at = str(matter.get("last_outbound_at") or "").strip()
         if sent_at and (last_sent is None or sent_at > str(last_sent.get("last_outbound_at") or "")):
             last_sent = {
                 "matter_id": str(matter.get("id") or ""),
-                "title": _matter_title(matter),
+                "title": core._matter_title(matter),  # noqa: SLF001 - canonical single-source reuse.
                 "last_outbound_at": sent_at,
                 "last_outbound_to": str(matter.get("last_outbound_to") or ""),
             }
@@ -687,14 +688,3 @@ def _search_filter(context: Any, args: Mapping[str, Any]) -> Mapping[str, Any]:
         playbook_provider=context.playbook_provider,
     )
     return core.search_filter_response(search_context)
-
-
-def _matter_phase(matter: Mapping[str, Any]) -> str:
-    workflow_state = matter.get("workflow_state")
-    if isinstance(workflow_state, Mapping):
-        return str(workflow_state.get("phase") or "").strip().lower()
-    return ""
-
-
-def _matter_title(matter: Mapping[str, Any]) -> str:
-    return str(matter.get("subject") or matter.get("document_title") or matter.get("source_filename") or "Untitled NDA")

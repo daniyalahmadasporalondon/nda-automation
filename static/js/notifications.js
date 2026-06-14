@@ -112,7 +112,11 @@ const NotificationsView = (() => {
 
     function enforceStackCap() {
       if (!container) return;
-      const toasts = container.querySelectorAll(".toast");
+      // Toasts already animating out (".toast--leaving") still linger in the DOM
+      // until their leave animation ends. Counting them would inflate the visible
+      // stack and prematurely evict toasts the user can still see, so cap only the
+      // not-yet-leaving toasts.
+      const toasts = container.querySelectorAll(".toast:not(.toast--leaving)");
       for (let index = 0; index < toasts.length - MAX_VISIBLE; index += 1) {
         removeToast(toasts[index]);
       }
