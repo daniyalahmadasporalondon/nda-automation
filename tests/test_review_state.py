@@ -168,6 +168,49 @@ class ReviewStateTests(unittest.TestCase):
         self.assertFalse(state["blocks_send"])
         self.assertFalse(result_requires_human_review(review_result))
 
+    def test_pure_fail_result_requires_human_review(self):
+        # The blocker fix: a matter the AI FAILED on a required clause (state
+        # 'check', counts.review == 0, no truncation) must require human review so
+        # the send/clear gate blocks it -- previously aggregate_review_state set
+        # requires_human_review/blocks_send to review>0 only, so a pure-fail matter
+        # false-cleared the gate and the failed NDA could be emailed.
+        review_result = {
+            "clauses": [
+                {"id": "governing_law", "decision": "fail"},
+                {"id": "mutuality", "decision": "pass"},
+            ]
+        }
+
+        state = review_state_from_result(review_result)
+
+        self.assertEqual(state["state"], "check")
+        self.assertEqual(state["counts"]["review"], 0)
+        self.assertEqual(state["counts"]["check"], 1)
+        # The already-computed flags consumed by the gate.
+        self.assertTrue(state["blocks_auto_send"])
+        self.assertTrue(state["requires_redline"])
+        self.assertTrue(result_requires_human_review(review_result))
+
+    def test_missing_required_clause_fail_requires_human_review(self):
+        # A missing required clause arrives as a fail (issue_type "missing"); the
+        # gate must block it just like the unapproved-governing-law fail.
+        review_result = {
+            "clauses": [{"id": "confidentiality", "decision": "fail", "issue_type": "missing"}]
+        }
+
+        self.assertTrue(result_requires_human_review(review_result))
+
+    def test_pure_fail_summary_counts_require_human_review(self):
+        # The integer-summary fallback (no clause list) must gate on a failed count
+        # too, mirroring the per-clause path.
+        review_result = {
+            "requirements_passed": 4,
+            "requirements_needs_review": 0,
+            "requirements_failed": 1,
+        }
+
+        self.assertTrue(result_requires_human_review(review_result))
+
 
 if __name__ == "__main__":
     unittest.main()

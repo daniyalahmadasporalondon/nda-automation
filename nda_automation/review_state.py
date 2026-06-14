@@ -205,12 +205,27 @@ def _result_truncation_reason(review_result: Dict[str, Any]) -> str:
 
 def result_requires_human_review(review_result: Dict[str, Any]) -> bool:
     state = review_state_from_result(review_result)
-    if bool(state.get("requires_human_review")) or bool(state.get("blocks_send")):
+    # An UNRESOLVED fail (check) state must gate the send/clear path exactly like a
+    # needs-review state: the AI rejected a required clause, so a human has to
+    # resolve it before the matter can be sent. aggregate_review_state already
+    # computes blocks_auto_send (review>0 OR check>0) and requires_redline
+    # (check>0) but nothing consumed them, so a pure-fail matter (counts.review=0)
+    # used to false-clear here. Consume them now -- plus the check count and the
+    # CHECK state itself -- so the gate also blocks fail. This is cleared the same
+    # way needs-review is: the call sites (send_redline, public_matter) drop the
+    # block once human_reviewed is set / the matter is approved.
+    if (
+        bool(state.get("requires_human_review"))
+        or bool(state.get("blocks_send"))
+        or bool(state.get("blocks_auto_send"))
+        or bool(state.get("requires_redline"))
+        or str(state.get("state") or "") == REVIEW_STATE_CHECK
+    ):
         return True
     counts = state.get("counts", {})
     if isinstance(counts, dict):
         try:
-            return int(counts.get("review") or 0) > 0
+            return int(counts.get("review") or 0) > 0 or int(counts.get("check") or 0) > 0
         except (TypeError, ValueError):
             return True
     return str(state.get("state") or "") == REVIEW_STATE_REVIEW

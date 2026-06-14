@@ -275,3 +275,95 @@ def test_send_redline_rechecks_human_review_gate_after_export():
 
     assert events == ["preflight", "export"]
     send_email.assert_not_called()
+
+
+_SENT_STUB = {
+    "message_id": "msg_123",
+    "outbound_account": "legal@aspora.com",
+    "sent_at": "2026-06-05T12:00:00+00:00",
+    "subject": "NDA",
+    "thread_id": "thread_123",
+    "to": "counterparty@example.com",
+}
+
+
+def _attempt_send(repo, matter_id):
+    """Drive send_redline through export+email mocks; return whether it sent.
+
+    Mirrors the real call path (preflight -> export -> send) with everything
+    downstream of the gate stubbed, so the result reflects ONLY the send gate.
+    Returns True if send_redline_email was invoked, False if the gate blocked.
+    """
+    export = redline_export_service.RedlineExport(data=b"docx", filename="NDA-redlined.docx")
+    with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+        with patch.object(gmail_integration, "validate_outbound_send_ready"):
+            with patch.object(redline_export_service, "build_matter_redline", return_value=export):
+                with patch.object(gmail_integration, "send_redline_email", return_value=dict(_SENT_STUB)) as send_email:
+                    try:
+                        RepositoryMatterLifecycle(repo).send_redline(
+                            matter_id,
+                            {"matter_id": matter_id, "confirm_send": True},
+                            to="counterparty@example.com",
+                            confirmed_recipient="counterparty@example.com",
+                        )
+                    except MatterSendBlockedError:
+                        return False
+    return send_email.called
+
+
+def _matter_with_review(repo, review_result):
+    return repo.create_matter(
+        **_create_kwargs(
+            intake_metadata={"reply_to": "counterparty@example.com"},
+            review_result=review_result,
+        )
+    )
+
+
+def test_send_gate_pass_state_is_freely_sendable():
+    # PRESERVED behavior: an all-pass review has no send block.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "mutuality", "decision": "pass"}]})
+
+    assert _attempt_send(repo, matter["id"]) is True
+
+
+def test_send_gate_needs_review_blocked_until_reviewed():
+    # PRESERVED behavior: needs-review is blocked until a human marks it reviewed.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "mutuality", "decision": "review"}]})
+
+    assert _attempt_send(repo, matter["id"]) is False
+
+    repo.update_matter_fields(matter["id"], {"human_reviewed": True})
+    assert _attempt_send(repo, matter["id"]) is True
+
+
+def test_send_gate_fail_state_blocked_until_resolved():
+    # THE BLOCKER FIX: a failed (check) review -- the AI rejected a required
+    # clause (e.g. an unapproved governing law) -- must NOT be sendable until a
+    # human resolves it. counts.review == 0, so this used to false-clear the gate
+    # and the failed NDA could be emailed.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "governing_law", "decision": "fail"}]})
+
+    assert _attempt_send(repo, matter["id"]) is False
+
+    # Cleared the same way needs-review is: a human engages the matter.
+    repo.update_matter_fields(matter["id"], {"human_reviewed": True})
+    assert _attempt_send(repo, matter["id"]) is True
+
+
+def test_send_gate_fail_state_cleared_by_recorded_approval():
+    # The fail block is not permanently wedged: a recorded approval is a stronger
+    # human sign-off and also clears the send gate, even without the
+    # human_reviewed toggle.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "governing_law", "decision": "fail"}]})
+
+    assert _attempt_send(repo, matter["id"]) is False
+
+    repo.update_matter_fields(
+        matter["id"], {"status": "approved", "approved_at": "2026-06-05T00:00:00+00:00"}
+    )
+    assert _attempt_send(repo, matter["id"]) is True
