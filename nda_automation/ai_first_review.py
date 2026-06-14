@@ -230,11 +230,26 @@ def reassess_single_clause(
         document_paragraphs,
         review_context,
     )
-    # Run the verifier over this single result if enabled.
+    # Run the verifier over this single result if enabled. The verifier is the
+    # adversarial backstop that double-checks the assessor, so it MUST read the SAME
+    # clause text the assessor just evaluated. When edited_paragraphs were overlaid,
+    # `text` is the ORIGINAL pre-edit document, but the assessor saw the edited
+    # document_paragraphs; handing the verifier `text` would make it grade a stale
+    # version of the clause that no longer exists (it could wave through an error the
+    # edit introduced). Reconstruct the verifier source from the (edited)
+    # document_paragraphs in that case — the same blank-line-block join the splitter
+    # uses — so the verifier sees the current text. The full-document path passes the
+    # text its paragraphs derive from and is already correct, so leave the no-edit
+    # case on `text`.
+    verifier_source_text = (
+        "\n\n".join(str(paragraph.get("text") or "") for paragraph in document_paragraphs)
+        if edited_paragraphs
+        else text
+    )
     clause_results_list: list[ClauseResult] = [clause_result]
     clause_results_list, ai_verifier_review = apply_ai_verifier(
         clause_results_list,
-        source_text=text,
+        source_text=verifier_source_text,
         verifier=ai_verifier,
         enabled=verify,
         contract_structure=contract_structure,

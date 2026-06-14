@@ -147,6 +147,101 @@ class ReassessSingleClauseTests(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
+# Verifier-text consistency on the single-clause reassess path
+# ------------------------------------------------------------------ #
+
+
+class ReassessVerifierSeesEditedTextTests(unittest.TestCase):
+    """The adversarial verifier is the safety backstop that double-checks the
+    primary assessor. On a single-clause reassess where the clause text was edited,
+    the verifier MUST grade the SAME edited text the assessor evaluated — not the
+    stale pre-edit document. Otherwise the verifier can wave through an error the
+    edit introduced (it is reviewing a version of the clause that no longer exists).
+    """
+
+    # A document whose non_circumvention paragraph (p2) starts CLEAN (no restriction),
+    # so the original-text verifier would see nothing to flag. The edit INTRODUCES a
+    # prohibited restriction into p2 — a true regression the verifier must now see.
+    DOC = "\n\n".join([
+        "Each party may disclose Confidential Information to the other party.",
+        "The parties shall cooperate in good faith regarding the Purpose.",
+        "This Agreement is governed by the laws of England and Wales.",
+    ])
+    EDITED_P2 = "The Recipient shall not solicit or hire any introduced party."
+    ORIGINAL_P2 = "cooperate in good faith"
+
+    def _reassess_with_spy(self, *, edited: bool):
+        """Reassess non_circumvention with a spy verifier that captures its packet.
+
+        When ``edited`` is True, paragraph p2 is overlaid with EDITED_P2 (a newly
+        introduced restriction). Returns (clause_result, captured_packet).
+        """
+        from nda_automation.review_document import split_document_paragraphs
+
+        paragraphs = split_document_paragraphs(self.DOC)
+        p2 = next((p for p in paragraphs if self.ORIGINAL_P2 in str(p.get("text") or "")), None)
+        self.assertIsNotNone(p2, "could not locate the clean p2 in the fixture")
+
+        edited_paragraphs = None
+        if edited:
+            replacement = dict(p2)
+            replacement["text"] = self.EDITED_P2
+            edited_paragraphs = [replacement]
+
+        captured: dict = {}
+
+        def spy_verifier(packet):
+            # Capture the exact text the verifier is asked to grade, then affirm so
+            # the assessor's own verdict is preserved (the verdict assertions below
+            # exercise the assessor; the packet assertions exercise the seam).
+            captured["source_text"] = packet.get("source_text")
+            captured["matched_text"] = packet.get("matched_text")
+            return {"verdict": "affirm", "confidence": 0.5, "rationale": "spy"}
+
+        clause = reassess_single_clause(
+            "non_circumvention",
+            self.DOC,
+            paragraphs=paragraphs,
+            edited_paragraphs=edited_paragraphs,
+            ai_verifier=spy_verifier,
+        )
+        return clause, captured
+
+    def test_verifier_grades_edited_text_not_stale_original(self):
+        clause, captured = self._reassess_with_spy(edited=True)
+        source_text = str(captured.get("source_text") or "")
+        # The verifier must see the EDITED restriction the assessor evaluated...
+        self.assertIn(
+            self.EDITED_P2,
+            source_text,
+            "verifier source_text must carry the edited clause text the assessor used",
+        )
+        # ...and must NOT be grading the stale pre-edit paragraph that no longer exists.
+        self.assertNotIn(
+            self.ORIGINAL_P2,
+            source_text,
+            "verifier must not grade the stale pre-edit clause text",
+        )
+
+    def test_regression_introduced_by_edit_is_seen_by_verifier(self):
+        # The edit introduces a real non_circumvention restriction. The assessor
+        # (stub) fails the clause, and the verifier is handed the edited restriction
+        # text — so the backstop is actually able to see the regression rather than a
+        # clean original it would wave through.
+        edited_clause, edited_captured = self._reassess_with_spy(edited=True)
+        self.assertEqual(edited_clause["decision"], "fail")
+        self.assertIn(self.EDITED_P2, str(edited_captured.get("matched_text") or ""))
+        self.assertIn(self.EDITED_P2, str(edited_captured.get("source_text") or ""))
+
+        # Sanity baseline: with NO edit, the clean original passes and the verifier
+        # sees the original document — confirming the divergence above is caused by
+        # the edit overlay, not by the spy.
+        clean_clause, clean_captured = self._reassess_with_spy(edited=False)
+        self.assertEqual(clean_clause["decision"], "pass")
+        self.assertIn(self.ORIGINAL_P2, str(clean_captured.get("source_text") or ""))
+
+
+# ------------------------------------------------------------------ #
 # HTTP route tests (owner-scoping + cross-tenant denial)
 # ------------------------------------------------------------------ #
 
