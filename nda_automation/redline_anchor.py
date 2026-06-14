@@ -61,11 +61,55 @@ _CLAUSE_SECTION_CUES: dict[str, tuple[str, ...]] = {
 }
 
 _SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
-# A single signature-block line: a lone marker label (By:/Title:/Date:/Name:/
-# Signature[:]) on its own paragraph -- the DOCX-default shape where each label is its
-# own Word paragraph. Anchored to line start so body prose mentioning "name" or "date"
-# mid-sentence does not trip it.
-_SIGNATURE_LINE_MARKER_PATTERN = r"^\s*(?:by|title|date|name|signature|signed)\s*[:_]"
+# A single signature-block line carrying a labelled marker -- the DOCX-default shape
+# where each label is its own Word paragraph. Anchored to line start so body prose
+# mentioning "name" or "date" mid-sentence does not trip it. Covers the standard
+# vocabulary plus the non-standard wordings the adversary surfaced: Per:, Its: Director,
+# Signed:, Print Name:, Name (print):, Witness/Witnessed by:, Accepted and agreed:.
+# DEFENSE-IN-DEPTH ONLY -- the final-source-backed-section guard is what guarantees
+# signatures are never anchored in; this just improves the floor's precision.
+_SIGNATURE_LINE_MARKER_PATTERN = (
+    r"^\s*(?:"
+    # Plain labels that take a colon/paren directly: "By:", "Per:", "Its:", "Date:".
+    r"(?:by|title|date|name|signature|sign|per|its|signatory|"
+    r"print(?:ed)?\s*name|name\s*\(print\))\b\s*[:(]"
+    r"|"
+    # Phrase markers that may carry a party/preposition before the colon:
+    # "Signed:", "Signed for ABC Ltd:", "Signed for and on behalf of X:",
+    # "Witnessed by: ___", "Accepted and agreed:", "Authorised signatory:".
+    r"(?:signed|witness(?:ed)?|accepted\s+and\s+agreed|authoris(?:ed|zed)\s+signatory|"
+    r"on\s+behalf\s+of)\b[A-Za-z .,'/&()-]{0,80}[:(]"
+    r")"
+)
+# A trailing-role line whose LAST words name a signer role, even without a colon:
+# "Authorised signatory", "Duly authorized representative", "Authorised signatory of
+# the Recipient". These name who signs, so a paragraph ending in them is a signature
+# line. Whole-line so a mid-sentence "as a representative of" in body prose is ignored.
+_SIGNATURE_ROLE_LINE_PATTERN = (
+    r"^\s*(?:[A-Za-z][A-Za-z .,'/&()-]{0,80}\b)?"
+    r"(?:authoris(?:ed|zed)\s+signatory|duly\s+authoris(?:ed|zed)\s+representative|"
+    r"authoris(?:ed|zed)\s+representative|signatory|representative|director|"
+    r"its\s+director)\b[A-Za-z .,'/&()-]{0,40}\s*$"
+)
+# A bare no-colon signature label standing ALONE on its own line ("Signature",
+# "Print Name", "Date", "Name", "Witness"). Whole-line + length-bounded so body prose
+# is never caught.
+_SIGNATURE_BARE_LABEL_PATTERN = (
+    r"^\s*(?:signature|print(?:ed)?\s*name|printed\s+name|name|date|witness|"
+    r"authoris(?:ed|zed)\s+signatory|signatory)\s*$"
+)
+# A no-colon execution line naming the signing party: "Signed for and on behalf of
+# Aspora Limited", "Signed for ABC Ltd", "For and on behalf of X". Requires the strong
+# "signed" prefix or an explicit "on behalf of", so a bare clause-prose "For the
+# purposes of ..." is NOT caught (that path is the checker's SIGNATURE_FOR_LINE_PATTERN,
+# which has its own exclusions). Whole-line + length-bounded.
+_SIGNATURE_PARTY_LINE_PATTERN = (
+    r"^\s*(?:"
+    r"signed\s+(?:for|by)\b[A-Za-z0-9 .,'/&()-]{1,80}"
+    r"|"
+    r"(?:signed\s+)?(?:for\s+and\s+)?on\s+behalf\s+of\s+[A-Za-z0-9][A-Za-z0-9 .,'/&()-]{1,80}"
+    r")\s*$"
+)
 # A signature underscore/blank fill line ("____", "/s/", "___________").
 _SIGNATURE_FILL_LINE_PATTERN = r"^\s*(?:_{3,}|/s/|x_{2,})\s*$"
 
@@ -108,6 +152,17 @@ def _structure_aware_insertion_anchor(
         return None
     signature_floor_index = _first_signature_index(ordered_paragraphs)
 
+    # PRIMARY STRUCTURAL GUARD (vocabulary-INDEPENDENT). build_contract_structure always
+    # extends the LAST detected heading's section to EOF, so the signature block is
+    # ALWAYS swallowed into the document's FINAL source-backed section -- regardless of
+    # how the signature lines are worded (Per:, Its: Director, Authorised signatory,
+    # Duly authorized representative, Signed:, bare no-colon labels, ...). Therefore an
+    # anchor may NEVER fall in that final source-backed section. We compute its paragraph
+    # ids up front; any candidate inside it is refused -> the legacy regex tiers run.
+    # This makes anchoring in/after signatures structurally impossible while preserving
+    # #6's value for every NON-final section.
+    final_source_backed_paragraph_ids = _final_source_backed_section_paragraph_ids(sections)
+
     target_rank = _CANONICAL_CLAUSE_ORDER.index(clause_id)
 
     # Find the last source-backed section that maps to a clause ranked strictly BEFORE
@@ -136,7 +191,60 @@ def _structure_aware_insertion_anchor(
         if anchor_index > best_end_index:
             best_end_index = anchor_index
             best_anchor = anchor
+
+    if best_anchor is None:
+        return None
+    # Hard guard: never return an anchor that belongs to the final source-backed section
+    # (where signatures always live). Refuse -> None -> legacy regex tiers.
+    if str(best_anchor.get("id") or "") in final_source_backed_paragraph_ids:
+        return None
     return best_anchor
+
+
+def _final_source_backed_section_paragraph_ids(sections: Sequence[Any]) -> set[str]:
+    """Paragraph ids of the document's FINAL source-backed section.
+
+    The final source-backed section is the source-backed section whose paragraph range
+    reaches furthest in document order (contains the highest paragraph index). Because
+    build_contract_structure runs the last heading's section to EOF, the signature block
+    is always part of this section, so refusing any anchor inside it is what guarantees
+    #6 can never anchor in/after signatures -- independent of signature vocabulary."""
+    final_section: Mapping[str, Any] | None = None
+    final_reach = -1
+    for section in sections:
+        if not isinstance(section, Mapping) or not _section_is_source_backed(section):
+            continue
+        reach = _section_max_paragraph_index(section)
+        if reach is None:
+            continue
+        if reach > final_reach:
+            final_reach = reach
+            final_section = section
+    if final_section is None:
+        return set()
+    return {
+        str(paragraph_id)
+        for paragraph_id in (final_section.get("paragraph_ids") or [])
+        if isinstance(paragraph_id, str) and paragraph_id
+    }
+
+
+def _section_max_paragraph_index(section: Mapping[str, Any]) -> int | None:
+    end_index = section.get("end_index")
+    if isinstance(end_index, int):
+        return end_index
+    # Fall back to scanning paragraph ids of the review-id form ``p{index}``.
+    max_index: int | None = None
+    for paragraph_id in section.get("paragraph_ids") or []:
+        index = _paragraph_id_index(paragraph_id)
+        if index is not None and (max_index is None or index > max_index):
+            max_index = index
+    return max_index
+
+
+def _paragraph_id_index(paragraph_id: Any) -> int | None:
+    match = re.fullmatch(r"p(\d+)", str(paragraph_id or ""), flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _section_clause_concept(section: Mapping[str, Any]) -> str | None:
@@ -251,19 +359,27 @@ def _is_signature_anchor_paragraph(paragraph: Mapping[str, Any]) -> bool:
 
 
 def _is_signature_line_paragraph(paragraph: Mapping[str, Any]) -> bool:
-    """True for a single line of a signature block: a "For <party>" line, a lone marker
-    label (By:/Title:/Date:/Name:/Signature), a fill/underscore line, or the merged
-    multi-marker shape. Used to detect the one-marker-per-paragraph DOCX layout."""
+    """True for a single line of a signature block. Recognizes a "For/Signed for <party>"
+    line, a labelled marker (By:/Title:/Date:/Name:/Per:/Its:/Signed:/Print Name:/
+    Witness:/Accepted and agreed:/Authorised signatory:/On behalf of:), a trailing-role
+    line ("Authorised signatory", "Duly authorized representative", "Its: Director"), a
+    bare no-colon label ("Signature"/"Print Name"/"Date"), a fill/underscore line, or the
+    merged multi-marker shape. Used to detect the one-marker-per-paragraph DOCX layout.
+
+    DEFENSE-IN-DEPTH: this vocabulary only improves the floor's precision. Safety is
+    guaranteed by the final-source-backed-section guard regardless of wording."""
     if _is_signature_anchor_paragraph(paragraph):
         return True
     text = str(paragraph.get("text") or "")
-    if re.search(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
-        return True
-    if re.search(_SIGNATURE_LINE_MARKER_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
-        return True
-    if re.search(_SIGNATURE_FILL_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
-        return True
-    return False
+    patterns = (
+        SIGNATURE_FOR_LINE_PATTERN,
+        _SIGNATURE_LINE_MARKER_PATTERN,
+        _SIGNATURE_ROLE_LINE_PATTERN,
+        _SIGNATURE_BARE_LABEL_PATTERN,
+        _SIGNATURE_PARTY_LINE_PATTERN,
+        _SIGNATURE_FILL_LINE_PATTERN,
+    )
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
 
 
 def _paragraph_index(paragraph: Mapping[str, Any]) -> int | None:
