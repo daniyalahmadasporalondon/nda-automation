@@ -143,6 +143,48 @@ class NdaGenerationError(ValueError):
     """Raised when generation inputs are invalid or the template is malformed."""
 
 
+# The counterparty identity fields the caller supplies via intake. Unlike the
+# free-text recital fields (purpose / business_description, which are sanitised),
+# these are filled verbatim into the document's structured identity slots and so
+# must NOT be altered — a name/address/jurisdiction is a legal value. They are
+# validated and *rejected* (not rewritten) when they carry a square bracket,
+# because the engine fills template tokens of the form ``[GOVERNING LAW]`` /
+# ``[COMPANY NAME]`` and a bracket in an identity value either collides with a
+# real fill token (tripping the fail-closed leftover-placeholder guard with an
+# opaque error) or silently lands stray ``[...]`` text in a signed NDA.
+_IDENTITY_INTAKE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("company_name", "company name"),
+    ("registered_office", "registered office"),
+    ("jurisdiction_of_incorporation", "jurisdiction of incorporation"),
+)
+
+
+def validate_intake_identity_fields(intake: "CounterpartyIntake") -> None:
+    """Reject counterparty identity values that conflict with the fill markers.
+
+    The document is filled by substituting square-bracket template tokens (e.g.
+    ``[COMPANY NAME]``, ``[GOVERNING LAW]``). A square bracket in a user-supplied
+    identity value therefore either collides with one of those markers — which
+    used to surface as the opaque ``"Generated NDA still contains unfilled
+    placeholders: ..."`` failure with no hint of which field caused it — or leaves
+    stray bracketed text in a signed legal document. We REJECT such values rather
+    than silently sanitising them (a name/address is a legal value the engine must
+    never alter), raising a clear, field-scoped :class:`NdaGenerationError` that
+    names the offending field and the reason. The first offending field is
+    reported (the caller fixes one field per attempt).
+    """
+
+    for attr, label in _IDENTITY_INTAKE_FIELDS:
+        value = str(getattr(intake, attr, "") or "")
+        if "[" in value or "]" in value:
+            bad = "[" if "[" in value else "]"
+            raise NdaGenerationError(
+                f"The {label} ({attr}) contains a square bracket '{bad}', which conflicts "
+                f"with the NDA template's fill markers (e.g. [GOVERNING LAW]). Remove the "
+                f"bracketed text from {attr} and try again."
+            )
+
+
 @dataclass(frozen=True)
 class EntityParty:
     """The Aspora signing entity (the SECOND party) for this NDA.
@@ -416,6 +458,11 @@ def generate_nda(
         raise NdaGenerationError(
             f"nda_type {intake.nda_type!r} is not supported yet; only {NDA_TYPE_MUTUAL!r} is implemented."
         )
+
+    # Reject counterparty identity values that collide with the fill markers
+    # BEFORE any fill runs, with a clear field-scoped error (replacing the opaque
+    # leftover-placeholder failure). Identity values are never altered.
+    validate_intake_identity_fields(intake)
 
     term_years = _resolve_term_years(intake.term_years, playbook)
     agreement_date = intake.agreement_date or _dt.date.today()
