@@ -51,6 +51,13 @@ def _flagged_review() -> dict:
     return {"clauses": [{"id": "mutuality", "decision": "review"}]}
 
 
+def _failed_review() -> dict:
+    # A pure-fail review (state 'check', counts.review == 0): the AI rejected a
+    # required clause (e.g. an unapproved governing law). This is the blocker
+    # fixture -- it must NOT auto-clear.
+    return {"clauses": [{"id": "governing_law", "decision": "fail"}]}
+
+
 def _no_blocks(matter):  # stand-in for a non-stale, fully-resolved approval gate
     return []
 
@@ -80,6 +87,24 @@ class PhaseStatusDerivationTests(unittest.TestCase):
         state = workflow_state({"extracted_text": "x", "review_result": _flagged_review()})
         self.assertEqual(state["phase"], PHASE_REVIEW)
         self.assertEqual(state["status"], STATUS_AWAITING_HUMAN)
+
+    def test_review_awaiting_human_when_failed(self):
+        # The blocker fix at the workflow consumer: a pure-fail (check) review must
+        # land in Review/awaiting_human, NOT auto_cleared -- a human has to resolve
+        # the flagged clauses before it can move on.
+        state = workflow_state({"extracted_text": "x", "review_result": _failed_review()})
+        self.assertEqual(state["phase"], PHASE_REVIEW)
+        self.assertEqual(state["status"], STATUS_AWAITING_HUMAN)
+
+    def test_failed_review_advances_to_approval_once_human_engages(self):
+        # Not permanently wedged: once the human engages (human_reviewed) a
+        # fail-state matter advances past Review to the approval gate, exactly like
+        # a needs-review matter. The earlier _approval_status branch owns this.
+        matter = {"extracted_text": "x", "human_reviewed": True, "review_result": _failed_review()}
+        with mock.patch.object(workflow, "_approval_blocks", _no_blocks):
+            state = workflow_state(matter)
+        self.assertEqual(state["phase"], PHASE_APPROVAL)
+        self.assertEqual(state["status"], STATUS_AWAITING_APPROVAL)
 
     def test_approval_awaiting_when_resolved_and_reviewed(self):
         matter = {"extracted_text": "x", "human_reviewed": True, "review_result": _pass_review()}

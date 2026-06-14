@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .review_state import review_state_from_result
+from .review_state import REVIEW_STATE_CHECK, review_state_from_result
 
 WORKFLOW_STATE_VERSION = 1
 
@@ -302,7 +302,20 @@ def _review_status(matter: Dict[str, Any]) -> str | None:
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
         state = review_state_from_result(review_result)
-        if bool(state.get("blocks_send")) or bool(state.get("requires_human_review")):
+        # An unresolved fail (check) state belongs in Review/awaiting_human just like
+        # needs-review: a human must resolve the flagged clauses before it can move
+        # on. aggregate_review_state's blocks_send/requires_human_review are review>0
+        # only, so consume the already-computed blocks_auto_send/requires_redline
+        # (and the CHECK state) so a pure-fail matter is no longer auto_cleared. Once
+        # the human engages (human_reviewed) the earlier _approval_status branch
+        # advances it to awaiting_approval, so this never wedges a fail-state matter.
+        if (
+            bool(state.get("blocks_send"))
+            or bool(state.get("requires_human_review"))
+            or bool(state.get("blocks_auto_send"))
+            or bool(state.get("requires_redline"))
+            or str(state.get("state") or "") == REVIEW_STATE_CHECK
+        ):
             return STATUS_AWAITING_HUMAN
         return STATUS_AUTO_CLEARED
     return None

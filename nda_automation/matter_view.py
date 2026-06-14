@@ -120,7 +120,7 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
             "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
-    elif matter_needs_human_review(matter) and not matter.get("human_reviewed"):
+    elif matter_needs_human_review(matter) and not _matter_review_block_resolved(matter):
         send_block_reason = "Matter needs human review before a redline can be sent."
     elif not recipient:
         send_block_reason = "Matter does not have a valid reply recipient email address."
@@ -195,20 +195,50 @@ def matter_artifacts_view(matter: dict[str, Any]) -> list[dict[str, Any]]:
     return view
 
 
+def _matter_review_block_resolved(matter: dict[str, Any]) -> bool:
+    """Has a human resolved the review/fail block so the redline can be sent?
+
+    Mirrors matter_lifecycle._matter_review_block_resolved so the UI projection's
+    can_send_redline / send_block_reason stay aligned with the actual send gate:
+    a needs-review OR unresolved-fail (check) matter is sendable once a human
+    engages it -- ``human_reviewed`` set, or a recorded approval (a stronger
+    sign-off). Kept local to avoid importing matter_lifecycle (cycle).
+    """
+    if matter.get("human_reviewed"):
+        return True
+    if str(matter.get("status") or "").strip().lower() == "approved":
+        return True
+    return bool(matter.get("approved_at"))
+
+
 def matter_needs_human_review(matter: dict[str, Any]) -> bool:
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
         return result_requires_human_review(review_result)
     review_state = matter.get("review_state")
     if isinstance(review_state, dict):
-        if bool(review_state.get("requires_human_review")) or bool(review_state.get("blocks_send")):
+        # Mirror result_requires_human_review for the stored-state fallback: an
+        # unresolved fail (check) state must gate the send like needs-review does,
+        # consuming the already-computed blocks_auto_send/requires_redline flags
+        # (and the CHECK state itself) rather than only the review-state flags.
+        if (
+            bool(review_state.get("requires_human_review"))
+            or bool(review_state.get("blocks_send"))
+            or bool(review_state.get("blocks_auto_send"))
+            or bool(review_state.get("requires_redline"))
+        ):
             return True
-        if str(review_state.get("state") or "") == "review":
+        if str(review_state.get("state") or "") in {"review", "check"}:
             return True
     try:
-        return int(matter.get("requirements_needs_review") or 0) > 0
+        needs_review = int(matter.get("requirements_needs_review") or 0) > 0
     except (TypeError, ValueError):
         return True
+    try:
+        failed = int(matter.get("requirements_failed") or 0) > 0
+    except (TypeError, ValueError):
+        return True
+    return needs_review or failed
 
 
 def matter_review_state(matter: dict[str, Any]) -> dict[str, Any]:

@@ -52,6 +52,24 @@ class MatterDeliveryError(MatterLifecycleError):
     pass
 
 
+def _matter_review_block_resolved(matter: dict[str, Any]) -> bool:
+    """Has a human resolved the review/fail block so the redline can go out?
+
+    The send gate now blocks BOTH needs-review and unresolved-fail (check) state
+    (see review_state.result_requires_human_review). Both are cleared the same
+    way: a human engages the matter. ``human_reviewed`` is the canonical
+    reviewed flag (set via the board's "mark reviewed" toggle); a recorded
+    approval (``status == "approved"`` / ``approved_at``) is a strictly stronger
+    sign-off and also clears it, so an approved fail-state matter is never
+    permanently wedged at the send step.
+    """
+    if matter.get("human_reviewed"):
+        return True
+    if str(matter.get("status") or "").strip().lower() == "approved":
+        return True
+    return bool(matter.get("approved_at"))
+
+
 @dataclass(frozen=True)
 class ReviewRefreshResult:
     matter: dict[str, Any]
@@ -293,7 +311,7 @@ class RepositoryMatterLifecycle:
             raise MatterDeliveryError("Matter does not have a valid reply recipient email address.")
         if not confirmed_recipient:
             raise MatterDeliveryError("Confirm the outbound recipient email address before sending.")
-        if matter_view.matter_needs_human_review(matter) and not matter.get("human_reviewed"):
+        if matter_view.matter_needs_human_review(matter) and not _matter_review_block_resolved(matter):
             raise MatterSendBlockedError("Matter needs human review before a redline can be sent.")
         if not app_settings.gmail_role_enabled("outbound"):
             raise MatterSendBlockedError("Gmail outbound is disabled in Admin.")
@@ -315,7 +333,7 @@ class RepositoryMatterLifecycle:
         send_matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if send_matter is None:
             raise MatterNotFoundError("Matter not found.")
-        if matter_view.matter_needs_human_review(send_matter) and not send_matter.get("human_reviewed"):
+        if matter_view.matter_needs_human_review(send_matter) and not _matter_review_block_resolved(send_matter):
             raise MatterSendBlockedError("Matter needs human review before a redline can be sent.")
 
         send_kwargs = {
