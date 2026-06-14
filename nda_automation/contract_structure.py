@@ -34,7 +34,7 @@ EXPLICIT_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 NUMBERED_HEADING_RE = re.compile(
-    rf"^\s*(?P<number>{NUMBERED_NUMBER_PATTERN})(?:\s*[:.\-\u2013\u2014]\s*|\s+)(?P<heading>.+)$"
+    rf"^\s*(?P<number>{NUMBERED_NUMBER_PATTERN})(?P<separator>\s*[:.\-\u2013\u2014]\s*|\s+)(?P<heading>.+)$"
 )
 UPPERCASE_PREFIX_RE = re.compile(
     r"^\s*(?P<heading>[A-Z][A-Z0-9 &,/()'\".\-]{2,90}):\s*(?P<body>.+)$"
@@ -156,7 +156,7 @@ def _detect_section_candidates(paragraphs: List[Paragraph]) -> List[_SectionCand
     candidates: List[_SectionCandidate] = []
     seen_positions = set()
     for position, paragraph in enumerate(paragraphs):
-        candidate = _candidate_for_paragraph(position, paragraph)
+        candidate = _candidate_for_paragraph(position, paragraph, candidates)
         if candidate is None or position in seen_positions:
             continue
         candidates.append(candidate)
@@ -164,7 +164,12 @@ def _detect_section_candidates(paragraphs: List[Paragraph]) -> List[_SectionCand
     return candidates
 
 
-def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCandidate | None:
+def _candidate_for_paragraph(
+    position: int,
+    paragraph: Paragraph,
+    prior_candidates: List[_SectionCandidate] | None = None,
+) -> _SectionCandidate | None:
+    prior_candidates = prior_candidates or []
     text = _collapse_whitespace(str(paragraph.get("text", "")))
     if not text:
         return None
@@ -193,16 +198,34 @@ def _candidate_for_paragraph(position: int, paragraph: Paragraph) -> _SectionCan
         )
 
     numbered_match = NUMBERED_HEADING_RE.match(text)
-    if numbered_match and _looks_like_numbered_heading(numbered_match.group("number"), numbered_match.group("heading")):
+    if numbered_match and _looks_like_numbered_heading(
+        numbered_match.group("number"),
+        numbered_match.group("heading"),
+        numbered_match.group("separator"),
+    ):
         number = TRAILING_NUMBER_DOT_RE.sub("", numbered_match.group("number").strip())
         heading = _clean_heading(numbered_match.group("heading"))
+        level = _level_for_number(number)
+        # Bare-outline over-promotion guard: a lone sub-list marker -- a parenthetical
+        # like "(ii)" or a bare single letter/roman like "A"/"IV" -- intrinsically lives
+        # *under* a parent and can never legitimately be the first top-level section.
+        # Without prior structural context it is a stray list bullet; promoting it to a
+        # level-1 section lets its paragraph range swallow the rest of the document
+        # (observed: one bullet swallowing 28% of a real doc). Only accept it once some
+        # genuine numbered/explicit outline context already exists upstream.
+        if (
+            level == 1
+            and _is_bare_outline_marker(number)
+            and not _has_outline_context(prior_candidates)
+        ):
+            return None
         return _SectionCandidate(
             position=position,
             kind="numbered",
             label=number,
             number=number,
             heading=heading,
-            level=_level_for_number(number),
+            level=level,
             confidence="high",
             heading_text=_preview(text),
         )
@@ -470,7 +493,7 @@ def _source_stats(paragraphs: List[Paragraph], sections: List[Dict[str, object]]
     }
 
 
-def _looks_like_numbered_heading(number: str, heading: str) -> bool:
+def _looks_like_numbered_heading(number: str, heading: str, separator: str = "") -> bool:
     cleaned = _clean_heading(heading)
     if not cleaned:
         return False
@@ -478,7 +501,34 @@ def _looks_like_numbered_heading(number: str, heading: str) -> bool:
         return _looks_like_short_heading(cleaned)
     if len(cleaned) <= 120:
         return True
-    return ":" in cleaned[:90]
+    if ":" in cleaned[:90]:
+        return True
+    # Run-in clause rescue: a genuine flat-DOCX / PDF-reconstructed clause reads
+    # "5. The Receiving Party shall not disclose ..." -- a real clause number,
+    # followed by an explicit punctuation separator (the deliberate marker, not the
+    # bare whitespace of body prose like "5 years from the date"), running straight
+    # into a long sentence that begins like a clause (an uppercase first letter, the
+    # start of a real sentence -- not a mid-sentence reference fragment such as
+    # "5 years ..."). Capturing it as a clause is correct structure; the explicit
+    # separator + uppercase-sentence-start guard keeps arbitrary numbered body prose
+    # out. Strict-outline markers ((ii), (a), bare letters/romans) never reach here.
+    return _has_explicit_separator(separator) and _starts_like_clause_sentence(cleaned)
+
+
+def _has_explicit_separator(separator: str) -> bool:
+    """True when the marker was followed by deliberate punctuation (``.``/``:``/dash),
+    not bare whitespace. A clause marker reads ``5. The ...``; body prose such as
+    ``5 years from the date`` separates the number from the next word with whitespace
+    only and must not be promoted to a clause heading."""
+    return bool(re.search(r"[:.\-–—]", separator or ""))
+
+
+def _starts_like_clause_sentence(cleaned: str) -> bool:
+    """True when a (long) run-in heading begins like a real clause sentence: its first
+    alphabetic character is uppercase. Mid-sentence reference fragments and unit phrases
+    (``years from the date``, ``business days notice``) begin lowercase and are rejected."""
+    first_alpha = next((character for character in cleaned if character.isalpha()), "")
+    return bool(first_alpha and first_alpha.isupper())
 
 
 def _looks_like_explicit_heading(number: str, heading: str, separator: str) -> bool:
@@ -492,6 +542,35 @@ def _looks_like_explicit_heading(number: str, heading: str, separator: str) -> b
     if _requires_strict_outline_heading(number):
         return _looks_like_short_heading(cleaned)
     return _looks_like_short_heading(cleaned) or not re.search(OPERATIVE_SENTENCE_RE, cleaned)
+
+
+def _is_bare_outline_marker(number: str) -> bool:
+    """True for a single-part sub-list marker that has no own parent in its identifier:
+    a parenthetical like ``(ii)``/``(a)``, or a bare single letter/roman like ``A``/``IV``.
+    Compound markers (``1(a)``, ``5.1``, ``II.A``) carry their own parent and are excluded;
+    digit-led top-level numbers (``5``, ``10``) are real clauses and are excluded."""
+    normalized_number = str(number or "").strip()
+    if not normalized_number:
+        return False
+    if "." in normalized_number:
+        return False
+    parenthetical_match = PARENTHETICAL_SUFFIX_RE.match(normalized_number)
+    if parenthetical_match:
+        # A lone "(ii)" has an empty prefix; "1(a)" has prefix "1" and is not bare.
+        return not parenthetical_match.group("prefix").strip()
+    return bool(
+        re.fullmatch(rf"(?:{ROMAN_NUMBER_PATTERN}|[A-Za-z])", normalized_number, flags=re.IGNORECASE)
+    )
+
+
+def _has_outline_context(prior_candidates: List[_SectionCandidate]) -> bool:
+    """True when at least one genuine numbered/explicit section already precedes this one,
+    i.e. the document is structured and a sub-list marker has plausible context. A lone
+    bullet in otherwise unstructured prose has no such context."""
+    return any(
+        candidate.number and candidate.kind in {"numbered", *EXPLICIT_KIND_LABELS}
+        for candidate in prior_candidates
+    )
 
 
 def _requires_strict_outline_heading(number: str) -> bool:

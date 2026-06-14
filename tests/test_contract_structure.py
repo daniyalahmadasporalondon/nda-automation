@@ -242,6 +242,100 @@ class ContractStructureTests(unittest.TestCase):
         self.assertEqual([section["label"] for section in structure["sections"]], ["Preamble"])
         self.assertEqual(structure["sections"][0]["paragraph_ids"], ["p1", "p2", "p3"])
 
+    def test_captures_run_in_numbered_clause_without_colon(self):
+        # A flat-DOCX / PDF-reconstructed clause: a real clause number followed by a
+        # long colon-less run-in sentence. The old heading gate (<=120 chars OR ':' in
+        # first 90) silently DROPPED this; it must now be captured as a clause with the
+        # correct paragraph boundaries.
+        run_in = (
+            "5. The Receiving Party shall not disclose Confidential Information to any "
+            "third party without the prior written consent of the Disclosing Party and "
+            "shall use it solely for the Purpose of evaluating the proposed transaction."
+        )
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            run_in,
+            "This obligation survives termination of the Agreement.",
+            "6. Term",
+            "This Agreement remains in force for three years.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        sections = structure["sections"]
+        sections_by_label = {section["label"]: section for section in sections}
+
+        self.assertEqual([section["label"] for section in sections], ["Preamble", "5", "6"])
+        clause_5 = sections_by_label["5"]
+        self.assertEqual(clause_5["kind"], "numbered")
+        self.assertEqual(clause_5["level"], 1)
+        # Boundaries: the run-in clause owns its own paragraph plus the trailing body
+        # sentence, ending exactly where clause 6 begins.
+        self.assertEqual(clause_5["paragraph_ids"], ["p2", "p3"])
+        self.assertEqual(clause_5["start_index"], 2)
+        self.assertEqual(clause_5["end_index"], 3)
+        self.assertEqual(sections_by_label["6"]["paragraph_ids"], ["p4", "p5"])
+        self.assertEqual(structure["stats"]["unmapped_paragraph_count"], 0)
+        self.assertIn(
+            {"key": "number:5", "section_id": clause_5["id"], "label": "5"},
+            structure["aliases"],
+        )
+
+    def test_does_not_promote_numbered_body_prose_run_in(self):
+        # Body prose that merely begins with a number must NOT be promoted to a clause.
+        # "5 years ..." separates the number from the next word with whitespace only
+        # (not a deliberate "5." marker) and continues a sentence (lowercase), so the
+        # run-in rescue must reject it.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "Clause 1: Definitions",
+            "Definitions text.",
+            "5 years from the date of disclosure the obligations shall cease and the "
+            "Receiving Party is released from all duties of confidentiality forever.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+
+        self.assertEqual([section["label"] for section in structure["sections"]], ["Clause 1"])
+        self.assertEqual(structure["sections"][0]["paragraph_ids"], ["p1", "p2", "p3"])
+
+    def test_does_not_over_promote_lone_parenthetical_bullet(self):
+        # A stray sub-list bullet "(ii) Confidentiality" in otherwise unstructured prose
+        # must not become a level-1 section: promoting it let one bullet swallow ~28% of
+        # a real document. With no prior numbered/explicit outline context it is rejected,
+        # so the body stays in the preamble rather than being captured under the bullet.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "This Agreement is made between the parties on the date last signed below.",
+            "The parties wish to exchange confidential information for the Purpose.",
+            "(ii) Confidentiality",
+            "The Receiving Party shall keep all Confidential Information secret.",
+            "The obligations of confidentiality survive termination for five years.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+
+        self.assertEqual([section["label"] for section in structure["sections"]], ["Preamble"])
+        self.assertEqual(
+            structure["sections"][0]["paragraph_ids"],
+            ["p1", "p2", "p3", "p4", "p5"],
+        )
+
+    def test_outline_bullet_promoted_only_with_prior_structure(self):
+        # The bare-outline guard is context-aware: the SAME "(ii) Confidentiality" bullet
+        # IS legitimate structure once genuine numbered clauses already precede it, so it
+        # must still be captured there (no false negative for real outlines).
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "1. Definitions",
+            "Confidential Information means non-public information.",
+            "(ii) Confidentiality",
+            "The Receiving Party shall keep all Confidential Information secret.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        labels = [section["label"] for section in structure["sections"]]
+
+        self.assertEqual(labels, ["1", "(ii)"])
+        sections_by_label = {section["label"]: section for section in structure["sections"]}
+        self.assertEqual(sections_by_label["(ii)"]["paragraph_ids"], ["p3", "p4"])
+
     def test_exposes_resolver_ready_reference_index(self):
         paragraphs = split_document_paragraphs("\n\n".join([
             "MUTUAL NON-DISCLOSURE AGREEMENT",
