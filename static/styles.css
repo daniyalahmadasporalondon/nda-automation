@@ -1097,19 +1097,44 @@ h3 {
   width: 16px;
 }
 
+/* Sizing comes from `.actions button.icon-only` (32px square); this rule only
+   supplies the borderless icon-button look + the disabled/blocked/send states. */
 .studio-send-redline-button {
   align-items: center;
-  border-radius: 9999px;
-  flex: 0 0 26px;
-  height: 26px;
+  background: transparent;
+  border: 0;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
   justify-content: center;
-  padding: 0;
-  width: 26px;
+  transition: background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
-.studio-send-redline-button svg {
-  height: 14px;
-  width: 14px;
+.studio-send-redline-button:hover:not(:disabled) {
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+  color: var(--brand);
+}
+
+.studio-send-redline-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* A review has run but sending is blocked (e.g. the matter needs human review):
+   the button stays clickable so a click surfaces the reason, but it reads as muted. */
+.studio-send-redline-button.blocked {
+  color: var(--ink-soft);
+  opacity: 0.55;
+}
+
+.studio-send-redline-button.confirming {
+  color: var(--brand);
+}
+
+.studio-send-redline-button.sending {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .send-plane-icon {
