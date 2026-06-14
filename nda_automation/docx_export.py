@@ -37,6 +37,7 @@ from .redline_xml import (
     _tracked_delete_paragraph,
     _tracked_insert_paragraphs,
     _tracked_replace_paragraph,
+    replace_redline_has_run_model,
 )
 from .docx_xml import (
     UnsafeDocxXmlError,
@@ -911,12 +912,14 @@ def _source_tracked_primary_redline_paragraph(
         # as FORMATTED runs (bold/italic/font/size) so the clean export keeps the
         # paragraph's formatting. ADDITIVE and gated on replacement_runs being a
         # non-empty list -- redlines without it keep the existing char/word diff path.
-        replacement_runs = redline.get("replacement_runs")
-        if isinstance(replacement_runs, list) and replacement_runs:
+        # The gate keys off the SAME predicate (replace_redline_has_run_model, via
+        # redline_replace_uses_whole_text_markup) so builder and gate agree this branch
+        # emits whole-del/whole-ins markup.
+        if replace_redline_has_run_model(redline):
             return _source_tracked_replace_paragraph_runs(
                 source_paragraph,
                 original_text,
-                replacement_runs,
+                redline["replacement_runs"],
                 revision_id,
             )
         # A free-form manual viewer edit diffs at the CHARACTER level (mirroring the

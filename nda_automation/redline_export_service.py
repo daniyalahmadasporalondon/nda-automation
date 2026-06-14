@@ -16,7 +16,11 @@ from .docx_export import (
     accept_all_revisions,
     build_review_report_docx,
 )
-from .docx_health import validate_docx_open_health, verify_export_content_coverage
+from .docx_health import (
+    validate_docx_open_health,
+    verify_export_content_coverage,
+    verify_pdf_reconstruction_redline_coverage,
+)
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .review_staleness import review_result_staleness, stale_review_message
@@ -212,6 +216,13 @@ def _build_redline_export(
                 source_filename=source_filename,
             ) from exc
         _raise_for_package_result(package_result)
+        # Post-render coverage gate adapted to the reconstruction. The strong DOCX
+        # sequence gate is off for PDF (the rebuilt body's paragraph/whitespace model
+        # differs from the PDF extractor, so a positional sequence match would
+        # false-positive). The anchor check above is fail-closed PRE-render; this
+        # verifies POST-render that every reviewer redline actually landed in the
+        # output bytes, so a dropped redline fails loudly instead of shipping silently.
+        _raise_for_pdf_redline_coverage(package_result.data, review_result, source_filename)
         download_filename = reconstructed.filename.replace(".docx", "-reviewed.docx")
         report_bytes = package_result.data
         if bool(payload.get("clean")):
@@ -368,6 +379,28 @@ def _validate_export(
         telemetry.increment("docx_export_content_failures")
         print(f"DOCX export content check failed: {len(content_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its content-coverage check.", content_errors)
+
+
+def _raise_for_pdf_redline_coverage(
+    report_bytes: bytes, review_result: dict, source_filename: str
+) -> None:
+    """Block a PDF-source reviewed export whose reconstruction silently dropped a
+    reviewer redline. Fails closed: a detected shortfall blocks the send/export and
+    points the UI at the source-PDF marked-up annotation recovery path (the same path
+    used when anchoring fails), so no incomplete redline ships."""
+    coverage_errors = verify_pdf_reconstruction_redline_coverage(
+        report_bytes,
+        review_result.get("redline_edits", []),
+    )
+    if coverage_errors:
+        telemetry.increment("pdf_redline_coverage_blocked")
+        print(f"PDF redline coverage check failed: {len(coverage_errors)} issue(s)")
+        raise PdfSourceRedlineUnavailableError(
+            "Some reviewer changes were not represented in the reconstructed Word document. "
+            "Export blocked to avoid sending an incomplete redline.",
+            source_filename=source_filename,
+            reason="redline_coverage_shortfall",
+        )
 
 
 def _raise_for_package_result(package_result: docx_package_renderer.DocxPackageRenderResult) -> None:

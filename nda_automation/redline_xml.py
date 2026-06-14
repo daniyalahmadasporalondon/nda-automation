@@ -730,6 +730,67 @@ def _tracked_delete_paragraph(text: str, revision_id: int) -> str:
     revision_attrs = _revision_attrs(revision_id)
     return f"<w:p>{_tracked_delete_with_attrs(text, revision_attrs)}</w:p>"
 
+def tracked_replace_uses_whole_text_markup(original: str, replacement: str) -> bool:
+    """Whether :func:`_tracked_replace_paragraph` emits WHOLE-del/WHOLE-ins markup
+    (the whole ``original`` inside one ``w:del`` and the whole ``replacement`` inside
+    one ``w:ins``) rather than fine-grained per-changed-token revision runs.
+
+    The builder takes the whole-text branch when EITHER side carries an internal
+    newline (the multiline guard below) OR the inline diff overflows its matrix limit
+    and falls back to a single whole delete + whole insert pair. The PDF redline
+    coverage gate consumes this predicate so its expected delta is computed against the
+    SAME markup the builder actually emits: when this returns True the gate must expect
+    the WHOLE-text per-word tokens (not the shared-token-excluding fine-grained diff),
+    or a genuinely-landed multiline/large replace is wrongly reported missing.
+
+    This is the TEXT-only arm (newline / matrix-overflow). The replace builder has a
+    THIRD whole-text branch -- a non-empty ``replacement_runs`` run model routed to
+    :func:`_tracked_replace_paragraph_runs` -- which depends on the redline, not just the
+    text. Callers holding the whole redline must use
+    :func:`redline_replace_uses_whole_text_markup` so all three branches are modelled."""
+    if "\n" in str(original) or "\n" in str(replacement):
+        return True
+    operations = diff_text_operations(str(original), str(replacement))
+    return operations == [("delete", str(original or "")), ("insert", str(replacement or ""))]
+
+
+def replace_redline_has_run_model(redline: object) -> bool:
+    """Whether a replace ``redline`` carries a non-empty ``replacement_runs`` run model.
+
+    This is the single signal that routes
+    :func:`docx_export._source_tracked_primary_redline_paragraph` into
+    :func:`_source_tracked_replace_paragraph_runs` (-> :func:`_tracked_replace_paragraph_runs`),
+    which emits WHOLE-del/WHOLE-ins markup regardless of the text size. Both the builder
+    and the coverage gate key off this one predicate so they cannot disagree on which
+    branch runs."""
+    if not isinstance(redline, dict):
+        return False
+    replacement_runs = redline.get("replacement_runs")
+    return isinstance(replacement_runs, list) and bool(replacement_runs)
+
+
+def redline_replace_uses_whole_text_markup(redline: object, original: str, replacement: str) -> bool:
+    """Whether the replace builder emits WHOLE-del/WHOLE-ins markup for this redline.
+
+    The single source of truth over the COMPLETE set of whole-text replace branches the
+    builder takes:
+
+      (a) either side carries an internal newline (the multiline guard),
+      (b) the inline diff overflows its matrix limit (whole-text fallback), or
+      (c) the redline carries a non-empty ``replacement_runs`` run model
+          (:func:`_tracked_replace_paragraph_runs` always emits whole-del/whole-ins).
+
+    Cases (a)/(b) are delegated to :func:`tracked_replace_uses_whole_text_markup` (text
+    only); case (c) needs the whole redline. The PDF coverage gate consults THIS
+    predicate so its expected delta matches the markup the builder actually emits for
+    every branch -- a genuinely-landed runs/multiline/large replace reconciles and
+    passes, while a drop (target paragraph left plain) still carries none of the tokens
+    and is caught."""
+    if replace_redline_has_run_model(redline):
+        return True
+    return tracked_replace_uses_whole_text_markup(original, replacement)
+
+
 def _tracked_replace_paragraph(original: str, replacement: str, first_revision_id: int) -> Tuple[str, int]:
     if "\n" in str(original) or "\n" in str(replacement):
         return (
