@@ -61,6 +61,13 @@ _CLAUSE_SECTION_CUES: dict[str, tuple[str, ...]] = {
 }
 
 _SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
+# A single signature-block line: a lone marker label (By:/Title:/Date:/Name:/
+# Signature[:]) on its own paragraph -- the DOCX-default shape where each label is its
+# own Word paragraph. Anchored to line start so body prose mentioning "name" or "date"
+# mid-sentence does not trip it.
+_SIGNATURE_LINE_MARKER_PATTERN = r"^\s*(?:by|title|date|name|signature|signed)\s*[:_]"
+# A signature underscore/blank fill line ("____", "/s/", "___________").
+_SIGNATURE_FILL_LINE_PATTERN = r"^\s*(?:_{3,}|/s/|x_{2,})\s*$"
 
 
 def structure_aware_insertion_anchor(
@@ -170,7 +177,9 @@ def _section_last_paragraph_before_signatures(
             continue
         if signature_floor_index is not None and index >= signature_floor_index:
             continue
-        if _is_signature_anchor_paragraph(paragraph):
+        # Defense in depth: never anchor on a signature-ish line even if the floor
+        # somehow missed it (e.g. a stray block before the main one).
+        if _is_signature_line_paragraph(paragraph):
             continue
         candidates.append(paragraph)
     if not candidates:
@@ -183,17 +192,78 @@ def _ordered_paragraphs(paragraphs_by_id: Mapping[str, Paragraph]) -> list[Parag
 
 
 def _first_signature_index(ordered_paragraphs: Sequence[Paragraph]) -> int | None:
-    for paragraph in ordered_paragraphs:
+    """Index of the FIRST paragraph of the document's signature block, block-aware.
+
+    The signature block can arrive in two shapes:
+
+    * MERGED -- the whole block sits in one paragraph (multiple markers, or a "For X"
+      line plus a marker). The legacy ``_is_signature_anchor_paragraph`` detects this.
+    * ONE-MARKER-PER-PARAGRAPH (the DOCX default) -- "For Aspora Limited", "By: ___",
+      "Title: ___", "Date: ___" each become their OWN paragraph, so no single paragraph
+      trips the merged test. Here the block is a RUN of consecutive signature-ish lines.
+
+    We return the index of the earliest paragraph that either is a merged signature
+    paragraph OR begins a run of >=2 consecutive signature-ish lines. Conservative by
+    design: anything that looks like the start of a signature run is treated as the
+    block, so an anchor can only ever be refused (never wrongly admitted past it),
+    keeping #6 at least as safe as the legacy regex tiers.
+    """
+    paragraphs = list(ordered_paragraphs)
+    for position, paragraph in enumerate(paragraphs):
+        # Merged single-paragraph block: matches the legacy detector directly.
         if _is_signature_anchor_paragraph(paragraph):
+            return _paragraph_index(paragraph)
+        # One-marker-per-paragraph block: this paragraph is a signature-ish line AND it
+        # begins/continues a run of >=2 consecutive signature-ish lines.
+        if _is_signature_line_paragraph(paragraph) and _starts_signature_run(paragraphs, position):
             return _paragraph_index(paragraph)
     return None
 
 
+def _starts_signature_run(paragraphs: Sequence[Paragraph], position: int) -> bool:
+    """True when ``position`` is the FIRST signature-ish line of a run of >=2 such lines.
+
+    A run is the maximal block of consecutive signature-ish paragraphs ending at this
+    position's block. Requiring length >=2 avoids treating a single stray "Date:" / "Name:"
+    line in body prose as a whole signature block, while the standard DOCX block (a
+    "For <party>" line plus per-marker lines) easily clears the threshold.
+    """
+    # Must be the START of the run: the previous paragraph is NOT signature-ish.
+    if position > 0 and _is_signature_line_paragraph(paragraphs[position - 1]):
+        return False
+    run_length = 0
+    for paragraph in paragraphs[position:]:
+        if not _is_signature_line_paragraph(paragraph):
+            break
+        run_length += 1
+        if run_length >= 2:
+            return True
+    return run_length >= 2
+
+
 def _is_signature_anchor_paragraph(paragraph: Mapping[str, Any]) -> bool:
+    """Merged-block detector (kept identical to the legacy clause_outcomes logic): a
+    single paragraph carrying >=2 markers, or a "For <party>" line plus a marker."""
     text = str(paragraph.get("text") or "")
     marker_count = len(re.findall(_SIGNATURE_MARKER_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE))
     has_for_line = bool(re.search(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE))
     return marker_count >= 2 or (has_for_line and marker_count >= 1)
+
+
+def _is_signature_line_paragraph(paragraph: Mapping[str, Any]) -> bool:
+    """True for a single line of a signature block: a "For <party>" line, a lone marker
+    label (By:/Title:/Date:/Name:/Signature), a fill/underscore line, or the merged
+    multi-marker shape. Used to detect the one-marker-per-paragraph DOCX layout."""
+    if _is_signature_anchor_paragraph(paragraph):
+        return True
+    text = str(paragraph.get("text") or "")
+    if re.search(SIGNATURE_FOR_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
+        return True
+    if re.search(_SIGNATURE_LINE_MARKER_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
+        return True
+    if re.search(_SIGNATURE_FILL_LINE_PATTERN, text, flags=re.IGNORECASE | re.MULTILINE):
+        return True
+    return False
 
 
 def _paragraph_index(paragraph: Mapping[str, Any]) -> int | None:
