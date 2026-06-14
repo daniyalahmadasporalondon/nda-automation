@@ -241,7 +241,9 @@ def reassess_single_clause(
     )
     _refinalize_ai_first_verifier_changes(clause_results_list, ai_verifier_review, document_paragraphs)
     # Build redline for just this clause.
-    redline_edits = _build_redline_edits(clause_results_list, document_paragraphs)
+    redline_edits = _build_redline_edits(
+        clause_results_list, document_paragraphs, contract_structure=contract_structure
+    )
     attach_redline_rationales(
         clause_results_list,
         redline_edits,
@@ -372,7 +374,9 @@ def build_ai_first_review_result(
         review_count=counts["needs_review"],
         check_count=counts["failed"],
     )
-    redline_edits = _build_redline_edits(clause_results, document_paragraphs)
+    redline_edits = _build_redline_edits(
+        clause_results, document_paragraphs, contract_structure=contract_structure
+    )
     # Explain WHY each proposed redline exists, sourced from the Playbook clause
     # (requirement / fallback wording / instructions) and the clause's own
     # grounded citation. Only clauses that produced an edit get a rationale.

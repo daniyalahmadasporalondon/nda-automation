@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, List
+from contextvars import ContextVar
+from typing import Any, Callable, Dict, List, Mapping
 
 from .checks.common import (
     ISSUE_TYPE_MISSING,
@@ -23,6 +24,16 @@ from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
+)
+from .redline_anchor import structure_aware_insertion_anchor
+
+# #6: the contract structure for the document currently being redlined. Set for the
+# duration of build_redline_edits so _insertion_anchor_paragraph can place a MISSING
+# clause by real section order, without threading the structure through every
+# fixed-signature builder in REDLINE_BUILDERS. None (the default) reproduces the exact
+# legacy regex-tier behaviour, so every existing caller is unaffected.
+_ACTIVE_CONTRACT_STRUCTURE: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "active_contract_structure", default=None
 )
 
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
@@ -51,12 +62,24 @@ FOLLOWING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
 }
 
 
-def build_redline_edits(clause_results: List[ClauseResult], paragraphs: List[Paragraph]) -> List[RedlineEdit]:
+def build_redline_edits(
+    clause_results: List[ClauseResult],
+    paragraphs: List[Paragraph],
+    *,
+    contract_structure: Mapping[str, Any] | None = None,
+) -> List[RedlineEdit]:
     paragraphs_by_id = {str(paragraph["id"]): paragraph for paragraph in paragraphs}
     edits: List[RedlineEdit] = []
 
-    for clause in clause_results:
-        edits.extend(redline_edits_for_clause(clause, paragraphs_by_id, len(edits) + 1))
+    # #6: expose the document structure to _insertion_anchor_paragraph for the duration
+    # of this build only. Reset in finally so the contextvar never leaks into an
+    # unrelated later build (and so a nested/concurrent build sees its own value).
+    token = _ACTIVE_CONTRACT_STRUCTURE.set(contract_structure)
+    try:
+        for clause in clause_results:
+            edits.extend(redline_edits_for_clause(clause, paragraphs_by_id, len(edits) + 1))
+    finally:
+        _ACTIVE_CONTRACT_STRUCTURE.reset(token)
 
     return edits
 
@@ -147,10 +170,37 @@ def _insertion_anchor_paragraph(clause: ClauseResult, paragraphs_by_id: Dict[str
     if str(clause.get("id")) == "signatures":
         return paragraphs[-1]
 
-    anchor = _logical_missing_clause_anchor(clause, paragraphs)
-    if anchor:
-        return anchor
-    return _last_non_signature_paragraph(paragraphs) or paragraphs[-1]
+    # Legacy anchor: the authoritative, battle-tested regex-tier placement. This is the
+    # value we must NEVER do worse than (Invariant 2).
+    legacy_anchor = _logical_missing_clause_anchor(clause, paragraphs)
+    if not legacy_anchor:
+        legacy_anchor = _last_non_signature_paragraph(paragraphs) or paragraphs[-1]
+
+    # #6 (guarded): a structure-aware anchor that places the missing clause in real
+    # section order. structure_aware_insertion_anchor returns None whenever it cannot
+    # produce a confident, source-backed, pre-signature-region anchor (Invariant 1), so
+    # the legacy placement remains the fallback and the unchanged behaviour whenever no
+    # structure is supplied.
+    structure_anchor = structure_aware_insertion_anchor(
+        str(clause.get("id") or ""),
+        paragraphs_by_id,
+        _ACTIVE_CONTRACT_STRUCTURE.get(),
+    )
+
+    # INVARIANT 2 -- NEVER WORSE THAN LEGACY. Only accept the structure anchor when it
+    # lands STRICTLY EARLIER than the legacy anchor. If the structure pick is at or after
+    # the legacy pick (>=), the legacy pick wins. This makes #6 provably "at worst equal
+    # to legacy, never worse" independent of region-detection precision: a structure
+    # anchor can only ever move the insertion EARLIER (further from signatures), never
+    # later (closer to / past them).
+    if structure_anchor is not None:
+        structure_index = structure_anchor.get("index")
+        legacy_index = legacy_anchor.get("index")
+        if isinstance(structure_index, int) and isinstance(legacy_index, int):
+            if structure_index < legacy_index:
+                return structure_anchor
+
+    return legacy_anchor
 
 
 def _logical_missing_clause_anchor(clause: ClauseResult, paragraphs: List[Paragraph]) -> Paragraph | None:

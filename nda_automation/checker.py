@@ -1015,8 +1015,15 @@ def _required_clause_terms(clause: Dict[str, object], field: str) -> List[str]:
     return [str(term).lower().strip() for term in values if str(term).strip()]
 
 
-def _build_redline_edits(clause_results: List[ClauseResult], paragraphs: List[Paragraph]) -> List[RedlineEdit]:
-    return clause_outcomes.build_redline_edits(clause_results, paragraphs)
+def _build_redline_edits(
+    clause_results: List[ClauseResult],
+    paragraphs: List[Paragraph],
+    *,
+    contract_structure: Mapping[str, object] | None = None,
+) -> List[RedlineEdit]:
+    return clause_outcomes.build_redline_edits(
+        clause_results, paragraphs, contract_structure=contract_structure
+    )
 
 
 def _redline_edits_for_clause(

@@ -129,7 +129,9 @@ def orchestrate_review(command: ReviewCommand) -> dict[str, Any]:
     )
     checker._refinalize_verifier_changes(clause_results, ai_verifier_review)
     counts = review_result_clause_counts(clause_results)
-    redline_edits = checker._build_redline_edits(clause_results, document_paragraphs)
+    redline_edits = checker._build_redline_edits(
+        clause_results, document_paragraphs, contract_structure=contract_structure
+    )
     attach_redline_rationales(clause_results, redline_edits, playbook_clauses_by_id=clauses_by_id)
     review_state = aggregate_review_state(
         clause_results,
