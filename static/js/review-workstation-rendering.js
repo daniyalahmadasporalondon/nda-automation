@@ -1141,21 +1141,25 @@ function validParagraphIdSet() {
 // else still lands on the right paragraph. Ambiguous keys (a number that recurs across
 // restarted numbering) are intentionally absent from the binding map, so they resolve
 // to nothing — which is the accuracy-or-nothing behaviour the linkifier wants (leave
-// them as plain text). The backend defines NO "exhibit" alias kind (it is not in
-// EXPLICIT_KIND_LABELS), so an "Exhibit N" reference resolves only via "number:N" —
-// the FE must not invent an "exhibit:N" key the backend would never produce.
+// them as plain text). "Exhibit N" is an ATTACHMENT reference (like Schedule/Annex/
+// Appendix): the backend never emits an "exhibit:N" alias and, treated as an attachment
+// kind, never borrows a body "number:N" heading — so "Exhibit N" resolves the same way
+// on FE and BE (both decline to bridge it onto a Section-N). See the namespace guard in
+// resolveStructureReferenceParagraphId, which mirrors reference_resolver's attachment
+// rules exactly.
 //
 // The bare "pN" token is a DIRECT paragraph id, never a printed number: it is still
 // validated against the real paragraph ids (validParagraphIdSet), not the index.
 
 // The structure-reference word -> the canonical alias kind the backend index uses.
 // "paragraph"/"para"/"¶" carry no structural kind, so they resolve only via the
-// printed-number key. The kind strings MUST match EXPLICIT_KIND_LABELS in
-// contract_structure.py exactly — the backend only emits a "<kind>:<number>" alias key
-// for kinds in that map. "exhibit" is deliberately NOT a kind there, so an "Exhibit N"
-// reference maps to "" (kind-less): it resolves only via the bare "number:N" key, the
-// SAME fallback the backend takes. Inventing an "exhibit:N" key here would diverge from
-// the backend (a key it never produces), so it is omitted.
+// printed-number key. Kind strings for body/attachment words MUST match the backend's
+// EXPLICIT_KIND_LABELS in contract_structure.py — the index only emits a "<kind>:<number>"
+// alias for those. "exhibit" is NOT a parser/alias kind, but it IS an attachment-kind for
+// the namespace guard (see REFERENCE_KIND_NAMESPACE_FE / resolveStructureReferenceParagraphId):
+// like Schedule/Annex/Appendix it never appends a "number:N" body fallback, so an
+// "Exhibit N" reference declines to bridge onto a Section-N, the SAME outcome the backend
+// reaches (its prose path maps exhibit -> an attachment kind for the identical guard).
 function structureReferenceKind(word) {
   const key = String(word || "").trim().toLowerCase().replace(/\.$/, "");
   const kinds = {
@@ -1169,8 +1173,8 @@ function structureReferenceKind(word) {
     articles: "article",
     clause: "clause",
     clauses: "clause",
-    exhibit: "",
-    exhibits: "",
+    exhibit: "exhibit",
+    exhibits: "exhibit",
     paragraph: "",
     paragraphs: "",
     para: "",
@@ -1182,6 +1186,51 @@ function structureReferenceKind(word) {
     sections: "section",
   };
   return Object.prototype.hasOwnProperty.call(kinds, key) ? kinds[key] : null;
+}
+
+// Mirror of reference_resolver.REFERENCE_KIND_NAMESPACES (read-only backend source of
+// truth) PLUS "exhibit" as an attachment kind. Schedules/annexes/appendices/exhibits are
+// attachments numbered in their own space; clauses/articles/sections are in-body. The
+// kind-agnostic "number:N" fallback must never bridge these namespaces (a "Schedule 2"
+// borrowing a "Section 2", or vice versa, is the latent governing-law false-clear). A
+// kind not in this map (bare paragraph/¶, or "" kind) has no namespace and is treated as
+// in-body via NUMERIC_FALLBACK_NAMESPACE_FE — exactly the backend's _kind_namespace.
+const REFERENCE_KIND_NAMESPACE_FE = {
+  annex: "attachment",
+  annexure: "attachment",
+  appendix: "attachment",
+  schedule: "attachment",
+  exhibit: "attachment",
+  article: "body",
+  clause: "body",
+  section: "body",
+};
+// A section detected without an explicit kind (bare numbered/heading) is in-body — the
+// clauses/sections a "Section N" reference means. Mirrors NUMERIC_FALLBACK_NAMESPACE.
+const NUMERIC_FALLBACK_NAMESPACE_FE = "body";
+
+// reference_resolver._kind_namespace: the namespace ("body"/"attachment") of a ref kind,
+// or null when the kind carries no namespace of its own.
+function referenceKindNamespace(kind) {
+  const key = String(kind || "").toLowerCase();
+  return Object.prototype.hasOwnProperty.call(REFERENCE_KIND_NAMESPACE_FE, key)
+    ? REFERENCE_KIND_NAMESPACE_FE[key]
+    : null;
+}
+
+// reference_resolver._numeric_fallback_namespace_matches: guard the kind-agnostic
+// "number:N" match against a cross-namespace target. A bare numbered/heading section has
+// no namespace of its own and is treated as in-body; if the matched section instead
+// carries an explicit attachment kind (a schedule/annex/appendix scraped with only a
+// number:N alias), it must NOT satisfy a body reference — that is the Schedule-N <->
+// Section-N collision. A null reference namespace (bare paragraph/¶) matches anything.
+function numericFallbackNamespaceMatches(referenceNamespace, sectionRecord) {
+  let targetNamespace = referenceKindNamespace(
+    sectionRecord && typeof sectionRecord === "object" ? sectionRecord.kind : "",
+  );
+  if (targetNamespace === null) targetNamespace = NUMERIC_FALLBACK_NAMESPACE_FE;
+  if (referenceNamespace === null) return true;
+  return targetNamespace === referenceNamespace;
 }
 
 // The shared structure index (reference_index) for the current review, preferring
@@ -1223,14 +1272,31 @@ function resolveStructureReferenceParagraphId(kind, number, index = structureRef
   // A structural word tries its kind key first, then the bare printed-number key; a
   // plain paragraph/¶ reference (kind === "") only carries the printed-number key.
   // Resolution is STRICTLY through alias_to_section_id, which the backend has already
-  // pruned of ambiguous keys and namespace collisions (schedule vs section) — so the
-  // FE resolves every reference the same way the backend does, for free.
+  // pruned of ambiguous keys — but the kind-agnostic "number:N" fallback still needs
+  // the SAME namespace guard reference_resolver._resolve_reference_item applies, so the
+  // FE resolves every reference exactly the way the backend does:
+  //   (a) an ATTACHMENT-kind reference (schedule/annex/annexure/appendix/exhibit) does
+  //       NOT append the "number:N" fallback — it must match its explicit kind alias;
+  //   (b) a body/number reference rejects a "number:N" match when the matched section is
+  //       attachment-namespaced (numericFallbackNamespaceMatches).
+  // Together these stop "Section 2" linking to a "Schedule 2" (and the inverse).
+  const referenceNamespace = referenceKindNamespace(kind);
   const aliasKeys = [];
   if (kind) aliasKeys.push(`${kind}:${normalizedNumber}`);
-  aliasKeys.push(`number:${normalizedNumber}`);
-  const matchedKey = aliasKeys.find((aliasKey) => aliasLookup[aliasKey]);
-  if (!matchedKey) return "";
-  const sectionId = aliasLookup[matchedKey];
+  if (referenceNamespace !== "attachment") aliasKeys.push(`number:${normalizedNumber}`);
+  let sectionId = "";
+  for (const aliasKey of aliasKeys) {
+    const candidateId = aliasLookup[aliasKey];
+    if (!candidateId) continue;
+    if (
+      aliasKey.startsWith("number:") &&
+      !numericFallbackNamespaceMatches(referenceNamespace, sectionsById[candidateId])
+    ) {
+      continue;
+    }
+    sectionId = candidateId;
+    break;
+  }
   const record = sectionId ? sectionsById[sectionId] : null;
   if (!record) return "";
   // Source-backed only: a parser-invented (source-less) section is never a link target.

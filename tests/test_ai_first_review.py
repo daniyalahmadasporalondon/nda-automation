@@ -602,6 +602,37 @@ class ProseAnchorFallbackTests(unittest.TestCase):
         matched = _matched_paragraphs(paragraphs, assessment, reference_index)
         self.assertEqual(matched, [])
 
+    def test_exhibit_reference_is_matched_by_the_prose_regex(self):
+        # FIX 2: the prose regex did not include "exhibit", so the BE never even saw an
+        # "Exhibit N" reference while the FE linked it. The regex now matches it (FE/BE
+        # parity on the reference WORD); the namespace guard governs how it RESOLVES.
+        from nda_automation.ai_first_review import _PROSE_REFERENCE_RE, _PROSE_REFERENCE_KINDS
+
+        match = _PROSE_REFERENCE_RE.search("the recipients are listed in Exhibit 3.")
+        self.assertIsNotNone(match, "the prose regex must now match 'Exhibit N'")
+        self.assertEqual(match.group("keyword").lower(), "exhibit")
+        self.assertEqual(match.group("number"), "3")
+        # "Exhibit" is treated as an ATTACHMENT kind so it obeys the same namespace guard
+        # as Schedule/Annex/Appendix (no kind-agnostic number:N body fallback).
+        self.assertIn(_PROSE_REFERENCE_KINDS["exhibit"], {"schedule", "annex", "annexure", "appendix"})
+
+    def test_exhibit_reference_does_not_borrow_body_or_schedule_namespace(self):
+        from nda_automation.ai_first_review import _matched_paragraphs
+
+        paragraphs, reference_index = self._structure_with_divergent_numbering()
+        # "Exhibit 11"/"Exhibit 12" must NOT borrow the in-body numbered headings (printed
+        # 11/12) via number:N -- an attachment-kind reference never appends that fallback.
+        # "Exhibit 3" must NOT borrow the Schedule 3 either (no exhibit:3/appendix:3 alias).
+        # There is no real Exhibit section, so every form seeds NOTHING -- the same outcome
+        # the FE reaches under the identical attachment guard.
+        for assessment in (
+            {"reason": "Exhibit 11 defines the governing law and needs review."},
+            {"reason": "Exhibit 12 governs the term of confidentiality."},
+            {"finding": "The permitted recipients are listed in Exhibit 3."},
+        ):
+            matched = _matched_paragraphs(paragraphs, assessment, reference_index)
+            self.assertEqual(matched, [], assessment)
+
     def test_bare_paragraph_token_is_a_direct_id(self):
         from nda_automation.ai_first_review import _matched_paragraphs
 

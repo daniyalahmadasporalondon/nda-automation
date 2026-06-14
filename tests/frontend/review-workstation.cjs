@@ -70,6 +70,7 @@ const tests = [
   ["resolves prose Paragraph/Schedule references through the structure index, not the block position", testProseParagraphReferenceLinkified],
   ["leaves unresolved structural references plain and keeps direct token/range ids", testProseParagraphReferenceValidationAndTokenCoexistence],
   ["jumps the document to a section start paragraph from a Structure-tab row click", testStructureRowClickJumpsToSection],
+  ["keeps the Schedule/Section/Exhibit namespace guard on prose structure references", testStructureReferenceNamespaceGuard],
   ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
@@ -7805,6 +7806,164 @@ async function testStructureRowClickJumpsToSection(page) {
     "a non-source-backed row must not be focusable");
   assert.equal(await page.locator('#studioDetailPanel .structure-row-nav[data-para-ref="p2"]').count(), 0,
     "the phantom row's scraped paragraph (p2) must not be a navigable structure row");
+}
+
+// A structure whose only "number 2" section is an ATTACHMENT (Schedule 2) reachable via
+// the kind-agnostic number:2 alias. "Schedule" and "Section" are different namespaces, so
+// a prose "Section 2" (body) reference must NOT borrow this Schedule via number:2. Mirrors
+// reference_resolver._numeric_fallback_namespace_matches + the backend
+// test_section_reference_does_not_alias_onto_schedule_number.
+function attachmentOnlyNumberTwoStructure() {
+  const sectionsById = {
+    "section-1": {
+      id: "section-1", kind: "section", number: "1", label: "Section 1", heading: "Definitions",
+      level: 1, paragraph_ids: ["p1"], start_index: 1, end_index: 1, parent_id: null,
+      source: { source_kind: "docx_numbered", numbering: { label: "1" } },
+    },
+    "section-sched": {
+      id: "section-sched", kind: "schedule", number: "2", label: "Schedule 2", heading: "Data Processing",
+      level: 1, paragraph_ids: ["p2", "p3"], start_index: 2, end_index: 3, parent_id: null,
+      source: { source_kind: "docx_heading", style_name: "Heading 2" },
+    },
+  };
+  return {
+    version: 2,
+    sections: Object.values(sectionsById),
+    reference_index: {
+      version: 2,
+      section_ids: Object.keys(sectionsById),
+      sections_by_id: sectionsById,
+      alias_to_section_id: {
+        "number:1": "section-1",
+        "section:1": "section-1",
+        "number:2": "section-sched",
+        "schedule:2": "section-sched",
+      },
+      ambiguous_alias_keys: [],
+      paragraph_to_section_id: { p1: "section-1", p2: "section-sched", p3: "section-sched" },
+    },
+    stats: { section_count: 2 },
+  };
+}
+
+// The inverse structure: the only "number 2" section is an in-body Section 2 reachable via
+// number:2. An attachment reference ("Schedule 2" / "Exhibit 2") must NOT borrow it —
+// attachment kinds do not append the number:N fallback at all (rule a). Mirrors the backend
+// test_schedule_reference_does_not_alias_onto_section_number.
+function bodyOnlyNumberTwoStructure() {
+  const sectionsById = {
+    "section-1": {
+      id: "section-1", kind: "section", number: "1", label: "Section 1", heading: "Definitions",
+      level: 1, paragraph_ids: ["p1"], start_index: 1, end_index: 1, parent_id: null,
+      source: { source_kind: "docx_numbered", numbering: { label: "1" } },
+    },
+    "section-body": {
+      id: "section-body", kind: "section", number: "2", label: "Section 2", heading: "Confidentiality",
+      level: 1, paragraph_ids: ["p2", "p3"], start_index: 2, end_index: 3, parent_id: null,
+      source: { source_kind: "docx_numbered", numbering: { label: "2" } },
+    },
+  };
+  return {
+    version: 2,
+    sections: Object.values(sectionsById),
+    reference_index: {
+      version: 2,
+      section_ids: Object.keys(sectionsById),
+      sections_by_id: sectionsById,
+      alias_to_section_id: {
+        "number:1": "section-1",
+        "section:1": "section-1",
+        "number:2": "section-body",
+        "section:2": "section-body",
+      },
+      ambiguous_alias_keys: [],
+      paragraph_to_section_id: { p1: "section-1", p2: "section-body", p3: "section-body" },
+    },
+    stats: { section_count: 2 },
+  };
+}
+
+const NAMESPACE_GUARD_PARAGRAPHS = [
+  { id: "p1", index: 1, source_index: 1, text: "Section 1 Definitions." },
+  { id: "p2", index: 2, source_index: 2, text: "Second section heading block." },
+  { id: "p3", index: 3, source_index: 3, text: "Body of the second section." },
+];
+
+// FE/BE resolver parity: the kind-agnostic number:N fallback must obey the Schedule-vs-
+// Section namespace divide exactly as reference_resolver does, so the FE never produces a
+// wrong-but-clickable jump across that divide.
+//   - prose "Section 2" must NOT link to a Schedule-2 section (rule b: a body number:N
+//     match onto an attachment-namespaced section is rejected).
+//   - prose "Schedule 2"/"Exhibit 2" must NOT link to a Section-2 section (rule a: an
+//     attachment-kind reference never appends the number:N fallback; "exhibit" is an
+//     attachment kind on both sides).
+async function testStructureReferenceNamespaceGuard(page) {
+  // Part 1: only a Schedule 2 (attachment) is reachable via number:2.
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Section 1 Definitions." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        // "Schedule 2" should link (its own schedule:2 alias); "Section 2" must NOT borrow it.
+        reason: "The obligations in Section 2 survive, and the recipients sit in Schedule 2.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: NAMESPACE_GUARD_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: attachmentOnlyNumberTwoStructure() },
+  });
+
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  let assessment = page.locator('[data-card-section="assessment"]');
+
+  // "Schedule 2" resolves via its explicit schedule:2 alias to the Schedule section (p2).
+  const scheduleLink = assessment.locator('.para-ref:has-text("Schedule 2")');
+  assert.equal(await scheduleLink.count(), 1, '"Schedule 2" should link to the Schedule section start (p2)');
+  assert.equal(await scheduleLink.getAttribute("data-para-ref"), "p2");
+  // "Section 2" must NOT borrow the Schedule-2 section via number:2 — it stays plain text.
+  assert.equal(await assessment.locator('.para-ref:has-text("Section 2")').count(), 0,
+    'prose "Section 2" must not link to a Schedule-2 section (cross-namespace number fallback rejected)');
+  await assertTextContains(assessment, "Section 2 survive");
+
+  // Part 2: only a Section 2 (in-body) is reachable via number:2.
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Section 1 Definitions." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        // "Section 2" should link (its own section:2 alias); "Schedule 2"/"Exhibit 2" must NOT borrow it.
+        reason: "Section 2 sets the obligations; Schedule 2 and Exhibit 2 would have listed recipients.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: NAMESPACE_GUARD_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: bodyOnlyNumberTwoStructure() },
+  });
+
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  assessment = page.locator('[data-card-section="assessment"]');
+
+  // "Section 2" resolves via its explicit section:2 alias to the in-body section (p2).
+  const sectionLink = assessment.locator('.para-ref:has-text("Section 2")');
+  assert.equal(await sectionLink.count(), 1, '"Section 2" should link to the in-body Section start (p2)');
+  assert.equal(await sectionLink.getAttribute("data-para-ref"), "p2");
+  // "Schedule 2" must NOT borrow the Section-2 section (attachment kind, no number fallback).
+  assert.equal(await assessment.locator('.para-ref:has-text("Schedule 2")').count(), 0,
+    'prose "Schedule 2" must not link to a Section-2 section (attachment kind appends no number fallback)');
+  // "Exhibit 2" is an attachment kind too — same guard, so it must not link either, matching the backend.
+  assert.equal(await assessment.locator('.para-ref:has-text("Exhibit 2")').count(), 0,
+    'prose "Exhibit 2" must not link to a Section-2 section (exhibit is an attachment kind on FE and BE)');
+  await assertTextContains(assessment, "Exhibit 2 would have listed");
 }
 
 // Option B (advisory recommendation): the CHECKED radio (.selected / aria-checked)

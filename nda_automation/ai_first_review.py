@@ -844,6 +844,16 @@ def _matched_paragraphs(
 # Keyword -> the kind passed to the shared resolver. "Paragraph"/"para"/"¶" is a numbered
 # cross-reference with no kind of its own, so it is resolved as a body reference
 # (``section``) and finds its target purely through the ``number:N`` fallback.
+#
+# "Exhibit" is an ATTACHMENT word (like Schedule/Annex/Appendix), but reference_resolver
+# (read-only) knows no ``exhibit`` kind/namespace and the parser never emits an
+# ``exhibit:N`` alias. To make "Exhibit N" obey the SAME attachment namespace guard as
+# Schedule/Annex on BOTH sides, it is mapped here to an attachment kind (``appendix``):
+# _resolve_reference_item then refuses to append the kind-agnostic ``number:N`` body
+# fallback, so "Exhibit N" never borrows a body "Section N"/numbered heading. There is no
+# ``appendix:N`` alias for a real exhibit either, so the net is: "Exhibit N" declines to
+# bridge onto a Section-N -- the EXACT outcome the FE reaches (structureReferenceKind maps
+# exhibit to an attachment kind for the same guard). FE and BE thus agree on "Exhibit N".
 _PROSE_REFERENCE_KINDS = {
     "paragraph": "section",
     "paragraphs": "section",
@@ -864,11 +874,13 @@ _PROSE_REFERENCE_KINDS = {
     "annexures": "annexure",
     "appendix": "appendix",
     "appendices": "appendix",
+    "exhibit": "appendix",
+    "exhibits": "appendix",
 }
 _PROSE_REFERENCE_NUMBER_PART = r"(?:\d+|[ivxlcdm]+|[a-z])(?:\([a-z0-9]+\))?"
 _PROSE_REFERENCE_RE = re.compile(
     r"(?P<keyword>paragraphs?|para\.?|¶|clauses?|sections?|articles?|schedules?|"
-    r"annexures?|annexes?|annex|appendices|appendix)\s*"
+    r"annexures?|annexes?|annex|appendices|appendix|exhibits?)\s*"
     rf"(?P<number>{_PROSE_REFERENCE_NUMBER_PART})\b",
     re.IGNORECASE,
 )
