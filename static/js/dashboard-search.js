@@ -211,6 +211,18 @@ const DashboardSearchView = (() => {
         });
     }
 
+    function factIsSourcePath(fact) {
+      // A bare code/source file path (e.g. "nda_automation/routes/matters.py") is
+      // an implementation detail — never surface it to a regular user. Only filter
+      // standalone path-like tokens so ordinary prose that mentions a file survives.
+      const text = String(fact || "").trim();
+      if (!text || /\s/.test(text)) return false;
+      return (
+        /\.(py|js|mjs|ts|tsx|json|ya?ml|html|css|md|txt)$/i.test(text) ||
+        text.startsWith("nda_automation/")
+      );
+    }
+
     function normalizeAssistantActions(payload) {
       const action = String(payload?.action || "").trim();
       const intent = String(payload?.intent || "");
@@ -488,15 +500,21 @@ const DashboardSearchView = (() => {
       if (["repository_question", "system_question", "review_finding_explanation", "matter_summary", "system_search", "how_it_works"].includes(type)) {
         const text = answerText(payload.answer) || message;
         if (!text) return false;
+        // Regular users get a plain prose answer. "How it works" shows the summary
+        // only — no internal step/route/citation bubbles. No answer card ever
+        // surfaces raw source-file paths (e.g. ...routes/matters.py) to a user.
+        const facts = type === "how_it_works"
+          ? []
+          : [
+              ...assistantCapabilityFacts(payload),
+              ...assistantAnswerFacts(payload),
+              ...citationFacts(payload.citations),
+            ].filter((fact) => !factIsSourcePath(fact));
         return renderAssistantCard({
           type,
           title: "Assistant answer",
           message: text,
-          facts: [
-            ...assistantCapabilityFacts(payload),
-            ...assistantAnswerFacts(payload),
-            ...citationFacts(payload.citations),
-          ],
+          facts,
           statusText: "Assistant answer",
         });
       }
