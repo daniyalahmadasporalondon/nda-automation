@@ -19,8 +19,12 @@ from .redline_defaults import playbook_redline_text
 from .review_document import Paragraph
 from .review_state import CLAUSE_DECISION_FAIL, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
 
-AI_ASSESSMENT_CONTRACT_VERSION = 1
+AI_ASSESSMENT_CONTRACT_VERSION = 2
 AI_REDLINE_NO_CHANGE = "no_change"
+# Cap on the number of structured reasoning steps carried onto a parsed
+# assessment. The reviewer method has five named steps (locate/read/apply/cite/
+# decide); the cap leaves headroom for sub-steps while bounding a runaway list.
+AI_ASSESSMENT_MAX_REASONING_STEPS = 8
 AI_ASSESSMENT_DECISIONS = (CLAUSE_DECISION_PASS, CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW)
 AI_ASSESSMENT_ISSUE_TYPES = (
     ISSUE_TYPE_NONE,
@@ -40,6 +44,24 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
     "properties": {
         "schema_version": {"type": "integer", "const": AI_ASSESSMENT_CONTRACT_VERSION},
         "clause_id": {"type": "string"},
+        # Optional, DISPLAY-ONLY chain-of-thought. Placed before `decision` so the
+        # model records its work (locate -> read -> apply -> cite) BEFORE committing
+        # to a verdict (genuine reasoning, not post-hoc justification). Parsed
+        # fail-open: a missing/empty/malformed value is dropped and never changes the
+        # decision/issue_type/evidence/confidence.
+        "reasoning_steps": {
+            "type": "array",
+            "maxItems": AI_ASSESSMENT_MAX_REASONING_STEPS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "step": {"type": "string"},
+                    "finding": {"type": "string"},
+                },
+                "required": ["step", "finding"],
+                "additionalProperties": False,
+            },
+        },
         "decision": {"type": "string", "enum": list(AI_ASSESSMENT_DECISIONS)},
         "issue_type": {"type": "string", "enum": list(AI_ASSESSMENT_ISSUE_TYPES)},
         "rationale": {"type": "string"},
@@ -185,6 +207,10 @@ def validate_ai_clause_assessment(
     resolution_question = _optional_text(assessment, "resolution_question")
     suggested_redline = _optional_text(assessment, "suggested_redline")
     recommended_option = _optional_recommended_option(assessment, location, errors)
+    # Display-only chain-of-thought. Parsed defensively and FAIL-OPEN: it never
+    # contributes to `errors`, so it can never fail the assessment or alter the
+    # decision/issue_type/evidence/confidence parsed above.
+    reasoning_steps = _optional_reasoning_steps(assessment)
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
     evidence = _validated_evidence(assessment, paragraph_by_id, ordered_paragraphs, location, errors)
@@ -241,6 +267,8 @@ def validate_ai_clause_assessment(
         cleaned["suggested_redline"] = suggested_redline
     if recommended_option:
         cleaned["recommended_option"] = recommended_option
+    if reasoning_steps:
+        cleaned["reasoning_steps"] = reasoning_steps
     return cleaned, errors
 
 
@@ -327,6 +355,39 @@ def _optional_recommended_option(
     if not reason:
         errors.append(f"{option_location}: reason must be non-empty text")
     return {"option": recommended, "reason": reason} if recommended and reason else {}
+
+
+def _optional_reasoning_steps(assessment: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Parse the optional, DISPLAY-ONLY ``reasoning_steps`` array, FAIL-OPEN.
+
+    The model is asked to record one entry per reviewer step (locate/read/apply/
+    cite/decide) as ``{"step": <label>, "finding": <text>}`` BEFORE it decides. This
+    is reviewer-facing chain-of-thought, never an input to the verdict, so it is
+    parsed in total isolation from ``errors``:
+
+    - missing, ``None``, or not a list -> ``[]`` (drop silently);
+    - any element that is not an object, or lacks a non-empty step/finding -> that
+      single element is skipped; the rest survive;
+    - the list is capped at :data:`AI_ASSESSMENT_MAX_REASONING_STEPS` entries.
+
+    It returns the cleaned ``[{"step", "finding"}]`` list and NEVER raises, so it
+    cannot crash the assessment or change the parsed decision/evidence/confidence.
+    """
+    raw = assessment.get("reasoning_steps")
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for item in raw:
+        if len(cleaned) >= AI_ASSESSMENT_MAX_REASONING_STEPS:
+            break
+        if not isinstance(item, Mapping):
+            continue
+        step = str(item.get("step") or "").strip()
+        finding = str(item.get("finding") or "").strip()
+        if not step or not finding:
+            continue
+        cleaned.append({"step": step, "finding": finding})
+    return cleaned
 
 
 def _required_confidence(assessment: Mapping[str, Any], location: str, errors: list[str]) -> float:

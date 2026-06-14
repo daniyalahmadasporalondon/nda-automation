@@ -11,7 +11,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 11
+AI_ASSESSMENT_PROMPT_VERSION = 12
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -80,6 +80,14 @@ AI_ASSESSMENT_INSTRUCTIONS = [
     "Return exactly one assessment for every playbook clause in the packet.",
     "Each assessment must match the supplied AI clause assessment schema.",
     "Follow the reasoning_steps in order for each clause: locate, read carefully, apply, cite, decide.",
+    (
+        "Record your work as you go: emit a reasoning_steps array in the assessment with one entry per reviewer "
+        "step you took -- {step, finding} -- where step is the step label (locate, read, apply, cite, decide) and "
+        "finding is a short note of what you found at that step. Produce reasoning_steps BEFORE you fill in decision: "
+        "reason through locate -> read -> apply -> cite first, record each finding, and only then choose the verdict, "
+        "so the steps are genuine chain-of-thought and not a justification written after the fact. Keep each finding "
+        "concise (one sentence). reasoning_steps is for reviewer display and never overrides the decision."
+    ),
     (
         "Write rationale as reviewer-facing assessment commentary, not a terse label: explain the clause text, "
         "apply the playbook position, state why the outcome follows, and mention any meaningful caveat or "

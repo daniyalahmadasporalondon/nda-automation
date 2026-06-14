@@ -489,6 +489,11 @@ def _clause_result_from_assessment(
     if not isinstance(proposed_redline, Mapping):
         proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
     blocks_send = bool(assessment.get("blocks_send"))
+    # Display-only chain-of-thought already cleaned by the contract parser
+    # ({step, finding} list, capped, fail-open). Thread it onto the result so the
+    # audit-trace builder can surface the model's real reasoning instead of the
+    # hardcoded plumbing steps. Never influences the decision/status.
+    reasoning_steps = _normalized_reasoning_steps(assessment.get("reasoning_steps"))
 
     # Ground every finding in the exact source text it cites. A pass/fail the
     # model could not back with a quotable span (and that is not a legitimate
@@ -547,6 +552,7 @@ def _clause_result_from_assessment(
         "recommended_option": _assessment_recommended_option(assessment, playbook_clause, decision),
         "blocks_send": blocks_send,
         "proposed_redline": deepcopy(proposed_redline),
+        "reasoning_steps": reasoning_steps,
         "reason_code": reason_codes[0],
         "reason_codes": reason_codes,
         "matched_paragraph_ids": [str(paragraph["id"]) for paragraph in matched_paragraphs],
@@ -820,6 +826,29 @@ def _approved_option_labels(playbook_clause: Mapping[str, Any]) -> list[str]:
             labels.append(label)
             seen.add(label)
     return labels
+
+
+def _normalized_reasoning_steps(value: object) -> list[dict[str, str]]:
+    """Defensively normalize the model's display-only ``reasoning_steps``.
+
+    The contract parser already cleans this to a ``[{"step", "finding"}]`` list, but
+    this guard keeps the wiring crash-proof for any caller (older cached assessments,
+    the verifier-refinalize path that passes an empty assessment): a non-list, or any
+    element missing a non-empty step/finding, is dropped silently. Never raises and
+    never affects the decision.
+    """
+    if not isinstance(value, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        step = str(item.get("step") or "").strip()
+        finding = str(item.get("finding") or "").strip()
+        if not step or not finding:
+            continue
+        cleaned.append({"step": step, "finding": finding})
+    return cleaned
 
 
 def _reason_codes(assessment: Mapping[str, Any], decision: str) -> list[str]:
@@ -1262,6 +1291,40 @@ def _signal_type(clause: ClauseResult) -> str:
     return "pass_evidence"
 
 
+def _audit_trace_steps(clause: ClauseResult) -> list[dict[str, Any]]:
+    """The ordered reasoning steps surfaced in the Reasoning trail.
+
+    When the model returned structured ``reasoning_steps`` ({step, finding}), use
+    them as the ordered reasoning -- mapped to the audit-trace step shape ({name,
+    outcome, details}) the FE already renders. The model's own chain-of-thought is
+    far more legible to a reviewer than the two hardcoded plumbing steps.
+
+    When ``reasoning_steps`` is absent (fail-open / older responses / verifier-
+    cleared clauses), fall back to the legacy two-step list (normalization +
+    Decision) so nothing regresses.
+    """
+    reasoning_steps = _normalized_reasoning_steps(clause.get("reasoning_steps"))
+    if reasoning_steps:
+        return [
+            {"name": step["step"], "outcome": "", "details": step["finding"]}
+            for step in reasoning_steps
+        ]
+    return [
+        {
+            "name": "AI assessment normalization",
+            "outcome": "normalized",
+            "details": "AI-first assessment was normalized into the review result contract.",
+        },
+        {
+            "name": "Decision",
+            "outcome": str(clause.get("decision") or ""),
+            "details": str(clause.get("decision_reason") or ""),
+            "reason_code": str(clause.get("reason_code") or ""),
+            "reason_codes": list(clause.get("reason_codes") or []),
+        },
+    ]
+
+
 def _audit_trace(clause: ClauseResult) -> dict[str, Any]:
     paragraph_ids = list(clause.get("matched_paragraph_ids") or [])
     structured_evidence = list(clause.get("structured_evidence") or [])
@@ -1286,20 +1349,7 @@ def _audit_trace(clause: ClauseResult) -> dict[str, Any]:
         },
         "analysis_outputs": [],
         "analysis_signals": [],
-        "steps": [
-            {
-                "name": "AI assessment normalization",
-                "outcome": "normalized",
-                "details": "AI-first assessment was normalized into the review result contract.",
-            },
-            {
-                "name": "Decision",
-                "outcome": str(clause.get("decision") or ""),
-                "details": str(clause.get("decision_reason") or ""),
-                "reason_code": str(clause.get("reason_code") or ""),
-                "reason_codes": list(clause.get("reason_codes") or []),
-            },
-        ],
+        "steps": _audit_trace_steps(clause),
     }
 
 

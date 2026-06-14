@@ -1821,11 +1821,17 @@ function renderEvidenceSignalsBlock(clause) {
 // Steps shown in the Reasoning trail: DEEPER reasoning only. The "Decision"
 // step is excluded because the decision + its reasoning are folded into the
 // first-class Assessment headline, and the "AI assessment normalization" step is
-// excluded as pure contract plumbing that means nothing to a reviewer.
+// excluded as pure contract plumbing that means nothing to a reviewer. When the
+// model returns its own structured reasoning (locate/read/apply/cite/decide) the
+// backend emits those as the steps instead, and they flow straight through.
+const AUDIT_TRACE_PLUMBING_STEP_NAMES = new Set(["decision", "ai assessment normalization"]);
+
 function auditTraceTrailSteps(clause) {
   const trace = clause?.audit_trace && typeof clause.audit_trace === "object" ? clause.audit_trace : null;
   const steps = Array.isArray(trace?.steps) ? trace.steps.filter((step) => step && step.name) : [];
-  return steps;
+  return steps.filter(
+    (step) => !AUDIT_TRACE_PLUMBING_STEP_NAMES.has(String(step.name).trim().toLowerCase()),
+  );
 }
 
 function renderAuditTraceBlock(clause) {
