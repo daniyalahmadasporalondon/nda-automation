@@ -143,7 +143,7 @@
             "id": "broad_definition_with_standard_exclusions",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The definition covers the material categories in the playbook and contains only accepted exclusions, including independent-development language only when it is qualified by no use of, access to, or reference to Confidential Information.",
+            "description": "The definition covers the material categories in the playbook -- including, expressly, the right of publicity and the existence and terms of the Agreement -- and contains only accepted exclusions, including independent-development language only when it is qualified by no use of, access to, or reference to Confidential Information. A broad definition that omits the right of publicity or the existence and terms of the Agreement does not satisfy this condition.",
             "redline_action": "no_change"
           }
         ],
@@ -191,6 +191,13 @@
             "issue_type": "unclear",
             "description": "Separate usage-right language may create an extra residual-knowledge, reverse-engineering, or unqualified independent-development carve-out outside the exclusion list.",
             "redline_action": "no_change"
+          },
+          {
+            "id": "missing_required_inclusions",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The definition does not expressly cover the existence and terms of the Agreement, or the right of publicity, both of which this clause requires.",
+            "redline_action": "replace_paragraph"
           }
         ],
         "evidence_requirements": {
