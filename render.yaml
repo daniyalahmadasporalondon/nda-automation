@@ -64,6 +64,15 @@ services:
         value: "true"
       - key: NDA_AI_VERIFIER_MODEL
         value: deepseek/deepseek-v4-pro
+      # AI structure-validation overlay (DeepSeek V4 Flash): demotes regime-3
+      # style-misuse false-positive sections (signature fields, address lines, bare
+      # connectives) the deterministic source-guard cannot catch. Additive + fail-safe
+      # (any error falls back to the deterministic parse); verdicts are content-hash
+      # cached so it bills at most once per document.
+      - key: NDA_STRUCTURE_VALIDATION_ENABLED
+        value: "true"
+      - key: NDA_STRUCTURE_VALIDATION_MODEL
+        value: deepseek/deepseek-v4-flash
       - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
