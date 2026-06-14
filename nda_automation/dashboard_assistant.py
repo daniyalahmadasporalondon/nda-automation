@@ -123,6 +123,15 @@ def handle_dashboard_assistant_command(
         search_resolver=search_resolver,
         playbook_provider=playbook_provider,
     )
+
+    # High-confidence deterministic guards take precedence over the inconsistent
+    # AI classifier: a clear, unambiguous command/question is routed by code so the
+    # model can never (mis)interpret it. Narrow on purpose — ambiguous queries fall
+    # through to the AI, and the no-hijack contrast cases are excluded by each guard.
+    guarded = _guarded_deterministic_response(context)
+    if guarded is not None:
+        return guarded
+
     ai_response = _ai_assistant_response(context, ai_model=ai_model)
     if ai_response is not None:
         return ai_response
@@ -132,6 +141,48 @@ def handle_dashboard_assistant_command(
             return capability.handler(context)
 
     return unsupported_response(cleaned_query)
+
+
+def _guarded_deterministic_response(context: AssistantContext) -> dict[str, Any] | None:
+    """Route only high-confidence intents the AI is known to mis-route.
+
+    Returns None for everything else so ambiguous queries still reach the AI and
+    then the full deterministic capability catalog.
+    """
+    lowered = context.lowered
+
+    # 1) GENERATE: "Generate/Create/Draft/Make/Build an NDA" -> the same generation
+    # action "Create an NDA" already uses. The AI sometimes downgrades "generate"
+    # to a how-it-works explanation; this guard makes that impossible.
+    if _is_clear_generation_command(lowered):
+        return draft_action_request_response(context)
+
+    # 2) REVIEW-FINDING: a specific "why did <clause> fail / explain the <finding>"
+    # question must explain the finding, not return a generic how_it_works answer.
+    # Only route when it resolves to a concrete owner-scoped finding; otherwise let
+    # the AI/clarification path handle the ambiguity.
+    if _is_clear_review_finding_question(lowered):
+        matter, _ = _resolve_matter(context, matter_query=context.query)
+        if matter is not None:
+            clause, _ = _resolve_clause(context, matter, clause_query=context.query)
+            if clause is not None:
+                return explain_review_finding_response(
+                    context,
+                    {"matter_id": str(matter.get("id") or ""), "clause_id": str(clause.get("id") or "")},
+                )
+
+    # 3) CLAUSE-COUNT: "how many clauses are in the <matter> NDA" must count that
+    # matter's clauses, not become a search filter. Only fires when the query names
+    # a resolvable matter; "this NDA" and playbook counts are excluded upstream.
+    if _is_clause_count_about_matter(lowered):
+        matter, _ = _resolve_matter(context, matter_query=context.query)
+        if matter is not None:
+            return matter_clause_count_response(
+                context,
+                {"matter_id": str(matter.get("id") or "")},
+            )
+
+    return None
 
 
 def _ai_assistant_response(context: AssistantContext, *, ai_model: Any | None) -> dict[str, Any] | None:
@@ -233,6 +284,50 @@ def playbook_clause_count_response(context: AssistantContext) -> dict[str, Any]:
                 "version": version,
             }
         ],
+    }
+
+
+def matter_clause_count_response(
+    context: AssistantContext,
+    args: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Answer a clause-count question scoped to one owner-scoped matter."""
+    args = args or {}
+    matter, matter_error = _resolve_matter(
+        context,
+        matter_id=str(args.get("matter_id") or ""),
+        matter_query=str(args.get("matter_query") or context.query),
+    )
+    if matter is None:
+        return clarification_response(
+            context,
+            matter_error or "Which matter's clauses should I count?",
+            questions=_matter_question_options(context),
+        )
+    public = matter_view.public_matter(matter)
+    title = _matter_title(public)
+    review_result = matter.get("review_result")
+    clauses = review_result.get("clauses") if isinstance(review_result, Mapping) else []
+    clause_list = [clause for clause in clauses if isinstance(clause, Mapping)] if isinstance(clauses, list) else []
+    count = len(clause_list)
+    noun = "clause" if count == 1 else "clauses"
+    if count:
+        text = f'"{title}" has {count} reviewed {noun}.'
+    else:
+        text = f'"{title}" does not have stored review clauses yet.'
+    return {
+        "intent": "repository_question",
+        "version": DASHBOARD_ASSISTANT_VERSION,
+        "query": context.query,
+        "domain": "repository",
+        "question": "matter_clause_count",
+        "answer": {
+            "text": text,
+            "count": count,
+            "matter_id": str(matter.get("id") or ""),
+            "matter_title": title,
+        },
+        "citations": _matter_citations([public]),
     }
 
 
@@ -1448,11 +1543,93 @@ def _looks_like_last_sent_question(lowered: str) -> bool:
     )
 
 
-def _looks_like_generation_request(lowered: str) -> bool:
-    return _contains_any(lowered, ("generate", "create", "draft", "prepare", "start")) and _contains_any(
+GENERATION_COMMAND_VERBS: tuple[str, ...] = (
+    "generate",
+    "create",
+    "draft",
+    "make",
+    "build",
+    "start",
+    "prepare",
+)
+GENERATION_NOUNS: tuple[str, ...] = ("nda", "non-disclosure", "agreement")
+# Phrasings that make the query an explanation/search rather than a build command.
+GENERATION_HIJACK_GUARDS: tuple[str, ...] = (
+    "how does",
+    "how do",
+    "how is",
+    "how are",
+    "explain how",
+    "how it works",
+    "how to",
+    "find",
+    "search",
+    "show",
+    "list",
+    "where are",
+    "where is",
+)
+
+
+def _is_clear_generation_command(lowered: str) -> bool:
+    """High-confidence guard: an unambiguous "build me an NDA" command.
+
+    Routes deterministically to the generation action so the inconsistent AI can
+    never downgrade "Generate an NDA" into an explanation. Narrow on purpose:
+    explanation ("how does generation work") and search ("find my generated NDAs")
+    phrasings are excluded so they still reach how_it_works / search.
+    """
+    if not _contains_any(lowered, GENERATION_COMMAND_VERBS):
+        return False
+    if not _contains_any(lowered, GENERATION_NOUNS):
+        return False
+    if _contains_any(lowered, GENERATION_HIJACK_GUARDS):
+        return False
+    return True
+
+
+def _is_clear_review_finding_question(lowered: str) -> bool:
+    """High-confidence guard: a specific review-finding explanation request.
+
+    Requires an explanation cue (why/explain) plus an explicit finding/verdict
+    referent, while excluding generic "how does review work" phrasings so those
+    still route to how_it_works.
+    """
+    if _looks_like_how_it_works_request(lowered):
+        return False
+    has_explain_cue = _contains_any(lowered, ("why", "explain", "what does", "what is"))
+    has_finding_referent = _contains_any(
         lowered,
-        ("nda", "non-disclosure", "agreement"),
+        ("flagged", "finding", "verdict", "review result", "review finding"),
+    ) or (
+        _contains_any(lowered, ("clause", "clauses"))
+        and _contains_any(lowered, ("fail", "failed", "flag", "flagged", "review", "verdict"))
     )
+    return has_explain_cue and has_finding_referent
+
+
+def _is_clause_count_about_matter(lowered: str) -> bool:
+    """High-confidence guard cue: a clause-COUNT question aimed at a matter.
+
+    Only a cue: the dispatch still requires the query to resolve to a specific
+    owner-scoped matter before answering, so playbook-clause-count ("do we have")
+    and generic "this NDA" questions are left to their existing handlers.
+    """
+    if not _contains_any(lowered, ("clause", "clauses")):
+        return False
+    if not _contains_any(lowered, ("how many", "number of", "count")):
+        return False
+    if "playbook" in lowered:
+        return False
+    if _looks_like_playbook_clause_count_question(lowered):
+        return False
+    # Generic, matter-less referents must stay unsupported, not get a wrong answer.
+    if _contains_any(
+        lowered,
+        ("this nda", "the nda", "this contract", "the contract", "this document", "the document"),
+    ):
+        return False
+    return True
 
 
 def _looks_like_playbook_clause_count_question(lowered: str) -> bool:
@@ -1695,7 +1872,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         domain="generation",
         intent="draft_action_request",
         description="Open/prefill the Generator after explicit confirmation; never silently generate.",
-        matcher=lambda context: _looks_like_generation_request(context.lowered),
+        matcher=lambda context: _is_clear_generation_command(context.lowered),
         handler=draft_action_request_response,
         side_effectful=True,
     ),

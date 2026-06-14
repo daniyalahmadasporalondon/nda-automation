@@ -453,3 +453,192 @@ def test_unknown_system_question_does_not_become_document_search_empty_state():
 
     assert response["intent"] == "unsupported"
     assert "search" in response["message"].lower()
+
+
+class _MisroutingModel:
+    """Fake AI that always mis-routes, proving deterministic guards win without a live AI."""
+
+    def __init__(self, intent="how_it_works"):
+        self.intent = intent
+        self.called = False
+
+    def __call__(self, _request_body):
+        self.called = True
+        return {
+            "assistant_response": {
+                "intent": self.intent,
+                "domain": "assistant",
+                "question": "how_review_works",
+                "answer": {"text": "Here is how the workflow works.", "topic": "review"},
+            }
+        }
+
+
+def test_clear_generation_command_routes_to_generation_action_over_misrouting_ai():
+    # Bug 1: "Generate an NDA" must never be downgraded to a how-it-works explanation.
+    for phrasing in (
+        "Generate an NDA",
+        "Create an NDA",
+        "Draft an NDA",
+        "Make me an NDA",
+        "Build an NDA",
+    ):
+        model = _MisroutingModel()
+        response = dashboard_assistant.handle_dashboard_assistant_command(
+            phrasing,
+            repository=InMemoryMatterRepository(),
+            ai_model=model,
+        )
+
+        assert response["intent"] == "draft_action_request", phrasing
+        assert response["action"] == "open_generator", phrasing
+        assert response["requires_confirmation"] is True
+        assert response["side_effects"] == []
+        # The guard short-circuits before the AI: deterministically testable, no live AI.
+        assert model.called is False, phrasing
+
+
+def test_clear_generation_command_routes_identically_to_create_an_nda():
+    repo = InMemoryMatterRepository()
+    generate = dashboard_assistant.handle_dashboard_assistant_command("Generate an NDA", repository=repo)
+    create = dashboard_assistant.handle_dashboard_assistant_command("Create an NDA", repository=repo)
+
+    assert generate["intent"] == create["intent"] == "draft_action_request"
+    assert generate["action"] == create["action"] == "open_generator"
+    assert generate["domain"] == create["domain"]
+    assert generate["requires_confirmation"] == create["requires_confirmation"] is True
+
+
+def test_generation_guard_does_not_hijack_how_it_works_or_search():
+    # No-hijack: explanation and search phrasings must route as before.
+    how = dashboard_assistant.handle_dashboard_assistant_command(
+        "How does generation work?",
+        repository=InMemoryMatterRepository(),
+    )
+    assert how["intent"] == "how_it_works"
+    assert how["intent"] != "draft_action_request"
+
+    explain = dashboard_assistant.handle_dashboard_assistant_command(
+        "Explain how the generator works",
+        repository=InMemoryMatterRepository(),
+    )
+    assert explain["intent"] == "how_it_works"
+    assert explain["answer"]["topic"] == "generation"
+
+    find = dashboard_assistant.handle_dashboard_assistant_command(
+        "Find my generated NDAs",
+        repository=InMemoryMatterRepository(),
+        search_resolver=lambda query: dashboard_search_intent.deterministic_search_intent(query),
+    )
+    assert find["intent"] == "search_filter"
+
+    show = dashboard_assistant.handle_dashboard_assistant_command(
+        "Show NDAs from Acme",
+        repository=InMemoryMatterRepository(),
+        search_resolver=lambda query: dashboard_search_intent.deterministic_search_intent(query),
+    )
+    assert show["intent"] == "search_filter"
+
+
+def test_specific_review_finding_question_explains_finding_over_misrouting_ai():
+    # Bug 2: a specific finding question must explain the finding, not how_it_works.
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(
+        repo,
+        owner_user_id="tenant-a",
+        source_filename="Acme NDA.docx",
+        review_result={
+            "clauses": [
+                {
+                    "id": "confidentiality",
+                    "name": "Confidentiality",
+                    "decision": "fail",
+                    "decision_reason": "Definition is too broad.",
+                    "citation": {"quote": "all information disclosed", "paragraph_id": "p1"},
+                },
+                {"id": "mutuality", "decision": "pass"},
+            ]
+        },
+    )
+
+    model = _MisroutingModel()
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "Why did the confidentiality clause fail on the Acme NDA?",
+        repository=repo,
+        owner_user_id="tenant-a",
+        ai_model=model,
+        playbook_provider=lambda: {
+            "clauses": [
+                {"id": "confidentiality", "name": "Confidentiality", "approved_positions": ["Narrow definition."]}
+            ]
+        },
+    )
+
+    assert response["intent"] == "review_finding_explanation"
+    assert response["question"] == "explain_review_finding"
+    assert response["answer"]["matter_id"] == matter["id"]
+    assert response["answer"]["clause_id"] == "confidentiality"
+    assert response["answer"]["verdict"] == "fail"
+    assert model.called is False
+
+
+def test_review_finding_guard_does_not_hijack_how_review_works():
+    # No-hijack: "how does review work" still routes to how_it_works.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How does review work?",
+        repository=InMemoryMatterRepository(),
+    )
+    assert response["intent"] == "how_it_works"
+    assert response["answer"]["topic"] == "review"
+
+
+def test_clause_count_about_a_named_matter_counts_that_matter_over_misrouting_ai():
+    # Bug 3: a clause-count question about a specific matter must count that matter.
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(
+        repo,
+        owner_user_id="tenant-a",
+        source_filename="Acme NDA.docx",
+        review_result={
+            "clauses": [
+                {"id": "confidentiality", "decision": "fail"},
+                {"id": "term", "decision": "pass"},
+                {"id": "mutuality", "decision": "pass"},
+            ]
+        },
+    )
+
+    model = _MisroutingModel(intent="search_filter")
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many clauses are in the Acme NDA?",
+        repository=repo,
+        owner_user_id="tenant-a",
+        ai_model=model,
+        search_resolver=lambda query: dashboard_search_intent.deterministic_search_intent(query),
+    )
+
+    assert response["intent"] == "repository_question"
+    assert response["question"] == "matter_clause_count"
+    assert response["answer"]["count"] == 3
+    assert response["answer"]["matter_id"] == matter["id"]
+    assert response["intent"] != "search_filter"
+    assert model.called is False
+
+
+def test_clause_count_guard_does_not_hijack_playbook_or_generic_document_questions():
+    # No-hijack: "do we have" stays playbook clause count; generic "this NDA" stays unsupported.
+    playbook = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many clauses do we have?",
+        repository=InMemoryMatterRepository(),
+        playbook_provider=lambda: {"name": "PB", "version": "1", "clauses": [{"id": "a"}, {"id": "b"}]},
+    )
+    assert playbook["intent"] == "system_question"
+    assert playbook["question"] == "playbook_clause_count"
+
+    generic = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many clauses are in this NDA?",
+        repository=InMemoryMatterRepository(),
+        search_resolver=lambda _query: {"filters": None, "fallback": True},
+        playbook_provider=lambda: {"clauses": [{"id": "mutuality"}]},
+    )
+    assert generic["intent"] == "unsupported"
