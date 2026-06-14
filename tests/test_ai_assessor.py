@@ -143,6 +143,66 @@ class AIAssessorTests(unittest.TestCase):
         self.assertEqual(redline["action"], REDLINE_REPLACE_PARAGRAPH)
         self.assertEqual(redline["paragraph_id"], "p3")
 
+    def test_assessor_hoists_structure_into_packet_before_model_call(self):
+        # #4: the packet the model SEES must already carry per-paragraph section
+        # context and the document structure outline -- proving the structure was
+        # built above the model call, not as a post-hoc audit record.
+        reviewer = InMemoryAssessmentReviewer(response=_complete_response())
+        assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        packet = reviewer.packets[0]
+        self.assertTrue(packet["structure"]["available"])
+        self.assertGreater(packet["structure"]["section_count"], 0)
+        # At least one paragraph record carries a section tag.
+        self.assertTrue(any("section" in record for record in packet["paragraphs"]))
+
+    def test_structure_in_packet_never_corrupts_quotable_text(self):
+        # #4 CORRECTNESS GUARD end-to-end: every quote the model returns still grounds
+        # against the ORIGINAL paragraph text after structure was added, so matched_text
+        # is the verbatim document text (not annotated with section labels). If the
+        # structure had been inlined into `text`, these grounded passes/fails would have
+        # been downgraded to ungrounded review.
+        reviewer = InMemoryAssessmentReviewer(response=_complete_response())
+        result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        # The packet text the model quoted from appears verbatim in the source document
+        # (no section labels spliced in -- the structure lives only in the `section` field,
+        # never in `text`).
+        for record in reviewer.packets[0]["paragraphs"]:
+            self.assertIn(record["text"], SOURCE_TEXT)
+
+        # governing_law cited "laws of California"; it must still be a grounded FAIL,
+        # not downgraded to an ungrounded review.
+        governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
+        self.assertEqual(governing_law["decision"], "fail")
+        self.assertNotIn("ungrounded_finding", governing_law.get("reason_codes", []))
+        self.assertIn("California", governing_law["matched_text"])
+        # confidential_information passes on a grounded quote and stays a pass.
+        confidential = next(clause for clause in result["clauses"] if clause["id"] == "confidential_information")
+        self.assertEqual(confidential["decision"], "pass")
+
+    def test_structure_built_once_not_double_built(self):
+        # #4: build_contract_structure must run exactly once per assessment -- the
+        # assessor builds it above the model call and build_ai_first_review_result
+        # reuses it, so it is not paid for twice.
+        call_count = {"n": 0}
+        real_build = __import__(
+            "nda_automation.contract_structure", fromlist=["build_contract_structure"]
+        ).build_contract_structure
+
+        def _counting_build(paragraphs):
+            call_count["n"] += 1
+            return real_build(paragraphs)
+
+        reviewer = InMemoryAssessmentReviewer(response=_complete_response())
+        with (
+            patch("nda_automation.ai_assessor.build_contract_structure", side_effect=_counting_build),
+            patch("nda_automation.ai_first_review.build_contract_structure", side_effect=_counting_build),
+        ):
+            assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        self.assertEqual(call_count["n"], 1)
+
     def test_ai_first_assessor_partial_response_fails_missing_clauses_to_review(self):
         reviewer = InMemoryAssessmentReviewer(response={
             "assessments": [
