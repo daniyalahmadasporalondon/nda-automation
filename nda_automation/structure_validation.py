@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -111,8 +112,17 @@ SYSTEM_PROMPT = (
     "Return ONLY a JSON array. Each element is an object with exactly these keys: "
     "\"id\" (the candidate id you were given), \"verdict\" (\"genuine\" or "
     "\"false_positive\"), and \"reason\" (a short justification). Return one element "
-    "for every candidate. Output no prose outside the JSON array."
+    "for every candidate. Output no prose outside the JSON array. "
+    "Return ONLY the raw JSON array -- no markdown fences, no commentary."
 )
+
+
+#: Matches the first balanced-looking ``[ ... ]`` block across newlines. DeepSeek
+#: V4 Flash often wraps the verdict array in a ```json fence and/or a prose
+#: preamble ("Here is the analysis:"); this extracts the array body so a strict
+#: ``json.loads`` of the WHOLE content does not throw away an otherwise-correct
+#: response. Greedy on purpose: the last ``]`` closes the outermost array.
+_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 
 class StructureValidationError(RuntimeError):
@@ -319,6 +329,77 @@ def _coerce_verdict_list(raw_verdicts: object) -> List[Mapping[str, Any]] | None
     return None
 
 
+def _parse_model_verdicts(response_text: str) -> object | None:
+    """Leniently extract the verdict array from raw model content.
+
+    DeepSeek V4 Flash returns the CORRECT verdict JSON array but often WRAPPED:
+    in a ```json fence and/or behind a prose preamble ("Here is the analysis:").
+    A strict ``json.loads`` of the whole content throws an otherwise-good response
+    away, which silently demotes 0 sections and makes the pass inert.
+
+    Strategy (cheapest-correct first):
+      1. Try to parse the whole content as-is (clean responses, the happy path).
+      2. Strip ```json / ``` markdown fences and retry.
+      3. Locate the first balanced ``[ ... ]`` block (preamble + trailing prose
+         tolerated) and parse THAT.
+
+    Returns the parsed object on success, or ``None`` when no JSON array can be
+    recovered -- the caller then raises and the existing graceful fallback
+    returns the deterministic structure UNCHANGED. There is no retry: a single
+    parse failure is terminal, so a malformed response never spins another
+    expensive model call.
+    """
+    text = (response_text or "").strip()
+    if not text:
+        return None
+
+    # 1. Happy path: the whole content is valid JSON.
+    parsed = _try_json_loads(text)
+    if parsed is not None:
+        return parsed
+
+    # 2. Strip a surrounding markdown code fence, then retry.
+    unfenced = _strip_code_fence(text)
+    if unfenced != text:
+        parsed = _try_json_loads(unfenced)
+        if parsed is not None:
+            return parsed
+
+    # 3. Extract the first balanced [ ... ] block from anywhere in the content
+    #    (preamble prose and trailing commentary tolerated).
+    match = _JSON_ARRAY_RE.search(unfenced)
+    if match is not None:
+        parsed = _try_json_loads(match.group(0))
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
+def _try_json_loads(text: str) -> object | None:
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a wrapping ```json ... ``` (or bare ``` ... ```) markdown fence."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    # Drop the opening fence line (``` or ```json) and any trailing fence.
+    body = stripped[3:]
+    newline = body.find("\n")
+    if newline != -1:
+        # The text after the first ``` up to the newline is the language tag.
+        body = body[newline + 1:]
+    closing = body.rfind("```")
+    if closing != -1:
+        body = body[:closing]
+    return body.strip()
+
+
 def _demote_false_positives(structure: Dict[str, Any], demoted_ids: set[str]) -> Dict[str, Any]:
     sections = structure.get("sections")
     if isinstance(sections, list):
@@ -435,10 +516,9 @@ class OpenRouterStructureValidator:
         response_text = _openrouter_response_text(payload)
         if not response_text:
             raise StructureValidationError("OpenRouter API returned no message content.")
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError as error:
-            raise StructureValidationError("OpenRouter API returned non-JSON text.") from error
+        parsed = _parse_model_verdicts(response_text)
+        if parsed is None:
+            raise StructureValidationError("OpenRouter API returned non-JSON text.")
         return parsed
 
     def _request_body(self, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:

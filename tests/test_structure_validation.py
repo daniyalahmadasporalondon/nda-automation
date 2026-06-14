@@ -1,8 +1,16 @@
+import contextlib
+import io
+import json
 import unittest
+from unittest import mock
 
+from nda_automation import structure_validation
 from nda_automation.contract_structure import build_contract_structure
 from nda_automation.structure_validation import (
     VERDICT_FALSE_POSITIVE,
+    OpenRouterStructureValidator,
+    StructureValidationError,
+    _parse_model_verdicts,
     should_validate_structure,
     validate_structure,
 )
@@ -437,6 +445,155 @@ class DemotionCorrectnessTests(unittest.TestCase):
         self.assertNotIn("validation", _section_by_id(structure, demoted_id))
         self.assertEqual(len(structure["reference_index"]["alias_to_section_id"]), original_alias_count)
         self.assertNotIn("structure_validation", structure)
+
+
+class LenientVerdictParseTests(unittest.TestCase):
+    """The real DeepSeek V4 Flash response is correct JSON but often WRAPPED.
+
+    The previous strict ``json.loads`` of the whole content threw those away with
+    "non-JSON text", silently demoting 0 sections (the pass was inert). These
+    drive the parsing path directly with wrapped raw responses.
+    """
+
+    _ARRAY = [{"id": "section-2", "verdict": "false_positive", "reason": "sig field"}]
+
+    def test_clean_array_parses(self):
+        parsed = _parse_model_verdicts(json.dumps(self._ARRAY))
+        self.assertEqual(parsed, self._ARRAY)
+
+    def test_json_fence_wrapped_array_parses(self):
+        raw = "```json\n" + json.dumps(self._ARRAY) + "\n```"
+        self.assertEqual(_parse_model_verdicts(raw), self._ARRAY)
+
+    def test_bare_fence_wrapped_array_parses(self):
+        raw = "```\n" + json.dumps(self._ARRAY) + "\n```"
+        self.assertEqual(_parse_model_verdicts(raw), self._ARRAY)
+
+    def test_prose_preamble_then_fence_parses(self):
+        raw = "Here is the analysis:\n```json\n" + json.dumps(self._ARRAY) + "\n```\n"
+        self.assertEqual(_parse_model_verdicts(raw), self._ARRAY)
+
+    def test_prose_preamble_without_fence_parses(self):
+        raw = "Here is the analysis: " + json.dumps(self._ARRAY) + " (let me know if you need more)"
+        self.assertEqual(_parse_model_verdicts(raw), self._ARRAY)
+
+    def test_truly_unparseable_returns_none(self):
+        self.assertIsNone(_parse_model_verdicts("I could not complete this request, sorry."))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(_parse_model_verdicts("   "))
+
+
+class _FakeHTTPResponse(io.BytesIO):
+    """Context-manager byte stream standing in for an ``http.client`` response."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def _openrouter_payload_with_content(content: str) -> bytes:
+    return json.dumps({
+        "choices": [{"message": {"content": content}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }).encode("utf-8")
+
+
+class OpenRouterWrappedResponseTests(unittest.TestCase):
+    """End-to-end: the live validator's HTTP path + a WRAPPED model response.
+
+    This is the regression guard the stub-only tests missed -- the StubValidator
+    never exercises ``OpenRouterStructureValidator``'s response parsing, where the
+    bug lived. We mock only the transport (``urlopen``); everything else is real.
+    """
+
+    def setUp(self):
+        self.paragraphs = _mnda_paragraphs()
+        self.structure = build_contract_structure(self.paragraphs)
+        self.sections_by_heading = {
+            section["heading"]: section["id"] for section in self.structure["sections"]
+        }
+
+    def _verdict_array_for(self, headings):
+        flagged = {h.strip().lower() for h in headings}
+        verdicts = []
+        for section in self.structure["sections"]:
+            if str(section.get("kind") or "") == "preamble":
+                continue
+            heading = str(section.get("heading") or "")
+            verdicts.append({
+                "id": section["id"],
+                "verdict": (
+                    VERDICT_FALSE_POSITIVE
+                    if heading.strip().lower() in flagged
+                    else "genuine"
+                ),
+                "reason": "test",
+            })
+        return verdicts
+
+    def test_wrapped_response_parses_and_demotes(self):
+        false_positives = ["AND", "COMPANY NAME", "IN WITNESS WHEREOF"]
+        verdicts = self._verdict_array_for(false_positives)
+        # The exact wrapping shape the live model emits: prose preamble + ```json fence.
+        wrapped = "Here is the analysis:\n```json\n" + json.dumps(verdicts) + "\n```\n"
+
+        validator = OpenRouterStructureValidator(api_key="test-key")
+        call_count = {"n": 0}
+
+        def fake_urlopen(request, *args, **kwargs):
+            call_count["n"] += 1
+            return _FakeHTTPResponse(_openrouter_payload_with_content(wrapped))
+
+        with mock.patch.object(structure_validation.urllib.request, "urlopen", fake_urlopen):
+            result = validate_structure(self.structure, self.paragraphs, validator=validator)
+
+        # The wrapped response was parsed and false positives demoted (not inert).
+        self.assertEqual(call_count["n"], 1)  # no retries spun
+        self.assertEqual(result["structure_validation"]["demoted_count"], 3)
+        for heading in false_positives:
+            section_id = self.sections_by_heading[heading]
+            section = _section_by_id(result, section_id)
+            self.assertEqual(section.get("validation"), VERDICT_FALSE_POSITIVE, heading)
+            self.assertEqual(_alias_keys_for(result, section_id), set(), heading)
+        # Genuine sections survive.
+        for heading in ("Definitions", "Confidentiality", "Annexure A"):
+            section = _section_by_id(result, self.sections_by_heading[heading])
+            self.assertNotEqual(section.get("validation"), VERDICT_FALSE_POSITIVE, heading)
+
+    def test_unparseable_response_falls_back_unchanged_without_retry(self):
+        garbage = "Sorry, I was unable to analyze the document."
+
+        validator = OpenRouterStructureValidator(api_key="test-key")
+        call_count = {"n": 0}
+
+        def fake_urlopen(request, *args, **kwargs):
+            call_count["n"] += 1
+            return _FakeHTTPResponse(_openrouter_payload_with_content(garbage))
+
+        with mock.patch.object(structure_validation.urllib.request, "urlopen", fake_urlopen):
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = validate_structure(self.structure, self.paragraphs, validator=validator)
+
+        # A single parse failure is terminal: one HTTP call, deterministic structure unchanged.
+        self.assertEqual(call_count["n"], 1)
+        self.assertEqual(result, self.structure)
+        self.assertNotIn("structure_validation", result)
+
+    def test_validator_call_raises_on_unparseable_for_direct_callers(self):
+        # The OpenRouter validator itself raises (caught upstream by validate_structure).
+        garbage = "no json here at all"
+        validator = OpenRouterStructureValidator(api_key="test-key")
+
+        def fake_urlopen(request, *args, **kwargs):
+            return _FakeHTTPResponse(_openrouter_payload_with_content(garbage))
+
+        with mock.patch.object(structure_validation.urllib.request, "urlopen", fake_urlopen):
+            with self.assertRaises(StructureValidationError):
+                validator([{"id": "section-2", "heading": "AND"}])
 
 
 if __name__ == "__main__":
