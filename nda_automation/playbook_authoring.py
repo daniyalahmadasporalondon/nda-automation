@@ -386,6 +386,11 @@ def save_active_playbook(
     try:
         with locked_playbook(playbook_path):
             validate_playbook(playbook)
+            # Same Layer-1 consistency-lint hard-gate publish enforces: a
+            # validate-passing but lint-FAILING playbook must never reach the live
+            # rules via save. Runs before any disk write, so rejection is a no-op,
+            # and reuses the fail-open helper (a lint bug logs + treats as clean).
+            _enforce_playbook_lint(playbook)
             previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
             history = read_playbook_history(playbook_path=playbook_path)
             if previous_playbook and not history:
@@ -457,6 +462,11 @@ def restore_playbook_history_entry(
             validate_playbook(snapshot)
             previous_playbook = read_playbook_from_path(playbook_path) if playbook_path.exists() else None
             restored_playbook = json.loads(json.dumps(snapshot))
+            # Same Layer-1 consistency-lint hard-gate publish enforces: a historical
+            # snapshot that validates but is lint-FAILING must never be restored into
+            # the live rules. Runs before any disk write, so rejection is a no-op, and
+            # reuses the fail-open helper (a lint bug logs + treats as clean).
+            _enforce_playbook_lint(restored_playbook)
             existing_runtime = read_playbook_runtime(playbook_path=playbook_path)
             runtime = {
                 "version": PLAYBOOK_RUNTIME_VERSION,
