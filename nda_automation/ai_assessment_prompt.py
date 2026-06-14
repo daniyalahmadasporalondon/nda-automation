@@ -427,22 +427,37 @@ def _relevant_section_ids(
     """Section ids worth keeping: those whose heading maps to a playbook clause, plus
     every section they cross-reference (so a clause that points at "Schedule 2" keeps
     Schedule 2 too). Derived from the deterministic structure + the same clause-heading
-    cues used for localization."""
+    cues used for localization.
+
+    SOURCE-BACKED GATE (parity with #6): only SOURCE-BACKED sections (real Word
+    numbering/heading metadata) are trusted as relevant. On a non-source-backed
+    structure (PDF / flat-text headings scraped from prose) this returns nothing, so
+    ``_section_aware_budget`` declines and the plain order-cut runs -- the section-aware
+    reprioritization only ever fires on trusted structure, exactly like #6's anchor."""
     from .clause_localization import build_clause_localization
+
+    sections = contract_structure.get("sections")
+    source_backed_ids = {
+        str(section.get("id") or "")
+        for section in (sections if isinstance(sections, Sequence) else [])
+        if isinstance(section, Mapping) and _section_is_source_backed(section) and str(section.get("id") or "")
+    }
+    if not source_backed_ids:
+        return set()
 
     relevant: set[str] = set()
     if isinstance(playbook, Mapping):
         localization = build_clause_localization(playbook, contract_structure)
         for hint in localization.values():
             for section_id in hint.get("suggested_section_ids", []) or []:
-                if isinstance(section_id, str) and section_id:
+                if isinstance(section_id, str) and section_id in source_backed_ids:
                     relevant.add(section_id)
 
     # Pull in sections cross-referenced FROM a relevant section, via the reference
     # index's alias map, so a clause body that says "as defined in Section 2" keeps the
-    # referenced section. This is a single, conservative hop (no transitive crawl).
+    # referenced section. This is a single, conservative hop (no transitive crawl). The
+    # cross-referenced target must ALSO be source-backed to be kept.
     reference_index = contract_structure.get("reference_index")
-    sections = contract_structure.get("sections")
     if isinstance(reference_index, Mapping) and isinstance(sections, Sequence):
         alias_map = reference_index.get("alias_to_section_id")
         alias_map = alias_map if isinstance(alias_map, Mapping) else {}
@@ -454,8 +469,16 @@ def _relevant_section_ids(
             if isinstance(section, Mapping)
         }
         referenced = _cross_referenced_section_ids(relevant, section_text_by_id, alias_map)
-        relevant |= referenced
+        relevant |= {section_id for section_id in referenced if section_id in source_backed_ids}
     return relevant
+
+
+def _section_is_source_backed(section: Mapping[str, Any]) -> bool:
+    """A section is source-backed when contract_structure attached a non-empty ``source``
+    mapping (real Word numbering/heading/style metadata). Mirrors the same gate in
+    redline_anchor (#6); a section scraped from flat text carries no ``source`` key."""
+    source = section.get("source")
+    return isinstance(source, Mapping) and bool(source)
 
 
 _BUDGET_REFERENCE_RE = re.compile(

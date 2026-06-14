@@ -408,23 +408,34 @@ class AIAssessmentPromptTests(unittest.TestCase):
 
     def test_section_aware_truncation_prefers_clause_relevant_sections(self):
         # When the document exceeds the paragraph budget, the section-aware selection
-        # should keep clause-relevant sections (Governing Law / Confidentiality) over
-        # neutral filler -- improving WHAT the model sees within the kept budget. The
-        # document is still truncated (review still forced); this only changes which
+        # keeps clause-relevant SOURCE-BACKED sections (Governing Law / Confidentiality)
+        # over neutral filler -- improving WHAT the model sees within the kept budget.
+        # The document is still truncated (review still forced); this only changes which
         # paragraphs survive the cut.
         from nda_automation.contract_structure import build_contract_structure
-        from nda_automation.review_document import split_document_paragraphs
+        from nda_automation.review_document import align_document_paragraphs
 
+        # Filler FIRST so a naive order-cut would keep only filler and drop the clauses;
+        # section-aware selection should rescue the source-backed clause paragraphs.
         topical = [
-            "1. Governing Law. This Agreement is governed by the laws of California.",
-            "2. Confidentiality. Each party keeps Confidential Information secret.",
+            ("8", "Governing Law. This Agreement is governed by the laws of California."),
+            ("9", "Confidentiality. Each party keeps Confidential Information secret."),
         ]
-        # Put filler FIRST so a naive order-cut would keep only filler and drop the
-        # clause paragraphs; section-aware selection should rescue the clauses.
-        filler = [f"Filler boilerplate paragraph number {i}." for i in range(20)]
-        source = "\n\n".join(filler + topical)
-        paragraphs = split_document_paragraphs(source)
+        filler = [f"Filler boilerplate paragraph number {i} with neutral text." for i in range(20)]
+        extracted = []
+        for text in filler:
+            extracted.append({"text": text})
+        for number, text in topical:
+            extracted.append({
+                "text": text,
+                "structure_number": number,
+                "numbering": {"label": number, "format": "decimal", "level": 0},
+            })
+        source = "\n\n".join(item["text"] for item in extracted)
+        paragraphs = align_document_paragraphs(extracted, source)
         structure = build_contract_structure(paragraphs)
+        # Precondition: the clause sections really are source-backed.
+        self.assertTrue(any(section.get("source") for section in structure["sections"]))
 
         packet = build_ai_assessment_packet(
             source,
@@ -439,6 +450,41 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("Confidentiality", kept_text)
         # Still truncated -> still forces review.
         self.assertTrue(packet["document"]["truncated"])
+
+    def test_section_aware_truncation_falls_back_to_order_cut_when_not_source_backed(self):
+        # PARITY WITH #6: on a NON-source-backed structure (PDF / flat-text headings
+        # scraped from prose), #7 must NOT reprioritize -- it degrades to the plain
+        # order-cut. Filler is first, so the order-cut keeps filler in document order.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        topical = [
+            "Governing Law. This Agreement is governed by the laws of California.",
+            "Confidentiality. Each party keeps Confidential Information secret.",
+        ]
+        filler = [f"Filler boilerplate paragraph number {i} with neutral text." for i in range(20)]
+        source = "\n\n".join(filler + topical)
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+        # Precondition: NO section is source-backed (flat text, no Word metadata).
+        self.assertFalse(any(section.get("source") for section in structure["sections"]))
+
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            paragraphs=paragraphs,
+            max_paragraphs=6,
+            max_chars=100000,
+            contract_structure=structure,
+        )
+        # Plain order-cut: the first 6 paragraphs (all filler) in document order.
+        self.assertEqual([r["id"] for r in packet["paragraphs"]], ["p1", "p2", "p3", "p4", "p5", "p6"])
+        # Still truncated -> still forces review (the safety guarantee is unchanged).
+        self.assertTrue(packet["document"]["truncated"])
+        self.assertEqual(
+            packet["document"]["omitted_paragraph_count"],
+            packet["document"]["paragraph_count"] - len(packet["paragraphs"]),
+        )
 
     def test_truncation_falls_back_to_order_cut_without_structure(self):
         # No structure supplied: behaviour is the legacy order-cut, unchanged.
