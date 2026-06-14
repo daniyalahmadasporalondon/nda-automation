@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
-from typing import Any, List
+from statistics import median
+from typing import Any, List, Optional
 
 from .review_document import Paragraph
 
@@ -11,11 +13,44 @@ class PdfExtractionError(ValueError):
     """Raised when a PDF file cannot be converted into reviewable text."""
 
 
+@dataclass(frozen=True)
+class GeoLine:
+    """A single extracted text line with the per-line geometry pypdf exposes.
+
+    ``visitor_text`` gives us the line's start position (``left_x``), baseline
+    ``y`` and ``font_size``. It does NOT expose glyph widths, so the line's END
+    x (right edge) is not reliably available — only ``y`` gaps, indentation and
+    font size are trustworthy geometric signals at this layer.
+    """
+
+    text: str
+    left_x: Optional[float]
+    y: Optional[float]
+    font_size: Optional[float]
+
+
 INVALID_PDF_MESSAGE = "The uploaded file is not a valid PDF document."
 ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the password before reviewing."
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
+
+# Two chunks whose baselines differ by less than this many points belong to the
+# same visual line (sub/superscript jitter, split runs on one line).
+_SAME_LINE_Y_TOLERANCE = 3.0
+# A heading-sized font jump relative to the body font.
+_HEADING_FONT_FACTOR = 1.15
+# Expected wrap pitch as a multiple of the body font size. Single-spaced text
+# wraps at roughly 1.0–1.2x the font size; we anchor the wrap-pitch estimate here
+# so that a uniform single-line page (no real wraps) cannot mistake its own clause
+# gaps for the wrap pitch. The smallest-gap cluster may only REFINE this downward.
+_WRAP_PITCH_FONT_FACTOR = 1.2
+# Fixed wrap-pitch floor (points) used when no font size is available. Sized for a
+# typical ~11pt body so the pitch never collapses to a clause gap.
+_WRAP_PITCH_FLOOR_POINTS = 13.2
+# Floating-point slack so an exact body*factor gap is not lost to representation
+# error in the gap >= threshold comparisons.
+_GAP_EPSILON = 0.5
 
 
 @dataclass(frozen=True)
@@ -58,7 +93,7 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
         if not decrypted:
             raise PdfExtractionError(ENCRYPTED_PDF_MESSAGE)
 
-    page_lines: list[list[str]] = []
+    page_geo_lines: list[list[GeoLine]] = []
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
@@ -68,27 +103,26 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     repeated_margins: set[str] = set()
     for page in reader.pages:
         try:
-            page_text = page.extract_text() or ""
+            geo_lines = _extract_geo_lines(page)
         except Exception as exc:
             raise PdfExtractionError("The PDF text could not be extracted.") from exc
-        extracted_character_count += len(page_text)
+        extracted_character_count += sum(len(geo_line.text) for geo_line in geo_lines)
         if extracted_character_count > MAX_PDF_EXTRACTED_CHARACTERS:
             raise PdfExtractionError(
                 f"The PDF produced more than the {MAX_PDF_EXTRACTED_CHARACTERS:,} character extraction limit."
             )
-        normalized_lines = _normalized_lines(page_text)
-        page_lines.append(normalized_lines)
-        if normalized_lines:
+        page_geo_lines.append(geo_lines)
+        if geo_lines:
             pages_with_text += 1
         else:
             pages_without_text += 1
 
     if page_count > 1:
-        repeated_margins = _repeated_margin_lines(page_lines)
+        repeated_margins = _repeated_margin_lines([[g.text for g in lines] for lines in page_geo_lines])
 
     paragraphs: List[Paragraph] = []
-    for page_index, lines in enumerate(page_lines, start=1):
-        filtered_lines = _filtered_pdf_lines(lines, repeated_margins)
+    for page_index, geo_lines in enumerate(page_geo_lines, start=1):
+        filtered_lines = _filtered_geo_lines(geo_lines, repeated_margins)
         for paragraph_text in _split_pdf_paragraphs(filtered_lines):
             paragraphs.append({
                 "id": f"p{len(paragraphs) + 1}",
@@ -116,6 +150,93 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     )
 
 
+def _extract_geo_lines(page: Any) -> list[GeoLine]:
+    """Extract per-line text plus the geometry ``visitor_text`` exposes.
+
+    pypdf's ``visitor_text`` callback fires once per drawn text chunk with the
+    text-matrix translation (start x via ``tm[4]``, baseline y via ``tm[5]``)
+    and the font size. We group those chunks into visual lines by baseline y so
+    the splitter can use vertical gaps, indentation and font size — the only
+    geometric signals reliably available at this layer. If the visitor yields
+    nothing usable we fall back to flat ``extract_text`` lines with no geometry,
+    which keeps the never-merge-safe text heuristics in force.
+    """
+
+    chunks: list[tuple[float, float, Optional[float], str]] = []
+
+    def _visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
+        cleaned = " ".join(str(text).split())
+        if not cleaned:
+            return
+        try:
+            x = float(tm[4])
+            y = float(tm[5])
+        except (TypeError, ValueError, IndexError):
+            return
+        size = _safe_float(font_size)
+        chunks.append((x, y, size, cleaned))
+
+    try:
+        page.extract_text(visitor_text=_visitor)
+    except Exception:
+        chunks = []
+
+    geo_lines = _group_chunks_into_lines(chunks)
+    if geo_lines:
+        return geo_lines
+
+    # Fallback: no usable geometry (e.g. visitor unsupported). Use flat text with
+    # no coordinates so the splitter relies purely on never-merge-safe text rules.
+    try:
+        page_text = page.extract_text() or ""
+    except Exception:
+        page_text = ""
+    return [GeoLine(text=line, left_x=None, y=None, font_size=None) for line in _normalized_lines(page_text)]
+
+
+def _group_chunks_into_lines(
+    chunks: list[tuple[float, float, Optional[float], str]],
+) -> list[GeoLine]:
+    """Group visitor chunks that share a baseline into single visual lines."""
+
+    if not chunks:
+        return []
+    # Preserve reading order: top-to-bottom (descending y), then left-to-right.
+    ordered = sorted(chunks, key=lambda chunk: (-chunk[1], chunk[0]))
+    lines: list[GeoLine] = []
+    bucket: list[tuple[float, float, Optional[float], str]] = []
+    bucket_y: Optional[float] = None
+    for x, y, size, text in ordered:
+        if bucket_y is None or abs(y - bucket_y) <= _SAME_LINE_Y_TOLERANCE:
+            bucket.append((x, y, size, text))
+            bucket_y = y if bucket_y is None else bucket_y
+        else:
+            lines.append(_merge_line_bucket(bucket))
+            bucket = [(x, y, size, text)]
+            bucket_y = y
+    if bucket:
+        lines.append(_merge_line_bucket(bucket))
+    return [line for line in lines if line.text]
+
+
+def _merge_line_bucket(bucket: list[tuple[float, float, Optional[float], str]]) -> GeoLine:
+    bucket = sorted(bucket, key=lambda chunk: chunk[0])
+    text = " ".join(" ".join(chunk[3].split()) for chunk in bucket if chunk[3].split())
+    left_x = min((chunk[0] for chunk in bucket), default=None)
+    y = bucket[0][1] if bucket else None
+    sizes = [chunk[2] for chunk in bucket if chunk[2] is not None]
+    font_size = max(sizes) if sizes else None
+    return GeoLine(text=text, left_x=left_x, y=y, font_size=font_size)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result == result else None  # drop NaN
+
+
 def _normalized_lines(text: str) -> list[str]:
     return [
         " ".join(raw_line.split())
@@ -124,32 +245,311 @@ def _normalized_lines(text: str) -> list[str]:
     ]
 
 
-def _split_pdf_paragraphs(lines: list[str]) -> list[str]:
+def _split_pdf_paragraphs(lines: Any) -> list[str]:
+    """Split a page's lines into clause blocks.
+
+    Accepts either ``list[GeoLine]`` (geometry-aware path) or a plain
+    ``list[str]`` (geometry absent / legacy callers). The cardinal invariant is
+    NEVER MERGE two genuinely separate clauses: geometry (vertical gaps, font
+    jumps) only ever *adds* boundaries the text heuristics miss, and the only
+    boundary the geometry path *removes* is a mid-sentence text split between two
+    lines that are vertically adjacent (a single wrapped clause), which by
+    definition cannot be two separate clauses.
+    """
+
+    geo_lines = _as_geo_lines(lines)
+    if not geo_lines:
+        return []
+
+    body_font = _dominant_font_size(geo_lines)
+    line_height = _dominant_line_height(geo_lines, body_font)
+    # NO page-global wrap signal is computed any more. The round-3 build derived a
+    # page-wide "this page has at least one proven wrap" flag and fed it into the
+    # sub-pitch JOIN decision; because the flag was page-wide it LEAKED — two
+    # genuinely-separate finished clauses one wrap apart merged whenever a real wrap
+    # appeared anywhere else on the page. The split/join decision is now made purely
+    # from the LOCAL line pair, so never-merge holds by construction.
+
     blocks: list[str] = []
-    current: list[str] = []
-    for line in lines:
-        if _starts_new_pdf_paragraph(line, current):
-            blocks.append(" ".join(current))
+    current: list[GeoLine] = []
+    for geo_line in geo_lines:
+        if _starts_new_pdf_paragraph(geo_line, current, line_height, body_font):
+            blocks.append(" ".join(item.text for item in current))
             current = []
-        current.append(line)
+        current.append(geo_line)
     if current:
-        blocks.append(" ".join(current))
+        blocks.append(" ".join(item.text for item in current))
     return blocks
 
 
-def _starts_new_pdf_paragraph(line: str, current: list[str]) -> bool:
+def _as_geo_lines(lines: Any) -> list[GeoLine]:
+    result: list[GeoLine] = []
+    for line in lines:
+        if isinstance(line, GeoLine):
+            if line.text:
+                result.append(line)
+        else:
+            text = " ".join(str(line).split())
+            if text:
+                result.append(GeoLine(text=text, left_x=None, y=None, font_size=None))
+    return result
+
+
+def _dominant_line_height(geo_lines: list[GeoLine], body_font: Optional[float] = None) -> Optional[float]:
+    """Estimate the body wrap pitch (single-line wrap distance) in points.
+
+    The pitch is ANCHORED to the font size (``~1.2 * body_font``) or a fixed
+    floor — NOT to the smallest observed baseline gap. This is the fix for the
+    single-line-clause merge bug: on a page where every clause is one line there
+    is no wrapped line to sample, so the previous "smallest-gap cluster" estimate
+    took a CLAUSE gap as the pitch and the boundary threshold became unreachable,
+    merging separate clauses.
+
+    The smallest-gap cluster is used ONLY as a downward refinement, and only when
+    wrapped lines actually exist: a wrap sits strictly below the font-derived
+    pitch, so we refine using sub-font gaps alone. The result is clamped so it can
+    never exceed the font/floor anchor — under-estimating the pitch biases toward
+    SPLITTING (never-merge-safe), never toward merging.
+    """
+
+    anchor = _font_wrap_pitch(body_font)
+
+    deltas: list[float] = []
+    previous_y: Optional[float] = None
+    for geo_line in geo_lines:
+        if geo_line.y is None:
+            previous_y = None
+            continue
+        if previous_y is not None:
+            delta = previous_y - geo_line.y
+            if delta > _SAME_LINE_Y_TOLERANCE:
+                deltas.append(delta)
+        previous_y = geo_line.y
+    if not deltas:
+        # No geometry to sample: fall back to the font/floor anchor so callers on
+        # the geometry path still have a font-anchored pitch (never a clause gap).
+        return anchor
+
+    # Only gaps strictly below the font-derived pitch can be genuine wraps; gaps at
+    # or above it are clause/paragraph spacing and must not lower the wrap pitch.
+    wrap_gaps = sorted(delta for delta in deltas if delta < anchor - _GAP_EPSILON)
+    if not wrap_gaps:
+        # No sub-font gaps -> no observable wraps -> keep the font/floor anchor.
+        return anchor
+    smallest = wrap_gaps[0]
+    pitch_cluster = [delta for delta in wrap_gaps if delta <= smallest * 1.25]
+    refined = median(pitch_cluster)
+    # DEFENSE-IN-DEPTH PITCH CAP: refinement may only ever LOWER the pitch, never raise
+    # it above the font-anchored value. Observed baseline gaps are allowed to refine the
+    # wrap pitch DOWN toward a tighter true wrap, but the font anchor (~1.2 * body_font)
+    # is a hard ceiling. This bounds the uniform-spacing inflation that fed the round-5
+    # bypass: even when every gap on the page is identical clause spacing, the pitch can
+    # never be reported ABOVE the font anchor. (It can still settle AT the clause spacing
+    # when that spacing happens to sit below the anchor — distinguishing a clause gap from
+    # a wrap gap is impossible when they are identical — but the continuation gate in
+    # _starts_new_pdf_paragraph makes that residual inflation un-exploitable: no JOIN can
+    # absorb a capitalized next clause regardless of how low the pitch reads.)
+    return min(refined, anchor)
+
+
+def _font_wrap_pitch(body_font: Optional[float]) -> float:
+    """Font-anchored expected wrap pitch in points (or a fixed floor)."""
+
+    if body_font and body_font > 0:
+        return body_font * _WRAP_PITCH_FONT_FACTOR
+    return _WRAP_PITCH_FLOOR_POINTS
+
+
+def _has_geometry(previous: GeoLine, line: GeoLine, line_height: Optional[float]) -> bool:
+    """True iff both lines carry a baseline and we have a usable pitch threshold.
+
+    When this is true the vertical gap is a trustworthy signal and drives the
+    split/join decision directly. When it is false (visitor never fired, or one of
+    the lines lacks a baseline) we have no geometric way to tell a wrap from a
+    boundary and must fail safe by fragmenting (never merging).
+    """
+
+    return (
+        previous.y is not None
+        and line.y is not None
+        and line_height is not None
+        and line_height > 0
+    )
+
+
+def _dominant_font_size(geo_lines: list[GeoLine]) -> Optional[float]:
+    sizes = [geo_line.font_size for geo_line in geo_lines if geo_line.font_size]
+    if not sizes:
+        return None
+    return median(sizes)
+
+
+def _starts_new_pdf_paragraph(
+    line: GeoLine,
+    current: list[GeoLine],
+    line_height: Optional[float] = None,
+    body_font: Optional[float] = None,
+) -> bool:
     if not current:
         return False
-    if _is_standalone_clause_number(current[-1]):
-        return False
-    if _is_heading(line):
-        return True
-    if _is_clause_start(line):
-        return True
     previous = current[-1]
-    if _ends_sentence(previous) and _looks_like_sentence_start(line):
+
+    # --- THE GEOMETRY GAP CHECK IS THE FIRST GATE. ---
+    # When per-line geometry is present, the vertical gap is the most trustworthy
+    # signal we have, and a gap exceeding the font-anchored line pitch can NEVER be an
+    # ordinary line wrap — it is paragraph spacing, i.e. a clause boundary. So when
+    # the gap is wider than the pitch we SPLIT here UNCONDITIONALLY, before ANY
+    # text-marker join guard runs. This is what makes never-merge STRUCTURAL: a
+    # standalone-number previous line, a marker-led-open block, and a mid-sentence
+    # wrap join are all evaluated ONLY below, AFTER this gate, and ONLY when the gap
+    # is sub-pitch. No join guard can fire across a >pitch gap because control never
+    # reaches one: a >pitch gap returns True right here. Two clauses separated by any
+    # paragraph spacing therefore always split, regardless of markers.
+    if _has_geometry(previous, line, line_height):
+        if not _lines_are_adjacent(previous, line, line_height):
+            # gap > pitch -> clause boundary, ALWAYS. No marker-led absorb, no
+            # standalone-number join, no mid-sentence-wrap join may override it.
+            return True
+
+        # gap <= pitch (TRUE sub-pitch adjacency). Only now may a join guard apply —
+        # the lines are genuinely one wrap apart, so a JOIN cannot bridge a paragraph
+        # gap. We still split on structural heading/font cues; the only JOINs are the
+        # three sub-pitch cases below.
+
+        # A jump up in font size starts a new (heading) clause even at sub-pitch.
+        if _has_heading_font_jump(previous, line, body_font):
+            return True
+        # Structural text markers split (numbered/lettered clause start, heading),
+        # EXCEPT when the next line is the body of a standalone-number/marker pairing
+        # handled by the JOIN guards below.
+        if _is_heading(line.text):
+            return True
+        if _is_clause_start(line.text):
+            return True
+        if _is_standalone_clause_number(line.text) and not _is_standalone_clause_number(previous.text):
+            if _block_has_prose(current):
+                return True
+
+        # The CONTINUATION GATE governs the body-absorbing JOINs (1, 2 and 3). A line a
+        # marker-led block, a lone clause number, or an unfinished sentence may absorb
+        # must be an UNAMBIGUOUS CONTINUATION: its first non-whitespace character is a
+        # LOWERCASE LETTER. A genuine mid-sentence wrap ALWAYS continues with a lowercase
+        # letter; a NEW clause/sentence NEVER opens with a bare lowercase letter — it
+        # starts with a capital, a digit, a marker, a quote of any kind, a bullet, a
+        # dash, a currency or section symbol, an open paren/bracket, etc. The gate is a
+        # POSITIVE lowercase-only test (round-8): it is COMPLETE BY CONSTRUCTION — there
+        # is no enumeration of clause-start markers to keep exhaustive, so no clause-start
+        # character can be omitted and mis-read as a continuation. Anything that is not a
+        # lowercase-letter lead falls through to SPLIT. This subsumes the round-5 fix
+        # (capitalized next line cannot be absorbed even under an inflated sub-pitch) and
+        # closes the round-7 hole where a non-enumerated start (e.g. a curly single quote
+        # U+2018 opening a defined-term clause) slipped through as a continuation.
+        next_is_continuation = _is_lowercase_continuation(line.text)
+
+        # JOIN 1 — the standalone-number + its adjacent body. A bare clause number
+        # ("2") immediately above (sub-pitch) a LOWERCASE continuation line absorbs
+        # only that body — and ONLY when the next line is an unambiguous lowercase
+        # continuation. A CAPITALIZED next line (e.g. a title "Confidentiality") is a
+        # fresh clause/sentence start and falls through to SPLIT, so a lone number can
+        # never bridge into a separate capitalized clause even under an inflated
+        # (clause-spacing) pitch. The number fragmenting from its capitalized title is
+        # the accepted safe failure under never-merge-absolute. Cannot bridge a real
+        # paragraph gap: the geometry gap gate above has already kept us sub-pitch.
+        if _is_standalone_clause_number(previous.text) and next_is_continuation:
+            return False
+        # JOIN 2 — the marker-led-open block absorbs its OWN immediately-adjacent body
+        # line. A block opened by a clause number/heading whose last line has not yet
+        # finished a sentence is a heading still reading its body; the sub-pitch next
+        # line is that body — but ONLY when that next line is an unambiguous lowercase
+        # continuation. A capitalized sentence-start next line is a fresh clause and
+        # falls through to SPLIT, so the marker-led-open guard can never swallow a
+        # separate clause even under an inflated (clause-spacing) pitch.
+        if _block_is_marker_led_open(current) and next_is_continuation:
+            return False
+        # JOIN 3 — the one unambiguous mid-sentence wrap: previous line UNFINISHED (no
+        # terminal punctuation) AND next line a lowercase continuation (not a fresh
+        # sentence start). This is the unmistakable signature of a sentence that ran
+        # out of horizontal space; it cannot be two clauses.
+        previous_finished = _ends_sentence(previous.text)
+        if not previous_finished and next_is_continuation:
+            return False
+        # EVERYTHING ELSE at sub-pitch SPLITS. In particular a FINISHED sentence
+        # followed by a sentence-start one wrap apart always splits — there is no
+        # page-global "page has wraps" escape hatch (that signal was page-wide and
+        # leaked, merging two genuinely-separate finished clauses). The accepted cost
+        # is that a single multi-sentence clause whose sentence boundary lands exactly
+        # on a line break fragments into two blocks — the chosen safe failure.
         return True
-    return False
+
+    # --- No geometry for this line pair (visitor never fired, or one line lacks a
+    # baseline): we cannot tell a wrap from a clause boundary, so we must fail SAFE
+    # (fragment, never merge). Keep the one pairing that is structurally a single
+    # marker — a bare standalone clause number immediately followed by its title —
+    # joined; SPLIT every other line break. Fragmenting one clause into several is
+    # acceptable; merging two is not. ---
+    if _is_standalone_clause_number(previous.text):
+        return False
+    return True
+
+
+def _block_has_prose(current: list[GeoLine]) -> bool:
+    """True when the accumulated block already contains a completed clause body.
+
+    Used to decide whether a following standalone clause number opens a new
+    clause. The block counts as prose once it ends a sentence, which marks the
+    prior clause as complete — a standalone number after that is a new boundary.
+    """
+
+    if not current:
+        return False
+    return _ends_sentence(current[-1].text)
+
+
+def _block_is_marker_led_open(current: list[GeoLine]) -> bool:
+    """True when the block was opened by a structural marker and is still open.
+
+    A block is "marker-led" when its FIRST line is a clause number, a numbered/
+    lettered clause start, or a short heading/title. It is "open" while its last
+    line has not completed a sentence — i.e. the clause body is still being read.
+    A line that follows such a block one wrap apart is that clause's body (the
+    title/number absorbs its prose), so we JOIN rather than fragment the heading
+    from its body. A markerless block (e.g. a definition list) is never marker-led,
+    so its entries split — preserving the never-merge invariant.
+    """
+
+    if not current:
+        return False
+    first = current[0].text
+    marker_led = (
+        _is_standalone_clause_number(first)
+        or _is_clause_start(first)
+        or _is_heading(first)
+    )
+    return marker_led and not _ends_sentence(current[-1].text)
+
+
+def _has_heading_font_jump(previous: GeoLine, line: GeoLine, body_font: Optional[float]) -> bool:
+    if line.font_size is None or previous.font_size is None or body_font is None:
+        return False
+    # New line is meaningfully larger than the body AND larger than what precedes
+    # it -> a heading begins a new clause.
+    return line.font_size >= body_font * _HEADING_FONT_FACTOR and line.font_size > previous.font_size + 0.5
+
+
+def _lines_are_adjacent(previous: GeoLine, line: GeoLine, line_height: Optional[float]) -> bool:
+    """True only when geometry confirms the lines are one wrap apart (no gap).
+
+    Adjacency is measured against the WRAP PITCH (``line_height``), not the larger
+    paragraph-gap threshold: a gap meaningfully exceeding the wrap pitch is spacing,
+    not a wrap, and must never be read as adjacent (which could merge two clauses).
+    """
+
+    if previous.y is None or line.y is None or line_height is None or line_height <= 0:
+        return False
+    gap = previous.y - line.y
+    if gap <= _SAME_LINE_Y_TOLERANCE:
+        return True
+    return gap <= line_height + _GAP_EPSILON
 
 
 def _is_clause_start(line: str) -> bool:
@@ -174,12 +574,97 @@ def _ends_sentence(line: str) -> bool:
     return bool(re.search(r"[.;:!?)](?:[\"”’])?$", line))
 
 
-def _looks_like_sentence_start(line: str) -> bool:
-    return bool(re.match(r"^(?:[A-Z0-9(]|“|\"|')", line))
+def _is_lowercase_continuation(line: str) -> bool:
+    """True IFF ``line`` begins a lowercase WORD (the start of a mid-sentence wrap).
+
+    This is the continuation gate for all three body-absorbing JOINs. It is a
+    POSITIVE test for "the next line continues a sentence", made COMPLETE BY
+    CONSTRUCTION: a genuine mid-sentence wrap always continues with a real
+    lowercase WORD, while a new clause/sentence/list-item never does — it opens
+    with a capital, a digit, a marker, a quote of any kind, a bullet, a dash, a
+    currency or section symbol, an open paren/bracket, OR a list enumerator. Every
+    such lead falls through to SPLIT, so no clause-start can be mis-absorbed.
+
+    Two precise exclusions matter here:
+
+    1. ``str.islower()`` / the Unicode LOWERCASE PROPERTY is WRONG for the first
+       char: it is True for non-letter MARKER glyphs that lead auto-numbered list
+       items — small Roman numerals U+2170+ (category Nl), circled latin small
+       letters U+24D0+ (So), ordinal indicators U+00AA/U+00BA (Lo), modifier
+       letters (Lm), script small l U+2113 (Ll-but-symbol-like). A list item that
+       text-extracts as such a single glyph must SPLIT, not JOIN. So we require the
+       first char to be a lowercase LETTER specifically: ASCII a-z OR
+       ``unicodedata.category(first) == "Ll"`` (which EXCLUDES Nl/So/Lo/Lm/No).
+
+    2. A SHORT list enumerator — single OR multi-letter — begins with a lowercase
+       letter but is a MARKER, not a word, and must SPLIT. Round-9 only excluded the
+       LONE single-letter case ("i.", "a)") by testing the SECOND char, so a
+       multi-letter ASCII roman/alpha enumerator ("ii.", "iii.", "iv.", "viii.",
+       "ix.", "ab)") — whose second char is itself a LETTER — slipped through and
+       was read as a continuation, MERGING a carve-out sub-list (e.g. a "Permitted
+       Disclosures" list of items i. ii. iii. iv.) into its lead-in line. So we
+       take the leading MAXIMAL run of ASCII lowercase letters (after stripping an
+       optional opening "(" or "["), and if that run is SHORT (length 1..6) and is
+       IMMEDIATELY followed by a list separator (".", ")", ":", "]"), the line is an
+       enumerator, NOT a continuation. A genuine mid-sentence wrap word is never a
+       short run immediately followed by a separator: it either is longer than 6
+       letters or is followed by whitespace ("to its advisers" -> "to" then a SPACE;
+       "information already ..." -> a long word then a space), so it still JOINs.
+       Over-splitting a rare short-word-then-separator line is the accepted safe
+       failure; we never merge.
+    """
+
+    stripped = line.lstrip()
+    if not stripped:
+        return False
+    first = stripped[0]
+    # The first char must be a lowercase LETTER (ASCII a-z or Unicode category Ll),
+    # NOT merely a glyph with the lowercase property. This EXCLUDES Nl small Roman
+    # numerals, So circled small letters, Lo ordinals, Lm modifiers, No, digits,
+    # punctuation, symbols, bullets, and whitespace -> those all SPLIT.
+    is_lowercase_letter = "a" <= first <= "z" or (
+        unicodedata.category(first) == "Ll"
+        # ...but EXCLUDE category-Ll letterlike SYMBOL glyphs (e.g. script small l
+        # U+2113 ℓ, script small e U+212F): these are presentation/marker glyphs, not
+        # word-starting letters. They carry a tagged compatibility decomposition
+        # ("<font> 006C"), whereas genuine accented letters (é, ß, à) decompose
+        # canonically or not at all. A tagged decomposition -> SPLIT.
+        and not unicodedata.decomposition(first).startswith("<")
+    )
+    if not is_lowercase_letter:
+        return False
+    # Exclude a SHORT list enumerator — single OR multi-letter. ``first`` is already a
+    # lowercase ASCII/Ll letter, so take the leading MAXIMAL run of ASCII lowercase
+    # letters; if that run is short (length 1..6) and is IMMEDIATELY followed by a list
+    # separator (".", ")", ":", "]"), the line is a list MARKER, not a word ("i.", "a)",
+    # "b:", "c]", "ii.", "iii.", "iv.", "viii.", "ix.", "ab)"). A genuine mid-sentence
+    # wrap word is never a short run immediately followed by a separator — it is either
+    # longer than 6 letters or followed by whitespace ("to" -> SPACE) — so it still
+    # JOINs. (A bracketed "(iii)" never reaches here: "(" is not a lowercase letter, so
+    # it already SPLIT at the first-char gate above.) Over-splitting a rare
+    # short-word-then-separator line is the accepted safe failure; never merge. -> SPLIT.
+    run = re.match(r"[a-z]+", stripped)
+    if run is not None:
+        token = run.group()
+        if 1 <= len(token) <= 6 and stripped[len(token) : len(token) + 1] in ".):]":
+            return False
+    return True
 
 
 def _is_page_number(line: str) -> bool:
     return bool(re.match(r"^(?:page\s+)?\d+(?:\s+of\s+\d+)?$", line, flags=re.IGNORECASE))
+
+
+def _filtered_geo_lines(geo_lines: list[GeoLine], repeated_margins: set[str]) -> list[GeoLine]:
+    texts = [geo_line.text for geo_line in geo_lines]
+    filtered: list[GeoLine] = []
+    for index, geo_line in enumerate(geo_lines):
+        if geo_line.text in repeated_margins:
+            continue
+        if _is_disposable_page_number(geo_line.text, index, texts):
+            continue
+        filtered.append(geo_line)
+    return filtered
 
 
 def _filtered_pdf_lines(lines: list[str], repeated_margins: set[str]) -> list[str]:
