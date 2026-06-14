@@ -185,12 +185,26 @@ def _approved_option_values(clause: Mapping[str, Any]) -> set[str]:
     return values
 
 
-# A reference to an enumerated, pre-approved option set. We require the word
-# "approved" (or "playbook") to sit next to option/law/jurisdiction vocabulary
+# A reference to an enumerated, pre-approved option set. We require an
+# "enumerated set" qualifier to sit next to option/law/jurisdiction vocabulary
 # so generic mentions of "lawful" or "the law" do not trip the check.
+#
+# Two distinct shapes are recognised:
+#   * "approved"/"playbook" may qualify the broad option-set vocabulary,
+#     including bare law/laws ("approved jurisdictions", "playbook-approved law").
+#   * "permitted"/"listed" only qualify *enumerable list* nouns
+#     (option/jurisdiction). They are deliberately NOT allowed to pair with the
+#     bare "law"/"laws" noun, because "permitted/required by law" (and similar
+#     lawful carve-out prose) is standard clause wording, not a reference to an
+#     enumerated approved-option set.
 _APPROVED_OPTION_PATTERN = re.compile(
-    r"\b(?:approved|playbook|permitted|listed)\b[^.]{0,60}?"
+    r"\b(?:approved|playbook)\b[^.]{0,60}?"
     r"\b(?:option|options|jurisdiction|jurisdictions|law|laws|governing law)\b",
+    re.IGNORECASE,
+)
+_PERMITTED_OPTION_PATTERN = re.compile(
+    r"\b(?:permitted|listed)\b[^.]{0,40}?"
+    r"\b(?:option|options|jurisdiction|jurisdictions)\b",
     re.IGNORECASE,
 )
 
@@ -202,7 +216,10 @@ def _prose_references_approved_options(clause: Mapping[str, Any]) -> bool:
     for _field, condition in _all_conditions(rules):
         parts.append(_text(condition.get("description")))
     blob = " ".join(part for part in parts if part)
-    return bool(_APPROVED_OPTION_PATTERN.search(blob))
+    return bool(
+        _APPROVED_OPTION_PATTERN.search(blob)
+        or _PERMITTED_OPTION_PATTERN.search(blob)
+    )
 
 
 # ---------------------------------------------------------------------------

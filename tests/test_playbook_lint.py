@@ -330,6 +330,71 @@ def test_approved_options_present_lawful_prose_is_not_a_trigger() -> None:
     assert _run_check("approved_options_present", clause) == []
 
 
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "Disclosure is allowed as permitted or required by law.",
+        "The receiving party may disclose if required by law.",
+        "Information may be disclosed where permitted by law.",
+        "Disclosure permitted to the extent required by applicable law or regulation.",
+        "Disclosure as permitted or required by law, regulation, or court order.",
+    ],
+)
+def test_approved_options_present_permitted_required_by_law_is_not_a_trigger(
+    wording: str,
+) -> None:
+    """Standard 'permitted/required by law' carve-out prose must NOT be read as a
+    reference to an enumerated approved-option set (regression for the publish
+    hard-block false positive)."""
+
+    clause = _clean_required_clause()
+    # Place the carve-out both in clause prose and in a rules condition
+    # description -- both are scanned by the approved-options check.
+    clause["requirement"] = f"The agreement must include a sample clause. {wording}"
+    clause["rules"]["fail_conditions"][0]["description"] = wording
+    assert _run_check("approved_options_present", clause) == []
+
+
+def test_permitted_listed_qualifying_options_still_triggers() -> None:
+    """'permitted'/'listed' qualifying an enumerable list noun (option/
+    jurisdiction) IS a genuine approved-option reference and must still fire when
+    no option list is enumerated."""
+
+    for wording in (
+        "Governing law must be one of the permitted jurisdictions.",
+        "Pick one of the listed options.",
+    ):
+        clause = _clean_required_clause()
+        clause["requirement"] = wording
+        violations = _run_check("approved_options_present", clause)
+        assert violations, wording
+        assert any("prose references approved" in v.message for v in violations)
+
+
+def test_lawful_carveout_playbook_publishes_clean() -> None:
+    """End-to-end repro: a clean playbook stays lint-clean (publishable) after a
+    clause picks up standard 'as permitted or required by law' carve-out wording."""
+
+    clause = _clean_required_clause()
+    clause["requirement"] = (
+        "The agreement must include a confidentiality clause. The receiving "
+        "party may disclose Confidential Information as permitted or required "
+        "by law, regulation, or court order."
+    )
+    clause["rules"]["review_triggers"][0]["description"] = (
+        "Disclosure is made other than as permitted or required by law."
+    )
+    playbook = {
+        "version": "1.0",
+        "name": "Test Playbook",
+        "clauses": [clause],
+    }
+    violations = lint_playbook(playbook)
+    approved_option_violations = _violations_for("approved_options_present", violations)
+    assert approved_option_violations == []
+    assert violations == []
+
+
 def test_approved_options_present_approved_laws_satisfy() -> None:
     clause = _option_clause(with_options=False)
     clause["rules"].pop("approved_options", None)
