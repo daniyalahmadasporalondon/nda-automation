@@ -4,7 +4,16 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
-from .review_document import Paragraph
+from .heading_detection import (
+    block_clause_number,
+    continuation_is_heading,
+    parse_leading_number,
+)
+from .review_document import (
+    SPLIT_CONTINUATION_KEY,
+    SPLIT_PARENT_NUMBER_KEY,
+    Paragraph,
+)
 
 STRUCTURE_VERSION = 2
 REFERENCE_INDEX_VERSION = 2
@@ -174,6 +183,19 @@ def _candidate_for_paragraph(
     if not text:
         return None
 
+    # Context-aware gate: a soft-return CONTINUATION of an already-numbered block
+    # (stamped by align_document_paragraphs) is wrapped body text, not a new
+    # heading -- unless it carries its own explicit-separator number that DIFFERS
+    # from the parent clause. This is the single check that replaces the second,
+    # independent re-derivation that used to undo the upstream fix; the metadata
+    # path below is skipped for continuations because the parent's clause number
+    # is not the continuation's own.
+    if _is_split_continuation(paragraph):
+        parent_number = _split_parent_number(paragraph)
+        if not continuation_is_heading(text, parent_number):
+            return None
+        return _continuation_heading_candidate(position, text)
+
     metadata_candidate = _candidate_from_source_metadata(position, paragraph, text)
     if metadata_candidate is not None:
         return metadata_candidate
@@ -267,20 +289,33 @@ def _candidate_from_source_metadata(position: int, paragraph: Paragraph, text: s
     source = _source_metadata(paragraph)
     structure_number = _source_structure_number(paragraph)
     if structure_number:
-        heading = _clean_heading(_strip_leading_number(text, structure_number)) or _clean_heading(text)
+        # The paragraph carries a Word-autonumber. Reconcile it with any literal
+        # number the author typed into the run via the SHARED block_clause_number
+        # (the same definition align_document_paragraphs used for split provenance,
+        # so the two layers agree): a literal "2. Second." under autonumber "1"
+        # yields section "2", while a numbered paragraph whose run carries no
+        # literal prefix keeps the autonumber. This branch only runs when a real
+        # autonumber exists, so prose without metadata still defers to the careful
+        # text classifiers below.
+        effective_number = block_clause_number(text, structure_number)
+        heading = _clean_heading(_strip_leading_number(text, effective_number)) or _clean_heading(text)
         return _SectionCandidate(
             position=position,
             kind="numbered",
-            label=structure_number,
-            number=structure_number,
+            label=effective_number,
+            number=effective_number,
             heading=heading,
-            level=_source_number_level(paragraph, structure_number),
+            level=_source_number_level(paragraph, effective_number),
             confidence="high",
             heading_text=_preview(_source_heading_text(paragraph, text)),
             source=source,
         )
 
     heading_level = paragraph.get("heading_level")
+    # A continuation piece inherits its source block's ``heading_level`` (the
+    # whole Word paragraph's style), but a wrapped continuation is not itself a
+    # styled heading -- so the continuation gate runs before this and this path is
+    # never reached for continuations.
     if isinstance(heading_level, int) and heading_level > 0:
         heading = _clean_heading(text)
         return _SectionCandidate(
@@ -296,6 +331,38 @@ def _candidate_from_source_metadata(position: int, paragraph: Paragraph, text: s
         )
 
     return None
+
+
+def _is_split_continuation(paragraph: Paragraph) -> bool:
+    return bool(paragraph.get(SPLIT_CONTINUATION_KEY))
+
+
+def _split_parent_number(paragraph: Paragraph) -> str:
+    value = paragraph.get(SPLIT_PARENT_NUMBER_KEY)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _continuation_heading_candidate(position: int, text: str) -> _SectionCandidate | None:
+    """Build a section for a continuation that the unified detector accepted as a
+    genuinely new heading -- a distinct, explicit-separator numbered clause that
+    shared one Word paragraph via soft returns (e.g. ``3. Third.``). The number is
+    taken from the continuation's own text, and its literal prefix is stripped
+    from the heading, mirroring the numbered-heading path."""
+    leading = parse_leading_number(text)
+    if leading is None:
+        return None
+    number = leading.number
+    heading = _clean_heading(_strip_leading_number(text, number)) or _clean_heading(text)
+    return _SectionCandidate(
+        position=position,
+        kind="numbered",
+        label=number,
+        number=number,
+        heading=heading,
+        level=_level_for_number(number),
+        confidence="high",
+        heading_text=_preview(text),
+    )
 
 
 def _section_dict(
