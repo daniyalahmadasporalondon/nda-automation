@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -178,7 +179,13 @@ def build_ai_assessment_packet(
     clause_localization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     document_paragraphs = _review_paragraphs(source_text or "", paragraphs)
-    included_paragraphs = _fit_context_budget(document_paragraphs, max_paragraphs=max_paragraphs, max_chars=max_chars)
+    included_paragraphs = _fit_context_budget(
+        document_paragraphs,
+        max_paragraphs=max_paragraphs,
+        max_chars=max_chars,
+        contract_structure=contract_structure,
+        playbook=playbook,
+    )
     omitted_paragraph_count = max(0, len(document_paragraphs) - len(included_paragraphs))
     clipped_paragraph_count = sum(1 for paragraph in included_paragraphs if paragraph.get("text_clipped"))
     # #4: per-paragraph structure. The contract structure is built ONCE upstream
@@ -264,11 +271,64 @@ def _fit_context_budget(
     *,
     max_paragraphs: int,
     max_chars: int,
+    contract_structure: Mapping[str, Any] | None = None,
+    playbook: Mapping[str, Any] | None = None,
+) -> list[Paragraph]:
+    """Select the paragraphs that fit the packet budget.
+
+    The legacy behaviour is a blind order-cut: keep paragraphs in document order until
+    a cap is hit. #7 adds an OPTIONAL section-aware pass that, when the document would
+    be truncated AND a structure is available, prioritizes keeping clause-relevant
+    sections (and their cross-referenced sections) over irrelevant filler -- so the
+    paragraphs the model DOES see within the budget are the ones that matter.
+
+    SAFETY-CRITICAL INVARIANT (do not weaken): this function only ever chooses WHICH
+    subset of the existing paragraphs to keep. The caller derives
+    ``omitted_paragraph_count = total - len(included)`` and ``clipped_paragraph_count``
+    purely from cardinality, so dropping a paragraph -- relevant or not -- always
+    increments the omitted count and always forces ``truncated=True`` (-> human review).
+    Section-awareness can change WHICH paragraphs survive the cut, but it can NEVER make
+    a document that dropped content report as untruncated. The order-cut remains the
+    fallback whenever no structure is supplied or the section-aware pass cannot help.
+    """
+    paragraph_limit = max(0, int(max_paragraphs))
+    char_limit = max(0, int(max_chars))
+
+    # The order-cut is the baseline and the fallback. Compute it first.
+    order_cut = _order_cut_budget(paragraphs, paragraph_limit=paragraph_limit, char_limit=char_limit)
+
+    # No paragraph was DROPPED under the order-cut -> the whole document fits (a single
+    # paragraph may still have been clipped, which the order-cut preserves). Nothing to
+    # gain from section-awareness, so return the identical order-cut (zero behaviour
+    # change), keeping the clip signal intact.
+    if len(order_cut) >= len(paragraphs):
+        return order_cut
+
+    # Section-aware path is OPT-IN: only when a usable structure is supplied. Any failure
+    # falls back to the order-cut, which is always safe.
+    try:
+        section_aware = _section_aware_budget(
+            paragraphs,
+            paragraph_limit=paragraph_limit,
+            char_limit=char_limit,
+            contract_structure=contract_structure,
+            playbook=playbook,
+        )
+    except Exception:
+        section_aware = None
+    if section_aware is not None:
+        return section_aware
+    return order_cut
+
+
+def _order_cut_budget(
+    paragraphs: Sequence[Paragraph],
+    *,
+    paragraph_limit: int,
+    char_limit: int,
 ) -> list[Paragraph]:
     fitted: list[Paragraph] = []
     char_count = 0
-    paragraph_limit = max(0, int(max_paragraphs))
-    char_limit = max(0, int(max_chars))
     for paragraph in paragraphs[:paragraph_limit]:
         text = str(paragraph.get("text") or "")
         remaining = char_limit - char_count if char_limit else None
@@ -285,6 +345,140 @@ def _fit_context_budget(
         fitted.append(paragraph)
         char_count += len(text)
     return fitted
+
+
+def _section_aware_budget(
+    paragraphs: Sequence[Paragraph],
+    *,
+    paragraph_limit: int,
+    char_limit: int,
+    contract_structure: Mapping[str, Any] | None,
+    playbook: Mapping[str, Any] | None,
+) -> list[Paragraph] | None:
+    """Keep clause-relevant sections (+ their cross-references) over filler, then emit
+    the kept paragraphs in DOCUMENT ORDER. Returns None to signal "fall back to the
+    order-cut" when no structure/priority is available or only one paragraph fits (the
+    clip-first-paragraph case is identical to the order-cut, so let it own that path)."""
+    if not isinstance(contract_structure, Mapping):
+        return None
+    sections = contract_structure.get("sections")
+    if not isinstance(sections, Sequence) or not sections:
+        return None
+    if paragraph_limit <= 1:
+        # With room for at most one paragraph the order-cut (which also handles the
+        # clip-to-budget case) is exactly right; nothing to reprioritize.
+        return None
+
+    # Stable document-order positions so the final output stays ordered and de-duped.
+    position_by_id: dict[str, int] = {}
+    for position, paragraph in enumerate(paragraphs):
+        paragraph_id = str(paragraph.get("id") or "")
+        if paragraph_id and paragraph_id not in position_by_id:
+            position_by_id[paragraph_id] = position
+
+    relevant_section_ids = _relevant_section_ids(contract_structure, playbook)
+    if not relevant_section_ids:
+        return None
+
+    # Priority order: paragraphs of relevant sections first (in document order), then
+    # the rest (in document order). This is a pure REORDERING of admission priority;
+    # the emitted result is re-sorted to document order below.
+    relevant_positions: set[int] = set()
+    for section in sections:
+        if not isinstance(section, Mapping):
+            continue
+        if str(section.get("id") or "") not in relevant_section_ids:
+            continue
+        for paragraph_id in section.get("paragraph_ids", []) or []:
+            position = position_by_id.get(str(paragraph_id)) if isinstance(paragraph_id, str) else None
+            if position is not None:
+                relevant_positions.add(position)
+    if not relevant_positions:
+        return None
+
+    priority_positions = [position for position in range(len(paragraphs)) if position in relevant_positions]
+    priority_positions += [position for position in range(len(paragraphs)) if position not in relevant_positions]
+
+    # Greedily admit by priority within BOTH caps. Never clip here: clipping a single
+    # oversized paragraph is the order-cut's job (and only matters when one paragraph
+    # fits, which we already delegated above). A paragraph that does not fit the char
+    # budget is simply skipped, so it counts as omitted -> truncation forced.
+    admitted_positions: list[int] = []
+    char_count = 0
+    for position in priority_positions:
+        if len(admitted_positions) >= paragraph_limit:
+            break
+        text = str(paragraphs[position].get("text") or "")
+        if char_limit and char_count + len(text) > char_limit:
+            continue
+        admitted_positions.append(position)
+        char_count += len(text)
+
+    if not admitted_positions:
+        return None
+    # Emit in document order (strict, de-duplicated subset of the input).
+    return [paragraphs[position] for position in sorted(admitted_positions)]
+
+
+def _relevant_section_ids(
+    contract_structure: Mapping[str, Any],
+    playbook: Mapping[str, Any] | None,
+) -> set[str]:
+    """Section ids worth keeping: those whose heading maps to a playbook clause, plus
+    every section they cross-reference (so a clause that points at "Schedule 2" keeps
+    Schedule 2 too). Derived from the deterministic structure + the same clause-heading
+    cues used for localization."""
+    from .clause_localization import build_clause_localization
+
+    relevant: set[str] = set()
+    if isinstance(playbook, Mapping):
+        localization = build_clause_localization(playbook, contract_structure)
+        for hint in localization.values():
+            for section_id in hint.get("suggested_section_ids", []) or []:
+                if isinstance(section_id, str) and section_id:
+                    relevant.add(section_id)
+
+    # Pull in sections cross-referenced FROM a relevant section, via the reference
+    # index's alias map, so a clause body that says "as defined in Section 2" keeps the
+    # referenced section. This is a single, conservative hop (no transitive crawl).
+    reference_index = contract_structure.get("reference_index")
+    sections = contract_structure.get("sections")
+    if isinstance(reference_index, Mapping) and isinstance(sections, Sequence):
+        alias_map = reference_index.get("alias_to_section_id")
+        alias_map = alias_map if isinstance(alias_map, Mapping) else {}
+        section_text_by_id = {
+            str(section.get("id") or ""): " ".join(
+                str(p) for p in (section.get("heading"), section.get("label"))
+            )
+            for section in sections
+            if isinstance(section, Mapping)
+        }
+        referenced = _cross_referenced_section_ids(relevant, section_text_by_id, alias_map)
+        relevant |= referenced
+    return relevant
+
+
+_BUDGET_REFERENCE_RE = re.compile(
+    r"\b(?:section|clause|article|schedule|annex|annexure|appendix|exhibit|paragraph)s?\s*"
+    r"(?P<number>\d+(?:\.\d+)*|[ivxlcdm]+|[a-z])\b",
+    re.IGNORECASE,
+)
+
+
+def _cross_referenced_section_ids(
+    relevant: set[str],
+    section_text_by_id: Mapping[str, str],
+    alias_map: Mapping[str, str],
+) -> set[str]:
+    referenced: set[str] = set()
+    for section_id in relevant:
+        text = section_text_by_id.get(section_id, "")
+        for match in _BUDGET_REFERENCE_RE.finditer(text):
+            number = match.group("number").lower()
+            target = alias_map.get(f"number:{number}") or alias_map.get(f"section:{number}")
+            if isinstance(target, str) and target:
+                referenced.add(target)
+    return referenced
 
 
 def _clip_paragraph_text(paragraph: Paragraph, char_limit: int) -> Paragraph:

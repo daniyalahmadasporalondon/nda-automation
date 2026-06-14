@@ -257,6 +257,26 @@ class AIAssessorTests(unittest.TestCase):
         self.assertEqual(result["ai_first_review"]["status"], "partial")
         self.assertTrue(result["ai_first_review"]["truncated"])
 
+    def test_section_aware_truncation_still_forces_review_clean_but_incomplete(self):
+        # #7 ADVERSARIAL SAFETY PROOF: a long document whose tail is dropped -- even when
+        # section-aware selection keeps the clause-relevant paragraphs and every assessed
+        # clause comes back PASS -- must STILL force manual review, never silently clear.
+        # This proves section-awareness cannot defeat the truncation-forces-review guard:
+        # dropped content always counts as omitted -> truncated -> review.
+        long_source = _padded_source(ALL_PASS_SOURCE_TEXT, filler_paragraphs=200)
+        reviewer = InMemoryAssessmentReviewer(response=_all_pass_response())
+
+        result = assess_nda_with_ai(long_source, reviewer=reviewer)
+
+        packet_document = reviewer.packets[0]["document"]
+        # Content WAS dropped (the tail did not fit) ...
+        self.assertGreater(packet_document["omitted_paragraph_count"], 0)
+        self.assertTrue(packet_document["truncated"])
+        # ... so even an all-pass response is escalated to blocking manual review.
+        self.assertEqual(result["overall_status"], "needs_review")
+        self.assertTrue(result["review_state"]["blocks_send"])
+        self.assertTrue(result["review_state"]["truncation_forced_review"])
+
     def test_untruncated_document_is_not_escalated_by_truncation_guard(self):
         # The same all-pass response on a document that fits the budget keeps its
         # natural verdict -- the guard only fires on truncation.
