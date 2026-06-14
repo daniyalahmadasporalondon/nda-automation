@@ -21,6 +21,15 @@ try:  # pragma: no cover - exercised only when the lint module is present
     from .playbook_lint import lint_playbook
 except ImportError:  # pragma: no cover - lint module may not be wired yet
     lint_playbook = None
+
+try:  # pragma: no cover - exercised only when the semantic-lint module is present
+    from .playbook_semantic_lint import (
+        semantic_lint_enabled,
+        semantic_lint_playbook,
+    )
+except ImportError:  # pragma: no cover - semantic-lint module may not be wired yet
+    semantic_lint_enabled = None
+    semantic_lint_playbook = None
 from .playbook_runtime import (
     PLAYBOOK_RUNTIME_VERSION,
     PlaybookDraftConflict,
@@ -107,6 +116,54 @@ def _enforce_playbook_lint(playbook: Any) -> None:
         raise PlaybookTemplateError(_LINT_FAILURE_PREFIX + "; ".join(messages))
 
 
+def _format_semantic_lint_violation(violation: Any) -> dict[str, Any]:
+    """Render a Layer-2 semantic violation as a structured advisory warning record.
+
+    Same envelope shape as :func:`_structured_playbook_error` (location/clause/field/
+    message) so the UI can render warnings and errors uniformly, but with
+    ``severity == "warning"`` and the model's self-reported ``confidence`` attached.
+    """
+    clause_id = str(getattr(violation, "clause_id", "") or "").strip()
+    message = str(getattr(violation, "message", "") or "").strip() or "Playbook semantic-lint warning."
+    check_id = str(getattr(violation, "check_id", "") or "").strip()
+    confidence = getattr(violation, "confidence", None)
+    return {
+        "location": clause_id,
+        "clause": clause_id or None,
+        "field": None,
+        "message": message,
+        "severity": "warning",
+        "check_id": check_id,
+        "confidence": confidence,
+    }
+
+
+def semantic_lint_warnings_for(playbook: Any) -> list[dict[str, Any]]:
+    """Return advisory Layer-2 semantic-lint warnings for a candidate playbook.
+
+    ADVISORY ONLY: an AI lint must never hard-block publishing (false positives +
+    model flakiness), so these are surfaced as a separate ``warnings`` list in the
+    draft-validation path -- never in the blocking ``errors`` list and never in the
+    publish hard-gate.
+
+    Gated by :func:`semantic_lint_enabled` (DEFAULT OFF) and fully FAIL-OPEN: if the
+    module is not wired, the flag is off, or the pass raises, this returns ``[]``.
+    Resolved at call time so tests can monkeypatch the module-level symbols.
+    """
+    lint = semantic_lint_playbook
+    enabled = semantic_lint_enabled
+    if lint is None or enabled is None:
+        return []
+    try:
+        if not enabled():
+            return []
+        violations = lint(playbook)
+    except Exception:  # noqa: BLE001 - an advisory AI lint must never block; fail open to a no-op
+        LOGGER.warning("Playbook semantic lint raised; skipping the advisory pass.", exc_info=True)
+        return []
+    return [_format_semantic_lint_violation(violation) for violation in (violations or [])]
+
+
 def load_playbook_workspace(
     *,
     playbook_path=PLAYBOOK_PATH,
@@ -139,7 +196,10 @@ def validate_playbook_draft(payload: dict[str, Any]) -> dict[str, Any]:
         raise PlaybookAuthoringError({"error": "Playbook draft payload must include a playbook object."}, status=400)
 
     errors = collect_playbook_validation_errors(playbook)
-    return {"valid": not errors, "errors": errors}
+    # Layer-2 semantic lint is ADVISORY: its findings ride in a SEPARATE "warnings"
+    # list and never affect ``valid`` or the publish gate. Default-off + fail-open.
+    warnings = semantic_lint_warnings_for(playbook)
+    return {"valid": not errors, "errors": errors, "warnings": warnings}
 
 
 def save_playbook_draft(
