@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from nda_automation import dashboard_assistant, dashboard_assistant_ai
 from nda_automation.matter_repository import InMemoryMatterRepository
 
@@ -348,3 +350,161 @@ def test_ai_unavailable_falls_back_to_deterministic_catalog():
     assert response["intent"] == "draft_action_request"
     assert response["action"] == "open_generator"
     assert response["requires_confirmation"] is True
+
+
+def _action_model(action, *, requires_confirmation=False, side_effects=None):
+    plan = {
+        "intent": "action_request",
+        "domain": "gmail",
+        "action": action,
+        "requires_confirmation": requires_confirmation,
+        "message": "Done.",
+    }
+    if side_effects is not None:
+        plan["side_effects"] = side_effects
+
+    class FakeProviderModel:
+        def __call__(self, _request_body):
+            return {"assistant_response": plan}
+
+    return FakeProviderModel()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        # The headline Gmail import/sync bypass plus every other state-mutating
+        # or external-operation action the assistant can emit. None of these may
+        # skip confirmation even when the model omits side_effects entirely.
+        "gmail_import",
+        "sync_gmail",
+        "open_gmail_sync",
+        "refresh_review",
+        "run_review",
+        "open_review",
+        "send_redline",
+        "approve_matter",
+        "open_drive_export",
+        "open_generator",
+    ],
+)
+def test_ai_side_effect_action_is_force_confirmed_even_with_empty_side_effects(action):
+    # A prompt-injected model returns a side-effectful action with
+    # requires_confirmation=false AND an empty side_effects list — the exact
+    # path that previously bypassed the gate. The server must override it.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "sync my gmail now",
+        repository=InMemoryMatterRepository(),
+        ai_model=_action_model(action, requires_confirmation=False, side_effects=[]),
+    )
+
+    # The model's original side-effect action may either be force-confirmed in
+    # place, or (for owner-scoped matter actions with no matters) safely
+    # degraded to a clarification or a navigation-only response. The invariant:
+    # the requested side-effect action must NEVER reach the user as an
+    # unconfirmed action_request.
+    resolved_action = response.get("action")
+    if resolved_action == action and response["intent"] in {
+        "action_request",
+        "draft_action_request",
+    }:
+        assert response["requires_confirmation"] is True, response
+    else:
+        assert response["intent"] in {"clarification", "unsupported", "action_request"}
+        if resolved_action not in dashboard_assistant_ai.SAFE_NO_CONFIRMATION_ACTIONS:
+            assert response.get("requires_confirmation") is not False, response
+
+
+def test_ai_gmail_import_with_omitted_confirmation_flag_is_force_confirmed():
+    # Even with no requires_confirmation key and no side_effects key at all,
+    # the Gmail import action must be confirmation-gated.
+    class FakeProviderModel:
+        def __call__(self, _request_body):
+            return {
+                "assistant_response": {
+                    "intent": "action_request",
+                    "domain": "gmail",
+                    "action": "gmail_import",
+                    "message": "Imported your Gmail.",
+                }
+            }
+
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "import my gmail",
+        repository=InMemoryMatterRepository(),
+        ai_model=FakeProviderModel(),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["requires_confirmation"] is True
+
+
+def test_ai_unknown_action_fails_safe_to_required_confirmation():
+    # An unrecognized action a (possibly injected) model invents must be treated
+    # as side-effectful and force-confirmed rather than allowed through.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "do the thing",
+        repository=InMemoryMatterRepository(),
+        ai_model=_action_model(
+            "wipe_all_matters", requires_confirmation=False, side_effects=[]
+        ),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["action"] == "wipe_all_matters"
+    assert response["requires_confirmation"] is True
+
+
+def test_ai_safe_navigation_action_declaring_side_effects_is_force_confirmed():
+    # A safe navigation action cannot be smuggled past the gate while carrying a
+    # declared side effect: the declared side effect forces confirmation.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "open the repository",
+        repository=InMemoryMatterRepository(),
+        ai_model=_action_model(
+            "open_repository",
+            requires_confirmation=False,
+            side_effects=["delete_everything"],
+        ),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["requires_confirmation"] is True
+
+
+@pytest.mark.parametrize("action", ["open_repository", "open_playbook", "open_admin"])
+def test_ai_safe_navigation_actions_still_skip_confirmation(action):
+    # Pure navigation actions in the allow-list must keep skipping confirmation.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "open it",
+        repository=InMemoryMatterRepository(),
+        ai_model=_action_model(action, requires_confirmation=False, side_effects=[]),
+    )
+
+    assert response["intent"] == "action_request"
+    assert response["action"] == action
+    assert response["requires_confirmation"] is False
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "system_question",
+        "repository_question",
+        "review_finding_explanation",
+        "matter_summary",
+        "system_search",
+        "how_it_works",
+    ],
+)
+def test_ai_read_intents_are_not_given_a_forced_confirmation_flag(intent):
+    # Pure read/informational intents keep their existing behavior and never
+    # acquire a requires_confirmation key from the gate.
+    payload = {"intent": intent, "answer": {"text": "hello"}}
+
+    response = dashboard_assistant_ai.validate_dashboard_assistant_response(
+        payload, query="q"
+    )
+
+    assert response is not None
+    assert "requires_confirmation" not in response
