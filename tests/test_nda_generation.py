@@ -730,6 +730,85 @@ class TestFreeTextSanitization:
 
 
 # --------------------------------------------------------------------------- #
+# Identity-field validation (clear, field-scoped rejection -- NOT sanitisation)
+# --------------------------------------------------------------------------- #
+
+
+class TestIdentityFieldValidation:
+    """The counterparty identity fields (name / registered office / jurisdiction)
+    are filled verbatim into structured slots, so a square bracket in their value
+    collides with the document's fill markers (e.g. [GOVERNING LAW]). These are
+    legal values, so we REJECT (never alter) such input -- with a clear,
+    field-scoped error replacing the old opaque leftover-placeholder failure."""
+
+    @pytest.mark.parametrize(
+        "field,human_label,value",
+        [
+            ("company_name", "company name", "Acme [GOVERNING LAW] Ltd"),
+            ("registered_office", "registered office", "42 [COMPANY NAME] Road"),
+            (
+                "jurisdiction_of_incorporation",
+                "jurisdiction of incorporation",
+                "India [BUSINESS DESCRIPTION]",
+            ),
+        ],
+    )
+    def test_template_token_in_identity_field_is_rejected_with_named_field(
+        self, playbook, field, human_label, value
+    ):
+        intake = _intake(**{field: value})
+        with pytest.raises(gen.NdaGenerationError) as excinfo:
+            _generate(playbook, intake=intake)
+        message = str(excinfo.value)
+        # The error must NAME the specific field that failed...
+        assert field in message, f"error did not name the field {field!r}: {message!r}"
+        assert human_label in message
+        # ...and state the concrete, human-readable cause (a square bracket that
+        # conflicts with the template's fill markers).
+        assert "square bracket" in message
+        assert "fill marker" in message
+        # It is not the old opaque leftover-placeholder failure.
+        assert "still contains unfilled placeholders" not in message
+
+    @pytest.mark.parametrize(
+        "field",
+        ["company_name", "registered_office", "jurisdiction_of_incorporation"],
+    )
+    def test_bare_bracket_in_identity_field_is_rejected(self, playbook, field):
+        # Any square bracket -- not only a real template token -- is rejected,
+        # because a stray "[...]" in an identity value would otherwise land in a
+        # signed legal document. Closing-bracket-only counts too.
+        for value in ("Acme [holdco] Ltd", "Acme] Ltd"):
+            with pytest.raises(gen.NdaGenerationError) as excinfo:
+                _generate(playbook, intake=_intake(**{field: value}))
+            assert field in str(excinfo.value)
+
+    def test_clean_identity_fields_still_generate(self, playbook):
+        # No regression: a clean intake (no brackets) still generates successfully.
+        result = _generate(playbook)
+        assert result.docx_bytes
+        # The clean identity values are written verbatim into the document.
+        text = extract_docx_text(result.docx_bytes)
+        assert "Acme Innovations Pvt Ltd" in text
+
+    def test_offending_identity_value_is_not_silently_modified(self, playbook):
+        # Security/legal intent: the bracketed value is REJECTED, never rewritten.
+        # validate_intake_identity_fields raises and does not mutate the intake.
+        intake = _intake(company_name="Acme [GOVERNING LAW] Ltd")
+        with pytest.raises(gen.NdaGenerationError):
+            gen.validate_intake_identity_fields(intake)
+        # The dataclass field is untouched by the (failed) validation.
+        assert intake.company_name == "Acme [GOVERNING LAW] Ltd"
+
+    def test_template_token_injection_is_still_rejected_not_accepted(self, playbook):
+        # Security intent holds: a template-token value must NEVER produce a
+        # document -- it is rejected, never accepted/sanitised into a draft.
+        intake = _intake(company_name="Innocuous [GOVERNING LAW]")
+        with pytest.raises(gen.NdaGenerationError):
+            _generate(playbook, intake=intake)
+
+
+# --------------------------------------------------------------------------- #
 # Artifact save seam (injected; no hard dependency on the artifact registry)
 # --------------------------------------------------------------------------- #
 

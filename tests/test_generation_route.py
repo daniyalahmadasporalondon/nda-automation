@@ -359,6 +359,26 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("one_way", payload["error"])
 
+    def test_bracketed_counterparty_name_is_rejected_with_a_clear_field_error(self):
+        # A counterparty name carrying a square bracket (which collides with the
+        # template fill markers) must 400 with a CLEAR field-scoped {"error": ...}
+        # naming the field + cause -- not the old opaque leftover-placeholder
+        # failure, and the document must never be returned.
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {
+                    "signing_entity_id": "aspora_technology",
+                    "intake": {"counterparty_name": "Acme [GOVERNING LAW] Ltd"},
+                },
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400)
+        message = payload["error"]
+        self.assertIn("company_name", message)
+        self.assertIn("square bracket", message)
+        self.assertNotIn("still contains unfilled placeholders", message)
+        self.assertNotIn("matter_id", payload)
+
     def test_governing_law_override_to_approved_law_is_applied(self):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
