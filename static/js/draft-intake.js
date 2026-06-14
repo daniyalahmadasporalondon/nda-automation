@@ -86,11 +86,14 @@ function createDraftIntakeController({
     return intakeApi;
   }
 
-  // (Re)binds the helper surface to a set of entities and resets the working
-  // intake. Used for the initial bind, an explicit registryEntities override,
-  // and after the live feed loads.
-  function rebindRegistry(entities) {
-    intakeApi = window.createDraftIntake(entities ? { entities } : {});
+  // (Re)binds the helper surface to a set of entities (and optional playbook law
+  // options) and resets the working intake. Used for the initial bind, an explicit
+  // registryEntities override, and after the live feed loads.
+  function rebindRegistry(entities, lawOptions) {
+    const config = {};
+    if (entities) config.entities = entities;
+    if (Array.isArray(lawOptions) && lawOptions.length) config.lawOptions = lawOptions;
+    intakeApi = window.createDraftIntake(config);
     intake = intakeApi.createInitialIntake();
   }
 
@@ -106,8 +109,16 @@ function createDraftIntakeController({
       const response = await fetch(signingEntitiesUrl, { headers: { Accept: "application/json" } });
       if (response.ok) {
         const payload = await response.json();
-        if (Array.isArray(payload?.entities) && payload.entities.length) {
-          rebindRegistry(payload.entities);
+        const entities =
+          Array.isArray(payload?.entities) && payload.entities.length ? payload.entities : null;
+        // Source the governing-law dropdown choices from the playbook (the feed's
+        // governing_law_options) so the override list is playbook-driven rather
+        // than derived from the embedded entity mirror.
+        const lawOptions = Array.isArray(payload?.governing_law_options)
+          ? payload.governing_law_options
+          : null;
+        if (entities || (Array.isArray(lawOptions) && lawOptions.length)) {
+          rebindRegistry(entities, lawOptions);
         }
         // Source the playbook term cap from the feed when present so the preview's
         // clamp tracks the live playbook rather than the hardcoded fallback.

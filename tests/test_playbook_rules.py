@@ -341,6 +341,50 @@ class PlaybookRulesTests(unittest.TestCase):
 
         validate_playbook(playbook)
 
+    def test_non_circumvention_carries_prohibited_position_patterns(self):
+        # The prohibited-position regex set lives on the playbook non_circumvention
+        # clause and is the single source for the guard, ship gate, and gen-verify.
+        non_circumvention = next(
+            clause for clause in load_playbook()["clauses"] if clause["id"] == "non_circumvention"
+        )
+        patterns = non_circumvention["prohibited_position_patterns"]
+        self.assertTrue(patterns)
+        labels = {entry["label"] for entry in patterns}
+        self.assertIn("non_compete", labels)
+        self.assertIn("ip_assignment", labels)
+
+    def test_validate_playbook_rejects_invalid_prohibited_position_regex(self):
+        playbook = deepcopy(load_playbook())
+        non_circumvention = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "non_circumvention"
+        )
+        non_circumvention["prohibited_position_patterns"] = [{"label": "broken", "pattern": "([unclosed"}]
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "pattern is not a valid regex"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_prohibited_position_unknown_field(self):
+        playbook = deepcopy(load_playbook())
+        non_circumvention = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "non_circumvention"
+        )
+        non_circumvention["prohibited_position_patterns"] = [
+            {"label": "x", "pattern": "x", "weight": 2}
+        ]
+
+        with self.assertRaisesRegex(PlaybookTemplateError, r"unsupported field\(s\): weight"):
+            validate_playbook(playbook)
+
+    def test_validate_playbook_rejects_prohibited_position_missing_label(self):
+        playbook = deepcopy(load_playbook())
+        non_circumvention = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "non_circumvention"
+        )
+        non_circumvention["prohibited_position_patterns"] = [{"pattern": "x"}]
+
+        with self.assertRaisesRegex(PlaybookTemplateError, "must include a label"):
+            validate_playbook(playbook)
+
 
 def _sync_governing_law_options(governing_law):
     governing_law["rules"]["approved_options"] = [

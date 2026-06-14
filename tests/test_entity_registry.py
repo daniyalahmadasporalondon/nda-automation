@@ -211,6 +211,17 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
             set(payload["playbook_option_ids"]),
             {"india", "delaware", "england_and_wales", "difc", "ontario_canada"},
         )
+        # The governing-law dropdown choices ({id,label}) are sourced from the
+        # playbook's governing_law approved_options (single source of truth) so the
+        # frontend dropdown is playbook-driven, not derived from the entity mirror.
+        governing_law = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "governing_law"
+        )
+        expected_options = [
+            {"id": option["id"], "label": option["label"]}
+            for option in governing_law["rules"]["approved_options"]
+        ]
+        self.assertEqual(payload["governing_law_options"], expected_options)
         self.assertTrue(
             all(row["matches_playbook"] for row in payload["law_mapping"])
         )
@@ -219,6 +230,9 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
         payload = er.signing_entities_payload(None)
         self.assertEqual(len(payload["entities"]), 7)
         self.assertEqual(payload["playbook_option_ids"], [])
+        # No playbook means no playbook-sourced law options; the frontend falls
+        # back to deriving them from the entity mirror.
+        self.assertEqual(payload["governing_law_options"], [])
         # No playbook means no drift verdict per row.
         self.assertNotIn("matches_playbook", payload["law_mapping"][0])
         # No playbook means no live term cap either.

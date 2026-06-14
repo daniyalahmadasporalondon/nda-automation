@@ -303,17 +303,38 @@ def _copy_bundle(entity: Mapping[str, Any]) -> dict[str, Any]:
 def _playbook_governing_law_option_ids(playbook: Mapping[str, Any]) -> set[str]:
     """Collect the governing_law approved_options ids from a playbook mapping."""
 
+    return {option["id"] for option in _playbook_governing_law_options(playbook)}
+
+
+def _playbook_governing_law_options(playbook: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The governing_law approved_options as ``[{"id", "label"}]`` from the playbook.
+
+    This is the canonical source for the draft-intake override dropdown's law
+    choices (id + display label), so the frontend does not have to derive them
+    from the embedded entity mirror. Ids are taken verbatim; the label falls back
+    to value then id when an option omits it. Order follows the playbook.
+    """
+
     for clause in playbook.get("clauses", []):
         if clause.get("id") != "governing_law":
             continue
         rules = clause.get("rules") or {}
         options = rules.get("approved_options") or []
-        return {
-            str(option.get("id"))
-            for option in options
-            if isinstance(option, Mapping) and option.get("id")
-        }
-    return set()
+        result: list[dict[str, str]] = []
+        for option in options:
+            if not isinstance(option, Mapping):
+                continue
+            option_id = str(option.get("id") or "").strip()
+            if not option_id:
+                continue
+            label = (
+                str(option.get("label") or "").strip()
+                or str(option.get("value") or "").strip()
+                or option_id
+            )
+            result.append({"id": option_id, "label": label})
+        return result
+    return []
 
 
 def _playbook_max_term_years(playbook: Mapping[str, Any]) -> int | None:
@@ -444,9 +465,11 @@ def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[
     """Assemble the API payload the draft-intake UI consumes.
 
     Returns the entity bundles, the entity -> governing-law mapping (with
-    ``matches_playbook`` drift flags when ``playbook`` is supplied), and the live
-    set of playbook governing-law option ids so the UI's override dropdown can be
-    playbook-driven rather than hardcoded.
+    ``matches_playbook`` drift flags when ``playbook`` is supplied), the live
+    set of playbook governing-law option ids, and the ``governing_law_options``
+    ({id,label}) list — both sourced from the playbook's governing_law
+    approved_options so the UI's override dropdown can be playbook-driven rather
+    than derived from the embedded entity mirror.
 
     When the playbook is supplied and carries a usable term cap, the payload also
     exposes ``playbook_meta.max_term_years`` sourced live from the playbook's
@@ -464,6 +487,14 @@ def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[
         "entities": list_entities(),
         "law_mapping": entity_law_mapping(playbook),
         "playbook_option_ids": option_ids,
+        # The governing-law dropdown choices ({id,label}) sourced live from the
+        # playbook's governing_law approved_options, so the draft-intake override
+        # dropdown is playbook-driven rather than derived from the embedded entity
+        # mirror. Empty when no playbook is supplied; the frontend then falls back
+        # to its entity-derived options.
+        "governing_law_options": (
+            _playbook_governing_law_options(playbook) if playbook is not None else []
+        ),
     }
     max_term_years = (
         _playbook_max_term_years(playbook) if playbook is not None else None

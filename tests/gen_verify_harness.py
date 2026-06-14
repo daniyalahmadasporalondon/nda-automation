@@ -37,6 +37,7 @@ from nda_automation.ai_assessor import (
 from nda_automation.ai_first_review import build_ai_first_review_result
 from nda_automation.checker import load_playbook, review_nda, validate_playbook
 from nda_automation.docx_text import extract_docx_text
+from nda_automation.prohibited_positions import PROHIBITED_POSITION_PATTERN_SOURCES
 
 # Template placeholder vocabulary (exact strings as authored in generic_nda.docx).
 # Any of these left in a generated draft is an unfilled slot = structural defect.
@@ -412,16 +413,12 @@ def check_clause_drift(text: str, authoritative_fragments: Sequence[str], report
 # text). A hit is a DEFECT: the generator must never assert these positions. This
 # complements the deterministic Playbook pass (which scores the 6 hard clauses) by
 # catching prohibited obligations the AI might add OUTSIDE those clause anchors.
-_PROHIBITED_POSITION_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("non_compete", r"non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)"),
-    ("non_solicit", r"non-?solicit|shall not solicit|will not solicit|refrain from soliciting"),
-    ("non_circumvention", r"non-?circumvent|shall not circumvent|bypass the disclosing party|circumvent or bypass"),
-    ("exclusivity", r"exclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to"),
-    ("ip_assignment", r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right, )?title and interest in"),
-    ("perpetual_confidentiality", r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|forever\b|for an unlimited (?:time|period)"),
-    ("penalty", r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages payable"),
-    ("auto_renew_lock", r"automatically renew|evergreen|may not (?:be )?terminat"),
-)
+# The prohibited-position pattern set is the single source shared with the
+# in-process guard and the ship gate: nda_automation.prohibited_positions, which
+# itself reads the patterns from the Playbook (non_circumvention clause's
+# prohibited_position_patterns). Importing it here keeps gen-verify's independent
+# gate and the generator's guard from ever drifting apart.
+_PROHIBITED_POSITION_PATTERNS: tuple[tuple[str, str], ...] = PROHIBITED_POSITION_PATTERN_SOURCES
 
 
 def check_prohibited_positions(text: str, report: VerificationReport) -> None:

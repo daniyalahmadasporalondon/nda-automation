@@ -72,6 +72,16 @@ CORE_CLAUSE_FIELDS = {
 DYNAMIC_CLAUSE_EXTRA_FIELDS = {
     "fallback",
     "instructions",
+    # The canonical prohibited-legal-position regex set (single source of truth
+    # for the in-process guard, the ship gate, and gen-verify). A list of
+    # {"label", "pattern"} entries; consumed by nda_automation.prohibited_positions.
+    "prohibited_position_patterns",
+}
+
+# Allowed shape for an entry in a dynamic clause's prohibited_position_patterns.
+PROHIBITED_POSITION_PATTERN_FIELDS = {
+    "label",
+    "pattern",
 }
 
 # Allowed shape for a dynamic clause's fallback/redline wording block.
@@ -340,15 +350,37 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             "Use one of the approved jurisdiction options. Default to "
             f"{preferred_law} unless another approved option is selected."
         )
-    rules["approved_options"] = [
-        {
-            "id": _option_id(law),
+    # Per-option alias / governmental-entity-prefix sets are authored on the
+    # input rules.approved_options and are the playbook's single source for the
+    # governing-law checker's recognition terms. Normalization rebuilds the option
+    # list from approved_laws, so carry these fields over (matched by id) instead
+    # of dropping them — otherwise the checker would fall back to no aliases.
+    existing_options = rules.get("approved_options")
+    extras_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(existing_options, list):
+        for option in existing_options:
+            if not isinstance(option, dict):
+                continue
+            option_id = _text(option.get("id")) or _option_id(_text(option.get("value")) or _text(option.get("label")))
+            carried = {
+                key: option[key]
+                for key in ("aliases", "entity_prefixes")
+                if isinstance(option.get(key), list) and option[key]
+            }
+            if option_id and carried:
+                extras_by_id[option_id] = carried
+    rebuilt_options: list[dict[str, Any]] = []
+    for law in approved_laws:
+        option_id = _option_id(law)
+        rebuilt = {
+            "id": option_id,
             "label": law,
             "value": law,
             "default": law == preferred_law,
         }
-        for law in approved_laws
-    ]
+        rebuilt.update(extras_by_id.get(option_id, {}))
+        rebuilt_options.append(rebuilt)
+    rules["approved_options"] = rebuilt_options
 
 
 def _normalize_term_survival_clause(clause: dict[str, Any]) -> None:
@@ -522,6 +554,7 @@ def _validate_dynamic_clause_schema(clause: Mapping[str, Any], clause_id: str, e
     _validate_clause_common_fields(clause, clause_id, errors)
     _validate_dynamic_fallback(clause, clause_id, errors)
     _validate_dynamic_instructions(clause, clause_id, errors)
+    _validate_prohibited_position_patterns(clause, clause_id, errors)
 
 
 def _validate_clause_common_fields(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
@@ -589,6 +622,46 @@ def _validate_dynamic_instructions(clause: Mapping[str, Any], clause_id: str, er
                 errors.append(f"Playbook clause {clause_id} instructions[{index}] must be text.")
         return
     errors.append(f"Playbook clause {clause_id} instructions must be text or a list of text.")
+
+
+def _validate_prohibited_position_patterns(
+    clause: Mapping[str, Any], clause_id: str, errors: list[str]
+) -> None:
+    """Validate the optional prohibited_position_patterns list.
+
+    Each entry must be an object with a non-blank ``label`` and a compilable
+    regex ``pattern`` (and no other keys). This is the single source the guard,
+    the ship gate, and gen-verify all read, so a malformed entry must fail the
+    publish/contract gate rather than silently weaken the prohibited scan.
+    """
+    entries = clause.get("prohibited_position_patterns")
+    if entries is None:
+        return
+    if not isinstance(entries, list) or not entries:
+        errors.append(
+            f"Playbook clause {clause_id} prohibited_position_patterns must be a non-empty list."
+        )
+        return
+    for index, entry in enumerate(entries):
+        prefix = f"Playbook clause {clause_id} prohibited_position_patterns[{index}]"
+        if not isinstance(entry, Mapping):
+            errors.append(f"{prefix} must be an object.")
+            continue
+        unknown = sorted(
+            str(key) for key in entry.keys() if str(key) not in PROHIBITED_POSITION_PATTERN_FIELDS
+        )
+        if unknown:
+            errors.append(f"{prefix} has unsupported field(s): {', '.join(unknown)}.")
+        if not _text(entry.get("label")):
+            errors.append(f"{prefix} must include a label.")
+        pattern = entry.get("pattern")
+        if not isinstance(pattern, str) or not pattern.strip():
+            errors.append(f"{prefix} pattern must be a non-empty string.")
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            errors.append(f"{prefix} pattern is not a valid regex: {error}.")
 
 
 def _validate_governing_law_policy_schema(clause: Mapping[str, Any], errors: list[str]) -> None:

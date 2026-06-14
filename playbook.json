@@ -390,31 +390,56 @@
             "id": "india",
             "label": "India",
             "value": "India",
-            "default": false
+            "default": false,
+            "aliases": [
+              "indian"
+            ],
+            "entity_prefixes": [
+              "republic"
+            ]
           },
           {
             "id": "delaware",
             "label": "Delaware",
             "value": "Delaware",
-            "default": false
+            "default": false,
+            "entity_prefixes": [
+              "state",
+              "commonwealth"
+            ]
           },
           {
             "id": "england_and_wales",
             "label": "England and Wales",
             "value": "England and Wales",
-            "default": true
+            "default": true,
+            "aliases": [
+              "english"
+            ]
           },
           {
             "id": "difc",
             "label": "DIFC",
             "value": "DIFC",
-            "default": false
+            "default": false,
+            "aliases": [
+              "dubai international financial centre",
+              "dubai international financial center"
+            ]
           },
           {
             "id": "ontario_canada",
             "label": "Ontario, Canada",
             "value": "Ontario, Canada",
-            "default": false
+            "default": false,
+            "aliases": [
+              "ontario",
+              "canadian",
+              "canada"
+            ],
+            "entity_prefixes": [
+              "province"
+            ]
           }
         ]
       },
@@ -631,6 +656,40 @@
         }
       },
       "acceptable_language": "No non-circumvention, non-compete, introduced-party non-solicit or hiring restriction, substitute-purpose exclusivity, IP assignment, liquidated/punitive damages, auto-renewal lock, or similar prohibited business restraint should appear in the NDA. Acceptable language may include freedom-preserving carve-outs saying that nothing restricts a party from dealing with third parties, that no non-circumvention obligation is created, that IP ownership is unchanged, or that parties must not circumvent applicable laws or regulatory obligations.",
+      "prohibited_position_patterns": [
+        {
+          "label": "non_compete",
+          "pattern": "non-?compete|shall not (?:directly or indirectly )?(?:compete|engage in any business that competes)|competing business"
+        },
+        {
+          "label": "non_solicit",
+          "pattern": "non-?solicit|(?:shall|will|may|agree|agrees|undertake|undertakes)\\b[^.]{0,25}\\bnot\\b[^.]{0,25}\\bsolicit|(?:shall|will|may|agrees?)\\b[^.]{0,15}\\bsolicit|refrain from soliciting|solicit or hire"
+        },
+        {
+          "label": "non_circumvention",
+          "pattern": "non-?circumvent|shall not circumvent|circumvent or bypass|bypass the disclosing party|\\bdeal\\s+directly\\b|introduced\\s+part"
+        },
+        {
+          "label": "exclusivity",
+          "pattern": "\\bexclusiv(?:e|ity)\\b|sole and exclusive|deal exclusively|exclusive right to"
+        },
+        {
+          "label": "ip_assignment",
+          "pattern": "hereby assigns?\\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest in"
+        },
+        {
+          "label": "perpetual_confidentiality",
+          "pattern": "in perpetuity|perpetual(?:ly)?\\b|indefinitely\\b|never expire|forever\\b|for an unlimited (?:time|period)"
+        },
+        {
+          "label": "penalty",
+          "pattern": "liquidated damages|penalty of|penalt(?:y|ies)\\b|punitive damages"
+        },
+        {
+          "label": "auto_renew_lock",
+          "pattern": "automatically renew|evergreen|may not (?:be )?terminat"
+        }
+      ],
       "engine": "dynamic",
       "fallback": {
         "redline_action": "delete_paragraph"

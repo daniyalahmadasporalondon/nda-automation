@@ -2321,6 +2321,45 @@ class CheckerTests(unittest.TestCase):
         redline = self.redline_for_clause(result, "governing_law")
         self.assertEqual(redline["replacement_text"], "This Agreement shall be governed by the laws of DIFC.")
 
+    def test_governing_law_aliases_come_from_playbook_options(self):
+        # The recognised alias forms (e.g. "English law") are sourced from each
+        # approved_options entry's "aliases" field, not a hardcoded checker map.
+        # Removing the alias from the playbook must stop the alias form passing.
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        for option in governing_law["rules"]["approved_options"]:
+            if option["id"] == "england_and_wales":
+                option["aliases"] = []
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            result = review_nda("This Agreement shall be governed by English law.")
+
+        clause = next(c for c in result["clauses"] if c["id"] == "governing_law")
+        # With "english" removed from the playbook aliases, the bare adjective form
+        # is no longer recognised as the approved England-and-Wales law.
+        self.assertNotEqual(clause["decision"], "pass")
+
+    def test_governing_law_entity_prefixes_come_from_playbook_options(self):
+        # The governmental-entity prefixes ("State of Delaware") are sourced from
+        # each approved_options entry's "entity_prefixes" field. A custom prefix
+        # added to the playbook must flow through to the checker.
+        playbook = deepcopy(load_playbook())
+        governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")
+        for option in governing_law["rules"]["approved_options"]:
+            if option["id"] == "delaware":
+                option["entity_prefixes"] = ["territory"]
+
+        with patch("nda_automation.checker.load_playbook", return_value=playbook):
+            recognised = review_nda("This Agreement shall be governed by the laws of the Territory of Delaware.")
+            dropped = review_nda("This Agreement shall be governed by the laws of the State of Delaware.")
+
+        recognised_clause = next(c for c in recognised["clauses"] if c["id"] == "governing_law")
+        dropped_clause = next(c for c in dropped["clauses"] if c["id"] == "governing_law")
+        # The playbook-supplied prefix is honoured...
+        self.assertEqual(recognised_clause["decision"], "pass")
+        # ...and the removed default prefix ("State") no longer auto-passes.
+        self.assertNotEqual(dropped_clause["decision"], "pass")
+
     def test_governing_law_anchor_terms_come_from_playbook_search_terms(self):
         playbook = deepcopy(load_playbook())
         governing_law = next(clause for clause in playbook["clauses"] if clause["id"] == "governing_law")

@@ -136,6 +136,54 @@ def _governing_law_phrase(clause: Dict[str, object], law: str) -> str:
             return phrase
     return law
 
+def _governing_law_option(clause: Dict[str, object], law: str) -> Dict[str, object]:
+    """The approved_options entry whose value/label/id matches ``law`` (or {}).
+
+    Looks in rules.approved_options first (the canonical home), then a top-level
+    approved_options, matching case-insensitively on value, then label, then id.
+    """
+    target = str(law).lower().strip()
+    if not target:
+        return {}
+    rules = clause.get("rules", {})
+    option_sources = []
+    if isinstance(rules, dict):
+        option_sources.append(rules.get("approved_options"))
+    option_sources.append(clause.get("approved_options"))
+    for source in option_sources:
+        if not isinstance(source, list):
+            continue
+        for option in source:
+            if not isinstance(option, dict):
+                continue
+            for key in ("value", "label", "id"):
+                if str(option.get(key, "")).lower().strip() == target:
+                    return option
+    return {}
+
+def _governing_law_aliases(clause: Dict[str, object], law: str) -> tuple:
+    """Per-option recognised input aliases for ``law`` (playbook-sourced).
+
+    Reads ``aliases`` off the matching approved_options entry so the alias set is
+    single-sourced in the playbook rather than hardcoded in the checker."""
+    option = _governing_law_option(clause, law)
+    aliases = option.get("aliases", ()) if isinstance(option, dict) else ()
+    if not isinstance(aliases, (list, tuple)):
+        return ()
+    return tuple(str(alias).strip() for alias in aliases if str(alias).strip())
+
+def _governing_law_entity_prefixes(clause: Dict[str, object], law: str) -> tuple:
+    """Per-option governmental entity prefixes for ``law`` (playbook-sourced).
+
+    Reads ``entity_prefixes`` off the matching approved_options entry (e.g.
+    "State of Delaware", "Republic of India") so the prefix set is single-sourced
+    in the playbook rather than hardcoded in the checker."""
+    option = _governing_law_option(clause, law)
+    prefixes = option.get("entity_prefixes", ()) if isinstance(option, dict) else ()
+    if not isinstance(prefixes, (list, tuple)):
+        return ()
+    return tuple(str(prefix).strip() for prefix in prefixes if str(prefix).strip())
+
 def _confidential_categories_label(categories: Iterable[str]) -> str:
     return _join_with_and([str(category).strip() for category in categories if str(category).strip()])
 

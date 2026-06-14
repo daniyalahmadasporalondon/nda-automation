@@ -9,6 +9,8 @@ from .common import (
     _approved_laws,
     _check,
     _governing_anchor_patterns,
+    _governing_law_aliases,
+    _governing_law_entity_prefixes,
     _governing_law_phrase,
     _governing_law_change_fix,
     _governing_law_missing_fix,
@@ -30,17 +32,10 @@ GOVERNING_LAW_VALUE_PATTERNS = (
     r"\bgoverning\s+law\b.{0,80}?(?:is|shall\s+be|will\s+be|:)\s*(?:the\s+)?(?:laws?\s+of\s+)?(?P<law>[^.;,\n]+)",
 )
 
-GOVERNING_LAW_INPUT_ALIASES = {
-    "england and wales": ("english",),
-    "india": ("indian",),
-    "difc": ("dubai international financial centre", "dubai international financial center"),
-    "ontario, canada": ("ontario", "canadian", "canada"),
-}
-APPROVED_GOVERNING_LAW_ENTITY_PREFIXES = {
-    "delaware": ("state", "commonwealth"),
-    "india": ("republic",),
-    "ontario, canada": ("province",),
-}
+# The per-law alias and governmental-entity-prefix sets are sourced from the
+# playbook governing_law clause's approved_options (each option's ``aliases`` /
+# ``entity_prefixes`` fields) via the common helpers below — the playbook is the
+# single source of truth, so these are no longer hardcoded literals here.
 UNCLEAR_GOVERNING_LAW_CANDIDATE_PATTERN = (
     r"(?:\[[^\]]*\]|_{2,}|\btbd\b|\bto\s+be\s+(?:agreed|determined|selected|inserted)\b|"
     r"\b(?:mutually\s+)?agreed\b|\b(?:applicable|relevant)\s+law\b|\bjurisdiction\b|"
@@ -522,7 +517,7 @@ def _governing_law_candidate_fragments(text: str) -> List[str]:
 def _starts_with_approved_law(text: str, clause: Dict[str, object]) -> bool:
     candidate = _trim_governing_law_candidate(text)
     for law in _approved_laws(clause):
-        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(law)
+        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(clause, law)
         for term in _approved_law_input_terms(clause, law):
             if re.search(
                 rf"^\s*(?:the\s+)?{entity_prefix_pattern}"
@@ -664,7 +659,7 @@ def _is_governing_law_heading_only(text: str) -> bool:
 
 def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) -> bool:
     for law in _approved_laws(clause):
-        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(law)
+        entity_prefix_pattern = _approved_governing_law_entity_prefix_pattern(clause, law)
         for term in _approved_law_input_terms(clause, law):
             if re.search(
                 rf"\blaws?\s+of\s+(?:the\s+)?{entity_prefix_pattern}"
@@ -678,8 +673,8 @@ def _contains_approved_governing_phrase(text: str, clause: Dict[str, object]) ->
     return False
 
 
-def _approved_governing_law_entity_prefix_pattern(law: str) -> str:
-    prefixes = APPROVED_GOVERNING_LAW_ENTITY_PREFIXES.get(law.lower().strip(), ())
+def _approved_governing_law_entity_prefix_pattern(clause: Dict[str, object], law: str) -> str:
+    prefixes = _governing_law_entity_prefixes(clause, law)
     if not prefixes:
         return ""
     escaped_prefixes = "|".join(re.escape(prefix) for prefix in prefixes)
@@ -688,7 +683,7 @@ def _approved_governing_law_entity_prefix_pattern(law: str) -> str:
 
 def _approved_law_input_terms(clause: Dict[str, object], law: str) -> List[str]:
     terms = [law, _governing_law_phrase(clause, law)]
-    terms.extend(GOVERNING_LAW_INPUT_ALIASES.get(law.lower().strip(), ()))
+    terms.extend(_governing_law_aliases(clause, law))
     return list(dict.fromkeys(term for term in terms if term))
 
 

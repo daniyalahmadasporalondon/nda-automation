@@ -1272,6 +1272,43 @@ assert.equal(
   null,
 );
 
+// --- Governing-law options sourced from the playbook (single source of truth) ---
+//
+// When the controller injects playbook governing-law options (the
+// /api/signing-entities feed's `governing_law_options`, sourced from the playbook's
+// governing_law approved_options), the override dropdown is playbook-driven rather
+// than derived from the embedded entity mirror. The injected order/labels win.
+const playbookLawOptions = [
+  { id: "england_and_wales", label: "England and Wales" },
+  { id: "india", label: "India" },
+  { id: "delaware", label: "Delaware" },
+  { id: "difc", label: "DIFC" },
+  { id: "ontario_canada", label: "Ontario, Canada" },
+];
+const playbookDrivenApi = createDraftIntake({ lawOptions: playbookLawOptions });
+assert.deepEqual(
+  playbookDrivenApi.governingLawOptions().map((law) => law.id),
+  ["england_and_wales", "india", "delaware", "difc", "ontario_canada"],
+  "the dropdown is sourced from the injected playbook options, in playbook order",
+);
+// effectiveGoverningLaw resolves its label through the injected playbook options.
+const playbookPick = playbookDrivenApi.applyEntitySelection(
+  playbookDrivenApi.createInitialIntake(),
+  "vance_money",
+);
+assert.equal(playbookDrivenApi.effectiveGoverningLaw(playbookPick).label, "Delaware");
+// Falling back: with no injected options, the dropdown derives laws from the
+// (embedded or injected) entity mirror exactly as before.
+assert.deepEqual(
+  new Set(governingLawOptions(SIGNING_ENTITIES, null).map((law) => law.id)),
+  new Set(["india", "delaware", "england_and_wales", "difc", "ontario_canada"]),
+);
+// An empty injected list also falls back to the entity-derived options.
+assert.deepEqual(
+  new Set(governingLawOptions(SIGNING_ENTITIES, []).map((law) => law.id)),
+  new Set(["india", "delaware", "england_and_wales", "difc", "ontario_canada"]),
+);
+
 // --- NDA generation API wrapper (the "Generate NDA" un-stub) ---
 //
 // createGenerationApi POSTs buildDraftPayload's shape to /api/generate-nda and

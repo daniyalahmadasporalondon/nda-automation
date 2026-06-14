@@ -191,11 +191,26 @@ export function entityLabel(entity) {
   return entity?.short_name || entity?.legal_name || entity?.id || "";
 }
 
-// The governing-law choices offered in the independent-override dropdown. Built
-// from the distinct laws across every entity so the override list and the entity
-// bundles can never drift apart — and so it matches the playbook's approved
-// governing-law positions (every entity law IS a playbook option id).
-export function governingLawOptions(entities = SIGNING_ENTITIES) {
+// The governing-law choices offered in the independent-override dropdown.
+//
+// SINGLE SOURCE OF TRUTH: when the controller has the live playbook governing-law
+// options (the /api/signing-entities feed's `governing_law_options`, sourced from
+// the playbook's governing_law approved_options), it passes them as `lawOptions`
+// and the dropdown is playbook-driven. Absent that (offline / endpoint not
+// deployed), we fall back to deriving the distinct laws across the embedded
+// entity mirror — every entity law IS a playbook option id, so the fallback set
+// still matches the playbook's approved positions.
+export function governingLawOptions(entities = SIGNING_ENTITIES, lawOptions = null) {
+  if (Array.isArray(lawOptions) && lawOptions.length) {
+    const seen = new Map();
+    for (const option of lawOptions) {
+      const id = option?.id;
+      if (id && !seen.has(id)) {
+        seen.set(id, { id, label: option.label || id });
+      }
+    }
+    if (seen.size) return Array.from(seen.values());
+  }
   const seen = new Map();
   for (const entity of entities || []) {
     const law = entity?.governing_law;
@@ -298,11 +313,11 @@ export function selectAddress(intake, addressId, entities = SIGNING_ENTITIES) {
 // any, else the picked entity's law. Returns the {id,label} object so callers
 // (and the payload) carry a coupled, labelled value — never a bare id that
 // could be mis-paired with a label elsewhere.
-export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES) {
+export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES, lawOptions = null) {
   const entity = findEntity(intake.entityId, entities);
   const lawId = intake.governingLawId || lawOptionId(entity?.governing_law);
   if (!lawId) return null;
-  const fromOptions = governingLawOptions(entities).find((law) => law.id === lawId);
+  const fromOptions = governingLawOptions(entities, lawOptions).find((law) => law.id === lawId);
   if (fromOptions) return fromOptions;
   // An overridden law id should still resolve to its entity label when it is the
   // entity's own law; otherwise surface the id as its own label.
@@ -331,7 +346,7 @@ export function isValidCounterpartyEmail(value) {
 // The entity (and therefore a coupled law + address) plus a counterparty name
 // are the minimum to draft an outbound NDA; the optional email, if present,
 // must be well formed.
-export function validateDraftIntake(intake = {}, entities = SIGNING_ENTITIES) {
+export function validateDraftIntake(intake = {}, entities = SIGNING_ENTITIES, lawOptions = null) {
   if (!String(intake.counterpartyName || "").trim()) {
     return { ok: false, error: "Enter the counterparty name." };
   }
@@ -341,7 +356,7 @@ export function validateDraftIntake(intake = {}, entities = SIGNING_ENTITIES) {
   if (!isValidCounterpartyEmail(intake.counterpartyEmail)) {
     return { ok: false, error: "Enter a valid counterparty email, or leave it blank." };
   }
-  if (!effectiveGoverningLaw(intake, entities)) {
+  if (!effectiveGoverningLaw(intake, entities, lawOptions)) {
     return { ok: false, error: "Pick a governing law." };
   }
   return { ok: true, error: "" };
@@ -351,10 +366,10 @@ export function validateDraftIntake(intake = {}, entities = SIGNING_ENTITIES) {
 // signing-entity block is emitted as a coupled unit — legal_name, address, and
 // governing_law together — so downstream generation receives the bundle, not
 // three loose fields that could be recombined incorrectly.
-export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES) {
+export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES, lawOptions = null) {
   const entity = findEntity(intake.entityId, entities);
   const address = selectedAddress(intake, entities);
-  const law = effectiveGoverningLaw(intake, entities);
+  const law = effectiveGoverningLaw(intake, entities, lawOptions);
   return {
     counterparty: {
       name: String(intake.counterpartyName || "").trim(),
@@ -399,11 +414,18 @@ export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES) {
 // Factory that binds a registry instance, returning the same helper surface
 // pre-bound to it. Lets the controller (and the eventual real registry) inject
 // entities once instead of threading them through every call.
-export function createDraftIntake({ entities = SIGNING_ENTITIES } = {}) {
+//
+// `lawOptions` (the playbook's governing_law approved_options as [{id,label}],
+// from the /api/signing-entities feed) makes the override dropdown playbook-driven
+// rather than entity-derived. When omitted, the helpers fall back to deriving the
+// laws from the embedded entity mirror — so the picker stays fully functional
+// before the live feed loads or when offline.
+export function createDraftIntake({ entities = SIGNING_ENTITIES, lawOptions = null } = {}) {
   return {
     entities,
+    lawOptions,
     ndaTypes: NDA_TYPES,
-    governingLawOptions: () => governingLawOptions(entities),
+    governingLawOptions: () => governingLawOptions(entities, lawOptions),
     createInitialIntake,
     findEntity: (id) => findEntity(id, entities),
     entityLabel,
@@ -417,8 +439,8 @@ export function createDraftIntake({ entities = SIGNING_ENTITIES } = {}) {
     setGoverningLawOverride,
     clearGoverningLawOverride: (intake) => clearGoverningLawOverride(intake, entities),
     selectAddress: (intake, id) => selectAddress(intake, id, entities),
-    effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities),
-    validateDraftIntake: (intake) => validateDraftIntake(intake, entities),
-    buildDraftPayload: (intake) => buildDraftPayload(intake, entities),
+    effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities, lawOptions),
+    validateDraftIntake: (intake) => validateDraftIntake(intake, entities, lawOptions),
+    buildDraftPayload: (intake) => buildDraftPayload(intake, entities, lawOptions),
   };
 }
