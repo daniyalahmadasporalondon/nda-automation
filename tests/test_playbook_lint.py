@@ -393,6 +393,237 @@ def test_referential_integrity_preferred_law_in_approved_options_dicts() -> None
 
 
 # ---------------------------------------------------------------------------
+# Check 6: option_id_collision
+# ---------------------------------------------------------------------------
+
+
+def _governing_clause_with_options(options: list[Any]) -> dict[str, Any]:
+    """A governing-law-shaped clause carrying the given approved-option dicts."""
+
+    clause = _clean_required_clause()
+    clause["id"] = "governing_law"
+    clause["rules"]["approved_options"] = options
+    return clause
+
+
+def test_option_id_collision_clean_distinct_ids() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {"id": "india", "label": "India", "value": "India"},
+            {"id": "delaware", "label": "Delaware", "value": "Delaware"},
+            {"id": "england_and_wales", "label": "England and Wales", "value": "England and Wales"},
+        ]
+    )
+    assert _run_check("option_id_collision", clause) == []
+
+
+def test_option_id_collision_distinct_names_same_id_is_flagged() -> None:
+    # "Ontario, Canada" and "Ontario Canada" both strip to "ontario_canada".
+    clause = _governing_clause_with_options(
+        [
+            {"id": "ontario_canada", "label": "Ontario, Canada", "value": "Ontario, Canada"},
+            {"id": "ontario_canada_2", "label": "Ontario Canada", "value": "Ontario Canada"},
+        ]
+    )
+    violations = _run_check("option_id_collision", clause)
+    assert len(violations) == 1
+    v = violations[0]
+    # Reported under the referential-integrity class so it flows through the gate.
+    assert v.check_id == "referential_integrity"
+    assert v.clause_id == "governing_law"
+    # The colliding names are named, and the shared id is named.
+    assert "Ontario, Canada" in v.message
+    assert "Ontario Canada" in v.message
+    assert "ontario_canada" in v.message
+
+
+def test_option_id_collision_case_only_difference_is_flagged() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {"id": "difc", "label": "DIFC", "value": "DIFC"},
+            {"id": "difc_lower", "label": "difc", "value": "difc"},
+        ]
+    )
+    violations = _run_check("option_id_collision", clause)
+    assert len(violations) == 1
+    assert "'difc'" in violations[0].message
+    assert "'DIFC'" in violations[0].message
+
+
+def test_option_id_collision_string_approved_laws() -> None:
+    # Plain-string options (approved_laws) collide too.
+    clause = _clean_required_clause()
+    clause["id"] = "governing_law"
+    clause["approved_laws"] = ["England, Wales", "England Wales"]
+    violations = _run_check("option_id_collision", clause)
+    assert len(violations) == 1
+    assert "england_wales" in violations[0].message
+
+
+def test_option_id_collision_identical_label_value_is_not_a_collision() -> None:
+    # A single option whose label == value must NOT count as two colliding names.
+    clause = _governing_clause_with_options(
+        [{"id": "india", "label": "India", "value": "India"}]
+    )
+    assert _run_check("option_id_collision", clause) == []
+
+
+def test_option_id_collision_no_options_is_clean() -> None:
+    # A clause without an approved-option set has nothing to collide.
+    assert _run_check("option_id_collision", _clean_required_clause()) == []
+
+
+def test_option_id_collision_lint_playbook_surfaces_it() -> None:
+    # The collision flows through the top-level lint_playbook entry point.
+    clause = _governing_clause_with_options(
+        [
+            {"id": "ontario_canada", "label": "Ontario, Canada", "value": "Ontario, Canada"},
+            {"id": "ontario_canada_2", "label": "Ontario Canada", "value": "Ontario Canada"},
+        ]
+    )
+    playbook = {"version": "1.0", "name": "Test", "clauses": [clause]}
+    violations = lint_playbook(playbook)
+    collision = [v for v in violations if "derive the same option id" in v.message]
+    assert len(collision) == 1
+
+
+def test_option_id_collision_mirrors_engine_option_id() -> None:
+    """The lint's id derivation must not drift from the engine's ``_option_id``.
+
+    This is the contract that makes the collision check meaningful: it flags the
+    exact ids the engine (and the entity-registry join key) actually produce.
+    """
+
+    from nda_automation.playbook_lint import _derive_option_id
+    from nda_automation.playbook_rules import _option_id
+
+    samples = [
+        "England and Wales",
+        "Ontario, Canada",
+        "DIFC",
+        "difc",
+        "England, Wales",
+        "England Wales",
+        "U.S.A.",
+        "  spaced  ",
+        "***",
+        "123-Abc",
+    ]
+    for sample in samples:
+        assert _derive_option_id(sample) == _option_id(sample), sample
+
+
+def test_option_id_collision_duplicate_explicit_id_is_flagged() -> None:
+    """GAP 1: two options sharing the EXPLICIT id (the generation join key) but
+    mapping to DIFFERENT laws must be flagged -- one silently shadows the other.
+
+    Skeptic-supplied repro: governing_law approved_options where two options both
+    carry id 'india' but resolve to different values. Their derived NAME ids are
+    distinct (india / delaware / england_and_wales), so the name-derivation check
+    alone would NOT catch this; the explicit-id check must.
+    """
+
+    clause = _governing_clause_with_options(
+        [
+            {"id": "england_and_wales", "value": "England and Wales", "default": True},
+            {"id": "india", "value": "India"},
+            {"id": "india", "label": "Delaware", "value": "Delaware"},
+        ]
+    )
+    violations = _run_check("option_id_collision", clause)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.check_id == "referential_integrity"
+    assert v.clause_id == "governing_law"
+    # The shared explicit id and both competing values are named.
+    assert "'india'" in v.message
+    assert "India" in v.message
+    assert "Delaware" in v.message
+    assert "explicit id" in v.message
+
+
+def test_option_id_collision_duplicate_explicit_id_engine_silently_drops() -> None:
+    """The harm the GAP 1 check guards against: the generation join keyed on the
+    explicit id silently drops one of two options sharing that id.
+
+    This pins WHY the explicit-id collision is a real bug -- selecting 'india'
+    would resolve to Delaware (the last writer wins), the wrong jurisdiction.
+    """
+
+    options = [
+        {"id": "england_and_wales", "value": "England and Wales", "default": True},
+        {"id": "india", "value": "India"},
+        {"id": "india", "label": "Delaware", "value": "Delaware"},
+    ]
+    # Mirror nda_generation._approved_governing_law_options: resolved[id] = value.
+    resolved: dict[str, str] = {}
+    for option in options:
+        option_id = str(option.get("id") or "").strip()
+        value = str(option.get("value") or option.get("label") or "").strip()
+        if option_id and value:
+            resolved[option_id] = value
+    # India -> Delaware silently shadowed: the 'india' join key now yields the
+    # wrong jurisdiction, and only one of the two distinct laws survives.
+    assert resolved["india"] == "Delaware"
+    assert "India" not in resolved.values()
+    assert len(resolved) == 2  # three options collapsed to two join keys
+
+
+def test_option_id_collision_value_collision_distinct_labels_is_flagged() -> None:
+    """GAP 2: two options whose VALUES collide under DISTINCT labels must be
+    flagged -- the engine derives the id from VALUE first, so a label-only
+    difference does not save them.
+
+    Skeptic-supplied repro: both values derive _option_id == 'ontario_canada'.
+    A label-first derivation (round-1) would see distinct labels and miss it.
+    """
+
+    clause = _governing_clause_with_options(
+        [
+            {"id": "opt_a", "label": "Ontario (Canada)", "value": "Ontario, Canada"},
+            {"id": "opt_b", "label": "Province of Ontario", "value": "Ontario Canada"},
+        ]
+    )
+    violations = _run_check("option_id_collision", clause)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.check_id == "referential_integrity"
+    assert "ontario_canada" in v.message
+    # The colliding VALUES (not the labels) are what derive the shared id.
+    assert "Ontario, Canada" in v.message
+    assert "Ontario Canada" in v.message
+    assert "derive the same option id" in v.message
+
+
+def test_option_id_collision_distinct_values_same_label_path_is_clean() -> None:
+    """Guard against value-first over-firing: options with distinct values but a
+    shared label must NOT collide on the name path (value wins), and distinct
+    explicit ids must NOT collide on the id path."""
+
+    clause = _governing_clause_with_options(
+        [
+            {"id": "india", "label": "Region", "value": "India"},
+            {"id": "delaware", "label": "Region", "value": "Delaware"},
+        ]
+    )
+    assert _run_check("option_id_collision", clause) == []
+
+
+def test_option_id_collision_identical_duplicate_rows_not_flagged() -> None:
+    """Two byte-identical option rows (same explicit id AND same value) do not
+    change which value the join resolves to, so they are not flagged as an
+    explicit-id collision (only a genuine value disagreement is harmful)."""
+
+    clause = _governing_clause_with_options(
+        [
+            {"id": "india", "value": "India"},
+            {"id": "india", "value": "India"},
+        ]
+    )
+    assert _run_check("option_id_collision", clause) == []
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary drift pin: the local valid sets must match the canonical contract.
 # ---------------------------------------------------------------------------
 

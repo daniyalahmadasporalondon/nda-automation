@@ -31,6 +31,7 @@ __all__ = [
     "VALID_ISSUE_TYPES",
     "VALID_REDLINE_ACTIONS",
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
+    "check_option_id_collision",
 ]
 
 # ---------------------------------------------------------------------------
@@ -519,6 +520,130 @@ def check_referential_integrity(clause: Mapping[str, Any]) -> list[LintViolation
 
 
 # ---------------------------------------------------------------------------
+# Check 6: option_id_collision
+# ---------------------------------------------------------------------------
+
+# Mirror of ``nda_automation.playbook_rules._option_id``: the short, internal id
+# the engine derives from an option's name (e.g. "England and Wales" ->
+# "england_and_wales"). Inlined so the lint stays standalone (no engine import);
+# a divergence test pins the two so they cannot silently drift.
+_OPTION_ID_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _derive_option_id(value: str) -> str:
+    return _OPTION_ID_NON_ALNUM.sub("_", value.lower()).strip("_") or "option"
+
+
+def _option_display_name(option: Any) -> str:
+    """The human-facing name an option's id is *derived* from.
+
+    The engine derives the option id from the option's ``value`` first, falling
+    back to ``label`` -- see ``nda_automation.playbook_rules`` (``_option_id(value
+    or label)`` at the input rules, and ``_option_id(law)`` where ``law`` is the
+    ``value`` when the list is rebuilt from ``approved_laws``). We MUST mirror that
+    value-first order so options whose *values* collide under distinct labels are
+    caught. A plain string option (e.g. an ``approved_laws`` entry) is its own
+    name. The explicit ``id`` is handled separately by the explicit-id check below.
+    """
+
+    if isinstance(option, Mapping):
+        return _text(option.get("value")) or _text(option.get("label"))
+    return _text(option)
+
+
+def _option_explicit_id(option: Any) -> str:
+    """The explicit ``id`` an option carries, if any.
+
+    This is the ACTUAL downstream JOIN KEY: ``_approved_governing_law_options``
+    (nda_automation/nda_generation.py) builds ``resolved[option["id"]] = value``
+    keyed on the explicit id. Plain-string options carry no explicit id.
+    """
+
+    if isinstance(option, Mapping):
+        return _text(option.get("id"))
+    return ""
+
+
+def check_option_id_collision(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Approved options must resolve to DISTINCT option ids on every key path.
+
+    The engine derives a short internal id from an option's *value* (see
+    :func:`nda_automation.playbook_rules._option_id`), and the generation join
+    (:func:`nda_automation.nda_generation._approved_governing_law_options`) keys a
+    ``resolved[id] -> value`` map on each option's *explicit* ``id``. Both are
+    JOIN KEYS, so a collision on either path silently shadows one option with
+    another and selection/validation resolves to the WRONG option (e.g. the wrong
+    jurisdiction). Two failure modes are flagged:
+
+    1. NAME-DERIVED collision: two distinct option values (value-first, mirroring
+       the engine) collapse to the same derived id -- e.g. they differ only by
+       punctuation, case, or stripped characters.
+    2. EXPLICIT-ID collision: two options carry the same explicit ``id`` (the
+       generation join key) but map to different laws/values, so one drops out of
+       the ``resolved`` map entirely.
+
+    Only real collisions (2+ distinct options -> one key) are flagged.
+    """
+
+    clause_id = _clause_id(clause)
+    violations: list[LintViolation] = []
+
+    # (1) NAME-DERIVED collision: distinct values that derive one id.
+    names_by_id: dict[str, list[str]] = {}
+    seen_names: set[str] = set()
+    for option in _approved_options(clause):
+        name = _option_display_name(option)
+        if not name or name in seen_names:
+            continue
+        seen_names.add(name)
+        derived = _derive_option_id(name)
+        names_by_id.setdefault(derived, []).append(name)
+
+    for derived, names in names_by_id.items():
+        if len(names) > 1:
+            colliding = ", ".join(f"'{name}'" for name in sorted(names))
+            violations.append(
+                LintViolation(
+                    clause_id,
+                    "referential_integrity",
+                    f"approved options {colliding} derive the same option id "
+                    f"'{derived}', so one shadows the other within the clause -- "
+                    "distinct options must have distinct ids",
+                )
+            )
+
+    # (2) EXPLICIT-ID collision: 2+ options sharing one explicit id (the
+    # generation join key). We map id -> the set of distinct values it would
+    # resolve to; only flag when the same id maps to MORE THAN ONE distinct
+    # value, i.e. one option genuinely shadows another (identical duplicate
+    # rows would not change which value the join resolves to).
+    values_by_explicit_id: dict[str, list[str]] = {}
+    for option in _approved_options(clause):
+        explicit_id = _option_explicit_id(option)
+        if not explicit_id:
+            continue
+        value = _option_display_name(option)
+        values_by_explicit_id.setdefault(explicit_id, []).append(value)
+
+    for explicit_id, values in values_by_explicit_id.items():
+        distinct_values = sorted({value for value in values if value})
+        if len(values) > 1 and len(distinct_values) > 1:
+            colliding = ", ".join(f"'{value}'" for value in distinct_values)
+            violations.append(
+                LintViolation(
+                    clause_id,
+                    "referential_integrity",
+                    f"approved options {colliding} share the explicit id "
+                    f"'{explicit_id}', which is the generation join key, so one "
+                    "silently drops out of the resolved option map -- distinct "
+                    "options must have distinct explicit ids",
+                )
+            )
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Registry + entry point
 # ---------------------------------------------------------------------------
 
@@ -528,6 +653,7 @@ CHECKS: dict[str, CheckFn] = {
     "redline_template_present": check_redline_template_present,
     "approved_options_present": check_approved_options_present,
     "referential_integrity": check_referential_integrity,
+    "option_id_collision": check_option_id_collision,
 }
 
 # Stable, ordered registry of the check ids the engine runs.
