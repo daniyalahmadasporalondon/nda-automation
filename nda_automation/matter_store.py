@@ -607,15 +607,11 @@ def _gmail_duplicate_removal_ids(matters: list[dict[str, Any]], owner_user_id: s
                 union(existing_id, object_id)
 
     for object_ids in filename_index.values():
-        no_hash_ids = [
-            object_id
-            for object_id in object_ids
-            if not str(matters_by_id[object_id].get("gmail_attachment_sha256") or "")
-        ]
-        if no_hash_ids:
-            for object_id in object_ids[1:]:
-                union(object_ids[0], object_id)
-            continue
+        # A shared filename is NOT a content identity: two genuinely different
+        # documents can carry the same name. Only merge matters in a same-filename
+        # group when their stored bytes hash equal. A matter with no content hash
+        # cannot be confirmed as a duplicate by filename alone, so it is left on its
+        # own (merging it away would be real data loss).
         hash_index: dict[str, list[int]] = {}
         for object_id in object_ids:
             attachment_sha256 = str(matters_by_id[object_id].get("gmail_attachment_sha256") or "")
@@ -1160,9 +1156,15 @@ def _gmail_attachments_match(left: dict[str, Any], right: dict[str, Any]) -> boo
         return False
     if any(not key[1].startswith("filename:") for key in shared_keys):
         return True
+    # The only thing the two attachments share is a filename. A filename is NOT a
+    # content identity: two genuinely different documents can carry the same name
+    # (two counterparties both send "NDA.docx", or a name reused for a new draft).
+    # Treat them as the same attachment ONLY when their stored bytes hash equal.
+    # If either side is missing a content hash we cannot confirm they are the same
+    # document, so we must keep both rather than merge one away (data loss).
     left_sha256 = str(left.get("gmail_attachment_sha256") or "")
     right_sha256 = str(right.get("gmail_attachment_sha256") or "")
-    return not (left_sha256 and right_sha256 and left_sha256 != right_sha256)
+    return bool(left_sha256) and left_sha256 == right_sha256
 
 
 def _gmail_attachment_filename_key(filename: str) -> str:

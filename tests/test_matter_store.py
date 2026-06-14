@@ -387,6 +387,145 @@ class MatterStoreConcurrencyTests(unittest.TestCase):
                 )
 
 
+class GmailFilenameCollisionDedupeTests(unittest.TestCase):
+    """A shared filename is NOT a content identity. Two genuinely different
+    documents that happen to share a filename (and gmail message) must BOTH be
+    preserved; a real duplicate (same name AND same bytes) must still dedupe to
+    one. Dedupe keys on the stored-bytes sha256, not the filename alone.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def _same_filename_kwargs(self, *, attachment_id: str, part_id: str, document_bytes: bytes):
+        # Two attachments under the same gmail message + same filename but with
+        # DIFFERENT attachment ids / part ids, so the ONLY dedupe key they share is
+        # the filename key. Content identity must then come from the sha256.
+        return _gmail_create_kwargs(
+            source_filename="NDA.docx",
+            document_bytes=document_bytes,
+            intake_metadata={
+                "gmail_message_id": "msg-shared",
+                "gmail_attachment_id": attachment_id,
+                "gmail_part_id": part_id,
+                "attachment_filename": "NDA.docx",
+            },
+        )
+
+    def test_same_filename_different_content_both_preserved_on_create(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                first = repo.create_matter(**self._same_filename_kwargs(
+                    attachment_id="att-A",
+                    part_id="1",
+                    document_bytes=b"counterparty A's NDA text",
+                ))
+                second = repo.create_matter(**self._same_filename_kwargs(
+                    attachment_id="att-B",
+                    part_id="2",
+                    document_bytes=b"counterparty B's COMPLETELY DIFFERENT NDA text",
+                ))
+
+                self.assertFalse(first.get("_existing_gmail_duplicate"))
+                self.assertFalse(
+                    second.get("_existing_gmail_duplicate"),
+                    "a different document sharing only the filename must not be deduped away",
+                )
+                stored = repo.list_matters()
+                self.assertEqual(
+                    {matter["id"] for matter in stored},
+                    {first["id"], second["id"]},
+                    "both genuinely different same-named documents must be preserved",
+                )
+
+    def test_same_filename_same_content_still_dedupes_on_create(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                identical = b"the exact same NDA bytes"
+                first = repo.create_matter(**self._same_filename_kwargs(
+                    attachment_id="att-A",
+                    part_id="1",
+                    document_bytes=identical,
+                ))
+                second = repo.create_matter(**self._same_filename_kwargs(
+                    attachment_id="att-B",
+                    part_id="2",
+                    document_bytes=identical,
+                ))
+
+                self.assertTrue(
+                    second.get("_existing_gmail_duplicate"),
+                    "same filename AND same bytes is a real duplicate — must still dedupe",
+                )
+                self.assertEqual(second["id"], first["id"])
+                self.assertEqual(len(repo.list_matters()), 1)
+
+    def _sweep_matter(self, *, matter_id: str, sha256: str) -> dict:
+        # A stored gmail matter that shares the message id + filename with its
+        # siblings, so the ONLY collision key is the filename key — the sweep then
+        # has to fall back to the content sha256 to decide identity.
+        return {
+            "id": matter_id,
+            "board_column": "gmail_demo",
+            "gmail_message_id": "msg-shared",
+            "attachment_filename": "NDA.docx",
+            "gmail_attachment_sha256": sha256,
+        }
+
+    def test_sweep_keeps_distinct_same_named_documents(self):
+        matters = [
+            self._sweep_matter(matter_id="m1", sha256="hash-of-document-one"),
+            self._sweep_matter(matter_id="m2", sha256="hash-of-a-different-doc"),
+        ]
+        removal_ids = matter_store._gmail_duplicate_removal_ids(matters)
+        self.assertEqual(removal_ids, set(), "the sweep must not merge different same-named documents")
+
+    def test_sweep_removes_true_duplicate(self):
+        matters = [
+            self._sweep_matter(matter_id="m1", sha256="identical-content-hash"),
+            self._sweep_matter(matter_id="m2", sha256="identical-content-hash"),
+        ]
+        removal_ids = matter_store._gmail_duplicate_removal_ids(matters)
+        self.assertEqual(len(removal_ids), 1, "same filename AND same bytes must still dedupe to one")
+
+    def test_sweep_keeps_same_named_matter_missing_a_hash(self):
+        # A matter with no content hash cannot be confirmed a duplicate by filename
+        # alone, so it must be preserved rather than merged away (legacy import).
+        matters = [
+            self._sweep_matter(matter_id="m1", sha256="some-hash"),
+            self._sweep_matter(matter_id="m2", sha256=""),
+        ]
+        removal_ids = matter_store._gmail_duplicate_removal_ids(matters)
+        self.assertEqual(removal_ids, set(), "a hash-less same-named matter must not be deduped away")
+
+    def test_match_keys_on_content_not_filename(self):
+        # _gmail_attachments_match is the create-time dedupe predicate. When the only
+        # shared key is the filename, identity must come from the content sha256.
+        def att(sha256: str) -> dict:
+            return {
+                "gmail_message_id": "msg-shared",
+                "attachment_filename": "NDA.docx",
+                "gmail_attachment_sha256": sha256,
+            }
+
+        # Same filename, different content -> NOT a duplicate.
+        self.assertFalse(matter_store._gmail_attachments_match(att("hash-a"), att("hash-b")))
+        # Same filename, same content -> a real duplicate.
+        self.assertTrue(matter_store._gmail_attachments_match(att("hash-x"), att("hash-x")))
+        # Same filename, one side missing a hash -> cannot confirm -> NOT a duplicate.
+        self.assertFalse(matter_store._gmail_attachments_match(att("hash-a"), att("")))
+        self.assertFalse(matter_store._gmail_attachments_match(att(""), att("")))
+
+
 class MatterStoreLockTimeoutTests(unittest.TestCase):
     """Verify that _locked_store() raises MatterStoreError rather than blocking
     indefinitely when the in-process lock is already held by another thread.
