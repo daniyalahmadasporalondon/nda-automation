@@ -4,7 +4,7 @@ from typing import Any
 
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
-from .docx_text import DocxExtractionError, extract_docx_paragraphs
+from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract_docx_paragraphs
 from .matter_lifecycle import BackgroundRunner, RepositoryMatterLifecycle, run_in_daemon_thread
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .pdf_text import PdfExtractionError, extract_pdf_document
@@ -80,7 +80,13 @@ def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[s
 def extract_document(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]], dict[str, object] | None]:
     lower_filename = filename.lower()
     if lower_filename.endswith(".docx"):
-        return "docx", extract_docx_paragraphs(document_bytes), None
+        paragraphs = extract_docx_paragraphs(document_bytes)
+        # Surface unresolved tracked changes as an extraction-quality warning so
+        # the review never silently acts on a synthesized redline state. The flat
+        # text now reflects the in-force baseline (see docx_text), but the matter
+        # must still be flagged + gated for human resolution of the redlines.
+        tracked_changes = detect_docx_tracked_changes(document_bytes)
+        return "docx", paragraphs, tracked_changes
     if lower_filename.endswith(".pdf"):
         extraction = extract_pdf_document(document_bytes)
         return "pdf", extraction.paragraphs, extraction.quality

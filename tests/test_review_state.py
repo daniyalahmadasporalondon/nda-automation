@@ -168,6 +168,41 @@ class ReviewStateTests(unittest.TestCase):
         self.assertFalse(state["blocks_send"])
         self.assertFalse(result_requires_human_review(review_result))
 
+    def test_tracked_changes_all_pass_result_still_blocks_send(self):
+        # Document-level gate: an all-pass verdict computed from a source carrying
+        # unresolved tracked changes must still force human review and block send.
+        review_result = {
+            "clauses": [{"id": "c1", "decision": "pass"}, {"id": "c2", "decision": "pass"}],
+            "tracked_changes": {"has_tracked_changes": True, "tracked_insertions": 1, "tracked_deletions": 1},
+        }
+
+        state = review_state_from_result(review_result)
+
+        self.assertEqual(state["state"], "review")
+        self.assertTrue(state["blocks_send"])
+        self.assertTrue(state["requires_human_review"])
+        self.assertTrue(state["tracked_changes_forced_review"])
+        self.assertTrue(result_requires_human_review(review_result))
+
+    def test_tracked_changes_marker_never_downgrades_a_check(self):
+        review_result = {
+            "clauses": [{"id": "c1", "decision": "fail"}],
+            "tracked_changes": {"has_tracked_changes": True},
+        }
+
+        state = review_state_from_result(review_result)
+
+        self.assertEqual(state["state"], "check")
+        self.assertTrue(state["blocks_send"])
+        self.assertTrue(state["requires_human_review"])
+
+    def test_clean_all_pass_result_has_no_tracked_changes_gate(self):
+        review_result = {"clauses": [{"id": "c1", "decision": "pass"}]}
+
+        state = review_state_from_result(review_result)
+
+        self.assertNotIn("tracked_changes_forced_review", state)
+
 
 if __name__ == "__main__":
     unittest.main()

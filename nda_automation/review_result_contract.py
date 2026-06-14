@@ -383,9 +383,42 @@ def attach_document_source(
     if extraction_quality:
         review_result["source"]["extraction_quality"] = extraction_quality
         _append_extraction_warnings(review_result, extraction_quality)
+        _apply_tracked_changes_marker(review_result, extraction_quality)
     review_result["extracted_text"] = resolved_text
     review_result["source_fidelity"] = source_fidelity_payload(review_result, source=review_result["source"])
     return review_result
+
+
+def _apply_tracked_changes_marker(
+    review_result: dict[str, Any],
+    extraction_quality: dict[str, object],
+) -> None:
+    """Record a document-level tracked-changes marker for the send/review gate.
+
+    The marker is the durable signal that ``review_state`` honors when forcing
+    human review (mirroring the truncation gate): re-deriving the review state
+    from clauses alone cannot see that the source carried unresolved redlines, so
+    the gate must read this top-level field. No-op for clean documents.
+    """
+    if not bool(extraction_quality.get("has_tracked_changes")):
+        return
+    review_result["tracked_changes"] = {
+        "has_tracked_changes": True,
+        "tracked_insertions": extraction_quality.get("tracked_insertions"),
+        "tracked_deletions": extraction_quality.get("tracked_deletions"),
+        "reviewed_state": extraction_quality.get("reviewed_state"),
+    }
+    # Re-derive and persist the gated review_state/overall_status so the stored
+    # result is self-consistent (the marker is set after build_review_result ran).
+    # review_state_from_result re-applies the document-level tracked-changes gate;
+    # importing it lazily keeps this module free of a review_state dependency.
+    from .review_state import review_state_from_result
+
+    gated_state = review_state_from_result(review_result)
+    review_result["review_state"] = gated_state
+    overall_status = gated_state.get("overall_status")
+    if overall_status:
+        review_result["overall_status"] = overall_status
 
 
 def review_result_paragraphs(review_result: object) -> list[dict[str, Any]] | None:

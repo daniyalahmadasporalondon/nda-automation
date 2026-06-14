@@ -4,7 +4,12 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from nda_automation import docx_text
-from nda_automation.docx_text import DocxExtractionError, extract_docx_paragraphs, extract_docx_text
+from nda_automation.docx_text import (
+    DocxExtractionError,
+    detect_docx_tracked_changes,
+    extract_docx_paragraphs,
+    extract_docx_text,
+)
 
 
 class DocxTextTests(unittest.TestCase):
@@ -420,6 +425,71 @@ class DocxTextTests(unittest.TestCase):
         with self.assertRaisesRegex(DocxExtractionError, "unsupported XML DTD/entity declarations"):
             extract_docx_paragraphs(data)
 
+    def test_extracts_in_force_baseline_from_tracked_changes(self):
+        # Insertion is dropped (not yet in force) and deletion is restored
+        # (still in force): the in-force baseline, not the all-accepted fabrication.
+        data = make_zip(
+            {"word/document.xml": tracked_changes_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        text = extract_docx_text(data)
+
+        self.assertEqual(text, "The term is five (5) years.")
+        self.assertNotIn("three (3)", text)
+
+    def test_detects_tracked_changes_with_warning(self):
+        data = make_zip(
+            {"word/document.xml": tracked_changes_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        quality = detect_docx_tracked_changes(data)
+
+        self.assertIsNotNone(quality)
+        self.assertTrue(quality["has_tracked_changes"])
+        self.assertEqual(quality["tracked_insertions"], 1)
+        self.assertEqual(quality["tracked_deletions"], 1)
+        self.assertEqual(quality["reviewed_state"], "in_force_baseline")
+        self.assertEqual(
+            [warning["type"] for warning in quality["warnings"]],
+            ["docx_unresolved_tracked_changes"],
+        )
+
+    def test_detects_tracked_changes_in_supplemental_parts(self):
+        data = make_docx(
+            ["Body paragraph."],
+            extra_parts={
+                "word/header1.xml": tracked_changes_part_xml(),
+            },
+        )
+
+        quality = detect_docx_tracked_changes(data)
+
+        self.assertIsNotNone(quality)
+        self.assertTrue(quality["has_tracked_changes"])
+
+    def test_clean_document_is_not_flagged(self):
+        data = make_docx(["A clean paragraph with no redlines."])
+
+        self.assertIsNone(detect_docx_tracked_changes(data))
+
+    def test_clean_document_extraction_is_byte_identical(self):
+        # The revision-aware walk must not perturb clean documents at all: tabs,
+        # line breaks, tables, and run formatting all serialize exactly as before.
+        data = make_zip(
+            {"word/document.xml": rich_clean_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            [paragraph["text"] for paragraph in paragraphs],
+            ["Bold plain", "Line1\nLine2\tTabbed", "Cell text"],
+        )
+        self.assertIsNone(detect_docx_tracked_changes(data))
+
 
 def make_docx(paragraphs, *, body_xml="", extra_parts=None):
     body = "".join(
@@ -473,6 +543,38 @@ def make_structured_docx():
             archive.writestr("word/styles.xml", styles_xml)
             archive.writestr("word/numbering.xml", numbering_xml)
         return output.getvalue()
+
+
+def tracked_changes_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">The term is </w:t></w:r>
+      <w:ins w:id="1" w:author="Counterparty"><w:r><w:t>three (3)</w:t></w:r></w:ins>
+      <w:del w:id="2" w:author="Counterparty"><w:r><w:delText>five (5)</w:delText></w:r></w:del>
+      <w:r><w:t xml:space="preserve"> years.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def tracked_changes_part_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p><w:ins w:id="9" w:author="Counterparty"><w:r><w:t>Inserted header text.</w:t></w:r></w:ins></w:p>
+</w:hdr>"""
+
+
+def rich_clean_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Bold </w:t></w:r><w:r><w:t>plain</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Line1</w:t><w:br/><w:t>Line2</w:t><w:tab/><w:t>Tabbed</w:t></w:r></w:p>
+    <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell text</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+  </w:body>
+</w:document>"""
 
 
 def part_xml(text):

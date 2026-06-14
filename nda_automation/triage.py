@@ -30,8 +30,13 @@ def triage_review_result(review_result: dict) -> dict:
     counts = state.get("counts", {})
     review_count = _count_from_state(counts, "review", int(review_result.get("requirements_needs_review") or len(review_clauses)))
     failed_count = _count_from_state(counts, "check", len(failed_clauses))
+    # Document-level gates (unresolved tracked changes, truncated AI packet) force
+    # human review even when every clause passes -- the verdict was computed from a
+    # source the firm has not yet agreed to. Surface that as a human-review item so
+    # the matter is never flagged "ready to sign" while the gate blocks send.
+    forced_human_review = bool(state.get("tracked_changes_forced_review") or state.get("truncation_forced_review"))
 
-    if failed_count == 0 and review_count == 0:
+    if failed_count == 0 and review_count == 0 and not forced_human_review:
         return {
             "triage_status": "ready_to_sign",
             "next_action": "Ready for signature",
@@ -41,9 +46,13 @@ def triage_review_result(review_result: dict) -> dict:
             "requirements_needs_review": 0,
         }
 
-    if review_count or any(str(clause.get("id") or "") in LEGAL_REVIEW_CLAUSE_IDS for clause in failed_clauses):
+    # A forced human-review item counts toward the review tally when no clause
+    # already raised one, so the matter shows an outstanding item rather than zero.
+    effective_review_count = review_count or (1 if forced_human_review else 0)
+
+    if effective_review_count or any(str(clause.get("id") or "") in LEGAL_REVIEW_CLAUSE_IDS for clause in failed_clauses):
         triage_status = "legal_review"
-        next_action = "Needs human review" if review_count and not failed_count else "Needs legal review"
+        next_action = "Needs human review" if effective_review_count and not failed_count else "Needs legal review"
     else:
         triage_status = "needs_redline"
         next_action = "Review redline"
@@ -51,10 +60,10 @@ def triage_review_result(review_result: dict) -> dict:
     return {
         "triage_status": triage_status,
         "next_action": next_action,
-        "issue_count": failed_count + review_count,
+        "issue_count": failed_count + effective_review_count,
         "requirements_passed": int(review_result.get("requirements_passed") or 0),
         "requirements_failed": int(review_result.get("requirements_failed") or failed_count),
-        "requirements_needs_review": review_count,
+        "requirements_needs_review": effective_review_count,
     }
 
 

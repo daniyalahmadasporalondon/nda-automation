@@ -36,6 +36,64 @@ def test_attach_document_source_adds_canonical_source_metadata_and_warnings():
     assert updated["source_fidelity"]["capabilities"]["pdf_page_references"] is False
 
 
+def test_attach_document_source_flags_and_gates_tracked_changes():
+    # An all-pass clause set must never silently clear when the source carried
+    # unresolved redlines: the marker + document-level gate force human review.
+    paragraphs = [{"id": "p1", "text": "Five year term."}]
+    result = {
+        "clauses": [{"id": "term", "decision": "pass"}],
+        "requirements_passed": 1,
+        "requirements_failed": 0,
+        "requirements_needs_review": 0,
+        "overall_status": "meets_requirements",
+    }
+
+    updated = attach_document_source(
+        result,
+        filename="NDA.docx",
+        document_type="docx",
+        extracted_paragraphs=paragraphs,
+        extraction_quality={
+            "has_tracked_changes": True,
+            "tracked_insertions": 1,
+            "tracked_deletions": 1,
+            "reviewed_state": "in_force_baseline",
+            "warnings": [{"type": "docx_unresolved_tracked_changes", "message": "Unresolved tracked changes."}],
+        },
+    )
+
+    assert updated["tracked_changes"]["has_tracked_changes"] is True
+    assert updated["tracked_changes"]["reviewed_state"] == "in_force_baseline"
+    assert updated["review_warnings"][0]["type"] == "docx_unresolved_tracked_changes"
+    # The stored state is re-derived through the gate, not left at the build-time pass.
+    assert updated["overall_status"] == "needs_review"
+    assert updated["review_state"]["state"] == "review"
+    assert updated["review_state"]["blocks_send"] is True
+    assert updated["review_state"]["tracked_changes_forced_review"] is True
+
+
+def test_attach_document_source_does_not_flag_clean_docx():
+    paragraphs = [{"id": "p1", "text": "Five year term."}]
+    result = {
+        "clauses": [{"id": "term", "decision": "pass"}],
+        "requirements_passed": 1,
+        "requirements_failed": 0,
+        "requirements_needs_review": 0,
+        "overall_status": "meets_requirements",
+    }
+
+    updated = attach_document_source(
+        result,
+        filename="NDA.docx",
+        document_type="docx",
+        extracted_paragraphs=paragraphs,
+        extraction_quality=None,
+    )
+
+    assert "tracked_changes" not in updated
+    assert updated["overall_status"] == "meets_requirements"
+
+
 def test_extracted_text_from_paragraphs_uses_review_result_separator():
     assert extracted_text_from_paragraphs([{"text": "A"}, {"text": "B"}]) == "A\n\nB"
 

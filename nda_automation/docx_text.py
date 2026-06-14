@@ -69,6 +69,60 @@ def extract_docx_paragraphs(data: bytes) -> List[DocxParagraph]:
     return paragraphs
 
 
+TRACKED_CHANGES_WARNING_TYPE = "docx_unresolved_tracked_changes"
+TRACKED_CHANGES_WARNING_MESSAGE = (
+    "The Word document contains unresolved tracked changes. The review reflects the current "
+    "in-force baseline (tracked insertions excluded, tracked deletions restored); the redlines "
+    "must be accepted or rejected by a human before any verdict is acted on."
+)
+
+
+def detect_docx_tracked_changes(data: bytes) -> dict[str, object] | None:
+    """Return an extraction-quality dict if the DOCX carries unresolved redlines.
+
+    Detects tracked insertions (``w:ins``) and deletions (``w:del``) in the main
+    body and reviewable supplemental parts. Returns ``None`` for a clean document
+    so the caller attaches no quality block and raises no flag. Callers thread the
+    returned dict through ``attach_document_source`` so the warning reaches the
+    review surface and the document-level tracked-changes gate forces human
+    review. Never raises: extraction has already succeeded by the time this runs,
+    so an unreadable archive here degrades to "no tracked changes detected".
+    """
+    try:
+        validate_docx_bytes_before_open(data)
+        with ZipFile(BytesIO(data)) as document:
+            validate_docx_archive(document)
+            insertions = 0
+            deletions = 0
+            for part_name in ["word/document.xml", *_supplemental_part_names(document)]:
+                try:
+                    root = _read_xml_part(document, part_name)
+                except DocxExtractionError:
+                    continue
+                for node in root.iter():
+                    if node.tag == f"{WORD_NS}ins":
+                        insertions += 1
+                    elif node.tag == f"{WORD_NS}del":
+                        deletions += 1
+    except (BadZipFile, RecursionError, DocxExtractionError):
+        return None
+
+    if not insertions and not deletions:
+        return None
+    return {
+        "has_tracked_changes": True,
+        "tracked_insertions": insertions,
+        "tracked_deletions": deletions,
+        "reviewed_state": "in_force_baseline",
+        "warnings": [
+            {
+                "type": TRACKED_CHANGES_WARNING_TYPE,
+                "message": TRACKED_CHANGES_WARNING_MESSAGE,
+            }
+        ],
+    }
+
+
 def validate_docx_bytes_before_open(docx_bytes: bytes) -> None:
     """Reject hostile DOCX archives before ZipFile builds in-memory metadata."""
     entries = _scan_zip_central_directory(docx_bytes)
@@ -785,15 +839,43 @@ def _supplemental_part_names(document: ZipFile) -> List[str]:
 
 
 def _paragraph_text(paragraph: ET.Element) -> str:
-    parts = []
-    for node in paragraph.iter():
-        if node.tag == f"{WORD_NS}t" and node.text:
-            parts.append(node.text)
-        elif node.tag == f"{WORD_NS}tab":
-            parts.append("\t")
-        elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
-            parts.append("\n")
+    parts: List[str] = []
+    _collect_revision_aware_text(paragraph, parts)
     return "".join(parts).strip()
+
+
+def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
+    """Append a node's reviewable text, honoring tracked-change markup.
+
+    The reviewed state is the CURRENT in-force baseline: tracked *insertions*
+    (``w:ins``) are not yet part of the agreement, so their text is skipped, and
+    tracked *deletions* (``w:del`` carrying ``w:delText``) are still in force, so
+    their text is restored. This mirrors ``docx_health`` (which already reads
+    ``w:delText``) and replaces the old flat ``w:t``-only walk that silently
+    yielded the "all insertions accepted, all deletions gone" hypothetical.
+
+    A clean document has no ``w:ins``/``w:del``/``w:delText`` anywhere, so this
+    recursion visits exactly the same ``w:t``/``w:tab``/``w:br``/``w:cr`` nodes,
+    in document order, that the previous ``.iter()`` walk did -- byte-identical
+    output. ``presence_of_tracked_changes`` flags the revision case separately.
+    """
+    tag = node.tag
+    if tag == f"{WORD_NS}ins":
+        # Tracked insertion: not in the in-force baseline, drop its text.
+        return
+    if tag == f"{WORD_NS}t":
+        if node.text:
+            parts.append(node.text)
+    elif tag == f"{WORD_NS}delText":
+        # Tracked-deleted text is still in force in the baseline; restore it.
+        if node.text:
+            parts.append(node.text)
+    elif tag == f"{WORD_NS}tab":
+        parts.append("\t")
+    elif tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
+        parts.append("\n")
+    for child in node:
+        _collect_revision_aware_text(child, parts)
 
 
 def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]] | None:
@@ -836,14 +918,8 @@ def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]]
 
 
 def _run_text(run: ET.Element) -> str:
-    parts = []
-    for node in run.iter():
-        if node.tag == f"{WORD_NS}t" and node.text:
-            parts.append(node.text)
-        elif node.tag == f"{WORD_NS}tab":
-            parts.append("\t")
-        elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
-            parts.append("\n")
+    parts: List[str] = []
+    _collect_revision_aware_text(run, parts)
     return "".join(parts)
 
 

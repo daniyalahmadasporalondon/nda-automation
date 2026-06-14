@@ -150,30 +150,37 @@ def _apply_document_level_gates(state: Dict[str, Any], review_result: Dict[str, 
     the gate is durable across re-derivation. Never downgrade a check -- a fail
     already blocks and must stay a fail.
     """
-    if not isinstance(state, dict) or not _result_is_truncated(review_result):
+    if not isinstance(state, dict):
         return state
-    if str(state.get("state") or "") == REVIEW_STATE_CHECK:
-        # A document-level fail already blocks; leave the stronger signal intact
-        # but make sure the human-review/send flags reflect the manual-review need.
-        gated = dict(state)
-        gated["requires_human_review"] = True
-        gated["requires_attention"] = True
-        gated["blocks_send"] = True
-        gated["blocks_auto_send"] = True
-        return gated
+    truncated = _result_is_truncated(review_result)
+    has_tracked_changes = _result_has_tracked_changes(review_result)
+    if not truncated and not has_tracked_changes:
+        return state
+
     gated = dict(state)
-    gated["state"] = REVIEW_STATE_REVIEW
-    gated["overall_status"] = _overall_status_for_state(REVIEW_STATE_REVIEW)
-    gated["label"] = _state_label(REVIEW_STATE_REVIEW)
-    gated["tone"] = _state_tone(REVIEW_STATE_REVIEW)
+    # Both gates require a human look and block send/auto-send. Never downgrade a
+    # CHECK -- a fail already blocks and must stay a fail -- but still raise the
+    # human-review/send flags so the manual-review need is explicit.
+    if str(state.get("state") or "") != REVIEW_STATE_CHECK:
+        gated["state"] = REVIEW_STATE_REVIEW
+        gated["overall_status"] = _overall_status_for_state(REVIEW_STATE_REVIEW)
+        gated["label"] = _state_label(REVIEW_STATE_REVIEW)
+        gated["tone"] = _state_tone(REVIEW_STATE_REVIEW)
     gated["requires_attention"] = True
     gated["requires_human_review"] = True
     gated["blocks_send"] = True
     gated["blocks_auto_send"] = True
-    gated["truncation_forced_review"] = True
-    reason = _result_truncation_reason(review_result)
-    if reason:
-        gated["truncation_reason"] = reason
+
+    if truncated:
+        gated["truncation_forced_review"] = True
+        reason = _result_truncation_reason(review_result)
+        if reason:
+            gated["truncation_reason"] = reason
+    if has_tracked_changes:
+        # The reviewed text is the in-force baseline (see docx_text); the unresolved
+        # redlines must be accepted/rejected by a human before this verdict is acted
+        # on, so a clean clause set must never silently auto-clear/send.
+        gated["tracked_changes_forced_review"] = True
     return gated
 
 
@@ -187,6 +194,18 @@ def _result_is_truncated(review_result: Dict[str, Any]) -> bool:
     if isinstance(existing_state, dict) and bool(existing_state.get("truncation_forced_review")):
         return True
     return bool(review_result.get("truncation_blocks_send"))
+
+
+def _result_has_tracked_changes(review_result: Dict[str, Any]) -> bool:
+    if not isinstance(review_result, dict):
+        return False
+    tracked_changes = review_result.get("tracked_changes")
+    if isinstance(tracked_changes, dict) and bool(tracked_changes.get("has_tracked_changes")):
+        return True
+    existing_state = review_result.get("review_state")
+    if isinstance(existing_state, dict) and bool(existing_state.get("tracked_changes_forced_review")):
+        return True
+    return False
 
 
 def _result_truncation_reason(review_result: Dict[str, Any]) -> str:
