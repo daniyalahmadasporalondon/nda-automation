@@ -1086,9 +1086,9 @@ class ServerTests(unittest.TestCase):
             "NDA_GMAIL_OUTBOUND_TOKEN_PATH": "",
             "NDA_AI_REVIEW_ENABLED": "true",
             "NDA_AI_PROVIDER": "openrouter",
-            "NDA_AI_MODEL": "x-ai/grok-4.3",
+            "NDA_AI_MODEL": "anthropic/claude-opus-4.8",
             "OPENROUTER_API_KEY": "configured",
-            "NDA_GMAIL_TRIAGE_MODEL": "x-ai/grok-4.3",
+            "NDA_GMAIL_TRIAGE_MODEL": "anthropic/claude-opus-4.8",
             "NDA_ALLOW_EPHEMERAL_DATA": "",
         }):
             with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
@@ -4542,7 +4542,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(save_payload["ai_review"]["enabled"], True)
         self.assertEqual(save_payload["ai_review"]["stored_enabled"], True)
         self.assertEqual(save_payload["ai_review"]["provider"], "openrouter")
-        self.assertEqual(save_payload["ai_review"]["model"], "x-ai/grok-4.3")
+        self.assertEqual(save_payload["ai_review"]["model"], "anthropic/claude-opus-4.8")
         self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
         self.assertEqual(save_payload["settings_audit"][0]["action"], "ai_api_key_saved")

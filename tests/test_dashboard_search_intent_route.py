@@ -351,7 +351,7 @@ class _patch_settings:
         dashboard_search_intent._ai_review_settings = lambda: {
             "enabled": self.enabled,
             "provider": "openrouter",
-            "model": "x-ai/grok-4.3",
+            "model": "anthropic/claude-opus-4.8",
             "timeout_seconds": 20,
         }
         return self

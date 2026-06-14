@@ -1551,12 +1551,12 @@ assert.equal(DASHBOARD_ASSISTANT_ENDPOINT, "/api/dashboard/assistant");
 assert.equal(SUMMARY_LABEL, "AI summary");
 const formatted = formatSummaryResult({
   summary: "  Mutual NDA with Acme. Needs human review.  ",
-  model: "x-ai/grok-4.3",
+  model: "anthropic/claude-opus-4.8",
   generated_at: "2026-06-07T10:00:00Z",
 });
 assert.equal(formatted.label, "AI summary");
 assert.equal(formatted.summary, "Mutual NDA with Acme. Needs human review."); // trimmed
-assert.equal(formatted.model, "x-ai/grok-4.3");
+assert.equal(formatted.model, "anthropic/claude-opus-4.8");
 assert.equal(formatted.generatedAt, "2026-06-07T10:00:00Z");
 assert.equal(formatSummaryResult({ summary: "   " }), null); // blank -> null, never fabricated
 assert.equal(formatSummaryResult({}), null);

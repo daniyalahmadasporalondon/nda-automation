@@ -57,9 +57,9 @@ services:
       - key: NDA_AI_PROVIDER
         value: openrouter
       - key: NDA_AI_MODEL
-        value: x-ai/grok-4.3
+        value: anthropic/claude-opus-4.8
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
-      # different model family from the main Grok reviewer on purpose.
+      # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER
         value: "true"
       - key: NDA_AI_VERIFIER_MODEL
@@ -67,4 +67,4 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL
-        value: x-ai/grok-4.3
+        value: anthropic/claude-opus-4.8

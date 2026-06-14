@@ -40,7 +40,7 @@ def test_configured_assistant_model_uses_existing_openrouter_ai_settings(monkeyp
         lambda: {
             "enabled": True,
             "provider": "openrouter",
-            "model": "x-ai/grok-4.3",
+            "model": "anthropic/claude-opus-4.8",
             "timeout_seconds": 17,
         },
     )
@@ -54,7 +54,7 @@ def test_configured_assistant_model_uses_existing_openrouter_ai_settings(monkeyp
 
     assert isinstance(model, dashboard_assistant_ai.OpenRouterDashboardAssistantModel)
     assert model.settings.provider == "openrouter"
-    assert model.settings.model == "x-ai/grok-4.3"
+    assert model.settings.model == "anthropic/claude-opus-4.8"
     assert model.settings.timeout_seconds == 17
     assert model.settings.api_key == "sk-or-test"
 
@@ -117,7 +117,7 @@ def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
     assert response["answer"]["count"] == 3
     assert "Test Playbook has 3 clauses" in response["answer"]["text"]
     assert model.requests[0]["messages"][0]["role"] == "system"
-    assert model.requests[0]["model"] == "x-ai/grok-4.3"
+    assert model.requests[0]["model"] == "anthropic/claude-opus-4.8"
     assert model.requests[0]["response_format"] == {"type": "json_object"}
     assert "previous_response_id" not in model.requests[1]
     assert model.requests[1]["messages"][-1]["role"] == "tool"

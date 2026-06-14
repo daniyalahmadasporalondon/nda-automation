@@ -93,8 +93,8 @@ class BuildSummaryContextTests(unittest.TestCase):
         context = matter_summary.build_summary_context(
             {"extracted_text": "Governed by England and Wales.", "review_result": {"clauses": []}}
         )
-        body = matter_summary.build_summary_request_body(context, model="x-ai/grok-4.3")
-        self.assertEqual(body["model"], "x-ai/grok-4.3")
+        body = matter_summary.build_summary_request_body(context, model="anthropic/claude-opus-4.8")
+        self.assertEqual(body["model"], "anthropic/claude-opus-4.8")
         self.assertEqual(body["temperature"], 0)
         system = body["messages"][0]["content"]
         self.assertIn("Use ONLY the supplied document text", system)
@@ -106,7 +106,7 @@ class BuildSummaryContextTests(unittest.TestCase):
 
 
 class SummarizeMatterTests(unittest.TestCase):
-    SETTINGS = {"enabled": True, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20}
+    SETTINGS = {"enabled": True, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20}
 
     def test_successful_summary_returns_text_and_provenance(self):
         matter = {"extracted_text": "Mutual NDA governed by England and Wales.", "review_result": {"clauses": []}}
@@ -114,7 +114,7 @@ class SummarizeMatterTests(unittest.TestCase):
             matter, transport=_stub_transport("A tight grounded summary."), settings=self.SETTINGS
         )
         self.assertEqual(result["summary"], "A tight grounded summary.")
-        self.assertEqual(result["model"], "x-ai/grok-4.3")
+        self.assertEqual(result["model"], "anthropic/claude-opus-4.8")
         self.assertTrue(result["generated_at"])
         self.assertTrue(result["grounded_in"]["document"])
 

@@ -164,14 +164,14 @@ class MatterSummaryRouteTests(unittest.TestCase):
             ), patch.object(
                 matter_summary,
                 "_ai_review_settings",
-                lambda: {"enabled": True, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20},
+                lambda: {"enabled": True, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20},
             ):
                 matter = self.seed_matter()
                 status, payload, _ = self.summarize(matter["id"], headers=self.basic_auth_headers())
 
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["summary"], STUB_SUMMARY_TEXT)
-        self.assertEqual(payload["model"], "x-ai/grok-4.3")
+        self.assertEqual(payload["model"], "anthropic/claude-opus-4.8")
         self.assertTrue(payload["generated_at"])
         self.assertTrue(payload["grounded_in"]["document"])
         self.assertTrue(payload["grounded_in"]["review_findings"])
@@ -197,7 +197,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()), patch.object(
                 matter_summary,
                 "_ai_review_settings",
-                lambda: {"enabled": False, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20},
+                lambda: {"enabled": False, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20},
             ):
                 matter = self.seed_matter()
                 status, payload, _ = self.summarize(matter["id"], headers=self.basic_auth_headers())
@@ -217,7 +217,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
             ), patch.object(
                 matter_summary,
                 "_ai_review_settings",
-                lambda: {"enabled": True, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20},
+                lambda: {"enabled": True, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20},
             ):
                 matter = self.seed_matter()
                 status, payload, _ = self.summarize(matter["id"], headers=self.basic_auth_headers())
@@ -233,7 +233,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
             ), patch.object(
                 matter_summary,
                 "_ai_review_settings",
-                lambda: {"enabled": True, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20},
+                lambda: {"enabled": True, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20},
             ):
                 # Matter owned by a DIFFERENT user than the authenticated caller.
                 other_matter = self.seed_matter(owner_user_id="someone-else")
@@ -258,7 +258,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
             ), patch.object(
                 matter_summary,
                 "_ai_review_settings",
-                lambda: {"enabled": True, "provider": "openrouter", "model": "x-ai/grok-4.3", "timeout_seconds": 20},
+                lambda: {"enabled": True, "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "timeout_seconds": 20},
             ):
                 matter = self.seed_matter(with_review=False, extracted_text="   ")
                 status, payload, _ = self.summarize(matter["id"], headers=self.basic_auth_headers())

@@ -295,7 +295,7 @@ async function testAccessibleControlState(page) {
         ai_review: {
           api_key_configured: true,
           enabled: true,
-          model: "x-ai/grok-4.3",
+          model: "anthropic/claude-opus-4.8",
           provider: "openrouter",
         },
         active_review_engine: {
@@ -962,7 +962,7 @@ async function testContractStructureReviewPanel(page) {
   let aiKeyConfigured = false;
   let aiKeySource = "";
   let aiProvider = "openrouter";
-  let aiModel = "x-ai/grok-4.3";
+  let aiModel = "anthropic/claude-opus-4.8";
   let activeReviewEngine = "ai_first";
   let runtimeSource = "default";
   let settingsAudit = [];
@@ -1214,7 +1214,7 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
   assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
-  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "x-ai/grok-4.3");
+  assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "anthropic/claude-opus-4.8");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="verifier-kind"]').innerText(), "AI via OpenRouter");
   assert.equal(await page.locator('[data-admin-ai="verifier-model"]').innerText(), "deepseek/deepseek-v4-pro");
@@ -2268,7 +2268,7 @@ async function testStructuredEvidenceAndRationale(page) {
 
   await page.evaluate(() => {
     state.latestReviewResult.ai_review = {
-      model: "x-ai/grok-4.3",
+      model: "anthropic/claude-opus-4.8",
       provider: "openrouter",
       status: "completed",
     };
@@ -8717,7 +8717,7 @@ async function testDashboardSmartSearch(page) {
       contentType: "application/json",
       body: JSON.stringify({
         summary: "Mutual NDA with Acme Corp. Governed by England and Wales; 3-year term. Recommendation: needs human review.",
-        model: "x-ai/grok-4.3",
+        model: "anthropic/claude-opus-4.8",
         generated_at: "2026-06-07T10:00:00Z",
       }),
     });
