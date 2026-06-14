@@ -40,6 +40,20 @@ SUPPORTED_INTENTS: frozenset[str] = frozenset(
     }
 )
 
+# Allow-list of navigation-only actions that legitimately skip the confirmation
+# gate. These open a Dashboard surface without mutating state or triggering any
+# external operation. Every OTHER action — including any unknown/unrecognized
+# action a (possibly prompt-injected) model emits — is treated as side-effectful
+# and is force-confirmed server-side. This FAILS SAFE: confirmation is the
+# default, and only explicitly-vetted read/navigation actions opt out.
+SAFE_NO_CONFIRMATION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "open_repository",
+        "open_playbook",
+        "open_admin",
+    }
+)
+
 
 class DashboardAssistantAIUnavailableError(RuntimeError):
     """The configured assistant model could not produce a safe response."""
@@ -315,14 +329,22 @@ def validate_dashboard_assistant_response(
     response.setdefault("version", 1)
     response.setdefault("query", query)
     if intent in {"action_request", "draft_action_request"}:
-        response["requires_confirmation"] = bool(response.get("requires_confirmation"))
         side_effects = response.get("side_effects")
         if not isinstance(side_effects, list):
             side_effects = []
         response["side_effects"] = [str(effect) for effect in side_effects if str(effect).strip()]
-        if response["side_effects"]:
-            response["requires_confirmation"] = True
         action = str(response.get("action") or "").strip()
+        # Server-enforced confirmation gate. The model does NOT get to decide
+        # whether a side-effectful action skips confirmation: only the vetted
+        # navigation-only allow-list may skip it. Any action outside that set
+        # (declared side effects, a known side-effect action, or an unknown
+        # action) is force-confirmed. Unknown actions fail safe to confirmed.
+        model_requested = bool(response.get("requires_confirmation"))
+        is_safe_navigation = action in SAFE_NO_CONFIRMATION_ACTIONS and not response["side_effects"]
+        if is_safe_navigation:
+            response["requires_confirmation"] = model_requested
+        else:
+            response["requires_confirmation"] = True
         if context is not None and action in {"refresh_review", "run_review", "send_redline", "approve_matter"}:
             params = response.get("params")
             params = params if isinstance(params, Mapping) else {}
