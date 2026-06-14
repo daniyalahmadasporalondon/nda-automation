@@ -180,12 +180,20 @@ def reassess_single_clause(
     # directly (no re-alignment against the original source text) and the AI
     # reviewer sees the proposed edits.
     packet_source_text = "" if edited_paragraphs else text
+    # #4: build the structure ONCE, above the model call, so the single-clause packet
+    # carries per-paragraph section context too; reuse it for the downstream context
+    # below (no double-build).
+    from .clause_localization import build_clause_localization
+    contract_structure = build_contract_structure(document_paragraphs)
+    clause_localization = build_clause_localization(single_clause_playbook, contract_structure)
     packet = build_ai_assessment_packet(
         packet_source_text,
         playbook=single_clause_playbook,
         paragraphs=document_paragraphs,
         provider=str(settings.get("provider") or ""),
         model=str(settings.get("model") or ""),
+        contract_structure=contract_structure,
+        clause_localization=clause_localization,
     )
     try:
         raw_response = configured_reviewer(packet)
@@ -207,8 +215,8 @@ def reassess_single_clause(
         raise ReassessClauseError(f"AI assessment response failed validation: {error}", status=502) from error
 
     assessment = assessment_by_clause_id.get(clause_id)
-    # Build context structures for this document.
-    contract_structure = build_contract_structure(document_paragraphs)
+    # Build the remaining context structures for this document (the contract structure
+    # was already built above the model call and is reused here).
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
     concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
     review_context = {
@@ -259,6 +267,7 @@ def build_ai_first_review_result(
     ai_verifier: Any | None = None,
     structure_validator: Any | None = None,
     verify: bool = True,
+    contract_structure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the existing review_result contract from AI-first clause assessments.
 
@@ -269,6 +278,11 @@ def build_ai_first_review_result(
     verifier pass (additive) justifies-or-refutes each escalated finding; refuted
     findings are downgraded and unsubstantiated ones flagged for human review. This
     is the SHIPPING path, so the verifier protects real product reviews here.
+
+    ``contract_structure`` may be supplied when the caller (the assessor) has already
+    built it above the model call (#4); it is reused verbatim instead of being rebuilt
+    here, so the structure is paid for once. The optional AI structure-validation
+    post-pass still runs on the supplied structure exactly as it would on a fresh one.
     """
     text = source_text or ""
     document_paragraphs = _review_paragraphs(text, paragraphs)
@@ -293,7 +307,14 @@ def build_ai_first_review_result(
         paragraphs=document_paragraphs,
         playbook_clauses_by_id=playbook_clauses_by_id,
     )
-    contract_structure = build_contract_structure(document_paragraphs)
+    # #4: reuse the structure the assessor already built above the model call when it
+    # is supplied (avoid double-building/double-paying); otherwise build it here so a
+    # direct caller still gets one. ``deepcopy`` so the shared upstream object is not
+    # mutated in place by the validation post-pass below.
+    if isinstance(contract_structure, Mapping):
+        contract_structure = deepcopy(contract_structure)
+    else:
+        contract_structure = build_contract_structure(document_paragraphs)
     # Optional, additive AI structure-validation post-pass (shipping path). OFF by
     # default behind NDA_STRUCTURE_VALIDATION_ENABLED so the feature ships dormant;
     # when enabled it is further gated to DOCX-sourced parses with sections and

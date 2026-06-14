@@ -20,6 +20,8 @@ from .ai_assessment_prompt import (
     build_ai_assessment_prompt,
 )
 from .ai_first_review import build_ai_first_review_result
+from .clause_localization import build_clause_localization
+from .contract_structure import build_contract_structure
 from .ai_review import (
     DEFAULT_AI_TIMEOUT_SECONDS,
     DEFAULT_OPENROUTER_MODEL,
@@ -241,12 +243,22 @@ def assess_nda_with_ai(
     document_paragraphs = _review_paragraphs(source, paragraphs)
     review_playbook = deepcopy(playbook) if isinstance(playbook, Mapping) else load_playbook()
     validate_playbook(review_playbook)
+    # #4: HOIST. Build the contract structure ONCE, BEFORE the model call, so the
+    # packet can carry per-paragraph section context (the model reasons "this is
+    # Section 3.2" while it assesses, instead of the structure being a post-hoc audit
+    # record it never saw). The same structure object is then reused downstream by
+    # build_ai_first_review_result (no double-build / double-pay). #5: derive light
+    # deterministic clause-localization hints from this same structure.
+    contract_structure = build_contract_structure(document_paragraphs)
+    clause_localization = build_clause_localization(review_playbook, contract_structure)
     packet = build_ai_assessment_packet(
         source,
         playbook=review_playbook,
         paragraphs=document_paragraphs,
         provider=str(settings["provider"]),
         model=str(settings["model"]),
+        contract_structure=contract_structure,
+        clause_localization=clause_localization,
     )
     try:
         raw_response = configured_reviewer(packet)
@@ -266,6 +278,7 @@ def assess_nda_with_ai(
         paragraphs=document_paragraphs,
         checked_at=checked_at,
         playbook=review_playbook,
+        contract_structure=contract_structure,
     )
     document_info = packet.get("document", {}) if isinstance(packet.get("document"), Mapping) else {}
     truncation = _apply_truncation_guard(result, document_info)
