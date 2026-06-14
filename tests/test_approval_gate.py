@@ -26,6 +26,7 @@ import pytest
 from nda_automation import approval, matter_store
 from nda_automation import pdf_docx_reconstruction, pdf_export_service
 from nda_automation import redline_export_service
+from nda_automation.matter_repository import InMemoryMatterRepository
 from nda_automation import server as server_module
 from nda_automation.redline_export_service import RedlineExport
 from nda_automation.review_engine import review_nda_with_active_engine
@@ -208,6 +209,8 @@ class ApprovalLogicTests(unittest.TestCase):
                     "id": "r1",
                     "clause_id": "governing_law",
                     "paragraph_id": "p3",
+                    "paragraph_index": 3,
+                    "source_index": 3,
                     "action": "replace_paragraph",
                     "original_text": "Governed by Mars law.",
                 },
@@ -232,8 +235,166 @@ class ApprovalLogicTests(unittest.TestCase):
         manual = payload["manual_redline_edits"][0]
         self.assertEqual(manual["paragraph_id"], "p3")
         self.assertEqual(manual["replacement_text"], "Governed by Delaware law.")
+        # The modify redline must carry the source redline's block indexes so the
+        # export content-coverage gate can locate the block it replaces; without them
+        # the gate keeps the original text as expected and rejects the legitimate edit.
+        self.assertEqual(manual["paragraph_index"], 3)
+        self.assertEqual(manual["source_index"], 3)
         self.assertEqual(len(payload["review_comments"]), 1)
         self.assertEqual(payload["review_comments"][0]["clause_id"], "governing_law")
+
+
+# --------------------------------------------------------------------------- #
+# Modify decision -> reviewed-DOCX / send-redline export through the real
+# content-coverage gate. The modify edit must pass the gate (no HTTP 500) and the
+# exported document must reflect the modified text, while a genuinely dropped
+# redline is still caught by the same gate.
+# --------------------------------------------------------------------------- #
+class ModifyExportCoverageTests(unittest.TestCase):
+    """End-to-end: a reviewer "modify" decision exports a reviewed DOCX whose
+    coverage gate accepts the intentional edit, without weakening drop-detection."""
+
+    SOURCE_PARAGRAPHS = [
+        "Intro paragraph that stays unchanged.",
+        "This Agreement shall be governed by the laws of California.",
+        "The confidentiality obligations survive for three years.",
+    ]
+    # Deliberately a value no AI/playbook redline would propose, so the assertions
+    # below isolate the reviewer's own edit from any engine-proposed replacement.
+    MODIFIED_TEXT = "This Agreement is governed exclusively by the laws of Singapore."
+
+    def _matter_and_source(self):
+        from tests.test_docx_export import make_source_docx
+        from nda_automation.checker import review_nda
+        from nda_automation.docx_text import extract_docx_paragraphs
+
+        source_docx = make_source_docx(list(self.SOURCE_PARAGRAPHS))
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        review_result = review_nda(source_text, paragraphs=extracted)
+        review_result["extracted_text"] = source_text
+        governing_law_redline = next(
+            redline
+            for redline in review_result["redline_edits"]
+            if redline.get("clause_id") == "governing_law"
+        )
+        matter = {
+            "id": "m-modify",
+            "review_result": review_result,
+            "reviewer_decisions": {
+                "governing_law": {
+                    "action": "modify",
+                    "modified_text": self.MODIFIED_TEXT,
+                    "actor": "reviewer",
+                    "decided_at": "t",
+                },
+            },
+        }
+        return matter, source_docx, review_result, governing_law_redline
+
+    def _render_with_payload(self, source_docx, review_result, payload):
+        from nda_automation import docx_package_renderer, export_service
+
+        rendered_result = deepcopy(review_result)
+        export_service.apply_selected_export_redlines(
+            rendered_result, payload.get("export_redline_edits")
+        )
+        export_service.apply_manual_export_redlines(
+            rendered_result, payload.get("manual_redline_edits")
+        )
+        export_service.apply_review_comments(rendered_result, payload.get("review_comments"))
+        return docx_package_renderer.render_source_redline_package(
+            source_docx,
+            rendered_result,
+            expected_source_text=str(review_result.get("extracted_text") or ""),
+            expected_redline_edits=rendered_result.get("redline_edits", []),
+        )
+
+    def test_modify_decision_export_passes_coverage_gate_and_reflects_edit(self):
+        from nda_automation import docx_health
+
+        matter, source_docx, review_result, _ = self._matter_and_source()
+        payload = approval.reviewed_docx_payload(matter)
+
+        result = self._render_with_payload(source_docx, review_result, payload)
+
+        self.assertEqual(result.health_errors, [])
+        self.assertEqual(result.content_errors, [])
+        # The reviewer's modified text is applied as a tracked change. The accepted
+        # view (changes accepted -> what the recipient ends up with) must reconstruct
+        # the reviewer's exact replacement paragraph.
+        accepted = [
+            record["accepted"]
+            for record in docx_health._export_revision_paragraphs(result.data)
+        ]
+        self.assertIn(self.MODIFIED_TEXT, accepted)
+        # The original wording is gone from the accepted view (it survives only as a
+        # tracked deletion), so the edit truly replaced the source clause.
+        self.assertNotIn(
+            "This Agreement shall be governed by the laws of California.", accepted
+        )
+
+    def test_modify_decision_send_redline_export_succeeds(self):
+        # send-redline and reviewed-DOCX share build_matter_redline; exercise it
+        # through the persisted-matter path used by the send endpoint to prove the
+        # export does not 500 after a modify.
+        matter, source_docx, review_result, _ = self._matter_and_source()
+        repository = InMemoryMatterRepository()
+        stored = repository.create_matter(
+            source_filename="Mutual NDA.docx",
+            document_bytes=source_docx,
+            extracted_text=str(review_result.get("extracted_text") or ""),
+            review_result=review_result,
+            triage={"triage_status": "ready_to_sign"},
+        )
+        stored["reviewer_decisions"] = matter["reviewer_decisions"]
+        payload = approval.reviewed_docx_payload(stored)
+        with patch.object(
+            redline_export_service, "review_result_staleness", return_value={"stale": False}
+        ):
+            export = redline_export_service.build_matter_redline(
+                stored["id"],
+                payload,
+                repository=repository,
+            )
+        self.assertTrue(export.data)
+        self.assertTrue(export.filename.endswith(".docx"))
+
+    def test_dropped_redline_is_still_caught_by_coverage_gate(self):
+        # Protection guard (the fix must NOT weaken drop-detection): if the reviewer's
+        # modify replacement is SILENTLY DROPPED on export (the prior P0 defect), the
+        # coverage gate must still flag it. Render the UNMODIFIED source (no redline
+        # applied at all -- a true drop) while telling the gate to EXPECT the modify.
+        from nda_automation import docx_package_renderer
+
+        matter, source_docx, review_result, _ = self._matter_and_source()
+        payload = approval.reviewed_docx_payload(matter)
+        manual = payload["manual_redline_edits"][0]
+        expected_with_modify = [
+            {
+                "action": manual["action"],
+                "paragraph_id": manual["paragraph_id"],
+                "paragraph_index": manual["paragraph_index"],
+                "source_index": manual["source_index"],
+                "replacement_text": manual["replacement_text"],
+            }
+        ]
+
+        # rendered_result carries NO redline edits: the export equals the plain source,
+        # so the reviewer's intended modify never reaches the document.
+        rendered_result = deepcopy(review_result)
+        rendered_result["redline_edits"] = []
+        result = docx_package_renderer.render_source_redline_package(
+            source_docx,
+            rendered_result,
+            expected_source_text=str(review_result.get("extracted_text") or ""),
+            expected_redline_edits=expected_with_modify,
+        )
+        self.assertEqual(result.health_errors, [])
+        self.assertTrue(
+            result.content_errors,
+            "A dropped modify redline must still be caught by the coverage gate.",
+        )
 
 
 # --------------------------------------------------------------------------- #
