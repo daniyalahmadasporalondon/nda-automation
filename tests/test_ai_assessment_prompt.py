@@ -332,6 +332,151 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("not exhaustive", governing_law["localization"]["note"])
         self.assertIn("never proof of presence", governing_law["localization"]["note"])
 
+    # ---- #7: section-aware smart truncation (SAFETY-CRITICAL) ----
+
+    def _budget_source(self, kept_topic_paragraphs, filler_count):
+        # A document with a few topical clause paragraphs followed by lots of filler.
+        topical = list(kept_topic_paragraphs)
+        filler = [f"Filler boilerplate paragraph number {i} with neutral text." for i in range(filler_count)]
+        return "\n\n".join(topical + filler)
+
+    def test_truncation_never_silently_drops_content_without_forcing_truncated_flag(self):
+        # SAFETY PROOF: whenever ANY paragraph is dropped, the packet MUST report
+        # truncated=True and a positive omitted count -- regardless of whether the
+        # selection was section-aware or a plain order-cut. This is the invariant the
+        # assessor's _apply_truncation_guard relies on to force human review.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = self._budget_source(
+            [
+                "1. Governing Law. This Agreement is governed by the laws of California.",
+                "2. Confidentiality. Each party keeps Confidential Information secret.",
+            ],
+            filler_count=40,
+        )
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            paragraphs=paragraphs,
+            max_paragraphs=5,
+            max_chars=100000,
+            contract_structure=structure,
+        )
+
+        included = len(packet["paragraphs"])
+        total = packet["document"]["paragraph_count"]
+        self.assertLess(included, total)  # content WAS dropped
+        self.assertGreater(packet["document"]["omitted_paragraph_count"], 0)
+        self.assertEqual(packet["document"]["omitted_paragraph_count"], total - included)
+        self.assertTrue(packet["document"]["truncated"])  # review WILL be forced
+
+    def test_truncation_keeps_subset_in_document_order_no_duplicates(self):
+        # The kept paragraphs must be a strict, de-duplicated SUBSET of the document,
+        # emitted in ascending document order, so omitted-count math (total-included)
+        # stays exact and grounding indices stay monotonic.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = self._budget_source(
+            [
+                "1. Governing Law. This Agreement is governed by the laws of California.",
+                "2. Confidentiality. Each party keeps Confidential Information secret.",
+                "3. Term. Obligations survive five years.",
+            ],
+            filler_count=30,
+        )
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            paragraphs=paragraphs,
+            max_paragraphs=8,
+            max_chars=100000,
+            contract_structure=structure,
+        )
+
+        ids = [record["id"] for record in packet["paragraphs"]]
+        self.assertEqual(len(ids), len(set(ids)))  # no duplicates
+        indices = [record["index"] for record in packet["paragraphs"]]
+        self.assertEqual(indices, sorted(indices))  # document order preserved
+        all_ids = {p["id"] for p in paragraphs}
+        self.assertTrue(set(ids).issubset(all_ids))  # strict subset
+
+    def test_section_aware_truncation_prefers_clause_relevant_sections(self):
+        # When the document exceeds the paragraph budget, the section-aware selection
+        # should keep clause-relevant sections (Governing Law / Confidentiality) over
+        # neutral filler -- improving WHAT the model sees within the kept budget. The
+        # document is still truncated (review still forced); this only changes which
+        # paragraphs survive the cut.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        topical = [
+            "1. Governing Law. This Agreement is governed by the laws of California.",
+            "2. Confidentiality. Each party keeps Confidential Information secret.",
+        ]
+        # Put filler FIRST so a naive order-cut would keep only filler and drop the
+        # clause paragraphs; section-aware selection should rescue the clauses.
+        filler = [f"Filler boilerplate paragraph number {i}." for i in range(20)]
+        source = "\n\n".join(filler + topical)
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            paragraphs=paragraphs,
+            max_paragraphs=6,
+            max_chars=100000,
+            contract_structure=structure,
+        )
+        kept_text = " ".join(record["text"] for record in packet["paragraphs"])
+        self.assertIn("Governing Law", kept_text)
+        self.assertIn("Confidentiality", kept_text)
+        # Still truncated -> still forces review.
+        self.assertTrue(packet["document"]["truncated"])
+
+    def test_truncation_falls_back_to_order_cut_without_structure(self):
+        # No structure supplied: behaviour is the legacy order-cut, unchanged.
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = self._budget_source(
+            ["1. Governing Law. Laws of California.", "2. Confidentiality. Keep secret."],
+            filler_count=10,
+        )
+        paragraphs = split_document_paragraphs(source)
+        packet = build_ai_assessment_packet(
+            source, playbook=load_playbook(), paragraphs=paragraphs, max_paragraphs=3, max_chars=100000
+        )
+        # Legacy order-cut keeps the first 3 in document order.
+        self.assertEqual([r["id"] for r in packet["paragraphs"]], ["p1", "p2", "p3"])
+        self.assertTrue(packet["document"]["truncated"])
+
+    def test_oversized_clipped_paragraph_still_forces_truncation_with_structure(self):
+        # A single oversized paragraph is clipped (not dropped); the clip alone must
+        # still set truncated=True even with a structure supplied. Section-aware
+        # selection must never neutralize the clip signal.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = "X" * 5000
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+        packet = build_ai_assessment_packet(
+            source,
+            playbook=load_playbook(),
+            paragraphs=paragraphs,
+            max_paragraphs=120,
+            max_chars=600,
+            contract_structure=structure,
+        )
+        self.assertEqual(packet["document"]["clipped_paragraph_count"], 1)
+        self.assertTrue(packet["document"]["truncated"])
+
     def test_prompt_contract_wraps_packet_with_system_and_response_schema(self):
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
         prompt = build_ai_assessment_prompt(packet)
