@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+from .heading_detection import block_clause_number
+
 Paragraph = Dict[str, object]
+# Split provenance keys stamped on the pieces of a soft-return-split block so the
+# downstream structure detector (contract_structure.build_contract_structure)
+# stays context aware and refuses to re-promote a continuation to a new heading.
+SPLIT_CONTINUATION_KEY = "split_continuation"
+SPLIT_PARENT_NUMBER_KEY = "split_parent_number"
 STRUCTURAL_METADATA_KEYS = (
     "fontSize",
     "heading_level",
@@ -58,15 +65,28 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
     cursor = 0
     for paragraph in paragraphs:
         paragraph_text = str(paragraph.get("text", ""))
+        whole_text = paragraph_text.strip()
         paragraph_parts = split_document_paragraphs(paragraph_text)
         if not paragraph_parts:
             continue
 
-        for paragraph_part in paragraph_parts:
-            paragraph_text = str(paragraph_part.get("text", "")).strip()
-            if not paragraph_text:
-                continue
+        part_texts = [
+            part_text
+            for part_text in (str(part.get("text", "")).strip() for part in paragraph_parts)
+            if part_text
+        ]
+        was_split = len(part_texts) > 1
+        # The split block's own clause number: the first piece's text-literal
+        # number wins over a mismatched Word-autonumber, else the metadata
+        # number. Continuation pieces are compared against this single value so
+        # the structure detector cannot re-promote them to duplicate sections.
+        parent_number = (
+            block_clause_number(part_texts[0], _structure_number_value(paragraph))
+            if was_split and part_texts
+            else ""
+        )
 
+        for part_position, paragraph_text in enumerate(part_texts):
             start = source_text.find(paragraph_text, cursor)
             if start == -1:
                 source_index = paragraph.get("source_index")
@@ -89,10 +109,23 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
             # ``runs`` describes the whole extracted paragraph. If that paragraph
             # was re-split into parts here, the run breakdown no longer matches a
             # part, so drop it and fall back to the part's flat text.
-            if "runs" in aligned_paragraph and (len(paragraph_parts) > 1 or paragraph_text != str(paragraph.get("text", "")).strip()):
+            if "runs" in aligned_paragraph and (was_split or paragraph_text != whole_text):
                 del aligned_paragraph["runs"]
+            # Stamp split provenance on continuation pieces (every piece after the
+            # first non-empty one). This is the structural signal the unified
+            # detector consults so a wrapped continuation of clause 5 is never
+            # mistaken for a new heading. Unsplit paragraphs get no new keys, so
+            # their metadata stays byte-identical to the pre-change behaviour.
+            if was_split and part_position > 0:
+                aligned_paragraph[SPLIT_CONTINUATION_KEY] = True
+                aligned_paragraph[SPLIT_PARENT_NUMBER_KEY] = parent_number
             aligned.append(aligned_paragraph)
     return aligned
+
+
+def _structure_number_value(paragraph: Paragraph) -> str:
+    value = paragraph.get("structure_number")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def validate_clause_evidence_trust(review_result: Dict[str, object], source_text: str | None = None) -> List[str]:

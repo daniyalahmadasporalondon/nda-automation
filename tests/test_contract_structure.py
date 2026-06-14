@@ -4,7 +4,10 @@ from nda_automation.checker import review_nda
 from nda_automation.contract_structure import build_contract_structure
 from nda_automation.matter_view import review_result_with_structure
 from nda_automation.reference_resolver import resolve_document_references
-from nda_automation.review_document import split_document_paragraphs
+from nda_automation.review_document import (
+    align_document_paragraphs,
+    split_document_paragraphs,
+)
 
 
 class ContractStructureTests(unittest.TestCase):
@@ -488,6 +491,150 @@ class ContractStructureTests(unittest.TestCase):
 
         self.assertIn("paragraphs", enriched)
         self.assertEqual(enriched["contract_structure"]["sections"][0]["label"], "Clause 1")
+
+
+class SoftReturnContinuationStructureTests(unittest.TestCase):
+    """End-to-end (align_document_paragraphs -> build_contract_structure) coverage
+    for the soft-return continuation bug: a continuation piece of an
+    already-numbered Word paragraph must never be re-promoted to a duplicate
+    numbered section, while genuinely new clauses and real standalone headings
+    must survive. Each repro runs through BOTH layers so the unified, context-aware
+    detector is exercised exactly as production does."""
+
+    @staticmethod
+    def _structure_for(source_paragraph):
+        text = str(source_paragraph["text"])
+        aligned = align_document_paragraphs([source_paragraph], text)
+        return aligned, build_contract_structure(aligned)
+
+    def _labels(self, source_paragraph):
+        _aligned, structure = self._structure_for(source_paragraph)
+        return [section["label"] for section in structure["sections"]]
+
+    def test_continuation_same_number_not_re_promoted(self):
+        # Repro 1.
+        _aligned, structure = self._structure_for(
+            {"text": "5. Confidentiality.\n5 business days notice is required.",
+             "structure_number": "5", "source_index": 7}
+        )
+        sections = structure["sections"]
+        self.assertEqual([section["label"] for section in sections], ["5"])
+        self.assertEqual(sections[0]["number"], "5")
+        self.assertEqual(sections[0]["heading"], "Confidentiality")
+        self.assertEqual(sections[0]["paragraph_ids"], ["p1", "p2"])
+
+    def test_continuation_year_survival_not_re_promoted(self):
+        # Repro 2.
+        self.assertEqual(
+            self._labels({"text": "3. Term and termination.\n3 year survival applies.",
+                          "structure_number": "3", "source_index": 1}),
+            ["3"],
+        )
+
+    def test_continuation_after_colon_less_run_in_not_re_promoted(self):
+        # Repro 3: the continuation begins with the parent number mid-sentence.
+        _aligned, structure = self._structure_for(
+            {"text": "5. The receiving party shall keep it confidential for a period of\n"
+                     "5 years following the date of disclosure.",
+             "structure_number": "5", "source_index": 2}
+        )
+        self.assertEqual([section["label"] for section in structure["sections"]], ["5"])
+        self.assertEqual(structure["sections"][0]["paragraph_ids"], ["p1", "p2"])
+
+    def test_distinct_numbered_continuations_become_sections_no_orphan(self):
+        # Repro 4: parent Word-autonumber "1" is NOT in the text; the two literal
+        # numbers in the text are distinct new clauses. No orphan "1", literal
+        # prefixes stripped from each heading.
+        _aligned, structure = self._structure_for(
+            {"text": "2. Second.\n3. Third.", "structure_number": "1", "source_index": 1}
+        )
+        sections = structure["sections"]
+        self.assertEqual([section["label"] for section in sections], ["2", "3"])
+        self.assertNotIn("1", [section["number"] for section in sections])
+        self.assertEqual(sections[0]["heading"], "Second")
+        self.assertEqual(sections[1]["heading"], "Third")
+
+    def test_capitalized_continuation_not_re_promoted(self):
+        # Repro 5: the CAPITALIZED continuation that defeated the round-2 text-only
+        # guard. "5 Business Days notice" / "4 Weeks notice" look exactly like a
+        # heading as pure text; only the shared structural context rejects them.
+        self.assertEqual(
+            self._labels({"text": "5. Confidentiality.\n5 Business Days notice is required.",
+                          "structure_number": "5", "source_index": 1}),
+            ["5"],
+        )
+        self.assertEqual(
+            self._labels({"text": "4. Term.\n4 Weeks notice shall be given.",
+                          "structure_number": "4", "source_index": 1}),
+            ["4"],
+        )
+
+    def test_real_standalone_headings_survive(self):
+        # Repro 6 (tension): a genuine heading is its OWN source block (no split
+        # provenance) and must still be detected. A numbered standalone and an
+        # all-caps standalone both survive.
+        numbered_source = "10.1 Return of Materials"
+        numbered_body = "The Receiving Party shall return all materials to the Disclosing Party."
+        aligned = align_document_paragraphs(
+            [{"text": numbered_source, "structure_number": "10.1", "source_index": 5},
+             {"text": numbered_body, "source_index": 6}],
+            f"{numbered_source}\n\n{numbered_body}",
+        )
+        # No provenance stamped: these are their own source blocks, not continuations.
+        self.assertNotIn("split_continuation", aligned[0])
+        numbered_structure = build_contract_structure(aligned)
+        numbered_section = numbered_structure["sections"][0]
+        self.assertEqual(numbered_section["number"], "10.1")
+        self.assertEqual(numbered_section["kind"], "numbered")
+
+        caps_source = "5 CONFIDENTIALITY"
+        caps_body = "Each party shall protect the Confidential Information of the other."
+        caps_structure = build_contract_structure(
+            align_document_paragraphs(
+                [{"text": caps_source, "source_index": 1},
+                 {"text": caps_body, "source_index": 2}],
+                f"{caps_source}\n\n{caps_body}",
+            )
+        )
+        caps_section = caps_structure["sections"][0]
+        self.assertEqual(caps_section["heading"], "CONFIDENTIALITY")
+        self.assertIn(caps_section["kind"], {"numbered", "heading"})
+
+    def test_unsplit_metadata_byte_identical_and_split_ids_unique(self):
+        # Repro 7: an UNSPLIT paragraph gets NO new provenance keys (byte-identical
+        # numbering metadata); split pieces share source_index while id/index stay
+        # unique per piece.
+        unsplit = {
+            "text": "5. Confidentiality Obligations",
+            "structure_number": "5",
+            "source_index": 9,
+            "source_part": "main",
+            "numbering": {"label": "5.", "level": 0, "format": "decimal"},
+            "style_id": "List",
+        }
+        aligned_unsplit = align_document_paragraphs([unsplit], unsplit["text"])[0]
+        self.assertEqual(aligned_unsplit, {
+            "id": "p1",
+            "index": 1,
+            "text": "5. Confidentiality Obligations",
+            "start": 0,
+            "end": 30,
+            "numbering": {"label": "5.", "level": 0, "format": "decimal"},
+            "source_part": "main",
+            "source_index": 9,
+            "structure_number": "5",
+            "style_id": "List",
+        })
+
+        split = {"text": "5. Confidentiality.\n5 business days notice.",
+                 "structure_number": "5", "source_index": 9}
+        aligned_split = align_document_paragraphs([split], split["text"])
+        self.assertEqual([p["source_index"] for p in aligned_split], [9, 9])
+        self.assertEqual([p["id"] for p in aligned_split], ["p1", "p2"])
+        self.assertEqual([p["index"] for p in aligned_split], [1, 2])
+        self.assertNotIn("split_continuation", aligned_split[0])
+        self.assertTrue(aligned_split[1]["split_continuation"])
+        self.assertEqual(aligned_split[1]["split_parent_number"], "5")
 
 
 if __name__ == "__main__":
