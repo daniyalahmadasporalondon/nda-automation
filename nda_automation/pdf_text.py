@@ -646,7 +646,8 @@ def _is_lowercase_continuation(line: str) -> bool:
     run = re.match(r"[a-z]+", stripped)
     if run is not None:
         token = run.group()
-        if 1 <= len(token) <= 6 and stripped[len(token) : len(token) + 1] in ".):]":
+        sep = stripped[len(token) : len(token) + 1]
+        if 1 <= len(token) <= 6 and sep and sep in ".):]":
             return False
     return True
 
