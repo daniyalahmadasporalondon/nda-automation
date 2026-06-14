@@ -199,6 +199,14 @@ def _classify_sections(
     for section in sections:
         if not isinstance(section, dict):
             continue
+        # Honor the AI structure-validation demotion (structure_validation.py): a
+        # section flagged validation == "false_positive" is style-misuse noise (an
+        # address line, signature field, bare "AND") whose aliases the backend already
+        # stripped from the reference index. Exclude it here so the concept /
+        # structure-context surface matches the reference index instead of presenting
+        # the demoted section as genuine. No-op when the pass is disabled or absent.
+        if str(section.get("validation") or "") == "false_positive":
+            continue
         paragraph_ids = [str(paragraph_id) for paragraph_id in section.get("paragraph_ids", []) if paragraph_id]
         concepts: Set[str] = set()
         for paragraph_id in paragraph_ids:

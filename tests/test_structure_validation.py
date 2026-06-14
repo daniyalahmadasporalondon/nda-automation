@@ -959,5 +959,56 @@ class RecitalKeptTests(StructureValidationTestCase):
             self.assertNotEqual(_alias_keys_for(result, section_id), set(), heading)
 
 
+class DownstreamConsumersHonorDemotionTests(StructureValidationTestCase):
+    """A demoted false-positive section must disappear from the concept /
+    structure-context surface too, not just the reference index. Otherwise the two
+    views disagree: the alias is pruned (a cross-reference stops resolving) yet the
+    same phantom is still handed to the clause reviewer and serialized to the
+    frontend as if it were genuine structure.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.paragraphs = _mnda_paragraphs()
+        structure = build_contract_structure(self.paragraphs)
+        sections_by_heading = {section["heading"]: section["id"] for section in structure["sections"]}
+        # Demote the signature/connective false positives through the real machinery.
+        validator = StubValidator(flag_headings=["AND", "COMPANY NAME", "IN WITNESS WHEREOF"])
+        self.demoted = validate_structure(structure, self.paragraphs, validator=validator)
+        self.demoted_ids = {sections_by_heading[heading] for heading in ("AND", "COMPANY NAME", "IN WITNESS WHEREOF")}
+        # Precondition: the demotion really happened on the structure we hand downstream.
+        for section_id in self.demoted_ids:
+            self.assertEqual(
+                _section_by_id(self.demoted, section_id).get("validation"),
+                VERDICT_FALSE_POSITIVE,
+            )
+
+    def test_concept_classifier_excludes_demoted_sections(self):
+        from nda_automation.concept_classifier import classify_document_concepts
+
+        classifier = classify_document_concepts(self.paragraphs, self.demoted)
+        emitted_ids = {str(section.get("section_id") or "") for section in classifier["sections"]}
+
+        self.assertTrue(self.demoted_ids.isdisjoint(emitted_ids))
+        for section_id in self.demoted_ids:
+            self.assertNotIn(section_id, classifier["concepts_by_section_id"])
+        # Genuine clauses still classify -- the filter dropped the phantoms, not everything.
+        self.assertTrue(emitted_ids)
+
+    def test_structure_context_for_clause_excludes_demoted_sections(self):
+        from nda_automation.ai_first_review import _structure_context_for_clause
+
+        review_context = {
+            "contract_structure": self.demoted,
+            "concept_classifier": {"concepts_by_clause_id": {}},
+        }
+        context = _structure_context_for_clause("confidential_information", review_context)
+        context_ids = {str(section.get("id") or "") for section in context["sections"]}
+
+        self.assertTrue(self.demoted_ids.isdisjoint(context_ids))
+        # Genuine sections still flow through to the clause's structure context.
+        self.assertTrue(context_ids)
+
+
 if __name__ == "__main__":
     unittest.main()

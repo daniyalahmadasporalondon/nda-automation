@@ -1275,9 +1275,17 @@ def _structure_context_for_clause(clause_id: str, review_context: Mapping[str, A
     concept_records = concept_classifier.get("concepts_by_clause_id", {}) if isinstance(concept_classifier, dict) else {}
     contract_structure = review_context.get("contract_structure")
     sections = contract_structure.get("sections", []) if isinstance(contract_structure, dict) else []
+    # Exclude AI structure-validation false positives (structure_validation.py) so a
+    # demoted style-misuse section is not surfaced to the clause as genuine structure,
+    # matching its removal from the reference index. No-op when the pass is off.
+    navigable_sections = [
+        section
+        for section in (sections if isinstance(sections, list) else [])
+        if not (isinstance(section, dict) and str(section.get("validation") or "") == "false_positive")
+    ]
     return {
         "clause_id": clause_id,
         "concepts": list(concept_records.get(clause_id, [])) if isinstance(concept_records, dict) else [],
-        "sections": list(sections) if isinstance(sections, list) else [],
+        "sections": navigable_sections,
         "reference_count": 0,
     }

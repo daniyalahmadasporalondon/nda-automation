@@ -70,6 +70,7 @@ const tests = [
   ["resolves prose Paragraph/Schedule references through the structure index, not the block position", testProseParagraphReferenceLinkified],
   ["leaves unresolved structural references plain and keeps direct token/range ids", testProseParagraphReferenceValidationAndTokenCoexistence],
   ["jumps the document to a section start paragraph from a Structure-tab row click", testStructureRowClickJumpsToSection],
+  ["hides a demoted false-positive section from the Structure tab and its count", testStructureTabHidesDemotedFalsePositiveSection],
   ["keeps the Schedule/Section/Exhibit namespace guard on prose structure references", testStructureReferenceNamespaceGuard],
   ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
@@ -7806,6 +7807,66 @@ async function testStructureRowClickJumpsToSection(page) {
     "a non-source-backed row must not be focusable");
   assert.equal(await page.locator('#studioDetailPanel .structure-row-nav[data-para-ref="p2"]').count(), 0,
     "the phantom row's scraped paragraph (p2) must not be a navigable structure row");
+}
+
+// AI structure-validation demotion (structure_validation.py): a section the validator
+// flags validation: "false_positive" is style-misuse noise. Even when it is source-backed
+// (so it WOULD otherwise render as a clickable, navigable row), the Structure tab must
+// drop it entirely — not render it and not count it — matching the backend pruning its
+// aliases from the reference index. The demotion key is a no-op when the pass is off.
+async function testStructureTabHidesDemotedFalsePositiveSection(page) {
+  const structure = proseLinkifyStructure();
+  // Demote the source-backed Schedule 3 section (section-3, start p5) as the validator would.
+  structure.sections.find((section) => section.id === "section-3").validation = "false_positive";
+
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p3", index: 3, text: "Confidential Information means all disclosed material." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Confidential Information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: PROSE_LINKIFY_PARAGRAPHS,
+    result: { redline_edits: [], contract_structure: structure },
+  });
+
+  await page.locator('[data-review-inspector="structure"]').click();
+  await page.waitForSelector("#studioDetailPanel .structure-row");
+
+  // The demoted Schedule 3 section is GONE: neither rendered as a row nor a jump target,
+  // even though it is source-backed (start_paragraph_id p5).
+  assert.equal(
+    await page.locator('#studioDetailPanel .structure-row:has(strong:text-is("Schedule 3"))').count(),
+    0,
+    "a demoted false-positive section must not render as a Structure-tab row",
+  );
+  assert.equal(
+    await page.locator('#studioDetailPanel .structure-row[data-para-ref="p5"]').count(),
+    0,
+    "the demoted section's start paragraph (p5) must not be a navigable structure row",
+  );
+
+  // A genuine sibling (Clause 11, section-2, start p3) still renders and stays navigable.
+  assert.equal(
+    await page.locator('#studioDetailPanel .structure-row[data-para-ref="p3"]').count(),
+    1,
+    "a genuine clause row must still render and be navigable",
+  );
+
+  // The Sections tile reflects the demotion (4 sections - 1 demoted = 3), not the stale
+  // backend stats.section_count of 4.
+  assert.equal(
+    await page.locator('.structure-summary-tile:has(span:text-is("Sections")) strong').first().textContent(),
+    "3",
+    "the Sections tile must exclude the demoted section",
+  );
 }
 
 // A structure whose only "number 2" section is an ATTACHMENT (Schedule 2) reachable via

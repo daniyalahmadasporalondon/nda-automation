@@ -12,7 +12,15 @@ function createContractStructureController({ state, root }) {
   function render() {
     if (!root) return;
     const structure = effectiveStructure();
-    const sections = Array.isArray(structure?.sections) ? structure.sections : [];
+    const allSections = Array.isArray(structure?.sections) ? structure.sections : [];
+    // Honor the AI structure-validation demotion (structure_validation.py): a section
+    // the validator flagged validation === "false_positive" is style-misuse noise (an
+    // address line, signature field, bare "AND") whose aliases the backend already
+    // stripped from the reference index. Drop it from the navigable list so it is not
+    // shown as a genuine, clickable row or counted in the Sections tile. No-op when the
+    // pass is off or on the client-side fallback structure (which never sets validation).
+    const sections = allSections.filter((section) => String(section?.validation || "") !== "false_positive");
+    const demotedCount = allSections.length - sections.length;
     const resolver = effectiveReferenceResolver(structure);
     const references = Array.isArray(resolver?.references) ? resolver.references : [];
     const resolverStats = resolver?.stats || {};
@@ -35,12 +43,12 @@ function createContractStructureController({ state, root }) {
 
     root.innerHTML = `
       <div class="structure-summary" aria-label="Structure map summary">
-        ${summaryTile("Sections", stats.section_count ?? sections.length)}
+        ${summaryTile("Sections", demotedCount > 0 ? sections.length : (stats.section_count ?? sections.length))}
         ${summaryTile("Mapped paragraphs", stats.mapped_paragraph_count ?? mappedParagraphCount(sections))}
         ${summaryTile("References", resolverStats.reference_count ?? references.length)}
         ${summaryTile("Resolved", resolverStats.resolved_reference_count ?? resolvedReferenceCount(references))}
         ${summaryTile("Unmapped paragraphs", stats.unmapped_paragraph_count ?? 0)}
-        ${summaryTile("Source-backed", stats.source_backed_section_count ?? sourceBackedSectionCount(sections))}
+        ${summaryTile("Source-backed", demotedCount > 0 ? sourceBackedSectionCount(sections) : (stats.source_backed_section_count ?? sourceBackedSectionCount(sections)))}
         ${summaryTile("Word numbers", stats.docx_numbered_paragraph_count ?? 0)}
         ${summaryTile("Tables", stats.table_paragraph_count ?? 0)}
       </div>
