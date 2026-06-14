@@ -310,10 +310,27 @@ def reviewed_docx_payload(matter: dict[str, Any]) -> dict[str, Any]:
 
 def _manual_redline_for_modify(redline: dict[str, Any], modified_text: str) -> dict[str, Any]:
     paragraph_id = str(redline.get("paragraph_id") or "")
-    return {
+    manual_redline: dict[str, Any] = {
         "id": f"modify-{str(redline.get('id') or paragraph_id)}",
         "action": REDLINE_REPLACE_PARAGRAPH,
         "paragraph_id": paragraph_id,
         "original_text": str(redline.get("original_text") or ""),
         "replacement_text": modified_text.strip()[:MAX_DECISION_TEXT_CHARS],
     }
+    # Carry the source redline's block indexes onto the modify redline. The export
+    # content-coverage gate keys expected-paragraph coverage on paragraph_index/
+    # source_index (see docx_health._expected_redline_source_index); without them the
+    # gate cannot tell which source block the modify replaces, so it keeps the original
+    # text as expected, the export shows the modified text, and the legitimate edit is
+    # rejected as a dropped/misplaced redline (HTTP 500). Copying the indexes lets the
+    # gate compute the correct expectation for this intentional edit -- a genuinely
+    # dropped redline still diverges and is still caught.
+    for key in ("paragraph_index", "source_index"):
+        value = redline.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            manual_redline[key] = value
+        elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            manual_redline[key] = int(value.strip())
+    return manual_redline
