@@ -205,32 +205,44 @@ function draftDiffersFromActive(draftBlock, activeBlock) {
   return stableJson(clausesOf(draftBlock)) !== stableJson(clausesOf(activeBlock));
 }
 
-// Normalize a validation response into a flat, render-ready error list.
-// Accepts `{ valid, errors:[...] }` where each error may be a string or an object.
-// The backend emits `{ location, clause, field, message, severity }`; we also
-// accept `clause_id`/`code` and bare arrays for resilience.
+// Normalize a single error/warning entry into a flat, render-ready record.
+// Accepts a bare string or the backend object shape
+// `{ location, clause, field, message, severity, check_id, confidence }`; also
+// accepts `clause_id`/`code` aliases. Returns null for empty entries.
+function normalizeValidationEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") return { message: entry };
+  if (typeof entry !== "object") return { message: String(entry) };
+  const message = entry.message || entry.error || entry.detail || "";
+  const normalized = { message: String(message || "Invalid value") };
+  const clauseId = entry.clause_id ?? entry.clause;
+  if (clauseId != null && clauseId !== "") normalized.clause_id = String(clauseId);
+  if (entry.field != null && entry.field !== "") normalized.field = String(entry.field);
+  const code = entry.code ?? entry.severity;
+  if (code != null && code !== "") normalized.code = String(code);
+  // Layer-2 semantic-lint warnings carry a check_id and the model's self-reported
+  // confidence; preserve both so the UI can label the advisory and show its strength.
+  if (entry.check_id != null && entry.check_id !== "") normalized.check_id = String(entry.check_id);
+  if (typeof entry.confidence === "number" && Number.isFinite(entry.confidence)) {
+    normalized.confidence = entry.confidence;
+  }
+  return normalized;
+}
+
+// Normalize a validation response into flat, render-ready error and warning lists.
+// Accepts `{ valid, errors:[...], warnings:[...] }`. Errors block publish; warnings
+// are the ADVISORY Layer-2 semantic-lint findings and never affect `valid`.
 function normalizeValidation(payload) {
   const source = payload && typeof payload === "object" ? payload : {};
   const rawErrors = Array.isArray(source) ? source : (Array.isArray(source.errors) ? source.errors : []);
-  const errors = rawErrors
-    .map((entry) => {
-      if (entry == null) return null;
-      if (typeof entry === "string") return { message: entry };
-      if (typeof entry !== "object") return { message: String(entry) };
-      const message = entry.message || entry.error || entry.detail || "";
-      const normalized = { message: String(message || "Invalid value") };
-      const clauseId = entry.clause_id ?? entry.clause;
-      if (clauseId != null && clauseId !== "") normalized.clause_id = String(clauseId);
-      if (entry.field != null && entry.field !== "") normalized.field = String(entry.field);
-      const code = entry.code ?? entry.severity;
-      if (code != null && code !== "") normalized.code = String(code);
-      return normalized;
-    })
-    .filter(Boolean);
+  const errors = rawErrors.map(normalizeValidationEntry).filter(Boolean);
+  const rawWarnings = Array.isArray(source.warnings) ? source.warnings : [];
+  const warnings = rawWarnings.map(normalizeValidationEntry).filter(Boolean);
 
-  // `valid` defaults to "no errors" when the backend omits the flag.
+  // `valid` defaults to "no errors" when the backend omits the flag. Warnings are
+  // advisory and deliberately excluded from the publish gate.
   const valid = typeof source.valid === "boolean" ? source.valid : errors.length === 0;
-  return { valid: valid && errors.length === 0, errors };
+  return { valid: valid && errors.length === 0, errors, warnings };
 }
 
 // One-line summary suitable for an aria-live status region.

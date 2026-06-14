@@ -50,16 +50,20 @@ function draftStatus({ hasUnsavedChanges = false, draftAhead = false } = {}) {
 
 function validationView(validation) {
   if (!validation) {
-    return { state: "idle", hidden: true, errors: [], title: "" };
+    return { state: "idle", hidden: true, errors: [], warnings: [], title: "" };
   }
   const errors = Array.isArray(validation.errors) ? validation.errors : [];
+  // Layer-2 semantic-lint warnings are ADVISORY: they ride alongside the result in
+  // BOTH the valid and invalid states and never change `state` or block publish.
+  const warnings = Array.isArray(validation.warnings) ? validation.warnings : [];
   if (validation.valid) {
-    return { state: "valid", hidden: false, errors: [], title: "Draft passed validation." };
+    return { state: "valid", hidden: false, errors: [], warnings, title: "Draft passed validation." };
   }
   return {
     state: "invalid",
     hidden: false,
     errors,
+    warnings,
     title: `Resolve ${errors.length === 1 ? "this issue" : "these issues"} before publishing:`,
   };
 }

@@ -839,24 +839,49 @@ async function testPlaybookAdminEditor(page) {
 
   // --- Validate Draft: surfaces server validation errors, then a clean pass ---
   // Errors use the backend's {location, clause, field, message, severity} shape.
+  // The first response ALSO carries an advisory Layer-2 semantic-lint warning
+  // (severity "warning", with check_id + confidence) alongside the blocking error;
+  // the second (clean) pass carries a warning with NO errors. The FE must render
+  // the advisory distinctly and never let a warning block publish.
   let validateCount = 0;
   await page.route("**/api/playbook/validate-draft", async (route) => {
     validateCount += 1;
     const body = validateCount === 1
-      ? { valid: false, errors: [{ location: "mutuality.check_trigger", clause: "mutuality", field: "check_trigger", message: "Check trigger is too vague.", severity: "error" }] }
-      : { valid: true, errors: [] };
+      ? {
+          valid: false,
+          errors: [{ location: "mutuality.check_trigger", clause: "mutuality", field: "check_trigger", message: "Check trigger is too vague.", severity: "error" }],
+          warnings: [{ location: "term_and_survival", clause: "term_and_survival", field: null, message: "Prose mandates a 3-year cap that no rule enforces.", severity: "warning", check_id: "prose_mandate_unenforced", confidence: 0.82 }],
+        }
+      : {
+          valid: true,
+          errors: [],
+          warnings: [{ location: "term_and_survival", clause: "term_and_survival", field: null, message: "Prose mandates a 3-year cap that no rule enforces.", severity: "warning", check_id: "prose_mandate_unenforced", confidence: 0.82 }],
+        };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.getByRole("button", { name: "Validate Draft" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookValidation")?.getAttribute("data-state") === "invalid");
   await assertTextContains(page.locator("#playbookValidation"), "Check trigger is too vague.");
   await assertTextContains(page.locator("#playbookValidation"), "Mutuality");
-  // A failed validation blocks Publish.
+  // The advisory warning renders in its own distinct block (not the red error list)
+  // even while the result is invalid, and shows the clause + confidence.
+  await page.waitForFunction(() => document.querySelector("#playbookValidation")?.getAttribute("data-has-warnings") === "true");
+  assert.equal(await page.locator("#playbookValidation .playbook-validation-warnings[data-advisory='true']").count(), 1);
+  await assertTextContains(page.locator(".playbook-validation-warnings"), "does not block publishing");
+  await assertTextContains(page.locator(".playbook-validation-warnings"), "Prose mandates a 3-year cap that no rule enforces.");
+  await assertTextContains(page.locator(".playbook-validation-warnings"), "82% confidence");
+  // The advisory block is a sibling of, not nested inside, the error list.
+  assert.equal(await page.locator("#playbookValidation .playbook-validation-warnings .playbook-validation-title").count(), 0);
+  // A failed validation STILL blocks Publish despite the advisory warning being present.
   assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), false);
   await page.getByRole("button", { name: "Validate Draft" }).click();
   await page.waitForFunction(() => document.querySelector("#playbookValidation")?.getAttribute("data-state") === "valid");
   await assertTextContains(page.locator("#playbookValidation"), "Draft passed validation.");
-  // Clean validation + saved draft ahead of active → Publish is enabled.
+  // The advisory warning persists under a clean (valid) result, still distinct.
+  assert.equal(await page.locator("#playbookValidation .playbook-validation-warnings[data-advisory='true']").count(), 1);
+  await assertTextContains(page.locator(".playbook-validation-warnings"), "Prose mandates a 3-year cap that no rule enforces.");
+  // Clean validation + saved draft ahead of active → Publish is enabled (the
+  // advisory warning does NOT block it).
   assert.equal(await page.getByRole("button", { name: "Publish Playbook" }).isEnabled(), true);
 
   // --- Publish: promotes the draft to the active published version ---

@@ -8675,6 +8675,34 @@ body.modal-open {
   font-weight: 600;
 }
 
+/* Layer-2 semantic-lint ADVISORY warnings. Deliberately styled apart from the red
+   blocking-error treatment: an amber, dashed-edged panel that reads as a heads-up,
+   not a gate. It can appear under either a valid or an invalid result. */
+.playbook-validation-warnings {
+  border: 1px dashed var(--amber-border, #d4a017);
+  border-radius: 10px;
+  background: var(--amber-bg, #fff8e6);
+  margin-top: 10px;
+  padding: 10px 12px;
+}
+
+.playbook-validation-warnings-title {
+  color: var(--amber-ink, #8a6100);
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.playbook-validation-warnings .playbook-validation-where {
+  color: var(--amber-ink, #8a6100);
+}
+
+.playbook-validation-confidence {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
 .playbook-draft-actions .primary {
   background: var(--brand);
   border-color: var(--brand);

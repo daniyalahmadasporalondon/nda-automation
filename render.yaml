@@ -73,6 +73,15 @@ services:
         value: "true"
       - key: NDA_STRUCTURE_VALIDATION_MODEL
         value: deepseek/deepseek-v4-flash
+      # Layer-2 AI semantic lint of the playbook (Claude Opus 4.8). ADVISORY ONLY:
+      # surfaces meaning-level contradictions (prose that no rule enforces, redline
+      # vs requirement, etc.) as draft-validation WARNINGS that never block publish.
+      # Authoring-time only and rare, so the per-clause Opus cost on validate/publish
+      # is acceptable; fully fail-open (any model error -> no warnings).
+      - key: NDA_PLAYBOOK_SEMANTIC_LINT_ENABLED
+        value: "true"
+      - key: NDA_PLAYBOOK_SEMANTIC_LINT_MODEL
+        value: anthropic/claude-opus-4.8
       - key: OPENROUTER_API_KEY
         sync: false
       - key: NDA_GMAIL_TRIAGE_MODEL

@@ -743,6 +743,30 @@ assert.equal(normalizeValidation({ errors: [{ message: "x" }] }).valid, false);
 assert.equal(normalizeValidation({}).valid, true);
 // Bare array of errors.
 assert.equal(normalizeValidation(["broken"]).valid, false);
+// Layer-2 advisory warnings are normalized into a separate list and NEVER affect
+// `valid` (they carry check_id + confidence from the semantic lint).
+const valWithWarnings = normalizeValidation({
+  valid: true,
+  errors: [],
+  warnings: [
+    { location: "term_and_survival", clause: "term_and_survival", field: null, message: "Prose mandates a 3-year cap that no rule enforces.", severity: "warning", check_id: "prose_mandate_unenforced", confidence: 0.82 },
+  ],
+});
+assert.equal(valWithWarnings.valid, true);
+assert.deepEqual(valWithWarnings.warnings, [
+  { message: "Prose mandates a 3-year cap that no rule enforces.", clause_id: "term_and_survival", code: "warning", check_id: "prose_mandate_unenforced", confidence: 0.82 },
+]);
+// Warnings present alongside blocking errors: errors still drive `valid: false`.
+const valErrAndWarn = normalizeValidation({
+  valid: false,
+  errors: [{ clause: "mutuality", field: "name", message: "Name is required", severity: "error" }],
+  warnings: [{ clause: "mutuality", message: "Redline contradicts the requirement.", severity: "warning", confidence: 0.7 }],
+});
+assert.equal(valErrAndWarn.valid, false);
+assert.equal(valErrAndWarn.errors.length, 1);
+assert.equal(valErrAndWarn.warnings.length, 1);
+// Missing/empty warnings key → empty list.
+assert.deepEqual(normalizeValidation({ valid: true, errors: [] }).warnings, []);
 
 // validationSummary: pluralization + valid case.
 assert.equal(validationSummary({ valid: true, errors: [] }), "Draft is valid.");
@@ -809,12 +833,14 @@ assert.equal(PlaybookAuthoringModel.shouldInvalidateValidation({
 }), true);
 assert.deepEqual(PlaybookAuthoringModel.validationView(null), {
   errors: [],
+  warnings: [],
   hidden: true,
   state: "idle",
   title: "",
 });
 assert.deepEqual(PlaybookAuthoringModel.validationView({ valid: true, errors: [] }), {
   errors: [],
+  warnings: [],
   hidden: false,
   state: "valid",
   title: "Draft passed validation.",
@@ -824,6 +850,31 @@ assert.deepEqual(PlaybookAuthoringModel.validationView({
   errors: [{ message: "Name is required" }],
 }), {
   errors: [{ message: "Name is required" }],
+  warnings: [],
+  hidden: false,
+  state: "invalid",
+  title: "Resolve this issue before publishing:",
+});
+// Layer-2 advisory warnings ride through in BOTH states without changing `state`:
+// a valid draft can still carry advisory warnings.
+assert.deepEqual(PlaybookAuthoringModel.validationView({
+  valid: true,
+  errors: [],
+  warnings: [{ message: "Prose mandates a cap no rule enforces.", clause_id: "term_and_survival", confidence: 0.8 }],
+}), {
+  errors: [],
+  warnings: [{ message: "Prose mandates a cap no rule enforces.", clause_id: "term_and_survival", confidence: 0.8 }],
+  hidden: false,
+  state: "valid",
+  title: "Draft passed validation.",
+});
+assert.deepEqual(PlaybookAuthoringModel.validationView({
+  valid: false,
+  errors: [{ message: "Name is required" }],
+  warnings: [{ message: "Redline contradicts the requirement.", clause_id: "mutuality" }],
+}), {
+  errors: [{ message: "Name is required" }],
+  warnings: [{ message: "Redline contradicts the requirement.", clause_id: "mutuality" }],
   hidden: false,
   state: "invalid",
   title: "Resolve this issue before publishing:",

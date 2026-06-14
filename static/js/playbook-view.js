@@ -397,8 +397,40 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     });
   }
 
+  // Format a confidence in [0,1] as a percent badge, or "" when not reported.
+  function confidenceLabel(confidence) {
+    if (typeof confidence !== "number" || !Number.isFinite(confidence)) return "";
+    const pct = Math.round(Math.max(0, Math.min(1, confidence)) * 100);
+    return `<span class="playbook-validation-confidence">${pct}% confidence</span>`;
+  }
+
+  // Render the ADVISORY Layer-2 semantic-lint warnings as a block that is visually
+  // distinct from blocking errors. Returns "" when there are no warnings so the
+  // error/valid markup is unchanged in that (common) case. Warnings never block
+  // publishing -- they are an advisory channel only.
+  function renderWarningsBlock(warnings) {
+    const list = Array.isArray(warnings) ? warnings : [];
+    if (!list.length) return "";
+    const items = list
+      .map((warning) => {
+        const where = warning.clause_id
+          ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(warning.clause_id))}${warning.field ? ` &middot; ${escapeHtml(warning.field)}` : ""}</span>`
+          : "";
+        return `<li>${where}<span>${escapeHtml(warning.message)}</span>${confidenceLabel(warning.confidence)}</li>`;
+      })
+      .join("");
+    const heading = list.length === 1 ? "Advisory warning" : "Advisory warnings";
+    return `
+      <div class="playbook-validation-warnings" data-advisory="true">
+        <p class="playbook-validation-warnings-title">${heading} (does not block publishing):</p>
+        <ul class="playbook-validation-list">${items}</ul>
+      </div>
+    `;
+  }
+
   // Render the validation region from the last validation result. Hidden until a
-  // validation has run; shows a success note or a list of errors.
+  // validation has run; shows a success note or a list of errors, plus any advisory
+  // (Layer-2 semantic-lint) warnings rendered distinctly below.
   function renderValidationState() {
     const region = clauseDetail.querySelector("#playbookValidation");
     if (!region) return;
@@ -414,8 +446,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (view) {
       region.hidden = false;
       region.dataset.state = view.state;
+      const warningsBlock = renderWarningsBlock(view.warnings);
+      region.dataset.hasWarnings = warningsBlock ? "true" : "false";
       if (view.state === "valid") {
-        region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>';
+        region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>' + warningsBlock;
         return;
       }
       const items = view.errors
@@ -429,13 +463,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       region.innerHTML = `
         <p class="playbook-validation-title">${escapeHtml(view.title)}</p>
         <ul class="playbook-validation-list">${items}</ul>
-      `;
+      ` + warningsBlock;
       return;
     }
     region.hidden = false;
+    const warningsBlock = renderWarningsBlock(lastValidation.warnings);
+    region.dataset.hasWarnings = warningsBlock ? "true" : "false";
     if (lastValidation.valid) {
       region.dataset.state = "valid";
-      region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>';
+      region.innerHTML = '<p class="playbook-validation-ok">Draft passed validation.</p>' + warningsBlock;
       return;
     }
     region.dataset.state = "invalid";
@@ -450,7 +486,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     region.innerHTML = `
       <p class="playbook-validation-title">Resolve ${lastValidation.errors.length === 1 ? "this issue" : "these issues"} before publishing:</p>
       <ul class="playbook-validation-list">${items}</ul>
-    `;
+    ` + warningsBlock;
   }
 
   // Friendly clause name for a validation error's clause_id (falls back to the id).
