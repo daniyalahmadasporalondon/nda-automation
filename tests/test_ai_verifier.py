@@ -368,6 +368,137 @@ class BuildPacketTests(unittest.TestCase):
         self.assertIn("ambiguous", lowered)
 
 
+class ClauseBoundaryMarkerTests(unittest.TestCase):
+    """Structure-awareness #2: section anchors on the verifier packet so the
+    verifier respects clause boundaries (no carve-out from section A refuting a
+    restriction in section B)."""
+
+    def _structure(self):
+        # Two real sections; p3/p4 live in section-1, p9 in section-2.
+        return {
+            "reference_index": {
+                "paragraph_to_section_id": {
+                    "p3": "section-1",
+                    "p4": "section-1",
+                    "p9": "section-2",
+                },
+                "sections_by_id": {
+                    "section-1": {"id": "section-1", "label": "2. Non-Circumvention", "heading": "Non-Circumvention"},
+                    "section-2": {"id": "section-2", "label": "5. Permitted Dealings", "heading": "Permitted Dealings"},
+                },
+            }
+        }
+
+    def _evidence_clause(self, *paragraph_ids):
+        clause = _clause(
+            "non_circumvention",
+            "fail",
+            clause_type="prohibited",
+            matched_text="The Recipient must not circumvent the Company.",
+        )
+        clause["structured_evidence"] = [
+            {"id": f"non_circumvention:{pid}:ai_first", "paragraph_id": pid, "matched_text": "x"}
+            for pid in paragraph_ids
+        ]
+        return clause
+
+    def test_single_section_clause_marks_scope_as_single(self):
+        clause = self._evidence_clause("p3", "p4")
+        updated, _ = apply_ai_verifier(
+            [clause],
+            source_text="full doc",
+            verifier=_scripted(VERIFIER_VERDICT_AFFIRM),
+            contract_structure=self._structure(),
+        )
+        # The packet markers are observed via a capturing verifier.
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        apply_ai_verifier(
+            [self._evidence_clause("p3", "p4")],
+            source_text="full doc",
+            verifier=capture,
+            contract_structure=self._structure(),
+        )
+        self.assertEqual(captured["matched_section_ids"], ["section-1"])
+        self.assertTrue(captured["clause_scope_is_single"])
+        self.assertEqual(captured["section_labels"], {"section-1": "2. Non-Circumvention"})
+        # The section_id is attached onto each structured-evidence record in place.
+        for record in updated[0]["structured_evidence"]:
+            self.assertEqual(record["section_id"], "section-1")
+
+    def test_multi_section_clause_marks_scope_as_not_single(self):
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        updated, _ = apply_ai_verifier(
+            [self._evidence_clause("p3", "p9")],
+            source_text="full doc",
+            verifier=capture,
+            contract_structure=self._structure(),
+        )
+        self.assertEqual(captured["matched_section_ids"], ["section-1", "section-2"])
+        self.assertFalse(captured["clause_scope_is_single"])
+        self.assertEqual(
+            captured["section_labels"],
+            {"section-1": "2. Non-Circumvention", "section-2": "5. Permitted Dealings"},
+        )
+
+    def test_markers_omitted_when_no_structure_supplied(self):
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        apply_ai_verifier(
+            [self._evidence_clause("p3", "p4")],
+            source_text="full doc",
+            verifier=capture,
+        )
+        # Backward-compatible: no structure => no section markers, packet unchanged.
+        self.assertNotIn("matched_section_ids", captured)
+        self.assertNotIn("clause_scope_is_single", captured)
+        self.assertEqual(captured["clause_id"], "non_circumvention")
+
+    def test_falls_back_to_matched_paragraph_ids_without_structured_evidence(self):
+        clause = _clause(
+            "non_circumvention",
+            "fail",
+            clause_type="prohibited",
+            matched_text="The Recipient must not circumvent the Company.",
+            matched_paragraph_ids=["p9"],
+        )
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        apply_ai_verifier(
+            [clause],
+            source_text="full doc",
+            verifier=capture,
+            contract_structure=self._structure(),
+        )
+        self.assertEqual(captured["matched_section_ids"], ["section-2"])
+        self.assertTrue(captured["clause_scope_is_single"])
+
+    def test_prompt_instructs_verifier_to_respect_clause_boundaries(self):
+        from nda_automation.ai_verifier import _VERIFIER_SYSTEM_PROMPT
+
+        lowered = _VERIFIER_SYSTEM_PROMPT.lower()
+        self.assertIn("clause boundaries", lowered)
+        self.assertIn("same section", lowered)
+        self.assertIn("clause_scope_is_single", lowered)
+
+
 class DefaultVerifierTests(unittest.TestCase):
     """The offline polarity-aware adversary."""
 

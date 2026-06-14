@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 from .contract_structure import IDENTIFIER_PART_PATTERN
 from .review_document import Paragraph
 
 REFERENCE_RESOLVER_VERSION = 1
+REFERENCE_INTEGRITY_VERSION = 1
+
+# A parse has "collapsed" when the structure detector failed to find real section
+# boundaries, leaving one section that owns (nearly) the whole document. Cross-
+# reference targets cannot be trusted against such a map -- every "Schedule 3"
+# would look dangling because the schedule heading was never split out -- so the
+# integrity signal disables itself rather than crying wolf. A single section, or
+# one section owning more than this share of the mapped paragraphs, trips it.
+COLLAPSE_DOMINANT_SECTION_RATIO = 0.70
 REFERENCE_KIND_PATTERN = (
     r"clause|clauses|article|articles|section|sections|schedule|schedules|"
     r"annex|annexes|annexure|annexures|appendix|appendices"
@@ -118,6 +127,167 @@ def resolve_document_references(
             "target_section_count": len(target_ids),
         },
     }
+
+
+def build_reference_integrity_signal(
+    reference_resolver: Dict[str, object] | None,
+    contract_structure: Dict[str, object] | None,
+) -> Dict[str, object]:
+    """Aggregate dangling/ambiguous cross-references into a document-level signal.
+
+    The reference resolver already computes per-reference resolution status and the
+    structure already flags ambiguous alias collisions; both are otherwise discarded.
+    This rolls them up into one additive, human-readable signal -- e.g. "Schedule 3
+    is referenced but no Schedule 3 section exists".
+
+    Guards (without these it cries wolf on every PDF / collapsed parse):
+      1. DOCX-with-numbering only -- ``applicable`` is ``False`` for a PDF / plain
+         text parse (``docx_numbered_paragraph_count == 0``); the cross-reference
+         map is only trustworthy when the extractor stamped real numbering.
+      2. Collapse detector -- if there is a single section, or one section owns more
+         than ``COLLAPSE_DOMINANT_SECTION_RATIO`` of the mapped paragraphs, the parse
+         collapsed and the signal disables itself.
+      3. Ambiguous-alias collisions are reported as UNKNOWN, never a dangling
+         violation: a number claimed by two restarted-numbering sections is a
+         resolver limitation, not a drafting defect.
+
+    Always returns a dict (never raises); when disabled it carries ``applicable:
+    False`` and an empty issue list so the key is stable for consumers.
+    """
+    references = []
+    if isinstance(reference_resolver, dict):
+        references = [
+            reference
+            for reference in reference_resolver.get("references", [])
+            if isinstance(reference, dict)
+        ]
+
+    skipped_reason = _integrity_skip_reason(contract_structure)
+    if skipped_reason:
+        return {
+            "version": REFERENCE_INTEGRITY_VERSION,
+            "applicable": False,
+            "skipped_reason": skipped_reason,
+            "status": "ok",
+            "dangling_reference_count": 0,
+            "ambiguous_reference_count": 0,
+            "issues": [],
+        }
+
+    dangling_issues: List[Dict[str, object]] = []
+    ambiguous_issues: List[Dict[str, object]] = []
+    for reference in references:
+        if str(reference.get("status") or "") not in {"partial", "unresolved"}:
+            continue
+        dangling_labels, ambiguous_labels = _classify_unresolved_items(reference)
+        reference_text = str(reference.get("reference_text") or "").strip()
+        source_section_id = reference.get("source_section_id")
+        if dangling_labels:
+            dangling_issues.append({
+                "reference_text": reference_text,
+                "kind": str(reference.get("kind") or ""),
+                "missing_numbers": dangling_labels,
+                "source_section_id": source_section_id if isinstance(source_section_id, str) else None,
+                "summary": _integrity_summary(reference_text, dangling_labels),
+            })
+        if ambiguous_labels:
+            ambiguous_issues.append({
+                "reference_text": reference_text,
+                "kind": str(reference.get("kind") or ""),
+                "ambiguous_numbers": ambiguous_labels,
+                "source_section_id": source_section_id if isinstance(source_section_id, str) else None,
+                "summary": (
+                    f"{reference_text or 'A cross-reference'} matches more than one section "
+                    "(restarted numbering); its target is unknown."
+                ),
+            })
+
+    return {
+        "version": REFERENCE_INTEGRITY_VERSION,
+        "applicable": True,
+        "skipped_reason": "",
+        "status": "issues_found" if dangling_issues else "ok",
+        "dangling_reference_count": len(dangling_issues),
+        "ambiguous_reference_count": len(ambiguous_issues),
+        "issues": dangling_issues,
+        "ambiguous_issues": ambiguous_issues,
+    }
+
+
+def _integrity_skip_reason(contract_structure: Dict[str, object] | None) -> str:
+    """Return why the integrity signal is disabled, or "" when it may run.
+
+    Implements guard #1 (DOCX-with-numbering only) and guard #2 (collapse detector).
+    """
+    if not isinstance(contract_structure, dict):
+        return "no_structure"
+    stats = contract_structure.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    numbered = stats.get("docx_numbered_paragraph_count")
+    if not isinstance(numbered, int) or numbered <= 0:
+        # PDF / plain-text parse: no numbering metadata, so cross-reference targets
+        # cannot be trusted. (Guard #1.)
+        return "not_docx_numbered"
+
+    sections = contract_structure.get("sections")
+    sections = sections if isinstance(sections, list) else []
+    section_count = stats.get("section_count")
+    if not isinstance(section_count, int):
+        section_count = len(sections)
+    if section_count <= 1:
+        return "collapsed_single_section"
+
+    paragraph_counts = [
+        len(section.get("paragraph_ids"))
+        for section in sections
+        if isinstance(section, dict) and isinstance(section.get("paragraph_ids"), list)
+    ]
+    total = sum(paragraph_counts)
+    if total > 0 and max(paragraph_counts, default=0) > COLLAPSE_DOMINANT_SECTION_RATIO * total:
+        # One section swallowed the document -- the parse collapsed. (Guard #2.)
+        return "collapsed_dominant_section"
+    return ""
+
+
+def _classify_unresolved_items(reference: Dict[str, object]) -> Tuple[List[str], List[str]]:
+    """Split a reference's unresolved numbers into genuinely-dangling vs ambiguous.
+
+    An item flagged ``ambiguous`` collided with more than one section (restarted
+    numbering); its target is UNKNOWN, never a dangling-reference violation (guard
+    #3). Everything else unresolved is a true dangling reference.
+    """
+    items = reference.get("items")
+    dangling: List[str] = []
+    ambiguous: List[str] = []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("section_id"):
+                continue
+            number = str(item.get("number") or "")
+            if not number:
+                continue
+            if item.get("ambiguous"):
+                ambiguous.append(number)
+            else:
+                dangling.append(number)
+        return _dedupe(dangling), _dedupe(ambiguous)
+
+    # Fallback for a reference carrying only ``unresolved_numbers`` (no item detail):
+    # treat them as dangling, since ambiguity cannot be distinguished.
+    dangling = [
+        str(number)
+        for number in reference.get("unresolved_numbers", [])
+        if str(number)
+    ]
+    return _dedupe(dangling), ambiguous
+
+
+def _integrity_summary(reference_text: str, missing_numbers: List[str]) -> str:
+    label = reference_text or "A cross-reference"
+    if missing_numbers:
+        joined = ", ".join(missing_numbers)
+        return f"{label} is referenced but no matching section ({joined}) exists in the document."
+    return f"{label} is referenced but no matching section exists in the document."
 
 
 def _references_for_paragraph(

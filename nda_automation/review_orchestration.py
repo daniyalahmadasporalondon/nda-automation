@@ -125,6 +125,7 @@ def orchestrate_review(command: ReviewCommand) -> dict[str, Any]:
         source_text=source_text,
         verifier=command.ai_verifier,
         enabled=command.verify and command.ai_enabled,
+        contract_structure=contract_structure,
     )
     checker._refinalize_verifier_changes(clause_results, ai_verifier_review)
     counts = review_result_clause_counts(clause_results)

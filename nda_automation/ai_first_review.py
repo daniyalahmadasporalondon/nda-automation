@@ -30,7 +30,11 @@ from .evidence_grounding import (
     build_grounding,
     downgrade_ungrounded_finding,
 )
-from .reference_resolver import _resolve_reference_item, resolve_document_references
+from .reference_resolver import (
+    _resolve_reference_item,
+    build_reference_integrity_signal,
+    resolve_document_references,
+)
 from .review_document import (
     Paragraph,
     align_document_paragraphs,
@@ -225,6 +229,7 @@ def reassess_single_clause(
         source_text=text,
         verifier=ai_verifier,
         enabled=verify,
+        contract_structure=contract_structure,
     )
     _refinalize_ai_first_verifier_changes(clause_results_list, ai_verifier_review, document_paragraphs)
     # Build redline for just this clause.
@@ -307,6 +312,11 @@ def build_ai_first_review_result(
             validator=structure_validator,
         )
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
+    # Document-level reference-integrity signal (additive): roll the resolver's
+    # otherwise-discarded dangling/ambiguous cross-references up into one surfaceable
+    # record. Guarded to DOCX-with-numbering + non-collapsed parses so it never cries
+    # wolf on a PDF or a structure parse that failed to find section boundaries.
+    reference_integrity = build_reference_integrity_signal(reference_resolver, contract_structure)
     concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
     review_context = {
         "contract_structure": contract_structure,
@@ -331,6 +341,7 @@ def build_ai_first_review_result(
         source_text=text,
         verifier=ai_verifier,
         enabled=verify,
+        contract_structure=contract_structure,
     )
     _refinalize_ai_first_verifier_changes(clause_results, ai_verifier_review, document_paragraphs)
     counts = review_result_clause_counts(clause_results)
@@ -385,6 +396,7 @@ def build_ai_first_review_result(
         ai_verifier=ai_verifier_review,
         clauses=clause_results,
         redline_edits=redline_edits,
+        result_fields={"reference_integrity": reference_integrity},
         evidence_error_prefix="AI-first review evidence validation failed",
     )
 

@@ -106,6 +106,7 @@ def apply_ai_verifier(
     source_text: str,
     verifier: VerifierFn | None = None,
     enabled: bool = True,
+    contract_structure: Mapping[str, object] | None = None,
 ) -> Tuple[List[dict], Dict[str, object]]:
     """Run the adversarial verifier over finalized clause findings.
 
@@ -132,11 +133,12 @@ def apply_ai_verifier(
     else:
         active_verifier = resolve_verifier()
         verifier_kind = "ai" if isinstance(active_verifier, OpenRouterVerifier) else "offline"
+    section_index = _section_index(contract_structure)
     records: List[Dict[str, object]] = []
     for clause in updated:
         if not _should_verify(clause):
             continue
-        packet = build_verifier_packet(clause, source_text=source_text)
+        packet = build_verifier_packet(clause, source_text=source_text, section_index=section_index)
         try:
             raw_verdict = active_verifier(packet)
         except Exception as error:  # noqa: BLE001 - a flaky verifier must not break review
@@ -156,12 +158,23 @@ def apply_ai_verifier(
     )
 
 
-def build_verifier_packet(clause: Mapping[str, object], *, source_text: str) -> Dict[str, object]:
+def build_verifier_packet(
+    clause: Mapping[str, object],
+    *,
+    source_text: str,
+    section_index: Mapping[str, object] | None = None,
+) -> Dict[str, object]:
     """Assemble the adversarial context for one finding.
 
     The packet is deliberately blind to the engine's *internal* reason codes beyond
     the human-readable finding -- the verifier judges the finding against the clause
     text and cited evidence, the same material a human reviewer would see.
+
+    ``section_index`` (derived from the contract structure's reference_index) lets
+    the packet anchor the finding to the document section(s) its evidence lives in,
+    so the verifier respects clause boundaries -- it must not borrow a carve-out from
+    section A to refute a restriction in section B. When absent (no structure, PDF
+    parse, or a caller that does not pass it) the section markers are simply omitted.
     """
     decision = str(clause.get("decision") or "")
     # matched_text / evidence / source_text are untrusted counterparty contract text.
@@ -172,7 +185,7 @@ def build_verifier_packet(clause: Mapping[str, object], *, source_text: str) -> 
     # polarity adversary (which reads matched_text/evidence) sees identical clause
     # wording, only the impersonation surface is removed.
     evidence = [neutralize_untrusted_text(quote) for quote in _clause_evidence(clause)]
-    return {
+    packet: Dict[str, object] = {
         "clause_id": str(clause.get("id") or ""),
         "clause_name": str(clause.get("name") or clause.get("id") or ""),
         "requirement": str(clause.get("requirement") or ""),
@@ -186,6 +199,103 @@ def build_verifier_packet(clause: Mapping[str, object], *, source_text: str) -> 
         "matched_text": neutralize_untrusted_text(clause.get("matched_text")),
         "evidence": evidence,
         "source_text": neutralize_untrusted_text(source_text),
+    }
+    packet.update(_clause_boundary_markers(clause, section_index))
+    return packet
+
+
+def _section_index(contract_structure: Mapping[str, object] | None) -> Dict[str, object]:
+    """Extract the paragraph->section map + section labels from a contract structure.
+
+    Returns ``{}`` when there is no usable structure (e.g. a PDF parse, or a caller
+    that did not supply one), which disables the clause-boundary markers entirely --
+    they are strictly additive context, never load-bearing.
+    """
+    if not isinstance(contract_structure, Mapping):
+        return {}
+    reference_index = contract_structure.get("reference_index")
+    if not isinstance(reference_index, Mapping):
+        return {}
+    paragraph_to_section_id = reference_index.get("paragraph_to_section_id")
+    if not isinstance(paragraph_to_section_id, Mapping) or not paragraph_to_section_id:
+        return {}
+    labels: Dict[str, str] = {}
+    sections_by_id = reference_index.get("sections_by_id")
+    if isinstance(sections_by_id, Mapping):
+        for section_id, section in sections_by_id.items():
+            if isinstance(section, Mapping):
+                label = str(section.get("label") or section.get("heading") or "").strip()
+                if label:
+                    labels[str(section_id)] = label
+    return {
+        "paragraph_to_section_id": {
+            str(paragraph_id): str(section_id)
+            for paragraph_id, section_id in paragraph_to_section_id.items()
+            if isinstance(section_id, str) and section_id
+        },
+        "section_labels": labels,
+    }
+
+
+def _clause_boundary_markers(
+    clause: Mapping[str, object],
+    section_index: Mapping[str, object] | None,
+) -> Dict[str, object]:
+    """Anchor a finding to the document section(s) its evidence lives in.
+
+    Resolves each structured-evidence paragraph (falling back to the clause's matched
+    paragraph ids) to a ``section_id`` via the structure's paragraph map, attaches
+    that id onto the structured-evidence record in place, and rolls the distinct ids
+    up into packet-level markers:
+      * ``matched_section_ids`` -- the sections the clause's evidence spans.
+      * ``clause_scope_is_single`` -- True iff all evidence resolves to ONE section
+        (the verifier may then refute only from that section's text).
+      * ``section_labels`` -- human labels for those ids, for the prompt.
+
+    Returns ``{}`` when no section index is available, so the packet stays unchanged
+    on a PDF parse or a non-structure caller.
+    """
+    if not section_index:
+        return {}
+    paragraph_to_section_id = section_index.get("paragraph_to_section_id")
+    if not isinstance(paragraph_to_section_id, Mapping) or not paragraph_to_section_id:
+        return {}
+    all_labels = section_index.get("section_labels")
+    all_labels = all_labels if isinstance(all_labels, Mapping) else {}
+
+    matched_section_ids: List[str] = []
+    structured_evidence = clause.get("structured_evidence")
+    paragraph_ids: List[str] = []
+    if isinstance(structured_evidence, list):
+        for record in structured_evidence:
+            if not isinstance(record, dict):
+                continue
+            paragraph_id = str(record.get("paragraph_id") or "")
+            section_id = paragraph_to_section_id.get(paragraph_id) if paragraph_id else None
+            # Attach the resolved section anchor onto the record in place (additive).
+            if isinstance(section_id, str) and section_id:
+                record["section_id"] = section_id
+            if paragraph_id:
+                paragraph_ids.append(paragraph_id)
+    if not paragraph_ids:
+        matched = clause.get("matched_paragraph_ids")
+        if isinstance(matched, list):
+            paragraph_ids = [str(item) for item in matched if str(item)]
+
+    for paragraph_id in paragraph_ids:
+        section_id = paragraph_to_section_id.get(paragraph_id)
+        if isinstance(section_id, str) and section_id and section_id not in matched_section_ids:
+            matched_section_ids.append(section_id)
+
+    if not matched_section_ids:
+        return {}
+    return {
+        "matched_section_ids": matched_section_ids,
+        "clause_scope_is_single": len(matched_section_ids) == 1,
+        "section_labels": {
+            section_id: str(all_labels.get(section_id) or "")
+            for section_id in matched_section_ids
+        },
     }
 
 
@@ -757,6 +867,11 @@ _VERIFIER_SYSTEM_PROMPT = (
     "a genuine prohibition co-located with freedom language must still be AFFIRMED. If "
     "the text is ambiguous, missing, or only fails to show a recognized restriction, "
     "answer 'uncertain' or 'affirm' instead of refuting. "
+    "CLAUSE BOUNDARIES: when matched_section_ids / section_labels are supplied they tell "
+    "you which document section(s) this finding lives in; only quote a carve-out or "
+    "permission to REFUTE if it sits in the SAME section as the finding (clause_scope_is_single "
+    "true means a single section) -- never borrow a carve-out from a different section to "
+    "refute a restriction in this one. "
     'Return ONLY JSON: {"verdict": "affirm|refute|uncertain", "confidence": 0..1, '
     '"rationale": "<one sentence tied to the cited text>"}.'
 )
