@@ -120,6 +120,125 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
             candidate,
         )
 
+    def _candidate_with_option_id_collision(self) -> dict:
+        """A real, otherwise-clean playbook with two colliding approved-option names.
+
+        "Ontario, Canada" and "Ontario Canada" both derive the option id
+        "ontario_canada", so the REAL consistency lint (not a fake) flags exactly one
+        collision and nothing else. We attach the colliding set to a non-governing
+        clause to avoid the governing_law-specific rules-schema validators (which are
+        orthogonal to this lint) and isolate the collision.
+        """
+        candidate = deepcopy(self.active_playbook)
+        for clause in candidate.get("clauses", []):
+            if clause.get("id") == "mutuality":
+                clause["rules"]["approved_options"] = [
+                    {"id": "opt_a", "label": "Ontario, Canada", "value": "Ontario, Canada"},
+                    {"id": "opt_b", "label": "Ontario Canada", "value": "Ontario Canada"},
+                ]
+                break
+        else:  # pragma: no cover - defensive: the live playbook has mutuality
+            self.fail("mutuality clause not found in the live playbook")
+        return candidate
+
+    def test_publish_rejected_on_real_option_id_collision(self) -> None:
+        # End-to-end: a genuine option-id collision is caught by the REAL lint and
+        # rejected through the same 400 / {"error"} publish gate as any other failure.
+        from nda_automation import playbook_lint
+
+        candidate = self._candidate_with_option_id_collision()
+        # Sanity: the real lint reports exactly the collision and nothing else.
+        violations = playbook_lint.lint_playbook(candidate)
+        self.assertEqual(len(violations), 1, [v.message for v in violations])
+        self.assertIn("derive the same option id", violations[0].message)
+
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+
+        error = ctx.exception
+        self.assertEqual(error.status, 400)
+        self.assertIn("error", error.payload)
+        message = error.payload["error"]
+        self.assertIn("mutuality", message)
+        self.assertIn("derive the same option id", message)
+        self.assertIn("'Ontario, Canada'", message)
+        self.assertIn("'Ontario Canada'", message)
+
+        # Rejection is a no-op: the active playbook on disk is unchanged.
+        self.assertEqual(
+            json.loads(self.playbook_path.read_text(encoding="utf-8")),
+            self.active_playbook,
+        )
+
+    def _candidate_with_explicit_id_collision(self) -> dict:
+        """A real, otherwise-clean playbook with two options sharing one explicit id.
+
+        Two options carry id 'opt_dup' but map to different values, so the
+        generation join (resolved[id] = value) would silently drop one. Attached to
+        the mutuality clause (same isolation rationale as the name-collision helper).
+        """
+        candidate = deepcopy(self.active_playbook)
+        for clause in candidate.get("clauses", []):
+            if clause.get("id") == "mutuality":
+                clause["rules"]["approved_options"] = [
+                    {"id": "opt_dup", "label": "India", "value": "India"},
+                    {"id": "opt_dup", "label": "Delaware", "value": "Delaware"},
+                ]
+                break
+        else:  # pragma: no cover - defensive: the live playbook has mutuality
+            self.fail("mutuality clause not found in the live playbook")
+        return candidate
+
+    def test_publish_rejected_on_real_explicit_id_collision(self) -> None:
+        # GAP 1 end-to-end: two options sharing the explicit join-key id map to
+        # different values, caught by the REAL lint and rejected through the gate.
+        from nda_automation import playbook_lint
+
+        candidate = self._candidate_with_explicit_id_collision()
+        violations = playbook_lint.lint_playbook(candidate)
+        self.assertEqual(len(violations), 1, [v.message for v in violations])
+        self.assertIn("share the explicit id", violations[0].message)
+
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+
+        error = ctx.exception
+        self.assertEqual(error.status, 400)
+        self.assertIn("error", error.payload)
+        message = error.payload["error"]
+        self.assertIn("mutuality", message)
+        self.assertIn("share the explicit id", message)
+        self.assertIn("'opt_dup'", message)
+        self.assertIn("'India'", message)
+        self.assertIn("'Delaware'", message)
+
+        # Rejection is a no-op: the active playbook on disk is unchanged.
+        self.assertEqual(
+            json.loads(self.playbook_path.read_text(encoding="utf-8")),
+            self.active_playbook,
+        )
+
+    def test_publish_fail_open_when_collision_check_raises(self) -> None:
+        # Fail-open contract for the new check specifically: if the collision check
+        # itself throws, the whole lint gate fails open and publishing is unaffected.
+        from nda_automation import playbook_lint
+
+        candidate = self._candidate_with_option_id_collision()
+
+        def exploding_check(_clause):
+            raise RuntimeError("collision check blew up")
+
+        patched_checks = dict(playbook_lint.CHECKS)
+        patched_checks["option_id_collision"] = exploding_check
+        with patch.object(playbook_lint, "CHECKS", patched_checks):
+            response = self._publish(candidate)
+
+        self.assertEqual(response["playbook"], candidate)
+        self.assertEqual(
+            json.loads(self.playbook_path.read_text(encoding="utf-8")),
+            candidate,
+        )
+
     def test_draft_validation_surfaces_lint_violations(self) -> None:
         # The draft-validation path reuses the same lint, so violations show up as
         # structured validation errors (early UI feedback before publish).
