@@ -8,6 +8,7 @@ files, locks, hashes, and sidecar persistence.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -15,6 +16,11 @@ from typing import Any
 
 from .checker import PLAYBOOK_PATH, PlaybookTemplateError, validate_playbook
 from .playbook_rules import PlaybookRulesError, validate_playbook_rules
+
+try:  # pragma: no cover - exercised only when the lint module is present
+    from .playbook_lint import lint_playbook
+except ImportError:  # pragma: no cover - lint module may not be wired yet
+    lint_playbook = None
 from .playbook_runtime import (
     PLAYBOOK_RUNTIME_VERSION,
     PlaybookDraftConflict,
@@ -49,6 +55,8 @@ from .playbook_runtime import (
     write_playbook_runtime,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 
 class PlaybookAuthoringError(RuntimeError):
     """Structured authoring failure for route adapters."""
@@ -57,6 +65,46 @@ class PlaybookAuthoringError(RuntimeError):
         super().__init__(str(payload.get("error") or "Playbook authoring failed."))
         self.payload = payload
         self.status = status
+
+
+_LINT_FAILURE_PREFIX = "Playbook is self-contradictory and cannot be published: "
+
+
+def _format_lint_violation(violation: Any) -> str:
+    """Render a single lint violation as a stable, human-readable line."""
+    clause_id = str(getattr(violation, "clause_id", "") or "").strip()
+    message = str(getattr(violation, "message", "") or "").strip() or "Playbook lint violation."
+    return f"Playbook clause {clause_id} {message}" if clause_id else message
+
+
+def lint_violations_for(playbook: Any) -> list[str]:
+    """Return formatted consistency-lint violation messages for a candidate playbook.
+
+    Resolves ``lint_playbook`` at call time so tests (and the integrator) can
+    monkeypatch :data:`nda_automation.playbook_authoring.lint_playbook` and so the
+    integration degrades gracefully when the lint module is not yet wired.
+    """
+    lint = lint_playbook
+    if lint is None:
+        return []
+    try:
+        violations = lint(playbook)
+    except Exception:  # noqa: BLE001 - a lint bug must never block publishing; fail open to a no-op
+        LOGGER.warning("Playbook consistency lint raised; skipping the lint gate.", exc_info=True)
+        return []
+    return [_format_lint_violation(violation) for violation in (violations or [])]
+
+
+def _enforce_playbook_lint(playbook: Any) -> None:
+    """Reject a playbook that fails the consistency lint.
+
+    Raises :class:`PlaybookTemplateError` (the existing publish-failure type) with a
+    message that enumerates every violation, so it surfaces through the same handlers
+    and response shape as any other ``validate_playbook`` failure.
+    """
+    messages = lint_violations_for(playbook)
+    if messages:
+        raise PlaybookTemplateError(_LINT_FAILURE_PREFIX + "; ".join(messages))
 
 
 def load_playbook_workspace(
@@ -223,6 +271,7 @@ def publish_playbook(
             if conflict:
                 raise PlaybookAuthoringError(conflict, status=409)
             validate_playbook(publish_playbook)
+            _enforce_playbook_lint(publish_playbook)
 
             runtime = _active_runtime_from_playbook(
                 publish_playbook,
@@ -455,6 +504,9 @@ def collect_playbook_validation_errors(playbook: Any) -> list[dict[str, Any]]:
     except PlaybookRulesError as error:
         for rule_error in error.errors:
             _add(rule_error)
+
+    for lint_message in lint_violations_for(playbook):
+        _add(lint_message)
 
     return [_structured_playbook_error(message) for message in messages]
 
