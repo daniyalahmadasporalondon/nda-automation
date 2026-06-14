@@ -1,17 +1,21 @@
 import contextlib
 import io
 import json
+import os
 import unittest
 from unittest import mock
 
 from nda_automation import structure_validation
 from nda_automation.contract_structure import build_contract_structure
 from nda_automation.structure_validation import (
+    STRUCTURE_VALIDATION_ENABLED_ENV,
     VERDICT_FALSE_POSITIVE,
     OpenRouterStructureValidator,
     StructureValidationError,
     _parse_model_verdicts,
+    reset_structure_validation_cache,
     should_validate_structure,
+    structure_validation_enabled,
     validate_structure,
 )
 
@@ -196,7 +200,22 @@ def _air_india_paragraphs():
     return paragraphs
 
 
-class ShouldValidateStructureTests(unittest.TestCase):
+class StructureValidationTestCase(unittest.TestCase):
+    """Base case: isolate the process-local verdict cache between tests.
+
+    The verdict cache is keyed by document content, so two tests that validate the
+    SAME paragraphs would otherwise share a cached verdict (the second would make no
+    validator call). Clearing it per-test keeps each test independent; the dedicated
+    caching tests assert the hit behaviour explicitly.
+    """
+
+    def setUp(self):
+        super().setUp()
+        reset_structure_validation_cache()
+        self.addCleanup(reset_structure_validation_cache)
+
+
+class ShouldValidateStructureTests(StructureValidationTestCase):
     def test_runs_for_docx_sourced_structure(self):
         paragraphs = _mnda_paragraphs()
         structure = build_contract_structure(paragraphs)
@@ -219,8 +238,9 @@ class ShouldValidateStructureTests(unittest.TestCase):
         self.assertFalse(should_validate_structure(structure, paragraphs))
 
 
-class MndaDemotionTests(unittest.TestCase):
+class MndaDemotionTests(StructureValidationTestCase):
     def setUp(self):
+        super().setUp()
         self.paragraphs = _mnda_paragraphs()
         self.structure = build_contract_structure(self.paragraphs)
         self.sections_by_heading = {
@@ -292,8 +312,9 @@ class MndaDemotionTests(unittest.TestCase):
         self.assertEqual(clause_candidate["number"], "1")
 
 
-class AirIndiaDemotionTests(unittest.TestCase):
+class AirIndiaDemotionTests(StructureValidationTestCase):
     def setUp(self):
+        super().setUp()
         self.paragraphs = _air_india_paragraphs()
         self.structure = build_contract_structure(self.paragraphs)
         self.sections_by_heading = {
@@ -359,7 +380,7 @@ class AirIndiaDemotionTests(unittest.TestCase):
         self.assertIn("c1cii", c_section["paragraph_ids"])
 
 
-class FallbackTests(unittest.TestCase):
+class FallbackTests(StructureValidationTestCase):
     def test_validator_raises_returns_structure_unchanged(self):
         paragraphs = _mnda_paragraphs()
         structure = build_contract_structure(paragraphs)
@@ -399,7 +420,7 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(result, structure)
 
 
-class DemotionCorrectnessTests(unittest.TestCase):
+class DemotionCorrectnessTests(StructureValidationTestCase):
     def test_demoted_aliases_removed_paragraphs_intact_genuine_aliases_kept(self):
         paragraphs = _mnda_paragraphs()
         structure = build_contract_structure(paragraphs)
@@ -447,7 +468,7 @@ class DemotionCorrectnessTests(unittest.TestCase):
         self.assertNotIn("structure_validation", structure)
 
 
-class LenientVerdictParseTests(unittest.TestCase):
+class LenientVerdictParseTests(StructureValidationTestCase):
     """The real DeepSeek V4 Flash response is correct JSON but often WRAPPED.
 
     The previous strict ``json.loads`` of the whole content threw those away with
@@ -502,7 +523,7 @@ def _openrouter_payload_with_content(content: str) -> bytes:
     }).encode("utf-8")
 
 
-class OpenRouterWrappedResponseTests(unittest.TestCase):
+class OpenRouterWrappedResponseTests(StructureValidationTestCase):
     """End-to-end: the live validator's HTTP path + a WRAPPED model response.
 
     This is the regression guard the stub-only tests missed -- the StubValidator
@@ -511,6 +532,7 @@ class OpenRouterWrappedResponseTests(unittest.TestCase):
     """
 
     def setUp(self):
+        super().setUp()
         self.paragraphs = _mnda_paragraphs()
         self.structure = build_contract_structure(self.paragraphs)
         self.sections_by_heading = {
@@ -594,6 +616,347 @@ class OpenRouterWrappedResponseTests(unittest.TestCase):
         with mock.patch.object(structure_validation.urllib.request, "urlopen", fake_urlopen):
             with self.assertRaises(StructureValidationError):
                 validator([{"id": "section-2", "heading": "AND"}])
+
+
+class _CountingValidator:
+    """Records how many times it is invoked so cache hits can be asserted."""
+
+    def __init__(self, flag_headings=()):
+        self._inner = StubValidator(flag_headings)
+        self.call_count = 0
+
+    def __call__(self, candidates):
+        self.call_count += 1
+        return self._inner(candidates)
+
+
+class KillSwitchFlagTests(StructureValidationTestCase):
+    """P1: NDA_STRUCTURE_VALIDATION_ENABLED gates BOTH engine call sites.
+
+    The flag defaults OFF: with it unset/falsy the engines must NOT call
+    ``validate_structure`` at all and the structure is the pure deterministic parse;
+    with it on, validation runs.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved = os.environ.pop(STRUCTURE_VALIDATION_ENABLED_ENV, None)
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        if self._saved is None:
+            os.environ.pop(STRUCTURE_VALIDATION_ENABLED_ENV, None)
+        else:
+            os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = self._saved
+
+    def test_enabled_helper_default_off(self):
+        self.assertFalse(structure_validation_enabled())
+
+    def test_enabled_helper_accepts_truthy_values(self):
+        for value in ("1", "true", "TRUE", "yes", "on", " On "):
+            os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = value
+            self.assertTrue(structure_validation_enabled(), value)
+
+    def test_enabled_helper_rejects_falsy_values(self):
+        for value in ("", "0", "false", "no", "off", "disabled"):
+            os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = value
+            self.assertFalse(structure_validation_enabled(), value)
+
+    def test_ai_first_call_site_skips_validation_when_flag_off(self):
+        # Spy on validate_structure where the ai_first engine calls it. The flag is
+        # OFF (popped in setUp) so the gate must short-circuit BEFORE the call --
+        # asserted whether or not the rest of the pipeline succeeds.
+        from nda_automation import ai_first_review
+
+        with mock.patch.object(
+            ai_first_review, "should_validate_structure", return_value=True
+        ), mock.patch.object(ai_first_review, "validate_structure") as spy:
+            with contextlib.suppress(Exception):
+                ai_first_review.build_ai_first_review_result(
+                    "", [], paragraphs=_mnda_paragraphs(),
+                )
+        spy.assert_not_called()
+
+    def test_ai_first_call_site_runs_validation_when_flag_on(self):
+        from nda_automation import ai_first_review
+
+        os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = "1"
+        with mock.patch.object(
+            ai_first_review, "should_validate_structure", return_value=True
+        ), mock.patch.object(
+            ai_first_review, "validate_structure", side_effect=lambda s, p, **k: s
+        ) as spy:
+            with contextlib.suppress(Exception):
+                ai_first_review.build_ai_first_review_result(
+                    "", [], paragraphs=_mnda_paragraphs(),
+                )
+        spy.assert_called_once()
+
+    def test_orchestrate_review_skips_validation_when_flag_off(self):
+        from nda_automation.review_orchestration import ReviewCommand, orchestrate_review
+
+        paragraphs = _mnda_paragraphs()
+        validator = _CountingValidator(flag_headings=["AND", "COMPANY NAME"])
+        command = ReviewCommand(
+            text="",
+            paragraphs=paragraphs,
+            structure_validator=validator,
+            verify=False,
+            ai_enabled=True,
+        )
+        result = orchestrate_review(command)
+        self.assertEqual(validator.call_count, 0)
+        self.assertNotIn("structure_validation", result.get("contract_structure", {}))
+
+    def test_orchestrate_review_runs_validation_when_flag_on(self):
+        from nda_automation.review_orchestration import ReviewCommand, orchestrate_review
+
+        os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = "1"
+        paragraphs = _mnda_paragraphs()
+        validator = _CountingValidator(flag_headings=["AND", "COMPANY NAME"])
+        command = ReviewCommand(
+            text="",
+            paragraphs=paragraphs,
+            structure_validator=validator,
+            verify=False,
+            ai_enabled=True,
+        )
+        result = orchestrate_review(command)
+        self.assertEqual(validator.call_count, 1)
+        self.assertIn("structure_validation", result.get("contract_structure", {}))
+
+
+class VerdictCacheTests(StructureValidationTestCase):
+    """P2: the verdict is cached by document content -- one validator call per doc."""
+
+    def test_second_review_of_same_document_reuses_cache_no_validator_call(self):
+        paragraphs = _mnda_paragraphs()
+        structure = build_contract_structure(paragraphs)
+        validator = _CountingValidator(flag_headings=["AND", "COMPANY NAME"])
+
+        first = validate_structure(structure, paragraphs, validator=validator)
+        # A second identical review reads the cache: NO further validator call.
+        second_structure = build_contract_structure(paragraphs)
+        second = validate_structure(second_structure, paragraphs, validator=validator)
+
+        self.assertEqual(validator.call_count, 1)
+        self.assertEqual(
+            first["structure_validation"]["demoted_section_ids"],
+            second["structure_validation"]["demoted_section_ids"],
+        )
+        self.assertEqual(second["structure_validation"]["demoted_count"], 2)
+
+    def test_cache_hit_makes_no_http_call(self):
+        false_positives = ["AND", "COMPANY NAME", "IN WITNESS WHEREOF"]
+        paragraphs = _mnda_paragraphs()
+        structure = build_contract_structure(paragraphs)
+        sections_by_heading = {s["heading"]: s["id"] for s in structure["sections"]}
+
+        flagged = {h.strip().lower() for h in false_positives}
+        verdicts = [
+            {
+                "id": section["id"],
+                "verdict": (
+                    VERDICT_FALSE_POSITIVE
+                    if str(section.get("heading") or "").strip().lower() in flagged
+                    else "genuine"
+                ),
+                "reason": "test",
+            }
+            for section in structure["sections"]
+            if str(section.get("kind") or "") != "preamble"
+        ]
+        wrapped = "```json\n" + json.dumps(verdicts) + "\n```"
+
+        validator = OpenRouterStructureValidator(api_key="test-key")
+        http_calls = {"n": 0}
+
+        def fake_urlopen(request, *args, **kwargs):
+            http_calls["n"] += 1
+            return _FakeHTTPResponse(_openrouter_payload_with_content(wrapped))
+
+        with mock.patch.object(structure_validation.urllib.request, "urlopen", fake_urlopen):
+            first = validate_structure(structure, paragraphs, validator=validator)
+            # Second review of identical content -> served from cache, no HTTP.
+            second = validate_structure(
+                build_contract_structure(paragraphs), paragraphs, validator=validator
+            )
+
+        self.assertEqual(http_calls["n"], 1)
+        self.assertEqual(first["structure_validation"]["demoted_count"], 3)
+        self.assertEqual(second["structure_validation"]["demoted_count"], 3)
+        for heading in false_positives:
+            section = _section_by_id(second, sections_by_heading[heading])
+            self.assertEqual(section.get("validation"), VERDICT_FALSE_POSITIVE, heading)
+
+    def test_cache_returns_fresh_copy_not_shared_mutable(self):
+        # A cache hit must not return the same object as the first call, so a
+        # consumer mutating one result cannot corrupt a later one.
+        paragraphs = _mnda_paragraphs()
+        validator = _CountingValidator(flag_headings=["AND"])
+        first = validate_structure(build_contract_structure(paragraphs), paragraphs, validator=validator)
+        second = validate_structure(build_contract_structure(paragraphs), paragraphs, validator=validator)
+        self.assertIsNot(first, second)
+        first["sections"][0]["mutated"] = True
+        self.assertNotIn("mutated", second["sections"][0])
+
+    def test_different_document_content_misses_cache(self):
+        validator = _CountingValidator(flag_headings=["AND"])
+        validate_structure(build_contract_structure(_mnda_paragraphs()), _mnda_paragraphs(), validator=validator)
+        # A different document (different content hash) must NOT hit the cache.
+        validate_structure(
+            build_contract_structure(_air_india_paragraphs()),
+            _air_india_paragraphs(),
+            validator=validator,
+        )
+        self.assertEqual(validator.call_count, 2)
+
+    def test_unparseable_response_is_not_cached(self):
+        # A garbled verdict must not pin the document to the fallback forever:
+        # a later review that parses cleanly should still get a verdict.
+        paragraphs = _mnda_paragraphs()
+
+        def garbled(_candidates):
+            return "totally not json"
+
+        first = validate_structure(build_contract_structure(paragraphs), paragraphs, validator=garbled)
+        self.assertNotIn("structure_validation", first)  # fell back
+
+        good = _CountingValidator(flag_headings=["AND"])
+        second = validate_structure(build_contract_structure(paragraphs), paragraphs, validator=good)
+        # The good validator WAS called (the failed run did not poison the cache).
+        self.assertEqual(good.call_count, 1)
+        self.assertEqual(second["structure_validation"]["demoted_count"], 1)
+
+
+class FailSafeTests(StructureValidationTestCase):
+    """P3: every failure path returns the deterministic structure, never raises."""
+
+    def setUp(self):
+        super().setUp()
+        self.paragraphs = _mnda_paragraphs()
+        self.structure = build_contract_structure(self.paragraphs)
+
+    def _assert_unchanged(self, result):
+        self.assertEqual(result, self.structure)
+        self.assertNotIn("structure_validation", result)
+
+    def test_validator_timeout_falls_back(self):
+        def timeout(_candidates):
+            raise TimeoutError("validator timed out")
+
+        self._assert_unchanged(validate_structure(self.structure, self.paragraphs, validator=timeout))
+
+    def test_validator_arbitrary_exception_falls_back(self):
+        def boom(_candidates):
+            raise ValueError("garbled internal state")
+
+        self._assert_unchanged(validate_structure(self.structure, self.paragraphs, validator=boom))
+
+    def test_validator_returns_garbage_type_falls_back(self):
+        self._assert_unchanged(validate_structure(self.structure, self.paragraphs, validator=lambda _c: object()))
+
+    def test_validator_returns_none_falls_back(self):
+        self._assert_unchanged(validate_structure(self.structure, self.paragraphs, validator=lambda _c: None))
+
+    def test_missing_api_key_with_flag_on_falls_back(self):
+        # Flag on but no key + no injected validator -> default validator is None.
+        saved_key = os.environ.pop("OPENROUTER_API_KEY", None)
+        saved_flag = os.environ.get(STRUCTURE_VALIDATION_ENABLED_ENV)
+        os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = "1"
+        try:
+            result = validate_structure(self.structure, self.paragraphs, validator=None)
+        finally:
+            if saved_key is not None:
+                os.environ["OPENROUTER_API_KEY"] = saved_key
+            if saved_flag is None:
+                os.environ.pop(STRUCTURE_VALIDATION_ENABLED_ENV, None)
+            else:
+                os.environ[STRUCTURE_VALIDATION_ENABLED_ENV] = saved_flag
+        self._assert_unchanged(result)
+
+    def test_non_dict_structure_returns_input(self):
+        self.assertEqual(validate_structure(None, self.paragraphs, validator=lambda _c: []), None)
+
+    def test_empty_paragraphs_falls_back(self):
+        validator = _CountingValidator(flag_headings=["AND"])
+        # No paragraphs -> snippets empty but candidates still derive from sections;
+        # this must not raise.
+        result = validate_structure(self.structure, None, validator=validator)
+        self.assertIsInstance(result, dict)
+
+
+class RecitalKeptTests(StructureValidationTestCase):
+    """P4: recitals / preamble narrative are KEPT as genuine, navigable structure."""
+
+    def _recital_paragraphs(self):
+        return [
+            {"id": "p1", "index": 0, "text": "NON-DISCLOSURE AGREEMENT", "source_kind": "paragraph"},
+            {"id": "p2", "index": 1, "text": "RECITALS", "heading_level": 1, "source_kind": "paragraph"},
+            {
+                "id": "rA",
+                "index": 2,
+                "text": "A. The parties wish to explore a potential business relationship.",
+                "numbering": {"label": "A.", "format": "upperLetter", "level": 0},
+                "structure_number": "A",
+                "source_kind": "paragraph",
+            },
+            {
+                "id": "rB",
+                "index": 3,
+                "text": "B. Each party may disclose confidential information to the other.",
+                "numbering": {"label": "B.", "format": "upperLetter", "level": 0},
+                "structure_number": "B",
+                "source_kind": "paragraph",
+            },
+            {
+                "id": "rC",
+                "index": 4,
+                "text": "C. The parties wish to record the terms of disclosure.",
+                "numbering": {"label": "C.", "format": "upperLetter", "level": 0},
+                "structure_number": "C",
+                "source_kind": "paragraph",
+            },
+            {
+                "id": "c1",
+                "index": 5,
+                "text": "1. Confidentiality",
+                "numbering": {"label": "1.", "format": "decimal", "level": 0},
+                "structure_number": "1",
+                "source_kind": "paragraph",
+            },
+            {"id": "c1b", "index": 6, "text": "The Receiving Party shall keep it confidential.", "source_kind": "paragraph"},
+        ]
+
+    def test_system_prompt_instructs_keeping_recitals(self):
+        prompt = structure_validation.SYSTEM_PROMPT.lower()
+        # The prompt must explicitly keep recital / preamble narrative and lettered
+        # recitals, and must NOT lump them with promoted definition sentences.
+        self.assertIn("recital", prompt)
+        self.assertIn("preamble narrative", prompt)
+        self.assertIn("a./b./c.", prompt)
+        self.assertIn("whereas", prompt)
+
+    def test_lettered_recitals_kept_genuine_and_navigable(self):
+        paragraphs = self._recital_paragraphs()
+        structure = build_contract_structure(paragraphs)
+        sections_by_heading = {s["heading"]: s["id"] for s in structure["sections"]}
+        recital_headings = [
+            "The parties wish to explore a potential business relationship",
+            "Each party may disclose confidential information to the other",
+            "The parties wish to record the terms of disclosure",
+        ]
+        # A correct validator (per the tweaked spec) keeps recitals genuine.
+        validator = StubValidator(flag_headings=[])
+        result = validate_structure(structure, paragraphs, validator=validator)
+
+        navigable = result["structure_validation"]["navigable_sections"]
+        for heading in recital_headings:
+            section_id = sections_by_heading[heading]
+            section = _section_by_id(result, section_id)
+            self.assertNotEqual(section.get("validation"), VERDICT_FALSE_POSITIVE, heading)
+            self.assertIn(section_id, navigable, heading)
+            self.assertNotEqual(_alias_keys_for(result, section_id), set(), heading)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,11 @@ from .review_result_contract import build_review_result, review_result_clause_co
 from .review_state import aggregate_review_state
 from .semantic import apply_semantic_fallback
 from .semantic_crosscheck import apply_semantic_crosscheck
-from .structure_validation import should_validate_structure, validate_structure
+from .structure_validation import (
+    should_validate_structure,
+    structure_validation_enabled,
+    validate_structure,
+)
 
 SemanticEvaluateFn = Callable[..., dict[str, Any] | None]
 AIReviewFn = Callable[..., dict[str, Any] | None]
@@ -60,11 +64,18 @@ def orchestrate_review(command: ReviewCommand) -> dict[str, Any]:
     clauses_by_id = {clause["id"]: clause for clause in review_playbook["clauses"]}
 
     contract_structure = build_contract_structure(document_paragraphs)
-    # Optional, additive AI structure-validation post-pass. Gated to DOCX-sourced
-    # parses with sections to check; demotes style-misuse false positives without
-    # touching paragraphs or genuine sections. Runs before the reference resolver
-    # so demoted aliases are already gone from the index the resolver consumes.
-    if command.ai_enabled and should_validate_structure(contract_structure, document_paragraphs):
+    # Optional, additive AI structure-validation post-pass. OFF by default behind
+    # NDA_STRUCTURE_VALIDATION_ENABLED so the feature ships dormant; when enabled it
+    # is further gated to DOCX-sourced parses with sections to check, and demotes
+    # style-misuse false positives without touching paragraphs or genuine sections.
+    # Runs before the reference resolver so demoted aliases are already gone from
+    # the index the resolver consumes. The verdict is cached by document content, so
+    # an enabled pass runs at most once per document.
+    if (
+        command.ai_enabled
+        and structure_validation_enabled()
+        and should_validate_structure(contract_structure, document_paragraphs)
+    ):
         contract_structure = validate_structure(
             contract_structure,
             document_paragraphs,

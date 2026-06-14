@@ -36,7 +36,11 @@ from .review_document import (
     align_document_paragraphs,
     split_document_paragraphs,
 )
-from .structure_validation import should_validate_structure, validate_structure
+from .structure_validation import (
+    should_validate_structure,
+    structure_validation_enabled,
+    validate_structure,
+)
 from .playbook_rules import normalize_playbook_policy
 from .redline_rationale import attach_redline_rationales
 from .playbook_runtime import playbook_snapshot_hash
@@ -285,11 +289,18 @@ def build_ai_first_review_result(
         playbook_clauses_by_id=playbook_clauses_by_id,
     )
     contract_structure = build_contract_structure(document_paragraphs)
-    # Optional, additive AI structure-validation post-pass (shipping path). Gated
-    # to DOCX-sourced parses with sections; demotes style-misuse false positives
-    # from the reference index before the resolver consumes it. Never deletes
-    # paragraphs or touches genuine sections, and never blocks on failure.
-    if verify and should_validate_structure(contract_structure, document_paragraphs):
+    # Optional, additive AI structure-validation post-pass (shipping path). OFF by
+    # default behind NDA_STRUCTURE_VALIDATION_ENABLED so the feature ships dormant;
+    # when enabled it is further gated to DOCX-sourced parses with sections and
+    # demotes style-misuse false positives from the reference index before the
+    # resolver consumes it. Never deletes paragraphs or touches genuine sections,
+    # and never blocks on failure. The verdict is cached by document content, so an
+    # enabled pass runs at most once per document.
+    if (
+        verify
+        and structure_validation_enabled()
+        and should_validate_structure(contract_structure, document_paragraphs)
+    ):
         contract_structure = validate_structure(
             contract_structure,
             document_paragraphs,

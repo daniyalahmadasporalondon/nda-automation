@@ -33,10 +33,12 @@ never touch the network or an API key.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -56,6 +58,14 @@ from .openrouter_usage import record_openrouter_usage
 LOGGER = logging.getLogger(__name__)
 
 STRUCTURE_VALIDATION_VERSION = 1
+
+#: Kill-switch env flag. The AI structure-validation pass is OFF by default so the
+#: feature can merge to main DORMANT: with the flag unset (or set to a falsy value)
+#: the structure path returns the PURE deterministic structure and makes NO AI
+#: call -- exactly the pre-validation behaviour. A deploy opts in deliberately by
+#: setting ``NDA_STRUCTURE_VALIDATION_ENABLED=1`` (also accepts ``true``/``yes``/``on``).
+#: Mirrors the verifier's opt-in gate (``ai_verifier.verifier_enabled``).
+STRUCTURE_VALIDATION_ENABLED_ENV = "NDA_STRUCTURE_VALIDATION_ENABLED"
 
 #: Model used for this structure-validation pass. DeepSeek V4 Flash was validated
 #: by a spike to flag regime-3 style-misuse false positives the deterministic
@@ -97,14 +107,18 @@ SYSTEM_PROMPT = (
     "- party-name lines (a company or person name standing alone);\n"
     "- street addresses, postal addresses, or bare dates;\n"
     "- table-cell values (numbers, money amounts, single words);\n"
-    "- a definition sentence or recital/body sentence that was promoted to a "
-    "TOP-LEVEL heading (e.g. a full \"X means ...\" sentence sitting at level 1).\n"
+    "- a definition sentence that was promoted to a TOP-LEVEL heading (e.g. a full "
+    "\"X means ...\" sentence sitting at level 1).\n"
     "\n"
     "Mark verdict \"genuine\" for EVERYTHING that is real document structure, "
     "including:\n"
     "- all real numbered or titled clauses, articles and sections;\n"
     "- schedules, annexes, annexures, appendices and exhibits;\n"
     "- recital HEADINGS (e.g. \"RECITALS\", \"BACKGROUND\", \"WHEREAS\" headers);\n"
+    "- recital / preamble narrative items, including lettered recitals (A./B./C.) "
+    "and \"WHEREAS ...\" preamble sentences: these are genuine, navigable structure "
+    "and must be KEPT even when each one is a full sentence -- do NOT treat a "
+    "recital paragraph the way you treat a promoted definition sentence;\n"
     "- real sub-clauses and enumerations: (a)/(b)/(c), (i)/(ii)/(iii), 1.1/1.2, etc.\n"
     "Do NOT flag a real sub-clause just because it is short or lower-level: real "
     "sub-structure must be KEPT as genuine. When unsure, prefer \"genuine\".\n"
@@ -129,6 +143,22 @@ class StructureValidationError(RuntimeError):
     pass
 
 
+def structure_validation_enabled() -> bool:
+    """True only when the AI structure-validation pass is explicitly enabled.
+
+    Default OFF: an unset / falsy ``NDA_STRUCTURE_VALIDATION_ENABLED`` means the
+    review path stays purely deterministic and never makes the AI call. This is the
+    non-negotiable kill switch -- it gates BOTH engine call sites, so the feature
+    can ship dormant and a deploy turns it on deliberately.
+    """
+    return str(os.environ.get(STRUCTURE_VALIDATION_ENABLED_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def validate_structure(
     structure: Dict[str, Any],
     paragraphs: Sequence[Mapping[str, Any]] | None,
@@ -147,6 +177,13 @@ def validate_structure(
     "false_positive"``, and excluded from a derived ``navigable_sections`` list).
     Genuine sections, their aliases, and ALL paragraphs are left untouched.
 
+    The validator verdict is CACHED by document-content hash (see
+    :func:`_candidate_cache_key`): the FIRST review of a document pays the AI call;
+    every subsequent review/reload/re-render of the SAME document reads the cached
+    verdict and makes NO further validator or HTTP call. The cache stores only the
+    small verdict (the demoted-id set), re-applied to a fresh copy of the
+    deterministic structure each time, so re-runs stay cheap and never re-pay.
+
     On ANY failure -- no API key, validator raises, times out, or returns
     unusable output -- the deterministic structure is returned UNCHANGED (a
     warning is logged). Validation is additive and must never block ingestion.
@@ -161,6 +198,15 @@ def validate_structure(
     if not candidates:
         return structure
 
+    valid_ids = {c["id"] for c in candidates}
+    cache_key = _candidate_cache_key(candidates)
+
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        # Cache hit: re-apply the previously computed verdict with NO validator /
+        # HTTP call. ``cached`` is the (possibly empty) set of ids to demote.
+        return _apply_verdict(structure, cached & valid_ids)
+
     active_validator = validator if validator is not None else _default_validator()
     if active_validator is None:
         LOGGER.warning(
@@ -174,17 +220,75 @@ def validate_structure(
         LOGGER.warning("Structure validation failed; using deterministic structure: %s", error)
         return structure
 
-    false_positive_ids = _false_positive_ids(raw_verdicts, valid_ids={c["id"] for c in candidates})
+    false_positive_ids = _false_positive_ids(raw_verdicts, valid_ids=valid_ids)
     if false_positive_ids is None:
+        # Unparseable output is NOT cached: a transient garbled response should not
+        # pin a document to the deterministic fallback forever -- a later review may
+        # get a clean verdict. Fall back unchanged this time.
         LOGGER.warning(
             "Structure validation returned unparseable output; using deterministic structure."
         )
         return structure
+
+    # A usable verdict (even an empty "nothing to demote") is cached so the AI call
+    # never repeats for this document content.
+    _cache_set(cache_key, set(false_positive_ids))
+    return _apply_verdict(structure, false_positive_ids)
+
+
+def _apply_verdict(structure: Dict[str, Any], false_positive_ids: set[str]) -> Dict[str, Any]:
+    """Build the annotated structure for a usable verdict (works on a fresh copy)."""
     if not false_positive_ids:
         # Nothing to demote, but still surface that the pass ran cleanly.
         return _annotate(deepcopy(structure), demoted_ids=set())
-
     return _demote_false_positives(deepcopy(structure), false_positive_ids)
+
+
+#: Process-local verdict cache: ``cache_key -> frozenset(false_positive_ids)``.
+#: Keyed by document content (see :func:`_candidate_cache_key`) so the AI pass runs
+#: at most ONCE per document; bounded by :data:`_CACHE_MAX_ENTRIES` with simple FIFO
+#: eviction. Guarded by a lock because reviews can run on worker threads.
+_VERDICT_CACHE: "Dict[str, frozenset[str]]" = {}
+_VERDICT_CACHE_LOCK = threading.Lock()
+_CACHE_MAX_ENTRIES = 256
+
+
+def _candidate_cache_key(candidates: List[Dict[str, Any]]) -> str:
+    """A stable hash over the candidate set + model.
+
+    The candidates carry the heading, number, level, kind and body snippet that the
+    validator actually classifies, so identical document content yields an identical
+    key (a hit) and any content change yields a miss. The model is folded in so a
+    model switch re-validates rather than serving a stale verdict.
+    """
+    fingerprint = json.dumps(
+        {"model": _configured_model(), "candidates": candidates},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+
+def _cache_get(cache_key: str) -> set[str] | None:
+    with _VERDICT_CACHE_LOCK:
+        cached = _VERDICT_CACHE.get(cache_key)
+    return set(cached) if cached is not None else None
+
+
+def _cache_set(cache_key: str, false_positive_ids: set[str]) -> None:
+    with _VERDICT_CACHE_LOCK:
+        if cache_key not in _VERDICT_CACHE and len(_VERDICT_CACHE) >= _CACHE_MAX_ENTRIES:
+            # FIFO eviction: drop the oldest inserted key (dicts preserve order).
+            oldest_key = next(iter(_VERDICT_CACHE), None)
+            if oldest_key is not None:
+                _VERDICT_CACHE.pop(oldest_key, None)
+        _VERDICT_CACHE[cache_key] = frozenset(false_positive_ids)
+
+
+def reset_structure_validation_cache() -> None:
+    """Clear the process-local verdict cache (test isolation hook)."""
+    with _VERDICT_CACHE_LOCK:
+        _VERDICT_CACHE.clear()
 
 
 def should_validate_structure(
