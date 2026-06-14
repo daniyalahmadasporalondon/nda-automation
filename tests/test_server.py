@@ -3715,7 +3715,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(kept, [matters[1], matters[2]])
         self.assertEqual(pruned, [matters[0]])
 
-    def test_gmail_attachment_dedupe_uses_stable_message_filename_key(self):
+    def test_gmail_attachment_dedupe_keeps_distinct_docs_sharing_message_filename(self):
+        # Two genuinely DIFFERENT documents arrive under the same gmail message +
+        # same filename (gmail's attachment ids are unstable). A shared filename is
+        # not a content identity, so both must be preserved — not merged away.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -3747,6 +3750,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
                 second_path = matter_store.UPLOADS_DIR / second["stored_filename"]
+                # A lookup keyed only on message + filename (no content hash) cannot
+                # confirm either stored doc is the same one, so it is not a duplicate.
                 duplicate = matter_store.find_gmail_attachment(
                     "msg_123",
                     "unstable_att_3",
@@ -3754,18 +3759,20 @@ class ServerTests(unittest.TestCase):
                 )
                 removed = matter_store.deduplicate_gmail_matters()
                 matters = matter_store.list_matters()
-                kept_id = matters[0]["id"]
                 first_path_exists = first_path.exists()
                 second_path_exists = second_path.exists()
 
-        self.assertIn(duplicate["id"], {first["id"], second["id"]})
-        self.assertEqual(removed, 1)
-        self.assertIn(kept_id, {first["id"], second["id"]})
-        self.assertEqual(len(matters), 1)
-        self.assertEqual(first_path_exists, kept_id == first["id"])
-        self.assertEqual(second_path_exists, kept_id == second["id"])
+        self.assertIsNone(duplicate)
+        self.assertEqual(removed, 0)
+        self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"]})
+        self.assertTrue(first_path_exists)
+        self.assertTrue(second_path_exists)
 
     def test_gmail_attachment_dedupe_cleanup_uses_live_lookup_keys(self):
+        # A legacy matter (no content hash) and a hashed matter share a message +
+        # filename but hold DIFFERENT documents. A content-hash lookup still finds
+        # the matching hashed doc, but the sweep must not merge the distinct legacy
+        # doc away on the filename alone.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -3796,6 +3803,8 @@ class ServerTests(unittest.TestCase):
                         "gmail_message_id": "msg_123",
                     },
                 )
+                # The lookup carries the hashed doc's content hash, so it matches the
+                # hashed matter on the content (sha256) key — a true content match.
                 duplicate = matter_store.find_gmail_attachment(
                     "msg_123",
                     "unstable_att_3",
@@ -3805,19 +3814,22 @@ class ServerTests(unittest.TestCase):
                 removed = matter_store.deduplicate_gmail_matters()
                 matters = matter_store.list_matters()
 
-        self.assertIn(duplicate["id"], {legacy["id"], hashed["id"]})
-        self.assertEqual(removed, 1)
-        self.assertEqual(len(matters), 1)
-        self.assertIn(matters[0]["id"], {legacy["id"], hashed["id"]})
+        self.assertEqual(duplicate["id"], hashed["id"])
+        self.assertEqual(removed, 0)
+        self.assertEqual({matter["id"] for matter in matters}, {legacy["id"], hashed["id"]})
 
     def test_gmail_attachment_dedupe_uses_key_index_without_pairwise_matching(self):
+        # The sweep groups by key without per-pair matcher calls. Two DIFFERENT
+        # documents with the same content hash are a true duplicate and collapse to
+        # one; the sweep must reach that verdict from the content-hash grouping alone,
+        # never invoking the pairwise matcher.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 for attachment_id in ["unstable_att_1", "unstable_att_2"]:
                     matter_store.create_matter(
                         source_filename="Counterparty NDA.docx",
-                        document_bytes=attachment_id.encode("utf-8"),
+                        document_bytes=b"identical attachment bytes",
                         extracted_text=attachment_id,
                         review_result={"clauses": []},
                         triage={},
@@ -3825,6 +3837,7 @@ class ServerTests(unittest.TestCase):
                         intake_metadata={
                             "attachment_filename": "Counterparty NDA.docx",
                             "gmail_attachment_id": attachment_id,
+                            "gmail_attachment_sha256": "shared_hash",
                             "gmail_message_id": "msg_123",
                         },
                     )
