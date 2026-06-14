@@ -46,20 +46,15 @@ export const DEFAULT_NDA_TYPE = "mutual";
 // term_and_survival.max_term_years.
 export const DEFAULT_MAX_TERM_YEARS = 5;
 
-// The forum/courts that go WITH each approved governing-law option, mirroring the
-// `jurisdiction` field each entity registers in the Python registry
-// (entity_registry.py) and resolved by nda_generation._forum_for_option_id when a
-// governing-law override switches the forum too. The live feed's entity bundles
-// carry `jurisdiction` directly (forumForLaw prefers it); this map is the fallback
-// for the embedded mirror, which omits it. Keep these strings byte-identical to
-// the registry so the preview's forum phrase matches what generation writes.
-export const FORUM_BY_OPTION_ID = {
-  india: "Courts of India",
-  delaware: "Courts of the State of Delaware",
-  england_and_wales: "Courts of England and Wales",
-  difc: "DIFC Courts, Dubai",
-  ontario_canada: "Courts of Ontario, Canada",
-};
+// NOTE: the generated NDA's "GOVERNING LAW AND JURISDICTION" clause is LAW-ONLY —
+// it states the governing law and names no forum/courts (a single governing law
+// may be litigated in more than one court, and generation deliberately omits the
+// courts sentence to match how review reads the clause; see
+// nda_generation._fill_variable_slots / the law-only template). The preview must
+// therefore NOT show a forum/courts sentence either, so there is no
+// FORUM_BY_OPTION_ID mirror or forum-resolution helper here. The backend still
+// records a provenance-only `forum` on the manifest, but it is never written into
+// the document, so it is not previewed.
 
 // Our seven signing entities, mirroring nda_automation/entity_registry.py. Each
 // bundle travels together: legal_name + governing_law + addresses are a unit
@@ -317,31 +312,6 @@ export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES) {
   return { id: lawId, label: lawId };
 }
 
-// The forum/courts phrase for a governing-law option id, mirroring the backend's
-// nda_generation._forum_for_option_id: prefer the `jurisdiction` of whichever
-// registry entity defaults to that option (the live /api/signing-entities feed
-// carries it), and fall back to the static FORUM_BY_OPTION_ID map for the
-// embedded mirror (which omits jurisdiction). So an override that switches the
-// law to e.g. delaware also moves the previewed forum to "Courts of the State of
-// Delaware", exactly as generation does. Returns "" when no forum is known.
-export function forumForOptionId(optionId, entities = SIGNING_ENTITIES) {
-  if (!optionId) return "";
-  for (const entity of entities || []) {
-    if (lawOptionId(entity?.governing_law) === optionId) {
-      const forum = String(entity?.jurisdiction || "").trim();
-      if (forum) return forum;
-    }
-  }
-  return FORUM_BY_OPTION_ID[optionId] || "";
-}
-
-// The forum for an intake's effective governing law — the value the preview's
-// jurisdiction clause shows and that an override moves alongside the law.
-export function effectiveForum(intake, entities = SIGNING_ENTITIES) {
-  const law = effectiveGoverningLaw(intake, entities);
-  return forumForOptionId(law?.id, entities);
-}
-
 export function selectedEntity(intake, entities = SIGNING_ENTITIES) {
   return findEntity(intake.entityId, entities);
 }
@@ -448,8 +418,6 @@ export function createDraftIntake({ entities = SIGNING_ENTITIES } = {}) {
     clearGoverningLawOverride: (intake) => clearGoverningLawOverride(intake, entities),
     selectAddress: (intake, id) => selectAddress(intake, id, entities),
     effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities),
-    forumForOptionId: (optionId) => forumForOptionId(optionId, entities),
-    effectiveForum: (intake) => effectiveForum(intake, entities),
     validateDraftIntake: (intake) => validateDraftIntake(intake, entities),
     buildDraftPayload: (intake) => buildDraftPayload(intake, entities),
   };

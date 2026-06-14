@@ -79,7 +79,7 @@ const tests = [
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
-  ["clamps an over-cap term and shows the forum in the Generator preview", testDraftIntakePreviewClampAndForum],
+  ["clamps an over-cap term and shows law-only governing law in the Generator preview", testDraftIntakePreviewClampAndGoverningLaw],
   ["surfaces generation self-check warnings while staging the artifact", testDraftIntakeGenerateSelfCheckWarning],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -2960,7 +2960,7 @@ async function testDraftIntakeGenerateNda(page) {
 // names the forum/courts that go WITH the law (and an override moves BOTH), and
 // the recital business description rides the `.nda-fill-entity` survival path so
 // its highlight reaches the always-visible editor. This test pins all three.
-async function testDraftIntakePreviewClampAndForum(page) {
+async function testDraftIntakePreviewClampAndGoverningLaw(page) {
   let capturedGeneratePayload = null;
   await page.route("**/api/generate-nda", async (route) => {
     capturedGeneratePayload = route.request().postDataJSON();
@@ -2984,14 +2984,17 @@ async function testDraftIntakePreviewClampAndForum(page) {
   await page.waitForFunction(
     () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
   );
-  // aspora_technology defaults to India law -> forum "Courts of India".
+  // aspora_technology defaults to India law. The governing-law clause is LAW-ONLY:
+  // it names the law ("India") and NO forum/courts (generation drops the courts
+  // sentence to match how review reads the clause), so the preview must not show
+  // any "Courts of ..." phrase.
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.locator("#draftIntakeBusinessDescription").fill("cross-border payments");
   // Ask for 10 years — over the playbook cap of 5; generation would clamp to 5.
   await page.locator("#draftIntakeTerm").fill("10 years");
 
-  // The hidden preview source carries the clamped term + the cap note + the forum.
+  // The hidden preview source carries the clamped term + the cap note + the law.
   const previewText = () =>
     page.evaluate(() => document.querySelector("#draftIntakePreview")?.textContent || "");
   await page.waitForFunction(
@@ -3000,14 +3003,22 @@ async function testDraftIntakePreviewClampAndForum(page) {
   const sourceText = await previewText();
   assert.ok(sourceText.includes("5 years"), "preview clamps the displayed term to the playbook max");
   assert.ok(!/\b10 years\b/.test(sourceText), "the over-cap term is not shown verbatim");
-  assert.ok(sourceText.includes("Courts of India"), "preview names the forum that goes with the law");
+  assert.ok(
+    sourceText.includes("governed by and construed in accordance with the laws of India"),
+    "preview states the governing law",
+  );
+  assert.ok(!/Courts of/.test(sourceText), "preview names no forum/courts (the clause is law-only)");
 
-  // The clamped term, the cap note, and the forum all survive into the visible
+  // The clamped term, the cap note, and the law all survive into the visible
   // editor (the raw #draftIntakePreview is hidden; #generatorEditor is what shows).
   const editorText = await page.locator("#generatorEditor").innerText();
   assert.ok(editorText.includes("5 years"), "editor shows the clamped term");
   assert.ok(editorText.includes("capped to 5 years per playbook"), "editor shows the cap note");
-  assert.ok(editorText.includes("Courts of India"), "editor shows the forum");
+  assert.ok(
+    editorText.includes("construed in accordance with the laws of India"),
+    "editor shows the governing law",
+  );
+  assert.ok(!/Courts of/.test(editorText), "editor names no forum/courts (the clause is law-only)");
 
   // Item 2: the recital business description rides `.nda-fill-entity`, so its
   // highlight survives flattening into the editor as a `fill` run (a plain
@@ -3018,14 +3029,25 @@ async function testDraftIntakePreviewClampAndForum(page) {
   });
   assert.ok(recitalIsEntityFill, "recital business description uses the surviving entity-fill highlight");
 
-  // An override switches the forum too: pick Delaware -> "Courts of the State of
-  // Delaware" replaces "Courts of India" in the preview, mirroring generation.
+  // An override switches the governing law: pick Delaware -> the law-only clause
+  // now reads "laws of Delaware", mirroring generation. No forum/courts is ever
+  // shown, so an override moves only the law (there is no forum to move with it).
   await page.locator("#draftIntakeGoverningLaw").selectOption("delaware");
   await page.waitForFunction(
-    () => (document.querySelector("#draftIntakePreview")?.textContent || "").includes("Courts of the State of Delaware"),
+    () =>
+      (document.querySelector("#draftIntakePreview")?.textContent || "").includes(
+        "governed by and construed in accordance with the laws of Delaware",
+      ),
   );
   const overriddenText = await previewText();
-  assert.ok(!overriddenText.includes("Courts of India"), "the override moves the forum off India");
+  // The governing-law clause now reads Delaware. Target the clause's full phrase so
+  // we don't match the (unchanged, correct) "incorporated under the laws of India"
+  // recital of the India-incorporated signing entity.
+  assert.ok(
+    !overriddenText.includes("construed in accordance with the laws of India"),
+    "the override moves the governing-law clause off India",
+  );
+  assert.ok(!/Courts of/.test(overriddenText), "the overridden clause still names no forum/courts");
 
   // Item 1 end-to-end: the new top-level keys reach the POST under their exact
   // backend-contract names (business_description + the counterparty identity).

@@ -77,7 +77,6 @@ import {
 } from "../../static/js/modules/send-document.mjs";
 import {
   DEFAULT_MAX_TERM_YEARS,
-  FORUM_BY_OPTION_ID,
   SIGNING_ENTITIES,
   applyEntitySelection,
   buildDraftPayload,
@@ -85,9 +84,7 @@ import {
   createDraftIntake,
   createInitialIntake,
   defaultAddressFor,
-  effectiveForum,
   effectiveGoverningLaw,
-  forumForOptionId,
   formatAddressLines,
   governingLawOptions,
   hasMultipleAddresses,
@@ -1176,42 +1173,16 @@ const overriddenPayload = buildDraftPayload(setGoverningLawOverride(validIntake,
 assert.equal(overriddenPayload.signing_entity.governing_law.playbook_option_id, "delaware");
 assert.equal(overriddenPayload.signing_entity.governing_law_overridden, true);
 
-// --- Forum/courts follow the governing law (preview clause 13). A govlaw
-// override switches the forum too in generation; effectiveForum mirrors that so
-// the preview can move BOTH the law and the forum. ---
-// Embedded mirror omits the per-entity `jurisdiction`, so the static
-// FORUM_BY_OPTION_ID map is the fallback and must match the registry strings.
-assert.equal(forumForOptionId("india"), "Courts of India");
-assert.equal(forumForOptionId("delaware"), "Courts of the State of Delaware");
-assert.equal(forumForOptionId("england_and_wales"), "Courts of England and Wales");
-assert.equal(forumForOptionId("difc"), "DIFC Courts, Dubai");
-assert.equal(forumForOptionId("ontario_canada"), "Courts of Ontario, Canada");
-assert.equal(forumForOptionId("unknown_option"), "", "unknown option yields no forum");
-assert.equal(forumForOptionId(null), "");
-// FORUM_BY_OPTION_ID is the source of truth the fallback reads.
-assert.equal(FORUM_BY_OPTION_ID.delaware, "Courts of the State of Delaware");
-// effectiveForum tracks the intake's effective law: default entity (India) →
-// India's courts; an override to Delaware → Delaware's courts.
-assert.equal(effectiveForum(validIntake), "Courts of India");
-assert.equal(effectiveForum(setGoverningLawOverride(validIntake, "delaware")), "Courts of the State of Delaware");
-assert.equal(effectiveForum(createInitialIntake()), "", "no entity → no forum");
-// When the live feed supplies a per-entity `jurisdiction`, it is preferred over
-// the static map (mirrors the backend resolving the forum from the registry).
-const forumRegistry = [
-  {
-    id: "live_entity",
-    short_name: "Live",
-    legal_name: "Live Co Ltd",
-    governing_law: { playbook_option_id: "delaware", label: "Delaware" },
-    jurisdiction: "The Court of Chancery of Delaware",
-    addresses: [{ id: "hq", label: "HQ", lines: ["Dover"], country: "USA", default: true }],
-  },
-];
-assert.equal(
-  forumForOptionId("delaware", forumRegistry),
-  "The Court of Chancery of Delaware",
-  "live jurisdiction wins over the static fallback map",
-);
+// --- Governing-law clause is LAW-ONLY (preview clause 13). Generation writes the
+// governing law and names no forum/courts (it omits the courts sentence to match
+// how review reads the clause), so the intake module's bound API exposes no
+// forum-resolution helper — there is nothing to keep in sync with the registry,
+// and the preview cannot drift into showing a court the executed NDA would not
+// contain. (A removed *named* export can't be import-tested under ESM without a
+// parse error, so we assert against the bound factory surface instead.) ---
+const forumlessApi = createDraftIntake();
+assert.equal(typeof forumlessApi.forumForOptionId, "undefined", "the bound intake API exposes no forum helper");
+assert.equal(typeof forumlessApi.effectiveForum, "undefined", "the bound intake API exposes no forum helper");
 
 // The playbook term cap the preview clamps to has a sane fallback default.
 assert.equal(DEFAULT_MAX_TERM_YEARS, 5);
