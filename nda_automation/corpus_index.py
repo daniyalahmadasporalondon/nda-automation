@@ -62,8 +62,6 @@ _ROLE_STAGE_LABELS = {
     artifact_registry.ROLE_SIGNED: "signed",
 }
 
-DRIVE_ONLY_STAGE = "On file"
-
 # --- per-owner Drive-listing cache ----------------------------------------
 _CACHE_LOCK = threading.Lock()
 # owner_user_id -> {"built_at": float (monotonic-ish epoch), "built_at_iso": str,
@@ -143,7 +141,9 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
             "counterparty": counterparty,
             "title": _app_title(matter),
             "created_at": str(matter.get("created_at") or ""),
-            "stage": str(state.get("phase_label") or "Intake"),
+            # Workflow axis = the Repository board column (FE renders it via
+            # RepositoryModel.boardColumnLabel). The dead 6-phase phase_label is
+            # NOT surfaced; "On file" is a SOURCE state, not a workflow status.
             "status": str(state.get("board_column") or ""),
             "source": SOURCE_APP,
             "in_app": True,
@@ -485,7 +485,8 @@ def _drive_only_matter(matter_id: str, drive_record: dict[str, Any]) -> dict[str
         "counterparty": counterparty or artifact_registry.COUNTERPARTY_UNKNOWN,
         "title": _drive_only_title(summary, drive_record),
         "created_at": str(summary.get("created_at") or ""),
-        "stage": str((workflow_state or {}).get("phase_label") or "") or DRIVE_ONLY_STAGE,
+        # Drive-only: board_column from the summary if present, else "" so the
+        # status chip renders "—". "On file" lives on the SOURCE badge only.
         "status": str((workflow_state or {}).get("board_column") or ""),
         "source": SOURCE_DRIVE,
         "in_app": False,
@@ -541,7 +542,7 @@ def _orphan_matter(orphan: dict[str, Any]) -> dict[str, Any]:
         "counterparty": str(orphan.get("counterparty") or "") or artifact_registry.COUNTERPARTY_UNKNOWN,
         "title": folder_name,
         "created_at": str(summary.get("created_at") or ""),
-        "stage": DRIVE_ONLY_STAGE,
+        # Summary-less orphan: no workflow status; chip renders "—".
         "status": "",
         "source": SOURCE_DRIVE,
         "in_app": False,

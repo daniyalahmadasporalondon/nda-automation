@@ -6,7 +6,7 @@
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260615a">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615c">
-    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615c">
+    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615d">
   </head>
   <body>
     <div class="app-shell">
@@ -693,8 +693,27 @@
                 <button class="corpus-refresh" type="button" id="corpusRefreshButton" title="Re-list Drive and rebuild the corpus">Refresh</button>
               </div>
             </header>
-            <div class="corpus-empty" id="corpusEmpty" hidden></div>
-            <div class="corpus-groups" id="corpusGroups" data-corpus-groups></div>
+
+            <form class="corpus-searchbar" id="corpusSearchForm" role="search">
+              <div class="corpus-token-field" id="corpusTokenField">
+                <input class="corpus-search-input" id="corpusSearchInput" type="search"
+                       placeholder="Search counterparties, matters…" autocomplete="off" aria-label="Search corpus" />
+              </div>
+              <button class="corpus-search-clear" id="corpusSearchClear" type="button" hidden>Clear</button>
+            </form>
+
+            <div class="corpus-layout">
+              <aside class="corpus-facet-rail" id="corpusFacetRail" aria-label="Filters"></aside>
+
+              <div class="corpus-results">
+                <div class="corpus-noresults" id="corpusNoResults" hidden>
+                  No matters match these filters.
+                  <button class="corpus-link corpus-noresults-reset" type="button" id="corpusNoResultsReset">Clear filters</button>
+                </div>
+                <div class="corpus-empty" id="corpusEmpty" hidden></div>
+                <div class="corpus-groups" id="corpusGroups" data-corpus-groups></div>
+              </div>
+            </div>
           </section>
         </main>
 
@@ -1909,7 +1928,7 @@
     <script src="/static/js/repository-detail.js?v=20260615f"></script>
     <script src="/static/js/repository-actions.js?v=20260612c"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
-    <script src="/static/js/corpus.js?v=20260615c"></script>
+    <script src="/static/js/corpus.js?v=20260615d"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260614b"></script>

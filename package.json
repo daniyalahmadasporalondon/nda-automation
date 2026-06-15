@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "test:frontend": "node tests/frontend/review-workstation.cjs",
-    "test:frontend:utils": "node tests/frontend/utility-modules.mjs"
+    "test:frontend:utils": "node tests/frontend/utility-modules.mjs",
+    "test:frontend:corpus": "node tests/frontend/corpus-model.cjs"
   },
   "devDependencies": {
     "playwright": "^1.52.0",
