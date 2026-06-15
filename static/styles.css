@@ -6889,7 +6889,6 @@ button.active-clause-status:hover {
 
 .fixed-clause-text {
   background: var(--green-bg);
-  border-left: 3px solid var(--green);
   border-radius: 7px;
   color: var(--ink);
   font-family: var(--doc-font);
