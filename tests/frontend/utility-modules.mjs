@@ -67,6 +67,7 @@ import {
   matterSigned,
   matterStatus,
   matterStatusLabel,
+  matterTermYears,
   matterTitle,
   runChip,
   summaryEndpoint,
@@ -1650,6 +1651,7 @@ assert.deepEqual(validSpec, {
   has_clause: null,
   signed: null,
   governing_law: null,
+  term_years: null,
   text: "Acme",
   min_age_days: 5,
   sort: "oldest",
@@ -1697,6 +1699,16 @@ assert.equal(validateFilterSpec({ signed: "yes" }).signed, null);
 assert.equal(validateFilterSpec({ governing_law: "DIFC" }).governing_law, "difc");
 assert.equal(validateFilterSpec({ governing_law: "england_and_wales" }).governing_law, "england_and_wales");
 assert.equal(validateFilterSpec({ governing_law: "narnia" }).governing_law, null);
+// term_years: clamps + rejects like min_age_days; bool != int, float truncates, junk drops.
+assert.equal("term_years" in NULL_FILTER_SPEC, true);
+assert.equal(validateFilterSpec({ term_years: 5 }).term_years, 5);
+assert.equal(validateFilterSpec({ term_years: 5.0 }).term_years, 5);
+assert.equal(validateFilterSpec({ term_years: "5" }).term_years, 5);
+assert.equal(validateFilterSpec({ term_years: 0 }).term_years, null);
+assert.equal(validateFilterSpec({ term_years: -3 }).term_years, null);
+assert.equal(validateFilterSpec({ term_years: true }).term_years, null);
+assert.equal(validateFilterSpec({ term_years: 9999 }).term_years, 100);
+assert.equal(validateFilterSpec({ term_years: "lots" }).term_years, null);
 
 // matterHasClause: the corpus facet (facets.has_clauses) is the primary source...
 const corpusClauseMatter = { facets: { has_clauses: ["confidential_information", "non_solicitation"] } };
@@ -1724,6 +1736,24 @@ assert.equal(matterSigned({ workflow_state: { status: "ai_reviewing" } }), null)
 assert.equal(matterGoverningLaw({ facets: { governing_law: "difc" } }), "difc");
 assert.equal(matterGoverningLaw({ governing_law: "delaware" }), "delaware");
 assert.equal(matterGoverningLaw({}), "");
+// matterTermYears reads the corpus facet; a positive number is the term, else null
+// (unknown). A term_years filter matches only a matter whose term we detected.
+assert.equal(matterTermYears({ facets: { term_years: 5 } }), 5);
+assert.equal(matterTermYears({ facets: { term_years: 0.5 } }), 0.5);
+assert.equal(matterTermYears({ facets: { term_years: null } }), null); // explicit unknown
+assert.equal(matterTermYears({ facets: { term_years: 0 } }), null); // 0 is unknown, not a match
+assert.equal(matterTermYears({ facets: {} }), null);
+assert.equal(matterTermYears({}), null);
+// applyFilterSpec term_years null-safety: a known-5yr matter matches term_years:5; a
+// 3yr matter and an UNKNOWN-term matter are both excluded (never a false positive).
+const fiveYearMatter = { id: "t5", facets: { term_years: 5 } };
+const threeYearMatter = { id: "t3", facets: { term_years: 3 } };
+const unknownTermMatter = { id: "tnull", facets: { term_years: null } };
+assert.deepEqual(
+  applyFilterSpec([fiveYearMatter, threeYearMatter, unknownTermMatter], { term_years: 5 }).map((m) => m.id),
+  ["t5"],
+);
+assert.deepEqual(applyFilterSpec([unknownTermMatter], { term_years: 5 }).map((m) => m.id), []);
 
 // --- Corpus adapter: flatten groups[].matters[] + map facets + open-link provenance ---
 const corpusPayload = {

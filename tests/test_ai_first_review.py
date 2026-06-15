@@ -342,6 +342,78 @@ class AIFirstReviewTests(unittest.TestCase):
 
         self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
 
+    def test_term_years_scalar_is_emitted_for_a_clear_term(self):
+        # PURELY ADDITIVE provenance: the AI-first engine records a detected term-in-
+        # years scalar on the term_and_survival clause when it is cleanly derivable from
+        # the source text (here "a fixed period of five years"), so the corpus
+        # term_years facet (and a "5-year NDA" search) resolves on AI-reviewed matters.
+        result = build_ai_first_review_result(
+            SOURCE_TEXT,
+            [
+                _assessment("mutuality", "pass"),
+                _assessment("confidential_information", "pass", paragraph_id="p2"),
+                _assessment("governing_law", "pass", paragraph_id="p3"),
+                _assessment("term_and_survival", "pass", paragraph_id="p4"),
+                _assessment("non_circumvention", "pass", paragraph_id="p5"),
+                _assessment("signatures", "pass", paragraph_id="p6"),
+            ],
+            verify=False,
+        )
+        term = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term["term_years"], 5.0)
+        # It is strictly additive: the verdict is untouched, and no other clause carries
+        # the scalar (it is term-clause-only provenance).
+        self.assertEqual(term["decision"], "pass")
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        self.assertNotIn("term_years", mutuality)
+
+    def test_term_years_absent_when_not_derivable(self):
+        # An indefinite/unstated term yields no scalar: the facet degrades to "unknown"
+        # rather than guessing, so a term search never silently mis-matches.
+        text = "\n\n".join([
+            "Each party may disclose Confidential Information to the other party.",
+            "Confidential Information means non-public business and trade secret information.",
+            "This Agreement shall be governed by the laws of California.",
+            "The confidentiality obligations shall continue indefinitely.",
+            "Each party remains free to deal with third parties.",
+            "For Aspora Limited\nBy:\nName:",
+        ])
+        quotes = {
+            "p1": "Each party may disclose",
+            "p2": "Confidential Information means",
+            "p3": "laws of California",
+            "p4": "continue indefinitely",
+            "p5": "free to deal",
+            "p6": "For Aspora Limited",
+        }
+
+        def assessment(clause_id, paragraph_id):
+            return {
+                "clause_id": clause_id,
+                "decision": "pass",
+                "issue_type": "none",
+                "rationale": f"{clause_id} assessed and cited.",
+                "evidence": [{"paragraph_id": paragraph_id, "quote": quotes[paragraph_id], "relevance": "r"}],
+                "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+                "confidence": 0.9,
+                "blocks_send": False,
+            }
+
+        result = build_ai_first_review_result(
+            text,
+            [
+                assessment("mutuality", "p1"),
+                assessment("confidential_information", "p2"),
+                assessment("governing_law", "p3"),
+                assessment("term_and_survival", "p4"),
+                assessment("non_circumvention", "p5"),
+                assessment("signatures", "p6"),
+            ],
+            verify=False,
+        )
+        term = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertNotIn("term_years", term)
+
 
 class QuoteOffsetRobustnessTests(unittest.TestCase):
     """BUGFIX: downstream quote location must use the SAME normalization the

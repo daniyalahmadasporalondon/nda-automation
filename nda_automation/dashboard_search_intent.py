@@ -67,6 +67,9 @@ MAX_TEXT_CHARS = 200
 # ``min_age_days`` is clamped into a sane range: 0 disables it, and a year is a
 # generous ceiling for "older than N days" on an NDA pipeline.
 MAX_MIN_AGE_DAYS = 365
+# ``term_years`` is the agreement's ordinary term in whole years. Clamped into a sane
+# range: 0/negative disables it, and a century is a generous ceiling for an NDA term.
+MAX_TERM_YEARS = 100
 
 # The allowed workflow_state.status values -- sourced directly from workflow.py so
 # the allowlist can never drift from the real state machine. These are the EXACT
@@ -186,6 +189,7 @@ NULL_FILTER_SPEC: dict[str, Any] = {
     "has_clause": None,
     "signed": None,
     "governing_law": None,
+    "term_years": None,
     "text": None,
     "min_age_days": None,
     "sort": None,
@@ -215,6 +219,7 @@ def validate_filter_spec(spec: object) -> dict[str, Any]:
         "has_clause": _validate_enum(spec.get("has_clause"), allowed_clause_ids()),
         "signed": _validate_bool(spec.get("signed")),
         "governing_law": _validate_enum(spec.get("governing_law"), allowed_governing_laws()),
+        "term_years": _validate_term_years(spec.get("term_years")),
         "text": _validate_text(spec.get("text")),
         "min_age_days": _validate_min_age_days(spec.get("min_age_days")),
         "sort": _validate_enum(spec.get("sort"), ALLOWED_SORTS),
@@ -248,6 +253,21 @@ def _corpus_matter_signed(matter: Mapping[str, Any]) -> bool | None:
 
 def _corpus_matter_governing_law(matter: Mapping[str, Any]) -> str:
     return str(_matter_facets(matter).get("governing_law") or "").strip().lower()
+
+
+def _corpus_matter_term_years(matter: Mapping[str, Any]) -> float | None:
+    """The matter's ordinary term in years (float), or None when unknown.
+
+    Mirrors the corpus_index facet contract: a positive number is the detected term;
+    anything else (null / 0 / bool / non-number) is "unknown", so a term_years filter
+    never positively matches a matter whose term we could not detect.
+    """
+    value = _matter_facets(matter).get("term_years")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    return None
 
 
 def _corpus_matter_has_clause(matter: Mapping[str, Any], clause_id: str) -> bool:
@@ -294,11 +314,12 @@ def corpus_matter_matches_spec(matter: Mapping[str, Any], spec: Mapping[str, Any
     """True when one CorpusMatter satisfies every non-null dimension of ``spec``.
 
     A deterministic AND mirroring the FE applyFilterSpec for the facet dimensions
-    (status / phase / has_clause / signed / governing_law / needs_attention /
-    human_gate / has_issues / text). An unknown facet (signed=None, governing_law="",
-    empty clause list, the workflow-state axes at their False/0 defaults) is never a
-    positive match, so a legacy Drive matter (facets_available=false) drops out of
-    facet-filtered counts rather than being counted as the opposite.
+    (status / phase / has_clause / signed / governing_law / term_years /
+    needs_attention / human_gate / has_issues / text). An unknown facet (signed=None,
+    governing_law="", term_years=None, empty clause list, the workflow-state axes at
+    their False/0 defaults) is never a positive match, so a legacy Drive matter
+    (facets_available=false) drops out of facet-filtered counts rather than being
+    counted as the opposite.
     """
     if not isinstance(spec, Mapping):
         return False
@@ -319,6 +340,13 @@ def corpus_matter_matches_spec(matter: Mapping[str, Any], spec: Mapping[str, Any
     governing_law = spec.get("governing_law")
     if governing_law is not None and _corpus_matter_governing_law(matter) != governing_law:
         return False
+    term_years = spec.get("term_years")
+    if term_years is not None:
+        matter_term_years = _corpus_matter_term_years(matter)
+        # A matter whose term is unknown (None) is NEVER a positive match, either way --
+        # same graceful-degradation contract as the other facets.
+        if matter_term_years is None or matter_term_years != float(term_years):
+            return False
     needs_attention = spec.get("needs_attention")
     if needs_attention is not None and _corpus_matter_needs_attention(matter) != needs_attention:
         return False
@@ -435,11 +463,17 @@ _FILTER_WORDS: frozenset[str] = frozenset(
         "signature",
         "signed",
         "stuck",
+        "term",
         "than",
         "week",
         "weeks",
+        "year",
+        "years",
     }
 )
+# A year-term token ("5-year", "10-years") the term_years dimension consumes; kept out
+# of the free-text field so a "5-year NDA" query does not also keyword-match "5-year".
+_YEAR_TERM_TOKEN_RE = re.compile(r"^\d{1,3}-years?$")
 
 
 # Phrase -> clause id for the deterministic has_clause fallback. Ordered so a more
@@ -529,6 +563,7 @@ def deterministic_filter_spec(query: str) -> dict[str, Any]:
     lowered = cleaned.lower()
     _apply_deterministic_status_phase_flags(lowered, spec)
     _apply_deterministic_corpus_flags(lowered, spec)
+    spec["term_years"] = _deterministic_term_years(lowered)
     spec["min_age_days"] = _deterministic_min_age_days(lowered)
     spec["sort"] = _deterministic_sort(lowered)
     spec["text"] = _deterministic_text_terms(cleaned)
@@ -621,6 +656,22 @@ def _deterministic_min_age_days(lowered: str) -> int | None:
     return None
 
 
+def _deterministic_term_years(lowered: str) -> int | None:
+    """Map "5-year" / "5 year term" / "term of 5 years" to the term_years filter.
+
+    Conservative: requires an explicit year-term phrase so a bare "5" never sets it.
+    The age phrasing ("older than 5 days/weeks") is handled separately and does not
+    use the word "year", so the two never collide.
+    """
+    match = re.search(r"\b(\d{1,3})[\s-]year(?:s)?\b(?:\s+term)?", lowered)
+    if match:
+        return _validate_term_years(match.group(1))
+    match = re.search(r"\bterm\s+of\s+(\d{1,3})\s+years?\b", lowered)
+    if match:
+        return _validate_term_years(match.group(1))
+    return None
+
+
 def _deterministic_sort(lowered: str) -> str | None:
     if _contains_any(lowered, ("oldest", "oldest first")):
         return "oldest"
@@ -634,6 +685,8 @@ def _deterministic_text_terms(cleaned: str) -> str | None:
     for token in _TOKEN_RE.findall(cleaned):
         lowered = token.lower().strip("'")
         if not lowered or lowered.isdigit():
+            continue
+        if _YEAR_TERM_TOKEN_RE.match(lowered):
             continue
         if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS or lowered in _CORPUS_FILTER_WORDS:
             continue
@@ -692,6 +745,28 @@ def _validate_min_age_days(value: object) -> int | None:
     if days < 1:
         return None
     return min(days, MAX_MIN_AGE_DAYS)
+
+
+def _validate_term_years(value: object) -> int | None:
+    """Clamp ``term_years`` into ``[1, MAX_TERM_YEARS]``; 0 / negative / non-int
+    disables it (None). Bools are not ints here (``True`` must not become 1). A float
+    is truncated, so "5.0" maps to the 5-year filter, mirroring ``min_age_days``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        years = value
+    elif isinstance(value, float):
+        years = int(value)
+    elif isinstance(value, str):
+        try:
+            years = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if years < 1:
+        return None
+    return min(years, MAX_TERM_YEARS)
 
 
 # --------------------------------------------------------------------------- #
@@ -753,6 +828,10 @@ def describe_filter_spec(spec: Mapping[str, Any]) -> str:
     governing_law = spec.get("governing_law")
     if isinstance(governing_law, str) and governing_law:
         parts.append(f"Governed by {_GOVERNING_LAW_LABELS.get(governing_law, governing_law.replace('_', ' ').title())}")
+    term_years = spec.get("term_years")
+    if isinstance(term_years, int) and not isinstance(term_years, bool):
+        year_word = "year" if term_years == 1 else "years"
+        parts.append(f"{term_years}-{year_word} term")
     min_age_days = spec.get("min_age_days")
     if isinstance(min_age_days, int):
         day_word = "day" if min_age_days == 1 else "days"
@@ -793,6 +872,7 @@ def _system_prompt() -> str:
         '  "has_clause": one of [' + clause_ids + "] or null  (the document contains that clause)\n"
         '  "signed": true, false, or null  (true = fully signed/executed; false = unsigned/awaiting signature)\n'
         '  "governing_law": one of [' + governing_laws + "] or null  (the agreement's governing law)\n"
+        '  "term_years": an integer N for "a 5-year NDA" / "term of N years", or null  (the agreement\'s term in whole years)\n'
         '  "text": a short keyword string (a counterparty or subject) or null\n'
         '  "min_age_days": an integer N for "older than N days" / "stuck", or null\n'
         '  "sort": "oldest", "newest", or null\n'

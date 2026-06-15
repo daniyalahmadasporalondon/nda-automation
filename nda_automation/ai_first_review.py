@@ -21,6 +21,14 @@ from .checks.common import (
     ISSUE_TYPE_UNCLEAR,
     MAX_EVIDENCE_PARAGRAPHS,
     ClauseResult,
+    _normalize,
+    _paragraph_matches,
+    _term_context_patterns,
+)
+from .checks.term_and_survival import (
+    _detected_term_years,
+    _extract_year_terms_with_context,
+    _year_term_has_required_scope,
 )
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
@@ -467,6 +475,42 @@ def _review_paragraphs(source_text: str, paragraphs: Sequence[Paragraph] | None)
     return [deepcopy(paragraph) for paragraph in paragraphs]
 
 
+def _ai_first_detected_term_years(
+    playbook_clause: Mapping[str, Any],
+    paragraphs: list[Paragraph],
+) -> float | None:
+    """Best-effort ordinary term-in-years scalar for the ``term_and_survival`` clause.
+
+    PURELY ADDITIVE PROVENANCE. The AI-first engine's assessment schema carries no
+    structured term number, so the corpus ``term_years`` facet stays null on every
+    AI-reviewed matter. This recovers it by reusing the SAME deterministic year-term
+    extraction the deterministic checker uses (``checks.term_and_survival``), driven
+    only by the source paragraphs + the playbook clause config -- it never reads the
+    AI's decision/finding/status/confidence and never feeds back into them. The result
+    is identical to what the deterministic engine would surface for the same document,
+    so a "5-year NDA" search resolves on AI-reviewed matters too.
+
+    Returns the largest scoped ordinary term in years, or None when nothing is
+    confidently derivable (the facet then degrades to "unknown" rather than guessing).
+    Never raises: any failure collapses to None.
+    """
+    try:
+        clause = dict(playbook_clause)
+        term_context_patterns = _term_context_patterns(clause)
+        term_paragraphs = _paragraph_matches(list(paragraphs), term_context_patterns)
+        term_normalized = _normalize(
+            " ".join(str(paragraph.get("text") or "") for paragraph in term_paragraphs)
+        )
+        scoped_year_terms = [
+            term
+            for term in _extract_year_terms_with_context(term_normalized)
+            if _year_term_has_required_scope(term_normalized, term, clause)
+        ]
+        return _detected_term_years(scoped_year_terms)
+    except Exception:  # noqa: BLE001 -- provenance only; never break the review.
+        return None
+
+
 def _clause_result_from_assessment(
     playbook_clause: Mapping[str, Any],
     assessment: Mapping[str, Any] | None,
@@ -584,6 +628,15 @@ def _clause_result_from_assessment(
     for field in _PLAYBOOK_RESULT_FIELDS:
         if field in playbook_clause:
             result[field] = deepcopy(playbook_clause[field])
+    # PURELY ADDITIVE: record a detected ordinary term-in-years scalar for the
+    # term_and_survival clause so the corpus `term_years` facet (and the "5-year NDA"
+    # search) resolves on AI-reviewed matters too. It is derived deterministically from
+    # the source paragraphs + playbook clause -- never from the AI verdict -- and only
+    # set when confidently derivable, so it can never alter any review decision.
+    if str(playbook_clause.get("id") or "") == "term_and_survival":
+        detected_term_years = _ai_first_detected_term_years(playbook_clause, paragraphs)
+        if detected_term_years is not None:
+            result["term_years"] = detected_term_years
     # Re-derive structured evidence against the final clause (its decision/status
     # may have changed in the grounding downgrade above) so signal types align.
     result["structured_evidence"] = _structured_evidence_records(result, matched_paragraphs, assessment)

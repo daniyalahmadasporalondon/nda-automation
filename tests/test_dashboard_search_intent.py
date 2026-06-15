@@ -178,6 +178,44 @@ class CorpusDimensionTests(unittest.TestCase):
         self.assertIn("non_solicitation", prompt)
 
 
+class TermYearsDimensionTests(unittest.TestCase):
+    """The term_years integer dimension: validation, NL mapping, describe, prompt."""
+
+    def test_null_spec_and_prompt_carry_term_years(self):
+        self.assertIn("term_years", dsi.NULL_FILTER_SPEC)
+        self.assertIn("term_years", dsi._system_prompt())
+
+    def test_validate_clamps_and_rejects(self):
+        # Mirrors min_age_days: 0/negative disable, over-ceiling clamps, bool != int,
+        # a float truncates, a numeric string parses, junk drops.
+        self.assertEqual(dsi.validate_filter_spec({"term_years": 5})["term_years"], 5)
+        self.assertEqual(dsi.validate_filter_spec({"term_years": 5.0})["term_years"], 5)
+        self.assertEqual(dsi.validate_filter_spec({"term_years": "5"})["term_years"], 5)
+        self.assertIsNone(dsi.validate_filter_spec({"term_years": 0})["term_years"])
+        self.assertIsNone(dsi.validate_filter_spec({"term_years": -3})["term_years"])
+        self.assertIsNone(dsi.validate_filter_spec({"term_years": True})["term_years"])
+        self.assertEqual(dsi.validate_filter_spec({"term_years": 9999})["term_years"], dsi.MAX_TERM_YEARS)
+        self.assertIsNone(dsi.validate_filter_spec({"term_years": "lots"})["term_years"])
+
+    def test_year_phrases_map_to_term_years_without_text_leak(self):
+        self.assertEqual(dsi.deterministic_filter_spec("show me 5-year NDAs")["term_years"], 5)
+        self.assertEqual(dsi.deterministic_filter_spec("NDAs with a term of 3 years")["term_years"], 3)
+        leaky = dsi.deterministic_filter_spec("Acme 5 year term")
+        self.assertEqual(leaky["term_years"], 5)
+        # The year-term words must not leak into the keyword haystack.
+        self.assertNotIn("year", (leaky["text"] or "").lower())
+        self.assertIn("Acme", leaky["text"])
+
+    def test_age_phrasing_does_not_set_term_years(self):
+        # "older than 5 days/weeks" is the age dimension, never the term.
+        self.assertIsNone(dsi.deterministic_filter_spec("docs older than 5 days")["term_years"])
+        self.assertIsNone(dsi.deterministic_filter_spec("stuck for more than 2 weeks")["term_years"])
+
+    def test_describe_includes_term(self):
+        self.assertIn("5-years term", dsi.describe_filter_spec(dsi.validate_filter_spec({"term_years": 5})))
+        self.assertIn("1-year term", dsi.describe_filter_spec(dsi.validate_filter_spec({"term_years": 1})))
+
+
 class DeterministicCorpusMappingTests(unittest.TestCase):
     def test_non_solicit_maps_to_has_clause(self):
         spec = dsi.deterministic_filter_spec("which NDAs have a non-solicit")
@@ -239,6 +277,7 @@ class CorpusMatcherTests(unittest.TestCase):
             "governing_law": "",
             "signed": None,
             "has_clauses": [],
+            "term_years": None,
             "phase": "",
             "status": "",
             "needs_attention": False,
@@ -254,6 +293,20 @@ class CorpusMatcherTests(unittest.TestCase):
         matter = self._matter(governing_law="difc", signed=True)
         spec = dsi.validate_filter_spec({"governing_law": "difc", "signed": True})
         self.assertTrue(dsi.corpus_matter_matches_spec(matter, spec))
+
+    def test_term_years_matches_only_the_known_term(self):
+        spec5 = dsi.validate_filter_spec({"term_years": 5})
+        # A matter with a detected 5-year term matches; a 3-year term does not.
+        self.assertTrue(dsi.corpus_matter_matches_spec(self._matter(term_years=5.0), spec5))
+        self.assertTrue(dsi.corpus_matter_matches_spec(self._matter(term_years=5), spec5))
+        self.assertFalse(dsi.corpus_matter_matches_spec(self._matter(term_years=3.0), spec5))
+
+    def test_term_years_unknown_is_never_a_positive_match(self):
+        # CRITICAL null-safety: a matter whose term_years facet is null/0 is "unknown"
+        # and must never be matched by a term_years filter (no silent mis-inclusion).
+        spec5 = dsi.validate_filter_spec({"term_years": 5})
+        self.assertFalse(dsi.corpus_matter_matches_spec(self._matter(term_years=None), spec5))
+        self.assertFalse(dsi.corpus_matter_matches_spec(self._matter(term_years=0), spec5))
 
     def test_human_gate_matches_from_facet(self):
         # The workflow-state failure/gate axes are now first-class corpus facets, so

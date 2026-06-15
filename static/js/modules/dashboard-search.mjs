@@ -278,6 +278,7 @@ const FILTER_SPEC_GOVERNING_LAWS = new Set([
 ]);
 const FILTER_SPEC_MAX_TEXT_CHARS = 200;
 const FILTER_SPEC_MAX_MIN_AGE_DAYS = 365;
+const FILTER_SPEC_MAX_TERM_YEARS = 100;
 
 // The canonical all-null spec: every dimension absent (apply nothing).
 const NULL_FILTER_SPEC = Object.freeze({
@@ -289,6 +290,7 @@ const NULL_FILTER_SPEC = Object.freeze({
   has_clause: null,
   signed: null,
   governing_law: null,
+  term_years: null,
   text: null,
   min_age_days: null,
   sort: null,
@@ -326,6 +328,23 @@ function validateMinAgeDays(value) {
   return Math.min(days, FILTER_SPEC_MAX_MIN_AGE_DAYS);
 }
 
+// The agreement's term in whole years. Clamped into [1, FILTER_SPEC_MAX_TERM_YEARS];
+// 0/negative/non-int disables it (null). Bools are not ints here (true must not become
+// 1) and a float is truncated, mirroring the backend _validate_term_years.
+function validateTermYears(value) {
+  if (typeof value === "boolean") return null;
+  let years;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    years = Math.trunc(value);
+  } else if (typeof value === "string" && value.trim() !== "" && /^-?\d+$/.test(value.trim())) {
+    years = parseInt(value.trim(), 10);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(years) || years < 1) return null;
+  return Math.min(years, FILTER_SPEC_MAX_TERM_YEARS);
+}
+
 // Validate a (server- or model-produced) filter spec against the fixed schema.
 // Out-of-enum values are dropped to null, ints are clamped, bools are coerced, and
 // unknown keys are ignored. Always returns a full spec with exactly the schema's
@@ -341,6 +360,7 @@ function validateFilterSpec(spec) {
     has_clause: validateEnumValue(spec.has_clause, FILTER_SPEC_CLAUSE_IDS),
     signed: validateBoolValue(spec.signed),
     governing_law: validateEnumValue(spec.governing_law, FILTER_SPEC_GOVERNING_LAWS),
+    term_years: validateTermYears(spec.term_years),
     text: validateTextValue(spec.text),
     min_age_days: validateMinAgeDays(spec.min_age_days),
     sort: validateEnumValue(spec.sort, FILTER_SPEC_SORTS),
@@ -431,6 +451,18 @@ function matterGoverningLaw(matter) {
   return String(matter?.governing_law || "").trim().toLowerCase();
 }
 
+// The matter's ordinary term in years (number), or null when unknown. The corpus
+// payload surfaces it on matter.facets.term_years (a positive number, else null). A
+// matter whose term we could not detect (null / 0 / non-number) is NEVER a positive
+// match for a term_years filter — same graceful-degradation contract as the other
+// facets, mirroring the backend _corpus_matter_term_years.
+function matterTermYears(matter) {
+  const value = matter?.facets?.term_years;
+  if (typeof value === "boolean") return null;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  return null;
+}
+
 // The matter's age in whole days, from created_at (fallback updated_at) vs `now`.
 // Returns null when no usable timestamp is present (so a min_age_days filter never
 // silently includes an undated matter).
@@ -467,6 +499,12 @@ function applyFilterSpec(matters, rawSpec, now = Date.now()) {
       if (signed === null || signed !== spec.signed) return false;
     }
     if (spec.governing_law !== null && matterGoverningLaw(matter) !== spec.governing_law) return false;
+    if (spec.term_years !== null) {
+      const termYears = matterTermYears(matter);
+      // A matter whose term is unknown (null) is never included by a term_years
+      // filter — we only match a matter whose term we actually detected.
+      if (termYears === null || termYears !== spec.term_years) return false;
+    }
     if (spec.text !== null) {
       const haystack = matterHaystack(matter);
       const terms = queryTerms(spec.text);
@@ -766,6 +804,7 @@ export {
   matterSigned,
   matterStatus,
   matterStatusLabel,
+  matterTermYears,
   matterTitle,
   queryTerms,
   runChip,
