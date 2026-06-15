@@ -1,28 +1,43 @@
 """Lifecycle stage: SENT (an outbound copy emailed to the counterparty).
 
-STUB — the ``hook/sent`` hook agent implements this module. The CORE agent owns
-the shared surfaces (the artifact-registry ``sent`` role, the Drive naming
-grammar, and the send-success CALL to :func:`capture_sent_artifact`); this stub
-exists so those shared edits land green. The hook agent fills ONLY this module
-and its own test file (``tests/test_lifecycle_sent.py``); it must not touch a
-sibling hook module or any shared file the core already owns.
+This is the ``hook/sent`` module. The CORE agent owns the shared surfaces (the
+artifact-registry ``sent`` role, the Drive naming grammar, and the send-success
+CALL to :func:`capture_sent_artifact` on ``RepositoryMatterLifecycle``); this
+module fills in the capture itself. It touches ONLY this file and its own test
+file (``tests/test_lifecycle_sent.py``).
 
-Contract the hook agent implements:
+Contract:
     capture_sent_artifact(repository, matter_id, owner_user_id, sent_bytes,
                           filename, recipient) -> Artifact | None
-        Register a SENT artifact (versioned via
-        ``artifact_registry.next_version_for_role(matter, ROLE_SENT)``) and store
-        the EXACT emailed bytes so ``artifact_service.get_artifact_bytes`` returns
-        them. ``recipient`` is recorded on the artifact metadata. Returns the new
-        ``Artifact`` (or ``None`` when there is nothing to capture).
+        Register a SENT artifact (role ``sent``, source ``generated``, actor
+        ``human`` — we sent it after our review) with the EXACT emailed bytes,
+        versioned via ``artifact_registry.next_version_for_role(matter, sent)``
+        (so a second send becomes ``sent`` v2), and stored through the repository
+        so ``artifact_service.get_artifact_bytes`` returns the same bytes the
+        Drive sync uploads. Lineage (``based_on``) points at the most-recent
+        upstream artifact — the latest ``reviewed`` (legal_review) doc, else the
+        latest ``redline``, else the ``original``. ``recipient`` and ``filename``
+        are recorded on the artifact metadata. Returns the new ``Artifact``.
 
-Until implemented this is a safe NO-OP: it returns ``None`` without raising, so
-the existing send-success path stays inert and the existing send tests stay
-green.
+Best-effort: returns ``None`` (never raises) when there is nothing to capture —
+no bytes, no matter id, or the matter is not found/owned — so the send-success
+path stays inert in those cases. The send already happened; capture is additive.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from . import artifact_service
+from .artifact_registry import (
+    ACTOR_HUMAN,
+    ROLE_ORIGINAL,
+    ROLE_REDLINE,
+    ROLE_REVIEWED,
+    ROLE_SENT,
+    SOURCE_GENERATED,
+    latest_artifact_for_role,
+    next_version_for_role,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .artifact_registry import Artifact
@@ -37,11 +52,64 @@ def capture_sent_artifact(
     filename: str,
     recipient: str,
 ) -> "Artifact | None":
-    """STUB — hook-agent-implements-this. Safe no-op: returns None, never raises.
+    """Register the emailed document as a SENT lifecycle artifact.
 
-    See the module docstring for the full contract. The CORE agent has already
-    added the CALL to this on the send-success path; with this no-op stub that
-    call is inert.
+    See the module docstring for the full contract. The version is derived by the
+    registry (one past the highest existing ``sent`` version), so a first send is
+    ``sent`` v1 and a second send is ``sent`` v2. Returns the new ``Artifact``,
+    or ``None`` when there is nothing to capture.
     """
-    _ = (repository, matter_id, owner_user_id, sent_bytes, filename, recipient)
-    return None
+    matter_id = str(matter_id or "")
+    if not matter_id or not sent_bytes:
+        return None
+
+    repository = repository or _default_repository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        return None
+
+    based_on = (
+        latest_artifact_for_role(matter, ROLE_REVIEWED)
+        or latest_artifact_for_role(matter, ROLE_REDLINE)
+        or latest_artifact_for_role(matter, ROLE_ORIGINAL)
+    )
+
+    metadata: dict[str, Any] = {}
+    recipient = str(recipient or "").strip()
+    if recipient:
+        metadata["recipient"] = recipient
+    filename = str(filename or "").strip()
+    if filename:
+        metadata["sent_filename"] = filename
+
+    # Each SENT version must keep its OWN bytes. The default provisional storage
+    # key is keyed only by (matter, actor, role) — so a second send would
+    # overwrite v1's bytes. Stage the bytes under a version-unique key first;
+    # passing ``stored_filename`` makes ``add_artifact`` reuse it (skipping its
+    # provisional put) while still hashing the bytes for ``content_hash``.
+    version = next_version_for_role(matter, ROLE_SENT)
+    stored_bytes = bytes(sent_bytes)
+    stored_filename = repository.put_artifact_document(
+        f"{matter_id}-sent-v{version}.docx", stored_bytes
+    )
+
+    return artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_SENT,
+        document_bytes=stored_bytes,
+        stored_filename=stored_filename,
+        version=version,
+        based_on_artifact_id=(based_on.id if based_on is not None else ""),
+        make_current=True,
+        metadata=metadata,
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
+
+
+def _default_repository() -> "MatterRepository":
+    from .matter_repository import DiskMatterRepository
+
+    return DiskMatterRepository()
