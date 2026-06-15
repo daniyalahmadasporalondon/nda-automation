@@ -69,8 +69,18 @@ def add_artifact(
     resolved_stored_filename = stored_filename
     if document_bytes is not None and not stored_filename:
         # Stage the bytes first so a persisted artifact record always points at
-        # real bytes. The repository returns the sanitised storage key.
-        provisional_name = _provisional_stored_name(matter, actor, role)
+        # real bytes. The repository returns the sanitised storage key. The key is
+        # VERSION-AWARE: resolve the SAME version ``register_artifact`` will assign
+        # (the explicit ``version`` if given, else one past the role's highest) so
+        # each version stores under its own key. Without this, registering a v2 of
+        # a role would reuse v1's (matter, actor, role) key and overwrite v1's
+        # bytes — get_artifact_bytes would then return v2's bytes for v1.
+        resolved_version = (
+            version
+            if version is not None
+            else artifact_registry.next_version_for_role(matter, role)
+        )
+        provisional_name = _provisional_stored_name(matter, actor, role, resolved_version)
         resolved_stored_filename = repository.put_artifact_document(provisional_name, document_bytes)
 
     artifact, artifacts_list, current_artifact_id = artifact_registry.register_artifact(
@@ -158,6 +168,42 @@ def register_reviewed_docx(
         metadata=metadata,
         repository=repository,
         owner_user_id=owner_user_id,
+    )
+
+
+def remove_artifact(
+    matter_id: str,
+    artifact_id: str,
+    *,
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Drop an artifact from a matter's registry and persist the change.
+
+    Used to keep a one-shot role exactly singular (e.g. SIGNED is terminal: a
+    second executed copy REPLACES the prior one rather than appending a duplicate).
+    If the removed artifact was the ``current_artifact_id``, the pointer is
+    re-anchored to the now-last remaining artifact (or cleared when none remain),
+    so the pointer never dangles. Returns the updated matter, or ``None`` when the
+    matter or artifact is not found.
+    """
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        return None
+    target = str(artifact_id or "")
+    remaining = [
+        item.to_dict()
+        for item in artifact_registry.matter_artifacts(matter)
+        if item.id != target
+    ]
+    if len(remaining) == len(artifact_registry.matter_artifacts(matter)):
+        return None  # nothing removed
+    current = str(matter.get(artifact_registry.CURRENT_ARTIFACT_FIELD) or "")
+    if current == target:
+        current = remaining[-1]["id"] if remaining else ""
+    return repository.update_matter_artifacts(
+        matter_id, remaining, current, owner_user_id=owner_user_id
     )
 
 
@@ -334,8 +380,16 @@ def _backfill_origin_metadata(matter: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _provisional_stored_name(matter: dict[str, Any], actor: str, role: str) -> str:
+def _provisional_stored_name(matter: dict[str, Any], actor: str, role: str, version: int) -> str:
+    """Version-aware storage key for auto-provisioned artifact bytes.
+
+    Each version of a (matter, actor, role) must store under its OWN key so a
+    later version never overwrites an earlier one's bytes (which
+    ``get_artifact_bytes`` would otherwise return for the older version). The
+    ``-v{N}`` suffix makes the key unique per version.
+    """
     matter_id = str(matter.get("id") or "matter")
     actor_slug = artifact_registry._slug(actor) or "actor"
     role_slug = artifact_registry._slug(role) or "doc"
-    return f"{matter_id}-{actor_slug}-{role_slug}.docx"
+    version_label = max(int(version), 1)
+    return f"{matter_id}-{actor_slug}-{role_slug}-v{version_label}.docx"

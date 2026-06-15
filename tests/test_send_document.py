@@ -16,7 +16,8 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from nda_automation import gmail_integration, matter_store
+from nda_automation import artifact_service, gmail_integration, matter_store
+from nda_automation.artifact_registry import ROLE_SENT
 from nda_automation.routes import send_document as send_document_routes
 
 
@@ -147,6 +148,28 @@ class SendDocumentTests(unittest.TestCase):
         self.assertEqual([event.get("type") for event in timeline], ["sent"])
         self.assertEqual(timeline[0].get("actor"), "legal@aspora.com")
         self.assertEqual(timeline[0].get("detail"), "counterparty@example.com")
+
+    def test_send_document_registers_sent_artifact_with_uploaded_bytes(self):
+        uploaded_docx = _make_docx("Engagement letter body.")
+        payload = self._payload(content_base64=base64.b64encode(uploaded_docx).decode("ascii"))
+        handler, _send_email = self._send(payload)
+
+        self.assertEqual(handler.status, 201, handler.response)
+        matter_id = handler.response["matter"]["id"]
+
+        # A SENT artifact was captured on the send_document success path (like the
+        # redline send path), carrying the EXACT uploaded bytes + the recipient.
+        sent_artifacts = [
+            a
+            for a in artifact_service.list_artifacts(matter_id)
+            if a.role == ROLE_SENT
+        ]
+        self.assertEqual(len(sent_artifacts), 1, "expected exactly one sent artifact")
+        sent_artifact = sent_artifacts[0]
+        self.assertEqual(sent_artifact.metadata.get("recipient"), "counterparty@example.com")
+
+        fetched = artifact_service.get_artifact_bytes(matter_id, sent_artifact.id)
+        self.assertEqual(fetched, uploaded_docx)
 
     def test_send_document_defaults_subject_to_filename_stem(self):
         handler, send_email = self._send(self._payload(subject=""))

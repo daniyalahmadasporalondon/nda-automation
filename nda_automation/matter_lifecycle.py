@@ -356,6 +356,17 @@ class RepositoryMatterLifecycle:
             filename=redline_export.filename,
             owner_user_id=owner_user_id,
         )
+        # Capture the emailed document as a SENT lifecycle artifact (the exact
+        # bytes that went out, plus the resolved recipient). Best-effort: the
+        # hook stub is a no-op today, and a hook failure must never undo a send
+        # that already succeeded.
+        self._capture_sent_artifact(
+            matter_id,
+            sent_bytes=redline_export.data,
+            filename=redline_export.filename,
+            recipient=str(sent.get("to") or confirmed_recipient or ""),
+            owner_user_id=owner_user_id,
+        )
         # For PDF-source matters the redline is reconstructed from the PDF (the
         # export stamps the X-PDF-DOCX-Reconstruction header), so the sent Word file
         # is best-effort, not faithful original formatting. Carry that caveat to the
@@ -405,10 +416,22 @@ class RepositoryMatterLifecycle:
             intake_metadata=send_document_metadata(filename, recipient, subject),
             owner_user_id=owner_user_id,
         )
+        matter_id = str(matter.get("id") or "")
         updated_matter = self.record_sent_delivery(
-            str(matter.get("id") or ""),
+            matter_id,
             sent,
             filename=filename,
+            owner_user_id=owner_user_id,
+        )
+        # Capture the emailed document as a SENT lifecycle artifact (the exact
+        # bytes that went out, plus the resolved recipient), like the redline
+        # path. Best-effort + guarded: the send already succeeded, so artifact
+        # capture must never undo it.
+        self._capture_sent_artifact(
+            matter_id,
+            sent_bytes=document_bytes,
+            filename=filename,
+            recipient=str(sent.get("to") or recipient or ""),
             owner_user_id=owner_user_id,
         )
         return MatterDocumentSendResult(matter=updated_matter, filename=filename, sent=sent)
@@ -440,6 +463,36 @@ class RepositoryMatterLifecycle:
             raise MatterNotFoundError("Matter not found.")
         self._stamp_sent_timeline(updated_matter, sent, owner_user_id=owner_user_id)
         return updated_matter
+
+    def _capture_sent_artifact(
+        self,
+        matter_id: str,
+        *,
+        sent_bytes: bytes,
+        filename: str,
+        recipient: str,
+        owner_user_id: str = "",
+    ) -> None:
+        """Register the emailed document as a SENT lifecycle artifact (best-effort).
+
+        Delegates to the ``lifecycle_sent`` hook module (a safe no-op stub until
+        the hook agent implements it). Guarded so a hook failure never undoes a
+        delivery that already succeeded.
+        """
+        try:
+            from . import lifecycle_sent
+
+            lifecycle_sent.capture_sent_artifact(
+                self._repository,
+                matter_id,
+                owner_user_id,
+                sent_bytes,
+                filename,
+                recipient,
+            )
+        except Exception:
+            # The send already succeeded; SENT-artifact capture is additive.
+            pass
 
     def _register_original_artifact(self, matter: dict[str, Any], *, owner_user_id: str = "") -> None:
         if matter.get("_existing_gmail_duplicate"):

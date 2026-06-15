@@ -54,15 +54,36 @@ def _seed_matter(repo, **overrides):
 
 # --- naming grammar --------------------------------------------------------
 def test_auto_naming_grammar():
-    assert artifact_name(1, "acme", "original", 1, "docx") == "01_acme_original_v1.docx"
-    assert artifact_name(2, "aspora", "redline", 2, "docx") == "02_aspora_redline_v2.docx"
+    # {NN}_{stage}[_v{N}]: stage derives from (role, actor). A counterparty
+    # original is the inbound "received" paper (one-shot, no version). A redline
+    # is the versioned "ai_redline" stage.
+    assert artifact_name(1, "counterparty", "original", 1, "docx") == "01_received.docx"
+    assert artifact_name(2, "ai", "redline", 2, "docx") == "02_ai_redline_v2.docx"
 
 
 def test_auto_naming_slugifies_and_pads():
-    # Actor/role are slugified; sequence zero-padded; ext normalised.
-    assert artifact_name(10, "Acme Corp, Inc.", "Original", 1, "PDF") == "10_acme-corp-inc_original_v1.pdf"
+    # Sequence zero-padded; ext normalised. A non-counterparty original (our org
+    # authored it) reads as the one-shot "draft" stage.
+    assert artifact_name(10, "Aspora Tech", "Original", 1, "PDF") == "10_draft.pdf"
     # Unknown extension falls back to docx.
     assert artifact_name(1, "ai", "redline", 1, "exe") == "01_ai_redline_v1.docx"
+
+
+def test_stage_mapping_covers_full_lifecycle():
+    # received <- counterparty original; draft <- our original/generated.
+    assert artifact_registry.stage_for("original", "counterparty") == "received"
+    assert artifact_registry.stage_for("original", "aspora_tech") == "draft"
+    assert artifact_registry.stage_for("generated", "aspora") == "draft"
+    assert artifact_registry.stage_for("redline", "ai") == "ai_redline"
+    assert artifact_registry.stage_for("reviewed", "human") == "legal_review"
+    assert artifact_registry.stage_for("sent", "human") == "sent"
+    assert artifact_registry.stage_for("counter", "counterparty") == "counter"
+    assert artifact_registry.stage_for("signed", "human") == "signed"
+    # One-shot stages get no version suffix; repeatable stages do (from v1).
+    assert artifact_name(1, "counterparty", "original", 1, "docx") == "01_received.docx"
+    assert artifact_name(8, "human", "signed", 1, "pdf") == "08_signed.pdf"
+    assert artifact_name(4, "human", "sent", 1, "docx") == "04_sent_v1.docx"
+    assert artifact_name(5, "counterparty", "counter", 2, "docx") == "05_counter_v2.docx"
 
 
 # --- creation + provenance -------------------------------------------------
@@ -85,7 +106,7 @@ def test_register_artifact_sets_provenance_and_current_pointer():
     assert artifact.actor == "counterparty"
     assert artifact.role == "original"
     assert artifact.version == 1
-    assert artifact.name == "01_counterparty_original_v1.docx"
+    assert artifact.name == "01_received.docx"
     assert artifact.created_at  # stamped
 
     stored = repo.get_matter(matter["id"])
@@ -164,7 +185,11 @@ def test_versions_increment_per_role():
     )
     assert first.version == 1
     assert second.version == 2
-    assert second.name == "02_ai_redline_v2.docx"
+    assert second.name == "02_ai_redline_v2.docx"  # versioned stage
+    # Each version owns its OWN bytes: the v2 storage key must not overwrite v1's
+    # (the version-aware provisional-storage-key regression guard).
+    assert artifact_service.get_artifact_bytes(matter["id"], first.id, repository=repo) == b"r1"
+    assert artifact_service.get_artifact_bytes(matter["id"], second.id, repository=repo) == b"r2"
 
 
 # --- lineage ---------------------------------------------------------------
@@ -297,7 +322,7 @@ def test_artifact_round_trips_through_dict():
         actor="counterparty",
         role="original",
         version=1,
-        name="01_counterparty_original_v1.docx",
+        name="01_received.docx",
         content_hash="deadbeef",
         based_on_artifact_id="",
         stored_filename="matter_1-orig.docx",
@@ -409,7 +434,7 @@ def test_public_matter_exposes_artifact_view_and_current_pointer():
     redline_view = next(a for a in view if a["role"] == "redline")
     assert redline_view["id"] == redline.id
     assert redline_view["version"] == 1
-    assert redline_view["name"] == "02_ai_redline_v1.docx"
+    assert redline_view["name"] == "02_ai_redline_v1.docx"  # versioned stage
     assert redline_view["based_on_artifact_id"] == original.id
     assert redline_view["is_current"] is True
     assert "content_hash" not in redline_view
@@ -544,6 +569,13 @@ def test_register_reviewed_docx_new_version_when_bytes_change():
     assert repo.get_matter(matter["id"])["current_artifact_id"] == second.id
     reviewed = [a for a in artifact_service.list_artifacts(matter["id"], repository=repo) if a.role == "reviewed"]
     assert len(reviewed) == 2
+    # The re-review must NOT have overwritten v1's stored bytes: each reviewed
+    # version retrieves its own distinct content (the corruption this guards).
+    assert artifact_service.get_artifact_bytes(matter["id"], first.id, repository=repo) == b"reviewed v1"
+    assert (
+        artifact_service.get_artifact_bytes(matter["id"], second.id, repository=repo)
+        == b"reviewed v2 (re-reviewed)"
+    )
 
 
 def test_register_reviewed_docx_missing_matter_raises():

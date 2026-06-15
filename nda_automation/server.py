@@ -73,6 +73,7 @@ from .rate_limit import (
     _reset_rate_limits as _reset_rate_limits,
 )
 from .ingestion_service import create_matter_from_document, extract_document
+from . import lifecycle_counter, lifecycle_signed
 from .matter_repository import DiskMatterRepository
 from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
@@ -415,6 +416,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/approve"):
                 approval_routes.handle_matter_approve(self, path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/signed"):
+                lifecycle_signed.handle_signed_upload(self, path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/counter"):
+                lifecycle_counter.handle_counter_upload(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
                 pdf_markup_routes.handle_pdf_annotation_create(self, path)

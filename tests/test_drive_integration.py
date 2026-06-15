@@ -116,6 +116,9 @@ class _FakeFilesV2:
             "parent": parents[0],
             "web_link": f"https://drive.google.com/file/d/{file_id}/view",
             "is_folder": body.get("mimeType") == drive_integration.FOLDER_MIME,
+            # The exact bytes uploaded, so a test can assert each versioned file
+            # carries its own correct content (not just the right filename).
+            "content": _media_bytes(media_body),
         }
         self._store["files"][file_id] = record
         return _FakeExecutable({"id": file_id, "webViewLink": record["web_link"]})
@@ -151,6 +154,21 @@ def _escape(value):
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _media_bytes(media_body):
+    """Extract the uploaded bytes from a ``MediaIoBaseUpload`` (or ``None``).
+
+    Folder creates carry no media; for a file upload the bytes are read back via
+    the media object's ``size()``/``getbytes()`` API so a test can verify the
+    exact content uploaded for each artifact version.
+    """
+    if media_body is None:
+        return None
+    try:
+        return media_body.getbytes(0, media_body.size())
+    except Exception:  # pragma: no cover - defensive, should not happen with real media
+        return None
+
+
 class FakeDriveV2Service:
     """A stateful fake Drive: folders + files, so idempotency is verifiable."""
 
@@ -177,6 +195,17 @@ class FakeDriveV2Service:
 
     def file_names(self):
         return sorted(rec["name"] for rec in self.file_records())
+
+    def content_for(self, filename):
+        """The uploaded bytes for the (single) file named ``filename``, or ``None``.
+
+        Lets a test assert that the Drive-synced file for each artifact version
+        carries that version's own distinct content.
+        """
+        for rec in self.file_records():
+            if rec["name"] == filename:
+                return rec.get("content")
+        return None
 
     def folder_create_count(self):
         return sum(
@@ -338,11 +367,11 @@ class DriveV2IntegrationTests(unittest.TestCase):
         fake = FakeDriveV2Service()
         folder = drive_integration.find_or_create_folder(name="NDAs", service=fake)
         first = drive_integration.upload_or_replace_file(
-            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+            file_bytes=b"docx", filename="01_received.docx", parent_id=folder, service=fake
         )
         self.assertTrue(first["created"])
         second = drive_integration.upload_or_replace_file(
-            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+            file_bytes=b"docx", filename="01_received.docx", parent_id=folder, service=fake
         )
         self.assertFalse(second["created"])
         self.assertEqual(first["file_id"], second["file_id"])
@@ -375,14 +404,17 @@ class DriveV2IntegrationTests(unittest.TestCase):
             get_artifact_bytes=fake_bytes,
         )
         names = fake.file_names()
-        self.assertIn("01_counterparty_original_v1.docx", names)
-        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
-        self.assertIn("03_legal_reviewed_v1.pdf", names)   # human -> legal, pdf ext
-        self.assertIn("04_aspora_draft_v1.docx", names)    # entity slug -> aspora, generated -> draft
+        # {NN}_{stage}[_v{N}]: counterparty original -> received (one-shot);
+        # ai redline -> ai_redline (versioned); human reviewed -> legal_review
+        # (versioned, pdf ext); our-org generated -> draft (one-shot).
+        self.assertIn("01_received.docx", names)
+        self.assertIn("02_ai_redline_v1.docx", names)
+        self.assertIn("03_legal_review_v1.pdf", names)
+        self.assertIn("04_draft.docx", names)
         # The pdf artifact was uploaded with the pdf mimetype.
         pdf_creates = [
             c for c in fake.store["create_calls"]
-            if c["body"].get("name") == "03_legal_reviewed_v1.pdf"
+            if c["body"].get("name") == "03_legal_review_v1.pdf"
         ]
         self.assertEqual(len(pdf_creates), 1)
         self.assertEqual(result["total_count"], 4)
@@ -427,7 +459,7 @@ class DriveV2IntegrationTests(unittest.TestCase):
                 {
                     "artifact_id": "a1", "sequence": 1, "actor": "counterparty",
                     "role": "original", "version": 1,
-                    "filename": "01_counterparty_original_v1.docx",
+                    "filename": "01_received.docx",
                     "drive_file_id": "id_99", "drive_file_url": "https://x/99",
                     "based_on_artifact_id": "", "created_at": "",
                 }
@@ -464,14 +496,71 @@ class DriveV2IntegrationTests(unittest.TestCase):
         )
 
     def test_matter_folder_name_grammar(self):
-        matter = {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00", "gmail_thread_id": "thr_1"}
-        name = drive_integration.derive_matter_folder_name(matter, "matter_z", "Acme")
-        self.assertEqual(name, "2026-06-07 - Acme - thr_1")
-        # No thread id -> matter id keys the folder.
-        name2 = drive_integration.derive_matter_folder_name(
-            {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00"}, "matter_z", "Acme"
+        # "{date} · {document title} · {ref}". The counterparty is the PARENT
+        # folder, so it is deliberately not repeated in the child name; the ref is
+        # the trailing 4 alphanumerics of the matter id.
+        matter = {
+            "id": "matter_3a8f2b1c9d0e",
+            "created_at": "2026-06-07T09:00:00+00:00",
+            "document_title": "Mutual NDA",
+            "subject": "RE: Mutual NDA thread",
+        }
+        name = drive_integration.derive_matter_folder_name(matter, "matter_3a8f2b1c9d0e", "Acme")
+        self.assertEqual(name, "2026-06-07 · Mutual NDA · 9d0e")
+
+    def test_matter_folder_name_falls_back_to_subject_then_nda(self):
+        # No usable document_title -> subject; the "Untitled NDA" placeholder is
+        # never treated as a real title.
+        subject_named = drive_integration.derive_matter_folder_name(
+            {
+                "id": "matter_aaaabbbbcccc",
+                "created_at": "2026-06-07T09:00:00+00:00",
+                "document_title": "Untitled NDA",
+                "subject": "Project Falcon NDA",
+            },
+            "matter_aaaabbbbcccc",
+            "Acme",
         )
-        self.assertEqual(name2, "2026-06-07 - Acme - matter_z")
+        self.assertEqual(subject_named, "2026-06-07 · Project Falcon NDA · cccc")
+        # Nothing human at all -> the literal "NDA" label, still date- and ref-keyed.
+        bare = drive_integration.derive_matter_folder_name(
+            {"id": "matter_0011223344ff", "created_at": "2026-06-07T09:00:00+00:00"},
+            "matter_0011223344ff",
+            "Acme",
+        )
+        self.assertEqual(bare, "2026-06-07 · NDA · 44ff")
+
+    def test_matter_folder_name_omits_date_when_unrecorded(self):
+        name = drive_integration.derive_matter_folder_name(
+            {"id": "matter_feedface1234", "document_title": "Mutual NDA"},
+            "matter_feedface1234",
+            "Acme",
+        )
+        self.assertEqual(name, "Mutual NDA · 1234")
+
+    def test_long_title_truncates_at_word_boundary_without_dangling_punctuation(self):
+        long_title = "Air India - Mutual NDA Template (Updated as on 23.04.2025) (4)"
+        name = drive_integration.derive_matter_folder_name(
+            {"id": "matter_aaaabbbbc518", "created_at": "2026-06-12T09:00:00+00:00", "document_title": long_title},
+            "matter_aaaabbbbc518",
+            "Air India",
+        )
+        # No mid-word slice and no dangling opening bracket / separator at the end.
+        self.assertEqual(name, "2026-06-12 · Air India - Mutual NDA Template (Updated as on 23.04.2025) · c518")
+        title = name.split(" · ")[1]
+        self.assertLessEqual(len(title), 60)
+        self.assertFalse(title.rstrip().endswith(("(", "-", "·", ",")))
+
+    def test_matter_ref_code_is_stable_and_fixed_length(self):
+        # Same id -> same ref every time (folders stay stable across re-syncs).
+        self.assertEqual(
+            drive_integration._matter_ref_code("matter_3a8f2b1c9d0e"),
+            drive_integration._matter_ref_code("matter_3a8f2b1c9d0e"),
+        )
+        self.assertEqual(len(drive_integration._matter_ref_code("matter_3a8f2b1c9d0e")), 4)
+        # Short/empty ids still yield a 4-char deterministic code.
+        self.assertEqual(len(drive_integration._matter_ref_code("x")), 4)
+        self.assertEqual(len(drive_integration._matter_ref_code("")), 4)
 
     def test_folder_names_are_drive_safe(self):
         # Slashes and control chars are neutralised so a name cannot escape the path.
@@ -743,11 +832,11 @@ class DriveRouteTests(unittest.TestCase):
         # 3 artifacts + matter_summary.json = 4 files.
         self.assertEqual(fake.file_create_count(), 4)
         self.assertIn("matter_summary.json", fake.file_names())
-        # Grammar filenames with the display vocabulary (ai->agent, human->legal).
+        # Lifecycle-grammar filenames {NN}_{stage}[_v{N}].
         names = fake.file_names()
-        self.assertIn("01_counterparty_original_v1.docx", names)
-        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
-        self.assertIn("03_legal_reviewed_v1.docx", names)  # human -> legal
+        self.assertIn("01_received.docx", names)          # counterparty original
+        self.assertIn("02_ai_redline_v1.docx", names)     # ai redline (versioned)
+        self.assertIn("03_legal_review_v1.docx", names)   # human reviewed (versioned)
         self.assertEqual(telemetry.snapshot()["counters"].get("drive_upload_succeeded"), 1)
         self.assertEqual(telemetry.snapshot()["counters"].get("drive_files_synced"), 3)
 
