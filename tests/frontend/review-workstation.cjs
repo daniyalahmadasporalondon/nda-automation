@@ -73,6 +73,7 @@ const tests = [
   ["hides a demoted false-positive section from the Structure tab and its count", testStructureTabHidesDemotedFalsePositiveSection],
   ["keeps the Schedule/Section/Exhibit namespace guard on prose structure references", testStructureReferenceNamespaceGuard],
   ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
+  ["keeps the governing-law concurrence mismatch advisory and never force-fails the backend verdict", testGovlawConcurrenceIsAdvisoryNotAForceFail],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
@@ -8188,6 +8189,85 @@ async function testRadioCheckedTracksStagedExportNotRecommendation(page) {
   // Highlight == export: both are now India — the two signals can never diverge.
   assert.equal(await page.evaluate(() => state.redlineTemplateSelections.rl_govlaw), "opt_india",
     "the staged export option must equal the explicitly-checked India radio");
+}
+
+// North star: the backend/AI verdict is the source of truth and the FE must NOT
+// override it. The client-only entity-vs-doc concurrence signal is advisory: when
+// the backend PASSED the governing-law clause, a picked-entity mismatch must NOT
+// force a FAIL pill/lane-dot (the "deterministic ghost" we removed). The mismatch
+// instead surfaces as a non-authoritative concurrence NOTE, and the clause verdict
+// stays PASS.
+async function testGovlawConcurrenceIsAdvisoryNotAForceFail(page) {
+  await loadReviewWithMatter(page, {
+    clauses: [
+      {
+        // Backend/AI PASSED this clause (e.g. the document's law IS approved).
+        approved_laws: ["India", "Delaware", "DIFC"],
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by the laws of India." }],
+        id: "governing_law",
+        issue_label: "Pass",
+        law_phrases: { India: "India", Delaware: "the State of Delaware", DIFC: "the DIFC" },
+        matched_paragraph_ids: ["p2"],
+        name: "Governing Law",
+        passes: true,
+        reason: "Approved governing law found.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+    ],
+    paragraphs: [
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by the laws of India." },
+    ],
+  });
+
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+
+  // Backend verdict is PASS, so the clause reads PASS before any entity is picked.
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "PASS");
+
+  // Pick an Aspora entity whose law (Delaware) CONFLICTS with the document (India).
+  await page.evaluate(() => {
+    state.reviewPickedAspora = { name: "Aspora US Entity", lawLabel: "Delaware" };
+    refreshGoverningLawConcurrence();
+  });
+  // Wait for the advisory concurrence note to appear (the live signal fired).
+  await page.waitForSelector("#studioDetailPanel .gl-concurrence-note");
+
+  // The advisory note is shown, framed as a non-authoritative entity-concurrence
+  // hint — never as a definitive clause "fail".
+  const note = detailPanel.locator(".gl-concurrence-note");
+  await assertTextContains(note, "advisory check");
+  // The <small> label is uppercased via CSS text-transform; compare case-insensitively.
+  assert.equal(
+    (await note.locator("small").innerText()).trim().toLowerCase(),
+    "entity concurrence note",
+  );
+
+  // CRITICAL: the clause verdict must STILL read PASS — the client-only mismatch
+  // must NOT override the backend PASS into a FAIL.
+  await assertTextContains(detailPanel.locator(".active-clause-status"), "PASS");
+  assert.equal(
+    (await detailPanel.locator(".active-clause-status").innerText()).toUpperCase().includes("FAIL"),
+    false,
+    "the entity-vs-doc mismatch must NOT force the clause verdict to FAIL over the backend PASS",
+  );
+
+  // The lane dot must reflect the backend PASS tone, not a forced verify/fail dot.
+  const laneStatus = await page.evaluate(
+    () => clauseDisplayStatus(state.reviewClauses.find((c) => c.id === "governing_law")),
+  );
+  assert.equal(laneStatus.passes, true, "clauseDisplayStatus must keep the backend PASS");
+  assert.equal(laneStatus.fails, false, "clauseDisplayStatus must not force a fail from the client compare");
+  assert.equal(laneStatus.pillLabel === "FAIL", false, "no force-FAIL pill from the concurrence ghost");
+
+  // The remediation picker is still offered (the genuinely useful client signal is
+  // preserved as an advisory affordance, not a verdict override).
+  assert.ok(
+    await detailPanel.locator('[data-gl-redline-law]').count() >= 1,
+    "the advisory redline-to-approved-law picker is still offered on a concurrence mismatch",
+  );
 }
 
 async function testRedlineRationaleBlock(page) {

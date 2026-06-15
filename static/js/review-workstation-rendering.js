@@ -883,9 +883,10 @@ function clauseEngineBadge() {
 // ── Governing-law <-> picked-entity concurrence ─────────────────────────────
 // The Fill tool's chosen Aspora entity carries a registry governing law; the
 // document states its own. When both are known and differ, the Governing Law
-// clause reads as a FAIL in real time (recomputed on every render, on entity
-// change, and on a document edit). This is a live UI signal layered on top of the
-// backend verdict — it does not re-run the backend review.
+// clause surfaces a NON-authoritative hint (a note banner + a one-click redline
+// picker) in real time. This is purely advisory: it never overrides the backend
+// verdict and never re-runs the backend review. The backend/AI engine is the
+// source of truth for the clause status (see clauseDisplayStatus).
 
 // Apply a governing-law fix from the concurrence picker: replace the matched
 // governing-law paragraph with a clean approved sentence (shown as a tracked redline
@@ -957,26 +958,15 @@ function governingLawConflict() {
   return { entityName: (picked && picked.name) || "the selected entity", entityLaw, docLaw };
 }
 
-// clauseStatus, overridden to a fail for the Governing Law clause when the
-// document's law does not concur with the picked entity's law. Used wherever the
-// clause verdict is shown so the conflict reads as a fail (dot, headline, status).
+// The clause verdict shown in the UI. The backend/AI verdict is the SOURCE OF
+// TRUTH: this defers to clauseStatus(clause) for every clause, including
+// Governing Law. The client-only entity-vs-doc concurrence signal
+// (governingLawConflict()) is surfaced separately as a NON-authoritative hint
+// (the concurrence note banner + redline picker in renderStudioDetail) — it must
+// never force a FAIL the backend did not call, which would be a "deterministic
+// ghost" overriding the real engine.
 function clauseDisplayStatus(clause) {
-  const status = clauseStatus(clause);
-  if (clause && clause.id === "governing_law" && governingLawConflict()) {
-    return {
-      ...status,
-      tone: "check",
-      dotTone: "verify",
-      fails: true,
-      needsReview: false,
-      passes: false,
-      requiresAttention: true,
-      blocksSend: true,
-      issueLabel: "Fail",
-      pillLabel: "FAIL",
-    };
-  }
-  return status;
+  return clauseStatus(clause);
 }
 
 let concurrenceRefreshFrame = null;
@@ -1448,12 +1438,18 @@ function renderStudioDetail() {
   const proposedRedlines = renderProposedRedlinesBlock(clause);
   const actions = renderClauseActionsBlock(clause, status);
   const reasoningTrail = renderReasoningTrailBlock(clause);
-  // Governing-law concurrence banner + unified entity-aware picker (Issue 1).
+  // Governing-law concurrence hint + unified entity-aware picker (Issue 1).
+  // NON-authoritative: this note (and the picker below) is an advisory client
+  // signal only. The clause verdict (dot/pill/headline) comes from the backend
+  // via clauseDisplayStatus and is NOT overridden here.
   const glConflict = clause.id === "governing_law" ? governingLawConflict() : null;
+  // Reuse the existing .gl-concurrence-fail styling (owned by styles.css); the
+  // copy is advisory and the .gl-concurrence-note marker class lets the wording be
+  // recognised as a non-authoritative hint without restyling.
   const concurrenceBanner = glConflict
-    ? `<div class="studio-detail-block gl-concurrence-fail">
-        <small>Governing law conflict</small>
-        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not concur with the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>.</p>
+    ? `<div class="studio-detail-block gl-concurrence-fail gl-concurrence-note">
+        <small>Entity concurrence note</small>
+        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not match the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>. This is an advisory check against the picked entity — the clause verdict above reflects the engine's review.</p>
       </div>`
     : "";
   // On a govlaw conflict, surface the one-click remediation picker: one button
@@ -1465,10 +1461,9 @@ function renderStudioDetail() {
   // carrying template_options, the connected proposed-edit card already renders
   // those jurisdiction options (renderRedlineTemplateOptions), so this detached
   // picker would show the SAME options a second time. Suppress only the duplicate
-  // option display in that case — the concurrence detection, banner, and FAIL-pill
-  // (clauseDisplayStatus override) are untouched. When there is NO backend govlaw
-  // redline_edit to host the options, keep this picker so the redline-to-
-  // recommended-law capability is preserved.
+  // option display in that case — the concurrence detection and advisory note are
+  // untouched. When there is NO backend govlaw redline_edit to host the options,
+  // keep this picker so the redline-to-recommended-law capability is preserved.
   const glCardHostsOptions = Boolean(glConflict) && state.reviewRedlines.some(
     (edit) => String(edit?.clause_id || "") === "governing_law"
       && (edit.template_options || []).length > 1,
